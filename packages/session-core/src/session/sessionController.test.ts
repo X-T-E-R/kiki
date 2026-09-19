@@ -13,6 +13,7 @@ import type { TranscriptEvent } from '@kiki/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
 import type { SubagentBlock, ToolBlock, UserBlock } from './transcript';
+import { ASSISTANT_FRAME_ID, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
 import type { SessionViewFacade } from '@kiki/klient/session-view';
 
@@ -431,6 +432,26 @@ describe('SessionController pipeline', () => {
       '*': 'turn', main: 'delta', 'late-child': 'delta',
     });
     expect(socket.unsubscribe).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it('collects view leases during initial sync without additional transcript initialization', async () => {
+    const held = deferred<SessionSnapshotResponse>();
+    const client = { snapshot: vi.fn(async () => held.promise) };
+    const socket = { subscribe: vi.fn(), setTranscriptGrades: vi.fn() };
+    const controller = new SessionController(client as unknown as KikiClient, fakeView(client, socket), 'session_test');
+    const opening = controller.open();
+    controller.retainAgentView('route', 'child-1', 'delta');
+    controller.retainAgentView('tab', 'child-1', 'delta');
+    controller.retainAgentView('discarded', 'child-2', 'delta');
+    controller.releaseAgentView('discarded');
+    held.resolve(snapshot());
+    await opening;
+    expect(client.snapshot).toHaveBeenCalledTimes(1);
+    expect(socket.subscribe).toHaveBeenCalledExactlyOnceWith('session_test', expect.any(Object), {
+      '*': 'turn', main: 'delta', 'child-1': 'delta',
+    });
+    expect(socket.setTranscriptGrades).not.toHaveBeenCalled();
     controller.close();
   });
 
@@ -928,6 +949,112 @@ describe('SessionController transcript authority', () => {
     await controller.open();
     return { controller, client, socket, flushAll };
   }
+
+  it('retains independent delta views alongside the unchanged legacy focus baseline', async () => {
+    const { controller, socket } = await openTranscriptController();
+    controller.setFocusedAgent('legacy-child');
+    controller.retainAgentView('left', 'child-1', 'delta');
+    controller.retainAgentView('right', 'child-2', 'delta');
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+      '*': 'turn', main: 'delta', 'legacy-child': 'delta', 'child-1': 'delta', 'child-2': 'delta',
+    });
+    controller.releaseAgentView('left');
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+      '*': 'turn', main: 'delta', 'legacy-child': 'delta', 'child-2': 'delta',
+    });
+    controller.setFocusedAgent(undefined);
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+      '*': 'turn', main: 'delta', 'child-2': 'delta',
+    });
+    controller.updateAgentView('right', 'off');
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'turn', main: 'delta' });
+    controller.close();
+  });
+
+  it('uses the highest same-agent demand without reinitializing a second view', async () => {
+    const { controller, client, socket } = await openTranscriptController();
+    controller.retainAgentView('route', 'child-1', 'delta');
+    controller.handleTranscript(resetEvent('child-1', userTurnSnapshot({ assistantText: 'shared' }), 1));
+    const initialized = controller.getAgentState('child-1');
+    const calls = socket.setTranscriptGrades.mock.calls.length;
+    controller.retainAgentView('tab', 'child-1', 'delta');
+    controller.retainAgentView('tab', 'child-1', 'delta');
+    controller.updateAgentView('route', 'block');
+    controller.releaseAgentView('route');
+    expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(calls);
+    expect(controller.getAgentState('child-1')).toBe(initialized);
+    expect(client.snapshot).toHaveBeenCalledTimes(1);
+    expect(socket.subscribe).toHaveBeenCalledTimes(1);
+    expect(client.getAgentTranscript).not.toHaveBeenCalled();
+    controller.retainAgentView('inspector', 'child-1', 'block');
+    controller.releaseAgentView('tab');
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'turn', main: 'delta', 'child-1': 'block' });
+    controller.updateAgentView('inspector', 'turn');
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'turn', main: 'delta', 'child-1': 'turn' });
+    controller.releaseAgentView('inspector');
+    const releasedCalls = socket.setTranscriptGrades.mock.calls.length;
+    controller.releaseAgentView('inspector');
+    controller.updateAgentView('inspector', 'delta');
+    expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(releasedCalls);
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'turn', main: 'delta' });
+    controller.close();
+  });
+
+  it('retargets a view without suppressing summary observers or main delta', async () => {
+    const { controller, socket } = await openTranscriptController();
+    const off = controller.subscribeAgent('child-1', vi.fn());
+    controller.retainAgentView('tab', 'child-1', 'delta');
+    controller.retainAgentView('tab', 'child-2', 'block');
+    controller.retainAgentView('main-view', 'main', 'off');
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+      '*': 'turn', main: 'delta', 'child-1': 'turn', 'child-2': 'block',
+    });
+    expect(() => controller.retainAgentView('wildcard', '*', 'off')).toThrow('concrete agent ID');
+    expect(() => controller.retainAgentView('', 'child-1', 'delta')).toThrow('view ID');
+    off();
+    controller.close();
+    const calls = socket.setTranscriptGrades.mock.calls.length;
+    controller.retainAgentView('late', 'child-1', 'delta');
+    controller.updateAgentView('tab', 'delta');
+    controller.releaseAgentView('tab');
+    expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(calls);
+  });
+
+  it('publishes per-agent transcript cursors with their blocks rather than the session cursor', async () => {
+    const { controller, flushAll } = await openTranscriptController();
+    expect(controller.getState().cursor.seq).toBe(10);
+    expect(controller.getAgentTranscriptCursor('main')).toBeUndefined();
+    controller.handleTranscript(resetEvent('main', userTurnSnapshot({ assistantText: 'MAIN' }), 3));
+    controller.handleTranscript(resetEvent('child-1', userTurnSnapshot({ assistantText: 'CHILD', streaming: true }), 1));
+    controller.handleTranscript(opsEvent('child-1', [
+      { op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: ASSISTANT_FRAME_ID }, offset: 5, text: '!' },
+    ], 2));
+    expect(controller.getAgentTranscriptCursor('child-1')).toEqual({ seq: 1, epoch: 'epoch-canonical' });
+    flushAll();
+    expect(controller.getAgentTranscriptCursor('child-1')).toEqual({ seq: 2, epoch: 'epoch-canonical' });
+    expect(controller.getAgentState('child-1').blocks.find((block) => block.kind === 'assistant')).toMatchObject({ text: 'CHILD!' });
+    expect(controller.getAgentTranscriptCursor('main')).toEqual({ seq: 3, epoch: 'epoch-canonical' });
+    expect(controller.getState().cursor.seq).toBe(10);
+    controller.close();
+  });
+
+  it('shares a pending older-page request between two views of one agent', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.retainAgentView('route', 'child-1', 'delta');
+    controller.retainAgentView('tab', 'child-1', 'delta');
+    controller.handleTranscript(resetEvent('child-1', userTurnSnapshot({ assistantText: 'shared' }), 1, true));
+    const held = deferred<AgentTranscriptResponse>();
+    client.getAgentTranscript.mockImplementationOnce(async () => held.promise);
+    const first = controller.loadOlderMessages('child-1');
+    const second = controller.loadOlderMessages('child-1');
+    controller.releaseAgentView('route');
+    expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
+    held.resolve({ agent_id: 'child-1', items: [{ kind: 'turn', turnId: 't0', prompt: 'older', steps: [] }], has_more: false });
+    expect(await first).toBe(true);
+    expect(await second).toBe(false);
+    expect(controller.getAgentState('child-1').blocks.some((block) => block.kind === 'user' && block.text === 'older')).toBe(true);
+    controller.close();
+  });
 
   it('retains the reopened bound model through sparse resets but accepts explicit transcript model changes', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
@@ -3065,11 +3192,11 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
-  it.each(['same-epoch', 'new-epoch', 'resync', 'rewrite', 'focus', 'close'])(
+  it.each(['same-epoch', 'new-epoch', 'resync', 'rewrite', 'focus', 'view-grade', 'close'])(
     'discards catchup responses after %s invalidates their history',
     async (boundary) => {
       const { controller, client, socket, flushAll } = await openTranscriptController();
-      const agentId = boundary === 'focus' ? 'child-1' : 'main';
+      const agentId = boundary === 'focus' || boundary === 'view-grade' ? 'child-1' : 'main';
       const held = deferred<Awaited<ReturnType<SessionViewFacade['transcript']['catchUp']>>>();
       client.getTranscriptOps.mockImplementationOnce((async () => held.promise) as never);
       seedTextAgent(controller, agentId, 'f1', 'OLD');
@@ -3089,6 +3216,7 @@ describe('SessionController transcript authority', () => {
         resync = controller.resync({ rewrite: boundary === 'rewrite' });
       }
       if (boundary === 'focus') controller.setFocusedAgent(agentId);
+      if (boundary === 'view-grade') controller.retainAgentView('timeline', agentId, 'delta');
       const reset = boundary === 'same-epoch' || boundary === 'new-epoch';
       if (reset) controller.handleTranscript(asTranscriptEvent({
         type: 'transcript.reset', agent_id: agentId,

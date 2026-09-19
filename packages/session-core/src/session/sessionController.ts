@@ -17,11 +17,13 @@ import type {
 } from '@kiki/protocol';
 import {
   AgentTranscript,
+  GRADE_RANK,
   gradeFor,
   type AgentTranscriptSnapshot,
   type TranscriptCoverage,
   type TranscriptCursor,
   type TranscriptEvent,
+  type TranscriptGrade,
   type TranscriptGradeSpec,
   type TranscriptOperation,
 } from '@kiki/transcript';
@@ -170,6 +172,7 @@ export class SessionController {
   private readonly agentTranscripts = new Map<string, AgentTranscript>();
   private readonly olderPages = new Map<string, AgentTranscriptSnapshot>();
   private readonly transcriptCursors = new Map<string, TranscriptCursor>();
+  private readonly publishedTranscriptCursors = new Map<string, TranscriptCursor>();
   private readonly toolCountObservations = new Map<string, ToolCountObservation>();
   private readonly toolCountSpans = new Map<string, ToolCountSpan[]>();
   private readonly pendingTranscriptBatches = new Map<string, PendingTranscriptBatch>();
@@ -181,6 +184,7 @@ export class SessionController {
   private publishedForest: AgentForest | undefined;
   private transcriptGrades: TranscriptGradeSpec = DEFAULT_TRANSCRIPT_GRADES;
   private focusedAgentId: string | undefined;
+  private readonly agentViews = new Map<string, { readonly agentId: string; readonly grade: TranscriptGrade }>();
   private readonly catchupByAgent = new Map<string, Promise<void>>();
   private readonly catchupReplay = new Map<
     string,
@@ -228,6 +232,10 @@ export class SessionController {
 
   getAgentState = (agentId: string): SessionViewState =>
     this.publishedAgentStates.get(agentId) ?? this.agentStates.get(agentId) ?? this.emptyAgentState;
+
+  /** Per-agent cursor at the latest transcript publication, not the session event cursor. */
+  getAgentTranscriptCursor = (agentId: string): TranscriptCursor | undefined =>
+    this.publishedTranscriptCursors.get(agentId);
 
   /** Observe summary state, explicitly admitting cold history at turn grade without taking timeline focus. */
   subscribeAgent = (agentId: string, listener: Listener): (() => void) => {
@@ -351,6 +359,7 @@ export class SessionController {
 
   close(): void {
     this.closed = true;
+    this.agentViews.clear();
     this.visibilityDocument?.removeEventListener?.('visibilitychange', this.onVisibilityChange);
     this.clearResyncTimer();
     this.clearRewriteHold();
@@ -485,10 +494,43 @@ export class SessionController {
     this.refreshTranscriptGrades();
   }
 
+  /**
+   * Retain a view-instance demand; reusing its ID replaces that demand, not another view's.
+   * Grades merge above the legacy focus/summary baseline; off adds no demand.
+   */
+  retainAgentView(viewId: string, agentId: string, grade: TranscriptGrade): void {
+    if (this.closed) return;
+    if (viewId.trim() === '' || agentId.trim() === '' || agentId === '*') {
+      throw new Error('Agent views require a view ID and a concrete agent ID');
+    }
+    this.agentViews.set(viewId, { agentId, grade });
+    this.refreshTranscriptGrades();
+  }
+
+  /** Change a retained view's demand; an unknown or released ID is a no-op. */
+  updateAgentView(viewId: string, grade: TranscriptGrade): void {
+    if (this.closed) return;
+    const view = this.agentViews.get(viewId);
+    if (view === undefined || view.grade === grade) return;
+    this.agentViews.set(viewId, { agentId: view.agentId, grade });
+    this.refreshTranscriptGrades();
+  }
+
+  /** Idempotently release one view without lowering any other consumer's demand. */
+  releaseAgentView(viewId: string): void {
+    if (!this.agentViews.delete(viewId)) return;
+    this.refreshTranscriptGrades();
+  }
+
   private requestedTranscriptGrades(): TranscriptGradeSpec {
     const grades = { ...transcriptGradesForFocus(this.focusedAgentId) };
     for (const agentId of this.agentListeners.keys()) {
       if (!Object.hasOwn(grades, agentId)) grades[agentId] = 'turn';
+    }
+    for (const { agentId, grade } of this.agentViews.values()) {
+      if (grade === 'off') continue;
+      const current = gradeFor(grades, agentId);
+      grades[agentId] = GRADE_RANK[grade] > GRADE_RANK[current] ? grade : current;
     }
     return grades;
   }
@@ -1061,6 +1103,8 @@ export class SessionController {
     const forestChanged = this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
       ? this.publishForest()
       : false;
+    const cursor = this.transcriptCursors.get(agentId);
+    if (cursor !== undefined) this.publishedTranscriptCursors.set(agentId, cursor);
     this.publishAgentView(agentId, projected);
     if (forestChanged && agentId !== MAIN_AGENT_ID) {
       this.setState({ ...this.state, version: this.state.version + 1 });

@@ -6,9 +6,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { writeSettings } from '@kiki/session-core/settings';
+import type { SessionController } from '@kiki/session-core/session';
 import { browserHost, HostProvider } from '../host';
 import { I18nProvider } from '../i18n';
-import { ConnectionProvider, nextGuiLeaseClientId, useConnection } from './connection';
+import { ConnectionProvider, LiveControllerRegistry, nextGuiLeaseClientId, useConnection } from './connection';
 
 const mocks = vi.hoisted(() => ({
   detectLocalConnection: vi.fn(),
@@ -204,6 +205,124 @@ async function emitStage(payload: unknown): Promise<void> {
     await Promise.resolve();
   });
 }
+
+describe('LiveControllerRegistry leases', () => {
+  function controller(sessionId = 'session-shared', ready = Promise.resolve()): SessionController {
+    return { sessionId, open: vi.fn(() => ready), close: vi.fn() } as unknown as SessionController;
+  }
+
+  it('shares one initialization and closes only after the last consumer releases', async () => {
+    const registry = new LiveControllerRegistry();
+    const connection = {};
+    const opening = deferred<void>();
+    const shared = controller('session-shared', opening.promise);
+    const factory = vi.fn(() => shared);
+    const changed = vi.fn();
+    const unsubscribe = registry.subscribe(changed);
+    const first = registry.acquire('session-shared', connection, factory);
+    const second = registry.acquire('session-shared', connection, factory);
+    expect(first.controller).toBe(second.controller);
+    expect(first.ready).toBe(second.ready);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(shared.open).toHaveBeenCalledTimes(1);
+    expect([...registry]).toEqual([shared]);
+    expect(registry.snapshot()).toBe(1);
+    first.release();
+    first.release();
+    expect(shared.close).not.toHaveBeenCalled();
+    const third = registry.acquire('session-shared', connection, factory);
+    expect(third.controller).toBe(shared);
+    second.release();
+    expect(shared.close).not.toHaveBeenCalled();
+    opening.resolve();
+    await third.ready;
+    third.release();
+    expect(shared.close).toHaveBeenCalledTimes(1);
+    expect([...registry]).toEqual([]);
+    expect(registry.snapshot()).toBe(2);
+    expect(changed).toHaveBeenCalledTimes(2);
+    unsubscribe();
+  });
+
+  it('isolates identical session IDs by connection identity and distinct sessions within a connection', async () => {
+    const registry = new LiveControllerRegistry();
+    const connection = {};
+    const a = registry.acquire('session-shared', connection, () => controller());
+    const b = registry.acquire('session-shared', {}, () => controller());
+    const c = registry.acquire('session-other', connection, () => controller('session-other'));
+    await Promise.all([a.ready, b.ready, c.ready]);
+    expect(new Set([a.controller, b.controller, c.controller]).size).toBe(3);
+    a.release();
+    expect([...registry]).toEqual([b.controller, c.controller]);
+    expect(b.controller.close).not.toHaveBeenCalled();
+    expect(c.controller.close).not.toHaveBeenCalled();
+    b.release();
+    c.release();
+  });
+
+  it('retains the first reference before notifying reentrant registry observers', () => {
+    const registry = new LiveControllerRegistry();
+    const connection = {};
+    const shared = controller();
+    const factory = vi.fn(() => shared);
+    const unsubscribe = registry.subscribe(() => {
+      if (registry.snapshot() !== 1) return;
+      registry.acquire('session-shared', connection, factory).release();
+    });
+    const lease = registry.acquire('session-shared', connection, factory);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(shared.close).not.toHaveBeenCalled();
+    expect([...registry]).toEqual([shared]);
+    unsubscribe();
+    lease.release();
+    expect(shared.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows effect cleanup and reacquisition while stale cleanup cannot close the new controller', async () => {
+    const registry = new LiveControllerRegistry();
+    const connection = {};
+    const opening = deferred<void>();
+    const first = registry.acquire('session-shared', connection, () => controller('session-shared', opening.promise));
+    first.release();
+    const next = registry.acquire('session-shared', connection, () => controller());
+    first.release();
+    opening.resolve();
+    await Promise.all([first.ready, next.ready]);
+    expect(next.controller).not.toBe(first.controller);
+    expect(first.controller.close).toHaveBeenCalledTimes(1);
+    expect(next.controller.close).not.toHaveBeenCalled();
+    expect([...registry]).toEqual([next.controller]);
+    next.release();
+    expect(next.controller.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves legacy registration ownership unchanged and does not borrow its externally closed controller', () => {
+    const registry = new LiveControllerRegistry();
+    const legacy = controller();
+    registry.add(legacy);
+    const lease = registry.acquire('session-shared', {}, () => controller());
+    expect(lease.controller).not.toBe(legacy);
+    expect([...registry]).toEqual([legacy, lease.controller]);
+    registry.delete(legacy);
+    expect(legacy.open).not.toHaveBeenCalled();
+    expect(legacy.close).not.toHaveBeenCalled();
+    expect(lease.controller.close).not.toHaveBeenCalled();
+    lease.release();
+  });
+
+  it('rejects factory identity mismatches and already registered instances without taking ownership', () => {
+    const registry = new LiveControllerRegistry();
+    const wrong = controller('other');
+    expect(() => registry.acquire('session-shared', {}, () => wrong)).toThrow('fresh controller');
+    expect(wrong.open).not.toHaveBeenCalled();
+    const legacy = controller();
+    registry.add(legacy);
+    expect(() => registry.acquire('session-shared', {}, () => legacy)).toThrow('fresh controller');
+    expect(legacy.close).not.toHaveBeenCalled();
+    expect([...registry]).toEqual([legacy]);
+    registry.delete(legacy);
+  });
+});
 
 describe('ConnectionProvider Klient ownership', () => {
   it('refreshes model and provider queries from typed Klient global events', async () => {

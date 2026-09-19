@@ -108,18 +108,72 @@ interface ConnectionValue {
   readonly applyConnection: (next: ConnectionConfig) => void;
 }
 
+export interface ControllerLease {
+  readonly controller: SessionController;
+  /** Initial open has settled; failures remain in the controller's load state. */
+  readonly ready: Promise<void>;
+  /** Idempotent; the last lease closes and unregisters its controller. */
+  release(): void;
+}
+
 export interface ControllerRegistry {
   add(controller: SessionController): void;
   delete(controller: SessionController): void;
+  /**
+   * Share by connection identity (e.g. KikiClient) and session; factory returns a fresh, unopened controller.
+   * Lease ownership is separate from legacy add/delete; never borrow an externally owned controller.
+   */
+  acquire(sessionId: string, connectionScope: object, createController: () => SessionController): ControllerLease;
   [Symbol.iterator](): Iterator<SessionController>;
   subscribe(listener: () => void): () => void;
   snapshot(): number;
 }
 
-class LiveControllerRegistry implements ControllerRegistry {
+interface RetainedController {
+  readonly controller: SessionController;
+  readonly ready: Promise<void>;
+  references: number;
+}
+
+export class LiveControllerRegistry implements ControllerRegistry {
   private readonly controllers = new Set<SessionController>();
+  private readonly retained = new WeakMap<object, Map<string, RetainedController>>();
   private readonly listeners = new Set<() => void>();
   private generation = 0;
+
+  acquire(sessionId: string, connectionScope: object, createController: () => SessionController): ControllerLease {
+    let sessions = this.retained.get(connectionScope);
+    if (sessions === undefined) {
+      sessions = new Map();
+      this.retained.set(connectionScope, sessions);
+    }
+    let entry = sessions.get(sessionId);
+    if (entry === undefined) {
+      const controller = createController();
+      if (controller.sessionId !== sessionId || this.controllers.has(controller)) {
+        throw new Error('Controller factory must return a fresh controller for the requested session');
+      }
+      entry = { controller, ready: controller.open(), references: 1 };
+      sessions.set(sessionId, entry);
+      this.add(controller);
+    } else {
+      entry.references += 1;
+    }
+    let released = false;
+    return {
+      controller: entry.controller,
+      ready: entry.ready,
+      release: () => {
+        if (released) return;
+        released = true;
+        entry.references -= 1;
+        if (entry.references > 0) return;
+        sessions.delete(sessionId);
+        entry.controller.close();
+        this.delete(entry.controller);
+      },
+    };
+  }
 
   add(controller: SessionController): void {
     this.controllers.add(controller);
