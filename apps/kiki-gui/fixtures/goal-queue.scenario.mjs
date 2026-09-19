@@ -46,6 +46,7 @@ export default {
             },
           ],
           meta: {
+            promptQueueHold: { reason: 'recovery', count: 2 },
             goal: {
               objective: 'Prepare the release evidence bundle',
               status: 'active',
