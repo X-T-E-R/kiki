@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_SUBAGENT_PROFILE_NAME,
   disabledProfilePatch,
   experimentalFlagRows,
   composerDefaultsForProfile,
@@ -10,6 +11,9 @@ import {
   namedAgentSessionHref,
   partitionNamedAgentProfiles,
   resolveCatalogModel,
+  shippedEntryForProfile,
+  subagentDefaultTargetFromConfig,
+  subagentDefaultTargetPatch,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
   summarizeNamedAgentLease,
@@ -502,5 +506,54 @@ describe('resolveCatalogModel', () => {
     expect(resolveCatalogModel(catalog, 'missing')).toBeUndefined();
     expect(resolveCatalogModel(catalog, 'other/k3-256k')).toBeUndefined();
     expect(resolveCatalogModel(catalog, 'alpha/')).toBeUndefined();
+  });
+});
+
+describe('subagent default target', () => {
+  it('mirrors the engine fallback when the key is unset or malformed', () => {
+    expect(DEFAULT_SUBAGENT_PROFILE_NAME).toBe('general');
+    expect(subagentDefaultTargetFromConfig({})).toEqual({ mode: 'profile', name: 'general' });
+    expect(subagentDefaultTargetFromConfig({ subagent: {} })).toEqual({ mode: 'profile', name: 'general' });
+    expect(subagentDefaultTargetFromConfig({ subagent: { defaultProfile: 42 } })).toEqual({ mode: 'profile', name: 'general' });
+  });
+
+  it('treats a blank value as strict and trims profile names', () => {
+    expect(subagentDefaultTargetFromConfig({ subagent: { defaultProfile: '' } })).toEqual({ mode: 'strict' });
+    expect(subagentDefaultTargetFromConfig({ subagent: { defaultProfile: '   ' } })).toEqual({ mode: 'strict' });
+    expect(subagentDefaultTargetFromConfig({ subagent: { defaultProfile: ' explore ' } })).toEqual({ mode: 'profile', name: 'explore' });
+  });
+
+  it('writes strict as the empty string and profile names verbatim', () => {
+    expect(subagentDefaultTargetPatch({ mode: 'strict' })).toEqual({ subagent: { default_profile: '' } });
+    expect(subagentDefaultTargetPatch({ mode: 'profile', name: 'explore' })).toEqual({ subagent: { default_profile: 'explore' } });
+  });
+});
+
+describe('shippedEntryForProfile', () => {
+  const entry = {
+    template_id: 'general',
+    status: 'custom' as const,
+    managed: true,
+    main: false,
+    active_path: 'C:/fixture/user/agents/builtin/general.md',
+  };
+
+  it('matches by the normalized on-disk path, never by name', () => {
+    expect(shippedEntryForProfile(
+      { source_file: 'C:\\fixture\\user\\agents\\builtin\\general.md' },
+      [entry],
+    )?.template_id).toBe('general');
+    // A same-named file elsewhere is not the managed built-in copy.
+    expect(shippedEntryForProfile({ source_file: 'C:/fixture/other/general.md' }, [entry])).toBeUndefined();
+    expect(shippedEntryForProfile({ source_file: undefined }, [entry])).toBeUndefined();
+  });
+
+  it('ignores unmanaged entries and entries without an active path', () => {
+    expect(shippedEntryForProfile({ source_file: 'C:/fixture/user/agents/builtin/general.md' }, [
+      { ...entry, managed: false },
+    ])).toBeUndefined();
+    expect(shippedEntryForProfile({ source_file: 'C:/fixture/user/agents/builtin/general.md' }, [
+      { ...entry, active_path: undefined },
+    ])).toBeUndefined();
   });
 });

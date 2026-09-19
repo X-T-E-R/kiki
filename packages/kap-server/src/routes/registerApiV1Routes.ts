@@ -36,6 +36,7 @@ import { registerSearchRoutes } from './search';
 import { registerSessionMediaRoutes } from './sessionMedia';
 import { registerSessionExportRoute } from './sessionExport';
 import { registerSessionsRoutes } from './sessions';
+import { registerShippedAgentProfilesRoute } from './shippedAgentProfiles';
 import { registerShutdownRoutes } from './shutdown';
 import { registerSnapshotRoutes } from './snapshot';
 import { registerSkillsRoutes } from './skills';
@@ -149,6 +150,10 @@ export async function registerApiV1Routes(
       registerLeaseRoutes(apiV1 as unknown as Parameters<typeof registerLeaseRoutes>[0], opts.leaseRegistry);
       registerAgentProfilesRoute(
         apiV1 as unknown as Parameters<typeof registerAgentProfilesRoute>[0],
+        core,
+      );
+      registerShippedAgentProfilesRoute(
+        apiV1 as unknown as Parameters<typeof registerShippedAgentProfilesRoute>[0],
         core,
       );
       registerOAuthRoutes(apiV1 as unknown as Parameters<typeof registerOAuthRoutes>[0], core);

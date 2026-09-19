@@ -12,6 +12,7 @@ const { client, dirtyReporter } = vi.hoisted(() => ({ dirtyReporter: vi.fn(), cl
   listNamedAgentProfiles: vi.fn(), listWorkspaces: vi.fn(), getConfig: vi.fn(),
   patchConfig: vi.fn(), updateNamedAgentProfile: vi.fn(), getAgentCapabilities: vi.fn(),
   readHostFile: vi.fn(), meta: vi.fn(),
+  listShippedAgentProfiles: vi.fn(), restoreShippedAgentProfile: vi.fn(),
 } }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, klient: { global: { agentPanel: { read: (query: unknown, options: { signal: AbortSignal }) => client.getAgentCapabilities(query, options.signal) } } } }) }));
 vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => vi.fn(), useDirtyReporter: dirtyReporter }));
@@ -50,6 +51,7 @@ beforeEach(() => {
   client.patchConfig.mockResolvedValue({ disabled_named_profiles: ['agent'] });
   client.getAgentCapabilities.mockResolvedValue({ context: 'draft', owner: { profile: 'agent' }, available: true,
     targets: [{ profile: 'directory-helper', executor: 'native', defaults_available: false }] });
+  client.listShippedAgentProfiles.mockResolvedValue({ items: [] });
   queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement('div');
   document.body.append(container);
@@ -301,6 +303,36 @@ describe('default main profile settings', () => {
     expect(queries.getQueryState(['agentProfiles', 'cwd', '/fixture', 'effective'])?.isInvalidated).toBe(true);
     expect(queries.getQueryState(['agentCapabilities', { workspace_id: 'ws-one', profile: 'agent' }])?.isInvalidated).toBe(true);
   });
+
+  it('treats the managed built-in copy as the effective row when no workspace is selected', async () => {
+    // No workspace means no `?effective=true` catalog, so the row that carries
+    // the managed built-in copy is the one that runs under its own name.
+    const builtinCopy: NamedAgentProfile = {
+      name: 'agent', main: true, source: 'user', disabled: false, routes: [],
+      source_file: '/fixture/user/agents/builtin/agent.md',
+      description: 'Builtin default',
+    };
+    const shadowingCopy: NamedAgentProfile = {
+      name: 'agent', main: true, source: 'user', disabled: false, routes: [],
+      source_file: '/fixture/user/agents/agent.md',
+      description: 'Unmanaged same-name copy',
+    };
+    client.listWorkspaces.mockResolvedValue({ items: [] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [builtinCopy, shadowingCopy] });
+    client.listShippedAgentProfiles.mockResolvedValue({ items: [{
+      template_id: 'agent', status: 'clean', managed: true, main: true,
+      description: 'Built-in default', active_path: '/fixture/user/agents/builtin/agent.md',
+    }] });
+    await render();
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith();
+    const rows = [...container.querySelectorAll<HTMLElement>('[data-agent-profile="agent"]')];
+    expect(rows).toHaveLength(2);
+    const builtinRow = rows.find((row) => row.textContent?.includes('Builtin default'))!;
+    expect(builtinRow.getAttribute('data-default-agent')).toBe('true');
+    expect(builtinRow.querySelector<HTMLButtonElement>('[data-new-session-href]')?.disabled).toBe(false);
+    const shadowingRow = rows.find((row) => row.textContent?.includes('Unmanaged same-name copy'))!;
+    expect(shadowingRow.getAttribute('data-default-agent')).toBeNull();
+  });
 });
 
 /**
@@ -454,5 +486,77 @@ describe('profile editor tool-list fidelity', () => {
     const body = await save(dialog);
     expect(body['disallowed_tools']).toEqual([]);
     expect(body['tools']).toBeUndefined();
+  });
+});
+
+describe('shipped (built-in) profile management', () => {
+  const shippedEntry = {
+    template_id: 'agent',
+    status: 'custom',
+    managed: true,
+    main: true,
+    description: 'Default main agent',
+    active_path: '/fixture/SYSTEM.md',
+  };
+
+  it('marks the managed built-in copy with its status and restores it after a double confirmation', async () => {
+    client.listShippedAgentProfiles.mockResolvedValue({ items: [shippedEntry] });
+    client.restoreShippedAgentProfile.mockResolvedValue({ ...shippedEntry, status: 'clean' });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-shipped-status="custom"]')?.textContent).toBe('Built-in · modified');
+    const restore = row.querySelector<HTMLButtonElement>('[data-shipped-restore="agent"]')!;
+    await act(async () => { restore.click(); });
+    const dialog = document.body.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain('Restore the original of built-in profile "agent"?');
+    // The row's copy pins fixture/model-a, so the warning spells the pin out.
+    expect(dialog.textContent).toContain('pins model fixture/model-a');
+    expect(dialog.textContent).toContain('backed up automatically');
+    const callsBefore = client.listShippedAgentProfiles.mock.calls.length;
+    const confirm = [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Restore original')!;
+    await act(async () => { confirm.click(); });
+    await settle();
+    expect(client.restoreShippedAgentProfile).toHaveBeenCalledWith('agent');
+    expect(client.listShippedAgentProfiles.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(row.textContent).toContain('Original restored and agent profiles reloaded.');
+  });
+
+  it('shows an unmodified built-in copy without a restore action', async () => {
+    client.listShippedAgentProfiles.mockResolvedValue({ items: [{ ...shippedEntry, status: 'clean' }] });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-shipped-status="clean"]')?.textContent).toBe('Built-in · unmodified');
+    expect(row.querySelector('[data-shipped-restore]')).toBeNull();
+  });
+
+  it('renders rows unchanged when the shipped-status endpoint does not exist', async () => {
+    client.listShippedAgentProfiles.mockRejectedValue(new Error('unknown route'));
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.textContent).toContain('Custom default');
+    expect(row.querySelector('[data-shipped-status]')).toBeNull();
+    expect(row.querySelector('[data-shipped-restore]')).toBeNull();
+  });
+
+  it('offers a tombstone restore row for a removed managed copy', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [] });
+    client.listShippedAgentProfiles.mockResolvedValue({
+      items: [{ ...shippedEntry, status: 'removed' }],
+    });
+    client.restoreShippedAgentProfile.mockResolvedValue({ ...shippedEntry, status: 'clean' });
+    await render();
+    const tombstone = container.querySelector('[data-shipped-removed="agent"]')!;
+    expect(tombstone.textContent).toContain('Default main agent');
+    expect(tombstone.querySelector('[data-shipped-status="removed"]')?.textContent).toBe('Built-in · removed');
+    const restore = tombstone.querySelector<HTMLButtonElement>('[data-shipped-restore="agent"]')!;
+    await act(async () => { restore.click(); });
+    const dialog = document.body.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain('recreates the original bundled with this release');
+    expect(dialog.textContent).not.toContain('pins model');
+    const confirm = [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Restore original')!;
+    await act(async () => { confirm.click(); });
+    await settle();
+    expect(client.restoreShippedAgentProfile).toHaveBeenCalledWith('agent');
+    expect(container.querySelector('#st-card-main-agents')?.textContent).toContain('Original restored and agent profiles reloaded.');
   });
 });

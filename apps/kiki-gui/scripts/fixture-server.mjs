@@ -468,6 +468,7 @@ class FixtureServer {
     this.files = new Map(); // global file facade uploads: id → { meta, bytes }
     this.workspaces = []; // mutable registered workspaces (PATCH/DELETE editable)
     this.agentProfiles = []; // expanded named-agent rows; GET /agents merges them
+    this.shippedAgentProfiles = []; // shipped (built-in) template status rows
     this.mcpManaged = []; // mutable /mcp/servers management catalog
     this.plugins = []; // mutable /plugins catalog
     this.oauthOverride = null; // mutable OAuth flow state (POST/DELETE /oauth/login)
@@ -500,6 +501,7 @@ class FixtureServer {
     this.agentProfiles = structuredClone(data.agentProfiles ?? [
       { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
     ]);
+    this.shippedAgentProfiles = structuredClone(data.shippedAgentProfiles ?? []);
     this.mcpManaged = structuredClone(data.mcpManagedServers ?? []);
     this.plugins = structuredClone(data.plugins ?? []);
     this.usageV2 = data.usageV2 ?? null;
@@ -1278,6 +1280,11 @@ class FixtureServer {
     if (path === '/config' && method === 'POST') {
       const patch = { ...(body ?? {}) };
       if (patch.request_identity === null) delete patch.request_identity;
+      // subagent keys arrive snake_cased and merge field-wise (the real server
+      // converts and echoes the resolved section); keep them out of the
+      // wholesale spread below.
+      const subagentPatch = patch.subagent;
+      delete patch.subagent;
       this.config = { ...this.config, ...patch };
       if (body?.request_identity === null) delete this.config.request_identity;
       if (patch.plugins !== undefined) {
@@ -1285,6 +1292,15 @@ class FixtureServer {
         this.config.plugins = typeof url === 'string' && url.trim() !== ''
           ? { marketplaceUrl: url.trim() }
           : {};
+      }
+      if (subagentPatch !== undefined) {
+        const subagent = { ...(this.config.subagent ?? {}) };
+        for (const [key, value] of Object.entries(subagentPatch)) {
+          const camel = key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase());
+          if (value === null || value === undefined) delete subagent[camel];
+          else subagent[camel] = value;
+        }
+        this.config.subagent = subagent;
       }
       return this.envelope(res, this.config);
     }
@@ -1356,6 +1372,20 @@ class FixtureServer {
           ? this.agentProfilesWithDisabled()
           : this.mergedAgentProfiles();
       return this.envelope(res, { items });
+    }
+    // Shipped (built-in) profile templates: a static per-scenario status list;
+    // the restore action flips the entry back to clean so the badge and the
+    // confirmation dialog stay walkable end to end.
+    if (path === '/agents/shipped') {
+      return this.envelope(res, { items: this.shippedAgentProfiles });
+    }
+    const shippedRestoreMatch = /^\/agents\/shipped\/([^/]+):restore$/.exec(path);
+    if (shippedRestoreMatch !== null && method === 'POST') {
+      const id = decodeURIComponent(shippedRestoreMatch[1]);
+      const entry = this.shippedAgentProfiles.find((item) => item.template_id === id);
+      if (entry === undefined) return this.envelope(res, null, 40001, `fixture: no shipped agent profile ${id}`);
+      entry.status = 'clean';
+      return this.envelope(res, entry);
     }
     const agentMatch = /^\/agents\/([^/]+)$/.exec(path);
     if (agentMatch !== null && method === 'PATCH') {

@@ -46,6 +46,7 @@ import type {
   PatchProviderRequest,
   ProviderEntity,
   ListNamedAgentProfilesResponse as ProtocolListNamedAgentProfilesResponse,
+  ListShippedAgentProfilesResponse as ProtocolListShippedAgentProfilesResponse,
   NamedAgentModelProfile as ProtocolNamedAgentModelProfile,
   NamedAgentProfile as ProtocolNamedAgentProfile,
   NamedAgentRoute as ProtocolNamedAgentRoute,
@@ -85,6 +86,7 @@ import type {
   Session,
   SessionCreate,
   SetDefaultModelResponse,
+  ShippedAgentProfile as ProtocolShippedAgentProfile,
   Task,
   Terminal,
   UndoSessionResponse,
@@ -364,6 +366,8 @@ export type NamedAgentSubagentLease = ProtocolNamedAgentSubagentLease;
 export type NamedAgentProfile = ProtocolNamedAgentProfile;
 export type ListNamedAgentProfilesResponse = ProtocolListNamedAgentProfilesResponse;
 export type UpdateNamedAgentProfileRequest = ProtocolUpdateNamedAgentProfileRequest;
+export type ShippedAgentProfile = ProtocolShippedAgentProfile;
+export type ListShippedAgentProfilesResponse = ProtocolListShippedAgentProfilesResponse;
 
 /**
  * Goal-control inputs mirrored from the engine's goal service (the klient
@@ -1032,6 +1036,14 @@ export class KikiClient {
     body: UpdateNamedAgentProfileRequest,
   ): Promise<NamedAgentProfile> {
     return this.run(this.rest.agents.update(name, body));
+  }
+
+  listShippedAgentProfiles(): Promise<ListShippedAgentProfilesResponse> {
+    return this.run(this.rest.agents.shipped.list());
+  }
+
+  restoreShippedAgentProfile(id: string): Promise<ShippedAgentProfile> {
+    return this.run(this.rest.agents.shipped.restore(id));
   }
 
   async readHostFile(path: string): Promise<string> {

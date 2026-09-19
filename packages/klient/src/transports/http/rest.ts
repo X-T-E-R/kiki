@@ -14,6 +14,7 @@ import type {
   ListMcpServersResponse,
   ListNamedAgentProfilesQuery,
   ListNamedAgentProfilesResponse,
+  ListShippedAgentProfilesResponse,
   ListSkillsResponse,
   ListTasksResponse,
   ListToolsResponse,
@@ -25,6 +26,7 @@ import type {
   QuestionRequest,
   Session,
   SessionCreate,
+  ShippedAgentProfile,
   Task,
   UpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
@@ -218,6 +220,13 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/agents/${encodeURIComponent(name)}`,
         { method: 'PATCH', body },
       ),
+      shipped: {
+        list: () => transport.json<ListShippedAgentProfilesResponse>('/agents/shipped'),
+        restore: (id: string) => transport.json<ShippedAgentProfile>(
+          `/agents/shipped/${encodeURIComponent(id)}:restore`,
+          { method: 'POST', body: {} },
+        ),
+      },
     },
 
     filesystem: {

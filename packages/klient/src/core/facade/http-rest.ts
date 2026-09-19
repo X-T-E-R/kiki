@@ -13,6 +13,7 @@ import type {
   ListMcpServersResponse,
   ListNamedAgentProfilesQuery,
   ListNamedAgentProfilesResponse,
+  ListShippedAgentProfilesResponse,
   ListSkillsResponse,
   ListTasksResponse,
   ListToolsResponse,
@@ -26,6 +27,7 @@ import type {
   RestoreSessionResponse,
   Session,
   SessionCreate,
+  ShippedAgentProfile,
   Task,
   UpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
@@ -213,6 +215,11 @@ export interface HttpRestFacade {
   readonly agents: {
     list(query?: string | ListNamedAgentProfilesQuery): Promise<ListNamedAgentProfilesResponse>;
     update(name: string, body: UpdateNamedAgentProfileRequest): Promise<NamedAgentProfile>;
+    /** Shipped (built-in) profile templates: management status and restore-original. */
+    readonly shipped: {
+      list(): Promise<ListShippedAgentProfilesResponse>;
+      restore(id: string): Promise<ShippedAgentProfile>;
+    };
   };
 
   readonly filesystem: {

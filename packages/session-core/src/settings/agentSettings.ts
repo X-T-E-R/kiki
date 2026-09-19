@@ -1,4 +1,4 @@
-import type { NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease } from '@kiki/protocol';
+import type { NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease, ShippedAgentProfile } from '@kiki/protocol';
 
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
 import { configObjectOrEmpty, normalizeConfigStringList } from './settings';
@@ -67,6 +67,54 @@ export function subagentGovernancePatch(draft: SubagentGovernanceDraft): KikiCon
         .filter(Boolean),
     },
   };
+}
+
+/**
+ * Mirror of the engine's `DEFAULT_SUBAGENT_PROFILE` (`[subagent].default_profile`
+ * falls back to it when the key is unset). The engine resolves
+ * `undefined → this name`, a blank string → strict mode (omitted targets fail),
+ * anything else → that profile name.
+ */
+export const DEFAULT_SUBAGENT_PROFILE_NAME = 'general';
+
+export type SubagentDefaultTarget =
+  | { readonly mode: 'strict' }
+  | { readonly mode: 'profile'; readonly name: string };
+
+export function subagentDefaultTargetFromConfig(config: unknown): SubagentDefaultTarget {
+  const subagent = configObjectOrEmpty(configObjectOrEmpty(config)['subagent']);
+  const raw = subagent['defaultProfile'];
+  if (typeof raw !== 'string') return { mode: 'profile', name: DEFAULT_SUBAGENT_PROFILE_NAME };
+  const trimmed = raw.trim();
+  return trimmed.length === 0 ? { mode: 'strict' } : { mode: 'profile', name: trimmed };
+}
+
+export function subagentDefaultTargetPatch(target: SubagentDefaultTarget): KikiConfigPatch {
+  return { subagent: { default_profile: target.mode === 'strict' ? '' : target.name } };
+}
+
+/**
+ * Locates the shipped-template management entry for a catalog row by its exact
+ * on-disk path — never by name alone, so a same-named user file elsewhere is
+ * not mistaken for the managed built-in copy.
+ */
+export function shippedEntryForProfile(
+  profile: Pick<NamedAgentProfile, 'source_file'>,
+  entries: readonly ShippedAgentProfile[],
+): ShippedAgentProfile | undefined {
+  const sourceFile = profile.source_file;
+  if (sourceFile === undefined) return undefined;
+  const normalized = normalizeShippedProfilePath(sourceFile);
+  return entries.find(
+    (entry) =>
+      entry.managed &&
+      entry.active_path !== undefined &&
+      normalizeShippedProfilePath(entry.active_path) === normalized,
+  );
+}
+
+function normalizeShippedProfilePath(path: string): string {
+  return path.replaceAll('\\', '/').replace(/\/+$/u, '');
 }
 export interface ExperimentalFlagRow {
   readonly id: string;

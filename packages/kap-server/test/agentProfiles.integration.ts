@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,7 +20,8 @@ import { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
 import { IAgentProfileService, IAgentExecutorRegistry, IAgentUsageService, ISessionInteractionService } from '@kiki/agent-core-v2';
-import { ErrorCode, listNamedAgentProfilesResponseSchema, agentCapabilitiesResponseSchema } from '@kiki/protocol';
+import { SHIPPED_AGENT_PROFILE_TEMPLATES } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfiles';
+import { ErrorCode, listNamedAgentProfilesResponseSchema, agentCapabilitiesResponseSchema, listShippedAgentProfilesResponseSchema } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type RunningServer, startServer } from '../src/start';
 import { registerAgentProfilesRoute } from '../src/routes/agentProfiles';
@@ -362,7 +363,7 @@ describe('GET /api/agents', () => {
       expect(readonly.metrics?.['main']).toMatchObject({
         inputTokens: 15, outputTokens: 5, totalTokens: 20, totalCostUsd: null,
         contextTokens: expect.any(Number), contextLimit: expect.any(Number), compactionCount: expect.any(Number),
-        usagePartial: true, costPartial: true, usageSource: 'persisted',
+        usagePartial: true, costPartial: true, usageSource: 'live',
       });
       expect(launch).not.toHaveBeenCalled();
       expect(registerReader).not.toHaveBeenCalled();
@@ -383,8 +384,7 @@ describe('GET /api/agents', () => {
     await writeFile(
       join(home as string, 'config.toml'),
       [
-        'disabled_builtin_profiles = ["explore", "agent"]',
-        'disabled_named_profiles = ["reviewer"]',
+        'disabled_named_profiles = ["reviewer", "explore"]',
         '',
         '[providers.stub]',
         'type = "openai"',
@@ -551,6 +551,7 @@ describe('GET /api/agents', () => {
         allowed_efforts: ['high'],
         disallowed_tools: ['Write'],
       },
+      subagent_policy: 'legacy',
       subagents: [
         'explore',
         {
@@ -585,8 +586,11 @@ describe('GET /api/agents', () => {
     expect(data.items.filter((profile) =>
       profile.name === 'reviewer' && profile.source_file === profilePath.replaceAll('\\', '/')
     )).toHaveLength(1);
-    expect(data.items.find((profile) => profile.name === 'explore' && profile.source === 'builtin')?.disabled).toBe(true);
-    expect(data.items.find((profile) => profile.name === 'agent' && profile.source === 'builtin')?.disabled).toBe(true);
+    const shippedCopy = (name: string, fileName: string) => data.items.find((profile) =>
+      profile.name === name
+      && (profile.source_file?.replaceAll('\\', '/') ?? '').endsWith(`agents/builtin/${fileName}`));
+    expect(shippedCopy('explore', 'explore.md')).toMatchObject({ source: 'user', disabled: true });
+    expect(shippedCopy('agent', 'agent.md')).toMatchObject({ source: 'user', main: true, disabled: false });
 
     const expandedResponse = await authedFetch(server, base, '/api/agents?expand=1');
     expect(expandedResponse.status).toBe(200);
@@ -1074,7 +1078,9 @@ describe('GET /api/agents', () => {
       );
       expect(plain.items.some((profile) => profile.source === 'example')).toBe(false);
       expect(plain.items.some((profile) => profile.name === 'm3-worker' || profile.name === 'helper')).toBe(false);
-      expect(plain.items.some((profile) => profile.name === 'explore' && profile.source === 'builtin')).toBe(true);
+      const shippedExplore = plain.items.find((profile) => profile.name === 'explore');
+      expect(shippedExplore?.source).toBe('user');
+      expect(shippedExplore?.source_file?.replaceAll('\\', '/')).toMatch(/agents\/builtin\/explore\.md$/);
 
       const expanded = listNamedAgentProfilesResponseSchema.parse(
         ((await (await authedFetch(server, base, `/api/agents?${query}&expand=true`)).json()) as Envelope<unknown>).data,
@@ -1146,9 +1152,11 @@ describe('GET /api/agents', () => {
 
     const listed = (await (await authedFetch(server, base, '/api/agents')).json()) as Envelope<unknown>;
     const data = listNamedAgentProfilesResponseSchema.parse(listed.data);
-    const builtinExplore = data.items.find((profile) => profile.name === 'explore' && profile.source === 'builtin');
-    const userExplore = data.items.find((profile) => profile.name === 'explore' && profile.source === 'user');
-    expect(builtinExplore?.override).toBeUndefined();
+    const exploreRows = data.items.filter((profile) => profile.name === 'explore');
+    expect(exploreRows).toHaveLength(1);
+    const userExplore = exploreRows[0];
+    expect(userExplore?.source).toBe('user');
+    expect(userExplore?.source_file?.replaceAll('\\', '/')).toMatch(/agents\/explore\.md$/);
     expect(userExplore?.override).toBe(true);
     const userReviewer = data.items.find((profile) => profile.name === 'reviewer' && profile.source === 'user');
     expect(userReviewer?.override).toBeUndefined();
@@ -1161,7 +1169,7 @@ describe('GET /api/agents', () => {
     expect((await capabilities.json() as Envelope<unknown>).data).toMatchObject({ available: false, targets: expect.arrayContaining([expect.objectContaining({ launch_allowed: false })]) });
   });
 
-  it('rejects writes to builtin profiles with a read-only business code', async () => {
+  it('edits a materialized shipped profile copy and reports it as custom until restored', async () => {
     const agentsDir = join(home as string, 'agents');
     await mkdir(agentsDir, { recursive: true });
     await writeFile(
@@ -1184,20 +1192,46 @@ describe('GET /api/agents', () => {
     });
     const listed = (await (await authedFetch(server, base, '/api/agents')).json()) as Envelope<unknown>;
     const data = listNamedAgentProfilesResponseSchema.parse(listed.data);
-    const workspaceId = data.items.find((profile) => profile.name === 'reviewer')?.workspace_id;
+    const shippedAgent = data.items.find((profile) =>
+      profile.name === 'agent' && (profile.source_file?.replaceAll('\\', '/') ?? '').endsWith('agents/builtin/agent.md'));
+    expect(shippedAgent).toMatchObject({ source: 'user', main: true });
 
     const response = await authedFetch(server, base, '/api/agents/agent', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         scope: 'user',
-        workspace_id: workspaceId,
-        description: 'cannot edit builtin',
+        workspace_id: shippedAgent?.workspace_id,
+        description: 'edited shipped copy',
       }),
     });
-    const body = (await response.json()) as Envelope<null>;
-    expect(body.code).toBe(40934);
-    expect(body.msg).toContain('read-only');
+    const body = (await response.json()) as Envelope<{ source_file?: string }>;
+    expect(body.code).toBe(0);
+    expect(body.data).toMatchObject({
+      name: 'agent',
+      description: 'edited shipped copy',
+      source: 'user',
+      source_file: expect.stringMatching(/agents[\\/]builtin[\\/]agent\.md$/),
+    });
+    const activePath = join(home as string, 'agents', 'builtin', 'agent.md');
+    expect(await readFile(activePath, 'utf8')).toContain('edited shipped copy');
+
+    const shipped = (await (await authedFetch(server, base, '/api/agents/shipped')).json()) as Envelope<unknown>;
+    expect(shipped.code).toBe(0);
+    expect(listShippedAgentProfilesResponseSchema.parse(shipped.data).items
+      .find((item) => item.template_id === 'agent')).toMatchObject({ managed: true, status: 'custom' });
+
+    const restored = await authedFetch(server, base, '/api/agents/shipped/agent:restore', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const restoredBody = (await restored.json()) as Envelope<{ status: string }>;
+    expect(restoredBody.code).toBe(0);
+    expect(restoredBody.data.status).toBe('clean');
+    expect(await readFile(activePath, 'utf8')).toBe(
+      SHIPPED_AGENT_PROFILE_TEMPLATES.find((template) => template.id === 'agent')?.text,
+    );
   });
 
   it('returns field details when the PATCH body requests non-editable fields', async () => {
@@ -1345,5 +1379,80 @@ describe('GET /agents named resolution', () => {
     expect(body.data.items.find((item) => item.name === 'hidden-lead')?.subagents).toEqual([
       expect.objectContaining({ name: 'hidden-helper', scope: 'private', status: 'ready' }),
     ]);
+  });
+});
+
+describe('shipped agent profiles', () => {
+  let server: RunningServer | undefined;
+  let home: string | undefined;
+  let base: string;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-shipped-profiles-'));
+  });
+
+  afterEach(async () => {
+    if (server !== undefined) await server.close();
+    if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  async function boot(): Promise<void> {
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+  }
+
+  async function listShipped(): Promise<Array<{ template_id: string; status: string; managed: boolean; active_path?: string }>> {
+    const response = await authedFetch(server as RunningServer, base, '/api/agents/shipped');
+    expect(response.status).toBe(200);
+    const body = await response.json() as Envelope<unknown>;
+    expect(body.code).toBe(0);
+    return listShippedAgentProfilesResponseSchema.parse(body.data).items;
+  }
+
+  async function restore(tail: string): Promise<Envelope<unknown>> {
+    const response = await authedFetch(server as RunningServer, base, `/api/agents/shipped/${tail}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(response.status).toBe(200);
+    return await response.json() as Envelope<unknown>;
+  }
+
+  it('lists materialized templates, tracks edits and removal, and restores the bundled original', async () => {
+    await boot();
+    const items = await listShipped();
+    const managed = items.filter((item) => item.managed);
+    expect(managed.map((item) => item.template_id).toSorted()).toEqual(['agent', 'explore', 'general']);
+    for (const item of managed) expect(item.status).toBe('clean');
+
+    const general = managed.find((item) => item.template_id === 'general');
+    expect(general?.active_path?.replaceAll('\\', '/')).toMatch(/agents\/builtin\/general\.md$/);
+    const activePath = general?.active_path as string;
+    const originalText = await readFile(activePath, 'utf8');
+    expect(originalText).toBe(SHIPPED_AGENT_PROFILE_TEMPLATES.find((template) => template.id === 'general')?.text);
+
+    await writeFile(activePath, `${originalText}\nlocal tweak\n`);
+    expect((await listShipped()).find((item) => item.template_id === 'general')?.status).toBe('custom');
+
+    const restored = await restore('general:restore');
+    expect(restored.code).toBe(0);
+    expect((restored.data as { status: string }).status).toBe('clean');
+    expect(await readFile(activePath, 'utf8')).toBe(originalText);
+    const backups = await readdir(join(home as string, 'agent-profile-state', 'backups'));
+    expect(backups.some((name) => name.includes('general'))).toBe(true);
+
+    await rm(activePath);
+    expect((await listShipped()).find((item) => item.template_id === 'general')?.status).toBe('removed');
+    const revived = await restore('general:restore');
+    expect(revived.code).toBe(0);
+    expect(await readFile(activePath, 'utf8')).toBe(originalText);
+    expect((await listShipped()).find((item) => item.template_id === 'general')?.status).toBe('clean');
+  });
+
+  it('rejects unknown templates and unsupported actions with 40001', async () => {
+    await boot();
+    expect((await restore('nope:restore')).code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect((await restore('general:frobnicate')).code).toBe(ErrorCode.VALIDATION_FAILED);
   });
 });

@@ -1,17 +1,168 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { readSettings, writeSettings, type SubagentPanelOpenMode } from '@kiki/session-core/settings';
+import { errorText } from '@kiki/session-core/i18n';
+import {
+  mergeNamedAgentProfiles,
+  readSettings,
+  subagentDefaultTargetFromConfig,
+  subagentDefaultTargetPatch,
+  writeSettings,
+  type SubagentDefaultTarget,
+  type SubagentPanelOpenMode,
+} from '@kiki/session-core/settings';
 import { subagentLimitsFromConfig } from '@kiki/session-core/settings/agentCapabilitiesSettings';
 import { useI18n } from '../../i18n';
+import { loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
+import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
-import { Hint, InlineError } from '../controls';
+import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { MsUnitInput } from '../ProviderFields';
-import { SECONDARY_BUTTON } from '../ui';
+import { SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { NamedAgentProfilesCard, SubagentGovernanceCard } from './AgentsSection';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
+
+const STRICT_TARGET_VALUE = '__strict__';
+
+/**
+ * Default subagent target (redesign §5.1/§7): the server-wide
+ * `[subagent].default_profile` as a selector — "require explicit" (strict) or
+ * one loaded subagent profile. Only omitted targets resolve through it; the
+ * engine default (`general`) applies while the key is unset. Saves on select,
+ * like the other single-choice server settings.
+ */
+export function SubagentDefaultTargetCard() {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: () => client.getConfig(),
+    staleTime: 60_000,
+  });
+  const profilesQuery = useQuery({
+    queryKey: ['named-agent-profiles', 'global'],
+    queryFn: () => loadAgentProfileCatalog(client, { mode: 'global' }),
+    staleTime: 15_000,
+  });
+
+  const current: SubagentDefaultTarget | undefined = configQuery.data === undefined
+    ? undefined
+    : subagentDefaultTargetFromConfig(configQuery.data);
+  const profiles = useMemo(
+    () => mergeNamedAgentProfiles(profilesQuery.data?.items ?? []),
+    [profilesQuery.data],
+  );
+  // Selectable targets: loaded, enabled subagent profiles. A configured value
+  // that is missing or disabled stays visible as an option so the select
+  // never lies about what is saved. Names dedupe: the config value is a bare
+  // profile name, and same-named rows (a built-in plus its overriding file)
+  // are one dispatch target.
+  const candidates = useMemo(() => {
+    const seen = new Set<string>();
+    return profiles
+      .filter((profile) => !profile.main && !profile.disabled)
+      .filter((profile) => {
+        if (seen.has(profile.name)) return false;
+        seen.add(profile.name);
+        return true;
+      })
+      .toSorted((a, b) => a.name.localeCompare(b.name));
+  }, [profiles]);
+  const selectedProfile: NamedAgentProfile | undefined = current?.mode === 'profile'
+    ? profiles.find((profile) => profile.name === current.name)
+    : undefined;
+  const selectValue = current === undefined
+    ? ''
+    : current.mode === 'strict'
+      ? STRICT_TARGET_VALUE
+      : current.name;
+  const optionNames = new Set(candidates.map((profile) => profile.name));
+
+  const applyTarget = async (value: string) => {
+    const target: SubagentDefaultTarget = value === STRICT_TARGET_VALUE
+      ? { mode: 'strict' }
+      : { mode: 'profile', name: value };
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.patchConfig(subagentDefaultTargetPatch(target));
+      queryClient.setQueryData(['config'], echoed);
+      setFeedback({ tone: 'success', text: t('st.subagentDefault.saved') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const summaryChips: string[] = [];
+  if (selectedProfile !== undefined) {
+    summaryChips.push(selectedProfile.source);
+    if (selectedProfile.pinned_model_alias !== undefined && selectedProfile.pinned_model_alias !== '') {
+      summaryChips.push(`${t('st.namedAgents.modelPin')} ${selectedProfile.pinned_model_alias}`);
+    }
+  }
+
+  return (
+    <SectionCard id="st-card-subagent-default-target" title={t('st.subagentDefault.title')}>
+      <div className="space-y-3">
+        <Hint>{t('st.subagentDefault.hint')}</Hint>
+        <fieldset disabled={saving || configQuery.isPending} className="space-y-3 disabled:opacity-60">
+          <label className="block text-[11px] font-medium text-ink-soft">{t('st.subagentDefault.label')}
+            <select
+              data-subagent-default-target
+              className={`${SMALL_INPUT} mt-1 block`}
+              value={selectValue}
+              onChange={(event) => { void applyTarget(event.target.value); }}
+            >
+              {current === undefined ? <option value="">{t('st.namedAgents.loading')}</option> : null}
+              <option value={STRICT_TARGET_VALUE}>{t('st.subagentDefault.strict')}</option>
+              {candidates.map((profile) => (
+                <option key={profile.name} value={profile.name}>{profile.name}</option>
+              ))}
+              {current?.mode === 'profile' && !optionNames.has(current.name) ? (
+                <option value={current.name}>{current.name}</option>
+              ) : null}
+            </select>
+          </label>
+        </fieldset>
+        {current?.mode === 'strict' ? (
+          <Hint>{t('st.subagentDefault.strictHint')}</Hint>
+        ) : null}
+        {current?.mode === 'profile' && profilesQuery.data !== undefined && selectedProfile === undefined ? (
+          <p data-subagent-default-status="unresolvable" className="text-[10.5px] text-danger">
+            {t('st.subagentDefault.unresolvable', { name: current.name })}
+          </p>
+        ) : null}
+        {selectedProfile !== undefined ? (
+          <div className="space-y-1.5" data-subagent-default-status="resolved">
+            <div className="flex flex-wrap gap-1.5">
+              {summaryChips.map((chip) => (
+                <span key={chip} className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint">{chip}</span>
+              ))}
+            </div>
+            {selectedProfile.disabled ? (
+              <p data-subagent-default-status="disabled" className="text-[10.5px] text-danger">
+                {t('st.subagentDefault.disabledTarget', { name: selectedProfile.name })}
+              </p>
+            ) : null}
+            {selectedProfile.pinned_model_alias === undefined || selectedProfile.pinned_model_alias === '' ? (
+              <Hint>{t('st.subagentDefault.noModelPin')}</Hint>
+            ) : null}
+          </div>
+        ) : null}
+        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+        {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
+}
 
 function SubagentOpenModeCard() {
   const { t } = useI18n();
@@ -107,14 +258,15 @@ function SubagentTimeoutCard() {
 }
 
 /**
- * Subagents leaf (redesign §10.3): profile list (the `sub` bucket of the
- * named-agent pipeline), delegation governance, and the runtime timeout —
- * everything subagent-shaped that used to be spread across Agents and the
- * sidecar card.
+ * Subagents leaf (redesign §10.3): the default dispatch target, the profile
+ * list (the `sub` bucket of the named-agent pipeline), delegation governance,
+ * and the runtime timeout — everything subagent-shaped that used to be spread
+ * across Agents and the sidecar card.
  */
 export function SubagentsSection() {
   return (
     <div className="space-y-4">
+      <SubagentDefaultTargetCard />
       <SubagentOpenModeCard />
       <NamedAgentProfilesCard bucket="sub" />
       <SubagentGovernanceCard />

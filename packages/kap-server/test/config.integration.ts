@@ -329,6 +329,22 @@ describe('server-v2 /api/config', () => {
     expect(persisted).toContain('refresh_interval_ms = 300000');
   });
 
+  it('round-trips the subagent default_profile, including the strict empty string', async () => {
+    await boot();
+
+    const named = await patchConfig({ subagent: { default_profile: 'explore' } });
+    expect(named.subagent?.defaultProfile).toBe('explore');
+    expect((await getConfig()).subagent?.defaultProfile).toBe('explore');
+    let persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('default_profile = "explore"');
+
+    const strict = await patchConfig({ subagent: { default_profile: '' } });
+    expect(strict.subagent?.defaultProfile).toBe('');
+    expect((await getConfig()).subagent?.defaultProfile).toBe('');
+    persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('default_profile = ""');
+  });
+
   it('round-trips every persistable GUI runtime domain through config.toml', async () => {
     await boot();
 

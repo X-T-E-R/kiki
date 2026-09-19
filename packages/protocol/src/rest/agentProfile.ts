@@ -85,6 +85,7 @@ export const namedAgentProfileSchema = z.object({
   disallowed_tools: z.array(z.string()).optional(),
   model_profiles: z.array(namedAgentModelProfileSchema).optional(),
   spawn_constraints: namedAgentSpawnConstraintsSchema.optional(),
+  subagent_policy: z.enum(['advisory', 'strict', 'legacy']).optional(),
   subagents: z.array(z.union([z.string(), namedAgentSubagentLeaseSchema])).optional(),
   disabled: z.boolean(),
   routes: z.array(namedAgentRouteSchema),
@@ -147,6 +148,9 @@ export const agentCapabilityTargetSchema = z.object({
   model_source: z.enum(['caller-lease', 'route', 'profile']).optional(),
   thinking_effort: z.string().optional(),
   effort_source: z.enum(['caller-lease', 'route', 'profile', 'model-profile', 'model', 'config', 'executor']).optional(),
+  dispatch_policy: z.enum(['advisory', 'strict', 'legacy']).optional(),
+  recommendation_status: z.enum(['preferred', 'allowed_nonpreferred', 'blocked', 'unconfigured']).optional(),
+  advisory_deviation: z.boolean().optional(),
   defaults_available: z.boolean(),
   unavailable_reason: z.string().optional(),
   launch_allowed: z.boolean().optional(),
@@ -202,6 +206,7 @@ export const agentPanelProfileSchema = z.object({
   tools: z.array(z.string()).optional(),
   disallowed_tools: z.array(z.string()).optional(),
   disabled_tool_groups: z.array(z.string()).optional(),
+  subagent_policy: z.enum(['advisory', 'strict', 'legacy']).optional(),
   execution_restriction: z.string().optional(),
   locked_model: z.string().optional(),
   locked_effort: z.string().optional(),
@@ -302,4 +307,36 @@ export const updateNamedAgentProfileRequestSchema = z.object({
 });
 export type UpdateNamedAgentProfileRequest = z.infer<
   typeof updateNamedAgentProfileRequestSchema
+>;
+
+export const shippedAgentProfileStatusSchema = z.enum([
+  'clean',
+  'custom',
+  'update-available',
+  'removed',
+  'adopted',
+  'unmanaged',
+  'disabled',
+  'retired',
+]);
+export type ShippedAgentProfileStatus = z.infer<typeof shippedAgentProfileStatusSchema>;
+
+export const shippedAgentProfileSchema = z.object({
+  template_id: z.string(),
+  status: shippedAgentProfileStatusSchema,
+  managed: z.boolean(),
+  main: z.boolean(),
+  description: z.string().optional(),
+  active_path: z.string().optional(),
+  baseline_hash: z.string().optional(),
+  active_hash: z.string().optional(),
+  offered_hash: z.string().optional(),
+});
+export type ShippedAgentProfile = z.infer<typeof shippedAgentProfileSchema>;
+
+export const listShippedAgentProfilesResponseSchema = z.object({
+  items: z.array(shippedAgentProfileSchema),
+});
+export type ListShippedAgentProfilesResponse = z.infer<
+  typeof listShippedAgentProfilesResponseSchema
 >;

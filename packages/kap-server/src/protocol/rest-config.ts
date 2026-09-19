@@ -183,6 +183,7 @@ export const patchConfigRequestSchema = z.object({
     deny_models: SubagentConfigSchema.shape.denyModels,
     max_direct_children: SubagentConfigSchema.shape.maxDirectChildren,
     max_total_subagents: SubagentConfigSchema.shape.maxTotalSubagents,
+    default_profile: SubagentConfigSchema.shape.defaultProfile,
   }).strict().optional(),
   agents: z.object({
     enabled: z.boolean().optional(),

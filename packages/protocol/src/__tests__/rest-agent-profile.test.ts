@@ -38,6 +38,7 @@ describe('named agent profile REST protocol', () => {
       workspace_id: 'wd_a',
       workspace_ids: ['wd_a', 'wd_b'],
       main: true,
+      subagent_policy: 'legacy',
       model_profiles: [{
         alias: 'fast',
         when: 'Use for small tasks',
@@ -61,6 +62,7 @@ describe('named agent profile REST protocol', () => {
     })).toMatchObject({
       workspace_ids: ['wd_a', 'wd_b'],
       main: true,
+      subagent_policy: 'legacy',
       model_profiles: [{ alias: 'fast', when: 'Use for small tasks' }],
       spawn_constraints: { allowed_models: ['fast'] },
       subagents: ['explore', { name: 'reviewer', model_alias: 'fast' }],
@@ -94,6 +96,7 @@ describe('named agent profile REST protocol', () => {
 
   it('separates live launch admission from defaults without inventing draft policy', () => {
     const target = { profile: 'helper', executor: 'native', defaults_available: false,
+      dispatch_policy: 'advisory', recommendation_status: 'allowed_nonpreferred', advisory_deviation: true,
       launch_allowed: true, execution_restriction: 'research-readonly' };
     expect(agentCapabilitiesResponseSchema.parse({ context: 'live', owner: { profile: 'lead' }, available: true,
       targets: [target] }).targets[0]).toEqual(target);

@@ -112,6 +112,14 @@ const STRINGS = {
     promptModeLabel: 'prompt mode',
     delegationNoticeLabel: 'delegation notice',
     scopedBadgeLabel: 'Scoped',
+    shippedBadgeModified: 'Built-in · modified',
+    shippedBadgeRemoved: 'Built-in · removed',
+    shippedRestore: 'Restore original',
+    shippedRestoreTitle: 'Restore the original of built-in profile',
+    shippedRestored: 'Original restored and agent profiles reloaded.',
+    subagentDefaultLabel: 'When no subagent profile is specified',
+    subagentDefaultStrict: 'Require an explicit profile',
+    subagentDefaultStrictHint: 'fail with an error instead of falling back',
     planGateTimeoutInvalid: 'Timeout must be at least 5 seconds.',
     nbSearchSave: 'Save search & retrieval',
     nbSearchSaved: 'Search & retrieval saved',
@@ -288,6 +296,14 @@ const STRINGS = {
     promptModeLabel: '提示词模式',
     delegationNoticeLabel: '委派通知',
     scopedBadgeLabel: '专用',
+    shippedBadgeModified: '内置 · 已修改',
+    shippedBadgeRemoved: '内置 · 已移除',
+    shippedRestore: '恢复原版',
+    shippedRestoreTitle: '恢复内置 profile',
+    shippedRestored: '已恢复原版并重新加载 agent profile。',
+    subagentDefaultLabel: '未指定子代理 profile 时',
+    subagentDefaultStrict: '要求显式指定',
+    subagentDefaultStrictHint: '未指定 profile 的派发将报错',
     planGateTimeoutInvalid: '超时时间最短为 5 秒。',
     nbSearchSave: '保存搜索与抓取',
     nbSearchSaved: '搜索与抓取配置已保存',
@@ -1987,7 +2003,81 @@ async function scenarioSettingsAgents() {
   // Re-enable so the merged row returns to full opacity for the next run.
   await reviewerSwitch().click();
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
+  // The switch clicks above scrolled the page; reset every scroller so this
+  // shot frames the top of the leaf regardless of how tall it has grown.
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    for (const node of document.querySelectorAll('*')) {
+      if (node.scrollTop > 0) node.scrollTop = 0;
+    }
+  });
+  await page.waitForTimeout(200);
   await shot('settings-agents-disabled-reloaded');
+}
+
+/**
+ * Shipped (built-in) profile management + the default subagent target
+ * (settings-shipped scenario): the Subagents leaf opens with the server-wide
+ * default-target card, the managed `general` copy shows its modification
+ * badge and a restore-original action behind a double confirmation, and a
+ * removed managed copy stays restorable from its tombstone row. The fixture
+ * flips restored entries back to clean and echoes config patches.
+ */
+async function scenarioSettingsShipped() {
+  await page.goto(`${WEB_URL}/settings/subagents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  // Default subagent target: unset config resolves to the engine fallback
+  // (general); strict mode and any loaded subagent profile are the options.
+  await page.waitForSelector('#st-card-subagent-default-target', { timeout: 10_000 });
+  const targetSelect = page.locator('[data-subagent-default-target]');
+  await targetSelect.waitFor({ timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelector('[data-subagent-default-target]')?.value === 'general',
+    undefined,
+    { timeout: 5000 },
+  );
+  // Managed-copy status: `general` was edited on disk (custom → restore
+  // offered), `plan` was removed (tombstone row).
+  const generalRow = page.locator('#st-card-subagent-profiles [data-agent-profile="general"]');
+  await generalRow.waitFor({ timeout: 10_000 });
+  await generalRow.locator('[data-shipped-status="custom"]').waitFor({ timeout: 5000 });
+  await generalRow.getByText(S.shippedBadgeModified, { exact: true }).waitFor({ timeout: 5000 });
+  const tombstone = page.locator('[data-shipped-removed="plan"]');
+  await tombstone.waitFor({ timeout: 5000 });
+  await tombstone.getByText(S.shippedBadgeRemoved, { exact: true }).waitFor({ timeout: 5000 });
+  await generalRow.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await shot('settings-subagents-shipped');
+
+  // Restore is double-confirmed and names the profile; Esc cancels safely…
+  await generalRow.locator('[data-shipped-restore="general"]').click();
+  const dialog = page.locator('[role="alertdialog"]');
+  await dialog.waitFor({ timeout: 5000 });
+  await dialog.getByText(S.shippedRestoreTitle, { exact: false }).waitFor({ timeout: 5000 });
+  await page.waitForTimeout(150);
+  await shot('settings-subagents-restore-confirm');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('[role="alertdialog"]', { state: 'detached', timeout: 5000 });
+  await generalRow.locator('[data-shipped-status="custom"]').waitFor({ timeout: 5000 });
+  // …and confirming flips the copy back to the bundled original.
+  await generalRow.locator('[data-shipped-restore="general"]').click();
+  await dialog.locator('button', { hasText: S.shippedRestore }).click();
+  await page.waitForSelector('#st-card-subagent-profiles [data-agent-profile="general"] [data-shipped-status="clean"]', { timeout: 5000 });
+  await page.getByText(S.shippedRestored, { exact: false }).waitFor({ timeout: 5000 });
+
+  // The default target saves on selection: strict mode stores the empty
+  // string and explains itself inline.
+  await page.locator('#st-card-subagent-default-target').scrollIntoViewIfNeeded();
+  await targetSelect.selectOption('__strict__');
+  await page.getByText(S.subagentDefaultStrictHint, { exact: false }).waitFor({ timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelector('[data-subagent-default-target]')?.value === '__strict__',
+    undefined,
+    { timeout: 5000 },
+  );
+  await page.waitForTimeout(200);
+  await shot('settings-subagents-default-strict');
 }
 
 /**
@@ -3846,6 +3936,7 @@ const SCENARIOS = [
   ['settings-communication', scenarioSettingsCommunication],
   ['settings-workspaces', scenarioWorkspaces],
   ['settings-agents', scenarioSettingsAgents],
+  ['settings-shipped', scenarioSettingsShipped],
   ['settings-nbsearch', scenarioSettingsNbSearch],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],

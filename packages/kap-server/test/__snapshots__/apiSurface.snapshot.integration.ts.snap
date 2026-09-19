@@ -66,6 +66,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/agents/shipped",
+    ],
+    [
+      "GET",
       "/api/auth",
     ],
     [
@@ -403,6 +407,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PATCH",
       "/api/workspaces/{workspace_id}",
+    ],
+    [
+      "POST",
+      "/api/agents/shipped/{tail}",
     ],
     [
       "POST",

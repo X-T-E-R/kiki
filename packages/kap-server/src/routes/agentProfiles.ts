@@ -2,7 +2,7 @@ import {
   AgentProfileSourceDiagnosticCodes,
   AgentProfileWriteErrors,
   BUILTIN_AGENT_PROFILE_SOURCE_ID,
-  DISABLED_BUILTIN_PROFILES_SECTION,
+  DEFAULT_AGENT_PROFILE_NAME,
   DISABLED_NAMED_PROFILES_SECTION,
   ErrorCodes,
   IAgentProfileRegistry,
@@ -18,7 +18,6 @@ import {
   type AgentProfileCatalogSnapshot,
   type AgentProfileRegistration,
   type AgentProfileRouteDefinition,
-  type DisabledBuiltinProfilesConfig,
   type DisabledNamedProfilesConfig,
   type Scope,
   type ScopedAgentProfileBinding,
@@ -110,9 +109,6 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       const executors = core.accessor.get(IAgentExecutorRegistry);
       const config = core.accessor.get(IConfigService);
       await config.ready;
-      const disabledBuiltins = new Set(
-        config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? [],
-      );
       const disabledNamed = new Set(
         config.get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? [],
       );
@@ -120,7 +116,6 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       if (workspaceId === undefined && req.query.cwd === undefined) {
         const items = projectNamedAgentProfiles(
           registry.entries(),
-          disabledBuiltins,
           disabledNamed,
           req.query.expand === true,
           await sessionAgentProfileCatalogs(core),
@@ -156,11 +151,11 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
                 priority: inspection?.priority ?? 0,
                 workspaceKey: resolvedWorkspaceId,
                 contribution: { profiles: [profile] },
-              }, profile, disabledBuiltins, disabledNamed, undefined,
+              }, profile, disabledNamed, undefined,
               { catalog, snapshot: catalog.snapshot() }, executors);
               return profile === defaultProfile && profile.main === true ? { ...item, disabled: false } : item;
             }).toSorted(compareNamedAgentProfiles)
-          : projectNamedAgentProfiles(entries, disabledBuiltins, disabledNamed,
+          : projectNamedAgentProfiles(entries, disabledNamed,
               req.query.expand === true, catalogs, executors);
         reply.send(okEnvelope({ items, complete: catalog.complete }, req.id));
       } finally {
@@ -233,8 +228,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
             workspaceKey: updated.workspaceKey,
             contribution: { profiles: [updated.profile], routes: updated.routes },
           },
-          profileWithBuiltinMain(updated.profile, core.accessor.get(IAgentProfileRegistry).entries()),
-          new Set(core.accessor.get(IConfigService).get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? []),
+          profileWithDefaultMain(updated.profile),
           new Set(core.accessor.get(IConfigService).get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? []),
         ), req.id));
       } catch (error) {
@@ -293,7 +287,6 @@ async function sessionAgentProfileCatalogs(
 
 function projectNamedAgentProfiles(
   entries: readonly AgentProfileRegistration[],
-  disabledBuiltins: ReadonlySet<string>,
   disabledNamed: ReadonlySet<string>,
   expand: boolean,
   catalogs: ReadonlyMap<string, SessionAgentProfileCatalogProjection> = new Map(),
@@ -307,7 +300,7 @@ function projectNamedAgentProfiles(
     ...entry.contribution,
     profiles: entry.contribution.profiles
       .filter((profile) => profile.private !== true)
-      .map((profile) => profileWithBuiltinMain(profile, entries)),
+      .map((profile) => profileWithDefaultMain(profile)),
   } }));
   if (expand) {
     return registrations
@@ -316,7 +309,6 @@ function projectNamedAgentProfiles(
           toNamedAgentProfile(
             registration,
             profile,
-            disabledBuiltins,
             disabledNamed,
             undefined,
             catalogForProfile(registration, profile, catalogs),
@@ -363,7 +355,6 @@ function projectNamedAgentProfiles(
       toNamedAgentProfile(
         registration,
         profile,
-        disabledBuiltins,
         disabledNamed,
         workspaceIds.size === 0 ? undefined : [...workspaceIds].toSorted(),
         catalogForProfile(registration, profile, catalogs),
@@ -390,11 +381,9 @@ function catalogForProfile(
   return undefined;
 }
 
-function profileWithBuiltinMain(profile: AgentProfile, entries: readonly AgentProfileRegistration[]): AgentProfile {
-  const builtin = entries.find((entry) => entry.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID)
-    ?.contribution.profiles.find((candidate) => candidate.name === profile.name);
-  return profile.main === undefined && builtin?.main !== undefined
-    ? { ...profile, main: builtin.main }
+function profileWithDefaultMain(profile: AgentProfile): AgentProfile {
+  return profile.main === undefined && profile.name === DEFAULT_AGENT_PROFILE_NAME
+    ? { ...profile, main: true }
     : profile;
 }
 
@@ -416,7 +405,6 @@ function compareNamedAgentProfiles(a: NamedAgentProfile, b: NamedAgentProfile): 
 function toNamedAgentProfile(
   registration: AgentProfileRegistration,
   profile: AgentProfile,
-  disabledBuiltins: ReadonlySet<string> = new Set(),
   disabledNamed: ReadonlySet<string> = new Set(),
   workspaceIds?: readonly string[],
   catalog?: SessionAgentProfileCatalogProjection,
@@ -465,6 +453,7 @@ function toNamedAgentProfile(
             ? undefined
             : [...profile.spawnConstraints.disallowedTools],
         },
+    subagent_policy: profile.subagentPolicy ?? 'legacy',
     subagents: profile.subagents?.map((name) => {
       const lease = profile.subagentLeases?.[name];
       const binding = lease?.source === undefined
@@ -472,9 +461,7 @@ function toNamedAgentProfile(
         : scopedBindingFor(catalog, registration, profile, name);
       return lease === undefined ? name : toNamedAgentSubagentLease(lease, binding);
     }),
-    disabled: registration.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID
-      ? disabledBuiltins.has(profile.name)
-      : disabledNamed.has(profile.name),
+    disabled: disabledNamed.has(profile.name),
     routes: (registration.contribution.routes ?? [])
       .filter((candidate) => candidate.profile === profile.name)
       .map(toNamedAgentRoute)

@@ -230,6 +230,10 @@ export const en = {
   'agentPanel.locked': 'Locked by profile, immutable in session',
   'agentPanel.provenanceCol': 'Declared ← Effective ← Source',
   'agentPanel.subagents': 'Dispatchable subagents',
+  'agentPanel.subagentPolicy': 'Dispatch policy',
+  'agentPanel.subagentPolicy.advisory': 'Advisory',
+  'agentPanel.subagentPolicy.strict': 'Strict',
+  'agentPanel.subagentPolicy.legacy': 'Legacy strict',
   'agentPanel.allowedCount': '{allowed}/{total} allowed to launch',
   'agentPanel.noSubagents': 'No dispatchable subagents',
   'agentPanel.allowed': 'Allowed',
@@ -283,6 +287,11 @@ export const en = {
   'diagnostics.defaultsMissing': 'Defaults unavailable',
   'diagnostics.allowed': 'Launch allowed now',
   'diagnostics.blocked': 'Launch blocked now',
+  'diagnostics.preferred': 'Recommended target',
+  'diagnostics.allowedNonpreferred': 'Allowed outside recommendations',
+  'diagnostics.policy.advisory': 'Advisory policy',
+  'diagnostics.policy.strict': 'Strict policy',
+  'diagnostics.policy.legacy': 'Legacy strict policy',
   'diagnostics.unknown': 'Not reported',
   'diagnostics.readonly': 'Research only · read-only execution',
   'diagnostics.source.caller-lease': 'Caller lease',
@@ -2072,6 +2081,36 @@ export const en = {
   'st.namedAgents.saveRaw': 'Save raw file',
   'st.namedAgents.rawSaved': 'Raw agent file saved, validated, and reloaded.',
   'st.namedAgents.saved': 'Agent profile saved and reloaded.',
+  'st.shipped.badge': 'Built-in',
+  'st.shipped.clean': 'unmodified',
+  'st.shipped.custom': 'modified',
+  'st.shipped.updateAvailable': 'modified · newer original available',
+  'st.shipped.removed': 'removed',
+  'st.shipped.restore': 'Restore original',
+  'st.shipped.restoreTitle': 'Restore the original of built-in profile "{name}"?',
+  'st.shipped.restoreBody':
+    'The on-disk copy is replaced with the original bundled with this release, and the server reloads agent profiles right away.',
+  'st.shipped.restoreRemovedBody':
+    'The on-disk copy was removed; restoring recreates the original bundled with this release, and the server reloads agent profiles right away.',
+  'st.shipped.restoreOverwrite':
+    'Every change in the current copy is overwritten; the file is backed up automatically before the restore.',
+  'st.shipped.restoreModelPin':
+    'The current copy pins model {model}; the original has no pin, so after the restore dispatches without an explicit model_alias use the default model instead.',
+  'st.shipped.restored': 'Original restored and agent profiles reloaded.',
+  'st.subagentDefault.title': 'Default subagent target',
+  'st.subagentDefault.hint':
+    'Server-wide default applied when a subagent dispatch does not name a profile. Saved on selection; affects every session on this server.',
+  'st.subagentDefault.label': 'When no subagent profile is specified',
+  'st.subagentDefault.strict': 'Require an explicit profile',
+  'st.subagentDefault.strictHint':
+    'Dispatches that omit the profile fail with an error instead of falling back to a default.',
+  'st.subagentDefault.unresolvable':
+    'The default "{name}" is not among the loaded profiles; dispatches without an explicit profile cannot resolve it.',
+  'st.subagentDefault.disabledTarget':
+    '"{name}" is disabled; while disabled it is not invoked as a subagent.',
+  'st.subagentDefault.noModelPin':
+    'This profile pins no model; dispatches without an explicit model_alias use the default model.',
+  'st.subagentDefault.saved': 'Default subagent target saved.',
   'st.sidecar.subagentTimeout': 'Subagent timeout',
   'st.sidecar.catalogInterval': 'Catalog refresh interval',
   'st.sidecar.builtinSkills': 'Include built-in product skills',

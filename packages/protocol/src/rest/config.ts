@@ -30,6 +30,7 @@ export const subagentConfigResponseSchema = z.object({
   timeoutMs: z.number().int().nonnegative().optional(),
   maxDirectChildren: z.number().int().nonnegative().optional(),
   maxTotalSubagents: z.number().int().nonnegative().optional(),
+  defaultProfile: z.string().optional(),
 });
 
 export const agentsConfigResponseSchema = z.object({
@@ -121,6 +122,7 @@ export const patchConfigRequestSchema = z.object({
     timeout_ms: z.number().int().nonnegative().optional(),
     max_direct_children: z.number().int().nonnegative().optional(),
     max_total_subagents: z.number().int().nonnegative().optional(),
+    default_profile: z.string().optional(),
   }).optional(),
   agents: z.object({
     enabled: z.boolean().optional(),

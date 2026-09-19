@@ -9,6 +9,7 @@ import {
   namedAgentOverrideRelations,
   namedAgentSessionHref,
   partitionNamedAgentProfiles,
+  shippedEntryForProfile,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
   summarizeNamedAgentLease,
@@ -26,6 +27,7 @@ import { AgentCapabilitiesPanel } from '../AgentCapabilitiesPanel';
 import type {
   ListNamedAgentProfilesResponse,
   NamedAgentProfile,
+  ShippedAgentProfile,
 } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
@@ -36,6 +38,7 @@ import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { ExperimentalSection } from './ExperimentalSection';
 import { PromptConfigCard } from './PromptConfigCard';
+import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
 
 const LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
@@ -131,6 +134,8 @@ function NamedAgentProfileRow({
   onToggleEnabled,
   toggleSaving,
   effective,
+  shippedEntry,
+  onShippedChanged,
 }: {
   effective: boolean;
   profile: NamedAgentProfile;
@@ -139,6 +144,8 @@ function NamedAgentProfileRow({
   onUpdated: (profile: NamedAgentProfile) => void;
   onToggleEnabled: (profile: NamedAgentProfile, enabled: boolean) => Promise<void>;
   toggleSaving: boolean;
+  shippedEntry?: ShippedAgentProfile;
+  onShippedChanged?: () => void;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -353,6 +360,17 @@ function NamedAgentProfileRow({
           <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">
             {profile.source}{writable ? '' : ` · ${t('st.namedAgents.readOnly')}`}
           </span>
+          {shippedEntry !== undefined ? (
+            <ShippedProfileControls
+              entry={shippedEntry}
+              profile={profile}
+              onRestored={() => {
+                onShippedChanged?.();
+                setFeedback({ tone: 'success', text: t('st.shipped.restored') });
+              }}
+              onError={(error) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); }}
+            />
+          ) : null}
           <button
             type="button"
             className={SECONDARY_BUTTON}
@@ -558,7 +576,7 @@ function NamedAgentProfileRow({
  */
 export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   const { client } = useConnection();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [toggleSaving, setToggleSaving] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string>();
@@ -589,6 +607,21 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     queryFn: () => client.getConfig(),
     staleTime: 60_000,
   });
+  // Shipped-template management state (built-in origin, modification status,
+  // restore). Additive: on servers without the routes the query fails and the
+  // rows render exactly like ordinary file profiles.
+  const shippedQuery = useQuery({
+    queryKey: ['shipped-agent-profiles'],
+    queryFn: () => client.listShippedAgentProfiles(),
+    staleTime: 15_000,
+    retry: false,
+  });
+  const [shippedFeedback, setShippedFeedback] = useState<Feedback>(null);
+  const shippedEntries = shippedQuery.data?.items ?? [];
+  const onShippedChanged = () => {
+    void queryClient.invalidateQueries({ queryKey: ['shipped-agent-profiles'] });
+    void invalidateAgentProfileCatalogs(queryClient);
+  };
   const updateEcho = (updated: NamedAgentProfile) => {
     queryClient.setQueryData<ListNamedAgentProfilesResponse>(
       profilesQueryKey,
@@ -624,8 +657,12 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     () => mergeNamedAgentProfiles(profilesQuery.data?.items ?? []),
     [profilesQuery.data],
   );
+  // The global list has no `?effective=true` resolution (that endpoint needs a
+  // workspace), so effectiveness follows the managed built-in copies: the
+  // materialized originals of the shipped templates are the profiles that run
+  // under their own name.
   const isEffective = (profile: NamedAgentProfile) => selectedWorkspaceId === undefined
-    ? profile.source === 'builtin' && !profile.disabled
+    ? shippedEntryForProfile(profile, shippedEntries) !== undefined && !profile.disabled
     : effectiveQuery.data?.items.some((item) => item.name === profile.name
       && item.source === profile.source && item.source_file === profile.source_file) === true;
   const workspaceSelector = (workspacesQuery.data?.items.length ?? 0) > 0 ? (
@@ -669,8 +706,40 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
       onUpdated={updateEcho}
       onToggleEnabled={toggleEnabled}
       toggleSaving={toggleSaving !== null || configQuery.isLoading}
+      shippedEntry={shippedEntryForProfile(profile, shippedEntries)}
+      onShippedChanged={onShippedChanged}
     />
   );
+
+  // Managed copies the user deleted stay restorable (tombstone); they have no
+  // catalog row, so they render as compact restore rows at the end of the
+  // bucket their template belongs to.
+  const removedRows = shippedEntries
+    .filter((entry) => entry.managed && entry.status === 'removed' && entry.main === (bucket === 'main'))
+    .map((entry) => (
+      <div
+        key={`shipped-removed:${entry.template_id}`}
+        data-shipped-removed={entry.template_id}
+        className="rounded-lg border border-hairline bg-panel px-3 py-2"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="font-mono text-[12.5px] text-ink-faint">{entry.template_id}</p>
+            {entry.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{entry.description}</p> : null}
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <ShippedProfileControls
+              entry={entry}
+              onRestored={() => {
+                onShippedChanged();
+                setShippedFeedback({ tone: 'success', text: t('st.shipped.restored') });
+              }}
+              onError={(error) => { setShippedFeedback({ tone: 'error', text: errorText(locale, error) }); }}
+            />
+          </div>
+        </div>
+      </div>
+    ));
 
   if (bucket === 'sub') {
     return (
@@ -680,8 +749,10 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
           {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
           <div className="space-y-2">
             {buckets.sub.map(renderRow)}
+            {removedRows}
             {profilesQuery.data !== undefined && buckets.sub.length === 0 ? <Hint>{t('st.subagentProfiles.empty')}</Hint> : null}
           </div>
+          <FeedbackLine feedback={shippedFeedback} />
         </div>
       </SectionCard>
     );
@@ -696,11 +767,13 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
         {effectiveQuery.isError ? <InlineError error={effectiveQuery.error} /> : null}
         <div className="space-y-2">
           {buckets.main.toSorted((a, b) => Number(b.name === 'agent' && isEffective(b)) - Number(a.name === 'agent' && isEffective(a))).map(renderRow)}
+          {removedRows}
           {profilesQuery.data !== undefined && buckets.main.length === 0 ? <Hint>{t('st.mainAgents.empty')}</Hint> : null}
           {profilesQuery.isLoading ? <Hint>{t('st.namedAgents.loading')}</Hint> : null}
           {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         </div>
+        <FeedbackLine feedback={shippedFeedback} />
       </div>
     </SectionCard>
   );
