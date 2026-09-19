@@ -552,6 +552,39 @@ describe('shipped (built-in) profile management', () => {
     expect(row.querySelector('[data-shipped-restore]')).toBeNull();
   });
 
+  it('refreshes a managed copy from clean to custom immediately after editing it', async () => {
+    let shippedStatus: 'clean' | 'custom' = 'clean';
+    client.listShippedAgentProfiles.mockImplementation(async () => ({
+      items: [{ ...shippedEntry, status: shippedStatus }],
+    }));
+    const echo = { ...profile, description: 'Customized managed copy' };
+    client.updateNamedAgentProfile.mockResolvedValue(echo);
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-shipped-status="clean"]')?.textContent).toBe('Built-in · unmodified');
+    expect(row.querySelector('[data-shipped-restore]')).toBeNull();
+
+    const edit = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
+    await act(async () => { edit.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    const description = dialog.querySelector<HTMLTextAreaElement>('textarea')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(description, 'Customized managed copy');
+      description.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [echo] });
+    shippedStatus = 'custom';
+    const callsBefore = client.listShippedAgentProfiles.mock.calls.length;
+    const save = [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
+    await act(async () => { save.click(); });
+    await settle();
+
+    expect(client.listShippedAgentProfiles.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(row.querySelector('[data-shipped-status="custom"]')?.textContent).toBe('Built-in · modified');
+    expect(row.querySelector('[data-shipped-restore="agent"]')).not.toBeNull();
+  });
+
   it('renders rows unchanged when the shipped-status endpoint does not exist', async () => {
     client.listShippedAgentProfiles.mockRejectedValue(new Error('unknown route'));
     await render();

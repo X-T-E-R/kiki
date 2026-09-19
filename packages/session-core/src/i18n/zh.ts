@@ -288,6 +288,7 @@ export const zh: Record<I18nKey, string> = {
   'diagnostics.blocked': '当前禁止启动',
   'diagnostics.preferred': '推荐目标',
   'diagnostics.allowedNonpreferred': '允许偏离推荐名单',
+  'diagnostics.unconfigured': '未配置推荐',
   'diagnostics.policy.advisory': '建议模式',
   'diagnostics.policy.strict': '严格模式',
   'diagnostics.unknown': '未报告',

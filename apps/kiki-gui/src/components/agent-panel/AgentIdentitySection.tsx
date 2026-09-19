@@ -21,33 +21,39 @@ function recommendationClass(status: AgentCapabilityTarget['recommendation_statu
       return 'border-amber-rule/40 bg-amber-card text-amber-ink';
     case 'blocked':
       return 'border-danger/30 bg-danger/10 text-danger';
+    case 'unconfigured':
+      return 'border-hairline bg-paper text-ink-soft';
     default:
       return 'border-hairline bg-paper text-ink-faint';
   }
 }
 
 export function DispatchPolicyBadges({
+  profilePolicy,
   targets,
   className = '',
 }: {
+  readonly profilePolicy?: AgentCapabilityTarget['dispatch_policy'];
   readonly targets?: readonly AgentCapabilityTarget[];
   readonly className?: string;
 }) {
   const { t } = useI18n();
-  const states = targets === undefined || targets.length === 0 ? [undefined] : targets;
-  const isUnreported = (target: AgentCapabilityTarget | undefined) => target === undefined || (
-    target.dispatch_policy === undefined &&
-    target.recommendation_status === undefined &&
-    target.advisory_deviation === undefined
+  const recommendationStates = targets === undefined || targets.length === 0 ? [undefined] : targets;
+  const isRecommendationUnreported = (target: AgentCapabilityTarget | undefined) => target === undefined || (
+    target.recommendation_status === undefined && target.advisory_deviation === undefined
   );
-  const hasUnreported = states.some(isUnreported);
-  const reportedStates = states.filter((target): target is AgentCapabilityTarget => !isUnreported(target));
-  const policies = [...new Set(reportedStates.map((target) => target.dispatch_policy))];
+  const hasUnreportedRecommendation = recommendationStates.some(isRecommendationUnreported);
+  const reportedRecommendations = recommendationStates.filter(
+    (target): target is AgentCapabilityTarget => !isRecommendationUnreported(target),
+  );
+  const policies = profilePolicy === undefined
+    ? [...new Set(recommendationStates.map((target) => target?.dispatch_policy))]
+    : [profilePolicy];
   const recommendations = new Map<string, {
     status: AgentCapabilityTarget['recommendation_status'];
     deviation: boolean | undefined;
   }>();
-  for (const target of reportedStates) {
+  for (const target of reportedRecommendations) {
     recommendations.set(
       `${target.recommendation_status ?? 'unknown'}:${String(target.advisory_deviation)}`,
       { status: target.recommendation_status, deviation: target.advisory_deviation },
@@ -66,31 +72,31 @@ export function DispatchPolicyBadges({
         </span>
       ))}
       {[...recommendations.values()].map(({ status, deviation }) => {
-        const complete = status !== undefined && deviation !== undefined;
-        const label = !complete || status === 'unconfigured'
+        const label = status === undefined
           ? t('diagnostics.unknown')
-          : status === 'preferred'
-            ? t('diagnostics.preferred')
-            : status === 'allowed_nonpreferred'
-              ? t('diagnostics.allowedNonpreferred')
-              : t('diagnostics.blocked');
+          : status === 'unconfigured'
+            ? t('diagnostics.unconfigured')
+            : status === 'preferred'
+              ? t('diagnostics.preferred')
+              : status === 'allowed_nonpreferred'
+                ? t('diagnostics.allowedNonpreferred')
+                : t('diagnostics.blocked');
         return (
           <span
             key={`${status ?? 'unknown'}:${String(deviation)}`}
             data-recommendation-status={status ?? 'unknown'}
             data-advisory-deviation={deviation === undefined ? 'unknown' : String(deviation)}
-            className={`rounded-full border px-1.5 py-px font-mono text-[9.5px] ${complete ? recommendationClass(status) : recommendationClass(undefined)}`}
+            className={`rounded-full border px-1.5 py-px font-mono text-[9.5px] ${recommendationClass(status)}`}
           >
             {label}
           </span>
         );
       })}
-      {hasUnreported ? (
+      {hasUnreportedRecommendation ? (
         <span
-          data-dispatch-policy="unknown"
           data-recommendation-status="unknown"
           data-advisory-deviation="unknown"
-          className={`rounded-full border px-1.5 py-px font-mono text-[9.5px] ${dispatchPolicyClass(undefined)}`}
+          className={`rounded-full border px-1.5 py-px font-mono text-[9.5px] ${recommendationClass(undefined)}`}
         >
           {t('diagnostics.unknown')}
         </span>
@@ -103,6 +109,7 @@ export interface AgentIdentitySectionProps {
   readonly identity: AgentIdentity;
   readonly usage?: AgentTokenUsage;
   readonly treeMetrics?: AgentTreeMetrics;
+  readonly profilePolicy?: AgentCapabilityTarget['dispatch_policy'];
   readonly dispatchTargets?: readonly AgentCapabilityTarget[];
   readonly onOpenTreeSelect?: () => void;
   readonly onOpenUsageDetail?: () => void;
@@ -112,6 +119,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
   identity,
   usage,
   treeMetrics,
+  profilePolicy,
   dispatchTargets,
   onOpenTreeSelect,
   onOpenUsageDetail,
@@ -243,7 +251,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
               </>
             ) : null}
           </div>
-          <DispatchPolicyBadges targets={dispatchTargets} className="mt-1.5" />
+          <DispatchPolicyBadges profilePolicy={profilePolicy} targets={dispatchTargets} className="mt-1.5" />
         </div>
 
         <div className="flex flex-col items-end gap-1 shrink-0">

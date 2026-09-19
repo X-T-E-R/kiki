@@ -190,11 +190,26 @@ it('shows dispatch policy, recommendation and advisory deviation badges, includi
   expect(element.querySelector('[data-recommendation-status="allowed_nonpreferred"]')?.textContent).toBe('允许偏离推荐名单');
   expect(element.querySelector('[data-recommendation-status="preferred"]')?.textContent).toBe('推荐目标');
   expect(element.querySelector('[data-recommendation-status="blocked"]')?.textContent).toBe('当前禁止启动');
-  expect(element.querySelector('[data-recommendation-status="unconfigured"]')?.textContent).toBe('未报告');
+  expect(element.querySelector('[data-recommendation-status="unconfigured"]')?.textContent).toBe('未配置推荐');
   expect(element.querySelector('[data-advisory-deviation="true"]')).not.toBeNull();
   expect(element.querySelector('[data-advisory-deviation="false"]')).not.toBeNull();
   expect(element.querySelector('[data-dispatch-policy="unknown"]')?.textContent).toBe('未报告');
   expect(element.querySelector('[data-advisory-deviation="unknown"]')?.textContent).toBe('未报告');
+});
+
+it('uses the profile policy when the caller has no dispatch targets', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'child' }, available: true, targets: [], tools: [], skills: [],
+    profile: { name: 'general', subagent_policy: 'strict' },
+    metrics: { child: UNKNOWN_AGENT_PANEL_METRICS },
+  });
+  harness.agents['child'] = viewState();
+
+  await render('child');
+
+  expect(element.querySelector('[data-dispatch-policy="strict"]')?.textContent).toBe('严格模式');
+  expect(element.querySelector('[data-dispatch-policy="unknown"]')).toBeNull();
+  expect(element.querySelector('[data-recommendation-status="unknown"]')?.textContent).toBe('未报告');
 });
 
 it('reports unknown instead of the routed agent todo when the tab agent has no data', async () => {

@@ -39,6 +39,8 @@ describe('translate', () => {
   it('returns the template for the requested locale', () => {
     expect(translate('en', 'sidebar.newSession')).toBe('New session');
     expect(translate('zh', 'sidebar.newSession')).toBe('新会话');
+    expect(translate('en', 'diagnostics.unconfigured')).toBe('No recommendations');
+    expect(translate('zh', 'diagnostics.unconfigured')).toBe('未配置推荐');
   });
 
   it('interpolates {params} and leaves unknown placeholders intact', () => {

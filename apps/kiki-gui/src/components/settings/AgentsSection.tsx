@@ -656,6 +656,9 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
             complete: current.complete,
           },
     );
+    if (shippedEntryForProfile(updated, shippedEntries)?.managed === true) {
+      void queryClient.invalidateQueries({ queryKey: ['shipped-agent-profiles'] });
+    }
     void invalidateAgentProfileCatalogs(queryClient);
   };
   const toggleEnabled = async (profile: NamedAgentProfile, enabled: boolean) => {

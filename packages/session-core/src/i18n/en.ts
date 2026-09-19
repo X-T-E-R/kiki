@@ -288,6 +288,7 @@ export const en = {
   'diagnostics.blocked': 'Launch blocked now',
   'diagnostics.preferred': 'Recommended target',
   'diagnostics.allowedNonpreferred': 'Allowed outside recommendations',
+  'diagnostics.unconfigured': 'No recommendations',
   'diagnostics.policy.advisory': 'Advisory policy',
   'diagnostics.policy.strict': 'Strict policy',
   'diagnostics.unknown': 'Not reported',

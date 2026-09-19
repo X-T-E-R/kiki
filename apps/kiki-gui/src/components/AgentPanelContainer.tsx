@@ -152,7 +152,7 @@ export function AgentPanelContainer({ state, forest, agentId }: {
       context: data?.context ?? 'live', isMain: agentId === MAIN_AGENT_ID,
       configContentPreview: profile === undefined ? undefined : JSON.stringify(profile, null, 2),
       rawProfile: profile,
-    }} dispatchTargets={data?.targets} usage={usage} treeMetrics={agentId === MAIN_AGENT_ID ? {
+    }} profilePolicy={profile?.subagent_policy} dispatchTargets={data?.targets} usage={usage} treeMetrics={agentId === MAIN_AGENT_ID ? {
       ...tree,
       cacheHitRate: aggregateTreeCacheHitRate(ids, metrics),
       cacheReadTokens: aggregateTreeCacheReadTokens(ids, metrics),

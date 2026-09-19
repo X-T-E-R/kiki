@@ -139,6 +139,7 @@ function AgentWorkspaceHeader({
   contextTokens,
   maxContextTokens,
   cumulativeTokens,
+  profilePolicy,
   dispatchTargets,
   crumbs,
   forest,
@@ -161,6 +162,7 @@ function AgentWorkspaceHeader({
   contextTokens: number | undefined;
   maxContextTokens: number | undefined;
   cumulativeTokens: number | undefined;
+  profilePolicy: AgentCapabilityTarget['dispatch_policy'];
   dispatchTargets: readonly AgentCapabilityTarget[] | undefined;
   crumbs: readonly AgentTreeNode[];
   forest: AgentForest;
@@ -211,7 +213,7 @@ function AgentWorkspaceHeader({
             {t('subagent.effort', { effort })}
           </span>
         ) : null}
-        <DispatchPolicyBadges targets={dispatchTargets} />
+        <DispatchPolicyBadges profilePolicy={profilePolicy} targets={dispatchTargets} />
         {contextTokens !== undefined &&
         maxContextTokens !== undefined &&
         maxContextTokens > 0 ? (
@@ -494,6 +496,7 @@ export function AgentWorkspace({
               contextTokens={displayContextTokens}
               maxContextTokens={displayMaxContextTokens}
               cumulativeTokens={cumulativeTokens}
+              profilePolicy={capabilitiesQuery.data?.profile?.subagent_policy}
               dispatchTargets={capabilitiesQuery.data?.targets}
               crumbs={crumbs}
               forest={forest}
