@@ -2,7 +2,7 @@
  * SubagentDetailActions — the action cluster on a subagent detail header:
  * message the agent, switch its model, terminate its run.
  *
- * Purely controlled: the parent (SessionView) owns the client calls and passes
+ * Purely controlled: the parent workspace owns the client calls and passes
  * them in as async callbacks, so the component renders in static markup tests
  * without a connection provider. Failures surface as toasts here; the message
  * dialog additionally keeps an inline error so the draft is not lost.
@@ -12,11 +12,11 @@ import { useEffect, useState } from 'react';
 
 import type { ModelCatalogItem } from '@kiki/protocol';
 
-import { useI18n } from '../i18n';
-import { pushToast } from '../lib/toasts';
-import { ConfirmDialog } from './ConfirmDialog';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
-import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
+import { useI18n } from '../../i18n';
+import { pushToast } from '../../lib/toasts';
+import { ConfirmDialog } from '../ConfirmDialog';
+import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
+import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 
 export interface SubagentDetailActionsProps {
   /** Stable id — scopes the uiBusy overlay registration. */

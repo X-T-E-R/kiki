@@ -11,11 +11,10 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 
 import type { DeferredAppendTiming, PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
 
-import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
-import { revealSubagentCard } from './ActivityHistory';
+import { AgentWorkspace, PanelIcon, ResyncStatusBanner, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort } from './Composer';
-import { ContextBreakdownProvider, ContextMeter } from './ContextMeter';
+import { ContextBreakdownProvider } from './ContextMeter';
 import {
   useConversationShell,
   useRegisterSeat,
@@ -27,12 +26,10 @@ import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
-import { SubagentDetailActions } from './SubagentDetailActions';
 import { TerminalPanel } from './TerminalPanel';
 import { Transcript, useStableForest, type TranscriptRowActions } from './Transcript';
 import { MediaPreviewProvider, PreviewToggleButton } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
-import { KikiMark } from './Wordmark';
 import {
   SESSION_REWRITTEN_EVENT,
   compactSessionContext,
@@ -57,9 +54,7 @@ import {
   type ComposerAttachment,
   type SelectionAnnotation,
 } from '@kiki/session-core/composer';
-import type { I18nKey } from '@kiki/session-core/i18n';
 import {
-  agentPath,
   assertSessionWritable,
   MAIN_AGENT_ID,
   SessionController,
@@ -72,8 +67,6 @@ import {
   type ApprovalBlock,
   type AssistantBlock,
   type Block,
-  type SessionViewState,
-  type SubagentBlock,
   type UserBlock,
 } from '@kiki/session-core/session';
 import { shortCwd } from '@kiki/session-core/sessions';
@@ -138,23 +131,6 @@ function MoreIcon({ className = '' }: { className?: string }) {
       <circle cx="3.2" cy="8" r="1.35" />
       <circle cx="8" cy="8" r="1.35" />
       <circle cx="12.8" cy="8" r="1.35" />
-    </svg>
-  );
-}
-
-function PanelIcon({ className = '' }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <rect x="2" y="3" width="12" height="10" rx="1.6" />
-      <path d="M10 3v10" />
     </svg>
   );
 }
@@ -1056,63 +1032,6 @@ export function agentDetailPath(sessionId: string, agentId: string): string {
   return `/s/${sessionId}/agent/${encodeURIComponent(agentId)}`;
 }
 
-export function resolveRunningSubagentTask(input: {
-  agentId: string;
-  parentAgentId?: string;
-  mainTasks: SessionViewState['tasks'];
-  parentTasks: SessionViewState['tasks'];
-}): {
-  ownerAgentId: string;
-  task: SessionViewState['tasks'][number] | undefined;
-} {
-  const ownerAgentId = input.parentAgentId ?? MAIN_AGENT_ID;
-  const tasks = ownerAgentId === MAIN_AGENT_ID ? input.mainTasks : input.parentTasks;
-  return {
-    ownerAgentId,
-    task: tasks.find(
-      (task) =>
-        task.kind === 'subagent' &&
-        task.status === 'running' &&
-        task.agent_id === input.agentId,
-    ),
-  };
-}
-
-export function ResyncStatusBanner({
-  resyncing,
-  resyncFailed,
-  error,
-  onRetry,
-}: {
-  resyncing: boolean;
-  resyncFailed: boolean;
-  error?: SessionViewState['resyncError'];
-  onRetry?: () => void;
-}) {
-  const { t } = useI18n();
-  if (!resyncing && !resyncFailed && error === undefined) return null;
-  return (
-    <div className="px-6 pt-1" data-resync-status role={resyncing ? 'status' : 'alert'}>
-      <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)] space-y-1 rounded-lg border border-hairline bg-panel px-3 py-2 text-[11.5px] text-ink-soft">
-        <div className="flex flex-wrap items-center gap-2">
-          {resyncing ? <KikiMark className="status-dot-busy" /> : null}
-          <span>{resyncing ? t('sv.resyncing') : t('sv.resyncFailed')} · {t('sv.sendPaused')}</span>
-          {!resyncing && onRetry !== undefined ? (
-            <button type="button" onClick={onRetry}
-              className="rounded-full border border-hairline px-2 py-0.5 font-medium transition-colors hover:border-accent hover:text-accent">
-              {t('sv.resyncRetryNow')}
-            </button>
-          ) : null}
-        </div>
-        {error !== undefined ? <div className="break-words text-danger">
-          <p>{error.message}</p>
-          {error.code !== undefined || error.requestId !== undefined ? <p className="break-all font-mono text-[10.5px]">{[error.code, error.requestId].filter(Boolean).join(' · ')}</p> : null}
-        </div> : null}
-      </div>
-    </div>
-  );
-}
-
 export function SessionView({
   onToggleSidebar,
   sessions,
@@ -1127,7 +1046,7 @@ export function SessionView({
   const { client, socket, meta, wsStatus } = useConnection();
   const { slots } = useConversationShell();
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
-  const { t, tp, time, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const agentMatch = useMatch('/s/:id/agent/:agentId');
@@ -1495,42 +1414,6 @@ export function SessionView({
   useEffect(() => {
     controller?.setFocusedAgent(selectedAgentId);
   }, [controller, selectedAgentId]);
-
-  // Live per-agent channel: child-agent frames land in their own sub-store, so
-  // an open agent page re-renders from here without the main transcript
-  // republishing for every hidden child delta.
-  const subscribeAgent = useCallback(
-    (listener: () => void) =>
-      controller === null || selectedAgentId === undefined
-        ? () => {}
-        : controller.subscribeAgent(selectedAgentId, listener),
-    [controller, selectedAgentId],
-  );
-  const agentLiveState = useSyncExternalStore(subscribeAgent, () =>
-    controller !== null && selectedAgentId !== undefined
-      ? controller.getAgentState(selectedAgentId)
-      : emptyView,
-  );
-  const selectedParentAgentId =
-    selectedAgentId === undefined
-      ? undefined
-      : (controller?.getForest() ?? sessionAgentForest(state)).byId[selectedAgentId]?.parentAgentId;
-  const subscribeParentAgent = useCallback(
-    (listener: () => void) =>
-      controller === null ||
-      selectedParentAgentId === undefined ||
-      selectedParentAgentId === MAIN_AGENT_ID
-        ? () => {}
-        : controller.subscribeAgent(selectedParentAgentId, listener),
-    [controller, selectedParentAgentId],
-  );
-  const parentAgentState = useSyncExternalStore(subscribeParentAgent, () =>
-    controller !== null &&
-    selectedParentAgentId !== undefined &&
-    selectedParentAgentId !== MAIN_AGENT_ID
-      ? controller.getAgentState(selectedParentAgentId)
-      : emptyView,
-  );
 
   // The sessions list lives in App (single owner, page-1 polling); this view
   // only merges the polled record for ITS session into the live controller.
@@ -2220,10 +2103,24 @@ export function SessionView({
     },
     [forest, liveSettings.subagentPanelOpenMode, navigate, sessionId],
   );
-  const handleLoadOlderAgent = useCallback(async (): Promise<boolean> => {
-    if (selectedAgentId === undefined || controller === null) return false;
-    return controller.loadOlderMessages(selectedAgentId);
-  }, [controller, selectedAgentId]);
+  // Route-shell seams for the agent workspace: back-to-session and the
+  // route-level agent open (no preview interception — the spawn jump-back).
+  const openSession = useCallback(() => {
+    void navigate(`/s/${sessionId}`);
+  }, [navigate, sessionId]);
+  const openAgentRoute = useCallback(
+    (agentId: string) => {
+      const path = agentDetailPath(sessionId, agentId);
+      if (location.pathname !== path) void navigate(path);
+    },
+    [location.pathname, navigate, sessionId],
+  );
+  const agentWorkspaceNavigation = useMemo<AgentWorkspaceNavigation>(
+    () => ({ openAgent, openAgentRoute, openSession }),
+    [openAgent, openAgentRoute, openSession],
+  );
+  const toggleRail = useCallback(() => { setRailOpen((value) => !value); }, []);
+  const closeRail = useCallback(() => { setRailOpen(false); }, []);
   const handleResolveApproval = useCallback(
     (
       approvalId: string,
@@ -2672,289 +2569,25 @@ export function SessionView({
     () => filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID),
     [state.blocks, forest],
   );
-  const selectedNode = selectedAgentId === undefined ? undefined : forest.byId[selectedAgentId];
-  const selectedSubagent =
-    selectedAgentId === undefined
-      ? undefined
-      : state.blocks.find(
-          (block): block is SubagentBlock =>
-            block.kind === 'subagent' && block.subagentId === selectedAgentId,
-        );
-  const crumbs = useMemo(
-    () => (selectedAgentId === undefined ? [] : agentPath(forest, selectedAgentId)),
-    [forest, selectedAgentId],
-  );
-
+  // The subagent route branch: the shell resolves the target and navigation;
+  // the workspace owns header, timeline, resync, details, and actions.
   if (selectedAgentId !== undefined) {
-    const capturedBlocks = agentLiveState.blocks;
-    // Pending approvals/questions waiting on THIS agent — feeds the rail's
-    // Needs-input badge. (agentState.pendingInteraction below stays 'none':
-    // that flag gates the main session's composer chrome, not this count.)
-    const agentPendingInteractionCount = capturedBlocks.filter(
-      (block) =>
-        (block.kind === 'approval' && block.resolution === undefined) ||
-        (block.kind === 'question' && block.outcome === undefined),
-    ).length;
-    // Parent jump-back: navigate to the spawning agent's timeline, then
-    // smooth-scroll to this agent's card there (retried briefly while the
-    // target view mounts and publishes its first blocks). The card may sit
-    // inside a collapsed history run; revealSubagentCard expands that run on
-    // the way, so the retry loop converges once the run is mounted.
-    const handleJumpToSpawn = (): void => {
-      const parentId = selectedNode?.parentAgentId ?? selectedSubagent?.parentAgentId;
-      const path =
-        parentId === undefined || parentId === MAIN_AGENT_ID
-          ? `/s/${sessionId}`
-          : agentDetailPath(sessionId, parentId);
-      if (location.pathname !== path) void navigate(path);
-      const scrollToCard = (attemptsLeft: number): void => {
-        if (revealSubagentCard(selectedAgentId)) return;
-        if (attemptsLeft > 0) window.setTimeout(() => { scrollToCard(attemptsLeft - 1); }, 150);
-      };
-      window.setTimeout(() => { scrollToCard(12); }, 150);
-    };
-    const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
-    const statusLabel =
-      selectedNode !== undefined
-        ? t(`subagent.status.${selectedNode.status}` as I18nKey)
-        : selectedSubagent !== undefined
-          ? t(`subagent.status.${selectedSubagent.status}` as I18nKey)
-          : t('sv.historyUnavailable');
-    const displayName = selectedNode?.label ?? selectedSubagent?.name ?? selectedAgentId;
-    const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
-    // Action affordances: the tree node can lag at 'unknown' on cold open, so
-    // a known timeline-card status wins (same rule as the rail's task section).
-    const actionStatus =
-      selectedSubagent !== undefined && selectedSubagent.status !== 'unknown'
-        ? selectedSubagent.status
-        : (selectedNode?.status ?? selectedSubagent?.status ?? 'unknown');
-    const agentLive =
-      actionStatus === 'running' || actionStatus === 'background' || actionStatus === 'suspended';
-    // The child run is a task on the PARENT agent's task service; nested agents
-    // therefore need the parent's per-agent snapshot rather than the main one.
-    const { ownerAgentId, task: runningAgentTask } = resolveRunningSubagentTask({
-      agentId: selectedAgentId,
-      parentAgentId: selectedNode?.parentAgentId ?? selectedParentAgentId,
-      mainTasks: state.tasks,
-      parentTasks: parentAgentState.tasks,
-    });
-    const handleMessageAgent = async (text: string) => {
-      await client.sendAgentMessage(sessionId, selectedAgentId, text);
-    };
-    const handleTerminateAgent = async () => {
-      if (runningAgentTask === undefined) {
-        pushToast({ tone: 'info', text: t('subagent.terminateUnavailable') });
-        return;
-      }
-      await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
-    };
-    const handleChangeAgentModel = async (model: string) => {
-      await client.setAgentModel(sessionId, selectedAgentId, model);
-    };
-    const displayEffort =
-      agentLiveState.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
-    const displayContextTokens = agentLiveState.contextTokens ?? selectedNode?.contextTokens;
-    const displayMaxContextTokens = agentLiveState.maxContextTokens ?? selectedNode?.maxContextTokens;
-    const displayUsage = agentLiveState.usage ?? selectedNode?.usage;
-    const totalUsage = displayUsage?.total;
-    const cumulativeTokens =
-      totalUsage === undefined
-        ? undefined
-        : totalUsage.inputOther +
-          totalUsage.inputCacheRead +
-          totalUsage.inputCacheCreation +
-          totalUsage.output;
-    const agentState: SessionViewState = {
-      ...agentLiveState,
-      session: state.session,
-      blocks: filterBlocksToDirectChildren(capturedBlocks, forest, selectedAgentId),
-      loaded: agentLiveState.loaded || state.loaded,
-      loadError: agentLiveState.loadError ?? state.loadError,
-      busy: headerBusy,
-      model: displayModel,
-      thinkingEffort: displayEffort,
-      contextTokens: displayContextTokens,
-      maxContextTokens: displayMaxContextTokens,
-      contextBreakdown: undefined,
-      usage: displayUsage,
-      pendingInteraction: 'none',
-    };
     return (
-      <MediaPreviewProvider
-        sessionId={sessionId}
-        cwd={state.session?.metadata?.cwd}
-        sessionViewState={agentState}
-        agentForest={forest}
-        onOpenSubagent={openAgent}
-        apiRef={previewRef}
-      >
-        {slots.header !== null
-          ? createPortal(
-              <>
-                <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-hairline bg-panel px-4 py-2">
-                  <button
-                    type="button"
-                    onClick={() => void navigate(`/s/${sessionId}`)}
-                    className="rounded-lg border border-hairline px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
-                  >
-                    {t('sv.backToSession')}
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <AgentBreadcrumb
-                      crumbs={crumbs}
-                      onOpenSession={() => void navigate(`/s/${sessionId}`)}
-                      onOpenAgent={openAgent}
-                    />
-                    <h1 className="truncate font-display text-[15px] font-semibold text-ink">
-                      {displayName}
-                    </h1>
-                    <p className="truncate text-[10.5px] text-ink-faint">
-                      {t('sv.subagentNote')}
-                      {' · '}
-                      {t('sv.agentActionsNote')}
-                    </p>
-                  </div>
-                  {displayModel !== undefined ? (
-                    <span className="rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft">
-                      {displayModel}
-                    </span>
-                  ) : null}
-                  {displayEffort !== undefined ? (
-                    <span
-                      data-agent-effort
-                      className="rounded-full border border-hairline bg-paper px-2 py-0.5 text-[10.5px] text-ink-soft"
-                    >
-                      {t('subagent.effort', { effort: displayEffort })}
-                    </span>
-                  ) : null}
-                  {displayContextTokens !== undefined &&
-                  displayMaxContextTokens !== undefined &&
-                  displayMaxContextTokens > 0 ? (
-                    <ContextMeter
-                      used={displayContextTokens}
-                      limit={displayMaxContextTokens}
-                      placement="below"
-                    />
-                  ) : displayContextTokens !== undefined ? (
-                    <span
-                      data-agent-context
-                      className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[10.5px] text-ink-soft"
-                    >
-                      {t('sv.agentContext', { tokens: time.formatTokens(displayContextTokens) })}
-                    </span>
-                  ) : null}
-                  {cumulativeTokens !== undefined ? (
-                    <span
-                      data-agent-tokens
-                      className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[10.5px] text-ink-soft"
-                    >
-                      {t('sv.agentTokens', { tokens: time.formatTokens(cumulativeTokens) })}
-                    </span>
-                  ) : null}
-                  <span
-                    className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
-                      headerBusy ? 'border-accent/50 text-accent' : 'border-hairline text-ink-soft'
-                    }`}
-                  >
-                    {headerBusy ? t('sv.working') : statusLabel}
-                  </span>
-                  <SubagentDetailActions
-                    agentId={selectedAgentId}
-                    name={displayName}
-                    live={agentLive}
-                    canTerminate={runningAgentTask !== undefined}
-                    currentModel={displayModel}
-                    models={modelsQuery.data?.items ?? []}
-                    onSendMessage={handleMessageAgent}
-                    onTerminate={handleTerminateAgent}
-                    onChangeModel={handleChangeAgentModel}
-                  />
-                  <PreviewToggleButton />
-                  <button
-                    type="button"
-                    onClick={() => { setRailOpen((value) => !value); }}
-                    title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
-                    aria-label={t('sv.togglePanelAria')}
-                    aria-expanded={railOpen}
-                    data-agent-rail-toggle
-                    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
-                      railOpen
-                        ? 'bg-accent-soft text-accent'
-                        : 'text-ink-faint hover:bg-paper hover:text-ink'
-                    }`}
-                  >
-                    <PanelIcon className="h-[13px] w-[13px]" />
-                  </button>
-                </header>
-                <div className="shrink-0 border-b border-hairline px-4 py-2 text-[11px]">
-                  <AgentRelations
-                    key={selectedAgentId}
-                    forest={forest}
-                    currentAgentId={selectedAgentId}
-                    onOpen={openAgent}
-                  />
-                </div>
-              </>,
-              slots.header,
-            )
-          : null}
-        <Transcript
-          state={agentState}
-          onLoadOlder={handleLoadOlderAgent}
-          onResolveApproval={handleResolveApproval}
-          onAnswerQuestion={handleAnswerQuestion}
-          onDismissQuestion={handleDismissQuestion}
+      <>
+        <AgentWorkspace
+          target={{ sessionId, agentId: selectedAgentId }}
+          controller={controller}
+          sessionState={state}
           forest={forest}
-          onOpenAgent={openAgent}
+          navigation={agentWorkspaceNavigation}
+          railOpen={railOpen}
+          railIsOverlay={railIsOverlay}
+          onToggleRail={toggleRail}
+          onCloseRail={closeRail}
+          onCancelTask={handleCancelTask}
+          onStopAgentTask={stopAgentTask}
+          previewApiRef={previewRef}
         />
-        {slots.dock !== null
-          ? createPortal(
-              <ResyncStatusBanner
-                resyncing={state.resyncing}
-                resyncFailed={state.resyncFailed}
-                error={state.resyncError}
-                onRetry={controller === null ? undefined : () => { void controller.resync(); }}
-              />,
-              slots.dock,
-            )
-          : null}
-        {slots.rail !== null && railOpen
-          ? createPortal(
-              <RightRail
-                className={`app-rail ${railOpen ? 'open' : ''}`}
-                state={agentState}
-                forest={forest}
-                selectedAgentId={selectedAgentId}
-                subagent={{
-                  agentId: selectedAgentId,
-                  block: selectedSubagent,
-                  pendingInteractionCount: agentPendingInteractionCount,
-                  onJumpToSpawn: handleJumpToSpawn,
-                }}
-                taskOwnerAgentId={selectedAgentId}
-                onCancelTask={handleCancelTask}
-                onStopAgentTask={stopAgentTask}
-                onOpenSubagent={openAgent}
-              />,
-              slots.rail,
-            )
-          : null}
-        {showBackdrop ? (
-          <div
-            role="button"
-            tabIndex={-1}
-            aria-label={t('sv.closePanel')}
-            className="app-overlay-backdrop lg:hidden"
-            onClick={() => {
-              setRailOpen(false);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                setRailOpen(false);
-              }
-            }}
-          />
-        ) : null}
         <div aria-live="polite" aria-atomic="true" className="sr-only">
           {state.pendingInteraction === 'approval'
             ? t('sv.ariaAwaitingApproval')
@@ -3000,7 +2633,7 @@ export function SessionView({
           onConfirm={confirmClearQueueRun}
           onCancel={() => { setConfirmClearQueue(false); }}
         />
-      </MediaPreviewProvider>
+      </>
     );
   }
 

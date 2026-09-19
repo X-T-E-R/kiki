@@ -28,7 +28,7 @@ import { AgentTreeView } from './AgentTreeView';
 import { Transcript } from './Transcript';
 import { ContextMeter } from './ContextMeter';
 import { RightRail } from './RightRail';
-import { SubagentDetailActions } from './SubagentDetailActions';
+import { resolveRunningSubagentTask, SubagentDetailActions } from './agent-workspace';
 
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ state }: { state: { todos: readonly { title: string }[] } }) =>
@@ -57,7 +57,6 @@ import {
   resolveControlledValue,
   resolvePlanGate,
   resolveProfileSwitchSubmission,
-  resolveRunningSubagentTask,
   sessionHasStartedConversation,
   parseSessionCreateHandoff,
   promptGoalObjective,

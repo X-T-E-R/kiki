@@ -10,7 +10,7 @@ import {
   HistoryRunRow,
   isMarkerNotice,
 } from './ActivityHistory';
-import { ResyncStatusBanner } from './SessionView';
+import { ResyncStatusBanner } from './agent-workspace';
 import { I18nProvider } from '../i18n';
 
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));

@@ -12,7 +12,7 @@ import { buildAgentForest, createViewState } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { RightRail } from './RightRail';
-import { SubagentDetailActions } from './SubagentDetailActions';
+import { SubagentDetailActions } from './agent-workspace';
 import { TasksPage } from './TasksPage';
 
 const listTasks = vi.fn();
