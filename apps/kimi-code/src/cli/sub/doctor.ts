@@ -30,23 +30,25 @@ type AgentRootsModule = typeof import(
 type AgentPathsModule = typeof import(
   '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'
 );
-type FrontmatterModule = typeof import('@kiki/agent-core-v2/_base/text/frontmatter');
+type ShippedAgentProfilesModule = typeof import(
+  '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfiles'
+);
 
 interface DoctorAgentModules {
   readonly core: AgentCoreModule;
   readonly agentRoots: AgentRootsModule;
   readonly agentPaths: AgentPathsModule;
-  readonly frontmatter: FrontmatterModule;
+  readonly shippedAgentProfiles: ShippedAgentProfilesModule;
 }
 
 async function loadAgentProfileModules(): Promise<DoctorAgentModules> {
-  const [core, agentRoots, agentPaths, frontmatter] = await Promise.all([
+  const [core, agentRoots, agentPaths, shippedAgentProfiles] = await Promise.all([
     import('@kiki/agent-core-v2'),
     import('@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'),
     import('@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'),
-    import('@kiki/agent-core-v2/_base/text/frontmatter'),
+    import('@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfiles'),
   ]);
-  return { core, agentRoots, agentPaths, frontmatter };
+  return { core, agentRoots, agentPaths, shippedAgentProfiles };
 }
 
 export interface DoctorDeps {
@@ -281,36 +283,13 @@ async function checkTomlFile(deps: ResolvedDoctorDeps, spec: CheckSpec): Promise
   }
 }
 
-const KNOWN_AGENT_FRONTMATTER_KEYS = new Set([
-  'name',
-  'description',
-  'whenToUse',
-  'override',
-  'main',
-  'delegation_notice',
-  'tools',
-  'disallowedTools',
-  'subagents',
-  'spawn_constraints',
-  'model_alias',
-  'thinking_effort',
-  'allowed_models',
-  'deny_models',
-  'allowed_efforts',
-  'model_profiles',
-  'recommended_models',
-  'service_tier',
-  'request_params',
-]);
 const MAX_AGENT_SCAN_DEPTH = 8;
 
 interface ParsedAgentFile {
   readonly path: string;
   readonly name: string;
-  readonly override: boolean;
   readonly subagents?: readonly string[];
   readonly modelAlias?: string;
-  readonly unknownKeys: readonly string[];
   readonly parserWarnings: readonly string[];
 }
 
@@ -368,7 +347,7 @@ async function checkAgentProfiles(
       },
     ];
   }
-  const { core, agentRoots, agentPaths, frontmatter } = modules;
+  const { core, agentRoots, agentPaths, shippedAgentProfiles } = modules;
   const fs = new core.HostFileSystem();
   const discoveryWarnings: string[] = [];
   const warn = (message: string): void => {
@@ -439,20 +418,11 @@ async function checkAgentProfiles(
             text,
             warn: (message) => parserWarnings.push(message),
           });
-          const parsedFrontmatter = frontmatter.parseFrontmatter(text);
-          const presentKeys = isRecord(parsedFrontmatter.data)
-            ? Object.keys(parsedFrontmatter.data)
-            : [];
-          const unknownKeys = presentKeys.filter(
-            (key) => !KNOWN_AGENT_FRONTMATTER_KEYS.has(key),
-          );
           parsedFiles.push({
             path: entryPath,
             name: agent.name,
-            override: agent.override,
             subagents: agent.subagents,
             modelAlias: agent.modelAlias,
-            unknownKeys,
             parserWarnings,
           });
         } catch (error) {
@@ -478,7 +448,7 @@ async function checkAgentProfiles(
     await walk(root.path, root.source, 0);
   }
 
-  const builtinNames = new Set(core.getAgentProfileContributions().map((profile) => profile.name));
+  const builtinNames = resolveBuiltinProfileNames(core, shippedAgentProfiles);
   const discoveredNames = new Set(builtinNames);
   for (const file of parsedFiles) discoveredNames.add(file.name);
 
@@ -497,17 +467,7 @@ async function checkAgentProfiles(
     if (missingSubagents.length > 0) {
       errors.push(`subagents references unknown agent profiles: ${missingSubagents.join(', ')}.`);
     }
-    if (file.unknownKeys.length > 0) {
-      warnings.push(
-        `Unknown frontmatter ${file.unknownKeys.length === 1 ? 'key' : 'keys'} ignored by the engine: ${file.unknownKeys.join(', ')}.`,
-      );
-    }
     warnings.push(...file.parserWarnings);
-    if (builtinNames.has(file.name) && !file.override) {
-      warnings.push(
-        `Agent profile "${file.name}" conflicts with a builtin profile; set override: true to replace it.`,
-      );
-    }
 
     results.push({
       label: 'agents',
@@ -536,6 +496,38 @@ async function checkAgentProfiles(
     ];
   }
   return results.toSorted((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * Names a `subagents` reference may resolve to without a project/user file: the profiles registered
+ * in-process plus the ones the product ships. The shipped profiles are installed as low-priority
+ * files under `<agent root>/builtin/` rather than contributed to the profile registry, so they are
+ * read from the shipped originals here.
+ */
+function resolveBuiltinProfileNames(
+  core: AgentCoreModule,
+  shippedAgentProfiles: ShippedAgentProfilesModule,
+): Set<string> {
+  const names = new Set(core.getAgentProfileContributions().map((profile) => profile.name));
+  for (const template of shippedAgentProfiles.SHIPPED_AGENT_PROFILE_TEMPLATES) {
+    names.add(shippedProfileName(core, template));
+  }
+  return names;
+}
+
+function shippedProfileName(
+  core: AgentCoreModule,
+  template: ShippedAgentProfilesModule['SHIPPED_AGENT_PROFILE_TEMPLATES'][number],
+): string {
+  try {
+    return core.parseAgentFileText({
+      path: template.fileName,
+      source: 'user',
+      text: template.text,
+    }).name;
+  } catch {
+    return template.id;
+  }
 }
 
 function formatAgentIssues(

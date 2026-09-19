@@ -1,6 +1,6 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -92,6 +92,13 @@ async function writeAgentFile(fileName: string, frontmatter: string): Promise<st
   const agentsDir = join(dir, '.kiki', 'agents');
   await mkdir(agentsDir, { recursive: true });
   const path = join(agentsDir, fileName);
+  await writeFile(path, `---\n${frontmatter.trim()}\n---\n\nAgent prompt.\n`, 'utf-8');
+  return path.replaceAll('\\', '/');
+}
+
+async function writeUserAgentFile(relativePath: string, frontmatter: string): Promise<string> {
+  const path = join(dir, 'kimi-home', 'agents', relativePath);
+  await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `---\n${frontmatter.trim()}\n---\n\nAgent prompt.\n`, 'utf-8');
   return path.replaceAll('\\', '/');
 }
@@ -490,11 +497,43 @@ future_field: true
     const err = stderr.join('');
     expect(err).toContain(`ERROR agents       ${agentPath}`);
     expect(err).toContain('Unknown frontmatter field "future_field"');
+    expect(err).not.toContain('ignored by the engine');
   });
 
-  it('warns when a builtin profile name is missing override true', async () => {
+  it('accepts frontmatter keys the engine defines', async () => {
     await writeValidConfig();
     const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+private: true
+system_prompt_mode: append
+context_budget: 1000
+max_completion_tokens: 1000
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const out = stdout.join('');
+    expect(out).toContain(`OK agents       ${agentPath}`);
+    expect(out).not.toContain('Unknown frontmatter');
+  });
+
+  it('accepts a user profile that shadows an installed builtin profile', async () => {
+    await writeValidConfig();
+    const builtinPath = await writeUserAgentFile(
+      'builtin/coder.md',
+      `
+name: coder
+description: Builtin coder
+`,
+    );
+    const agentPath = await writeUserAgentFile(
       'coder.md',
       `
 name: coder
@@ -508,10 +547,10 @@ description: Custom coder
     expect(code).toBe(0);
     expect(stderr.join('')).toBe('');
     const out = stdout.join('');
-    expect(out).toContain(`WARN agents       ${agentPath}`);
-    expect(out).toContain(
-      'Agent profile "coder" conflicts with a builtin profile; set override: true to replace it.',
-    );
+    expect(out).toContain(`OK agents       ${builtinPath}`);
+    expect(out).toContain(`OK agents       ${agentPath}`);
+    expect(out).not.toContain('conflicts with a builtin profile');
+    expect(out).not.toContain('override');
   });
 
   it('reports dangling subagent allowlist entries as an error', async () => {
