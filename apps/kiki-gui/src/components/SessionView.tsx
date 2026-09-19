@@ -2385,37 +2385,18 @@ export function SessionView({
   const handleGoalCancel = useCallback(() => client.cancelAgentGoal(sessionId), [client, sessionId]);
 
   // Cold-recovery hold: the engine parks a queue restored from disk until a
-  // client calls resumeRecoveredQueue. There is no wire flag for the hold, so
-  // the view infers it once per mount: a cold-open queue that contains an
-  // agent_idle prompt while the agent sits idle is being held (a live queue
-  // would have drained it). Deferred-timing leftovers never trigger it, and a
-  // false positive is harmless — the confirm click is a documented no-op then.
-  // The gate is transcriptReady, not loaded: the session shell lands first
-  // with an empty queue and would latch a wrong "not held" verdict.
-  const [recoveryHold, setRecoveryHold] = useState(false);
+  // client calls resumeRecoveredQueue. The engine surfaces this as an explicit
+  // promptQueueHold contract in session view state.
+  const [recoveryDismissed, setRecoveryDismissed] = useState(false);
   const [recoveryPending, setRecoveryPending] = useState(false);
-  const recoveryEvaluatedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (recoveryEvaluatedRef.current === sessionId) {
-      // Already offered for this mount: clear as soon as the queue drains or
-      // a turn starts (another client released the hold).
-      if (recoveryHold && (state.queuedPromptIds.length === 0 || state.busy)) setRecoveryHold(false);
-      return;
-    }
-    if (!state.loaded || !state.transcriptReady || state.resyncing) return;
-    recoveryEvaluatedRef.current = sessionId;
-    const held =
-      state.queuedPromptIds.length > 0 &&
-      !state.busy &&
-      queuedItems.some((item) => (item.appendTiming ?? 'agent_idle') === 'agent_idle');
-    setRecoveryHold(held);
-  }, [sessionId, state.loaded, state.transcriptReady, state.resyncing, state.busy, state.queuedPromptIds, recoveryHold, queuedItems]);
+  const hasPromptQueueHold = state.promptQueueHold !== undefined;
+  const recoveryHold = hasPromptQueueHold && !recoveryDismissed;
   const handleRecoveryConfirm = useCallback(() => {
     setRecoveryPending(true);
     void client
       .resumeRecoveredQueue(sessionId)
       .then(() => {
-        setRecoveryHold(false);
+        setRecoveryDismissed(false);
       })
       .catch((error: unknown) => {
         pushToast({
@@ -2429,7 +2410,7 @@ export function SessionView({
         setRecoveryPending(false);
       });
   }, [client, sessionId, t]);
-  const handleRecoveryDismiss = useCallback(() => { setRecoveryHold(false); }, []);
+  const handleRecoveryDismiss = useCallback(() => { setRecoveryDismissed(true); }, []);
 
   const composerBusy = state.busy && state.activePromptId !== undefined;
   // The subagent page is read-only chrome over the same session: active
