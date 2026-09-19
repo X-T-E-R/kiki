@@ -13,6 +13,8 @@ This repository uses VitePress for the documentation site. Most user-facing page
   - Configuration (`configuration/`): config-files, providers, overrides, env-vars, data-locations
   - Reference (`reference/`): command (`kiki` command), slash-commands, keyboard, tools, and Release Notes group (changelog)
 - Navigation, sidebar, and URL rewrites are defined in `docs/.vitepress/config.ts`. Any new, moved, or renamed page must be wired there for both locales.
+- Canonical pages publish at their source paths. `.vitepress/legacy-routes.ts` lists old-to-new page moves for both locales; `redirects/[locale]/[page].md` generates localized redirect pages, and `config.ts` rewrites those pages to the old URLs. Do not rewrite canonical pages back to old URLs: VitePress rewrites replace output paths, not add aliases, and do not repair nav/sidebar or Markdown links automatically. Keep merged-page anchor mappings with the route list.
+- Release notes share the Reference sidebar and nav state. Home actions and document footers also link to the changelog.
 
 ## Source of truth
 
@@ -337,6 +339,7 @@ Before shipping, verify these values match the rest of the docs:
   - `npm install`
   - `npm run dev`
   - `npm run build`
+  - `npm run test:ia` (after building, with the same `VITEPRESS_BASE`): checks mirrored navigation, old URL redirects, and rendered page links
   - `npm run preview`
 - The build output is `docs/.vitepress/dist`.
 

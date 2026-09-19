@@ -233,6 +233,8 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 
 ### `kiki migrate-config`
 
+安装后的统一入口为 `kiki`：不带子命令时进入 daemon 支持的 TUI，`kiki -p "提示词"` 继续使用既有非交互 memory 链路。Daemon、席位和 inbound 集成命令也在同一入口提供。不再安装 `kimi` bin，请同步更新命令启动器。
+
 将旧配置和自定义资源复制到 `KIKI_HOME`（默认 `~/.kiki`），不会覆盖已有的 Kiki 文件。只有这条显式迁移命令会读取旧的 `KIMI_CODE_HOME` 环境变量；未显式指定时，默认来源依次为 `--from <目录>`、旧 `KIMI_CODE_HOME` 设置、`~/.kimi-code`。使用 `--home <目录>` 可指定目标。解析 home 路径不会自动执行迁移。
 
 ```sh

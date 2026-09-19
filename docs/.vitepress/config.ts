@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitepress'
 import { withMermaid } from 'vitepress-plugin-mermaid'
 import llmstxt from 'vitepress-plugin-llms'
+import { legacyRoutes } from './legacy-routes'
 
 const rawBase = process.env.VITEPRESS_BASE
 const base = rawBase
@@ -30,25 +31,18 @@ const config = withMermaid(defineConfig({
 
   srcExclude: ['AGENTS.md', 'superpowers/**', 'examples/**'],
 
-  rewrites: {
-    'zh/getting-started/migration.md': 'zh/configuration/migration.md',
-    'en/getting-started/migration.md': 'en/configuration/migration.md',
-    'zh/getting-started/model-vocabulary.md': 'zh/configuration/model-vocabulary.md',
-    'en/getting-started/model-vocabulary.md': 'en/configuration/model-vocabulary.md',
-    'zh/guides/interface.md': 'zh/desktop/interface.md',
-    'en/guides/interface.md': 'en/desktop/interface.md',
-    'zh/guides/sessions.md': 'zh/desktop/sessions.md',
-    'en/guides/sessions.md': 'en/desktop/sessions.md',
-    'zh/guides/settings.md': 'zh/desktop/settings.md',
-    'en/guides/settings.md': 'en/desktop/settings.md',
-    'zh/guides/interaction.md': 'zh/cli/interaction.md',
-    'en/guides/interaction.md': 'en/cli/interaction.md',
-    'zh/guides/goals.md': 'zh/cli/goals.md',
-    'en/guides/goals.md': 'en/cli/goals.md',
-    'zh/reference/slash-commands.md': 'zh/cli/slash-commands.md',
-    'en/reference/slash-commands.md': 'en/cli/slash-commands.md',
-    'zh/reference/command.md': 'zh/cli/command.md',
-    'en/reference/command.md': 'en/cli/command.md',
+  // Rewrites publish redirect pages at every old URL, without hiding the new pages.
+  rewrites: Object.fromEntries(legacyRoutes.map(({ locale, from }) => [
+    `redirects/${locale}/${from}.md`, `${locale}/${from}.md`,
+  ])),
+
+  transformPageData(pageData) {
+    if (pageData.filePath === 'redirects/[locale]/[page].md') {
+      pageData.frontmatter.head.push([
+        'noscript', {},
+        `<meta http-equiv="refresh" content="0; url=${base}${pageData.params!.target.slice(1)}">`,
+      ])
+    }
   },
 
   locales: {
@@ -65,7 +59,7 @@ const config = withMermaid(defineConfig({
           { text: '定制', link: '/zh/customization/agents', activeMatch: '/zh/customization/' },
           { text: '服务器与集成', link: '/zh/server/local-server', activeMatch: '/zh/server/' },
           { text: '配置', link: '/zh/configuration/config-files', activeMatch: '/zh/configuration/' },
-          { text: '参考手册', link: '/zh/reference/command', activeMatch: '/zh/reference/' },
+          { text: '参考手册', link: '/zh/reference/command', activeMatch: '/zh/(reference|release-notes)/' },
         ],
         sidebar: {
           '/zh/getting-started/': [
@@ -187,7 +181,7 @@ const config = withMermaid(defineConfig({
           { text: 'Customization', link: '/en/customization/agents', activeMatch: '/en/customization/' },
           { text: 'Server & integration', link: '/en/server/local-server', activeMatch: '/en/server/' },
           { text: 'Configuration', link: '/en/configuration/config-files', activeMatch: '/en/configuration/' },
-          { text: 'Reference', link: '/en/reference/command', activeMatch: '/en/reference/' },
+          { text: 'Reference', link: '/en/reference/command', activeMatch: '/en/(reference|release-notes)/' },
         ],
         sidebar: {
           '/en/getting-started/': [
@@ -311,7 +305,7 @@ const config = withMermaid(defineConfig({
     optimizeDeps: {
       include: mermaidOptimizeDeps.map((dep) => `mermaid > ${dep}`),
     },
-    plugins: [llmstxt()],
+    plugins: [llmstxt({ ignoreFiles: ['redirects/**'] })],
   },
 }))
 
@@ -319,6 +313,13 @@ if (config.vite?.optimizeDeps?.include) {
   config.vite.optimizeDeps.include = config.vite.optimizeDeps.include.filter(
     (dep) => !mermaidOptimizeDeps.includes(dep),
   )
+}
+
+for (const locale of ['en', 'zh']) {
+  const sidebar = config.locales?.[locale]?.themeConfig?.sidebar
+  if (sidebar && !Array.isArray(sidebar)) {
+    sidebar[`/${locale}/release-notes/`] = sidebar[`/${locale}/reference/`]
+  }
 }
 
 export default config

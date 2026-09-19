@@ -16,6 +16,7 @@
   "scripts": {
     "dev": "vitepress dev",
     "build": "vitepress build",
+    "test:ia": "node --test .vitepress/ia.test.mjs",
     "preview": "vitepress preview"
   },
   "devDependencies": {

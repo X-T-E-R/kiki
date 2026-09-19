@@ -233,6 +233,8 @@ The removed `prompt.shared` and `prompt.tools` keys have moved into fields under
 
 ### `kiki migrate-config`
 
+The installed entry point is now `kiki`: run it without a subcommand for the daemon-backed TUI, or use `kiki -p "prompt"` for the existing non-interactive memory path. Daemon, seat, and inbound integration commands are available from the same entry point. The `kimi` bin is no longer installed; update your command launchers.
+
 Copy legacy configuration and authored assets into `KIKI_HOME` (default `~/.kiki`) without overwriting existing Kiki files. This is the only command that reads the legacy `KIMI_CODE_HOME` environment variable; otherwise the default source is `--from <dir>`, legacy `KIMI_CODE_HOME`, then `~/.kimi-code`. Use `--home <dir>` to select the destination. Migration never runs as a side effect of resolving a home path.
 
 ```sh

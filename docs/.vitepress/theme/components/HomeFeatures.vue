@@ -43,7 +43,7 @@ const capabilities = computed<Capability[]>(() => isZh.value
         badge: '任务看板',
         title: '透明的执行流与任务状态',
         desc: '内置任务看板与状态追踪，清晰把控长期运行的工作流、子任务依赖与工具调用审查。',
-        href: '/zh/desktop/sessions',
+        href: '/zh/guides/sessions',
       },
       {
         badge: '扩展生态',
@@ -81,7 +81,7 @@ const capabilities = computed<Capability[]>(() => isZh.value
         badge: 'Task Board',
         title: 'Transparent Task Tracking',
         desc: 'Inspect multi-step execution flows, dependencies, and tool approval checkpoints in real time.',
-        href: '/en/desktop/sessions',
+        href: '/en/guides/sessions',
       },
       {
         badge: 'Ecosystem',

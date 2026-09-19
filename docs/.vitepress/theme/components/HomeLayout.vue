@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import DefaultTheme from 'vitepress/theme'
-import { useData } from 'vitepress'
+import { useData, withBase } from 'vitepress'
 import HomeHero from './HomeHero.vue'
 import HomeFeatures from './HomeFeatures.vue'
 import HomeQuickStart from './HomeQuickStart.vue'
 
 const { Layout } = DefaultTheme
-const { frontmatter } = useData()
+const { frontmatter, lang } = useData()
 </script>
 
 <template>
@@ -22,6 +22,14 @@ const { frontmatter } = useData()
         <HomeQuickStart />
         <HomeFeatures />
       </div>
+    </template>
+
+    <template #doc-footer-before>
+      <p>
+        <a :href="withBase(`/${lang.startsWith('zh') ? 'zh' : 'en'}/release-notes/changelog.html`)">
+          {{ lang.startsWith('zh') ? '发布说明' : 'Release Notes' }}
+        </a>
+      </p>
     </template>
   </Layout>
 </template>
