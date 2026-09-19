@@ -157,7 +157,7 @@ export async function agentCapabilities(
         tools: profile.tools === undefined ? undefined : [...profile.tools],
         disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
         disabled_tool_groups: profile.disabledToolGroups === undefined ? undefined : [...profile.disabledToolGroups],
-        subagent_policy: profile.subagentPolicy ?? 'legacy',
+        subagent_policy: profile.subagentPolicy ?? 'advisory',
       },
       tools: getAgentToolContributions().map(({ options }) => {
         const active = isToolActiveComposed(policy, options.name, options.source);

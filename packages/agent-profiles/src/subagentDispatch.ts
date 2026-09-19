@@ -2,7 +2,7 @@ import type {
   AgentProfile,
   AgentProfileRouteCatalogEntry,
   AgentSubagentPolicy,
-  EffectiveAgentSubagentPolicy,
+  PersistedAgentSubagentPolicy,
   ResolvedAgentProfileRoute,
   SubagentDeclaration,
 } from './agentProfile';
@@ -35,8 +35,8 @@ export type SubagentRecommendationFallback = 'no-recommendations' | 'recommended
 
 export interface SubagentDispatchDecision {
   readonly version: 1;
-  readonly policyMode: EffectiveAgentSubagentPolicy;
-  readonly policySource: 'profile' | 'legacy';
+  readonly policyMode: PersistedAgentSubagentPolicy;
+  readonly policySource: 'profile' | 'default' | 'legacy';
   readonly declaration: SubagentDeclaration;
   readonly selectionKind: SubagentSelectionKind;
   readonly selectionOrigin: SubagentSelectionOrigin;
@@ -45,6 +45,11 @@ export interface SubagentDispatchDecision {
   readonly advisoryDeviation: boolean;
   readonly allowed: boolean;
   readonly fallback?: SubagentRecommendationFallback;
+}
+
+export interface CurrentSubagentDispatchDecision extends Omit<SubagentDispatchDecision, 'policyMode' | 'policySource'> {
+  readonly policyMode: AgentSubagentPolicy;
+  readonly policySource: 'profile' | 'default';
 }
 
 export interface SubagentDispatchSelection {
@@ -76,7 +81,7 @@ export interface ResolveSubagentDispatchInput {
 export interface ResolvedSubagentDispatch {
   readonly selection: SubagentDispatchSelection;
   readonly scoped: boolean;
-  readonly decision: SubagentDispatchDecision;
+  readonly decision: CurrentSubagentDispatchDecision;
   readonly snapshot?: AgentProfileCatalogSnapshot;
 }
 
@@ -100,9 +105,9 @@ export function evaluateSubagentDispatchDecision(
     readonly selectionOrigin?: SubagentSelectionOrigin;
     readonly fallback?: SubagentRecommendationFallback;
   } = {},
-): SubagentDispatchDecision {
+): CurrentSubagentDispatchDecision {
   const configured = caller.profileName === undefined ? catalog.getDefault() : caller;
-  const policyMode: EffectiveAgentSubagentPolicy = configured.subagentPolicy ?? 'legacy';
+  const policyMode: AgentSubagentPolicy = configured.subagentPolicy ?? 'advisory';
   const declaration = configured.subagentDeclaration ?? (
     configured.subagents === undefined
       ? { kind: 'all' as const }
@@ -121,7 +126,7 @@ export function evaluateSubagentDispatchDecision(
   return {
     version: 1,
     policyMode,
-    policySource: configured.subagentPolicy === undefined ? 'legacy' : 'profile',
+    policySource: configured.subagentPolicy === undefined ? 'default' : 'profile',
     declaration,
     selectionKind: options.selectionKind ?? 'profile',
     selectionOrigin: options.selectionOrigin ?? 'explicit',

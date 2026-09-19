@@ -46,7 +46,7 @@ it('freezes a scoped profile source graph through JSON and resolves it without r
 });
 
 describe('profile file runtime isolation', () => {
-  it('retains the caller ceiling after real binding with a wider lease and replay', async () => {
+  it('retains tool ceilings without promoting unmarked subagent recommendations to a hard ceiling', async () => {
     const ctx = createTestAgent();
     try {
       const catalog = ctx.get(ISessionAgentProfileCatalog);
@@ -68,7 +68,7 @@ describe('profile file runtime isolation', () => {
       expect(policy.isToolActive('Read')).toBe(true);
       expect(policy.isToolActive('Write')).toBe(false);
       expect(svc.data().disallowedTools).toContain('Bash');
-      expect(svc.data().subagents).toEqual(['explore']);
+      expect(svc.data().subagents).toEqual(['coder', 'explore']);
       const apply = await svc.prepareResumeBinding({});
       apply();
       expect(policy.isToolActive('Write')).toBe(false);
@@ -94,6 +94,25 @@ describe('profile file runtime isolation', () => {
     expect(loaded.snapshot.publicProfiles.get('reviewer')).toMatchObject({
       subagentPolicy: 'advisory',
       subagents: ['researcher'],
+    });
+  });
+
+  it('propagates an explicit strict caller subagent ceiling into a profile file', async () => {
+    const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => '' });
+    const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
+    const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
+    Object.defineProperty(fake, 'fs', { value: {
+      realpath: async (path: string) => path,
+      readText: async () => '---\nname: reviewer\ndescription: File role\nsubagents: [researcher, explore]\n---\nFile role',
+    } as unknown as IHostFileSystem });
+    const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
+      thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
+      subagentPolicy: 'strict', subagentDeclaration: { kind: 'set', names: ['explore'] },
+      subagents: ['explore'],
+    });
+    expect(loaded.snapshot.publicProfiles.get('reviewer')).toMatchObject({
+      subagentPolicy: 'strict',
+      subagents: ['explore'],
     });
   });
 

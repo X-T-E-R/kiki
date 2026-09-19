@@ -4,7 +4,6 @@ import { customPromptVariables } from './promptConfig';
 import { applySystemPromptFields } from './systemPromptFields';
 
 import {
-  type AgentProfile,
   type AgentProfileContext,
   type EnvironmentDisclosureSnapshot,
   type SystemPromptRenderResult,
@@ -14,28 +13,6 @@ export const TASK_AGENT_ROLE_PREFIX = SUBAGENT_NOTICE_DEFAULT;
 
 export function skillActiveFor(tools: readonly string[]): boolean {
   return tools.includes('Skill');
-}
-
-export function subagentAllowlistFor(
-  catalog: {
-    getDefault(): Pick<AgentProfile, 'subagents'>;
-  },
-  caller: {
-    readonly profileName?: string;
-    readonly subagents?: readonly string[];
-  },
-): readonly string[] | undefined {
-  const configured =
-    caller.profileName === undefined ? catalog.getDefault().subagents : caller.subagents;
-  return configured?.includes('*') === true ? undefined : configured;
-}
-
-export function profileNotAllowedMessage(
-  name: string,
-  allowlist: readonly string[],
-): string {
-  const allowed = allowlist.length === 0 ? 'none' : allowlist.join(', ');
-  return `Profile "${name}" is not allowed for this agent. Allowed profiles: ${allowed}.`;
 }
 
 const WINDOWS_NOTES =

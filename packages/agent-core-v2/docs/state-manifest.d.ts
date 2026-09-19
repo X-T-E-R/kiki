@@ -1744,8 +1744,8 @@ export interface AgentStateSnapshot {
     }>>;
     readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
       readonly version: 1;
-      readonly policyMode: /* EffectiveAgentSubagentPolicy — packages/agent-profiles/src/agentProfile.ts */ 'strict' | 'advisory' | 'legacy';
-      readonly policySource: 'profile' | 'legacy';
+      readonly policyMode: /* PersistedAgentSubagentPolicy — packages/agent-profiles/src/agentProfile.ts */ 'strict' | 'advisory' | 'legacy';
+      readonly policySource: 'default' | 'profile' | 'legacy';
       readonly declaration: /* SubagentDeclaration — packages/agent-profiles/src/agentProfile.ts */ {
         readonly kind: 'inherit';
       } | {
@@ -2447,8 +2447,8 @@ export interface AgentStateSnapshot {
           }>>;
           readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
             readonly version: 1;
-            readonly policyMode: /* EffectiveAgentSubagentPolicy — packages/agent-profiles/src/agentProfile.ts */ 'strict' | 'advisory' | 'legacy';
-            readonly policySource: 'profile' | 'legacy';
+            readonly policyMode: /* PersistedAgentSubagentPolicy — packages/agent-profiles/src/agentProfile.ts */ 'strict' | 'advisory' | 'legacy';
+            readonly policySource: 'default' | 'profile' | 'legacy';
             readonly declaration: /* SubagentDeclaration — packages/agent-profiles/src/agentProfile.ts */ {
               readonly kind: 'inherit';
             } | {

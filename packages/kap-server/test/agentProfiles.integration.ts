@@ -269,13 +269,21 @@ describe('GET /api/agents', () => {
       const response = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
       const body = await response.json() as Envelope<{ targets: Array<{ profile: string; route?: string; defaults_available: boolean; model_alias?: string; model_source?: string; thinking_effort?: string; unavailable_reason?: string }> }>;
       expect(body.code).toBe(0);
-      expect(body.data.targets.map((target) => target.route ?? target.profile).toSorted()).toEqual(['leased-helper', 'leased-helper.stub', 'private-helper', 'unbound-helper']);
+      expect(body.data.targets.map((target) => target.route ?? target.profile).toSorted()).toEqual([
+        'explore',
+        'general',
+        'hidden-helper',
+        'leased-helper',
+        'leased-helper.stub',
+        'private-helper',
+        'unbound-helper',
+      ]);
       expect(body.data.targets.find((target) => target.route === 'leased-helper.stub')).toMatchObject({ defaults_available: true, model_alias: 'stub', model_source: 'route', thinking_effort: 'off' });
       expect(body.data.targets.find((target) => target.profile === 'leased-helper')).toMatchObject({ defaults_available: true, model_alias: 'stub', model_source: 'caller-lease', thinking_effort: 'off' });
       expect(body.data.targets.find((target) => target.profile === 'private-helper')).toMatchObject({ defaults_available: true, model_alias: 'stub' });
       expect(body.data.targets.find((target) => target.profile === 'unbound-helper')).toMatchObject({ defaults_available: false, unavailable_reason: expect.stringContaining('No default model') });
       for (const target of body.data.targets) expect(description).toContain(target.profile);
-      expect(JSON.stringify(body.data)).not.toMatch(/PRIVATE_PROMPT|_private|sourceDefinitionId|YOUR_API_KEY|hidden-helper/);
+      expect(JSON.stringify(body.data)).not.toMatch(/PRIVATE_PROMPT|_private|sourceDefinitionId|YOUR_API_KEY/);
       expect(lifecycle.list()).toHaveLength(1);
       registration.dispose();
       const after = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
@@ -350,7 +358,9 @@ describe('GET /api/agents', () => {
       expect(planned.targets.find((target) => target.executor === 'external')).toMatchObject({ launch_allowed: false });
       const draft = await read(`cwd=${encodeURIComponent(home!)}&profile=lead`);
       expect(draft.context).toBe('draft');
-      expect(draft.targets).toHaveLength(2);
+      expect(draft.targets.map((target) => target.profile).toSorted()).toEqual(
+        before.targets.map((target) => target.profile).toSorted(),
+      );
       expect(draft.targets.every((target) => target.launch_allowed === undefined && target.execution_restriction === undefined)).toBe(true);
       const profile = agent.accessor.get(IAgentProfileService);
       const data = profile.data();
@@ -551,7 +561,7 @@ describe('GET /api/agents', () => {
         allowed_efforts: ['high'],
         disallowed_tools: ['Write'],
       },
-      subagent_policy: 'legacy',
+      subagent_policy: 'advisory',
       subagents: [
         'explore',
         {

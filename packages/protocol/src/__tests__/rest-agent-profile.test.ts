@@ -38,7 +38,7 @@ describe('named agent profile REST protocol', () => {
       workspace_id: 'wd_a',
       workspace_ids: ['wd_a', 'wd_b'],
       main: true,
-      subagent_policy: 'legacy',
+      subagent_policy: 'advisory',
       model_profiles: [{
         alias: 'fast',
         when: 'Use for small tasks',
@@ -62,12 +62,19 @@ describe('named agent profile REST protocol', () => {
     })).toMatchObject({
       workspace_ids: ['wd_a', 'wd_b'],
       main: true,
-      subagent_policy: 'legacy',
+      subagent_policy: 'advisory',
       model_profiles: [{ alias: 'fast', when: 'Use for small tasks' }],
       spawn_constraints: { allowed_models: ['fast'] },
       subagents: ['explore', { name: 'reviewer', model_alias: 'fast' }],
       disabled: true,
     });
+    expect(namedAgentProfileSchema.safeParse({
+      name: 'reviewer',
+      source: 'user',
+      subagent_policy: 'legacy',
+      disabled: false,
+      routes: [],
+    }).success).toBe(false);
   });
 
   it('requires catalog responses to declare whether their projection is complete', () => {

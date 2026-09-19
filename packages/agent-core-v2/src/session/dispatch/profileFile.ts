@@ -29,15 +29,13 @@ export function applyProfileFileSubagentCeiling(
   profile: AgentProfile,
   ceiling: FrozenProfileFileSources['callerCeiling'],
 ): AgentProfile {
-  if (ceiling === undefined || ceiling.subagentPolicy === 'advisory' || ceiling.subagents === undefined) return profile;
+  if (ceiling === undefined || ceiling.subagentPolicy !== 'strict' || ceiling.subagents === undefined) return profile;
   const subagents = profile.subagents === undefined
     ? ceiling.subagents
     : profile.subagents.filter((name) => ceiling.subagents!.includes(name));
   return {
     ...profile,
-    subagentPolicy: ceiling.subagentPolicy === 'strict' || profile.subagentPolicy === 'advisory'
-      ? 'strict'
-      : profile.subagentPolicy,
+    subagentPolicy: 'strict',
     subagentDeclaration: { kind: 'set', names: subagents },
     subagents,
   };

@@ -227,7 +227,7 @@ describe('loadSystemMdProfile', () => {
     expect(profile?.systemPrompt({})).toBe('body only');
   });
 
-  it('inherits recommendations only for an explicit subagent policy and keeps unmarked SYSTEM.md legacy', async () => {
+  it('inherits recommendations only for an explicit subagent policy and keeps omission implicit', async () => {
     const builtin = normalizeAgentProfile({
       ...BUILTIN_DEFAULT,
       subagentPolicy: 'advisory',
@@ -243,11 +243,11 @@ describe('loadSystemMdProfile', () => {
       subagents: ['explore'],
     });
 
-    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\n---\n\nlegacy upgraded\n');
-    const legacy = await loadProfile(hostFs, builtin, warn);
-    expect(legacy?.subagentPolicy).toBeUndefined();
-    expect(legacy?.subagentDeclaration).toBeUndefined();
-    expect(legacy?.subagents).toEqual(['explore']);
+    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\n---\n\nunmarked upgraded\n');
+    const unmarked = await loadProfile(hostFs, builtin, warn);
+    expect(unmarked?.subagentPolicy).toBeUndefined();
+    expect(unmarked?.subagentDeclaration).toBeUndefined();
+    expect(unmarked?.subagents).toEqual(['explore']);
   });
 
   it('defaults an upgraded SYSTEM.md description to the builtin when omitted', async () => {

@@ -132,7 +132,7 @@ describe('applyLease', () => {
     expect(applied.subagents).toBeUndefined();
   });
 
-  it('keeps legacy replacement while preventing explicit strict policy widening', () => {
+  it('keeps unmarked replacement while preventing explicit strict policy widening', () => {
     expect(applyLease(child({ subagents: [] }), { name: 'explore', subagents: null }).subagents)
       .toBeUndefined();
     expect(applyLease(child({ subagentPolicy: 'strict', subagents: [] }), {

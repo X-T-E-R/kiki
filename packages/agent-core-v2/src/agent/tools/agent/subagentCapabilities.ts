@@ -32,7 +32,7 @@ export interface SubagentCapabilityTarget {
   readonly modelSource?: 'caller-lease' | 'route' | 'profile';
   readonly thinkingEffort?: string;
   readonly effortSource?: 'caller-lease' | 'route' | 'profile' | 'model-profile' | 'model' | 'config' | 'executor';
-  readonly dispatchPolicy: 'advisory' | 'strict' | 'legacy';
+  readonly dispatchPolicy: 'advisory' | 'strict';
   readonly recommendationStatus: SubagentRecommendationStatus;
   readonly advisoryDeviation: boolean;
   readonly dispatchAllowed: boolean;

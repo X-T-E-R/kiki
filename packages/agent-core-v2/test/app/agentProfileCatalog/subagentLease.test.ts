@@ -188,12 +188,17 @@ describe('resolveSubagentDispatch', () => {
     resolveSelection: () => ({ profile: publicProfile, baseProfile: publicProfile }),
   };
 
-  it('applies the caller allowlist after scoped alias resolution', () => {
+  it('applies an explicit strict caller allowlist after scoped alias resolution', () => {
     for (const subagents of [[], ['other']]) {
       expect(() =>
         resolveSubagentDispatch(
           catalog,
-          { profileName: 'parent', profileDefinitionId: 'parent-definition', subagents },
+          {
+            profileName: 'parent',
+            profileDefinitionId: 'parent-definition',
+            subagentPolicy: 'strict',
+            subagents,
+          },
           { profileName: 'writer', snapshot },
         ),
       ).toThrowError(
@@ -205,6 +210,7 @@ describe('resolveSubagentDispatch', () => {
       {
         profileName: 'parent',
         profileDefinitionId: 'parent-definition',
+        subagentPolicy: 'strict',
         subagents: ['writer'],
       },
       { profileName: 'writer', snapshot },
@@ -229,13 +235,14 @@ describe('resolveSubagentDispatch', () => {
     );
   });
 
-  it('returns a structured allowlist error', () => {
+  it('returns a structured strict-policy error', () => {
     try {
       resolveSubagentDispatch(
         catalog,
         {
           profileName: 'parent',
           profileDefinitionId: 'parent-definition',
+          subagentPolicy: 'strict',
           subagents: [],
         },
         { profileName: 'writer', snapshot },
@@ -245,17 +252,23 @@ describe('resolveSubagentDispatch', () => {
       expect(isError2(error)).toBe(true);
       if (!isError2(error)) return;
       expect(error.code).toBe(ErrorCodes.AGENT_TYPE_NOT_ALLOWED);
-      expect(error.message).toBe('Profile "writer" is not allowed for this agent. Allowed profiles: none.');
-      expect(error.details).toEqual({ profileName: 'writer', allowlist: [] });
+      expect(error.message).toBe('Profile "writer" is not allowed by strict subagent policy. Allowed profiles: none.');
+      expect(error.details).toMatchObject({
+        profileName: 'writer',
+        allowlist: [],
+        dispatchDecision: {
+          policyMode: 'strict',
+          recommendationStatus: 'blocked',
+        },
+      });
     }
   });
 
-  it('allows an advisory named-profile deviation and records the machine decision', () => {
+  it('defaults an unmarked named profile to advisory and records deviations', () => {
     const resolved = resolveSubagentDispatch(
       catalog,
       {
         profileName: 'parent',
-        subagentPolicy: 'advisory',
         subagentDeclaration: { kind: 'set', names: ['explore'] },
         subagents: ['explore'],
       },
@@ -264,7 +277,7 @@ describe('resolveSubagentDispatch', () => {
     expect(resolved.decision).toEqual({
       version: 1,
       policyMode: 'advisory',
-      policySource: 'profile',
+      policySource: 'default',
       declaration: { kind: 'set', names: ['explore'] },
       selectionKind: 'profile',
       selectionOrigin: 'explicit',
@@ -276,10 +289,28 @@ describe('resolveSubagentDispatch', () => {
     });
   });
 
-  it.each([
-    [{ profileName: 'parent', subagentPolicy: 'strict' as const, subagents: ['explore'] }, 'strict'],
-    [{ profileName: 'parent', subagents: ['explore'] }, 'legacy'],
-  ])('keeps %s policy strict for named-profile deviations', (caller, mode) => {
+  it('allows any legal target when an unmarked profile recommends no targets', () => {
+    const resolved = resolveSubagentDispatch(
+      catalog,
+      { profileName: 'parent', subagents: [] },
+      { profileName: 'writer' },
+    );
+    expect(resolved.decision).toMatchObject({
+      policyMode: 'advisory',
+      policySource: 'default',
+      declaration: { kind: 'set', names: [] },
+      recommendationStatus: 'allowed_nonpreferred',
+      advisoryDeviation: true,
+      allowed: true,
+    });
+  });
+
+  it('blocks named-profile deviations only under explicit strict policy', () => {
+    const caller = {
+      profileName: 'parent',
+      subagentPolicy: 'strict' as const,
+      subagents: ['explore'],
+    };
     expect(() => resolveSubagentDispatch(catalog, caller, { profileName: 'writer' })).toThrowError(
       expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }),
     );
@@ -288,14 +319,10 @@ describe('resolveSubagentDispatch', () => {
     } catch (error) {
       expect(isError2(error)).toBe(true);
       if (!isError2(error)) return;
-      if (mode === 'strict') {
-        expect(error.details?.['dispatchDecision']).toMatchObject({
-          policyMode: 'strict',
-          recommendationStatus: 'blocked',
-        });
-      } else {
-        expect(error.details).toEqual({ profileName: 'writer', allowlist: ['explore'] });
-      }
+      expect(error.details?.['dispatchDecision']).toMatchObject({
+        policyMode: 'strict',
+        recommendationStatus: 'blocked',
+      });
     }
   });
 });
@@ -369,6 +396,7 @@ describe('resolved subagent targets', () => {
     const lease = { name: 'worker', tools: ['Read'] } as const;
     const caller = {
       profileName: 'parent',
+      subagentPolicy: 'strict',
       subagents: ['worker'],
       subagentLeases: { worker: lease },
       spawnPolicy: { denyModels: ['route-model'] },

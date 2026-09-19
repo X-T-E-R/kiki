@@ -6,6 +6,7 @@ import {
   listAvailableSubagentTargets as listTargets,
   resolveSnapshotProfileDefinition as resolveSnapshotDefinition,
   subagentDispatchAllowed as dispatchAllowed,
+  type CurrentSubagentDispatchDecision,
   type SubagentDispatchDecision,
   type SubagentRecommendationFallback,
   type SubagentRecommendationStatus,
@@ -25,7 +26,6 @@ import {
   type CallerLeaseOwner,
 } from './applySubagentLease';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
-import { profileNotAllowedMessage } from './profile-shared';
 import {
   scopedBinding,
   type AgentProfileCatalogSnapshot,
@@ -68,7 +68,7 @@ export interface ResolveSubagentDispatchInput {
 export interface ResolvedSubagentDispatch {
   readonly selection: SubagentDispatchSelection;
   readonly scoped: boolean;
-  readonly decision: SubagentDispatchDecision;
+  readonly decision: CurrentSubagentDispatchDecision;
   readonly snapshot?: AgentProfileCatalogSnapshot;
 }
 
@@ -85,6 +85,7 @@ export interface AvailableSubagentTargets {
 
 export { evaluateSubagentDispatchDecision };
 export type {
+  CurrentSubagentDispatchDecision,
   SubagentDispatchDecision,
   SubagentRecommendationFallback,
   SubagentRecommendationStatus,
@@ -101,17 +102,10 @@ export function subagentDispatchAllowed(
 }
 
 export function assertSubagentDispatchAllowed(
-  decision: SubagentDispatchDecision,
+  decision: CurrentSubagentDispatchDecision,
 ): void {
   if (decision.allowed) return;
   const names = decision.declaration.kind === 'set' ? decision.declaration.names : [];
-  if (decision.policyMode === 'legacy') {
-    throw new Error2(
-      ErrorCodes.AGENT_TYPE_NOT_ALLOWED,
-      profileNotAllowedMessage(decision.requestedProfile, names),
-      { details: { profileName: decision.requestedProfile, allowlist: names } },
-    );
-  }
   const allowed = names.length === 0 ? 'none' : names.join(', ');
   throw new Error2(
     ErrorCodes.AGENT_TYPE_NOT_ALLOWED,

@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Add advisory and strict subagent dispatch policies for agent profiles.
+Default unmarked agent profiles to advisory subagent dispatch and reserve strict dispatch for explicit opt-in.

@@ -20,7 +20,7 @@ export {
   type AgentRecommendedModel,
   type AgentSubagentPolicy,
   type AgentSystemPromptMode,
-  type EffectiveAgentSubagentPolicy,
+  type PersistedAgentSubagentPolicy,
   type EnvironmentDisclosureSnapshot,
   type ResolvedAgentProfileRoute,
   type SubagentDeclaration,

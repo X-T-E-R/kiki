@@ -15,7 +15,7 @@ export type AgentSystemPromptMode = z.infer<typeof AgentSystemPromptModeSchema>;
 
 export const AgentSubagentPolicySchema = z.enum(['advisory', 'strict']);
 export type AgentSubagentPolicy = z.infer<typeof AgentSubagentPolicySchema>;
-export type EffectiveAgentSubagentPolicy = AgentSubagentPolicy | 'legacy';
+export type PersistedAgentSubagentPolicy = AgentSubagentPolicy | 'legacy';
 export type SubagentDeclaration =
   | { readonly kind: 'inherit' }
   | { readonly kind: 'all' }

@@ -1241,7 +1241,7 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(lane.lifecycleCreate).toHaveBeenCalledTimes(4);
   });
 
-  it('loads profile_file through AgentRun without registering its name and intersects caller permissions', async () => {
+  it('loads profile_file through AgentRun without registering its name or hardening unmarked recommendations', async () => {
     const lane = createLane(disposables, 'internal');
     const runtime = lane.ix.get(IAgentRuntimeService).inspect();
     const readText = vi.fn(async () => '---\nname: coder\ndescription: File role\nmodel_alias: parity-model\nthinking_effort: high\ntools: [Read, Write, Bash]\nsubagents: [coder, outside]\n---\nFILE INSTRUCTIONS');
@@ -1257,7 +1257,7 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(bound.sourcePath).toBe('/workspace/custom.md');
     expect(bound.toolAllowPolicies).toContainEqual(['Read']);
     expect(bound.disallowedTools).toContain('Bash');
-    expect(bound.subagents).toEqual(['coder']);
+    expect(bound.subagents).toEqual(['coder', 'outside']);
     expect(bound.systemPrompt({})).toContain('FILE INSTRUCTIONS');
     await complete(lane, 0);
     const denied = await lane.runInternal({ profile_file: 'custom.md', model_alias: 'outside-model', prompt: 'fail', description: 'Reject escape', background: true });
@@ -1305,7 +1305,7 @@ describe('AgentRun and dispatch parity golden', () => {
     const lane = createLane(disposables, 'internal');
     const caller = lane.handles.get('main')!.accessor.get(IAgentProfileService).data();
     Object.assign(caller, {
-      subagentPolicy: 'advisory',
+      subagentPolicy: undefined,
       subagentDeclaration: { kind: 'set', names: ['coder'] },
       subagents: ['coder'],
     });
@@ -2017,7 +2017,7 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(outputText(result.output)).toBe([
       'agent_id: agent_child_1',
       'actual_profile: coder',
-      'dispatch_policy: legacy',
+      'dispatch_policy: advisory',
       'selection_kind: profile',
       'selection_origin: explicit',
       'recommendation_status: preferred',

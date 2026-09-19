@@ -19,8 +19,6 @@ import {
   DEFAULT_REPLY_STYLE_GUIDE,
   renderPromptTemplateResult,
   renderSystemPromptResult,
-  subagentAllowlistFor,
-  profileNotAllowedMessage,
   systemPromptVars,
 } from '#/profileShared';
 
@@ -29,45 +27,6 @@ type AssertFalse<T extends false> = T;
 type RenderlessInputIsNotAssignable = AssertFalse<
   [{ name: string }] extends [AgentProfileInput] ? true : false
 >;
-
-describe('subagent allowlists', () => {
-  const catalog = (subagents?: readonly string[]) => ({
-    getDefault: () => ({ subagents }),
-  });
-
-  it('keeps an explicit empty list as deny-all and renders Allowed: none', () => {
-    const allowlist = subagentAllowlistFor(catalog(['coder']), {
-      profileName: 'orchestrator',
-      subagents: [],
-    });
-
-    expect(allowlist).toEqual([]);
-    expect(profileNotAllowedMessage('coder', allowlist ?? ['unexpected'])).toBe(
-      'Profile "coder" is not allowed for this agent. Allowed profiles: none.',
-    );
-  });
-
-  it('treats omitted and wildcard allowlists as unrestricted', () => {
-    expect(
-      subagentAllowlistFor(catalog(undefined), {
-        profileName: 'orchestrator',
-        subagents: undefined,
-      }),
-    ).toBeUndefined();
-    expect(
-      subagentAllowlistFor(catalog(['coder']), {
-        profileName: 'orchestrator',
-        subagents: ['*'],
-      }),
-    ).toBeUndefined();
-  });
-
-  it('uses the default profile allowlist before a caller profile is bound', () => {
-    expect(subagentAllowlistFor(catalog([]), {})).toEqual([]);
-    expect(subagentAllowlistFor(catalog(['*']), {})).toBeUndefined();
-    expect(subagentAllowlistFor(catalog(['explore']), {})).toEqual(['explore']);
-  });
-});
 
 describe('systemPromptVars', () => {
   it('builds the full variable table from the context', () => {

@@ -542,11 +542,11 @@ body
     );
   });
 
-  it('normalizes explicit subagent policies without changing legacy files', () => {
-    const legacy = parse('---\nname: solo\ndescription: d\nsubagents: [explore]\n---\n\nbody\n');
-    expect(legacy.subagentPolicy).toBeUndefined();
-    expect(legacy.subagentDeclaration).toBeUndefined();
-    expect(legacy.subagents).toEqual(['explore']);
+  it('normalizes explicit subagent policies while keeping policy omission implicit', () => {
+    const unmarked = parse('---\nname: solo\ndescription: d\nsubagents: [explore]\n---\n\nbody\n');
+    expect(unmarked.subagentPolicy).toBeUndefined();
+    expect(unmarked.subagentDeclaration).toBeUndefined();
+    expect(unmarked.subagents).toEqual(['explore']);
 
     const advisory = parse('---\nname: solo\ndescription: d\nsubagent_policy: advisory\nsubagents: [explore]\n---\n\nbody\n');
     expect(advisory.subagentPolicy).toBe('advisory');

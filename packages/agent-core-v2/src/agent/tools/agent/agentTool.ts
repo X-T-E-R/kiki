@@ -334,13 +334,6 @@ export class SubagentTool implements ISubagentTool {
     readonly fallback?: SubagentRecommendationFallback;
   } {
     const caller = this.profile.data();
-    if (caller.subagentPolicy === undefined) {
-      return {
-        profileName: this.requireDefaultProfileName(),
-        selectionOrigin: 'configured-fallback',
-        fallback: 'no-recommendations',
-      };
-    }
     const targets = listAvailableSubagentTargets(
       this.catalog,
       caller,

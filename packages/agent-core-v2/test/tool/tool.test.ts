@@ -821,6 +821,7 @@ describe('AgentRun tool description', () => {
     const caller: AgentProfile = normalizeAgentProfile({
       name: 'orchestrator',
       description: 'Orchestrator',
+      subagentPolicy: 'strict',
       subagents: ['explore'],
       systemPrompt: () => 'orchestrator',
     });
@@ -857,7 +858,7 @@ describe('AgentRun tool description', () => {
     expect(description).not.toContain('- coder: Coder');
   });
 
-  it('lists subagent types from the persisted binding instead of the current catalog profile', () => {
+  it('uses persisted advisory recommendations without filtering legal subagent types', () => {
     const caller: AgentProfile = normalizeAgentProfile({
       name: 'orchestrator',
       description: 'Orchestrator',
@@ -899,7 +900,7 @@ describe('AgentRun tool description', () => {
     const description = agentDescription();
 
     expect(description).toContain('- explore: Explorer');
-    expect(description).not.toContain('- coder: Coder');
+    expect(description).toContain('- coder: Coder');
   });
 
   it('freezes the subagent type list once the profile catalog is ready', async () => {
@@ -1075,10 +1076,14 @@ describe('AgentRun tool execution contract', () => {
     return ctx;
   }
 
-  function allowlistCatalog(allowlist: readonly string[]): ISessionAgentProfileCatalog {
+  function allowlistCatalog(
+    allowlist: readonly string[],
+    subagentPolicy?: AgentProfile['subagentPolicy'],
+  ): ISessionAgentProfileCatalog {
     const caller: AgentProfile = normalizeAgentProfile({
       name: 'orchestrator',
       description: 'Orchestrator',
+      subagentPolicy,
       subagents: allowlist,
       systemPrompt: () => 'orchestrator',
     });
@@ -1130,11 +1135,11 @@ describe('AgentRun tool execution contract', () => {
     expect(lifecycle.run).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects a subagent type outside the caller allowlist', async () => {
+  it('rejects a subagent type outside an explicit strict caller allowlist', async () => {
     const lifecycle = createAgentLifecycleStub();
     const context = createAgentToolContext(
       lifecycle,
-      sessionService(ISessionAgentProfileCatalog, allowlistCatalog(['explore'])),
+      sessionService(ISessionAgentProfileCatalog, allowlistCatalog(['explore'], 'strict')),
     );
 
     const result = await executeAgentTool(context, {
@@ -1144,7 +1149,7 @@ describe('AgentRun tool execution contract', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.output).toContain('Profile "coder" is not allowed for this agent');
+    expect(result.output).toContain('Profile "coder" is not allowed by strict subagent policy');
     expect(result.output).toContain('explore');
     expect(lifecycle.create).not.toHaveBeenCalled();
   });
@@ -1182,6 +1187,7 @@ describe('AgentRun tool execution contract', () => {
       profileName: 'deleted-profile',
       thinkingLevel: 'off',
       systemPrompt: 'persisted prompt',
+      subagentPolicy: 'strict',
       subagents: ['explore'],
     });
 
@@ -1192,7 +1198,7 @@ describe('AgentRun tool execution contract', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.output).toContain('Profile "coder" is not allowed for this agent');
+    expect(result.output).toContain('Profile "coder" is not allowed by strict subagent policy');
     expect(result.output).toContain('explore');
     expect(lifecycle.create).not.toHaveBeenCalled();
   });

@@ -411,17 +411,30 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     replay.ix.dispose();
   });
 
-  it('replays a legacy profile bind without reinterpreting its allowlist as advisory', async () => {
+  it('preserves a legacy dispatch decision during replay without generating new legacy decisions', async () => {
     svc.applyBindingSnapshot({
       profileName: 'legacy-parent',
       thinkingLevel: 'off',
       systemPrompt: 'legacy',
       subagents: ['explore'],
+      dispatchDecision: {
+        version: 1,
+        policyMode: 'legacy',
+        policySource: 'legacy',
+        declaration: { kind: 'set', names: ['explore'] },
+        selectionKind: 'profile',
+        selectionOrigin: 'explicit',
+        requestedProfile: 'reviewer',
+        recommendationStatus: 'blocked',
+        advisoryDeviation: false,
+        allowed: false,
+      },
     });
     const records = await readRecords();
     expect(records).toContainEqual(expect.objectContaining({
       type: 'profile.bind',
       subagents: ['explore'],
+      dispatchDecision: expect.objectContaining({ policyMode: 'legacy' }),
     }));
     const replayKey = 'profile-replay-legacy-subagent-policy';
     const replay = buildHost(replayKey);
@@ -435,11 +448,21 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     expect(data.subagentPolicy).toBeUndefined();
     expect(data.subagentDeclaration).toBeUndefined();
     expect(data.subagents).toEqual(['explore']);
+    expect(data.dispatchDecision).toMatchObject({
+      policyMode: 'legacy',
+      policySource: 'legacy',
+      allowed: false,
+    });
     expect(evaluateSubagentDispatchDecision(
       { getDefault: () => data as never },
       data,
       'reviewer',
-    )).toMatchObject({ policyMode: 'legacy', recommendationStatus: 'blocked', allowed: false });
+    )).toMatchObject({
+      policyMode: 'advisory',
+      policySource: 'default',
+      recommendationStatus: 'allowed_nonpreferred',
+      allowed: true,
+    });
     replay.ix.dispose();
   });
 
