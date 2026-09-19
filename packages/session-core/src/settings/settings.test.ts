@@ -32,6 +32,7 @@ import {
   modelCreateBody,
   providerTemplateFor,
   isComposerSendKey,
+  isDefaultAppendTiming,
   readDesktopPrefs,
   readRestartRequirement,
   readSettings,
@@ -64,6 +65,7 @@ import {
   toolPolicyDraftFromConfig,
   toolPolicyPatch,
   validateDesktopConfigDraft,
+  validateNewProviderDraft,
   validateProviderDraft,
   validateRequestTimeoutSeconds,
   validateServerDefaults,
@@ -95,6 +97,8 @@ const providerDraft = (patch: Partial<ProviderDraft> = {}): ProviderDraft => ({
   clearApiKey: false,
   requestIdentityChoice: 'inherit',
   requestIdentityOverridesJson: '',
+  imageAcceptedTypes: null,
+  imageConvertUnsupported: null,
   models: [
     {
       id: 'example/chat',
@@ -105,6 +109,8 @@ const providerDraft = (patch: Partial<ProviderDraft> = {}): ProviderDraft => ({
       supportEfforts: ['low', 'high'],
       requestIdentityChoice: 'inherit',
       requestIdentityOverridesJson: '',
+      imageAcceptedTypes: null,
+      imageConvertUnsupported: null,
     },
   ],
   ...patch,
@@ -128,17 +134,23 @@ describe('settings persistence and validation', () => {
     writeSettings({});
     expect(readSettings().closeToTray).toBe(true);
     expect(readSettings().requestTimeoutSeconds).toBe(30);
+    expect(readSettings().subagentPanelOpenMode).toBe('tab');
+    expect(readSettings().defaultAppendTiming).toBe('agent_idle');
     expect(readDesktopPrefs().closeToTray).toBe(true);
 
     localStorage.setItem('kiki.settings', JSON.stringify({
       sendShortcut: 'invalid',
       defaultPermissionMode: 'root',
       requestTimeoutSeconds: 601,
+      subagentPanelOpenMode: 'invalid',
+      defaultAppendTiming: 'immediate',
     }));
     localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ notifications: false }));
     expect(readSettings().sendShortcut).toBe('enter');
     expect(readSettings().defaultPermissionMode).toBe('manual');
     expect(readSettings().requestTimeoutSeconds).toBe(30);
+    expect(readSettings().subagentPanelOpenMode).toBe('tab');
+    expect(readSettings().defaultAppendTiming).toBe('agent_idle');
     expect(readDesktopPrefs()).toEqual({
       notifications: false,
       closeToTray: true,
@@ -161,6 +173,20 @@ describe('settings persistence and validation', () => {
 
     writeSettings({ requestTimeoutSeconds: 120 });
     expect(readSettings().requestTimeoutSeconds).toBe(120);
+  });
+
+  it('persists a valid default append timing and falls back on illegal values', () => {
+    expect(isDefaultAppendTiming('agent_idle')).toBe(true);
+    expect(isDefaultAppendTiming('subagents_done')).toBe(true);
+    expect(isDefaultAppendTiming('tasks_done')).toBe(true);
+    expect(isDefaultAppendTiming('immediate')).toBe(false);
+
+    writeSettings({ defaultAppendTiming: 'tasks_done' });
+    expect(readSettings().defaultAppendTiming).toBe('tasks_done');
+    expect(settingsSnapshot().defaultAppendTiming).toBe('tasks_done');
+
+    localStorage.setItem('kiki.settings', JSON.stringify({ defaultAppendTiming: 'all_quiet' }));
+    expect(readSettings().defaultAppendTiming).toBe('agent_idle');
   });
 
   it('preserves an explicitly persisted quit choice', () => {
@@ -477,6 +503,77 @@ describe('settings persistence and validation', () => {
         [],
       ),
     ).toBeNull();
+  });
+
+  it('enforces provider IDs only when creating a provider', () => {
+    const legacy = providerDraft({ id: 'managed:kimi-code' });
+    expect(validateProviderDraft(legacy)).toBeNull();
+    expect(validateNewProviderDraft(legacy)?.key).toBe('val.providerId');
+    expect(validateNewProviderDraft(providerDraft({ id: '!bad' }))?.key).toBe('val.providerId');
+    expect(validateNewProviderDraft(providerDraft({ id: 'valid-provider_1' }))).toBeNull();
+  });
+
+  it('maps authored image policies and preserves model inheritance', () => {
+    const draft = providerDraftFromCatalog(
+      {
+        id: 'example',
+        type: 'openai',
+        images: {
+          accepted_types: ['image/jpeg', 'image/png'],
+          convert_unsupported: 'auto',
+        },
+        has_api_key: true,
+        status: 'connected',
+      },
+      [{
+        id: 'example/chat',
+        provider_id: 'example',
+        remote_id: 'chat',
+        max_context_size: 128000,
+      }],
+    )!;
+    expect(draft.imageAcceptedTypes).toEqual(['image/jpeg', 'image/png']);
+    expect(draft.models[0]).toMatchObject({
+      imageAcceptedTypes: null,
+      imageConvertUnsupported: null,
+    });
+    expect(providerCreateBody(draft)).toMatchObject({
+      images: {
+        accepted_types: ['image/jpeg', 'image/png'],
+        convert_unsupported: 'auto',
+      },
+      models: [expect.not.objectContaining({ images: expect.anything() })],
+    });
+  });
+
+  it('validates image conversion targets and builds sparse image patches', () => {
+    const baseline = providerDraft();
+    expect(validateProviderDraft(providerDraft({ imageAcceptedTypes: [] }))?.key)
+      .toBe('val.imageAcceptedTypesEmpty');
+    expect(validateProviderDraft(providerDraft({
+      imageAcceptedTypes: ['image/webp'],
+      imageConvertUnsupported: 'png',
+    }))?.key).toBe('val.imageConversionTarget');
+    expect(validateProviderDraft(providerDraft({
+      imageAcceptedTypes: ['image/webp'],
+      imageConvertUnsupported: 'auto',
+    }))?.key).toBe('val.imageAutoTarget');
+    expect(providerPatchBody(providerDraft({
+      imageAcceptedTypes: ['image/png'],
+      imageConvertUnsupported: 'png',
+    }), baseline)).toEqual({
+      images: {
+        accepted_types: ['image/png'],
+        convert_unsupported: 'png',
+      },
+    });
+    expect(providerPatchBody(providerDraft({
+      imageAcceptedTypes: null,
+      imageConvertUnsupported: null,
+    }), providerDraft({
+      imageAcceptedTypes: ['image/png'],
+      imageConvertUnsupported: 'png',
+    }))).toEqual({ images: null });
   });
 
   it('maps authored request identity layers to the wire without inventing presets', () => {

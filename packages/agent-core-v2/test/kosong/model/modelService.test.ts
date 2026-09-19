@@ -18,6 +18,7 @@ describe('models TOML transforms', () => {
         beta_api: true,
         support_efforts: ['low', 'high'],
         default_effort: 'high',
+        images: { accepted_types: ['image/png'], convert_unsupported: 'auto' },
         overrides: { max_output_size: 4096, default_effort: 'low' },
       },
     }) as Record<string, Record<string, unknown>>;
@@ -32,6 +33,7 @@ describe('models TOML transforms', () => {
       betaApi: true,
       supportEfforts: ['low', 'high'],
       defaultEffort: 'high',
+      images: { acceptedTypes: ['image/png'], convertUnsupported: 'auto' },
       overrides: { maxOutputSize: 4096, defaultEffort: 'low' },
     });
 
@@ -47,6 +49,7 @@ describe('models TOML transforms', () => {
       beta_api: true,
       support_efforts: ['low', 'high'],
       default_effort: 'high',
+      images: { accepted_types: ['image/png'], convert_unsupported: 'auto' },
       overrides: { max_output_size: 4096, default_effort: 'low' },
     });
   });

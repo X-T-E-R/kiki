@@ -6,12 +6,26 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IFileService } from '#/app/file/fileService';
 import { LifecycleScope } from '#/app/scopes';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IFlagService } from '#/app/flag/flag';
 import type { ContentPart, Message } from '#/kosong/contract/message';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
+import type { ResolvedImagePolicy } from '#/kosong/provider/providerImagePolicy';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 
+import './flag';
 import { detectFileType, MEDIA_SNIFF_BYTES } from './file-type';
-import { isModelAcceptedImageMime, normalizeImageMime } from './image-format-policy';
+import { compressImageForModel, IMAGE_BYTE_BUDGET } from './image-compress';
+import {
+  buildMalformedImageNotice,
+  buildUnsupportedImageNotice,
+  decodeBase64Prefix,
+  isDataUrl,
+  isModelAcceptedImageMime,
+  normalizeImageMime,
+  parseImageDataUrl,
+  resolveEffectiveImageMime,
+  unsupportedImageMimeFromUrl,
+} from './image-format-policy';
 import {
   buildMediaPathTag,
   type DaemonFileRef,
@@ -36,6 +50,7 @@ const IMAGE_UNAVAILABLE_TEXT =
   '[image omitted: the uploaded file is no longer available]';
 const IMAGE_MEMO_MAX_BYTES = 8 * 1024 * 1024;
 const IMAGE_MEMO_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+const FLAGS_ENABLED = { enabled: () => true } as unknown as IFlagService;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -54,6 +69,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentStateService private readonly states: IAgentStateService,
     @ISessionMediaStore private readonly mediaStore: ISessionMediaStore,
+    @IFlagService private readonly flags: IFlagService = FLAGS_ENABLED,
   ) {
     this.states.contributeState(mediaResolvedKey);
   }
@@ -73,38 +89,32 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     requester: ModelRequester,
     signal?: AbortSignal,
   ): Promise<readonly Message[]> {
-    if (!messages.some(hasDaemonFileMediaPart)) return messages;
+    if (!messages.some(hasResolvableMediaPart)) return messages;
 
     let changed = false;
     const out: Message[] = [];
     for (const message of messages) {
-      if (!hasDaemonFileMediaPart(message)) {
+      if (!hasResolvableMediaPart(message)) {
         out.push(message);
         continue;
       }
       const content: ContentPart[] = [];
-      let sawVideoRef = false;
       for (const part of message.content) {
         const daemonPart = daemonFileRefFromPart(part);
-        if (daemonPart === undefined) {
-          content.push(part);
-          continue;
-        }
-        sawVideoRef ||= daemonPart.kind === 'video';
         const resolved =
-          daemonPart.kind === 'video'
+          daemonPart?.kind === 'video'
             ? await this.resolveVideoPart(daemonPart.ref, requester, signal)
-            : await this.resolveImagePart(daemonPart.ref, requester, signal);
+            : daemonPart?.kind === 'image'
+              ? await this.resolveImagePart(daemonPart.ref, requester, signal)
+              : part.type === 'image_url'
+                ? await this.resolveInlineImagePart(part, requester, signal)
+                : part;
         content.push(resolved);
+        changed ||= resolved !== part;
       }
-      out.push({
-        ...message,
-        content:
-          content.length > 0
-            ? content
-            : [unavailableMediaText(sawVideoRef ? 'video' : 'image')],
-      });
-      changed = true;
+      out.push(content.some((part, index) => part !== message.content[index])
+        ? { ...message, content }
+        : message);
     }
     return changed ? out : messages;
   }
@@ -121,8 +131,12 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     if (!requester.model.capabilities.image_in) {
       return degradedImage(await this.displayPath(ref));
     }
-    const cacheKey = `image\0${ref.fileId}`;
-    const memoed = this.memoedImage(cacheKey, requester.model.providerType);
+    const policy = imagePolicyFor(
+      requester,
+      this.flags.enabled('image_format_conversion'),
+    );
+    const cacheKey = `image\0${ref.fileId}\0${policy.convertUnsupported}`;
+    const memoed = this.memoedImage(cacheKey, policy);
     if (memoed !== undefined) return memoed;
     const path = await this.displayPath(ref);
 
@@ -140,25 +154,96 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       'media',
     );
     if (fileType.kind !== 'image') return degradedImage(path);
-    const mimeType = normalizeImageMime(fileType.mimeType);
-    if (!isModelAcceptedImageMime(mimeType, requester.model.providerType)) {
-      return degradedImage(path);
-    }
+    const resolved = await prepareImageBytes(
+      source.bytes,
+      normalizeImageMime(fileType.mimeType),
+      policy,
+      requester.model.providerType,
+      signal,
+    );
+    if (resolved === undefined) return degradedImage(path);
 
     const part: ContentPart = {
       type: 'image_url',
-      imageUrl: { url: `data:${mimeType};base64,${source.bytes.toString('base64')}` },
+      imageUrl: { url: `data:${resolved.mimeType};base64,${resolved.bytes.toString('base64')}` },
     };
-    if (source.bytes.length <= IMAGE_MEMO_MAX_BYTES) {
-      this.memoizeImage(cacheKey, part, source.bytes.length, mimeType);
+    if (resolved.bytes.length <= IMAGE_MEMO_MAX_BYTES) {
+      this.memoizeImage(cacheKey, part, resolved.bytes.length, resolved.mimeType);
     }
     return part;
   }
 
-  private memoedImage(cacheKey: string, providerType: string | undefined): ContentPart | undefined {
+  private async resolveInlineImagePart(
+    part: Extract<ContentPart, { type: 'image_url' }>,
+    requester: ModelRequester,
+    signal: AbortSignal | undefined,
+  ): Promise<ContentPart> {
+    if (!requester.model.capabilities.image_in) {
+      return { type: 'text', text: '[Image omitted: the current model does not support image input.]' };
+    }
+    const policy = imagePolicyFor(
+      requester,
+      this.flags.enabled('image_format_conversion'),
+    );
+    const parsed = parseImageDataUrl(part.imageUrl.url);
+    if (parsed === null) {
+      if (isDataUrl(part.imageUrl.url)) {
+        return { type: 'text', text: buildMalformedImageNotice(part.imageUrl.url) };
+      }
+      const unsupported = unsupportedImageMimeFromUrl(
+        part.imageUrl.url,
+        requester.model.providerType,
+        policy.acceptedTypes,
+      );
+      if (unsupported === null) return part;
+      return {
+        type: 'text',
+        text: buildUnsupportedImageNotice(
+          unsupported,
+          part.imageUrl.url,
+          requester.model.providerType,
+          policy.acceptedTypes,
+        ),
+      };
+    }
+    const mimeType = normalizeImageMime(
+      resolveEffectiveImageMime(parsed.mimeType, decodeBase64Prefix(parsed.base64)),
+    );
+    if (isModelAcceptedImageMime(mimeType, requester.model.providerType, policy.acceptedTypes)) {
+      const url = `data:${mimeType};base64,${parsed.base64}`;
+      return url === part.imageUrl.url
+        ? part
+        : { type: 'image_url', imageUrl: { ...part.imageUrl, url } };
+    }
+    const source = Buffer.from(parsed.base64, 'base64');
+    const resolved = await prepareImageBytes(
+      source,
+      mimeType,
+      policy,
+      requester.model.providerType,
+      signal,
+    );
+    if (resolved === undefined) {
+      return {
+        type: 'text',
+        text: buildUnsupportedImageNotice(
+          mimeType,
+          undefined,
+          requester.model.providerType,
+          policy.acceptedTypes,
+        ),
+      };
+    }
+    const url = `data:${resolved.mimeType};base64,${resolved.bytes.toString('base64')}`;
+    return url === part.imageUrl.url
+      ? part
+      : { type: 'image_url', imageUrl: { ...part.imageUrl, url } };
+  }
+
+  private memoedImage(cacheKey: string, policy: ResolvedImagePolicy): ContentPart | undefined {
     const entry = this.imageMemo.get(cacheKey);
     if (entry === undefined) return undefined;
-    if (!isModelAcceptedImageMime(entry.mimeType, providerType)) return undefined;
+    if (!isModelAcceptedImageMime(entry.mimeType, undefined, policy.acceptedTypes)) return undefined;
     this.imageMemo.delete(cacheKey);
     this.imageMemo.set(cacheKey, entry);
     return entry.part;
@@ -302,8 +387,57 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
   }
 }
 
-function hasDaemonFileMediaPart(message: Message): boolean {
-  return message.content.some((part) => daemonFileRefFromPart(part) !== undefined);
+function hasResolvableMediaPart(message: Message): boolean {
+  return message.content.some(
+    (part) => part.type === 'image_url' || daemonFileRefFromPart(part) !== undefined,
+  );
+}
+
+function imagePolicyFor(
+  requester: ModelRequester,
+  conversionEnabled: boolean,
+): ResolvedImagePolicy {
+  const configured = requester.model.imagePolicy;
+  return conversionEnabled || configured.convertUnsupported === 'off'
+    ? configured
+    : { acceptedTypes: configured.acceptedTypes, convertUnsupported: 'off' };
+}
+
+function conversionOutputs(policy: ResolvedImagePolicy): ReadonlySet<string> {
+  if (policy.convertUnsupported === 'png') return new Set(['image/png']);
+  if (policy.convertUnsupported === 'jpeg') return new Set(['image/jpeg']);
+  const outputs = new Set<string>();
+  if (policy.acceptedTypes.has('image/png')) outputs.add('image/png');
+  if (policy.acceptedTypes.has('image/jpeg')) outputs.add('image/jpeg');
+  return outputs;
+}
+
+async function prepareImageBytes(
+  bytes: Buffer,
+  mimeType: string,
+  policy: ResolvedImagePolicy,
+  providerType: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<{ readonly bytes: Buffer; readonly mimeType: string } | undefined> {
+  if (isModelAcceptedImageMime(mimeType, providerType, policy.acceptedTypes)) {
+    return { bytes, mimeType };
+  }
+  if (policy.convertUnsupported === 'off') return undefined;
+  signal?.throwIfAborted();
+  const converted = await compressImageForModel(bytes, mimeType, {
+    acceptedMimes: policy.acceptedTypes,
+    outputMimes: conversionOutputs(policy),
+    byteBudget: IMAGE_BYTE_BUDGET,
+  });
+  signal?.throwIfAborted();
+  if (
+    !converted.changed ||
+    converted.finalByteLength > IMAGE_BYTE_BUDGET ||
+    !isModelAcceptedImageMime(converted.mimeType, providerType, policy.acceptedTypes)
+  ) {
+    return undefined;
+  }
+  return { bytes: Buffer.from(converted.data), mimeType: normalizeImageMime(converted.mimeType) };
 }
 
 function degradedImage(path: string | undefined): ContentPart {

@@ -27,6 +27,7 @@ describe('model catalog schemas', () => {
     max_context_size: 131072,
     capabilities: ['thinking'],
     request_identity: { overrides: { client: { user_agent: 'host' } } },
+    images: { accepted_types: ['image/png'], convert_unsupported: 'png' },
   };
 
   const provider: ProviderCatalogItem = {
@@ -38,6 +39,7 @@ describe('model catalog schemas', () => {
       preset: 'grok_build_compatible',
       overrides: { client: { user_agent: 'grok_build' } },
     },
+    images: { accepted_types: ['image/jpeg', 'image/png'], convert_unsupported: 'auto' },
     has_api_key: true,
     status: 'connected',
     models: ['k2'],
@@ -74,6 +76,25 @@ describe('model catalog schemas', () => {
     });
     expect(patchModelRequestSchema.safeParse({ max_output_size: 0 }).success).toBe(false);
     expect(patchModelRequestSchema.safeParse({ models: [] }).success).toBe(false);
+  });
+
+  it('accepts sparse image-policy leaf updates and null clears', () => {
+    expect(
+      patchModelRequestSchema.parse({ images: { convert_unsupported: 'off' } }),
+    ).toEqual({ images: { convert_unsupported: 'off' } });
+    expect(
+      patchProviderRequestSchema.parse({ images: { accepted_types: ['IMAGE/JPG'] } }),
+    ).toEqual({ images: { accepted_types: ['image/jpeg'] } });
+    expect(
+      patchProviderRequestSchema.parse({ images: { accepted_types: null } }),
+    ).toEqual({ images: { accepted_types: null } });
+    expect(patchModelRequestSchema.parse({ images: null })).toEqual({ images: null });
+    expect(
+      patchProviderRequestSchema.safeParse({ images: { accepted_types: [] } }).success,
+    ).toBe(false);
+    expect(
+      patchProviderRequestSchema.safeParse({ images: { future_option: true } }).success,
+    ).toBe(false);
   });
 
   it('never accepts a model list inside a provider patch', () => {

@@ -12,8 +12,11 @@ const IMAGE_FORMAT_LABELS: Readonly<Record<string, string>> = Object.freeze({
   'image/heif': 'HEIF',
 });
 
-function acceptedFormatsText(providerType: string | undefined): string {
-  const labels = [...providerImagePolicy(providerType).acceptedMimes].map(
+function acceptedFormatsText(
+  providerType: string | undefined,
+  acceptedMimes?: ReadonlySet<string>,
+): string {
+  const labels = [...(acceptedMimes ?? providerImagePolicy(providerType).acceptedMimes)].map(
     (mime) => IMAGE_FORMAT_LABELS[mime] ?? mime,
   );
   const last = labels.at(-1);
@@ -52,7 +55,11 @@ export function resolveEffectiveImageMime(declaredMime: string, header: Uint8Arr
   return sniffed !== null ? sniffed.mimeType : declaredMime;
 }
 
-export function unsupportedImageMimeFromUrl(url: string, providerType?: string): string | null {
+export function unsupportedImageMimeFromUrl(
+  url: string,
+  providerType?: string,
+  acceptedMimes?: ReadonlySet<string>,
+): string | null {
   let path = url;
   const query = path.indexOf('?');
   if (query !== -1) path = path.slice(0, query);
@@ -62,7 +69,7 @@ export function unsupportedImageMimeFromUrl(url: string, providerType?: string):
   if (dot === -1) return null;
   const ext = path.slice(dot).toLowerCase();
   const mime = ext === '.svg' ? 'image/svg+xml' : IMAGE_MIME_BY_SUFFIX[ext];
-  if (mime === undefined || isModelAcceptedImageMime(mime, providerType)) return null;
+  if (mime === undefined || isModelAcceptedImageMime(mime, providerType, acceptedMimes)) return null;
   return mime;
 }
 
@@ -76,8 +83,14 @@ export function isDataUrl(url: string): boolean {
   return url.toLowerCase().startsWith('data:');
 }
 
-export function isModelAcceptedImageMime(mimeType: string, providerType?: string): boolean {
-  return providerImagePolicy(providerType).acceptedMimes.has(normalizeImageMime(mimeType));
+export function isModelAcceptedImageMime(
+  mimeType: string,
+  providerType?: string,
+  acceptedMimes?: ReadonlySet<string>,
+): boolean {
+  return (acceptedMimes ?? providerImagePolicy(providerType).acceptedMimes).has(
+    normalizeImageMime(mimeType),
+  );
 }
 
 export function buildImageConversionGuidance(
@@ -135,6 +148,7 @@ export function buildUnsupportedImageNotice(
   mimeType: string,
   name?: string,
   providerType?: string,
+  acceptedMimes?: ReadonlySet<string>,
 ): string {
   const what =
     name === undefined || name.length === 0
@@ -142,7 +156,7 @@ export function buildUnsupportedImageNotice(
       : `"${name}" uses unsupported image format ${mimeType}`;
   return (
     `[Image omitted: ${what}. The current model provider accepts only ` +
-    `${acceptedFormatsText(providerType)} — convert it to PNG or JPEG and try again.]`
+    `${acceptedFormatsText(providerType, acceptedMimes)} — convert it to PNG or JPEG and try again.]`
   );
 }
 

@@ -170,6 +170,20 @@ describe('compressImageForModel — fast path', () => {
     expect(result.height).toBe(64);
   });
 
+  it('converts a within-budget JPEG when the model accepts only PNG', async () => {
+    const jpeg = await solidJpeg(64, 64);
+    const acceptedMimes = new Set(['image/png']);
+    const result = await compressImageForModel(jpeg, 'image/jpeg', {
+      acceptedMimes,
+      outputMimes: acceptedMimes,
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.mimeType).toBe('image/png');
+    expect(result.width).toBe(64);
+    expect(result.height).toBe(64);
+  });
+
   it('treats image/jpg as image/jpeg', async () => {
     const jpeg = await solidJpeg(32, 32);
     const result = await compressImageForModel(jpeg, 'image/jpg');
@@ -214,6 +228,19 @@ describe('compressImageForModel — byte budget', () => {
     expect(result.changed).toBe(true);
     expect(result.mimeType).toBe('image/jpeg');
     expect(result.finalByteLength).toBeLessThan(result.originalByteLength);
+  });
+
+  it('never emits JPEG when the target model accepts only PNG', async () => {
+    const png = await noisePng(500, 500);
+    const acceptedMimes = new Set(['image/png']);
+    const result = await compressImageForModel(png, 'image/png', {
+      byteBudget: 8 * 1024,
+      acceptedMimes,
+      outputMimes: acceptedMimes,
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.mimeType).toBe('image/png');
   });
 
   it('keeps a translucent PNG as PNG when the budget allows', async () => {

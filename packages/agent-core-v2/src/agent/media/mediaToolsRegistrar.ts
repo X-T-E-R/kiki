@@ -7,6 +7,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventBus } from '#/app/event/eventBus';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { type ModelRequester } from '#/kosong/model/modelRequester';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -37,6 +38,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @ITelemetryService private readonly telemetry: ITelemetryService,
+    @IFlagService private readonly flags: IFlagService,
     @IAgentStateService private readonly states: IAgentStateService,
     @ISessionSkillCatalog private readonly skillCatalog?: ISessionSkillCatalog,
   ) {
@@ -89,10 +91,20 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
       inspected.identity.generation,
     ].join('|');
     const model = this.tryResolveModel(modelAlias);
+    const configuredImagePolicy = model?.imagePolicy;
+    const imagePolicy =
+      configuredImagePolicy !== undefined &&
+      !this.flags.enabled('image_format_conversion') &&
+      configuredImagePolicy.convertUnsupported !== 'off'
+        ? { acceptedTypes: configuredImagePolicy.acceptedTypes, convertUnsupported: 'off' as const }
+        : configuredImagePolicy;
     const key = [
       modelAlias,
       providerType ?? '',
       model?.protocol ?? '',
+      imagePolicy === undefined
+        ? ''
+        : `${[...imagePolicy.acceptedTypes].toSorted().join(',')}:${imagePolicy.convertUnsupported}`,
       String(capabilities.image_in),
       String(capabilities.video_in),
       identityKey,
@@ -140,6 +152,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
       }),
       inlineVideoSupported: model?.protocol !== 'openai' && model?.protocol !== 'openai_responses',
       providerType,
+      imagePolicy,
       telemetry: this.telemetry,
     });
   }

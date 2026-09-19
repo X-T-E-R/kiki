@@ -65,6 +65,7 @@ import type { Message } from '@kiki/agent-core-v2/kosong/contract/message';
 import type { Tool } from '@kiki/agent-core-v2/kosong/contract/tool';
 import type { AuthProvider, Model } from '@kiki/agent-core-v2/kosong/model/catalog';
 import { IModelCatalog } from '@kiki/agent-core-v2/kosong/model/catalog';
+import { resolveImagePolicy } from '@kiki/agent-core-v2';
 import type {
   ModelRequestInput,
   ModelRequester,
@@ -299,6 +300,7 @@ async function probeWireEncoding(): Promise<void> {
       providerType,
       providerName: providerType ?? 'probe',
       authProvider: staticKey,
+      imagePolicy: resolveImagePolicy(providerType, undefined, undefined),
     };
     return new ModelRequesterImpl(model, registry);
   };

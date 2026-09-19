@@ -7,6 +7,8 @@ import {
   patchProviderRequestSchema,
   type CreateModelRequest,
   type CreateProviderRequest,
+  type ImagePolicyPatch,
+  type ImagePolicyWire,
   type ModelEntity,
   type ModelIssue,
   type ModelProviderSource,
@@ -30,6 +32,7 @@ import type { ModelRecord, ModelsSection } from '#/kosong/model/model';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import type { ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
+import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import {
   requestIdentityFromWire,
   requestIdentityToWire,
@@ -224,6 +227,7 @@ function modelEntity(
     adaptive_thinking: record.adaptiveThinking,
     service_tier: record.serviceTier,
     request_identity: requestIdentityToWire(record.requestIdentity),
+    images: imagePolicyToWire(record.images),
     protocol: record.protocol,
     base_url: record.baseUrl,
     revision: revisionOf(record),
@@ -256,6 +260,38 @@ function withoutUndefined(value: unknown): unknown {
 
 function setCleared(target: object, key: string): void {
   (target as Record<string, unknown>)[key] = undefined;
+}
+
+function imagePolicyFromWire(value: ImagePolicyWire): ImagePolicyConfig {
+  return {
+    acceptedTypes: value.accepted_types,
+    convertUnsupported: value.convert_unsupported,
+  };
+}
+
+function imagePolicyToWire(value: ImagePolicyConfig | undefined): ImagePolicyWire | undefined {
+  if (value === undefined) return undefined;
+  return {
+    accepted_types: value.acceptedTypes,
+    convert_unsupported: value.convertUnsupported,
+  };
+}
+
+function applyImagePolicyPatch(
+  current: ImagePolicyConfig | undefined,
+  patch: ImagePolicyPatch | null | undefined,
+): ImagePolicyConfig | undefined {
+  if (patch === undefined) return current;
+  if (patch === null) return undefined;
+  const next: ImagePolicyConfig = { ...current };
+  if (patch.accepted_types !== undefined) {
+    next.acceptedTypes = patch.accepted_types === null ? undefined : patch.accepted_types;
+  }
+  if (patch.convert_unsupported !== undefined) {
+    next.convertUnsupported =
+      patch.convert_unsupported === null ? undefined : patch.convert_unsupported;
+  }
+  return next;
 }
 
 function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRecord {
@@ -299,6 +335,13 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
       next['requestIdentity'] = policy;
     }
   }
+  if (patch.images !== undefined) {
+    if (patch.images === null) {
+      setCleared(next, 'images');
+    } else {
+      next['images'] = applyImagePolicyPatch(record.images, patch.images);
+    }
+  }
   return next as ModelRecord;
 }
 
@@ -334,6 +377,13 @@ function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderReques
       const policy = requestIdentityFromWire(patch.request_identity);
       resolveProviderRequestIdentity({ requestIdentity: policy });
       next.requestIdentity = policy;
+    }
+  }
+  if (patch.images !== undefined) {
+    if (patch.images === null) {
+      setCleared(next, 'images');
+    } else {
+      next.images = applyImagePolicyPatch(provider.images, patch.images);
     }
   }
   if (patch.api_key !== undefined) {
@@ -463,6 +513,7 @@ export class ModelCatalogMutationService
         record.adaptiveThinking = request.adaptive_thinking;
       }
       if (request.service_tier !== undefined) record.serviceTier = request.service_tier;
+      if (request.images !== undefined) record.images = imagePolicyFromWire(request.images);
       if (request.request_identity !== undefined) {
         const policy = requestIdentityFromWire(request.request_identity);
         resolveProviderRequestIdentity({ requestIdentity: policy });
@@ -539,10 +590,20 @@ export class ModelCatalogMutationService
           `provider ${id} already exists`,
         );
       }
+      for (const entry of request.models ?? []) {
+        const alias = `${id}/${entry.remote_id}`;
+        if (models[alias] !== undefined) {
+          throw new Error2(
+            ModelCatalogErrors.codes.MODEL_ALREADY_EXISTS,
+            `model ${alias} already exists`,
+          );
+        }
+      }
       const provider: ProviderConfig = { type: request.type };
       if (request.api_key !== undefined && request.api_key !== '') provider.apiKey = request.api_key;
       const baseUrl = request.base_url === undefined ? undefined : nonEmpty(request.base_url);
       if (baseUrl !== undefined) provider.baseUrl = baseUrl;
+      if (request.images !== undefined) provider.images = imagePolicyFromWire(request.images);
       if (request.request_identity !== undefined) {
         const policy = requestIdentityFromWire(request.request_identity);
         resolveProviderRequestIdentity({ requestIdentity: policy });
@@ -564,6 +625,7 @@ export class ModelCatalogMutationService
         if (entry.adaptive_thinking !== undefined) {
           record.adaptiveThinking = entry.adaptive_thinking;
         }
+        if (entry.images !== undefined) record.images = imagePolicyFromWire(entry.images);
         if (entry.request_identity !== undefined) {
           const policy = requestIdentityFromWire(entry.request_identity);
           resolveProviderRequestIdentity({ requestIdentity: policy });

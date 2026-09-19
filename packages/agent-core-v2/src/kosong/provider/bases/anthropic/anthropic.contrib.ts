@@ -28,7 +28,9 @@ registerProtocolBase({
             ? undefined
             : { ...config.providerOptions.metadata },
         hooks: composeAnthropicHooks(traits),
-        acceptedImageMimes: providerImagePolicy(config.providerType).acceptedMimes,
+        acceptedImageMimes:
+          config.providerOptions?.acceptedImageMimes ??
+          providerImagePolicy(config.providerType).acceptedMimes,
       }),
     });
   },

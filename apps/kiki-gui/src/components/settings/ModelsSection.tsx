@@ -1,24 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { GetModelResponse, ModelCatalogItem, PatchModelRequest, ProviderCatalogItem } from '@kiki/protocol';
+import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 
-import { errorText, issueText } from '@kiki/session-core/i18n';
+import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   KNOWN_CAPABILITIES,
   KNOWN_EFFORTS,
   markRestartRequired,
-  providerDraftFromCatalog,
+  modelPatchBody,
+  providerModelDraftFromCatalog,
+  providerModelDraftsEqual,
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
   validateDesktopConfigDraft,
+  validateImagePolicyDraft,
   writeSettings,
-  type ProviderDraft,
   type ProviderModelDraft,
   type RequestIdentityLayerDraft,
-  type ServerConnection,
   type ServerFileSettings,
 } from '@kiki/session-core/settings';
 import { formatTokens } from '@kiki/session-core/util';
@@ -27,7 +28,7 @@ import { useConnection } from '../../state/connection';
 import { ChipSelect } from '../ChipSelect';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
-import { ContextStepper, MsUnitInput } from '../ProviderFields';
+import { ContextStepper, ImagePolicyEditor, MsUnitInput } from '../ProviderFields';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { useRestartRequirement } from '../RestartBanner';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
@@ -113,7 +114,7 @@ export function GlobalRequestIdentityCard() {
  * validation and save channel.
  */
 export function ModelCatalogCard() {
-  const { client, config: connection } = useConnection();
+  const { client } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
@@ -217,10 +218,6 @@ export function ModelCatalogCard() {
           {groups.map((group) => {
             const provider: ProviderCatalogItem | undefined = providers.get(group.provider);
             const providerDefault = provider?.default_model;
-            // Only providers whose wire type round-trips through the provider
-            // form can offer the in-place row editor (same rule as the
-            // provider editor's cannot-rewrite branch).
-            const editable = provider !== undefined && providerDraftFromCatalog(provider, items) !== null;
             return (
               <div key={group.provider}>
                 <div className="mb-1.5 flex flex-wrap items-center gap-2">
@@ -242,7 +239,7 @@ export function ModelCatalogCard() {
                     <ModelRow
                       key={item.id}
                       item={item}
-                      provider={editable ? provider : undefined}
+                      provider={provider}
                       isDefault={item.id === defaultModel}
                       busy={busy}
                       onSetDefault={() => void selectDefaultModel(item)}
@@ -561,6 +558,15 @@ export function DefaultsTab() {
   );
 }
 
+const MODEL_ISSUE_KEYS: Readonly<Record<string, I18nKey>> = {
+  'model.remote_id_missing': 'st.models.issue.remoteIdMissing',
+  'model.provider_missing': 'st.models.issue.providerMissing',
+  'model.endpoint_missing': 'st.models.issue.endpointMissing',
+  'model.max_context_size_missing': 'st.models.issue.contextMissing',
+  'model.protocol_unresolved': 'st.models.issue.protocolUnresolved',
+  'model.request_identity_invalid': 'st.models.issue.requestIdentityInvalid',
+};
+
 function ModelRow({
   item,
   provider,
@@ -570,7 +576,6 @@ function ModelRow({
   onSaved,
 }: {
   item: ModelCatalogItem;
-  /** Undefined when this provider cannot round-trip through the provider form. */
   provider: ProviderCatalogItem | undefined;
   isDefault: boolean;
   busy: boolean;
@@ -615,21 +620,23 @@ function ModelRow({
             ))}
           </div>
         ) : null}
-        {provider !== undefined ? (
-          <button
-            type="button"
-            aria-label={t('st.models.editAria', { model: item.id })}
-            aria-expanded={editing}
-            title={t('st.models.editTitle')}
-            onClick={() => { setEditing((value) => !value); }}
-            className="shrink-0 text-[10px] text-ink-faint transition-colors hover:text-ink"
-          >
-            <span aria-hidden className={`inline-block transition-transform ${editing ? 'rotate-90' : ''}`}>▶</span>
-          </button>
-        ) : null}
+        <button
+          type="button"
+          aria-label={t('st.models.editAria', { model: item.id })}
+          aria-expanded={editing}
+          title={t('st.models.editTitle')}
+          onClick={() => { setEditing((value) => !value); }}
+          className="shrink-0 text-[10px] text-ink-faint transition-colors hover:text-ink"
+        >
+          <span aria-hidden className={`inline-block transition-transform ${editing ? 'rotate-90' : ''}`}>▶</span>
+        </button>
       </div>
-      {editing && provider !== undefined ? (
-        <ModelCatalogRowEditor item={item} onSaved={onSaved} />
+      {editing ? (
+        <ModelCatalogRowEditor
+          item={item}
+          inheritedImageTypes={provider?.images?.accepted_types}
+          onSaved={onSaved}
+        />
       ) : null}
     </div>
   );
@@ -645,9 +652,11 @@ function ModelRow({
  */
 function ModelCatalogRowEditor({
   item,
+  inheritedImageTypes,
   onSaved,
 }: {
   item: ModelCatalogItem;
+  inheritedImageTypes: readonly string[] | undefined;
   onSaved: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
@@ -657,21 +666,21 @@ function ModelCatalogRowEditor({
     queryFn: () => client.getModel(item.id),
   });
   const entity = entityQuery.data;
-  const [draft, setDraft] = useState<ModelEntityDraft | null>(null);
-  const [baseline, setBaseline] = useState<ModelEntityDraft | null>(null);
+  const [draft, setDraft] = useState<ProviderModelDraft | null>(null);
+  const [baseline, setBaseline] = useState<ProviderModelDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
 
   useEffect(() => {
     if (entity === undefined) return;
-    if (draft !== null && baseline !== null && !modelEntityDraftsEqual(draft, baseline)) return;
-    const next = modelEntityDraftFrom(entity);
-    if (draft !== null && modelEntityDraftsEqual(draft, next)) return;
+    if (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline)) return;
+    const next = providerModelDraftFromCatalog(entity);
+    if (draft !== null && providerModelDraftsEqual(draft, next)) return;
     setDraft(next);
     setBaseline(next);
   }, [entity, draft, baseline]);
 
-  const dirty = draft !== null && baseline !== null && !modelEntityDraftsEqual(draft, baseline);
+  const dirty = draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline);
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
 
   if (entityQuery.isError) return <InlineError error={entityQuery.error} />;
@@ -680,7 +689,16 @@ function ModelCatalogRowEditor({
   }
 
   const save = async () => {
-    const patch = modelEntityPatch(draft, baseline);
+    if (draft.remoteId.trim() === '') {
+      setFeedback({ tone: 'error', text: issueText(locale, { key: 'val.modelIdEmpty' }) });
+      return;
+    }
+    const imageIssue = validateImagePolicyDraft(draft, inheritedImageTypes);
+    if (imageIssue !== null) {
+      setFeedback({ tone: 'error', text: issueText(locale, imageIssue) });
+      return;
+    }
+    const patch = modelPatchBody(draft, baseline);
     if (patch === null) return;
     setSaving(true);
     setFeedback(null);
@@ -704,10 +722,20 @@ function ModelCatalogRowEditor({
       </p>
       {entity.issues.length > 0 ? (
         <p className="text-[10.5px] text-amber-ink">
-          {entity.issues.map((issue) => `${issue.path}: ${issue.message}`).join(' · ')}
+          {entity.issues.map((issue) => {
+            const key = MODEL_ISSUE_KEYS[issue.code];
+            return `${issue.path}: ${key === undefined ? issue.message : t(key)}`;
+          }).join(' · ')}
         </p>
       ) : null}
       <div className="grid items-center gap-2 sm:grid-cols-2">
+        <input
+          className={INPUT}
+          aria-label={t('st.models.remoteIdAria', { model: entity.id })}
+          value={draft.remoteId}
+          onChange={(event) => { setDraft({ ...draft, remoteId: event.target.value }); }}
+          placeholder="model-id"
+        />
         <input
           className={INPUT}
           aria-label={t('st.models.displayNameAria', { model: entity.id })}
@@ -747,6 +775,11 @@ function ModelCatalogRowEditor({
           removeLabel={(value) => t('st.chips.removeAria', { value })}
         />
       </div>
+      <ImagePolicyEditor
+        value={draft}
+        onChange={(images) => { setDraft({ ...draft, ...images }); }}
+        inheritLabel={t('st.images.inheritProvider')}
+      />
       <div className="border-t border-hairline pt-3">
         <RequestIdentityLayerEditor
           value={draft}
@@ -769,64 +802,6 @@ function ModelCatalogRowEditor({
   );
 }
 
-type ModelEntityDraft = Pick<
-  ProviderModelDraft,
-  | 'displayName'
-  | 'maxContextSize'
-  | 'capabilities'
-  | 'supportEfforts'
-  | 'requestIdentityChoice'
-  | 'requestIdentityOverridesJson'
->;
-
-function modelEntityDraftFrom(entity: GetModelResponse): ModelEntityDraft {
-  return {
-    displayName: entity.display_name ?? '',
-    maxContextSize: entity.max_context_size ?? 0,
-    capabilities: [...(entity.capabilities ?? [])],
-    supportEfforts: [...(entity.support_efforts ?? [])],
-    ...requestIdentityLayerDraftFromPolicy(entity.request_identity),
-  };
-}
-
-function modelEntityDraftsEqual(a: ModelEntityDraft, b: ModelEntityDraft): boolean {
-  return a.displayName === b.displayName
-    && a.maxContextSize === b.maxContextSize
-    && a.requestIdentityChoice === b.requestIdentityChoice
-    && a.requestIdentityOverridesJson === b.requestIdentityOverridesJson
-    && stringListEquals(a.capabilities, b.capabilities)
-    && stringListEquals(a.supportEfforts, b.supportEfforts);
-}
-
-function modelEntityPatch(
-  draft: ModelEntityDraft,
-  baseline: ModelEntityDraft,
-): PatchModelRequest | null {
-  const patch: PatchModelRequest = {};
-  if (draft.displayName !== baseline.displayName) {
-    patch.display_name = draft.displayName.trim() || null;
-  }
-  if (draft.maxContextSize !== baseline.maxContextSize) {
-    patch.max_context_size = draft.maxContextSize > 0 ? draft.maxContextSize : null;
-  }
-  if (!stringListEquals(draft.capabilities, baseline.capabilities)) {
-    patch.capabilities = [...draft.capabilities];
-  }
-  if (!stringListEquals(draft.supportEfforts, baseline.supportEfforts)) {
-    patch.support_efforts = [...draft.supportEfforts];
-  }
-  if (
-    draft.requestIdentityChoice !== baseline.requestIdentityChoice
-    || draft.requestIdentityOverridesJson !== baseline.requestIdentityOverridesJson
-  ) {
-    patch.request_identity = requestIdentityPolicyFromDraft(draft) ?? null;
-  }
-  return Object.keys(patch).length === 0 ? null : patch;
-}
-
-function stringListEquals(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }

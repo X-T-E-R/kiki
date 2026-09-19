@@ -26,6 +26,7 @@ import { ProviderEditor } from './ProviderFields';
 
 const refreshProvider = vi.fn();
 const getProviderEntity = vi.fn();
+const getModel = vi.fn();
 const updateProvider = vi.fn();
 const updateModel = vi.fn();
 const createModel = vi.fn();
@@ -37,6 +38,7 @@ vi.mock('../state/connection', () => ({
     client: {
       refreshProvider,
       getProviderEntity,
+      getModel,
       updateProvider,
       updateModel,
       createModel,
@@ -102,11 +104,24 @@ beforeEach(() => {
   refreshProvider.mockReset();
   getProviderEntity.mockReset().mockImplementation(async (id: string) => ({
     ...(id === 'managed:kimi-code' ? MANAGED_PROVIDER : COLON_PROVIDER),
-    revision: 'rev-1',
+    revision: 'provider-rev-1',
   }));
-  updateProvider.mockReset().mockResolvedValue({ ...COLON_PROVIDER, revision: 'rev-2' });
-  updateModel.mockReset().mockResolvedValue({});
-  createModel.mockReset().mockResolvedValue({});
+  getModel.mockReset().mockImplementation(async (id: string) => {
+    const model = [...MANAGED_MODELS, ...FAST_MODELS].find((candidate) => candidate.id === id)!;
+    return { ...model, provider_source: 'provider', revision: `${id}-rev-1`, issues: [] };
+  });
+  updateProvider.mockReset().mockResolvedValue({ ...COLON_PROVIDER, revision: 'provider-rev-2' });
+  updateModel.mockReset().mockImplementation(async (id: string) => ({
+    ...(await getModel(id)),
+    revision: `${id}-rev-2`,
+  }));
+  createModel.mockReset().mockResolvedValue({
+    ...FAST_MODELS[0],
+    id: 'edge:gateway/new-model',
+    provider_source: 'provider',
+    revision: 'new-model-rev-1',
+    issues: [],
+  });
   deleteModel.mockReset().mockResolvedValue(undefined);
   deleteProviderEntity.mockReset().mockResolvedValue(undefined);
 });
@@ -181,7 +196,7 @@ describe('ProviderEditor save channel', () => {
     expect(providerId).toBe('managed:kimi-code');
     expect(patch).toEqual({
       base_url: 'https://api.changed.example.test/v1',
-      base_revision: 'rev-1',
+      base_revision: 'provider-rev-1',
     });
     expect(patch).not.toHaveProperty('models');
     expect(patch).not.toHaveProperty('id');
@@ -219,7 +234,7 @@ describe('ProviderEditor save channel', () => {
     expect(updateModel).toHaveBeenCalledTimes(1);
     const [modelId, patch] = updateModel.mock.calls[0] as [string, Record<string, unknown>];
     expect(modelId).toBe('fast');
-    expect(patch).toEqual({ display_name: 'Fast (renamed)' });
+    expect(patch).toEqual({ display_name: 'Fast (renamed)', base_revision: 'fast-rev-1' });
     expect(patch).not.toHaveProperty('remote_id');
     expect(updateProvider).not.toHaveBeenCalled();
     expect(onSaved).toHaveBeenCalledTimes(1);
@@ -261,9 +276,99 @@ describe('ProviderEditor save channel', () => {
     // the display name: the alias, the remote id, the capabilities and the
     // stored protocol fields stay exactly as they were.
     expect(modelId).toBe('kimi-code/kimi-k2');
-    expect(patch).toEqual({ display_name: 'K2 (mine)' });
+    expect(patch).toEqual({
+      display_name: 'K2 (mine)',
+      base_revision: 'kimi-code/kimi-k2-rev-1',
+    });
     expect(deleteModel).not.toHaveBeenCalled();
     expect(createModel).not.toHaveBeenCalled();
     expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the first writer when two editors save the same model field', async () => {
+    let storedName = 'Fast';
+    let revision = 'fast-rev-1';
+    let conflictCode: number | undefined;
+    getModel.mockImplementation(async () => ({
+      ...FAST_MODELS[0],
+      display_name: storedName,
+      provider_source: 'provider',
+      revision,
+      issues: [],
+    }));
+    updateModel.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      if (patch['base_revision'] !== revision) {
+        conflictCode = 40941;
+        throw Object.assign(new Error('Model changed since it was read.'), { code: conflictCode });
+      }
+      storedName = String(patch['display_name']);
+      revision = 'fast-rev-2';
+      return { ...(await getModel('fast')), revision };
+    });
+
+    const first = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    const second = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    for (const [container, name] of [[first, 'First writer'], [second, 'Second writer']] as const) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click();
+      });
+      const input = [...container.querySelectorAll('input')].find((candidate) => candidate.value === 'Fast')!;
+      await act(async () => { setInputValue(input, name); });
+    }
+
+    await act(async () => { buttonByText(first, 'Save provider').click(); });
+    await act(async () => { buttonByText(second, 'Save provider').click(); });
+
+    expect(updateModel).toHaveBeenCalledTimes(2);
+    expect(updateModel.mock.calls[0]?.[1]).toMatchObject({
+      display_name: 'First writer',
+      base_revision: 'fast-rev-1',
+    });
+    expect(updateModel.mock.calls[1]?.[1]).toMatchObject({
+      display_name: 'Second writer',
+      base_revision: 'fast-rev-1',
+    });
+    expect(conflictCode).toBe(40941);
+    expect(storedName).toBe('First writer');
+    expect(second.textContent).toContain('Model changed since it was read.');
+  });
+
+  it('records a created model before a later provider failure so retry can continue', async () => {
+    const onSaved = vi.fn(async () => {});
+    updateProvider
+      .mockRejectedValueOnce(new Error('Provider changed since it was read.'))
+      .mockResolvedValueOnce({ ...COLON_PROVIDER, revision: 'provider-rev-2' });
+    createModel.mockResolvedValue({
+      id: 'edge:gateway/new-model',
+      provider_id: 'edge:gateway',
+      provider_source: 'provider',
+      remote_id: 'new-model',
+      max_context_size: 128000,
+      revision: 'new-model-rev-1',
+      issues: [],
+    });
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, onSaved);
+
+    await act(async () => { buttonByText(container, 'Add model').click(); });
+    const remoteInput = container.querySelector<HTMLInputElement>('input[aria-label="Model 2 ID"]')!;
+    const baseUrlInput = [...container.querySelectorAll('input')].find(
+      (candidate) => candidate.value === 'https://edge.example.test/v1',
+    )!;
+    await act(async () => {
+      setInputValue(remoteInput, 'new-model');
+      setInputValue(baseUrlInput, 'https://edge-2.example.test/v1');
+    });
+
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(createModel).toHaveBeenCalledTimes(1);
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('edge:gateway/new-model');
+    expect(container.textContent).toContain('Provider changed since it was read.');
+
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(createModel).toHaveBeenCalledTimes(1);
+    expect(updateProvider).toHaveBeenCalledTimes(2);
+    expect(onSaved).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('Server saved provider edge:gateway.');
   });
 });

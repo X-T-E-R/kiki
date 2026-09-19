@@ -133,6 +133,63 @@ describe('Model assembly (pure data)', () => {
     }
   });
 
+  it('resolves provider image defaults with field-level model overrides', () => {
+    const { host, catalog } = createHost({
+      providers: {
+        gateway: {
+          type: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: 'https://example.test/v1',
+          images: {
+            acceptedTypes: ['image/jpeg', 'image/png'],
+            convertUnsupported: 'auto',
+          },
+        },
+      },
+      models: {
+        vision: {
+          provider: 'gateway',
+          model: 'vision-1',
+          maxContextSize: 128000,
+          images: { acceptedTypes: ['image/png'] },
+        },
+      },
+    });
+    try {
+      expect(catalog.get('vision').imagePolicy).toEqual({
+        acceptedTypes: new Set(['image/png']),
+        convertUnsupported: 'auto',
+      });
+      expect(catalog.inspect('vision').resolved.imagePolicy).toEqual({
+        acceptedTypes: new Set(['image/png']),
+        convertUnsupported: 'auto',
+      });
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('rejects a fixed conversion target outside the effective accepted set', () => {
+    const { host, catalog } = createHost({
+      providers: {
+        gateway: { type: 'openai', apiKey: 'sk-test', baseUrl: 'https://example.test/v1' },
+      },
+      models: {
+        vision: {
+          provider: 'gateway',
+          model: 'vision-1',
+          maxContextSize: 128000,
+          images: { acceptedTypes: ['image/jpeg'], convertUnsupported: 'png' },
+        },
+      },
+    });
+    try {
+      expect(() => catalog.get('vision')).toThrow(/requires image\/png/);
+    } finally {
+      host.dispose();
+    }
+  });
+
   it('assembles a kimi model: protocol resolves to the vendor base, never a vendor', () => {
     const { host, catalog } = createHost(kimiSections);
     try {

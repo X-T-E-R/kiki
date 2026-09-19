@@ -1,4 +1,5 @@
 import type { ModelCapability } from '#/kosong/contract/capability';
+import type { ResolvedImagePolicy } from '#/kosong/provider/providerImagePolicy';
 import type { ContentPart } from '#/kosong/contract/message';
 import { VideoUploadUnsupportedError } from '#/kosong/contract/errors';
 import { inlineVideoPart, isVideoUploadAuthError } from '#/agent/media/videoUpload';
@@ -68,6 +69,16 @@ function buildDescription(capabilities: ModelCapability): string {
     lines.push('- The current model does not support image or video input.');
   }
   return lines.join('\n');
+}
+
+function imageOutputMimes(policy: ResolvedImagePolicy | undefined): ReadonlySet<string> | undefined {
+  if (policy === undefined) return undefined;
+  if (policy.convertUnsupported === 'png') return new Set(['image/png']);
+  if (policy.convertUnsupported === 'jpeg') return new Set(['image/jpeg']);
+  const outputs = new Set<string>();
+  if (policy.acceptedTypes.has('image/png')) outputs.add('image/png');
+  if (policy.acceptedTypes.has('image/jpeg')) outputs.add('image/jpeg');
+  return outputs;
 }
 
 interface ImageDelivery {
@@ -183,6 +194,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     telemetry?: ITelemetryService,
     inlineVideoSupported?: boolean,
     private readonly providerType?: string,
+    private readonly imagePolicy?: ResolvedImagePolicy,
   ) {
     this.description = buildDescription(capabilities);
     this.compressTelemetry =
@@ -289,7 +301,12 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       }
       if (
         fileType.kind === 'image' &&
-        !isModelAcceptedImageMime(fileType.mimeType, this.providerType)
+        !isModelAcceptedImageMime(
+          fileType.mimeType,
+          this.providerType,
+          this.imagePolicy?.acceptedTypes,
+        ) &&
+        (this.imagePolicy?.convertUnsupported ?? 'off') === 'off'
       ) {
         return {
           isError: true,
@@ -377,6 +394,8 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           const outcome = await cropImageForModel(data, fileType.mimeType, args.region, {
             skipResize: args.full_resolution === true,
             telemetry: this.compressTelemetry,
+            acceptedMimes: this.imagePolicy?.acceptedTypes,
+            outputMimes: imageOutputMimes(this.imagePolicy),
           });
           if (!outcome.ok) {
             return { isError: true, output: `Cannot read region from "${args.path}": ${outcome.error}` };
@@ -421,6 +440,8 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             byteBudget: readByteBudget,
             maxEdge,
             telemetry: this.compressTelemetry,
+            acceptedMimes: this.imagePolicy?.acceptedTypes,
+            outputMimes: imageOutputMimes(this.imagePolicy),
           });
           if (
             compressed.finalByteLength > readByteBudget ||

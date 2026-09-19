@@ -93,7 +93,8 @@ const M_GOOGLE = 'matrix-google';
 
 const KIMI_PROVIDER = 'matrix-kimi-provider';
 
-const IMAGE_BAD_MIME_URL = 'data:image/bmp;base64,QUJD'; // bmp is outside every base's allowlist
+const IMAGE_BAD_MIME_URL =
+  'data:image/bmp;base64,Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAATCwAAEwsAAAAAAAAAAAAAAAD/AA==';
 const IMAGE_BAD_BASE64_URL = 'data:image/png;base64,%%%not-base64%%%';
 const VIDEO_HTTP_URL = 'https://example.com/clip.mp4';
 const VIDEO_BAD_MIME_URL = 'data:video/x-ms-wmv;base64,QUJD';
@@ -533,12 +534,9 @@ describe('l1: klient input validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('image blocks with invalid data', () => {
-  it('a data-URL image with an unaccepted mime is replaced at prompt ingestion (l2)', async () => {
-    // PromptStepRequest gates image parts through gateImageFormatParts before
-    // the turn starts: a mime the provider does not advertise never reaches
-    // the conversion layer — it becomes a text notice, the request goes out
-    // without the image, and the turn completes. Kimi advertises bmp support,
-    // so the same image passes through there unchanged.
+  it('a data-URL image with an unaccepted mime is replaced during request preparation (l2)', async () => {
+    // Request-time media preparation applies the current model policy. Kimi
+    // advertises BMP support, so the same real BMP passes through unchanged.
     const cases = [
       { label: 'bmp-openai', model: M_OPENAI, reply: OK_OPENAI, accepted: false },
       { label: 'bmp-kimi', model: M_KIMI, reply: OK_OPENAI, accepted: true },
@@ -565,7 +563,7 @@ describe('image blocks with invalid data', () => {
     }
   }, 60_000);
 
-  it('a malformed data URL is replaced with a notice at prompt ingestion (l2)', async () => {
+  it('a malformed data URL is replaced with a notice during request preparation (l2)', async () => {
     const ctx = await newCase(M_OPENAI, 'malformed-data-url');
     resetMock(queueScript(OK_OPENAI));
 

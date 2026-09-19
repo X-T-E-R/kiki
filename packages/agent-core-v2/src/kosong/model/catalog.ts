@@ -8,6 +8,11 @@ import type { Protocol, ProtocolProviderOptions } from '#/kosong/protocol/protoc
 
 import type { ProviderConfig } from '../provider/provider';
 import {
+  IMAGE_MIME_TYPES,
+  type ImagePolicyConfig,
+  type ResolvedImagePolicy,
+} from '../provider/providerImagePolicy';
+import {
   RequestIdentityPolicyWireSchema,
   requestIdentityToWire,
 } from '../requestIdentity/requestIdentityPolicy';
@@ -57,6 +62,7 @@ export interface Model {
   readonly alwaysThinking: boolean;
   readonly providerType?: string;
   readonly providerName: string;
+  readonly imagePolicy: ResolvedImagePolicy;
 
   readonly authProvider: AuthProvider;
   readonly providerOptions?: ProtocolProviderOptions;
@@ -71,6 +77,11 @@ export interface ModelPingResult {
   readonly error?: string;
 }
 
+const imagePolicyWireSchema = z.object({
+  accepted_types: z.array(z.enum(IMAGE_MIME_TYPES)).min(1).optional(),
+  convert_unsupported: z.enum(['off', 'auto', 'png', 'jpeg']).optional(),
+});
+
 export const modelCatalogItemSchema = z.object({
   id: z.string().min(1),
   provider_id: z.string(),
@@ -82,6 +93,7 @@ export const modelCatalogItemSchema = z.object({
   default_effort: z.string().optional(),
   service_tier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
+  images: imagePolicyWireSchema.optional(),
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 
@@ -98,6 +110,7 @@ export const providerCatalogItemSchema = z.object({
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
+  images: imagePolicyWireSchema.optional(),
   has_api_key: z.boolean(),
   status: providerCatalogStatusSchema,
   models: z.array(z.string().min(1)).optional(),
@@ -131,6 +144,7 @@ export function toProtocolModel(
     default_effort: model.defaultEffort,
     service_tier: model.serviceTier,
     request_identity: requestIdentityToWire(record.requestIdentity),
+    images: imagePolicyToWire(record.images),
   };
 }
 
@@ -152,6 +166,7 @@ export function toProtocolModelFallback(
     default_effort: effective.defaultEffort,
     service_tier: effective.serviceTier,
     request_identity: requestIdentityToWire(record.requestIdentity),
+    images: imagePolicyToWire(record.images),
   };
 }
 
@@ -171,9 +186,18 @@ export function toProtocolProvider(
     base_url: provider.baseUrl,
     default_model: defaultModel,
     request_identity: requestIdentityToWire(provider.requestIdentity),
+    images: imagePolicyToWire(provider.images),
     has_api_key: credential.hasApiKey,
     status: credential.hasApiKey || credential.hasOAuthToken ? 'connected' : 'unconfigured',
     models: providerModels,
+  };
+}
+
+function imagePolicyToWire(config: ImagePolicyConfig | undefined): z.infer<typeof imagePolicyWireSchema> | undefined {
+  if (config === undefined) return undefined;
+  return {
+    accepted_types: config.acceptedTypes === undefined ? undefined : [...config.acceptedTypes],
+    convert_unsupported: config.convertUnsupported,
   };
 }
 

@@ -29,6 +29,7 @@ import {
   getProviderDefinition,
   resolveProviderEndpoint,
 } from '../provider/providerDefinition';
+import { resolveImagePolicy } from '../provider/providerImagePolicy';
 
 import {
   type AuthProvider,
@@ -367,11 +368,13 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       model.maxContextSize,
       model.maxInputSize,
     );
+    const imagePolicy = resolveImagePolicy(providerType, providerConfig?.images, configuredModel.images);
     const providerOptions = buildProtocolProviderOptions(
       model,
       protocol,
       providerConfig,
       resolvedBaseUrl,
+      imagePolicy.acceptedTypes,
     );
     if (providerOptions !== undefined) {
       attributeProviderOptions(trace, providerOptions, providerConfig?.env);
@@ -408,6 +411,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       alwaysThinking: declared.has('always_thinking'),
       providerType,
       providerName,
+      imagePolicy,
       authProvider,
       providerOptions,
     };
@@ -616,6 +620,7 @@ function buildProtocolProviderOptions(
   protocol: Protocol,
   provider: ProviderConfig | undefined,
   baseUrl: string | undefined,
+  acceptedImageMimes: ReadonlySet<string>,
 ): ProtocolProviderOptions | undefined {
   const options: MutableProtocolProviderOptions = {};
 
@@ -625,6 +630,7 @@ function buildProtocolProviderOptions(
       if (model.supportEfforts !== undefined) options.supportEfforts = model.supportEfforts;
       if (model.adaptiveThinking !== undefined) options.adaptiveThinking = model.adaptiveThinking;
       if (model.betaApi !== undefined) options.betaApi = model.betaApi;
+      options.acceptedImageMimes = acceptedImageMimes;
       break;
     case 'openai': {
       const reasoningKey = nonEmpty(model.reasoningKey);

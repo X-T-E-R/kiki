@@ -110,6 +110,10 @@ function modelWith(authProvider: Model['authProvider']): Model {
     alwaysThinking: false,
     providerType: 'fake',
     providerName: 'fake',
+    imagePolicy: {
+      acceptedTypes: new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+      convertUnsupported: 'off',
+    },
     authProvider,
   };
 }

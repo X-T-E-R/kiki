@@ -25,6 +25,7 @@ import type {
 } from '#/kosong/model/model';
 import type { ThinkingConfig } from '#/kosong/model/thinking';
 import type { OAuthRef, ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
+import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
 
@@ -44,6 +45,31 @@ export const OAuthRefSchema = z.object({
 
 export const ModelSourceSchema = z.enum(['static', 'discover', 'oauth-catalog']);
 
+const ImageMimeSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'image/jpg' ? 'image/jpeg' : normalized;
+  },
+  z.enum([
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+    'image/bmp',
+    'image/heic',
+    'image/heif',
+    'image/avif',
+    'image/tiff',
+    'image/x-icon',
+  ]),
+);
+
+export const ImagePolicyConfigSchema = z.object({
+  acceptedTypes: z.array(ImageMimeSchema).min(1).optional(),
+  convertUnsupported: z.enum(['off', 'auto', 'png', 'jpeg']).optional(),
+});
+
 const StringRecordSchema = z.record(z.string(), z.string());
 
 const ProviderConfigObjectSchema = z.object({
@@ -53,6 +79,7 @@ const ProviderConfigObjectSchema = z.object({
   customHeaders: StringRecordSchema.optional(),
   defaultModel: z.string().optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
+  images: ImagePolicyConfigSchema.optional(),
 
   type: ProviderTypeSchema.optional(),
   apiKey: z.string().optional(),
@@ -79,6 +106,9 @@ export const ProviderConfigSchema = z.preprocess((value, ctx) => {
 export const ProvidersSectionSchema = z.record(z.string(), ProviderConfigSchema);
 
 type _AssertOAuthRef = AssertExact<Equal<z.infer<typeof OAuthRefSchema>, OAuthRef>>;
+type _AssertImagePolicyConfig = AssertExact<
+  Equal<z.infer<typeof ImagePolicyConfigSchema>, ImagePolicyConfig>
+>;
 type _AssertProviderConfig = AssertExact<
   Equal<z.infer<typeof ProviderConfigSchema>, ProviderConfig>
 >;
@@ -117,7 +147,7 @@ function providerEntryFromToml(data: Record<string, unknown>): Record<string, un
     const targetKey = snakeToCamel(key);
     if (targetKey === 'oauth') {
       out[targetKey] = isPlainObject(value) ? transformPlainObject(value) : value;
-    } else if (targetKey === 'requestIdentity') {
+    } else if (targetKey === 'requestIdentity' || targetKey === 'images') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'env' || targetKey === 'customHeaders') {
       out[targetKey] = isPlainObject(value) ? cloneRecord(value) : value;
@@ -148,7 +178,7 @@ function providerEntryToToml(
   for (const [key, value] of Object.entries(provider)) {
     if (key === 'oauth' && isPlainObject(value)) {
       out[camelToSnake(key)] = plainObjectToToml(value, undefined);
-    } else if (key === 'requestIdentity' && isPlainObject(value)) {
+    } else if ((key === 'requestIdentity' || key === 'images') && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if ((key === 'env' || key === 'customHeaders') && value !== undefined) {
       out[camelToSnake(key)] = cloneRecord(value);
@@ -231,6 +261,7 @@ const ModelBaseSchema = z.object({
   maxCompletionTokens: z.number().int().min(1).optional(),
   serviceTier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   requestParams: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+  images: ImagePolicyConfigSchema.optional(),
 });
 
 export const ModelOverrideSchema = ModelBaseSchema.omit({
@@ -244,6 +275,7 @@ export const ModelOverrideSchema = ModelBaseSchema.omit({
   provider: true,
   model: true,
   betaApi: true,
+  images: true,
 }).partial();
 
 const CognitionPathRefSchema = z.union([
@@ -347,6 +379,9 @@ export const modelsFromToml = (rawSnake: unknown): unknown => {
     if (isPlainObject(converted['requestIdentity'])) {
       converted['requestIdentity'] = deepSnakeToCamel(converted['requestIdentity']);
     }
+    if (isPlainObject(converted['images'])) {
+      converted['images'] = deepSnakeToCamel(converted['images']);
+    }
     out[id] = converted;
   }
   return out;
@@ -371,6 +406,8 @@ export const modelsToToml = (value: unknown, rawSnake: unknown): unknown => {
         merged['cognition'] = cognitionToToml(field, merged['cognition']);
       } else if (key === 'requestIdentity' && isPlainObject(field)) {
         merged['request_identity'] = deepCamelToSnake(field);
+      } else if (key === 'images' && isPlainObject(field)) {
+        merged['images'] = deepCamelToSnake(field);
       } else {
         setDefined(merged, camelToSnake(key), field);
       }

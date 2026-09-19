@@ -67,6 +67,7 @@ describe('providers TOML transforms', () => {
           preset: 'kimi_code',
           overrides: { client: { user_agent: 'kimi_code' } },
         },
+        images: { accepted_types: ['image/png'], convert_unsupported: 'png' },
         oauth: { storage: 'file', key: 'k', oauth_host: 'example.com' },
       },
     }) as Record<string, Record<string, unknown>>;
@@ -79,6 +80,7 @@ describe('providers TOML transforms', () => {
         preset: 'kimi_code',
         overrides: { client: { userAgent: 'kimi_code' } },
       },
+      images: { acceptedTypes: ['image/png'], convertUnsupported: 'png' },
       oauth: { storage: 'file', key: 'k', oauthHost: 'example.com' },
     });
     expect(ProvidersSectionSchema.parse(from)).toEqual(from);
@@ -93,6 +95,7 @@ describe('providers TOML transforms', () => {
         preset: 'kimi_code',
         overrides: { client: { user_agent: 'kimi_code' } },
       },
+      images: { accepted_types: ['image/png'], convert_unsupported: 'png' },
       oauth: { storage: 'file', key: 'k', oauth_host: 'example.com' },
     });
   });

@@ -54,7 +54,7 @@ const MAX_DECODE_PIXELS = 100_000_000;
 
 export const MAX_IMAGE_DECODE_BYTES = 64 * 1024 * 1024;
 
-const RECODABLE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const RECODABLE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/bmp']);
 
 export interface CompressImageOptions {
   readonly maxEdge?: number;
@@ -62,6 +62,8 @@ export interface CompressImageOptions {
   readonly maxDecodeBytes?: number;
   readonly telemetry?: ImageCompressionTelemetry;
   readonly providerType?: string;
+  readonly acceptedMimes?: ReadonlySet<string>;
+  readonly outputMimes?: ReadonlySet<string>;
 }
 
 export interface ImageCompressionTelemetryClient {
@@ -106,6 +108,9 @@ export async function compressImageForModel(
   const byteBudget = options.byteBudget ?? IMAGE_BYTE_BUDGET;
   const maxDecodeBytes = options.maxDecodeBytes ?? MAX_IMAGE_DECODE_BYTES;
   const normalizedMime = normalizeImageMime(mimeType);
+  const acceptedMimes = options.acceptedMimes;
+  const outputMimes = options.outputMimes ?? acceptedMimes ?? new Set(['image/png', 'image/jpeg']);
+  const requiresFormatConversion = acceptedMimes !== undefined && !acceptedMimes.has(normalizedMime);
   const dims = sniffImageDimensions(bytes);
 
   const passthrough = (): CompressImageResult => ({
@@ -131,7 +136,12 @@ export async function compressImageForModel(
   };
 
   if (bytes.length === 0) return finish('passthrough_unsupported', passthrough());
-  if (!RECODABLE_MIME.has(normalizedMime)) return finish('passthrough_unsupported', passthrough());
+  if (
+    !RECODABLE_MIME.has(normalizedMime) ||
+    (normalizedMime === 'image/bmp' && acceptedMimes === undefined)
+  ) {
+    return finish('passthrough_unsupported', passthrough());
+  }
   if (normalizedMime === 'image/webp' && isAnimatedWebp(bytes)) {
     return finish('passthrough_unsupported', passthrough());
   }
@@ -139,7 +149,7 @@ export async function compressImageForModel(
   const longestEdge = dims ? Math.max(dims.width, dims.height) : 0;
   const withinBytes = bytes.length <= byteBudget;
   const withinEdge = longestEdge > 0 && longestEdge <= maxEdge;
-  if (withinBytes && (withinEdge || longestEdge === 0)) {
+  if (!requiresFormatConversion && withinBytes && (withinEdge || longestEdge === 0)) {
     return finish('passthrough_fast', passthrough());
   }
 
@@ -160,13 +170,17 @@ export async function compressImageForModel(
       preferLossless,
       byteBudget,
       fallbackEdges: FALLBACK_EDGES_PX,
+      outputMimes,
     });
+    if (encoded === null) return finish('passthrough_unsupported', passthrough());
 
     const originalPixels = decodedWidth * decodedHeight;
     const finalPixels = encoded.width * encoded.height;
     const shrankBytes = encoded.data.length < bytes.length;
     const shrankPixels = finalPixels < originalPixels;
-    if (!shrankBytes && !shrankPixels) return finish('passthrough_unhelpful', passthrough());
+    if (!requiresFormatConversion && !shrankBytes && !shrankPixels) {
+      return finish('passthrough_unhelpful', passthrough());
+    }
 
     return finish('compressed', {
       data: encoded.data,
@@ -525,7 +539,9 @@ export async function cropImageForModel(
       preferLossless,
       byteBudget,
       fallbackEdges: FALLBACK_EDGES_PX,
+      outputMimes: options.outputMimes ?? options.acceptedMimes ?? new Set(['image/png', 'image/jpeg']),
     });
+    if (encoded === null) return fail('unsupported_format', 'No accepted image output format is available.');
     return succeed({
       ok: true,
       data: new Uint8Array(encoded.data),
@@ -624,6 +640,7 @@ interface EncodeOptions {
   readonly preferLossless: boolean;
   readonly byteBudget: number;
   readonly fallbackEdges: readonly number[];
+  readonly outputMimes: ReadonlySet<string>;
 }
 
 async function decodeToJimp(bytes: Uint8Array, normalizedMime: string): Promise<JimpImage> {
@@ -639,8 +656,13 @@ async function decodeToJimp(bytes: Uint8Array, normalizedMime: string): Promise<
   return Jimp.fromBuffer(Buffer.from(bytes));
 }
 
-async function encodeWithinBudget(image: JimpImage, opts: EncodeOptions): Promise<EncodedImage> {
-  const { preferLossless, byteBudget, fallbackEdges } = opts;
+async function encodeWithinBudget(
+  image: JimpImage,
+  opts: EncodeOptions,
+): Promise<EncodedImage | null> {
+  const { preferLossless, byteBudget, fallbackEdges, outputMimes } = opts;
+  const allowPng = outputMimes.has('image/png');
+  const allowJpeg = outputMimes.has('image/jpeg');
   let smallest: EncodedImage | null = null;
 
   const consider = (data: Buffer, mimeType: string): EncodedImage => {
@@ -651,7 +673,14 @@ async function encodeWithinBudget(image: JimpImage, opts: EncodeOptions): Promis
     return candidate;
   };
 
+  const pngCandidate = async (): Promise<EncodedImage | null> => {
+    if (!allowPng) return null;
+    const png = await image.getBuffer('image/png', { deflateLevel: 9 });
+    return consider(png, 'image/png');
+  };
+
   const jpegLadder = async (): Promise<EncodedImage | null> => {
+    if (!allowJpeg) return null;
     for (const quality of JPEG_QUALITY_STEPS) {
       const jpeg = await image.getBuffer('image/jpeg', { quality });
       if (jpeg.length <= byteBudget) return consider(jpeg, 'image/jpeg');
@@ -660,28 +689,23 @@ async function encodeWithinBudget(image: JimpImage, opts: EncodeOptions): Promis
     return null;
   };
 
-  if (preferLossless) {
-    const png = await image.getBuffer('image/png', { deflateLevel: 9 });
-    if (png.length <= byteBudget) return consider(png, 'image/png');
-    consider(png, 'image/png');
-
+  if (allowPng && (preferLossless || !allowJpeg)) {
+    const png = await pngCandidate();
+    if (png !== null && png.data.length <= byteBudget) return png;
     for (const edge of fallbackEdges) {
       if (edge < PNG_RESCALE_FLOOR_PX) break;
       if (!fitWithinEdge(image, edge)) continue;
-      const smallerPng = await image.getBuffer('image/png', { deflateLevel: 9 });
-      if (smallerPng.length <= byteBudget) return consider(smallerPng, 'image/png');
-      consider(smallerPng, 'image/png');
+      const smallerPng = await pngCandidate();
+      if (smallerPng !== null && smallerPng.data.length <= byteBudget) return smallerPng;
     }
-
-    const atFloor = await jpegLadder();
-    if (atFloor !== null) return atFloor;
-    for (const edge of fallbackEdges) {
-      if (edge >= PNG_RESCALE_FLOOR_PX) continue;
-      if (!fitWithinEdge(image, edge)) continue;
-      const atEdge = await jpegLadder();
-      if (atEdge !== null) return atEdge;
+    if (!allowJpeg) {
+      for (const edge of fallbackEdges) {
+        if (edge >= PNG_RESCALE_FLOOR_PX || !fitWithinEdge(image, edge)) continue;
+        const smallerPng = await pngCandidate();
+        if (smallerPng !== null && smallerPng.data.length <= byteBudget) return smallerPng;
+      }
+      return smallest;
     }
-    return smallest!;
   }
 
   const atFitted = await jpegLadder();
@@ -692,7 +716,8 @@ async function encodeWithinBudget(image: JimpImage, opts: EncodeOptions): Promis
     if (atEdge !== null) return atEdge;
   }
 
-  return smallest!;
+  if (!allowJpeg && allowPng && smallest === null) return pngCandidate();
+  return smallest;
 }
 
 function fitWithinEdge(image: JimpImage, edge: number): boolean {

@@ -45,7 +45,7 @@ import { EXAMPLE_CLIENT_IDENTITY } from './identity.js';
 
 import type { AddressInfo } from 'node:net';
 
-import { bootstrap, logSeed, resolveLoggingConfig } from '@kiki/agent-core-v2';
+import { bootstrap, logSeed, resolveImagePolicy, resolveLoggingConfig } from '@kiki/agent-core-v2';
 import { isError2 } from '@kiki/agent-core-v2/_base/errors/errors';
 import { IConfigService } from '@kiki/agent-core-v2/app/config/config';
 import { UNKNOWN_CAPABILITY } from '@kiki/agent-core-v2/kosong/contract/capability';
@@ -356,6 +356,7 @@ async function probeBoundaries(): Promise<void> {
       alwaysThinking: false,
       providerName: 'probe',
       authProvider,
+      imagePolicy: resolveImagePolicy(undefined, undefined, undefined),
     };
     return new ModelRequesterImpl(model, registry);
   };

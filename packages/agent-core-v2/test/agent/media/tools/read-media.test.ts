@@ -907,6 +907,7 @@ describe('AgentMediaToolsRegistrar', () => {
       runtime,
       workspaceCtx,
       recordingTelemetry([]),
+      { enabled: () => true } as never,
       new AgentStateService(),
     );
     const bindModel = (alias: string, caps: ModelCapability): void => {

@@ -1,5 +1,6 @@
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
+import type { ResolvedImagePolicy } from '#/kosong/provider/providerImagePolicy';
 import type { VideoUploadEvent } from '#/app/telemetry/events';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
 
@@ -18,6 +19,7 @@ export interface RegisterMediaToolsDeps {
   readonly telemetry?: ITelemetryService;
   readonly inlineVideoSupported?: boolean;
   readonly providerType?: string;
+  readonly imagePolicy?: ResolvedImagePolicy;
 }
 
 export function registerMediaTools(
@@ -39,6 +41,7 @@ export function registerMediaTools(
       deps.telemetry,
       deps.inlineVideoSupported,
       deps.providerType,
+      deps.imagePolicy,
     ),
   );
 }

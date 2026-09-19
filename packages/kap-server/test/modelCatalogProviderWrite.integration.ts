@@ -121,6 +121,20 @@ const ALIAS_TOML = [
   '',
 ].join('\n');
 
+const ALIAS_COLLISION_TOML = [
+  '[providers.edge]',
+  'type = "openai"',
+  'api_key = "sk-edge"',
+  'base_url = "https://edge.example.test/v1"',
+  '',
+  '[models."my-openai/gpt-4.1"]',
+  'provider = "edge"',
+  'model = "vendor/model:v1"',
+  'max_context_size = 200000',
+  'display_name = "Edge GPT wrapper"',
+  '',
+].join('\n');
+
 const CREATE_BODY = {
   id: 'my-openai',
   type: 'openai',
@@ -402,6 +416,42 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(providers['my-openai']).not.toHaveProperty('request_identity');
   });
 
+  it('round-trips image policies and applies sparse leaf clears', async () => {
+    await boot();
+    const created = await postJson('/api/providers', {
+      ...CREATE_BODY,
+      images: {
+        accepted_types: ['image/jpeg', 'image/png'],
+        convert_unsupported: 'auto',
+      },
+      models: [
+        {
+          ...CREATE_BODY.models[0],
+          images: { accepted_types: ['image/png'], convert_unsupported: 'png' },
+        },
+        CREATE_BODY.models[1],
+      ],
+    });
+    expect(created.status).toBe(201);
+
+    await patchJson('/api/providers/my-openai', {
+      images: { accepted_types: null },
+    });
+    await patchJson('/api/models/my-openai%2Fgpt-4.1', {
+      images: { convert_unsupported: 'off' },
+    });
+
+    const config = await readConfigToml();
+    expect(config['providers']).toMatchObject({
+      'my-openai': { images: { convert_unsupported: 'auto' } },
+    });
+    expect(config['models']).toMatchObject({
+      'my-openai/gpt-4.1': {
+        images: { accepted_types: ['image/png'], convert_unsupported: 'off' },
+      },
+    });
+  });
+
   it('rejects invalid provider and model request_identity layers', async () => {
     await boot();
     for (const body of [
@@ -545,6 +595,35 @@ describe('server-v2 /api provider write endpoints', () => {
 
     const providers = await getJson<{ items: Array<{ id: string }> }>('/api/providers');
     expect(providers.body.data.items.map((p) => p.id)).toEqual(['kimi', 'openai']);
+  });
+
+  it('rejects a provider create whose model alias already exists, leaving config untouched', async () => {
+    await boot(ALIAS_COLLISION_TOML);
+    const before = await readFile(join(home as string, 'config.toml'), 'utf-8');
+
+    const { status, body } = await postJson<unknown>('/api/providers', CREATE_BODY);
+    expect(status).toBe(200);
+    expect(body.code).toBe(40942);
+    expect(body.data).toBeNull();
+
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).toBe(before);
+
+    const onDisk = await readConfigToml();
+    expect(onDisk['providers']).toEqual({
+      edge: { type: 'openai', api_key: 'sk-edge', base_url: 'https://edge.example.test/v1' },
+    });
+    expect(onDisk['models']).toEqual({
+      'my-openai/gpt-4.1': {
+        provider: 'edge',
+        model: 'vendor/model:v1',
+        max_context_size: 200000,
+        display_name: 'Edge GPT wrapper',
+      },
+    });
+    expect(onDisk['default_model']).toBeUndefined();
+
+    const providers = await getJson<{ items: Array<{ id: string }> }>('/api/providers');
+    expect(providers.body.data.items.map((p) => p.id)).toEqual(['edge']);
   });
 
   it('accepts a Unicode provider id (Chinese + space)', async () => {
@@ -1354,7 +1433,7 @@ describe('server-v2 /api entity-level model editing', () => {
     expect(first.status).toBe(200);
 
     const second = await request<Record<string, unknown>>('PATCH', '/api/models/fast', {
-      max_context_size: 12345,
+      display_name: 'second writer',
       base_revision: revision,
     });
     expect(second.body.code).toBe(40941);

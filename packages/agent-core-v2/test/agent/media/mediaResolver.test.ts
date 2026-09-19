@@ -21,10 +21,15 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { type GetResult, IFileService } from '#/app/file/fileService';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IFlagService } from '#/app/flag/flag';
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { ContentPart, Message, VideoURLPart } from '#/kosong/contract/message';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
 import type { Protocol } from '#/kosong/protocol/protocol';
+import {
+  providerImagePolicy,
+  type ResolvedImagePolicy,
+} from '#/kosong/provider/providerImagePolicy';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 
 import { registerStateServices } from '../../state/stubs';
@@ -32,7 +37,10 @@ import { registerStateServices } from '../../state/stubs';
 const FILE_ID = 'file_abc';
 const VIDEO_BYTES = Buffer.from('tiny fake mp4 bytes');
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
-const BMP_BYTES = Buffer.from([0x42, 0x4d, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00]);
+const BMP_BYTES = Buffer.from(
+  'Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAATCwAAEwsAAAAAAAAAAAAAAAD/AA==',
+  'base64',
+);
 const MP4_MAGIC_BYTES = Buffer.from([
   0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x00, 0x00,
 ]);
@@ -158,6 +166,7 @@ function requester(opts: {
   imageIn?: boolean;
   protocol?: Protocol;
   providerType?: string;
+  imagePolicy?: ResolvedImagePolicy;
   uploadVideo?: ModelRequester['uploadVideo'];
 }): ModelRequester {
   return {
@@ -175,6 +184,10 @@ function requester(opts: {
       alwaysThinking: false,
       providerName: 'p',
       providerType: opts.providerType ?? 'kimi',
+      imagePolicy: opts.imagePolicy ?? {
+        acceptedTypes: providerImagePolicy(opts.providerType ?? 'kimi').acceptedMimes,
+        convertUnsupported: 'off',
+      },
       authProvider: {} as never,
     },
     request: () => {
@@ -211,6 +224,7 @@ function resolver(
       reg.defineInstance(IFileService, fileService(files));
       reg.defineInstance(IBlobStore, blobStore());
       reg.defineInstance(ITelemetryService, telemetry);
+      reg.defineInstance(IFlagService, { enabled: () => true } as never);
       reg.defineInstance(ISessionMediaStore, mediaStore);
       reg.define(IAgentMediaResolverService, AgentMediaResolverService);
     },
@@ -443,6 +457,117 @@ describe('AgentMediaResolverService image strategy', () => {
       remotePart,
       { type: 'image_url', imageUrl: { url: PNG_DATA_URL } },
     ]);
+  });
+
+  it('converts an unsupported BMP to the configured PNG target before the request', async () => {
+    const res = resolver(new Map());
+    const message = imageMessage(`data:image/bmp;base64,${BMP_BYTES.toString('base64')}`);
+    const out = await res.resolve(
+      [message],
+      requester({
+        providerType: 'openai',
+        imagePolicy: {
+          acceptedTypes: new Set(['image/png']),
+          convertUnsupported: 'png',
+        },
+      }),
+    );
+
+    const part = firstPart(out);
+    expect(part.type).toBe('image_url');
+    expect(part.type === 'image_url' ? part.imageUrl.url : '').toMatch(/^data:image\/png;base64,/);
+  });
+
+  it('does not convert when the experimental conversion flag is disabled', async () => {
+    const res = new AgentMediaResolverService(
+      fileService(new Map()),
+      blobStore(),
+      telemetry,
+      new AgentStateService(),
+      stubMediaStore(),
+      { enabled: () => false } as never,
+    );
+    const message = imageMessage(`data:image/bmp;base64,${BMP_BYTES.toString('base64')}`);
+    const out = await res.resolve(
+      [message],
+      requester({
+        providerType: 'openai',
+        imagePolicy: {
+          acceptedTypes: new Set(['image/png']),
+          convertUnsupported: 'auto',
+        },
+      }),
+    );
+
+    expect(firstPart(out)).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('unsupported image format image/bmp'),
+    });
+  });
+
+  it('leaves an unsupported image omitted when conversion is off', async () => {
+    const res = resolver(new Map());
+    const message = imageMessage(`data:image/bmp;base64,${BMP_BYTES.toString('base64')}`);
+    const out = await res.resolve(
+      [message],
+      requester({
+        providerType: 'openai',
+        imagePolicy: {
+          acceptedTypes: new Set(['image/png']),
+          convertUnsupported: 'off',
+        },
+      }),
+    );
+
+    expect(firstPart(out)).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('unsupported image format image/bmp'),
+    });
+  });
+
+  it('auto-converts only unsupported formats and preserves accepted image parts', async () => {
+    const res = resolver(new Map());
+    const accepted = imageMessage(PNG_DATA_URL);
+    const policy: ResolvedImagePolicy = {
+      acceptedTypes: new Set(['image/png', 'image/jpeg']),
+      convertUnsupported: 'auto',
+    };
+
+    const acceptedMessages = [accepted];
+    expect(
+      await res.resolve(
+        acceptedMessages,
+        requester({ providerType: 'openai', imagePolicy: policy }),
+      ),
+    ).toBe(acceptedMessages);
+
+    const unsupported = imageMessage(`data:image/bmp;base64,${BMP_BYTES.toString('base64')}`);
+    const converted = await res.resolve(
+      [unsupported],
+      requester({ providerType: 'openai', imagePolicy: policy }),
+    );
+    const part = firstPart(converted);
+    expect(part.type).toBe('image_url');
+    expect(part.type === 'image_url' ? part.imageUrl.url : '').toMatch(/^data:image\/png;base64,/);
+  });
+
+  it('passes accepted corrupt base64 through unchanged when conversion is off', async () => {
+    const res = resolver(new Map());
+    const message = imageMessage('data:image/png;base64,%%%not-base64%%%');
+    const messages = [message];
+
+    expect(
+      await res.resolve(
+        messages,
+        requester({
+          providerType: 'openai',
+          imagePolicy: {
+            acceptedTypes: new Set(['image/png']),
+            convertUnsupported: 'off',
+          },
+        }),
+      ),
+    ).toBe(messages);
   });
 
   it('rethrows a cancelled image read instead of degrading to a tag', async () => {
@@ -808,6 +933,7 @@ describe('AgentMediaResolverService scoped registration', () => {
       stubPair(IFileService, fileService(files)),
       stubPair(IBlobStore, blobStore()),
       stubPair(ITelemetryService, telemetry),
+      stubPair(IFlagService, { enabled: () => true } as never),
     ]);
     return host.child(LifecycleScope.Agent, 'main', [
       stubPair(IAgentStateService, new AgentStateService()),

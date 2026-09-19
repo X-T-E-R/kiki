@@ -24,6 +24,7 @@ import {
   isProviderDraftDirty,
   KNOWN_CAPABILITIES,
   KNOWN_EFFORTS,
+  KNOWN_IMAGE_MIME_TYPES,
   MS_UNIT_FACTORS,
   msUnitFor,
   modelCreateBody,
@@ -31,10 +32,11 @@ import {
   PROVIDER_TEMPLATES,
   PROVIDER_WIRE_TYPES,
   providerCreateBody,
-  providerDefaultRow,
   providerDraftFromCatalog,
   providerPatchBody,
+  validateNewProviderDraft,
   validateProviderDraft,
+  type ImagePolicyDraft,
   type MsUnit,
   type ProviderDraft,
   type ProviderModelDraft,
@@ -60,6 +62,8 @@ export function blankProviderDraft(): ProviderDraft {
     clearApiKey: false,
     requestIdentityChoice: 'inherit',
     requestIdentityOverridesJson: '',
+    imageAcceptedTypes: null,
+    imageConvertUnsupported: null,
     models: [blankModel()],
   };
 }
@@ -74,6 +78,8 @@ function blankModel(): ProviderModelDraft {
     supportEfforts: [],
     requestIdentityChoice: 'inherit',
     requestIdentityOverridesJson: '',
+    imageAcceptedTypes: null,
+    imageConvertUnsupported: null,
   };
 }
 
@@ -227,6 +233,82 @@ export function MsUnitInput({
   );
 }
 
+export function ImagePolicyEditor({
+  value,
+  onChange,
+  inheritLabel,
+}: {
+  value: ImagePolicyDraft;
+  onChange: (value: ImagePolicyDraft) => void;
+  inheritLabel: string;
+}) {
+  const { t } = useI18n();
+  const acceptedMode = value.imageAcceptedTypes === null ? 'inherit' : 'custom';
+  return (
+    <div className="space-y-2 rounded-lg border border-hairline bg-panel/50 p-3">
+      <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-faint">
+        {t('st.images.title')}
+      </p>
+      <div className="grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-center">
+        <span className="text-[10.5px] font-medium text-ink-soft">
+          {t('st.images.acceptedTypes')}
+        </span>
+        <select
+          aria-label={t('st.images.acceptedTypesModeAria')}
+          className={SMALL_INPUT}
+          value={acceptedMode}
+          onChange={(event) => {
+            onChange({
+              ...value,
+              imageAcceptedTypes: event.target.value === 'inherit'
+                ? null
+                : [...KNOWN_IMAGE_MIME_TYPES],
+            });
+          }}
+        >
+          <option value="inherit">{inheritLabel}</option>
+          <option value="custom">{t('st.images.custom')}</option>
+        </select>
+      </div>
+      {value.imageAcceptedTypes === null ? (
+        <Hint>{t('st.images.inheritHint')}</Hint>
+      ) : (
+        <ChipSelect
+          values={value.imageAcceptedTypes}
+          knownOptions={KNOWN_IMAGE_MIME_TYPES}
+          onChange={(imageAcceptedTypes) => { onChange({ ...value, imageAcceptedTypes }); }}
+          ariaLabel={t('st.images.acceptedTypesAria')}
+          addPlaceholder={t('st.images.addMime')}
+          removeLabel={(mime) => t('st.images.removeMimeAria', { mime })}
+        />
+      )}
+      <div className="grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-center">
+        <span className="text-[10.5px] font-medium text-ink-soft">
+          {t('st.images.convertUnsupported')}
+        </span>
+        <select
+          aria-label={t('st.images.convertUnsupportedAria')}
+          className={SMALL_INPUT}
+          value={value.imageConvertUnsupported ?? ''}
+          onChange={(event) => {
+            onChange({
+              ...value,
+              imageConvertUnsupported: event.target.value === ''
+                ? null
+                : event.target.value as NonNullable<ImagePolicyDraft['imageConvertUnsupported']>,
+            });
+          }}
+        >
+          <option value="">{inheritLabel}</option>
+          {(['off', 'auto', 'png', 'jpeg'] as const).map((mode) => (
+            <option key={mode} value={mode}>{t(`st.images.convert.${mode}`)}</option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
 // ---- model draft rows ----
 
 function ModelDraftRow({
@@ -351,6 +433,11 @@ function ModelDraftRow({
               removeLabel={(value) => t('st.chips.removeAria', { value })}
             />
           </div>
+          <ImagePolicyEditor
+            value={model}
+            onChange={(images) => { onChange(images); }}
+            inheritLabel={t('st.images.inheritProvider')}
+          />
           <div className="border-t border-hairline pt-3">
             <RequestIdentityLayerEditor
               value={model}
@@ -483,6 +570,11 @@ export function ProviderFields({
         inheritLabel={t('st.requestIdentity.inheritGlobal')}
         hint={t('st.providers.requestIdentityHint')}
       />
+      <ImagePolicyEditor
+        value={draft}
+        onChange={(images) => { onChange({ ...draft, ...images }); }}
+        inheritLabel={t('st.images.inheritBuiltin')}
+      />
       {managed ? (
         <Hint>{t('st.providers.managedHint')}</Hint>
       ) : (
@@ -563,8 +655,27 @@ export function ProviderEditor({
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirming, setConfirming] = useState<'remove' | 'clearKey' | null>(null);
+  const [revisions, setRevisions] = useState<{
+    provider: string;
+    models: ReadonlyMap<string, string>;
+  } | null>(null);
 
   useEffect(() => { setDraft(initial); }, [initial]);
+  useEffect(() => {
+    let current = true;
+    setRevisions(null);
+    void Promise.all([
+      client.getProviderEntity(provider.id),
+      Promise.all((initial?.models ?? []).filter((model) => model.id !== '').map(
+        async (model) => [model.id, (await client.getModel(model.id)).revision] as const,
+      )),
+    ]).then(([providerEntity, modelEntries]) => {
+      if (current) setRevisions({ provider: providerEntity.revision, models: new Map(modelEntries) });
+    }).catch((error: unknown) => {
+      if (current) setFeedback({ tone: 'error', text: errorText(locale, error) });
+    });
+    return () => { current = false; };
+  }, [initial, provider.id]);
 
   const dirty = draft !== null && initial !== null && isProviderDraftDirty(draft, initial);
   useDirtyReporter(`provider:${provider.id}`, dirty);
@@ -585,48 +696,66 @@ export function ProviderEditor({
       setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
     }
+    if (revisions === null) return;
     setSaving(true);
     setFeedback(null);
+    let mutationSucceeded = false;
     try {
-      const entity = await client.getProviderEntity(provider.id);
-      // Model entities first: a row the user just added gets its alias from the
-      // server, and the connection patch last can then point its default at it.
-      const createdIds = new Map<number, string>();
+      let normalized = next;
+      const revisionMap = new Map(revisions.models);
       for (const [index, row] of next.models.entries()) {
         if (row.id !== '') continue;
         const created = await client.createModel(modelCreateBody(provider.id, row));
-        createdIds.set(index, created.id);
+        mutationSucceeded = true;
+        revisionMap.set(created.id, created.revision);
+        normalized = {
+          ...normalized,
+          models: normalized.models.map((candidate, candidateIndex) =>
+            candidateIndex === index ? { ...candidate, id: created.id } : candidate),
+        };
+        setDraft(normalized);
+        setRevisions({ provider: revisions.provider, models: revisionMap });
       }
-      for (const row of next.models) {
-        if (row.id === '') continue;
+      for (const row of normalized.models) {
         const baseline = initial!.models.find((model) => model.id === row.id);
         if (baseline === undefined) continue;
         const rowPatch = modelPatchBody(row, baseline);
-        if (rowPatch !== null) await client.updateModel(row.id, rowPatch);
+        if (rowPatch === null) continue;
+        const baseRevision = revisionMap.get(row.id);
+        if (baseRevision === undefined) throw new Error(`Missing revision for model ${row.id}`);
+        const updated = await client.updateModel(row.id, {
+          ...rowPatch,
+          base_revision: baseRevision,
+        });
+        mutationSucceeded = true;
+        revisionMap.set(row.id, updated.revision);
+        setRevisions({ provider: revisions.provider, models: revisionMap });
       }
       for (const row of initial!.models) {
-        const kept = next.models.some((model) => model.id === row.id);
-        if (!kept && row.id !== '') await client.deleteModel(row.id);
+        const kept = normalized.models.some((model) => model.id === row.id);
+        if (kept || row.id === '') continue;
+        const baseRevision = revisionMap.get(row.id);
+        if (baseRevision === undefined) throw new Error(`Missing revision for model ${row.id}`);
+        await client.deleteModel(row.id, { baseRevision });
+        mutationSucceeded = true;
+        revisionMap.delete(row.id);
+        setRevisions({ provider: revisions.provider, models: revisionMap });
       }
-      const normalized: ProviderDraft = {
-        ...next,
-        models: next.models.map((row, index) => {
-          const createdId = createdIds.get(index);
-          return row.id === '' && createdId !== undefined ? { ...row, id: createdId } : row;
-        }),
-      };
       const connectionPatch = providerPatchBody(normalized, initial!);
       if (connectionPatch !== null) {
-        await client.updateProvider(provider.id, {
+        const updatedProvider = await client.updateProvider(provider.id, {
           ...connectionPatch,
-          base_revision: entity.revision,
+          base_revision: revisions.provider,
         });
+        mutationSucceeded = true;
+        setRevisions({ provider: updatedProvider.revision, models: revisionMap });
       }
-      setDraft({ ...next, apiKey: '', clearApiKey: false });
+      setDraft({ ...normalized, apiKey: '', clearApiKey: false });
       await onSaved();
       setFeedback({ tone: 'success', text: t('st.providers.savedEcho', { id: provider.id }) });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
+      if (mutationSucceeded) await onSaved();
     } finally {
       setSaving(false);
     }
@@ -691,7 +820,7 @@ export function ProviderEditor({
         {/* OAuth-managed providers keep the save button for the editable
             fields; the credential clear/delete danger zone stays hidden. */}
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
+          <button type="button" className={PRIMARY_BUTTON} disabled={saving || revisions === null || !dirty} onClick={() => void save()}>
             {saving ? t('common.saving') : t('st.providers.save')}
           </button>
           {dirty ? <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
@@ -780,7 +909,7 @@ export function NewProviderWizard({
         draft.defaultModel
         || (draft.models[0]?.id ?? draft.models[0]?.remoteId ?? ''),
     };
-    const validation = validateProviderDraft(normalized);
+    const validation = validateNewProviderDraft(normalized);
     if (validation !== null) {
       setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;

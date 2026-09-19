@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -8,7 +7,6 @@ import { pipeline } from 'node:stream/promises';
 import {
   buildDaemonFileUrl,
   buildImageCompressionCaption,
-  buildUnsupportedImageNotice,
   compressBase64ForModel,
   compressImageForModel,
   decodeBase64Prefix,
@@ -18,7 +16,6 @@ import {
   normalizeImageMime,
   persistOriginalImage,
   resolveEffectiveImageMime,
-  unsupportedImageMimeFromUrl,
   type ContentPart,
   type GetResult,
   type IFileService,
@@ -106,9 +103,8 @@ export interface ResolvePromptMediaOptions {
   readonly resolveOriginalsDir?: () => Promise<string | undefined>;
   /**
    * Lazily resolve the session's attachments dir for materializing arbitrary
-   * file uploads (and image bytes the provider rejects) into a path the model
-   * can open with the Read tool. A failure or undefined result falls back to
-   * the shared cache dir.
+   * file uploads into a path the model can open with the Read tool. A failure
+   * or undefined result falls back to the shared cache dir.
    */
   readonly resolveAttachmentsDir?: () => Promise<string | undefined>;
   /** Report an `image_compress` event per compressed prompt image. */
@@ -132,9 +128,10 @@ export interface PromptMediaPreparation {
 
 /**
  * Resolve a wire content list's media/file references into their final wire
- * form: uploaded files materialize to a session-local path notice, images are
- * format-gated and compressed, and image/video uploads enter context as bare
- * internal `kimi-file://` references. The preparation's `content` is the
+ * form: uploaded files materialize to a session-local path notice, supported
+ * images retain the existing compression path, unsupported originals remain
+ * machine-readable media references, and image/video uploads enter context as
+ * bare internal `kimi-file://` references. The preparation's `content` is the
  * input array unchanged when nothing needed resolving; `discard` rolls back
  * or releases the daemon uploads the preparation created after intake.
  */
@@ -182,24 +179,23 @@ export async function resolvePromptMediaFiles(
           part.source.media_type,
           decodeBase64Prefix(part.source.data),
         );
-        if (!isModelAcceptedImageMime(effectiveMime, options.providerType)) {
+        const canonicalMime = normalizeImageMime(effectiveMime);
+        if (!isModelAcceptedImageMime(canonicalMime, options.providerType)) {
           const bytes = Buffer.from(part.source.data, 'base64');
-          const name = part.name ?? `image.${imageExtensionForMime(effectiveMime)}`;
-          const persisted = await persistAttachmentBytes(
-            bytes,
-            `${createHash('sha256').update(bytes).digest('hex').slice(0, 32)}-${sanitizeAttachmentName(name)}`,
-            await resolveAttachmentsDir(),
+          const saved = await store.save(
+            Readable.from(bytes),
+            part.name ?? `image.${imageExtensionForMime(canonicalMime)}`,
+            { mimeType: canonicalMime },
           );
+          ownedFileIds.add(saved.id);
           content.push({
-            type: 'text',
-            text: persisted === null
-              ? buildUnsupportedImageNotice(effectiveMime, name, options.providerType)
-              : buildAttachedFileNotice(name, effectiveMime, bytes.length, persisted),
+            type: 'image',
+            source: { kind: 'url', url: buildDaemonFileUrl(saved.id) },
+            name: part.name,
           });
           changed = true;
           continue;
         }
-        const canonicalMime = normalizeImageMime(effectiveMime);
         const compressed = await compressBase64ForModel(part.source.data, canonicalMime, {
           telemetry: telemetryFor('prompt_inline'),
         });
@@ -241,15 +237,6 @@ export async function resolvePromptMediaFiles(
       }
 
       if (part.type === 'image' && part.source.kind === 'url') {
-        const extMime = unsupportedImageMimeFromUrl(part.source.url, options.providerType);
-        if (extMime !== null) {
-          content.push({
-            type: 'text',
-            text: buildUnsupportedImageNotice(extMime, part.source.url, options.providerType),
-          });
-          changed = true;
-          continue;
-        }
         content.push(part);
         continue;
       }
@@ -276,22 +263,6 @@ export async function resolvePromptMediaFiles(
         const data = await readFileOrStream(file);
         let mediaType = file.meta.media_type;
         mediaType = resolveEffectiveImageMime(mediaType, data);
-        if (!isModelAcceptedImageMime(mediaType, options.providerType)) {
-          const name = part.name ?? file.meta.name;
-          const persisted = await persistAttachmentBytes(
-            data,
-            `${file.meta.id}-${sanitizeAttachmentName(name)}`,
-            await resolveAttachmentsDir(),
-          );
-          content.push({
-            type: 'text',
-            text: persisted === null
-              ? buildUnsupportedImageNotice(mediaType, name, options.providerType)
-              : buildAttachedFileNotice(name, mediaType, file.meta.size, persisted),
-          });
-          changed = true;
-          continue;
-        }
         mediaType = normalizeImageMime(mediaType);
         const compressed = await compressImageForModel(data, mediaType, {
           telemetry: telemetryFor('prompt_file'),
@@ -376,22 +347,6 @@ async function materializeAttachmentToDir(file: GetResult, dir: string): Promise
 
   await pipeline(file.stream(), createWriteStream(target));
   return target;
-}
-
-async function persistAttachmentBytes(
-  bytes: Uint8Array,
-  name: string,
-  dir: string,
-): Promise<string | null> {
-  try {
-    await mkdir(dir, { recursive: true });
-    const target = join(dir, name);
-    const info = await stat(target).catch(() => undefined);
-    if (info?.size !== bytes.length) await writeFile(target, bytes);
-    return target;
-  } catch {
-    return null;
-  }
 }
 
 function imageExtensionForMime(mediaType: string): string {

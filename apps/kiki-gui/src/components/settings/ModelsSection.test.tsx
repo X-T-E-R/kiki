@@ -141,6 +141,12 @@ function setInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function setSelectValue(select: HTMLSelectElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+  setter.call(select, value);
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 describe('ModelCatalogCard row editor', () => {
   it('reads the model entity and saves a sparse patch with its revision', async () => {
     const container = await renderCard();
@@ -190,5 +196,82 @@ describe('ModelCatalogCard row editor', () => {
     expect(container.textContent).toContain(
       'The server saved the parameters for kimi-code/kimi-k2.',
     );
+  });
+
+  it('edits the remote id and image policy while leaving model inheritance explicit', async () => {
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
+      )!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(container.textContent).toContain('Inherit provider');
+    const remoteId = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Remote ID for kimi-code/kimi-k2"]',
+    )!;
+    const acceptedMode = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Accepted image types source"]',
+    )!;
+    const conversion = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Unsupported image conversion"]',
+    )!;
+    await act(async () => {
+      setInputValue(remoteId, 'kimi-k2.5');
+      setSelectValue(acceptedMode, 'custom');
+      setSelectValue(conversion, 'png');
+    });
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click();
+    });
+
+    expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
+      remote_id: 'kimi-k2.5',
+      images: {
+        accepted_types: ['image/jpeg', 'image/png', 'image/webp', 'image/bmp'],
+        convert_unsupported: 'png',
+      },
+      base_revision: 'rev-7',
+    });
+  });
+
+  it('offers model editing even when the provider type cannot use the provider form', async () => {
+    listProviders.mockResolvedValue({ items: [{ ...PROVIDER, type: 'future-protocol' }] });
+    const container = await renderCard();
+    expect(container.querySelector(
+      'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
+    )).not.toBeNull();
+  });
+
+  it('localizes known model issues and keeps server prose only for unknown codes', async () => {
+    getModel.mockResolvedValue({
+      ...ENTITY,
+      issues: [
+        {
+          code: 'model.provider_missing',
+          severity: 'error',
+          path: 'provider_id',
+          message: 'backend provider message',
+        },
+        {
+          code: 'model.future_issue',
+          severity: 'warning',
+          path: 'future',
+          message: 'future backend message',
+        },
+      ],
+    });
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
+      )!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(container.textContent).toContain('provider_id: The referenced provider is not configured.');
+    expect(container.textContent).not.toContain('backend provider message');
+    expect(container.textContent).toContain('future: future backend message');
   });
 });

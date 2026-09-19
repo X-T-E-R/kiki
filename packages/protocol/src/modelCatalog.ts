@@ -67,6 +67,42 @@ export type RequestIdentityPolicyWire = z.infer<typeof requestIdentityPolicySche
 export const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
 export type ServiceTierWire = z.infer<typeof serviceTierSchema>;
 
+export const imageMimeSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'image/jpg' ? 'image/jpeg' : normalized;
+  },
+  z.enum([
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+    'image/bmp',
+    'image/heic',
+    'image/heif',
+    'image/avif',
+    'image/tiff',
+    'image/x-icon',
+  ]),
+);
+export const imageConversionModeSchema = z.enum(['off', 'auto', 'png', 'jpeg']);
+export const imagePolicySchema = z
+  .object({
+    accepted_types: z.array(imageMimeSchema).min(1).optional(),
+    convert_unsupported: imageConversionModeSchema.optional(),
+  })
+  .strict();
+export type ImagePolicyWire = z.infer<typeof imagePolicySchema>;
+
+export const imagePolicyPatchSchema = z
+  .object({
+    accepted_types: z.array(imageMimeSchema).min(1).nullable().optional(),
+    convert_unsupported: imageConversionModeSchema.nullable().optional(),
+  })
+  .strict();
+export type ImagePolicyPatch = z.infer<typeof imagePolicyPatchSchema>;
+
 /**
  * One configured model, as read back by `GET /models`. `id` is the local
  * alias (the `[models]` config key — what sessions, profiles and the default
@@ -85,6 +121,7 @@ export const modelCatalogItemSchema = z.object({
   default_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
+  images: imagePolicySchema.optional(),
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 
@@ -94,6 +131,7 @@ export const providerCatalogItemSchema = z.object({
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
   request_identity: requestIdentityPolicySchema.optional(),
+  images: imagePolicySchema.optional(),
   has_api_key: z.boolean(),
   status: providerCatalogStatusSchema,
   models: z.array(z.string().min(1)).optional(),
@@ -163,6 +201,7 @@ export const modelEntitySchema = z.object({
   adaptive_thinking: z.boolean().optional(),
   service_tier: serviceTierSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
+  images: imagePolicySchema.optional(),
   protocol: z.string().min(1).optional(),
   base_url: z.string().min(1).optional(),
   revision: z.string().min(1),
@@ -191,6 +230,7 @@ export const patchModelRequestSchema = z
     adaptive_thinking: z.boolean().nullable().optional(),
     service_tier: serviceTierSchema.nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
+    images: imagePolicyPatchSchema.nullable().optional(),
   })
   .strict();
 export type PatchModelRequest = z.infer<typeof patchModelRequestSchema>;
@@ -215,6 +255,7 @@ export const createModelRequestSchema = z
     adaptive_thinking: z.boolean().optional(),
     service_tier: serviceTierSchema.optional(),
     request_identity: requestIdentityPolicySchema.optional(),
+    images: imagePolicySchema.optional(),
   })
   .strict();
 export type CreateModelRequest = z.infer<typeof createModelRequestSchema>;
@@ -235,6 +276,7 @@ export const patchProviderRequestSchema = z
     base_url: z.string().trim().nullable().optional(),
     default_model: z.string().min(1).nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
+    images: imagePolicyPatchSchema.nullable().optional(),
   })
   .strict();
 export type PatchProviderRequest = z.infer<typeof patchProviderRequestSchema>;
@@ -264,6 +306,7 @@ const modelDraftSchema = z.object({
   max_output_size: z.number().int().min(1).optional(),
   support_efforts: z.array(z.string().min(1)).optional(),
   adaptive_thinking: z.boolean().optional(),
+  images: imagePolicySchema.optional(),
 });
 
 export const createProviderModelSchema = modelDraftSchema.extend({
@@ -328,6 +371,7 @@ export const createProviderRequestSchema = z
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
     request_identity: requestIdentityPolicySchema.optional(),
+    images: imagePolicySchema.optional(),
     models: z.array(createProviderModelSchema).optional(),
   })
   .strict()

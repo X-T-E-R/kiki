@@ -157,6 +157,10 @@ function createRequester(
     providerName: 'p',
     authProvider: { getAuth: async () => undefined },
     ...modelOverrides,
+    imagePolicy: modelOverrides?.imagePolicy ?? {
+      acceptedTypes: new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+      convertUnsupported: 'off',
+    },
   };
   return {
     model,
@@ -1469,6 +1473,10 @@ describe('AgentLLMRequesterService trace id', () => {
       maxContextSize: 1000,
       alwaysThinking: false,
       providerName: 'p',
+      imagePolicy: {
+        acceptedTypes: new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+        convertUnsupported: 'off',
+      },
       authProvider: { getAuth: async () => undefined },
     };
     return {

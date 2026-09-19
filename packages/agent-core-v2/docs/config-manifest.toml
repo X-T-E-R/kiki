@@ -343,6 +343,9 @@ merge_all_available_skills = true
   # max_completion_tokens: integer
   # service_tier: "auto" | "default" | "flex" | "priority"
   # request_params: record<string, string | number | boolean>
+  # images: object
+    # accepted_types: "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/heic" | "image/heif" | "image/avif" | "image/tiff" | "image/x-icon"[]
+    # convert_unsupported: "off" | "auto" | "png" | "jpeg"
   # overrides: object
     # max_context_size: integer
     # max_input_size: integer
@@ -503,6 +506,9 @@ enter_approval_timeout_ms = 60000
         # responses: "prompt_cache_key" | "none"
         # messages: "metadata_user_id" | "none"
       # responses_metadata: "codex" | "none"
+  # images: object
+    # accepted_types: "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/heic" | "image/heif" | "image/avif" | "image/tiff" | "image/x-icon"[]
+    # convert_unsupported: "off" | "auto" | "png" | "jpeg"
   # type: string
   # api_key: string
   # oauth: object
@@ -595,6 +601,7 @@ timeout_ms = 7200000
 # deny_models: string[]
 max_direct_children = 16
 max_total_subagents = 0
+default_profile = "general"
 
 # ##########################################################################
 # task

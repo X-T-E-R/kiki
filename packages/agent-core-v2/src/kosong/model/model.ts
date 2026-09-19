@@ -5,6 +5,7 @@ import type { Event, IWaitUntil } from '#/_base/event';
 import type { Protocol } from '#/kosong/protocol/protocol';
 import type { ServiceTier } from '#/kosong/contract/provider';
 import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
+import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 
 import type { OAuthRef } from '../provider/provider';
 
@@ -69,6 +70,7 @@ export interface ModelRecord extends ModelParameterDefaults {
   cognition?: CognitionConfig;
   promptOverrides?: PromptOverrides;
   requestIdentity?: RequestIdentityPolicy;
+  images?: ImagePolicyConfig;
   serviceTier?: ServiceTier;
 
   [key: string]: unknown;

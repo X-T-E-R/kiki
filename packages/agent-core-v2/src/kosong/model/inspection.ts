@@ -10,6 +10,7 @@ import type { Protocol, ProtocolProviderOptions } from '#/kosong/protocol/protoc
 import type { AnthropicModelProfile } from '../provider/bases/anthropic/anthropic-profile';
 import type { ProviderConfig } from '../provider/provider';
 import { getProviderDefinition } from '../provider/providerDefinition';
+import type { ResolvedImagePolicy } from '../provider/providerImagePolicy';
 
 import type { ModelRecord } from './model';
 import type { ResolvedModelAuthMaterial } from './model.types';
@@ -39,6 +40,7 @@ export interface InspectedResolvedModel {
   readonly serviceTier?: ServiceTier;
   readonly alwaysThinking: boolean;
   readonly headers: Readonly<Record<string, string>>;
+  readonly imagePolicy: ResolvedImagePolicy;
   readonly providerOptions?: ProtocolProviderOptions;
 }
 
@@ -233,6 +235,7 @@ interface ResolvedModelLike {
   readonly serviceTier?: ServiceTier;
   readonly alwaysThinking: boolean;
   readonly headers: Readonly<Record<string, string>>;
+  readonly imagePolicy: ResolvedImagePolicy;
   readonly providerOptions?: ProtocolProviderOptions;
 }
 
@@ -399,6 +402,7 @@ export function assembleModelInspection(args: {
       serviceTier: model.serviceTier,
       alwaysThinking: model.alwaysThinking,
       headers: model.headers,
+      imagePolicy: model.imagePolicy,
       providerOptions: model.providerOptions,
     },
     sources: Object.fromEntries(sources),

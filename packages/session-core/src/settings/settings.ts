@@ -1,7 +1,12 @@
 import {
+  imageMimeSchema,
+  providerIdSchema,
   requestIdentityPolicySchema,
   type CreateModelRequest,
   type CreateProviderRequest,
+  type GetModelResponse,
+  type ImagePolicyPatch,
+  type ImagePolicyWire,
   type ModelCatalogItem,
   type PatchConfigRequest,
   type PatchModelRequest,
@@ -16,6 +21,13 @@ import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
 /** Client-local preferences stored in localStorage (`kiki.settings`). */
 export type SendShortcut = 'enter' | 'cmd-enter';
 
+/** Deferred-append timing a client sends by default with each new message. */
+export type DefaultAppendTiming = 'agent_idle' | 'subagents_done' | 'tasks_done';
+
+export function isDefaultAppendTiming(value: unknown): value is DefaultAppendTiming {
+  return value === 'agent_idle' || value === 'subagents_done' || value === 'tasks_done';
+}
+
 /** `system` follows the OS; the other two pin the palette regardless. */
 export type ThemePreference = 'light' | 'dark' | 'system';
 
@@ -27,6 +39,8 @@ export const DEFAULT_REQUEST_TIMEOUT_SECONDS = 30;
 export const MIN_REQUEST_TIMEOUT_SECONDS = 5;
 export const MAX_REQUEST_TIMEOUT_SECONDS = 600;
 
+export type SubagentPanelOpenMode = 'tab' | 'fullscreen';
+
 export interface DesktopSettings {
   defaultPermissionMode: 'manual' | 'auto' | 'yolo';
   defaultPlanMode: boolean;
@@ -37,6 +51,8 @@ export interface DesktopSettings {
   closeToTray: boolean;
   theme: ThemePreference;
   requestTimeoutSeconds: number;
+  subagentPanelOpenMode: SubagentPanelOpenMode;
+  defaultAppendTiming: DefaultAppendTiming;
 }
 
 export type UpdateChannel = 'stable' | 'beta';
@@ -199,6 +215,22 @@ export interface RequestIdentityLayerDraft {
   requestIdentityOverridesJson: string;
 }
 
+export type ImageConversionMode = NonNullable<ImagePolicyWire['convert_unsupported']>;
+
+export interface ImagePolicyDraft {
+  /** `null` leaves this leaf inherited; an explicit empty list is invalid. */
+  imageAcceptedTypes: string[] | null;
+  /** `null` inherits the enclosing provider/built-in conversion policy. */
+  imageConvertUnsupported: ImageConversionMode | null;
+}
+
+export const KNOWN_IMAGE_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/bmp',
+] as const;
+
 /**
  * One editable local model row. `id` is the local alias (the config key a
  * session references) and `remoteId` the exact model name sent upstream; they
@@ -206,7 +238,7 @@ export interface RequestIdentityLayerDraft {
  * A row that does not exist on the server yet carries `id: ''` and is created
  * from `providerId/remoteId` on save.
  */
-export interface ProviderModelDraft extends RequestIdentityLayerDraft {
+export interface ProviderModelDraft extends RequestIdentityLayerDraft, ImagePolicyDraft {
   id: string;
   remoteId: string;
   /** `0` means the stored model declares no context size yet. */
@@ -216,7 +248,7 @@ export interface ProviderModelDraft extends RequestIdentityLayerDraft {
   supportEfforts: string[];
 }
 
-export interface ProviderDraft extends RequestIdentityLayerDraft {
+export interface ProviderDraft extends RequestIdentityLayerDraft, ImagePolicyDraft {
   id: string;
   type: ProviderWireType;
   baseUrl: string;
@@ -248,6 +280,8 @@ const DEFAULTS: DesktopSettings = {
   closeToTray: true,
   theme: 'system',
   requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  subagentPanelOpenMode: 'tab',
+  defaultAppendTiming: 'agent_idle',
 };
 
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
@@ -316,6 +350,11 @@ export function readSettings(): DesktopSettings {
       && validateRequestTimeoutSeconds(requestTimeoutSeconds) === null
         ? requestTimeoutSeconds
         : DEFAULTS.requestTimeoutSeconds,
+    subagentPanelOpenMode:
+      stored.subagentPanelOpenMode === 'fullscreen' ? 'fullscreen' : 'tab',
+    defaultAppendTiming: isDefaultAppendTiming(stored.defaultAppendTiming)
+      ? stored.defaultAppendTiming
+      : DEFAULTS.defaultAppendTiming,
   };
 }
 
@@ -1042,6 +1081,106 @@ export function validateRequestIdentityLayerDraft(
   }
 }
 
+export function imagePolicyDraftFromWire(
+  policy: ImagePolicyWire | undefined,
+): ImagePolicyDraft {
+  return {
+    imageAcceptedTypes: policy?.accepted_types === undefined ? null : [...policy.accepted_types],
+    imageConvertUnsupported: policy?.convert_unsupported ?? null,
+  };
+}
+
+function parsedImageTypes(values: readonly string[]): NonNullable<ImagePolicyWire['accepted_types']> {
+  const parsed: NonNullable<ImagePolicyWire['accepted_types']> = [];
+  for (const value of normalizeTags(values)) {
+    const result = imageMimeSchema.safeParse(value);
+    if (!result.success) throw new LocalizedError({ key: 'val.imageMime', params: { mime: value } });
+    if (!parsed.includes(result.data)) parsed.push(result.data);
+  }
+  return parsed;
+}
+
+export function imagePolicyFromDraft(draft: ImagePolicyDraft): ImagePolicyWire | undefined {
+  if (draft.imageAcceptedTypes === null && draft.imageConvertUnsupported === null) return undefined;
+  const acceptedTypes = draft.imageAcceptedTypes === null
+    ? undefined
+    : parsedImageTypes(draft.imageAcceptedTypes);
+  if (acceptedTypes !== undefined && acceptedTypes.length === 0) {
+    throw new LocalizedError({ key: 'val.imageAcceptedTypesEmpty' });
+  }
+  return {
+    accepted_types: acceptedTypes,
+    convert_unsupported: draft.imageConvertUnsupported ?? undefined,
+  };
+}
+
+export function imagePolicyPatchFromDraft(
+  draft: ImagePolicyDraft,
+  baseline: ImagePolicyDraft,
+): ImagePolicyPatch | null | undefined {
+  const acceptedChanged = !nullableStringArraysEqual(
+    draft.imageAcceptedTypes,
+    baseline.imageAcceptedTypes,
+  );
+  const conversionChanged = draft.imageConvertUnsupported !== baseline.imageConvertUnsupported;
+  if (!acceptedChanged && !conversionChanged) return undefined;
+  if (draft.imageAcceptedTypes === null && draft.imageConvertUnsupported === null) return null;
+  return {
+    accepted_types: acceptedChanged
+      ? (draft.imageAcceptedTypes === null ? null : parsedImageTypes(draft.imageAcceptedTypes))
+      : undefined,
+    convert_unsupported: conversionChanged ? draft.imageConvertUnsupported : undefined,
+  };
+}
+
+export function validateImagePolicyDraft(
+  draft: ImagePolicyDraft,
+  inheritedAcceptedTypes?: readonly string[] | null,
+): ValidationIssue | null {
+  let authoredAccepted: readonly string[] | null = null;
+  try {
+    authoredAccepted = draft.imageAcceptedTypes === null
+      ? null
+      : parsedImageTypes(draft.imageAcceptedTypes);
+  } catch (error) {
+    return error instanceof LocalizedError ? error.issue : { key: 'val.imageMime', params: { mime: '' } };
+  }
+  if (authoredAccepted !== null && authoredAccepted.length === 0) {
+    return { key: 'val.imageAcceptedTypesEmpty' };
+  }
+  const accepted = authoredAccepted ?? inheritedAcceptedTypes;
+  if (accepted === undefined || accepted === null || draft.imageConvertUnsupported === null) return null;
+  if (draft.imageConvertUnsupported === 'png' && !accepted.includes('image/png')) {
+    return { key: 'val.imageConversionTarget', params: { mime: 'image/png' } };
+  }
+  if (draft.imageConvertUnsupported === 'jpeg' && !accepted.includes('image/jpeg')) {
+    return { key: 'val.imageConversionTarget', params: { mime: 'image/jpeg' } };
+  }
+  if (
+    draft.imageConvertUnsupported === 'auto'
+    && !accepted.includes('image/png')
+    && !accepted.includes('image/jpeg')
+  ) {
+    return { key: 'val.imageAutoTarget' };
+  }
+  return null;
+}
+
+export function providerModelDraftFromCatalog(
+  model: ModelCatalogItem | GetModelResponse,
+): ProviderModelDraft {
+  return {
+    id: model.id,
+    remoteId: model.remote_id ?? '',
+    maxContextSize: model.max_context_size ?? 0,
+    displayName: model.display_name ?? '',
+    capabilities: [...(model.capabilities ?? [])],
+    supportEfforts: [...(model.support_efforts ?? [])],
+    ...requestIdentityLayerDraftFromPolicy(model.request_identity),
+    ...imagePolicyDraftFromWire(model.images),
+  };
+}
+
 export function providerDraftFromCatalog(
   provider: ProviderCatalogItem,
   models: readonly ModelCatalogItem[],
@@ -1049,15 +1188,7 @@ export function providerDraftFromCatalog(
   if (!isProviderWireType(provider.type)) return null;
   const providerModels = models
     .filter((model) => model.provider_id === provider.id)
-    .map((model) => ({
-      id: model.id,
-      remoteId: model.remote_id,
-      maxContextSize: model.max_context_size,
-      displayName: model.display_name ?? '',
-      capabilities: [...(model.capabilities ?? [])],
-      supportEfforts: [...(model.support_efforts ?? [])],
-      ...requestIdentityLayerDraftFromPolicy(model.request_identity),
-    }));
+    .map(providerModelDraftFromCatalog);
   return {
     id: provider.id,
     type: provider.type,
@@ -1066,6 +1197,7 @@ export function providerDraftFromCatalog(
     apiKey: '',
     clearApiKey: false,
     ...requestIdentityLayerDraftFromPolicy(provider.request_identity),
+    ...imagePolicyDraftFromWire(provider.images),
     models: providerModels,
   };
 }
@@ -1085,6 +1217,8 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
   if (!isProviderWireType(draft.type)) return { key: 'val.providerProtocol' };
   const providerIdentityIssue = validateRequestIdentityLayerDraft(draft);
   if (providerIdentityIssue !== null) return providerIdentityIssue;
+  const providerImageIssue = validateImagePolicyDraft(draft);
+  if (providerImageIssue !== null) return providerImageIssue;
   if (draft.baseUrl !== '') {
     let url: URL;
     try {
@@ -1118,6 +1252,8 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
     if (modelIdentityIssue !== null) {
       return { key: 'val.modelRequestIdentity', params: { model: label } };
     }
+    const modelImageIssue = validateImagePolicyDraft(model, draft.imageAcceptedTypes);
+    if (modelImageIssue !== null) return modelImageIssue;
     const key = stored ? model.id : `${draft.id}/${model.remoteId}`;
     if (seen.has(key)) return { key: 'val.modelDuplicate', params: { model: label } };
     seen.add(key);
@@ -1126,6 +1262,11 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
     return { key: 'val.defaultModelInModels' };
   }
   return null;
+}
+
+export function validateNewProviderDraft(draft: ProviderDraft): ValidationIssue | null {
+  if (!providerIdSchema.safeParse(draft.id).success) return { key: 'val.providerId' };
+  return validateProviderDraft(draft);
 }
 
 // ---- provider templates, chip editing, dirty tracking ----
@@ -1175,6 +1316,33 @@ function stringArraysEqual(a: readonly string[], b: readonly string[]): boolean 
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+function nullableStringArraysEqual(
+  a: readonly string[] | null,
+  b: readonly string[] | null,
+): boolean {
+  return a === null || b === null ? a === b : stringArraysEqual(a, b);
+}
+
+function imagePolicyDraftsEqual(a: ImagePolicyDraft, b: ImagePolicyDraft): boolean {
+  return nullableStringArraysEqual(a.imageAcceptedTypes, b.imageAcceptedTypes)
+    && a.imageConvertUnsupported === b.imageConvertUnsupported;
+}
+
+export function providerModelDraftsEqual(
+  model: ProviderModelDraft,
+  other: ProviderModelDraft,
+): boolean {
+  return model.id === other.id
+    && model.remoteId === other.remoteId
+    && model.maxContextSize === other.maxContextSize
+    && model.displayName === other.displayName
+    && model.requestIdentityChoice === other.requestIdentityChoice
+    && model.requestIdentityOverridesJson === other.requestIdentityOverridesJson
+    && imagePolicyDraftsEqual(model, other)
+    && stringArraysEqual(model.capabilities, other.capabilities)
+    && stringArraysEqual(model.supportEfforts, other.supportEfforts);
+}
+
 /** Deep field equality for "unsaved changes" badges and leave-section guards. */
 export function providerDraftsEqual(a: ProviderDraft, b: ProviderDraft): boolean {
   if (a.id !== b.id || a.type !== b.type || a.baseUrl !== b.baseUrl) return false;
@@ -1182,18 +1350,11 @@ export function providerDraftsEqual(a: ProviderDraft, b: ProviderDraft): boolean
   if (a.clearApiKey !== b.clearApiKey) return false;
   if (a.requestIdentityChoice !== b.requestIdentityChoice) return false;
   if (a.requestIdentityOverridesJson !== b.requestIdentityOverridesJson) return false;
+  if (!imagePolicyDraftsEqual(a, b)) return false;
   if (a.models.length !== b.models.length) return false;
   return a.models.every((model, index) => {
     const other = b.models[index];
-    return other !== undefined
-      && model.id === other.id
-      && model.remoteId === other.remoteId
-      && model.maxContextSize === other.maxContextSize
-      && model.displayName === other.displayName
-      && model.requestIdentityChoice === other.requestIdentityChoice
-      && model.requestIdentityOverridesJson === other.requestIdentityOverridesJson
-      && stringArraysEqual(model.capabilities, other.capabilities)
-      && stringArraysEqual(model.supportEfforts, other.supportEfforts);
+    return other !== undefined && providerModelDraftsEqual(model, other);
   });
 }
 
@@ -1213,6 +1374,7 @@ export function isProviderDraftDirty(draft: ProviderDraft, initial: ProviderDraf
  */
 export function providerCreateBody(draft: ProviderDraft): CreateProviderRequest {
   const requestIdentity = requestIdentityPolicyFromDraft(draft);
+  const images = imagePolicyFromDraft(draft);
   const defaultRow = providerDefaultRow(draft);
   return {
     id: draft.id,
@@ -1221,8 +1383,10 @@ export function providerCreateBody(draft: ProviderDraft): CreateProviderRequest 
     base_url: draft.baseUrl.trim() || undefined,
     default_model: defaultRow?.remoteId,
     request_identity: requestIdentity,
+    images,
     models: draft.models.map((model) => {
       const modelIdentity = requestIdentityPolicyFromDraft(model);
+      const modelImages = imagePolicyFromDraft(model);
       return {
         remote_id: model.remoteId,
         max_context_size: model.maxContextSize > 0 ? model.maxContextSize : undefined,
@@ -1230,6 +1394,7 @@ export function providerCreateBody(draft: ProviderDraft): CreateProviderRequest 
         capabilities: model.capabilities.length > 0 ? [...model.capabilities] : undefined,
         support_efforts: model.supportEfforts.length > 0 ? [...model.supportEfforts] : undefined,
         request_identity: modelIdentity,
+        images: modelImages,
       };
     }),
   };
@@ -1257,6 +1422,8 @@ export function providerPatchBody(
   ) {
     patch.request_identity = requestIdentityPolicyFromDraft(draft) ?? null;
   }
+  const imagePatch = imagePolicyPatchFromDraft(draft, baseline);
+  if (imagePatch !== undefined) patch.images = imagePatch;
   if (draft.clearApiKey) {
     patch.api_key = '';
   } else if (draft.apiKey !== '') {
@@ -1292,6 +1459,8 @@ export function modelPatchBody(
   ) {
     patch.request_identity = requestIdentityPolicyFromDraft(draft) ?? null;
   }
+  const imagePatch = imagePolicyPatchFromDraft(draft, baseline);
+  if (imagePatch !== undefined) patch.images = imagePatch;
   return Object.keys(patch).length === 0 ? null : patch;
 }
 
@@ -1301,6 +1470,7 @@ export function modelCreateBody(
   row: ProviderModelDraft,
 ): CreateModelRequest {
   const requestIdentity = requestIdentityPolicyFromDraft(row);
+  const images = imagePolicyFromDraft(row);
   return {
     id: row.id !== '' && row.id !== `${providerId}/${row.remoteId}` ? row.id : undefined,
     provider_id: providerId,
@@ -1310,6 +1480,7 @@ export function modelCreateBody(
     capabilities: row.capabilities.length > 0 ? [...row.capabilities] : undefined,
     support_efforts: row.supportEfforts.length > 0 ? [...row.supportEfforts] : undefined,
     request_identity: requestIdentity,
+    images,
   };
 }
 
@@ -1424,6 +1595,8 @@ export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<Provi
     supportEfforts: [],
     requestIdentityChoice: 'inherit',
     requestIdentityOverridesJson: '',
+    imageAcceptedTypes: null,
+    imageConvertUnsupported: null,
   }));
 }
 
@@ -1584,6 +1757,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'tasks', cardId: 'st-card-agent-todo', titleKey: 'st.agentTodo.title', keywordKeys: ['st.agentTodo.hint'], synonyms: ['TodoList', 'todo'] },
   { section: 'tasks', cardId: 'st-card-defaults', titleKey: 'st.plan.title', keywordKeys: ['st.plan.hint', 'st.defaults.planMode', 'st.defaults.planGate', 'st.defaults.planGateTimeout'], synonyms: ['plan', 'plan mode', '计划', '计划模式'] },
   { section: 'tasks', cardId: 'st-card-agent-board', titleKey: 'st.agentBoard.title', keywordKeys: ['st.boardStorage.policy', 'st.boardStorage.noMove'], synonyms: ['board', '看板', 'storage'] },
+  { section: 'subagents', cardId: 'st-card-subagent-open-mode', titleKey: 'st.subagentOpenMode.title', keywordKeys: ['st.subagentOpenMode.hint', 'st.subagentOpenMode.tab', 'st.subagentOpenMode.fullscreen'], synonyms: ['subagent panel', '子代理面板', '打开方式'] },
   { section: 'subagents', cardId: 'st-card-subagent-limits', titleKey: 'st.subagentLimits.title', keywordKeys: ['st.subagentLimits.timeout', 'st.subagentLimits.direct', 'st.subagentLimits.total'], synonyms: ['timeout', '超时', '限额'] },
   { section: 'general', cardId: 'st-card-language', titleKey: 'st.language.title', keywordKeys: ['st.language.hint'] },
   { section: 'general', cardId: 'st-card-appearance', titleKey: 'st.appearance.title', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system'] },
@@ -1611,6 +1785,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'communication', cardId: 'st-card-thread-communication', titleKey: 'st.communication.threadTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.threadHint'], synonyms: ['thread communication', '线程通信'] },
   { section: 'communication', cardId: 'st-card-notify-parent', titleKey: 'st.communication.notifyParentTitle', keywordKeys: ['st.communication.notifyParent', 'st.communication.notifyParentHint'], synonyms: ['notify parent', '通知父代理', 'AgentNotify'] },
   { section: 'communication', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.communication.tokenCountingHint'], synonyms: ['token counting', 'token 计数'] },
+  { section: 'communication', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },
   { section: 'advanced', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
   { section: 'agents', cardId: 'st-card-agent-runtime', titleKey: 'st.agentIdentity.title', keywordKeys: ['st.agentIdentity.identityName', 'st.agentIdentity.extraAgentDirs', 'st.agentIdentity.disabledProfiles'], synonyms: ['identity', '身份', 'agent dirs', 'disabled profiles', '禁用 profile'] },
   { section: 'advanced', cardId: 'st-card-performance-storage', titleKey: 'st.advanced.performanceTitle', keywordKeys: ['st.experimental.searchWorker', 'st.experimental.readModel', 'st.experimental.unknownFeature'], synonyms: ['experimental features', '实验特性', 'performance', 'storage'] },
