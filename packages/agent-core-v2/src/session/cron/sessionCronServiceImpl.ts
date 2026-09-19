@@ -1,7 +1,11 @@
 import { ulid } from 'ulid';
 
 import type { ContentPart } from '#/kosong/contract/message';
-import type { CronJobOrigin, CronMissedOrigin } from '#/agent/contextMemory/types';
+import type {
+  ContextMessage,
+  CronJobOrigin,
+  CronMissedOrigin,
+} from '#/agent/contextMemory/types';
 
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -21,12 +25,11 @@ import { jitteredNextCronRunMs, oneShotJitteredNextCronRunMs } from '#/app/cron/
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
-import { IAgentLoopService, type Turn } from '#/agent/loop/loop';
+import type { Turn } from '#/agent/loop/loop';
 import { BugIndicatingError } from '#/errors';
 
 import { ICronCreateTool } from '#/agent/tools/cron/cron-create/cron-create';
@@ -409,7 +412,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
       toolCalls: [],
       origin,
     };
-    void promptService.inject(message).catch(() => {});
+    void promptService.enqueue({ message }).catch(() => {});
     this.telemetry.track2(CRON_MISSED, { count: tasks.length });
     return undefined;
   }
@@ -438,12 +441,12 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     return delivered;
   }
 
-  private deliverFire(
+  private async deliverFire(
     task: CronTask,
     ctx: { readonly coalescedCount: number; readonly firedAt: number },
   ): Promise<boolean> {
     const mainHandle = this.agentLifecycle.get('main');
-    if (!mainHandle) return Promise.resolve(false);
+    if (!mainHandle) return false;
 
     const promptService = mainHandle.accessor.get(IAgentPromptService);
 
@@ -466,40 +469,25 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
       toolCalls: [],
       origin,
     };
-    const buffered = mainHandle.accessor.get(IAgentLoopService).status().state === 'running';
 
-    let launched: Promise<unknown>;
     try {
-      launched = promptService.inject(message);
+      const handle = await promptService.enqueue({ message });
+      this.signalCron(new CronFired({ origin, prompt: task.prompt }));
+      this.telemetry.track2(CRON_FIRED, {
+        recurring: task.recurring !== false,
+        coalesced_count: ctx.coalescedCount,
+        stale: origin.stale,
+        buffered: handle.state === 'pending',
+      });
+      return true;
     } catch (error) {
       this.debugLog(
-        `steer threw for task ${task.id}: ${
+        `prompt admission rejected for task ${task.id}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      return Promise.resolve(false);
+      return false;
     }
-
-    return launched.then(
-      () => {
-        this.signalCron(new CronFired({ origin, prompt: task.prompt }));
-        this.telemetry.track2(CRON_FIRED, {
-          recurring: task.recurring !== false,
-          coalesced_count: ctx.coalescedCount,
-          stale: origin.stale,
-          buffered,
-        });
-        return true;
-      },
-      (error: unknown) => {
-        this.debugLog(
-          `steer launch rejected for task ${task.id}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        return false;
-      },
-    );
   }
 
   private advanceCursor(id: string, lastFiredAt: number): void {

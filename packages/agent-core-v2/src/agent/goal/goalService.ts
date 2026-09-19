@@ -210,6 +210,10 @@ function isGoalContinuationOrigin(origin: TurnStarted['origin']): boolean {
   return origin.kind === 'system_trigger' && origin.name === 'goal_continuation';
 }
 
+function isIndependentScheduledOrigin(origin: PromptOrigin): boolean {
+  return origin.kind === 'cron_job' || origin.kind === 'cron_missed';
+}
+
 export const goalLiveTurnIdKey = defineState<number | undefined>(
   'goal.liveTurnId',
   () => undefined as number | undefined,
@@ -267,6 +271,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   declare readonly _serviceBrand: undefined;
 
   private readonly wallClockDeadline = this._register(new MutableDisposable<IDisposable>());
+  private readonly independentScheduledTurns = new Set<number>();
   private pendingContinuation?: PendingContinuation;
   private yieldedGoalId?: string;
 
@@ -313,6 +318,10 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         {
           getGoal: () => this.getGoal().goal,
           isTaskWaitEnabled: () => this.isTaskWaitAvailable(),
+          shouldInject: () => {
+            const turnId = this.liveTurnId;
+            return turnId === undefined || !this.independentScheduledTurns.has(turnId);
+          },
         },
         injector,
       ),
@@ -792,7 +801,13 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.goalTurnTargets.delete(turnId);
     this.goalTurnRevisions.delete(turnId);
     this.exhaustedTurnBudgetGoals.delete(turnId);
-    if (!this.goalDrivenTurns.has(turnId)) {
+    const independentScheduled = isIndependentScheduledOrigin(origin);
+    if (independentScheduled) {
+      this.independentScheduledTurns.add(turnId);
+    } else {
+      this.independentScheduledTurns.delete(turnId);
+    }
+    if (!independentScheduled && !this.goalDrivenTurns.has(turnId)) {
       const state = this.goalState;
       const continuationGoalId = isGoalContinuationOrigin(origin)
         ? this.pendingContinuationGoals.get(turnId)
@@ -951,6 +966,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     const goalId = this.goalDrivenTurns.get(turnId);
     const lifecycleGoalId = this.goalTurnTarget(turnId);
     const starterTurn = this.goalStarterTurns.delete(turnId);
+    this.independentScheduledTurns.delete(turnId);
     this.goalDrivenTurns.delete(turnId);
     this.countedGoalTurns.delete(turnId);
     this.goalOutcomeToolResultTurns.delete(turnId);

@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { Emitter, Event } from '#/_base/event';
 import { createServices } from '#/_base/di/test';
@@ -11,7 +11,9 @@ import type { ServiceIdentifier } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IConfigService } from '#/app/config/config';
 import type { CronConfig } from '#/app/cron/configSection';
 import { ICronScheduler } from '#/app/cron/cronScheduler';
@@ -120,7 +122,7 @@ function createAppScheduler(
   };
 }
 
-describe('cron-fired steer turn context', () => {
+describe('cron-fired prompt admission', () => {
   let ctx: TestAgentContext;
   let clockFile: string;
   let onWillCreate: Emitter<IAgentScopeHandle>;
@@ -183,7 +185,7 @@ describe('cron-fired steer turn context', () => {
     await ctx.dispose();
   });
 
-  it('carries earlier tool results into the cron-fired steer turn request', async () => {
+  it('carries earlier tool results into the cron-fired prompt turn', async () => {
     ctx.mockNextResponse({
       type: 'function',
       id: 'call_cron_1',
@@ -238,7 +240,82 @@ describe('cron-fired steer turn context', () => {
     await cron.flushPersist();
   });
 
-  it('resumes a cold session, injects a due one-shot, and deletes it durably', async () => {
+  it('queues a due fire while the agent is busy', async () => {
+    const prompts = ctx.get(IAgentPromptService);
+    const cron = ctx.get(ISessionCronService);
+    const task = cron.addTask({ cron: '* * * * *', prompt: 'queued cron fire', recurring: true });
+    const callsBefore = ctx.llmCalls.length;
+    await ctx.rpc.setPermission({ mode: 'manual' });
+    ctx.mockNextResponse({
+      type: 'function',
+      id: 'call_busy_cron',
+      name: 'Bash',
+      arguments: JSON.stringify({ command: 'do not execute' }),
+    });
+
+    try {
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start foreground work' }] });
+      const approval = await ctx.takeApprovalRequest();
+      writeFileSync(clockFile, String(cron.now() + 120_000));
+      await cron.tick();
+
+      expect(ctx.llmCalls).toHaveLength(callsBefore + 1);
+      expect(prompts.list().pending).toHaveLength(1);
+      expect(prompts.list().pending[0]?.message.origin).toMatchObject({
+        kind: 'cron_job',
+        jobId: task.id,
+        coalescedCount: 2,
+      });
+
+      ctx.mockNextResponse({ type: 'text', text: 'foreground prompt done' });
+      ctx.mockNextResponse({ type: 'text', text: 'queued cron done' });
+      approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
+      await ctx.untilTurnEnd();
+      await vi.waitFor(() => {
+        expect(ctx.llmCalls).toHaveLength(callsBefore + 3);
+      });
+      await ctx.get(IAgentLoopService).settled();
+      expect(textOf(ctx.llmCalls[callsBefore + 2]!.history.findLast((message) => message.role === 'user')!))
+        .toContain('queued cron fire');
+    } finally {
+      await ctx.rpc.setPermission({ mode: 'yolo' });
+      cron.removeTasks([task.id]);
+      await cron.flushPersist();
+    }
+  });
+
+  it('keeps a cron fire independent from the active goal', async () => {
+    const cron = ctx.get(ISessionCronService);
+    const goals = ctx.get(IAgentGoalService);
+    const task = cron.addTask({ cron: '* * * * *', prompt: 'independent scheduled work', recurring: true });
+    await goals.createGoal({ objective: 'ongoing foreground goal' });
+    await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1_000, turnBudget: 2 } });
+    const callsBefore = ctx.llmCalls.length;
+
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'independent cron done' });
+      expect(await cron.fireTaskNow(task.id)).toBe(true);
+      await ctx.get(IAgentLoopService).settled();
+
+      expect(ctx.llmCalls).toHaveLength(callsBefore + 1);
+      expect(goals.getGoal().goal).toMatchObject({
+        status: 'active',
+        turnsUsed: 0,
+        tokensUsed: 0,
+      });
+      expect(
+        ctx.contextData().history.some(
+          (message) => message.origin?.kind === 'injection' && message.origin.variant === 'goal',
+        ),
+      ).toBe(false);
+    } finally {
+      await goals.cancelGoal();
+      cron.removeTasks([task.id]);
+      await cron.flushPersist();
+    }
+  });
+
+  it('resumes a cold session, admits a due one-shot, and deletes it durably', async () => {
     const cron = ctx.get(ISessionCronService);
     const task = cron.addTask({ cron: '* * * * *', prompt: 'cold one-shot', recurring: false });
     await cron.flushPersist();
@@ -309,8 +386,11 @@ describe('cron-fired steer turn context', () => {
       expect(appScheduler.acquireCount()).toBe(1);
       expect(ctx.llmCalls).toHaveLength(callsBefore + 1);
       const request = ctx.llmCalls[callsBefore]!;
-      const user = request.history.findLast((message) => message.role === 'user');
-      expect(user === undefined ? '' : textOf(user)).toContain('eviction boundary');
+      expect(
+        request.history.some(
+          (message) => message.role === 'user' && textOf(message).includes('eviction boundary'),
+        ),
+      ).toBe(true);
     } finally {
       cron.removeTasks([task.id]);
       await cron.flushPersist();

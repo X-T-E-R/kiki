@@ -9,6 +9,7 @@ import GOAL_PAUSED_REMINDER from './goal-paused-reminder.md?raw';
 export interface GoalInjectionOptions {
   readonly getGoal: () => GoalSnapshot | null;
   readonly isTaskWaitEnabled?: () => boolean;
+  readonly shouldInject?: () => boolean;
 }
 
 export const GOAL_TASK_WAIT_GUIDANCE =
@@ -26,6 +27,7 @@ export class GoalInjection extends Service {
   }
 
   private reminder(): string | undefined {
+    if (this.options.shouldInject?.() === false) return undefined;
     const goal = this.options.getGoal();
     if (goal === null) return undefined;
     if (goal.status === 'active') {
