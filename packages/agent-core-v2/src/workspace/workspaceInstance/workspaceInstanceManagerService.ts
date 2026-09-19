@@ -4,6 +4,7 @@ import { Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -91,6 +92,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     @IAgentProfileRegistry private readonly agentProfiles: IAgentProfileRegistry,
     @IAgentExecutorRegistry private readonly agentExecutors: IAgentExecutorRegistry,
     @IBuiltinAgentProfileLoader private readonly builtinAgentProfiles: IBuiltinAgentProfileLoader,
+    @IShippedAgentProfileManager private readonly shippedProfiles: IShippedAgentProfileManager,
     @IBuiltinSkillSource private readonly builtinSkills: IBuiltinSkillSource,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAppendLogStore private readonly appendLogStore: IAppendLogStore,
@@ -330,6 +332,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
         agentProfiles: this.agentProfiles,
         agentExecutors: this.agentExecutors,
         builtinAgentProfiles: this.builtinAgentProfiles,
+        shippedAgentProfiles: this.shippedProfiles,
         builtinSkills: this.builtinSkills,
         telemetry: this.telemetry,
         docs: this.docs,

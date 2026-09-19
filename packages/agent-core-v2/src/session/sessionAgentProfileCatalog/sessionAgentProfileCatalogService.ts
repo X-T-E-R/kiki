@@ -25,9 +25,7 @@ import {
 import { projectAgentProfileCatalog } from '@kiki/agent-profiles/profileCatalog';
 import { IConfigService } from '#/app/config/config';
 import {
-  DISABLED_BUILTIN_PROFILES_SECTION,
   DISABLED_NAMED_PROFILES_SECTION,
-  type DisabledBuiltinProfilesConfig,
   type DisabledNamedProfilesConfig,
 } from '#/workspace/workspaceAgentProfileLoader/configSection';
 
@@ -87,10 +85,7 @@ export class SessionAgentProfileCatalogService
     );
     this._register(
       this.config.onDidSectionChange((change) => {
-        if (
-          change.domain !== DISABLED_BUILTIN_PROFILES_SECTION
-          && change.domain !== DISABLED_NAMED_PROFILES_SECTION
-        ) return;
+        if (change.domain !== DISABLED_NAMED_PROFILES_SECTION) return;
         if (this.tracksSourceReadiness && !this.completeValue) return;
         if (this.reproject()) this.onDidChangeEmitter.fire('catalog');
       }),
@@ -112,8 +107,10 @@ export class SessionAgentProfileCatalogService
   getDefault(): AgentProfile {
     const profile = this.get(DEFAULT_AGENT_PROFILE_NAME) ?? this.defaultBindingProfile;
     if (profile === undefined) {
-      throw new BugIndicatingError(
-        `Default agent profile "${DEFAULT_AGENT_PROFILE_NAME}" is not registered`,
+      throw new Error2(
+        ErrorCodes.PROFILE_UNKNOWN,
+        `Default agent profile "${DEFAULT_AGENT_PROFILE_NAME}" is not available. Restore the shipped profile at <profile home>/agents/builtin/agent.md, keep a SYSTEM.md, or add your own agents/agent.md.`,
+        { details: { profileName: DEFAULT_AGENT_PROFILE_NAME } },
       );
     }
     return profile;
@@ -248,12 +245,6 @@ export class SessionAgentProfileCatalogService
     ];
   }
 
-  private disabledBuiltinProfileNames(): ReadonlySet<string> {
-    return new Set(
-      this.config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? [],
-    );
-  }
-
   private disabledNamedProfileNames(): ReadonlySet<string> {
     return new Set(
       this.config.get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? [],
@@ -264,14 +255,13 @@ export class SessionAgentProfileCatalogService
     try {
       const projection = projectAgentProfileCatalog({
         entries: this.relevantEntries(),
-        disabledBuiltinProfiles: this.disabledBuiltinProfileNames(),
         disabledNamedProfiles: this.disabledNamedProfileNames(),
         routeBaseMissingCode: ErrorCodes.ROUTE_BASE_MISSING,
         warn: (message) => this.log.warn(message),
       });
       this.resolvable = new Map(projection.resolvableProfiles);
       this.publicProfiles = new Map(projection.profiles);
-      this.defaultBindingProfile = projection.defaultBindingProfile;
+      this.defaultBindingProfile = projection.snapshot.defaultProfile;
       this.inspections = new Map(projection.inspections);
       this.routes = new Map(projection.routes);
       this.publicRoutes = new Map(projection.publicRoutes);

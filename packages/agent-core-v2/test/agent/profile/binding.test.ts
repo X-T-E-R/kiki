@@ -6,8 +6,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { Event } from '#/_base/event';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
-import { InstantiationService } from '#/_base/di/instantiationService';
-import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { ConfigTarget, IConfigService } from '#/app/config/config';
 import { TOOLS_SECTION } from '#/agent/toolPolicy/configSection';
 import {
@@ -17,6 +15,7 @@ import {
   type ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { BuiltinAgentProfileLoaderService } from '#/app/agentProfileCatalog/builtinAgentProfileLoaderService';
+import { ShippedAgentProfileSourceService } from '#/app/shippedAgentProfiles/shippedAgentProfileSourceService';
 import { registerAgentProfile } from '#/app/agentProfileCatalog/contribution';
 import {
   IAgentExecutorRegistry,
@@ -763,11 +762,9 @@ describe('AgentProfileService.bind', () => {
   it('binds a profile + model atomically and becomes runnable', async () => {
     const { profile: svc } = buildContext();
 
-    const container = new InstantiationService(new ServiceCollection(), true);
-    const catalog = new BuiltinAgentProfileLoaderService(container);
+    const catalog = new BuiltinAgentProfileLoaderService(new ShippedAgentProfileSourceService());
     expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeDefined();
     catalog.dispose();
-    container.dispose();
 
     expect(svc.isRunnable()).toBe(false);
 
@@ -912,8 +909,7 @@ describe('AgentProfileService.bind', () => {
   });
 
   it('does not admit deleted collaboration tools on any builtin profile', () => {
-    const container = new InstantiationService(new ServiceCollection(), true);
-    const catalog = new BuiltinAgentProfileLoaderService(container);
+    const catalog = new BuiltinAgentProfileLoaderService(new ShippedAgentProfileSourceService());
     const collaborationTools = [
       'spawn_agent',
       'list_agents',
@@ -930,7 +926,6 @@ describe('AgentProfileService.bind', () => {
     }
 
     catalog.dispose();
-    container.dispose();
   });
 
   it('waits for the identity freeze instead of racing it', async () => {

@@ -1,5 +1,6 @@
 import { isAbortError, isUserCancellation, userCancellationReason } from '#/_base/utils/abort';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -12,12 +13,12 @@ import { ErrorCodes, Error2 } from '#/errors';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
+import { resolveDefaultSubagentProfileName } from '#/session/subagent/configSection';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 
 import { ISessionInitService } from './sessionInit';
 import { DEFAULT_INIT_PROMPT, initCompletionReminder } from './profile/init';
 
-const INIT_PROFILE_NAME = 'coder';
 const INIT_PARENT_TOOL_CALL_ID = 'generate-agents-md';
 const INIT_DESCRIPTION = 'Initialize AGENTS.md';
 
@@ -33,6 +34,7 @@ export class SessionInitService implements ISessionInitService {
     @IHostEnvironment private readonly env: IHostEnvironment,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @ISessionContext private readonly sessionContext: ISessionContext,
+    @IConfigService private readonly config: IConfigService,
   ) {}
 
   cancelInit(): void {
@@ -53,10 +55,17 @@ export class SessionInitService implements ISessionInitService {
         throw new Error2(ErrorCodes.SESSION_INIT_FAILED, 'Main agent has no model bound');
       }
       const permissionMode = main.accessor.get(IAgentPermissionModeService).mode;
+      const initProfileName = resolveDefaultSubagentProfileName(this.config);
+      if (initProfileName === undefined) {
+        throw new Error2(
+          ErrorCodes.SESSION_INIT_FAILED,
+          'Cannot initialize AGENTS.md: no agent profile was specified and [subagent].default_profile is not configured. Set default_profile to an available profile and retry.',
+        );
+      }
 
       const child = await this.lifecycle.create({
         binding: {
-          profile: INIT_PROFILE_NAME,
+          profile: initProfileName,
           model: own.modelAlias,
           thinking: own.thinkingLevel,
         },
@@ -65,7 +74,7 @@ export class SessionInitService implements ISessionInitService {
       child.accessor.get(IAgentPermissionModeService).setMode(permissionMode);
 
       emitAgentRunSpawned(main, child.id, {
-        profileName: INIT_PROFILE_NAME,
+        profileName: initProfileName,
         parentToolCallId: INIT_PARENT_TOOL_CALL_ID,
         description: INIT_DESCRIPTION,
         runInBackground: false,
@@ -78,7 +87,7 @@ export class SessionInitService implements ISessionInitService {
         { signal: controller.signal },
       );
       await mirrorAgentRun(main, run, {
-        profileName: INIT_PROFILE_NAME,
+        profileName: initProfileName,
         prompt: DEFAULT_INIT_PROMPT,
         signal: controller.signal,
         cancel: (reason) => controller.abort(reason),

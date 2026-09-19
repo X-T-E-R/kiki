@@ -60,11 +60,11 @@ import {
   buildSubagentModelDescriptions,
   formatSubagentTimeoutDescription,
   normalizeSubagentBindingValue,
+  resolveDefaultSubagentProfileName,
   resolveSubagentTimeoutMs,
 } from '#/session/subagent/configSection';
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
-  DEFAULT_PROFILE_NAME,
   ISubagentTool,
   RESUME_WITH_TYPE_UNAVAILABLE,
   RESUMED_LABEL,
@@ -266,7 +266,8 @@ export class SubagentTool implements ISubagentTool {
     const profileNameForDisplay =
       resumeAgentId !== undefined && resumeAgentId.length > 0
         ? (await this.resumeProfileName(resumeAgentId)) ?? RESUMED_LABEL
-        : args.profile_file ?? requestedRoute ?? requestedProfileName ?? DEFAULT_PROFILE_NAME;
+        : args.profile_file ?? requestedRoute ?? requestedProfileName
+          ?? resolveDefaultSubagentProfileName(this.config) ?? RESUMED_LABEL;
     const prefix = args.background === true ? 'Launching background' : 'Launching';
     if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
     const snapshot = this.catalog.snapshot?.();
@@ -310,6 +311,15 @@ export class SubagentTool implements ISubagentTool {
         return this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy);
       },
     };
+  }
+
+  private requireDefaultProfileName(): string {
+    const configured = resolveDefaultSubagentProfileName(this.config);
+    if (configured !== undefined) return configured;
+    throw new Error2(
+      ErrorCodes.PROFILE_UNKNOWN,
+      'No agent profile specified and no default subagent profile is configured. Pass an explicit profile (or route / profile_file), or set [subagent].default_profile to an available profile name.',
+    );
   }
 
   private async resumeProfileName(ref: string): Promise<string | undefined> {
@@ -367,7 +377,7 @@ export class SubagentTool implements ISubagentTool {
             delegator: { kind: 'agent', agentId: this.callerAgentId },
             requesterAgentId: this.callerAgentId,
             requesterProfileData: this.profile.data(),
-            profileName: fileTarget?.profileName ?? (args.profile?.length ? args.profile : args.route === undefined ? DEFAULT_PROFILE_NAME : undefined),
+            profileName: fileTarget?.profileName ?? (args.profile?.length ? args.profile : args.route === undefined ? this.requireDefaultProfileName() : undefined),
             routeId: args.route,
             snapshot: fileTarget?.snapshot ?? snapshot,
             message: args.prompt,
@@ -450,7 +460,7 @@ export class SubagentTool implements ISubagentTool {
           toolCallId,
           runInBackground,
           operation: isResume ? 'resume' : 'spawn',
-          profile: requestedRoute ?? requestedProfileName ?? DEFAULT_PROFILE_NAME,
+          profile: requestedRoute ?? requestedProfileName ?? resolveDefaultSubagentProfileName(this.config),
           resumeAgentId: isResume ? resumeAgentId : undefined,
           error,
         });

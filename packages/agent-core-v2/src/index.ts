@@ -342,7 +342,6 @@ import '#/agent/activityView/activityViewService';
 export * from '#/features/btw/btw';
 export * from '#/features/btw/btwService';
 import '#/features/btw/btwFeature';
-import '#/features/plan/profile/plan';
 export * from '#/features/plan/tools/enter-plan-mode/enter-plan-mode';
 import '#/features/plan/tools/enter-plan-mode/enterPlanModeTool';
 export * from '#/features/plan/tools/exit-plan-mode/exit-plan-mode';
@@ -428,6 +427,8 @@ import '#/app/cron/configSection';
 export * from '#/app/cron/cronTask';
 export * from '#/app/cron/cronTaskPersistence';
 export * from '#/app/cron/cronTaskPersistenceService';
+export * from '#/app/cron/cronScheduler';
+export * from '#/app/cron/cronSchedulerService';
 export * from '#/app/cron/cron-expr';
 export * from '#/app/cron/format';
 export * from '#/app/cron/jitter';
@@ -442,7 +443,8 @@ import '#/agent/tools/cron/cron-list/cronListTool';
 export * from '#/agent/tools/cron/cron-delete/cron-delete';
 import '#/agent/tools/cron/cron-delete/cronDeleteTool';
 
-import '#/session/agentLifecycle/profile/profiles';
+import '#/app/shippedAgentProfiles/shippedAgentProfileSourceService';
+import '#/app/shippedAgentProfiles/shippedAgentProfileManagerService';
 export * from '#/session/agentLifecycle/agentLifecycle';
 export * from '#/session/agentLifecycle/agentLifecycleService';
 export * from '#/session/agentLifecycle/mainAgent';
@@ -607,8 +609,14 @@ export {
   unsupportedImageMimeFromUrl,
 } from '#/agent/media/image-format-policy';
 export {
+  IMAGE_MIME_TYPES,
   providerImagePolicy,
+  resolveImagePolicy,
+  type ImageConversionMode,
+  type ImageMime,
+  type ImagePolicyConfig,
   type ProviderImagePolicy,
+  type ResolvedImagePolicy,
 } from '#/kosong/provider/providerImagePolicy';
 export {
   persistOriginalImage,

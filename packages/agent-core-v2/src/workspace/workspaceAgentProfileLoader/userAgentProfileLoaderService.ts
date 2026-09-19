@@ -10,6 +10,9 @@ import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext
 import { IFlagService } from '#/app/flag/flag';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import {
+  IShippedAgentProfileManager,
+} from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 
 import { discoverAgentFiles } from './internal/agentFileDiscovery';
 import { AgentProfileLoaderBase } from './internal/agentProfileLoader';
@@ -53,11 +56,21 @@ export class UserAgentProfileLoaderService
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
     @IFlagService private readonly flags: IFlagService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
+    @IShippedAgentProfileManager private readonly shippedManager: IShippedAgentProfileManager,
     registry?: IAgentProfileRegistry,
   ) {
     super(log, registry);
     this.defaultProfile = builtin.getDefault();
     this.watchReady = this.watchUserAgentRoots();
+    this._register(
+      this.shippedManager.onDidChange(() => {
+        this.watchDebounce.cancelAndSet(() => {
+          void this.reload().catch((error) => {
+            this.log.warn(`agent profile loader "user" reload failed: ${String(error)}`);
+          });
+        }, WATCH_DEBOUNCE_MS);
+      }),
+    );
     this.start();
   }
 
@@ -74,6 +87,7 @@ export class UserAgentProfileLoaderService
   }
 
   protected async load(): Promise<AgentProfileContribution> {
+    await this.shippedManager.ready;
     await this.watchReady;
     const roots = await userAgentRoots(
       this.fs,

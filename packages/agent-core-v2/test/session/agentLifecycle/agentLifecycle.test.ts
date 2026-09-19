@@ -1001,6 +1001,7 @@ describe('AgentLifecycleService', () => {
       _serviceBrand: undefined,
       get: async () => undefined,
       list: async () => [],
+      listWorkspaceIds: async () => [],
       save: async () => {},
       delete: async () => {},
     } as ICronTaskPersistence);

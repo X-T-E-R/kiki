@@ -32,10 +32,21 @@ export const SubagentConfigSchema = z.object({
   denyModels: z.array(z.string()).optional(),
   maxDirectChildren: z.number().int().min(0).optional(),
   maxTotalSubagents: z.number().int().min(0).optional(),
+  defaultProfile: z.string().optional(),
 });
 
 export const DEFAULT_MAX_DIRECT_CHILDREN = 16;
 export const DEFAULT_MAX_TOTAL_SUBAGENTS = 0;
+export const DEFAULT_SUBAGENT_PROFILE = 'general';
+
+/** Resolves the dispatch target for an AgentRun call that omits profile/route/profile_file:
+ *  the configured `[subagent].default_profile` name, or `undefined` when it is unset or blank
+ *  (strict mode — omitted-target dispatches are rejected with a recovery suggestion). */
+export function resolveDefaultSubagentProfileName(config: IConfigService): string | undefined {
+  const value = config.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.defaultProfile;
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
 
 export function resolveDispatchCapacityLimits(config: IConfigService): {
   readonly maxDirectChildren: number;
@@ -76,6 +87,7 @@ registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
     timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
     maxDirectChildren: DEFAULT_MAX_DIRECT_CHILDREN,
     maxTotalSubagents: DEFAULT_MAX_TOTAL_SUBAGENTS,
+    defaultProfile: DEFAULT_SUBAGENT_PROFILE,
   },
   env: subagentEnvBindings,
   stripEnv: stripSubagentEnv,

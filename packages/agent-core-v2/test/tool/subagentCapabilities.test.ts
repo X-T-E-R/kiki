@@ -24,7 +24,12 @@ describe('subagent capability final bindings', () => {
       id: 'example', name: 'example', aliases: [], protocol: 'openai', headers: {},
       capabilities: { ...UNKNOWN_CAPABILITY, thinking: true }, maxContextSize: 1000,
       supportEfforts: ['low', 'high'], defaultEffort: 'low', alwaysThinking: false,
-      providerName: 'example', authProvider: { getAuth: async () => undefined },
+      providerName: 'example',
+      imagePolicy: {
+        acceptedTypes: new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+        convertUnsupported: 'off',
+      },
+      authProvider: { getAuth: async () => undefined },
     };
     ix.stub(IConfigService, { get: <T>() => undefined as T });
     ix.stub(IModelService, { resolveId: (id) => id });

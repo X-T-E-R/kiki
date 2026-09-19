@@ -25,12 +25,12 @@ import {
 import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProfileRegistryService';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import { IShippedAgentProfileSource } from '#/app/shippedAgentProfiles/shippedAgentProfileSource';
+import { ShippedAgentProfileSourceService } from '#/app/shippedAgentProfiles/shippedAgentProfileSourceService';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { BuiltinAgentProfileLoaderService } from '#/app/agentProfileCatalog/builtinAgentProfileLoaderService';
 import { AGENT_PROFILE_SOURCE_PRIORITY } from '#/app/agentProfileCatalog/agentProfileContribution';
-import {
-  _clearAgentProfileContributionsForTests,
-  registerAgentProfile,
-} from '#/app/agentProfileCatalog/contribution';
+import { _clearAgentProfileContributionsForTests } from '#/app/agentProfileCatalog/contribution';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorRegistryService';
@@ -359,6 +359,19 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IFlagService, flags],
       [IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService)],
       [IAgentProfileRegistry, new SyncDescriptor(AgentProfileRegistryService)],
+      [IShippedAgentProfileSource, new SyncDescriptor(ShippedAgentProfileSourceService)],
+      [
+        IShippedAgentProfileManager,
+        {
+          _serviceBrand: undefined,
+          ready: Promise.resolve(),
+          onDidChange: Event.None as Event<void>,
+          status: async () => [],
+          restoreOriginal: async () => {
+            throw new Error('restoreOriginal is not available in this harness');
+          },
+        } satisfies IShippedAgentProfileManager,
+      ],
       [IBuiltinAgentProfileLoader, new SyncDescriptor(BuiltinAgentProfileLoaderService)],
       [IUserAgentProfileLoader, new SyncDescriptor(UserAgentProfileLoaderService)],
       [IPluginAgentProfileLoader, new SyncDescriptor(PluginAgentProfileLoaderService)],
@@ -439,12 +452,6 @@ async function withStack(
 describe('agent profile loaders + session catalog', () => {
   beforeEach(() => {
     _clearAgentProfileContributionsForTests();
-    const builtinDefault: AgentProfile = normalizeAgentProfile({
-      name: DEFAULT_AGENT_PROFILE_NAME,
-      description: 'builtin default',
-      systemPrompt: () => 'BUILTIN PROMPT',
-    });
-    registerAgentProfile(builtinDefault);
   });
 
   it('strictly validates route prompt composition modes', () => {
@@ -797,20 +804,19 @@ describe('agent profile loaders + session catalog', () => {
           name: DEFAULT_AGENT_PROFILE_NAME,
           scope: 'user',
           description: 'not allowed',
-        })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.PROFILE_READ_ONLY });
+        })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.PROFILE_NOT_FOUND });
       });
     });
   });
 
-  it('lists builtin profiles when no agent directories exist', async () => {
+  it('reports an empty catalog when no agent directories exist', async () => {
     await withFixture(async (fixture) => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)?.description).toBe('builtin default');
-        expect(stack.catalog.getDefault().name).toBe(DEFAULT_AGENT_PROFILE_NAME);
-        expect(stack.catalog.list().length).toBeGreaterThan(0);
-        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('builtin');
+        expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
+        expect(() => stack.catalog.getDefault()).toThrow(/not available/);
+        expect(stack.catalog.list()).toEqual([]);
       });
     });
   });
@@ -1019,54 +1025,6 @@ describe('agent profile loaders + session catalog', () => {
           ]),
         );
       });
-    });
-  });
-
-  it('omits disabled builtin profiles and reprojects when the config changes', async () => {
-    registerAgentProfile(
-      normalizeAgentProfile({
-        name: 'coder',
-        description: 'builtin coder',
-        systemPrompt: () => 'CODER',
-      }),
-    );
-    await withFixture(async (fixture) => {
-      await withStack(fixture, { disabledBuiltinProfiles: ['coder'] }, async (stack) => {
-        await stack.ready();
-        expect(stack.catalog.get('coder')).toBeUndefined();
-        expect(stack.catalog.list().map((profile) => profile.name)).not.toContain('coder');
-
-        stack.config.setDisabledBuiltinProfiles([]);
-        const changed = waitForEvent(stack.catalog.onDidChange);
-        stack.config.fireSectionChange(DISABLED_BUILTIN_PROFILES_SECTION);
-        await changed;
-
-        expect(stack.catalog.get('coder')?.description).toBe('builtin coder');
-      });
-    });
-  });
-
-  it('retains a disabled default builtin for binding but removes it from dispatch', async () => {
-    await withFixture(async (fixture) => {
-      await withStack(
-        fixture,
-        { disabledBuiltinProfiles: [DEFAULT_AGENT_PROFILE_NAME] },
-        async (stack) => {
-          await stack.ready();
-
-          expect(stack.catalog.getDefault().description).toBe('builtin default');
-          expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
-          expect(stack.catalog.list().map((profile) => profile.name)).not.toContain(
-            DEFAULT_AGENT_PROFILE_NAME,
-          );
-          expect(
-            stack.warnings.some(
-              (warning) =>
-                warning.includes(DEFAULT_AGENT_PROFILE_NAME) && warning.includes('cannot be disabled'),
-            ),
-          ).toBe(false);
-        },
-      );
     });
   });
 
@@ -1329,7 +1287,7 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('keeps the builtin default when a same-name file does not opt in to override', async () => {
+  it('lets a same-name file take over the default agent name without opting in to override', async () => {
     await withFixture(async (fixture) => {
       await writeAgent(
         join(fixture.workDir, '.kiki', 'agents'),
@@ -1339,15 +1297,8 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.getDefault().description).toBe('builtin default');
-        expect(stack.catalog.getDefault().description).not.toBe('project default override');
-        const inspection = stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME);
-        expect(inspection?.sourceId).toBe('builtin');
-        expect(inspection?.suppressed).toContainEqual({
-          sourceId: 'workspace',
-          priority: 30,
-          reason: 'builtin-override-required',
-        });
+        expect(stack.catalog.getDefault().description).toBe('project default override');
+        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('workspace');
       });
     });
   });
@@ -1368,12 +1319,12 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('falls back to a valid lower-priority override when the higher candidate does not opt in', async () => {
+  it('resolves the default agent name by source priority regardless of the override flag', async () => {
     await withFixture(async (fixture) => {
       await writeAgent(
         join(fixture.homeDir, 'agents'),
         'agent.md',
-        agentMd('agent', 'user default override', true),
+        agentMd('agent', 'user default', true),
       );
       await writeAgent(
         join(fixture.workDir, '.kiki', 'agents'),
@@ -1383,21 +1334,25 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.getDefault().description).toBe('user default override');
-        expect(stack.catalog.getDefault().description).not.toBe('project default without override');
-        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('user');
+        expect(stack.catalog.getDefault().description).toBe('project default without override');
+        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('workspace');
+        expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.suppressed).toContainEqual({
+          sourceId: 'user',
+          priority: AGENT_PROFILE_SOURCE_PRIORITY.user,
+          reason: 'priority',
+        });
       });
     });
   });
 
-  it('keeps builtin profiles and warns when a non-fatal loader fails its first load', async () => {
+  it('warns and leaves the catalog empty when a non-fatal loader fails its first load', async () => {
     await withFixture(async (fixture) => {
       await mkdir(join(fixture.homeDir, 'agents'), { recursive: true });
       const hostFs = failingReaddirFs(new HostFileSystem(), () => true);
       await withStack(fixture, { hostFs }, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)?.description).toBe('builtin default');
+        expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
         expect(stack.warnings.some((w) => w.includes('"user"') && w.includes('load failed'))).toBe(
           true,
         );
@@ -1499,7 +1454,8 @@ describe('agent profile loaders + session catalog', () => {
           pluginSections: 'PLUGIN_A',
         });
         expect(profile.systemPromptMode).toBe('append');
-        expect(prompt).toMatch(/^BUILTIN PROMPT\n\nOPERATOR cwd=\/work\/dir/);
+        expect(prompt).toContain('You are Kiki');
+        expect(prompt.indexOf('You are Kiki')).toBeLessThan(prompt.indexOf('OPERATOR cwd=/work/dir'));
         expect(prompt).toContain('# Plugin Instructions');
         expect(prompt).toContain('PLUGIN_A');
         expect(prompt).toContain('${delegation_context}');
@@ -1517,12 +1473,13 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.getDefault().systemPrompt({})).toBe(
-          'OPERATOR FIRST\n\nBUILTIN PROMPT',
-        );
+        const prompt = stack.catalog.getDefault().systemPrompt({});
+        expect(prompt.startsWith('OPERATOR FIRST')).toBe(true);
+        expect(prompt).toContain('You are Kiki');
       });
     });
   });
+
 
   it('rejects an invalid system prompt composition mode', async () => {
     await withFixture(async (fixture) => {
@@ -1533,7 +1490,7 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
-        expect(stack.catalog.getDefault().systemPrompt({})).toBe('BUILTIN PROMPT');
+        expect(() => stack.catalog.getDefault()).toThrow(/not available/);
         expect(stack.warnings.some((warning) =>
           warning.includes('system_prompt_mode') &&
           warning.includes('replace, prepend, append, or inherit')
@@ -1694,15 +1651,12 @@ describe('agent profile loaders + session catalog', () => {
 
         const bySourceId = new Map(stack.registry.entries().map((entry) => [entry.sourceId, entry]));
         expect([...bySourceId.keys()].toSorted()).toEqual([
-          'builtin',
           'explicit',
           'extra',
           'plugin',
           'user',
           'workspace',
         ]);
-        expect(bySourceId.get('builtin')?.workspaceKey).toBeUndefined();
-        expect(bySourceId.get('builtin')?.priority).toBe(AGENT_PROFILE_SOURCE_PRIORITY.builtin);
         for (const sourceId of ['explicit', 'extra', 'plugin', 'user', 'workspace'] as const) {
           expect(bySourceId.get(sourceId)?.workspaceKey).toBe('wd_test');
           expect(bySourceId.get(sourceId)?.priority).toBe(AGENT_PROFILE_SOURCE_PRIORITY[sourceId]);
@@ -1799,7 +1753,7 @@ describe('agent profile loaders + session catalog', () => {
 
         expect(stack.registry.entries().some((entry) => entry.sourceId === 'user')).toBe(false);
         expect(stack.catalog.get('user-only')).toBeUndefined();
-        expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)?.description).toBe('builtin default');
+        expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
       });
     });
   });
@@ -1811,7 +1765,7 @@ describe('agent profile loaders + session catalog', () => {
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
         const frozen = stack.catalog.snapshot();
-        const caller = { subagents: ['m3-worker'] };
+        const caller = { profileName: 'tester', subagents: ['m3-worker'] };
         expect(stack.catalog.list().map((profile) => profile.name)).toContain('m3-worker');
 
         await writeFile(profilePath, privateAgentMd('m3-worker', 'private worker'));

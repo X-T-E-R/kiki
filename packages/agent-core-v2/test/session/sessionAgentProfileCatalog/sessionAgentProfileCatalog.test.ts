@@ -295,7 +295,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     container.dispose();
   });
 
-  it('keeps the builtin profile when a same-name file profile lacks override: true', () => {
+  it('lets a same-name file profile win the default agent name by source priority', () => {
     const { container, catalog, contribute } = makeCatalog();
     const builtinProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
     const fileProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
@@ -307,17 +307,17 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       workspaceKey: 'wd_a',
     });
 
-    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBe(builtinProfile);
+    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toMatchObject(fileProfile);
     expect(catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)).toEqual({
       name: DEFAULT_AGENT_PROFILE_NAME,
-      profile: builtinProfile,
-      sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID,
-      priority: AGENT_PROFILE_SOURCE_PRIORITY.builtin,
+      profile: expect.objectContaining({ name: fileProfile.name }),
+      sourceId: 'workspace',
+      priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
       suppressed: [
         {
-          sourceId: 'workspace',
-          priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
-          reason: 'builtin-override-required',
+          sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID,
+          priority: AGENT_PROFILE_SOURCE_PRIORITY.builtin,
+          reason: 'priority',
         },
       ],
     });
@@ -347,15 +347,15 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       },
     ]);
 
-    expect(catalog.getDefault()).toBe(builtinProfile);
-    expect(catalog.resolveSelection({ profile: DEFAULT_AGENT_PROFILE_NAME }).profile).toBe(builtinProfile);
+    expect(catalog.getDefault()).toMatchObject(builtinProfile);
+    expect(catalog.resolveSelection({ profile: DEFAULT_AGENT_PROFILE_NAME }).profile).toMatchObject(builtinProfile);
     expect(catalog.get('writer')).toBeUndefined();
     expect(warnings).toContainEqual(expect.stringMatching(/writer.*no lower-priority base profile/));
     catalog.dispose();
     container.dispose();
   });
 
-  it('lets a file profile with override: true replace the same-name builtin', () => {
+  it('lets a higher-priority file profile replace a same-name low-priority candidate', () => {
     const { container, catalog, contribute } = makeCatalog();
     const builtinProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
     const overrideProfile = profile(DEFAULT_AGENT_PROFILE_NAME, { override: true });
@@ -365,19 +365,25 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       workspaceKey: 'wd_a',
     });
 
-    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBe(overrideProfile);
+    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toMatchObject(overrideProfile);
     expect(catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)).toEqual({
       name: DEFAULT_AGENT_PROFILE_NAME,
-      profile: overrideProfile,
+      profile: expect.objectContaining({ name: overrideProfile.name }),
       sourceId: 'workspace',
       priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
-      suppressed: [],
+      suppressed: [
+        {
+          sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID,
+          priority: 0,
+          reason: 'priority',
+        },
+      ],
     });
     catalog.dispose();
     container.dispose();
   });
 
-  it('filters configured builtin profiles and reprojects when the config changes', () => {
+  it('leaves legacy disabled-builtin filtering to the shipped-profile manager, not the session catalog', () => {
     const { container, catalog, config, contribute } = makeCatalog(WORKSPACE_KEY, [
       'coder',
       'plan',
@@ -393,20 +399,18 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       planProfile,
     ]);
 
-    expect(catalog.getDefault()).toBe(defaultProfile);
-    expect(catalog.get('coder')).toBeUndefined();
-    expect(catalog.get('plan')).toBeUndefined();
-    expect(catalog.get('explore')).toBe(exploreProfile);
-    expect(catalog.list()).toEqual([defaultProfile, exploreProfile]);
+    expect(catalog.getDefault()).toMatchObject(defaultProfile);
+    expect(catalog.get('coder')).toMatchObject(coderProfile);
+    expect(catalog.get('plan')).toMatchObject(planProfile);
+    expect(catalog.get('explore')).toMatchObject(exploreProfile);
 
     const seen: string[] = [];
     const subscription = catalog.onDidChange((sourceId) => seen.push(sourceId));
     config.setDisabled(['explore']);
 
-    expect(catalog.get('coder')).toBe(coderProfile);
-    expect(catalog.get('plan')).toBe(planProfile);
-    expect(catalog.get('explore')).toBeUndefined();
-    expect(seen).toEqual(['catalog']);
+    expect(catalog.get('coder')).toMatchObject(coderProfile);
+    expect(catalog.get('explore')).toMatchObject(exploreProfile);
+    expect(seen).toEqual([]);
     subscription.dispose();
     catalog.dispose();
     container.dispose();
@@ -415,33 +419,35 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
   it('filters named profiles, rejects their dispatch selection, and hot-reprojects config changes', () => {
     const { container, catalog, config, contribute } = makeCatalog(
       WORKSPACE_KEY,
-      [DEFAULT_AGENT_PROFILE_NAME],
-      ['reviewer', DEFAULT_AGENT_PROFILE_NAME],
+      [],
+      ['reviewer'],
     );
     const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
     const namedDefaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME, { override: true });
     const reviewerProfile = profile('reviewer');
     const coderProfile = profile('coder');
-    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile]);
+    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile], {
+      priority: AGENT_PROFILE_SOURCE_PRIORITY.builtin,
+    });
     contribute('user', [namedDefaultProfile, reviewerProfile, coderProfile], {
+      priority: AGENT_PROFILE_SOURCE_PRIORITY.user,
       workspaceKey: WORKSPACE_KEY,
     });
 
-    expect(catalog.getDefault()).toBe(defaultProfile);
-    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
+    expect(catalog.getDefault()).toMatchObject(namedDefaultProfile);
+    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toMatchObject(namedDefaultProfile);
     expect(catalog.get('reviewer')).toBeUndefined();
-    expect(catalog.get('coder')).toBe(coderProfile);
+    expect(catalog.get('coder')).toMatchObject(coderProfile);
     expect(() => catalog.resolveSelection({ profile: 'reviewer' })).toThrow(
       'Unknown agent profile: "reviewer"',
     );
 
     const seen: string[] = [];
     const subscription = catalog.onDidChange((sourceId) => seen.push(sourceId));
-    config.setDisabledNamed(['coder', DEFAULT_AGENT_PROFILE_NAME]);
+    config.setDisabledNamed(['coder']);
 
-    expect(catalog.getDefault()).toBe(defaultProfile);
-    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
-    expect(catalog.get('reviewer')).toBe(reviewerProfile);
+    expect(catalog.getDefault()).toMatchObject(namedDefaultProfile);
+    expect(catalog.get('reviewer')).toMatchObject(reviewerProfile);
     expect(catalog.get('coder')).toBeUndefined();
     expect(() => catalog.resolveSelection({ profile: 'coder' })).toThrow(
       'Unknown agent profile: "coder"',
@@ -452,16 +458,18 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     container.dispose();
   });
 
-  it('keeps a disabled default builtin only on the main-agent binding surface', async () => {
-    const { container, catalog, warnings, contribute } = makeCatalog(WORKSPACE_KEY, [
-      DEFAULT_AGENT_PROFILE_NAME,
-    ]);
+  it('keeps a disabled default profile only on the main-agent binding surface', async () => {
+    const { container, catalog, warnings, contribute } = makeCatalog(
+      WORKSPACE_KEY,
+      [],
+      [DEFAULT_AGENT_PROFILE_NAME],
+    );
     const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
     const coderProfile = profile('coder');
     contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile, coderProfile]);
     await catalog.ready;
 
-    expect(catalog.getDefault()).toBe(defaultProfile);
+    expect(catalog.getDefault()).toMatchObject(defaultProfile);
     expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
     expect(catalog.list()).toEqual([coderProfile]);
     expect(catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
@@ -564,21 +572,19 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(catalog.get('missing')).toBeUndefined();
     expect(catalog.inspect('missing')).toBeUndefined();
     expect(catalog.list()).toEqual([]);
-    expect(() => catalog.getDefault()).toThrow(
-      `Default agent profile "${DEFAULT_AGENT_PROFILE_NAME}" is not registered`,
-    );
+    expect(() => catalog.getDefault()).toThrow(/not available/);
 
     const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
     const coderProfile = profile('coder');
     contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile]);
     contribute('user', [coderProfile]);
 
-    expect(catalog.getDefault()).toBe(defaultProfile);
+    expect(catalog.getDefault()).toMatchObject(defaultProfile);
     expect(catalog.get('coder')).toBe(coderProfile);
-    expect(catalog.list()).toEqual([defaultProfile, coderProfile]);
+    expect(catalog.list()).toEqual([expect.objectContaining({ name: DEFAULT_AGENT_PROFILE_NAME }), coderProfile]);
     expect(catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)).toEqual({
       name: DEFAULT_AGENT_PROFILE_NAME,
-      profile: defaultProfile,
+      profile: expect.objectContaining({ name: defaultProfile.name }),
       sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID,
       priority: 0,
       suppressed: [],

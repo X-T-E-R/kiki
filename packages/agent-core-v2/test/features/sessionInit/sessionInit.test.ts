@@ -5,6 +5,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { UserCancellationError } from '#/_base/utils/abort';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
@@ -112,6 +113,19 @@ describe('SessionInitService', () => {
     };
 
     ix.stub(IAgentLifecycleService, lifecycle as unknown as IAgentLifecycleService);
+    ix.stub(IConfigService, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeConfiguration: () => ({ dispose: () => {} }),
+      onDidSectionChange: () => ({ dispose: () => {} }),
+      get: (domain: string) => (domain === 'subagent' ? { defaultProfile: 'general' } : undefined),
+      inspect: () => ({ value: undefined, defaultValue: undefined, userValue: undefined, memoryValue: undefined }),
+      getAll: () => ({}),
+      set: async () => {},
+      replace: async () => {},
+      reload: async () => {},
+      diagnostics: () => [],
+    } as unknown as IConfigService);
     ix.stub(ISessionSubagentService, lifecycle as unknown as ISessionSubagentService);
     ix.stub(IHostFileSystem, {
       _serviceBrand: undefined,
@@ -143,13 +157,13 @@ describe('SessionInitService', () => {
 
   afterEach(() => disposables.dispose());
 
-  it('spawns a coder subagent, reloads AGENTS.md, and reminds the main agent', async () => {
+  it('spawns the default subagent profile, reloads AGENTS.md, and reminds the main agent', async () => {
     const svc = ix.get(ISessionInitService);
     await svc.generateAgentsMd();
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(create.mock.calls[0]![0]).toMatchObject({
-      binding: { profile: 'coder', model: 'mock-model', thinking: 'off' },
+      binding: { profile: 'general', model: 'mock-model', thinking: 'off' },
     });
 
     expect(run).toHaveBeenCalledTimes(1);
@@ -176,7 +190,7 @@ describe('SessionInitService', () => {
       expect.objectContaining({
         type: 'subagent.spawned',
         subagentId: 'agent-0',
-        subagentName: 'coder',
+        subagentName: 'general',
         parentToolCallId: 'generate-agents-md',
         callerAgentId: 'main',
         model: 'mock-model',

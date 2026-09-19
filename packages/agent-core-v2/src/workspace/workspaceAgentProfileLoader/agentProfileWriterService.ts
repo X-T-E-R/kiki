@@ -4,6 +4,7 @@ import { atomicWrite } from '#/_base/utils/fs';
 import { Error2 } from '#/_base/errors/errors';
 import { CoreErrors } from '#/_base/errors/codes';
 import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 
@@ -181,7 +182,8 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
       }
       const builtin = this.registry.entries().find((entry) => entry.sourceId === 'builtin')
         ?.contribution.profiles.find((candidate) => candidate.name === parsedProfile.name);
-      const main = parsedProfile.main ?? builtin?.main;
+      const main = parsedProfile.main ?? builtin?.main
+        ?? (parsedProfile.name === DEFAULT_AGENT_PROFILE_NAME ? true : undefined);
       if (main === true && parsedProfile.executor !== undefined && parsedProfile.executor !== 'native') {
         throw validationError([{
           path: 'rawText',

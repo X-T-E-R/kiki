@@ -96,6 +96,10 @@ function createTestModel(
     alwaysThinking: false,
     providerType,
     providerName: 'kimi',
+    imagePolicy: {
+      acceptedTypes: new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+      convertUnsupported: 'off',
+    },
     authProvider: { getAuth: async () => undefined },
   };
 }

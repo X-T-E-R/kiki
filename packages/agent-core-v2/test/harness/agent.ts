@@ -36,6 +36,10 @@ import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { loadAgentsMdForRoots, type LoadedAgentsMd } from '#/agent/profile/context';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import { ISessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
+import { getAgentProfileContributions } from '#/app/agentProfileCatalog/contribution';
+import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { IShippedAgentProfileSource } from '#/app/shippedAgentProfiles/shippedAgentProfileSource';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 import { ISessionSkillCatalogData } from '#/session/sessionSkillCatalog/skillCatalogData';
 import type { PermissionData, PermissionMode } from '#/agent/permissionPolicy/types';
@@ -1186,6 +1190,19 @@ export class AgentTestContext {
       'app',
     );
     this.root = createAppScope({ seeds: appSeeds });
+    const shippedProfiles = this.root.accessor.get(IShippedAgentProfileSource).list();
+    const registeredProfiles = getAgentProfileContributions() as AgentProfile[];
+    const builtinLane = new Map<string, AgentProfile>();
+    for (const profile of [...shippedProfiles, ...registeredProfiles]) {
+      builtinLane.set(profile.name, profile);
+    }
+    if (builtinLane.size > 0) {
+      this.root.accessor.get(IAgentProfileRegistry).register({
+        sourceId: 'builtin',
+        priority: 0,
+        contribution: { profiles: [...builtinLane.values()] },
+      });
+    }
     const hookRunnerSeed = appSeeds.find(([id]) => id === IExternalHooksRunnerService);
     if (hookRunnerSeed !== undefined) {
       this.root.instantiation.provide(

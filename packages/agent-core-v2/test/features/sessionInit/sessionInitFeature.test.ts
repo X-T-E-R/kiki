@@ -6,6 +6,7 @@ import {
   registerScopedService,
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
+import { IConfigService } from '#/app/config/config';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFeatureManager } from '#/app/feature/featureManager';
 import { FeatureManagerService } from '#/app/feature/featureManagerService';
@@ -54,6 +55,7 @@ describe('SessionInitFeature', () => {
       stubPair(IHostEnvironment, {} as IHostEnvironment),
       stubPair(IBootstrapService, {} as IBootstrapService),
       stubPair(ISessionContext, {} as ISessionContext),
+      stubPair(IConfigService, {} as IConfigService),
     ]);
     const manager = host.app.accessor.get(IFeatureManager);
 

@@ -1,18 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { getAgentProfileContributions } from '#/app/agentProfileCatalog/contribution';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
-import '#/session/agentLifecycle/profile/profiles';
+import { ShippedAgentProfileSourceService } from '#/app/shippedAgentProfiles/shippedAgentProfileSourceService';
 
-function profile(name: string) {
-  const found = getAgentProfileContributions().find((p) => p.name === name);
-  expect(found, `builtin profile "${name}" is registered`).toBeDefined();
-  return found!;
+function source() {
+  return new ShippedAgentProfileSourceService();
 }
 
-describe('builtin agent profiles', () => {
+describe('shipped agent profiles', () => {
   it('wires thread communication and TaskWait into the default profile', () => {
-    const agent = profile('agent');
+    const agent = source().get('agent')!;
     expect(agent.tools).toEqual(
       expect.arrayContaining([
         'ThreadList',
@@ -27,7 +24,7 @@ describe('builtin agent profiles', () => {
   });
 
   it.each(['BoardRead', 'BoardWrite'])('enables %s for the default profile unless explicitly disabled', (tool) => {
-    const agent = profile('agent');
+    const agent = source().get('agent')!;
     expect(isToolActive(agent, tool)).toBe(true);
     expect(isToolActive({ ...agent, disallowedTools: [tool] }, tool)).toBe(false);
   });
@@ -46,13 +43,30 @@ describe('builtin agent profiles', () => {
     'CronDelete',
     'EnterPlanMode',
     'ExitPlanMode',
-  ])('keeps the builtin coder from dispatching, scheduling, or planning via %s', (tool) => {
-    expect(profile('coder').tools).not.toContain(tool);
+  ])('keeps the shipped coder from dispatching, scheduling, or planning via %s', (tool) => {
+    expect(source().get('coder')?.tools).not.toContain(tool);
   });
 
-  it('keeps the builtin coder able to do the delegated coding work', () => {
-    expect(profile('coder').tools).toEqual(
+  it('keeps the shipped coder able to do the delegated coding work', () => {
+    expect(source().get('coder')?.tools).toEqual(
       expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash']),
     );
+  });
+
+  it('keeps the shipped general profile a strict leaf with editing tools', () => {
+    const general = source().get('general')!;
+    expect(general.tools).toEqual(
+      expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash', 'Skill']),
+    );
+    expect(general.tools).not.toContain('AgentRun');
+    expect(general.tools).not.toContain('TaskWait');
+    expect(general.subagents).toEqual([]);
+    expect(general.main).toBeUndefined();
+  });
+
+  it('renders shipped profiles against the terminal base prompt', () => {
+    const rendered = source().get('explore')!.renderSystemPrompt({});
+    expect(rendered.text).toContain('codebase exploration specialist');
+    expect(rendered.text).toContain('You are Kiki');
   });
 });

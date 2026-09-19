@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { normalizeAgentProfile, type AgentProfile } from '#/agentProfile';
 import { AGENT_PROFILE_SOURCE_PRIORITY } from '#/agentProfileContribution';
 import {
-  BUILTIN_AGENT_PROFILE_SOURCE_ID,
   projectAgentProfileCatalog,
   type AgentProfileRegistration,
 } from '#/profileCatalog';
@@ -15,14 +14,12 @@ function profile(name: string, override = false): AgentProfile {
 function project(
   entries: readonly AgentProfileRegistration[],
   options?: {
-    readonly disabledBuiltinProfiles?: readonly string[];
     readonly disabledNamedProfiles?: readonly string[];
   },
 ) {
   const warnings: string[] = [];
   const result = projectAgentProfileCatalog({
     entries,
-    disabledBuiltinProfiles: new Set(options?.disabledBuiltinProfiles),
     disabledNamedProfiles: new Set(options?.disabledNamedProfiles),
     routeBaseMissingCode: 'agent_profile_route.base_missing',
     warn: (message) => warnings.push(message),
@@ -53,58 +50,52 @@ describe('projectAgentProfileCatalog', () => {
     ]);
   });
 
-  it('requires override true to replace a builtin profile', () => {
-    const builtin = profile('agent');
-    const candidate = profile('agent');
+  it('resolves same-name file candidates by priority without a builtin lane', () => {
+    const user = profile('explore');
+    const workspace = profile('explore');
     const { result, warnings } = project([
       {
-        sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID,
-        priority: AGENT_PROFILE_SOURCE_PRIORITY.builtin,
-        contribution: { profiles: [builtin] },
+        sourceId: 'user',
+        priority: AGENT_PROFILE_SOURCE_PRIORITY.user,
+        contribution: { profiles: [user] },
       },
       {
         sourceId: 'workspace',
         priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
-        contribution: { profiles: [candidate] },
+        contribution: { profiles: [workspace] },
       },
     ]);
 
-    expect(result.profiles.get('agent')).toBe(builtin);
-    expect(result.defaultBindingProfile).toBe(builtin);
-    expect(warnings).toHaveLength(1);
+    expect(result.profiles.get('explore')).toBe(workspace);
+    expect(warnings).toHaveLength(0);
   });
 
-  it.each([undefined, true, false])('inherits builtin main unless explicitly set to %s', (main) => {
-    const builtin = normalizeAgentProfile({ ...profile('agent'), main: true });
-    const override = normalizeAgentProfile({ ...profile('agent', true), main, tools: ['Read'], subagents: [] });
+  it('anchors the main flag on the default agent profile name', () => {
+    const named = profile('agent');
     const { result } = project([
-      { sourceId: 'builtin', priority: 0, contribution: { profiles: [builtin] } },
-      { sourceId: 'workspace', priority: 10, contribution: { profiles: [override] } },
+      { sourceId: 'user', priority: 10, contribution: { profiles: [named] } },
     ]);
-    expect(result.profiles.get('agent')?.main).toBe(main ?? true);
-    expect(result.profiles.get('agent')?.tools).toEqual(['Read']);
-    expect(result.profiles.get('agent')?.subagents).toEqual([]);
+    expect(result.profiles.get('agent')?.main).toBe(true);
+    expect(result.snapshot.defaultProfile?.main).toBe(true);
   });
 
-  it('keeps the disabled default override on the main binding surface only', () => {
-    const builtin = normalizeAgentProfile({ ...profile('agent'), main: true });
-    const override = normalizeAgentProfile({ ...profile('agent', true), tools: ['Read'] });
+  it('keeps the disabled default agent on the main binding surface only', () => {
+    const named = normalizeAgentProfile({ ...profile('agent'), tools: ['Read'] });
     const { result } = project([
-      { sourceId: 'builtin', priority: 0, contribution: { profiles: [builtin] } },
-      { sourceId: 'user', priority: 10, contribution: { profiles: [override] } },
-    ], { disabledBuiltinProfiles: ['agent'], disabledNamedProfiles: ['agent'] });
+      { sourceId: 'user', priority: 10, contribution: { profiles: [named] } },
+    ], { disabledNamedProfiles: ['agent'] });
     expect(result.profiles.has('agent')).toBe(false);
+    expect(result.resolvableProfiles.has('agent')).toBe(false);
     expect(result.snapshot.defaultProfile).toMatchObject({ main: true, tools: ['Read'] });
   });
 
-  it('does not make an external executor eligible as an inherited main', () => {
-    const builtin = normalizeAgentProfile({ ...profile('agent'), main: true });
-    const external = normalizeAgentProfile({ ...profile('agent', true), executor: 'example-acp' });
+  it('does not make an external executor eligible as a main profile', () => {
+    const external = normalizeAgentProfile({ ...profile('agent'), executor: 'example-acp' });
     const { result, warnings } = project([
-      { sourceId: 'builtin', priority: 0, contribution: { profiles: [builtin] } },
       { sourceId: 'user', priority: 10, contribution: { profiles: [external] } },
     ]);
-    expect(result.profiles.get('agent')).toBe(builtin);
+    expect(result.profiles.get('agent')).toBeUndefined();
+    expect(result.snapshot.defaultProfile).toBeUndefined();
     expect(warnings.join(' ')).toContain('unsupported for main');
   });
 
@@ -168,7 +159,6 @@ describe('projectAgentProfileCatalog', () => {
   });
 
   it('warns and skips inherit without a base while preserving other profiles', () => {
-    const builtin = profile('agent');
     const reviewer = profile('reviewer');
     const inherited = normalizeAgentProfile({
       name: 'writer',
@@ -177,10 +167,8 @@ describe('projectAgentProfileCatalog', () => {
       systemPrompt: () => 'UNRESOLVED',
     });
     const { result, warnings } = project([
-      { sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID, priority: 0, contribution: { profiles: [builtin] } },
       { sourceId: 'workspace', priority: 30, contribution: { profiles: [inherited, reviewer] } },
     ]);
-    expect(result.profiles.get('agent')).toBe(builtin);
     expect(result.profiles.get('reviewer')).toBe(reviewer);
     expect(result.profiles.has('writer')).toBe(false);
     expect(warnings).toContainEqual(expect.stringMatching(/writer.*no lower-priority base profile/));

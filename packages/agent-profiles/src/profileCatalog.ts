@@ -31,7 +31,7 @@ export interface AgentProfileRouteDiagnostic {
 export interface AgentProfileSuppressedCandidate {
   readonly sourceId: string;
   readonly priority: number;
-  readonly reason: 'priority' | 'builtin-override-required';
+  readonly reason: 'priority';
 }
 
 export interface AgentProfileInspection {
@@ -45,7 +45,6 @@ export interface AgentProfileInspection {
 export interface ProfileCatalogProjection {
   readonly profiles: ReadonlyMap<string, AgentProfile>;
   readonly resolvableProfiles: ReadonlyMap<string, AgentProfile>;
-  readonly defaultBindingProfile?: AgentProfile;
   readonly inspections: ReadonlyMap<string, AgentProfileInspection>;
   readonly routes: ReadonlyMap<string, ResolvedAgentProfileRoute>;
   readonly publicRoutes: ReadonlyMap<string, ResolvedAgentProfileRoute>;
@@ -68,45 +67,23 @@ export class AgentProfileInheritanceError extends Error {
 
 export function projectAgentProfileCatalog(input: {
   readonly entries: readonly AgentProfileRegistration[];
-  readonly disabledBuiltinProfiles: ReadonlySet<string>;
   readonly disabledNamedProfiles: ReadonlySet<string>;
   readonly routeBaseMissingCode: string;
   readonly warn: (message: string) => void;
 }): ProfileCatalogProjection {
   const publicProfiles = new Map<string, AgentProfile>();
   const resolvableProfiles = new Map<string, AgentProfile>();
-  let defaultBindingProfile: AgentProfile | undefined;
   const inspections = new Map<string, AgentProfileInspection>();
-  const builtinEntry = input.entries.find(
-    (entry) => entry.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID,
-  );
-  if (builtinEntry !== undefined) {
-    for (const profile of builtinEntry.contribution.profiles) {
-      if (profile.name === DEFAULT_AGENT_PROFILE_NAME) defaultBindingProfile = profile;
-      if (input.disabledBuiltinProfiles.has(profile.name)) continue;
-      publicProfiles.set(profile.name, profile);
-      resolvableProfiles.set(profile.name, profile);
-      inspections.set(profile.name, {
-        name: profile.name,
-        profile,
-        sourceId: builtinEntry.sourceId,
-        priority: builtinEntry.priority,
-        suppressed: [],
-      });
-    }
-  }
+  let disabledMainProfile: AgentProfile | undefined;
 
   const fileCandidates = new Map<string, ProfileCandidate[]>();
-  const ordered = input.entries
-    .filter((entry) => entry.sourceId !== BUILTIN_AGENT_PROFILE_SOURCE_ID)
-    .toSorted((a, b) => b.priority - a.priority);
+  const ordered = [...input.entries].toSorted((a, b) => b.priority - a.priority);
   for (const entry of ordered) {
     const entryProfiles = new Map<string, AgentProfile>();
     for (const profile of entry.contribution.profiles) entryProfiles.set(profile.name, profile);
     for (const declared of entryProfiles.values()) {
-      const builtin = builtinEntry?.contribution.profiles.find((item) => item.name === declared.name);
-      const profile = declared.main === undefined && builtin?.main !== undefined
-        ? { ...declared, main: builtin.main }
+      const profile = declared.name === DEFAULT_AGENT_PROFILE_NAME && declared.main === undefined
+        ? { ...declared, main: true as const }
         : declared;
       if (profile.main === true && profile.executor !== undefined && profile.executor !== 'native') {
         input.warn(`External executor "${profile.executor}" is unsupported for main agent profile "${profile.name}"`);
@@ -122,58 +99,37 @@ export function projectAgentProfileCatalog(input: {
 
   for (const candidates of fileCandidates.values()) {
     const suppressed: AgentProfileSuppressedCandidate[] = [];
-    let winner = false;
     for (const [candidateIndex, candidate] of candidates.entries()) {
-      const builtinBase = resolvableProfiles.get(candidate.profile.name);
-      if (builtinBase !== undefined && candidate.profile.override !== true) {
-        input.warn(
-          `agent file profile "${candidate.profile.name}" ignored: a same-name builtin profile exists; set "override: true" in the frontmatter to replace it`,
-        );
-        suppressed.push({
-          sourceId: candidate.sourceId,
-          priority: candidate.priority,
-          reason: 'builtin-override-required',
-        });
-        continue;
-      }
       let profile: AgentProfile;
       try {
-        profile = resolveInheritedCandidate(candidates, candidateIndex, builtinBase);
+        profile = resolveInheritedCandidate(candidates, candidateIndex);
       } catch (error) {
         if (!(error instanceof AgentProfileInheritanceError)) throw error;
         input.warn(`agent file profile "${candidate.profile.name}" ignored: ${error.message}`);
         continue;
       }
-      if (input.disabledNamedProfiles.has(profile.name)) {
-        defaultBindingProfile = profile;
-        publicProfiles.delete(profile.name);
-        resolvableProfiles.delete(profile.name);
-      } else {
+      if (!input.disabledNamedProfiles.has(profile.name)) {
         resolvableProfiles.set(profile.name, profile);
         if (profile.private === true) publicProfiles.delete(profile.name);
         else publicProfiles.set(profile.name, profile);
+        inspections.set(profile.name, {
+          name: profile.name,
+          profile,
+          sourceId: candidate.sourceId,
+          priority: candidate.priority,
+          suppressed: [
+            ...suppressed,
+            ...candidates.slice(candidateIndex + 1).map((rest) => ({
+              sourceId: rest.sourceId,
+              priority: rest.priority,
+              reason: 'priority' as const,
+            })),
+          ],
+        });
+      } else if (profile.name === DEFAULT_AGENT_PROFILE_NAME && profile.main === true) {
+        disabledMainProfile = profile;
       }
-      inspections.set(profile.name, {
-        name: profile.name,
-        profile,
-        sourceId: candidate.sourceId,
-        priority: candidate.priority,
-        suppressed: [
-          ...suppressed,
-          ...candidates.slice(candidateIndex + 1).map((rest) => ({
-            sourceId: rest.sourceId,
-            priority: rest.priority,
-            reason: 'priority' as const,
-          })),
-        ],
-      });
-      winner = true;
       break;
-    }
-    if (!winner && suppressed.length > 0) {
-      const name = candidates[0]?.profile.name;
-      const existing = name === undefined ? undefined : inspections.get(name);
-      if (existing !== undefined) inspections.set(existing.name, { ...existing, suppressed });
     }
   }
 
@@ -185,8 +141,7 @@ export function projectAgentProfileCatalog(input: {
     }
   }
   const routeCandidates = new Map<string, AgentProfileRouteDefinition>();
-  const routeEntries = input.entries.toSorted((a, b) => b.priority - a.priority);
-  for (const entry of routeEntries) {
+  for (const entry of ordered) {
     for (const route of entry.contribution.routes ?? []) {
       if (!routeCandidates.has(route.id)) routeCandidates.set(route.id, route);
     }
@@ -219,7 +174,7 @@ export function projectAgentProfileCatalog(input: {
   const visit = (definitionId: string): void => {
     if (visited.has(definitionId)) return;
     visited.add(definitionId);
-    for (const entry of routeEntries) {
+    for (const entry of ordered) {
       const table = entry.contribution.scopedBindings?.get(definitionId);
       if (table === undefined) continue;
       scopedBindings.set(definitionId, new Map(table));
@@ -240,7 +195,7 @@ export function projectAgentProfileCatalog(input: {
   for (const profile of resolvableProfiles.values()) {
     if (profile.definitionId !== undefined) visit(profile.definitionId);
   }
-  const defaultProfile = resolvableProfiles.get(DEFAULT_AGENT_PROFILE_NAME) ?? defaultBindingProfile;
+  const defaultProfile = resolvableProfiles.get(DEFAULT_AGENT_PROFILE_NAME) ?? disabledMainProfile;
   if (defaultProfile?.definitionId !== undefined) visit(defaultProfile.definitionId);
   const snapshot: AgentProfileCatalogSnapshot = {
     publicProfiles: new Map(publicProfiles),
@@ -256,7 +211,6 @@ export function projectAgentProfileCatalog(input: {
   return {
     profiles: publicProfiles,
     resolvableProfiles,
-    defaultBindingProfile,
     inspections,
     routes,
     publicRoutes,
@@ -268,20 +222,13 @@ export function projectAgentProfileCatalog(input: {
 function resolveInheritedCandidate(
   candidates: readonly ProfileCandidate[],
   index: number,
-  builtinBase: AgentProfile | undefined,
 ): AgentProfile {
   const candidate = candidates[index]?.profile;
   if (candidate === undefined) throw new AgentProfileInheritanceError('unknown');
   if (candidate.systemPromptMode !== 'inherit') return candidate;
-  let lowerIndex = index + 1;
-  while (builtinBase !== undefined) {
-    const lowerCandidate = candidates[lowerIndex];
-    if (lowerCandidate === undefined || lowerCandidate.profile.override === true) break;
-    lowerIndex += 1;
-  }
-  const lower = candidates[lowerIndex] === undefined
-    ? builtinBase
-    : resolveInheritedCandidate(candidates, lowerIndex, builtinBase);
+  const lower = candidates[index + 1] === undefined
+    ? undefined
+    : resolveInheritedCandidate(candidates, index + 1);
   if (lower === undefined) throw new AgentProfileInheritanceError(candidate.name);
   const lowerLayers = lower.promptOverrideLayers
     ?? (lower.promptOverrides === undefined ? [] : [lower.promptOverrides]);

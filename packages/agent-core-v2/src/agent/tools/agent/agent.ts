@@ -4,7 +4,6 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { agentNameIssue } from '#/session/agentCollaboration/directChildren';
 import { type AgentTool } from '#/tool/toolContract';
 
-export const DEFAULT_PROFILE_NAME = 'coder';
 export const RESUMED_LABEL = 'subagent';
 
 export const SubagentToolInputSchema = z.preprocess(
@@ -14,15 +13,9 @@ export const SubagentToolInputSchema = z.preprocess(
     }
     const record = input as Record<string, unknown>;
     const normalized = { ...record };
-    const hasResumeId =
-      typeof normalized['resume'] === 'string' && normalized['resume'].trim().length > 0;
     const hasProfile =
       typeof normalized['profile'] === 'string' && normalized['profile'].length > 0;
-    const hasRoute = typeof normalized['route'] === 'string' && normalized['route'].length > 0;
-    const hasFile = typeof normalized['profile_file'] === 'string' && normalized['profile_file'].trim().length > 0;
-    if (!hasProfile && !hasResumeId && !hasRoute && !hasFile) {
-      normalized['profile'] = DEFAULT_PROFILE_NAME;
-    } else if (!hasProfile) {
+    if (!hasProfile) {
       delete normalized['profile'];
     }
     return normalized;
@@ -34,7 +27,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'One of the available agent profiles (see "Available agent profiles" in this tool description). Defaults to "coder" when omitted.',
+        'One of the available agent profiles (see "Available agent profiles" in this tool description). When omitted, the configured default subagent profile ([subagent].default_profile) is used; if no default is configured, the call is rejected — pass an explicit profile instead.',
       ),
     route: z
       .string()

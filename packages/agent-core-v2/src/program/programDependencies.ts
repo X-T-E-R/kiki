@@ -3,6 +3,7 @@ import type { IDisposable } from '#/_base/di/lifecycle';
 import type { ILogService } from '#/_base/log/log';
 import type { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import type { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import type { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import type { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -60,6 +61,7 @@ export interface ProgramDependencies {
   readonly agentProfiles: IAgentProfileRegistry;
   readonly agentExecutors: IAgentExecutorRegistry;
   readonly builtinAgentProfiles: IBuiltinAgentProfileLoader;
+  readonly shippedAgentProfiles: IShippedAgentProfileManager;
   readonly builtinSkills: IBuiltinSkillSource;
   readonly telemetry: ITelemetryService;
   readonly docs: IAtomicDocumentStore;
