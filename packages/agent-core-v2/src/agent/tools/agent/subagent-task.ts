@@ -20,6 +20,9 @@ export type SubagentHandle = {
   readonly parentToolCallId?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortSource?: import('#/agent/profile/profile').ThinkingEffortSource;
+  readonly routeDetached?: boolean;
+  readonly profileSource?: import('#/agent/profile/profile').ProfileBindingSource;
   readonly completion: Promise<SubagentCompletion>;
 };
 

@@ -58,7 +58,14 @@ export interface SystemPromptContext extends AgentProfileContext {
 
 export type ResolvedAgentProfile = AgentProfile;
 
+export type ThinkingEffortSource = 'forced' | 'adjusted';
+export type ProfileBindingSource = 'registered' | 'profile-file';
+
 export interface ProfileData extends AgentConfigData {
+  readonly effectiveThinkingLevel?: ThinkingEffort;
+  readonly thinkingEffortSource?: ThinkingEffortSource;
+  readonly routeDetached?: boolean;
+  readonly profileSource?: ProfileBindingSource;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly executorId?: string;
   readonly executorProtocol?: string;
@@ -85,6 +92,7 @@ export type ProfileUpdateData = Partial<{
   modelAlias: string;
   profileName: string;
   thinkingLevel: string;
+  thinkingEffortAdjusted: boolean;
   systemPrompt: string;
   environmentDisclosure: EnvironmentDisclosureSnapshot;
   agentsMdPaths: readonly string[];
@@ -106,6 +114,7 @@ export interface ProfileBindingSnapshot {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
+  readonly thinkingEffortAdjusted?: boolean;
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly systemPrompt: string;

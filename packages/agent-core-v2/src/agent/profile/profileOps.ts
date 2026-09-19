@@ -34,6 +34,7 @@ export interface ProfileModelState {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
+  readonly thinkingEffortAdjusted?: boolean;
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly systemPrompt: string;
@@ -63,6 +64,7 @@ const profileBindSchema = z.object({
   executorOptions: ExecutorOptionsSchema.readonly().optional(),
   executorDescriptorRevision: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>(),
+  thinkingEffortAdjusted: z.boolean().optional(),
   serviceTier: ServiceTierSchema.optional(),
   requestParams: RequestParamsSchema.readonly().optional(),
   systemPrompt: z.string(),
@@ -93,6 +95,7 @@ const configUpdateSchema = z.object({
   profileName: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>().optional(),
   thinkingLevel: z.custom<ThinkingEffort>().optional(),
+  thinkingEffortAdjusted: z.boolean().optional(),
   systemPrompt: z.string().optional(),
   environmentDisclosure: z.custom<EnvironmentDisclosureSnapshot>().optional(),
   renderGeneration: z.number().optional(),
@@ -143,6 +146,7 @@ export const profileKey = defineState(
   'profile',
   (): ProfileModelState => ({
     thinkingLevel: 'off',
+    thinkingEffortAdjusted: false,
     systemPrompt: '',
     renderGeneration: 0,
   }),
@@ -160,6 +164,7 @@ export const profileKey = defineState(
     executorOptions: e.executorOptions,
     executorDescriptorRevision: e.executorDescriptorRevision,
     thinkingLevel: e.thinkingEffort,
+    thinkingEffortAdjusted: e.thinkingEffortAdjusted ?? false,
     serviceTier: e.serviceTier,
     requestParams: e.requestParams,
     systemPrompt: e.systemPrompt,
@@ -186,6 +191,9 @@ export const profileKey = defineState(
     const thinkingLevel = configUpdateThinkingLevel(e);
     if (thinkingLevel !== undefined && thinkingLevel !== s.thinkingLevel) {
       s.thinkingLevel = thinkingLevel;
+    }
+    if (e.thinkingEffortAdjusted !== undefined) {
+      s.thinkingEffortAdjusted = e.thinkingEffortAdjusted;
     }
     if (
       e.systemPrompt !== undefined &&

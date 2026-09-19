@@ -395,6 +395,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         executorOptions: snapshot.executorOptions,
         executorDescriptorRevision: snapshot.executorDescriptorRevision,
         thinkingEffort: snapshot.thinkingLevel,
+        thinkingEffortAdjusted: snapshot.thinkingEffortAdjusted,
         serviceTier: snapshot.serviceTier,
         requestParams:
           snapshot.requestParams === undefined ? undefined : { ...snapshot.requestParams },
@@ -504,26 +505,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const routeModelAlias = selection.route?.lockedModelAlias;
     const canonicalRouteModelAlias =
       routeModelAlias === undefined ? undefined : this.resolveModelId(routeModelAlias);
-    if (
-      routeModelAlias !== undefined &&
-      input.model !== undefined &&
-      this.resolveModelId(input.model) !== canonicalRouteModelAlias
-    ) {
-      throw new Error2(
-        ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${selection.route!.id}" locks model_alias to "${routeModelAlias}"`,
-      );
-    }
-    if (
-      selection.route?.lockedThinkingEffort !== undefined &&
-      input.thinking !== undefined &&
-      input.thinking !== selection.route.lockedThinkingEffort
-    ) {
-      throw new Error2(
-        ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${selection.route.id}" locks thinking_effort to "${selection.route.lockedThinkingEffort}"`,
-      );
-    }
     const requested = resolveMainModelCandidate({
       inputModel: input.model,
       routeLockedAlias: routeModelAlias,
@@ -564,36 +545,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const systemPrompt = assembled.text;
     this.cacheAgentsMdWarning(context);
 
-    const thinkingLevel = this.resolveThinkingEffort(
-      resolveMainThinkingCandidate({
-        inputThinking: input.thinking,
-        routeLockedThinking: selection.route?.lockedThinkingEffort,
-        profileThinking: resolveProfileThinkingDefault(profile, alias, (id) => this.models.resolveId(id)),
-      }),
-      model,
-    );
-    const resolvedRoute = selection.route;
-    const lockedThinkingEffort = resolvedRoute?.lockedThinkingEffort;
-    const normalizedLockedThinkingEffort = normalizeRequestedThinkingEffort(lockedThinkingEffort);
-    if (
-      lockedThinkingEffort !== undefined &&
-      resolvedRoute !== undefined &&
-      normalizedLockedThinkingEffort !== undefined &&
-      thinkingLevel !== normalizedLockedThinkingEffort
-    ) {
-      throw new Error2(
-        ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${resolvedRoute.id}" requires thinking_effort "${lockedThinkingEffort}", which model "${alias}" cannot honor`,
-        {
-          details: {
-            route: resolvedRoute.id,
-            modelAlias: alias,
-            lockedThinkingEffort,
-            resolvedThinkingEffort: thinkingLevel,
-          },
-        },
-      );
-    }
+    const requestedThinking = resolveMainThinkingCandidate({
+      inputThinking: input.thinking,
+      routeLockedThinking: selection.route?.lockedThinkingEffort,
+      profileThinking: resolveProfileThinkingDefault(profile, alias, (id) => this.models.resolveId(id)),
+    });
+    const thinkingLevel = this.resolveThinkingEffort(requestedThinking, model);
+    const normalizedRequestedThinking = requestedThinking === undefined
+      ? undefined
+      : normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking.trim().toLowerCase();
+    const thinkingEffortAdjusted =
+      normalizedRequestedThinking !== undefined && normalizedRequestedThinking !== thinkingLevel;
 
     if (requested.source === 'input' || input.thinking !== undefined) {
       for (const message of humanProfileDeviations({
@@ -624,6 +586,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         thinkingLevel,
       );
     }
+    this.validatedForcedThinkingEffort(
+      thinkingLevel,
+      model,
+      alias,
+      roleConstraintsFromProfile(profile, spawnConstraintOrigin(input.lease, input.spawnPolicy)),
+    );
 
     this.assertProfileToolPatterns(profile, input.inheritedUserToolNames);
     this.activeProfile = profile;
@@ -644,6 +612,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorOptions: undefined,
       executorDescriptorRevision: 'native',
       thinkingEffort: thinkingLevel,
+      thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
       serviceTier: profile.serviceTier,
       requestParams:
         profile.requestParams === undefined ? undefined : { ...profile.requestParams },
@@ -727,33 +696,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     );
     const alias = validated.modelAlias!;
     const thinkingLevel = validated.thinkingEffort as ThinkingEffort;
-    const routeBinding =
-      selection.route === undefined
-        ? undefined
-        : this.requireValidBinding(
-            this.executors.validateBinding(executor.descriptor.id, executor.options, {
-              modelAlias: selection.route.lockedModelAlias ?? alias,
-              thinkingEffort: selection.route.lockedThinkingEffort ?? thinkingLevel,
-            }),
-          );
-    if (
-      selection.route?.lockedModelAlias !== undefined &&
-      routeBinding?.modelAlias !== alias
-    ) {
-      throw new Error2(
-        ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${selection.route.id}" locks model_alias to "${selection.route.lockedModelAlias}"`,
-      );
-    }
-    if (
-      selection.route?.lockedThinkingEffort !== undefined &&
-      routeBinding?.thinkingEffort !== thinkingLevel
-    ) {
-      throw new Error2(
-        ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${selection.route.id}" locks thinking_effort to "${selection.route.lockedThinkingEffort}"`,
-      );
-    }
+    const normalizedRequestedThinking =
+      normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking.trim().toLowerCase();
+    const thinkingEffortAdjusted = normalizedRequestedThinking !== thinkingLevel;
+    const routeBinding = selection.route === undefined
+      ? undefined
+      : this.executors.validateBinding(executor.descriptor.id, executor.options, {
+          modelAlias: selection.route.lockedModelAlias ?? alias,
+          thinkingEffort: selection.route.lockedThinkingEffort ?? thinkingLevel,
+        });
+    const normalizedRouteBinding = routeBinding?.ok === true ? routeBinding.binding : undefined;
     await this.sessionToolPolicy.ready;
     const context = await this.buildSystemPromptContext(profile);
     this.assertRouteBindable(selection.route?.id);
@@ -778,17 +730,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profileName: selection.baseProfile.name,
       profileDefinitionId: selection.baseProfile.definitionId,
       routeId: selection.route?.id,
-      lockedModelAlias:
-        routeModelAlias === undefined ? undefined : routeBinding?.modelAlias,
-      lockedThinkingEffort:
-        selection.route?.lockedThinkingEffort === undefined
-          ? undefined
-          : routeBinding?.thinkingEffort,
+      lockedModelAlias: routeModelAlias === undefined
+        ? undefined
+        : normalizedRouteBinding?.modelAlias ?? routeModelAlias,
+      lockedThinkingEffort: selection.route?.lockedThinkingEffort === undefined
+        ? undefined
+        : normalizedRouteBinding?.thinkingEffort ?? selection.route.lockedThinkingEffort,
       executorId: executor.descriptor.id,
       executorProtocol: executor.descriptor.protocol,
       executorOptions: { ...executor.options },
       executorDescriptorRevision: executor.descriptor.revision,
       thinkingEffort: thinkingLevel,
+      thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
       systemPrompt: assembled.text,
       environmentDisclosure: assembled.environment,
       agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text),
@@ -846,20 +799,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const model = validated.modelAlias;
     if (model === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'The resumed agent has no bound model.');
     const thinking = (this.isExternalExecutor ? validated.thinkingEffort : normalizeRequestedThinkingEffort(validated.thinkingEffort)) ?? previous.thinkingLevel;
+    const requestedThinking = input.thinkingEffort?.trim().toLowerCase();
+    const thinkingEffortAdjusted = requestedThinking !== undefined &&
+      (normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking) !== thinking;
     const identity = (alias: string | undefined): string | undefined => alias === undefined || this.isExternalExecutor ? alias : this.models.resolveId(alias) ?? alias;
     const changedModel = model !== identity(previous.modelAlias);
     if (changedModel && (input.allowModelChange !== true || input.modelAlias === undefined)) {
       throw new Error2(ErrorCodes.REQUEST_INVALID,
         `Changing the resumed agent model from "${previous.modelAlias ?? '(unbound)'}" to "${model}" requires model_alias plus allow_model_change: true.`,
         { details: { previousModel: previous.modelAlias, requestedModel: model, requiredParameter: 'allow_model_change' } });
-    }
-    if (previous.lockedModelAlias !== undefined && model !== identity(previous.lockedModelAlias)) {
-      throw new Error2(ErrorCodes.ROUTE_BINDING_CONFLICT, 'The resumed agent model is locked by its route.',
-        { details: { lockedModelAlias: previous.lockedModelAlias, requestedModel: model } });
-    }
-    if (previous.lockedThinkingEffort !== undefined && thinking !== previous.lockedThinkingEffort) {
-      throw new Error2(ErrorCodes.ROUTE_BINDING_CONFLICT, 'The resumed agent effort is locked by its route.',
-        { details: { lockedThinkingEffort: previous.lockedThinkingEffort, requestedEffort: thinking } });
     }
     const constraints = previous.boundProfile ?? this.resolveActiveProfile();
     if (constraints === undefined && (changedModel || thinking !== previous.thinkingLevel)) {
@@ -900,7 +848,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'The agent binding changed during resume admission. Retry against its current binding.');
       }
       assertBoundModelAllowed(this.config, model, constraints, resolver, thinking);
-      if (changedModel || thinking !== previous.thinkingLevel) this.update({ modelAlias: model, thinkingLevel: thinking, systemPrompt, environmentDisclosure });
+      if (changedModel || thinking !== previous.thinkingLevel) {
+        this.update({
+          modelAlias: model,
+          thinkingLevel: thinking,
+          thinkingEffortAdjusted,
+          systemPrompt,
+          environmentDisclosure,
+        });
+      }
     };
   }
 
@@ -1008,7 +964,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
     }
     const previousEffort = this.thinkingLevel;
-    this.update({ thinkingLevel: effort });
+    const requestedEffort = normalizeRequestedThinkingEffort(level) ?? level.trim().toLowerCase();
+    this.update({ thinkingLevel: effort, thinkingEffortAdjusted: requestedEffort !== effort });
     if (this.activeProfile !== undefined && this.modelAlias !== undefined) {
       for (const message of humanProfileDeviations({
         model: this.modelAlias,
@@ -1332,6 +1289,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   data(): ProfileData {
     const model = this.tryResolveRawModel();
+    const thinking = this.isExternalExecutor
+      ? { effective: this.profileState.thinkingLevel as ThinkingEffort, forced: undefined }
+      : this.resolveThinkingState(model);
+    const lockedModelAlias = this.profileState.lockedModelAlias;
+    const lockedThinkingEffort = this.profileState.lockedThinkingEffort;
+    const routeModelDetached = lockedModelAlias !== undefined &&
+      (this.isExternalExecutor ? lockedModelAlias : this.resolveModelId(lockedModelAlias)) !== this.modelAlias;
+    const routeEffortDetached = lockedThinkingEffort !== undefined &&
+      (normalizeRequestedThinkingEffort(lockedThinkingEffort) ?? lockedThinkingEffort.trim().toLowerCase()) !== thinking.effective;
+    const routeDetached = this.routeId !== undefined && (routeModelDetached || routeEffortDetached);
     return {
       modelAlias: this.modelAlias,
       modelCapabilities: model?.capabilities ?? UNKNOWN_CAPABILITY,
@@ -1348,6 +1315,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           : { ...this.profileState.executorOptions },
       executorDescriptorRevision: this.profileState.executorDescriptorRevision,
       thinkingLevel: this.thinkingLevel,
+      effectiveThinkingLevel: thinking.effective,
+      thinkingEffortSource: thinking.forced !== undefined
+        ? 'forced'
+        : this.profileState.thinkingEffortAdjusted ? 'adjusted' : undefined,
+      routeDetached,
+      profileSource: this.profileState.boundProfile?.fileSources === undefined ? 'registered' : 'profile-file',
       systemPrompt: this.systemPrompt,
       agentsMdPaths: this.profileState.agentsMdPaths,
       activeToolNames: this.activeToolNames === undefined ? undefined : [...this.activeToolNames],
@@ -1563,18 +1536,32 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (changed.promptBase !== undefined) payload.promptBase = changed.promptBase;
     if (changed.modelAlias !== undefined) payload.modelAlias = changed.modelAlias;
     if (changed.profileName !== undefined) payload.profileName = changed.profileName;
+    if (
+      changed.thinkingEffortAdjusted !== undefined &&
+      (changed.thinkingEffortAdjusted || this.profileState.thinkingEffortAdjusted === true)
+    ) {
+      payload.thinkingEffortAdjusted = changed.thinkingEffortAdjusted;
+    }
     if (changed.thinkingLevel !== undefined || changed.modelAlias !== undefined) {
+      const requested = changed.thinkingLevel;
       if (this.isExternalExecutor) {
         payload.thinkingEffort =
-          (changed.thinkingLevel ?? this.profileState.thinkingLevel) as ThinkingEffort;
+          (requested ?? this.profileState.thinkingLevel) as ThinkingEffort;
       } else {
         const alias = changed.modelAlias ?? this.modelAlias;
         const model = this.resolveModelForThinking(alias);
         const changedModel = alias !== undefined && this.resolveModelId(alias) !== this.modelAlias;
-        const requested = changed.thinkingLevel ?? (changedModel
+        const candidate = requested ?? (changedModel
           ? resolveProfileThinkingDefault(this.profileState.boundProfile ?? this.resolveActiveProfile(), alias, (id) => this.models.resolveId(id))
           : this.modelAlias === undefined ? undefined : this.thinkingLevel);
-        payload.thinkingEffort = this.resolveThinkingEffort(requested, model);
+        payload.thinkingEffort = this.resolveThinkingEffort(candidate, model);
+        if (changed.thinkingEffortAdjusted === undefined && candidate !== undefined) {
+          const normalized = normalizeRequestedThinkingEffort(candidate) ?? candidate.trim().toLowerCase();
+          const adjusted = normalized !== payload.thinkingEffort;
+          if (adjusted || this.profileState.thinkingEffortAdjusted === true) {
+            payload.thinkingEffortAdjusted = adjusted;
+          }
+        }
       }
     }
     if (changed.systemPrompt !== undefined) {
@@ -1734,12 +1721,29 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   } {
     const base = this.thinkingLevel;
     if (this.isExternalExecutor) return { effective: base, forced: undefined };
+    const forced = this.validatedForcedThinkingEffort(
+      base,
+      model,
+      this.modelAlias,
+      this.profileState.boundProfile ?? this.activeProfile,
+    );
+    return { effective: forced ?? base, forced };
+  }
+
+  private validatedForcedThinkingEffort(
+    base: ThinkingEffort,
+    model: Model | undefined,
+    modelAlias: string | undefined,
+    constraints: Parameters<typeof assertBoundModelAllowed>[2],
+  ): ThinkingEffort | undefined {
     const forced = resolveForcedThinkingEffort(
       this.config.get<ThinkingConfig>(THINKING_SECTION)?.forcedEffort,
       base,
       drivesThinkingThroughTraits(model?.providerType),
     );
-    return { effective: forced ?? base, forced };
+    if (forced === undefined || modelAlias === undefined) return forced;
+    assertBoundModelAllowed(this.config, modelAlias, constraints, this.models, forced);
+    return forced;
   }
 
   private strictThinkingValidation(model: Model | undefined): boolean {

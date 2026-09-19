@@ -1643,6 +1643,7 @@ export interface AgentStateSnapshot {
     readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
     readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
+    readonly thinkingEffortAdjusted?: boolean;
     readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
     readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
     readonly systemPrompt: string;
@@ -2295,6 +2296,10 @@ export interface AgentStateSnapshot {
           readonly delegationNotice?: 'off' | 'auto';
         };
         readonly callerCeiling?: Pick</* ProfileData — packages/agent-core-v2/src/agent/profile/profile.ts */ {
+          readonly effectiveThinkingLevel?: 'off' | 'on' | (string & {});
+          readonly thinkingEffortSource?: 'forced' | 'adjusted';
+          readonly routeDetached?: boolean;
+          readonly profileSource?: 'registered' | 'profile-file';
           readonly executionRestriction?: 'research-readonly';
           readonly executorId?: string;
           readonly executorProtocol?: string;

@@ -27,7 +27,7 @@ export interface AgentProfileSelection {
 export interface AgentProfileSuppressedCandidate {
   readonly sourceId: string;
   readonly priority: number;
-  readonly reason: 'priority' | 'builtin-override-required';
+  readonly reason: 'priority';
 }
 
 export interface AgentProfileInspection {
@@ -42,8 +42,7 @@ export interface AgentProfileInspection {
  *  `IAgentProfileRegistry` scoped to THIS session, merging the global contributions (builtin /
  *  plugin / user) with the ones the workspace loaders tagged with this session's seeded workspace key
  *  (workspace / extra / explicit). Name-level dedup happens here — higher-priority sources win name
- *  collisions, and builtin names require an explicit `override: true` opt-in to be replaced. Disabled
- *  builtins are absent from `get` / `list` / `resolveSelection` / `inspect`, while `getDefault`
+ *  collisions. Disabled builtins are absent from `get` / `list` / `resolveSelection` / `inspect`, while `getDefault`
  *  retains the default binding fallback the main agent needs. */
 export interface ISessionAgentProfileCatalog {
   readonly _serviceBrand: undefined;

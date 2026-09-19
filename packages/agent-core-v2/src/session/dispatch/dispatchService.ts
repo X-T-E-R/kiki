@@ -44,10 +44,6 @@ import {
   resolveSubagentBinding,
 } from '#/session/subagent/configSection';
 import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
-import {
-  assertProfileRouteBinding,
-  assertProfileRouteModelAvailable,
-} from '#/session/subagent/profileRouteBinding';
 import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagent/subagent';
 
 import {
@@ -516,15 +512,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const resolver = modelAliasResolverForExecutor(profile.executor, this.models);
     if (input.resolvedBinding !== undefined) {
       const model = resolver.resolveId(input.resolvedBinding.model) ?? input.resolvedBinding.model;
-      if (native) {
-        assertProfileRouteBinding(
-          selection.route,
-          { modelAlias: model, thinkingEffort: input.resolvedBinding.thinking },
-          resolver,
-        );
-        assertProfileRouteModelAvailable(selection.route, this.modelCatalog, resolver);
-        this.modelCatalog.get(model);
-      }
+      if (native) this.modelCatalog.get(model);
       return { model, thinking: input.resolvedBinding.thinking };
     }
     const filled = fillLeasePins(
@@ -532,14 +520,6 @@ export class SessionDispatchService implements ISessionDispatchService {
       target.lease,
       selection.route,
     );
-    if (native) {
-      assertProfileRouteBinding(
-        selection.route,
-        { modelAlias: filled.modelAlias, thinkingEffort: filled.thinkingEffort },
-        resolver,
-      );
-      assertProfileRouteModelAvailable(selection.route, this.modelCatalog, resolver);
-    }
     const roleConstraints = roleConstraintsFromProfile(
       profile,
       spawnConstraintOrigin(target.lease, target.spawnPolicy),
@@ -575,7 +555,10 @@ export class SessionDispatchService implements ISessionDispatchService {
       name,
       profileName,
       modelAlias: data.modelAlias,
-      thinkingEffort: data.thinkingLevel,
+      thinkingEffort: data.effectiveThinkingLevel ?? data.thinkingLevel,
+      thinkingEffortSource: data.thinkingEffortSource,
+      routeDetached: data.routeDetached,
+      profileSource: data.profileSource,
       effectiveProfile,
       meta,
     };

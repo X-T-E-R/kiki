@@ -407,9 +407,10 @@ export class SubagentTool implements ISubagentTool {
       name: run.child.name,
       parentToolCallId: toolCallId,
       model: run.child.modelAlias,
-      thinkingEffort: run.child.agent
-        .accessor.get(IAgentProfileService)
-        .getEffectiveThinkingLevel(),
+      thinkingEffort: run.child.thinkingEffort,
+      thinkingEffortSource: run.child.thinkingEffortSource,
+      routeDetached: run.child.routeDetached,
+      profileSource: run.child.profileSource,
       completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
     };
   }
@@ -576,6 +577,20 @@ registerAgentToolService(ISubagentTool, SubagentTool, {
   requiredRuntimeCapabilities: ['process'],
 });
 
+function bindingResultLines(handle: SubagentHandle): string[] {
+  return [
+    `actual_profile: ${handle.profileName}`,
+    ...(handle.profileSource === 'profile-file' ? ['profile_source: profile_file'] : []),
+    ...(handle.thinkingEffortSource === undefined || handle.thinkingEffort === undefined
+      ? []
+      : [
+          `thinking_effort: ${handle.thinkingEffort}`,
+          `thinking_effort_source: ${handle.thinkingEffortSource}`,
+        ]),
+    ...(handle.routeDetached === true ? ['route_status: detached'] : []),
+  ];
+}
+
 function formatBackgroundAgentResult(
   taskId: string,
   handle: SubagentHandle,
@@ -585,7 +600,7 @@ function formatBackgroundAgentResult(
     `task_id: ${taskId}`,
     'status: running',
     `agent_id: ${handle.agentId}`,
-    `actual_profile: ${handle.profileName}`,
+    ...bindingResultLines(handle),
     'automatic_notification: true',
     `description: ${description}`,
   ].join('\n');
@@ -594,7 +609,7 @@ function formatBackgroundAgentResult(
 function formatForegroundAgentSuccess(handle: SubagentHandle, result: string): string {
   return [
     `agent_id: ${handle.agentId}`,
-    `actual_profile: ${handle.profileName}`,
+    ...bindingResultLines(handle),
     'status: completed',
     '',
     '[summary]',
@@ -609,7 +624,7 @@ function formatForegroundAgentFailure(
 ): string {
   const lines = [
     `agent_id: ${handle.agentId}`,
-    `actual_profile: ${handle.profileName}`,
+    ...bindingResultLines(handle),
     'status: failed',
     '',
     `subagent error: ${message}`,

@@ -733,6 +733,14 @@ function createLane(
       profileName: binding?.profile ?? resolved.name,
       profileDefinitionId: resolved.definitionId,
       thinkingLevel: validated.binding.thinkingEffort ?? 'off',
+      effectiveThinkingLevel: validated.binding.thinkingEffort ?? 'off',
+      routeDetached: binding?.resolvedRoute !== undefined && (
+        binding.resolvedRoute.lockedModelAlias !== undefined &&
+        binding.resolvedRoute.lockedModelAlias !== validated.binding.modelAlias ||
+        binding.resolvedRoute.lockedThinkingEffort !== undefined &&
+        binding.resolvedRoute.lockedThinkingEffort !== validated.binding.thinkingEffort
+      ),
+      profileSource: 'fileSources' in resolved ? 'profile-file' : 'registered',
       systemPrompt: '',
       executionRestriction: binding?.executionRestriction ?? prior?.executionRestriction,
       activeToolNames: resolved.tools,
@@ -1185,18 +1193,18 @@ describe('AgentRun and dispatch parity golden', () => {
     disposables.dispose();
   });
 
-  it('MP-01 honors route effort over a model-profile default when dispatch omits effort', async () => {
+  it('MP-01 uses route effort by default and permits an explicit detached override', async () => {
     const profile = normalizeAgentProfile({ ...parityProfile, allowedEfforts: ['low', 'high'], modelProfiles: [{ alias: 'parity-model', thinkingEffort: 'low' }] });
     const lane = createLane(disposables, 'internal', { profile });
     const route: ResolvedAgentProfileRoute = { id: 'coder.locked', profile: 'coder', description: '', modelAlias: 'parity-model', thinkingEffort: 'high', lockedModelAlias: 'parity-model', lockedThinkingEffort: 'high', overriddenFields: ['model_alias', 'thinking_effort'], effectiveProfile: profile };
     Object.assign(lane.ix.get(ISessionAgentProfileCatalog), { resolveSelection: () => ({ profile, baseProfile: profile, route }), listRoutes: () => [route] });
-    const dispatch = lane.ix.get(ISessionDispatchService);
-    const input = { requesterAgentId: 'main', delegator: { kind: 'agent', agentId: 'main' } as const, routeId: route.id, message: 'work', parentTurnId: 1, workDir: '/workspace', runtime: lane.ix.get(IAgentRuntimeService).inspect(), signal: new AbortController().signal };
     const result = await lane.runInternal({ route: route.id, prompt: 'work', description: 'MP01 route default', background: true });
     expect(result.isError).not.toBe(true);
     expect(lane.lifecycleCreate.mock.calls[0]?.[0]?.binding?.thinking).toBe('high');
-    await expect(dispatch.launch({ ...input, thinkingEffort: 'low' })).rejects.toMatchObject({ code: 'agent_profile_route.binding_conflict' });
-    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    const detached = await lane.runInternal({ route: route.id, effort: 'low', prompt: 'work', description: 'MP01 route override', background: true });
+    expect(detached.output).toContain('route_status: detached');
+    expect(lane.lifecycleCreate.mock.calls[1]?.[0]?.binding?.thinking).toBe('low');
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(2);
   });
 
   it('shares the tree limit across main, child and grandchild dispatch and retains cancelled descendants until settlement', async () => {
@@ -1239,6 +1247,7 @@ describe('AgentRun and dispatch parity golden', () => {
     const original = lane.ix.get(ISessionAgentProfileCatalog).get('coder');
     const result = await lane.runInternal({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true });
     expect(result.isError).not.toBe(true);
+    expect(result.output).toContain('profile_source: profile_file');
     expect(readText).toHaveBeenCalledWith('/workspace/custom.md');
     expect(lane.ix.get(ISessionAgentProfileCatalog).get('coder')).toBe(original);
     const bound = lane.lifecycleCreate.mock.calls[0]![0]!.binding!.resolvedProfile!;

@@ -715,7 +715,11 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     configValues['thinking'] = { effort: 'low', forcedEffort: ' max ' };
 
     host.svc.update({ modelAlias: 'kimi-code', thinkingLevel: 'high' });
-    expect(host.svc.data().thinkingLevel).toBe('high');
+    expect(host.svc.data()).toMatchObject({
+      thinkingLevel: 'high',
+      effectiveThinkingLevel: 'max',
+      thinkingEffortSource: 'forced',
+    });
     expect(modelOf(host.agentState).thinkingLevel).toBe('high');
     expect(host.svc.resolveModelContext().thinkingLevel).toBe('max');
 

@@ -73,6 +73,9 @@ export interface DispatchChild {
   readonly profileName: string;
   readonly modelAlias?: string;
   readonly thinkingEffort: string;
+  readonly thinkingEffortSource?: ProfileData['thinkingEffortSource'];
+  readonly routeDetached?: boolean;
+  readonly profileSource?: ProfileData['profileSource'];
   readonly effectiveProfile?: AgentProfile;
   readonly meta?: AgentMeta;
 }

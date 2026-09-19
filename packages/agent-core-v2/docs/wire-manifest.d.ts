@@ -111,6 +111,7 @@ interface ConfigUpdatePayload {
   thinkingEffort?: 'off' | 'on' | (string & {});
   /** ThinkingEffort */
   thinkingLevel?: 'off' | 'on' | (string & {});
+  thinkingEffortAdjusted?: boolean;
   systemPrompt?: string;
   environmentDisclosure?: EnvironmentDisclosureSnapshot;
   renderGeneration?: number;
@@ -531,6 +532,7 @@ interface ProfileBindPayload {
   executorDescriptorRevision?: string;
   /** ThinkingEffort */
   thinkingEffort: 'off' | 'on' | (string & {});
+  thinkingEffortAdjusted?: boolean;
   serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
   requestParams?: Record<string, string | number | boolean>;
   systemPrompt: string;

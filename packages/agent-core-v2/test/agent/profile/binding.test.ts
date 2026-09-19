@@ -1080,7 +1080,7 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('fails a routed bind atomically when its pinned model alias is unavailable', async () => {
+  it('fails an unavailable route default atomically but accepts an explicit detached model', async () => {
     ctx = createTestAgent(
       hostEnvironmentServices(homeDir, hostPathClass),
       sessionService(ISessionAgentProfileCatalog, routedCatalog('removed-model')),
@@ -1092,9 +1092,18 @@ describe('AgentProfileService.bind', () => {
     });
     expect(profile.data().profileName).toBeUndefined();
     expect(profile.data().routeId).toBeUndefined();
+
+    await expect(
+      profile.bind({ route: 'reviewer.ui-k3', model: MOCK_MODEL }),
+    ).resolves.toBeUndefined();
+    expect(profile.data()).toMatchObject({
+      modelAlias: MOCK_MODEL,
+      lockedModelAlias: 'removed-model',
+      routeDetached: true,
+    });
   });
 
-  it('fails a routed bind when the pinned effort cannot be honored exactly', async () => {
+  it('binds a routed profile as detached when its pinned effort is adjusted by the model', async () => {
     const alias = 'kimi-code/kimi-for-coding';
     ctx = createTestAgent(
       {
@@ -1118,11 +1127,67 @@ describe('AgentProfileService.bind', () => {
     );
     const profile = ctx.get(IAgentProfileService);
 
-    await expect(profile.bind({ route: 'reviewer.ui-k3' })).rejects.toMatchObject({
-      code: 'agent_profile_route.binding_conflict',
+    await expect(profile.bind({ route: 'reviewer.ui-k3' })).resolves.toBeUndefined();
+    expect(profile.data()).toMatchObject({
+      profileName: 'reviewer',
+      routeId: 'reviewer.ui-k3',
+      lockedThinkingEffort: 'ultra',
+      thinkingEffortSource: 'adjusted',
+      routeDetached: true,
     });
+    expect(profile.data().effectiveThinkingLevel).not.toBe('ultra');
+  });
+
+  it('rejects a forced effort that violates the target profile allowlist before binding', async () => {
+    const configured = resumeProfile({ thinkingEffort: 'low', allowedEfforts: ['low', 'high'] });
+    const options = nativeResumeOptions();
+    ctx = createTestAgent(
+      {
+        initialConfig: {
+          ...options.initialConfig,
+          thinking: { enabled: true, effort: 'low', forcedEffort: 'max' },
+          models: {
+            ...options.initialConfig.models,
+            [RESUME_OLD_MODEL]: {
+              ...options.initialConfig.models[RESUME_OLD_MODEL],
+              supportEfforts: ['low', 'high', 'max'],
+            },
+          },
+        },
+      },
+      hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)),
+    );
+    const profile = ctx.get(IAgentProfileService);
+
+    await expect(
+      profile.bind({ profile: configured.name, delegationPosition: 'sub' }),
+    ).rejects.toThrow(/allowed_efforts/);
     expect(profile.data().profileName).toBeUndefined();
-    expect(profile.data().routeId).toBeUndefined();
+  });
+
+  it('marks a route detached when forced effort differs from its effort pin', async () => {
+    const options = nativeResumeOptions();
+    ctx = createTestAgent(
+      {
+        initialConfig: {
+          ...options.initialConfig,
+          thinking: { enabled: true, effort: 'low', forcedEffort: 'high' },
+        },
+      },
+      hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, routedCatalog(RESUME_OLD_MODEL, 'low')),
+    );
+    const profile = ctx.get(IAgentProfileService);
+
+    await profile.bind({ route: 'reviewer.ui-k3', delegationPosition: 'sub' });
+
+    expect(profile.data()).toMatchObject({
+      thinkingLevel: 'low',
+      effectiveThinkingLevel: 'high',
+      thinkingEffortSource: 'forced',
+      routeDetached: true,
+    });
   });
 
   it.each(['main', 'sub'] as const)('applies profile tier over model defaults for %s bindings', async (delegationPosition) => {
@@ -1729,7 +1794,7 @@ describe('AgentProfileService.bind', () => {
     }
   });
 
-  it('rejects model and effort changes against hard route locks before changing the binding', async () => {
+  it('allows route pin deviations on resume and marks the binding detached', async () => {
     ctx = createTestAgent(
       nativeResumeOptions(),
       sessionService(ISessionAgentProfileCatalog, routedCatalog(RESUME_OLD_MODEL, 'low')),
@@ -1738,13 +1803,17 @@ describe('AgentProfileService.bind', () => {
     const svc = ctx.get(IAgentProfileService);
     await svc.bind({ route: 'reviewer.ui-k3', delegationPosition: 'sub' });
 
-    await expect(
-      prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }),
-    ).rejects.toThrow(/locked by its route/);
-    await expect(prepareResumeBinding(svc, { thinkingEffort: 'high' })).rejects.toThrow(/locked by its route/);
+    const applyModel = await prepareResumeBinding(svc, {
+      modelAlias: RESUME_NEW_MODEL,
+      allowModelChange: true,
+    });
+    applyModel();
+    const applyEffort = await prepareResumeBinding(svc, { thinkingEffort: 'high' });
+    applyEffort();
     expect(svc.data()).toMatchObject({
-      modelAlias: RESUME_OLD_MODEL,
-      thinkingLevel: 'low',
+      modelAlias: RESUME_NEW_MODEL,
+      thinkingLevel: 'high',
+      routeDetached: true,
     });
   });
 

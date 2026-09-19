@@ -219,7 +219,7 @@ export function resolveSubagentTarget(
     resolved.snapshot?.defaultProfile ?? catalog.getDefault(),
     resolveId,
   );
-  assertAutomaticDispatchPermitted(dispatched.profile, resolved.selection.route, models);
+  assertAutomaticDispatchPermitted(dispatched.profile);
   return {
     ...resolved,
     effectiveProfile: dispatched.profile,
