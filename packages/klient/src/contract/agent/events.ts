@@ -53,6 +53,8 @@ export const hookResultEventSchema = z.object({
 export const goalSnapshotSchema = z.object({
   goalId: z.string(), objective: z.string(), completionCriterion: z.string().optional(),
   status: z.enum(['active', 'paused', 'blocked', 'complete']),
+  followUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
+  controlRevision: z.number().int().nonnegative().optional(),
   turnsUsed: z.number(), tokensUsed: z.number(), wallClockMs: z.number(),
   terminalReason: z.string().optional(),
   budget: z.object({
@@ -160,6 +162,7 @@ export const toolResultEventSchema = z.object({
 });
 
 const promptContentPartSchema = z.unknown();
+const promptAppendTimingSchema = z.enum(['agent_idle', 'subagents_done', 'tasks_done']);
 
 export const promptSubmittedEventSchema = z.object({
   type: z.literal('prompt.submitted'),
@@ -169,6 +172,8 @@ export const promptSubmittedEventSchema = z.object({
   status: z.enum(['running', 'queued', 'blocked']),
   content: z.array(promptContentPartSchema),
   createdAt: z.string(),
+  appendTiming: promptAppendTimingSchema.optional(),
+  revision: z.number().int().nonnegative().optional(),
 });
 
 export const promptQueuedEventSchema = z.object({
@@ -177,6 +182,8 @@ export const promptQueuedEventSchema = z.object({
   promptId: z.string(),
   content: z.array(promptContentPartSchema),
   queueLength: z.number().int().nonnegative(),
+  appendTiming: promptAppendTimingSchema.optional(),
+  revision: z.number().int().nonnegative().optional(),
 });
 
 export const promptStartedEventSchema = z.object({
@@ -191,6 +198,17 @@ export const promptReplacedEventSchema = z.object({
   promptId: z.string(),
   content: z.array(promptContentPartSchema),
   replacedAt: z.string(),
+  message: z.unknown().optional(),
+  revision: z.number().int().nonnegative().optional(),
+});
+
+export const promptTimingChangedEventSchema = z.object({
+  type: z.literal('prompt.timing_changed'),
+  time: z.number().optional(),
+  promptId: z.string(),
+  appendTiming: promptAppendTimingSchema,
+  revision: z.number().int().nonnegative(),
+  changedAt: z.string(),
 });
 
 export const promptSteeredEventSchema = z.object({
@@ -324,6 +342,7 @@ export interface AgentEventPayloads {
   'prompt.started': z.infer<typeof promptStartedEventSchema>;
   'prompt.replaced': z.infer<typeof promptReplacedEventSchema>;
   'prompt.moved': z.infer<typeof promptMovedEventSchema>;
+  'prompt.timing_changed': z.infer<typeof promptTimingChangedEventSchema>;
   'prompt.steered': z.infer<typeof promptSteeredEventSchema>;
   'prompt.completed': z.infer<typeof promptCompletedEventSchema>;
   'prompt.aborted': z.infer<typeof promptAbortedEventSchema>;
@@ -360,6 +379,7 @@ export const agentEvents = {
   'prompt.started': { kind: 'stream', name: 'events', type: 'prompt.started', schema: promptStartedEventSchema },
   'prompt.replaced': { kind: 'stream', name: 'events', type: 'prompt.replaced', schema: promptReplacedEventSchema },
   'prompt.moved': { kind: 'stream', name: 'events', type: 'prompt.moved', schema: promptMovedEventSchema },
+  'prompt.timing_changed': { kind: 'stream', name: 'events', type: 'prompt.timing_changed', schema: promptTimingChangedEventSchema },
   'prompt.steered': { kind: 'stream', name: 'events', type: 'prompt.steered', schema: promptSteeredEventSchema },
   'prompt.completed': { kind: 'stream', name: 'events', type: 'prompt.completed', schema: promptCompletedEventSchema },
   'prompt.aborted': { kind: 'stream', name: 'events', type: 'prompt.aborted', schema: promptAbortedEventSchema },

@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (68 record types)
+// Index (72 record types)
 //   config.update                      profile                                                               src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory, turn                                                   src/agent/contextMemory/contextEvents.ts
 //   context.append_message             contextMemory, goalForkNotice, plan, task.notificationDelivery, todo  src/agent/contextMemory/contextEvents.ts
@@ -60,8 +60,12 @@
 //   prompt.aborted                     promptResolution                                                      src/agent/prompt/promptService.ts
 //   prompt.accepted                    promptAdmission                                                       src/agent/prompt/promptOps.ts
 //   prompt.completed                   promptResolution                                                      src/agent/prompt/promptService.ts
+//   prompt.enqueued                    (none)                                                                src/agent/prompt/promptService.ts
+//   prompt.launch_committed            (none)                                                                src/agent/prompt/promptService.ts
 //   prompt.moved                       (none)                                                                src/agent/prompt/promptService.ts
+//   prompt.replaced                    (none)                                                                src/agent/prompt/promptService.ts
 //   prompt.steered                     promptResolution                                                      src/agent/prompt/promptService.ts
+//   prompt.timing_changed              (none)                                                                src/agent/prompt/promptService.ts
 //   runtime.set_binding                runtimeBinding                                                        src/agent/runtimeBinding/runtimeBindingOps.ts
 //   staleGuard.cleared                 staleGuard                                                            src/features/staleGuard/staleGuardOps.ts
 //   staleGuard.recorded                staleGuard                                                            src/features/staleGuard/staleGuardOps.ts
@@ -304,6 +308,8 @@ interface GoalCreatePayload {
   completionCriterion?: string;
   wallClockResumedAt?: number;
   status?: 'active' | 'paused' | 'blocked' | 'complete';
+  followUpTiming?: 'subagents_done' | 'tasks_done';
+  controlRevision?: number;
   actor?: 'user' | 'model' | 'runtime' | 'system';
   budgetLimits?: {
     tokenBudget?: number;
@@ -321,6 +327,10 @@ interface GoalUpdatePayload {
   goalId?: string;
   status?: 'active' | 'paused' | 'blocked' | 'complete';
   reason?: string;
+  objective?: string;
+  completionCriterion?: string | null;
+  followUpTiming?: 'subagents_done' | 'tasks_done';
+  controlRevision?: number;
   turnsUsed?: number;
   tokensUsed?: number;
   wallClockMs?: number;
@@ -573,12 +583,118 @@ interface PromptCompletedPayload {
  * states: (none)
  * owner: src/agent/prompt/promptService.ts
  */
+interface PromptEnqueuedPayload {
+  _name: 'prompt.enqueued';
+  schemaVersion: 1;
+  promptId: string;
+  userMessageId: string;
+  createdAt: string;
+  /** ContextMessage */
+  message: {
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    name?: string;
+    content: ('text' | 'think' | 'image_url' | 'audio_url' | 'video_url')[];
+    toolCalls: {
+      type: 'function';
+      id: string;
+      name: string;
+      arguments: string | null;
+      extras?: Record<string, unknown>;
+      _streamIndex?: number | string;
+    }[];
+    toolCallId?: string;
+    partial?: boolean;
+    tools?: {
+      name: string;
+      description: string;
+      parameters: Record<string, unknown>;
+      deferred?: true;
+    }[];
+    id?: string;
+    providerMessageId?: string;
+    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | undefined;
+    isError?: boolean;
+    note?: string;
+  };
+  /** PromptExecutionBinding */
+  execution?: {
+    profile?: string;
+    model?: string;
+    thinking?: string;
+    swarmMode?: boolean;
+    goalObjective?: string;
+    goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
+    goalInitialStatus?: 'active' | 'paused';
+  };
+  goalId?: string;
+  deferredDisabledTools?: string[];
+  alreadyMaterialized: boolean;
+  appendTiming: 'agent_idle' | 'subagents_done' | 'tasks_done';
+  revision: number;
+  queueIndex: number;
+}
+
+/**
+ * states: (none)
+ * owner: src/agent/prompt/promptService.ts
+ */
+interface PromptLaunchCommittedPayload {
+  _name: 'prompt.launch_committed';
+  launchId: string;
+  promptId: string;
+  revision: number;
+  committedAt: string;
+}
+
+/**
+ * states: (none)
+ * owner: src/agent/prompt/promptService.ts
+ */
 interface PromptMovedPayload {
   _name: 'prompt.moved';
   promptId: string;
   targetIndex: number;
   queuedPromptIds: string[];
   movedAt: string;
+}
+
+/**
+ * states: (none)
+ * owner: src/agent/prompt/promptService.ts
+ */
+interface PromptReplacedPayload {
+  _name: 'prompt.replaced';
+  promptId: string;
+  content: ContentPart[];
+  /** ContextMessage */
+  message: {
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    name?: string;
+    content: ('text' | 'think' | 'image_url' | 'audio_url' | 'video_url')[];
+    toolCalls: {
+      type: 'function';
+      id: string;
+      name: string;
+      arguments: string | null;
+      extras?: Record<string, unknown>;
+      _streamIndex?: number | string;
+    }[];
+    toolCallId?: string;
+    partial?: boolean;
+    tools?: {
+      name: string;
+      description: string;
+      parameters: Record<string, unknown>;
+      deferred?: true;
+    }[];
+    id?: string;
+    providerMessageId?: string;
+    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | undefined;
+    isError?: boolean;
+    note?: string;
+  };
+  revision: number;
+  replacedAt: string;
 }
 
 /**
@@ -591,6 +707,18 @@ interface PromptSteeredPayload {
   promptIds: string[];
   content: ContentPart[];
   steeredAt: string;
+}
+
+/**
+ * states: (none)
+ * owner: src/agent/prompt/promptService.ts
+ */
+interface PromptTimingChangedPayload {
+  _name: 'prompt.timing_changed';
+  promptId: string;
+  appendTiming: 'agent_idle' | 'subagents_done' | 'tasks_done';
+  revision: number;
+  changedAt: string;
 }
 
 /**
@@ -729,7 +857,7 @@ interface TaskNotifiedPayload {
 interface TaskStartedPayload {
   _name: 'task.started';
   /** AgentTaskInfo */
-  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'question', questionCount: number, toolCallId?: string };
+  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, kind: 'question', questionCount: number, toolCallId?: string };
 }
 
 /**
@@ -739,7 +867,7 @@ interface TaskStartedPayload {
 interface TaskTerminatedPayload {
   _name: 'task.terminated';
   /** AgentTaskInfo */
-  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, kind: 'question', questionCount: number, toolCallId?: string };
+  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, kind: 'question', questionCount: number, toolCallId?: string };
   outputTail?: string;
 }
 
@@ -1046,8 +1174,12 @@ interface WirePayloadMap {
   "prompt.aborted": PromptAbortedPayload;
   "prompt.accepted": PromptAcceptedPayload;
   "prompt.completed": PromptCompletedPayload;
+  "prompt.enqueued": PromptEnqueuedPayload;
+  "prompt.launch_committed": PromptLaunchCommittedPayload;
   "prompt.moved": PromptMovedPayload;
+  "prompt.replaced": PromptReplacedPayload;
   "prompt.steered": PromptSteeredPayload;
+  "prompt.timing_changed": PromptTimingChangedPayload;
   "runtime.set_binding": RuntimeSetBindingPayload;
   "staleGuard.cleared": StaleGuardClearedPayload;
   "staleGuard.recorded": StaleGuardRecordedPayload;

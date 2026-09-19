@@ -73,6 +73,7 @@ export interface AgentFacade {
    */
   promptWithSkills(input: PromptWithSkillsInput): Promise<PromptWithSkillsResult>;
   steer(input: { input: readonly ContentPart[] }): Promise<PromptLaunchResult>;
+  resumeRecoveredPromptQueue(): Promise<void>;
   /**
    * Activate a skill as a user-slash activation: the engine renders the skill
    * prompt and drives it as a normal turn (same settlement/event flow as
@@ -99,6 +100,7 @@ export interface AgentFacade {
   setPermission(mode: PermissionMode, options?: { broadcast?: boolean }): Promise<void>;
   getGoal(): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalToolResult>;
   createGoal(input: import('@kiki/agent-core-v2/agent/goal/types').CreateGoalInput): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
+  updateGoal(input: import('@kiki/agent-core-v2/agent/goal/types').UpdateGoalInput): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
   pauseGoal(): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
   resumeGoal(): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
   cancelGoal(): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
@@ -162,6 +164,8 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentSkillService', 'promptWithSkills', [input]) as Promise<PromptWithSkillsResult>,
     steer: (input) =>
       call(scope, 'agentPromptService', 'submitSteer', [input]) as Promise<PromptLaunchResult>,
+    resumeRecoveredPromptQueue: () =>
+      call(scope, 'agentPromptService', 'resumeRecoveredQueue', []) as Promise<void>,
     activateSkill: (input) =>
       call(scope, 'agentSkillService', 'activate', [input]) as Promise<PromptLaunchResult>,
     activatePluginCommand: (input) =>
@@ -194,6 +198,7 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentPermissionModeService', options?.broadcast === false ? 'setMode' : 'setModeAndBroadcast', [mode]) as Promise<void>,
     getGoal: () => call(scope, 'agentGoalService', 'getGoal', []) as ReturnType<AgentFacade['getGoal']>,
     createGoal: (input) => call(scope, 'agentGoalService', 'createGoal', [input]) as ReturnType<AgentFacade['createGoal']>,
+    updateGoal: (input) => call(scope, 'agentGoalService', 'updateGoal', [input]) as ReturnType<AgentFacade['updateGoal']>,
     pauseGoal: () => call(scope, 'agentGoalService', 'pauseGoal', []) as ReturnType<AgentFacade['pauseGoal']>,
     resumeGoal: () => call(scope, 'agentGoalService', 'resumeGoal', []) as ReturnType<AgentFacade['resumeGoal']>,
     cancelGoal: () => call(scope, 'agentGoalService', 'cancelGoal', []) as ReturnType<AgentFacade['cancelGoal']>,

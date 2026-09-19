@@ -1,6 +1,7 @@
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  DeferredAppendTiming,
   GoalSnapshot,
   PermissionMode,
   PromptStatus,
@@ -338,6 +339,13 @@ export interface SessionViewState {
   readonly pendingInteraction: SessionPendingInteraction;
   readonly activePromptId: string | undefined;
   readonly queuedPromptIds: readonly string[];
+  /**
+   * Per-queued-prompt scheduling state (effective `append_timing` plus the
+   * scheduling `revision` used as the optimistic-concurrency token for
+   * `:timing`). Keyed by promptId; entries only exist while the prompt is
+   * queued.
+   */
+  readonly queuedPromptMeta: Readonly<Record<string, QueuedPromptMeta>>;
   readonly model: string | undefined;
   readonly profile: string | undefined;
   readonly thinkingEffort: string | undefined;
@@ -370,6 +378,13 @@ export interface SessionViewState {
     readonly retryable: boolean;
   };
   readonly loaded: boolean;
+  /**
+   * The main agent transcript has projected at least one snapshot/reset. The
+   * session shell (`applyTranscriptShell`) flips `loaded` without any
+   * transcript data, so consumers that reason about transcript-carried state
+   * (queue contents, goal meta) must gate on this instead.
+   */
+  readonly transcriptReady: boolean;
   readonly loadError: string | undefined;
   readonly hasMoreHistory: boolean;
   readonly oldestMessageId: string | undefined;
@@ -394,6 +409,7 @@ export function createViewState(sessionId: string): SessionViewState {
     pendingInteraction: 'none',
     activePromptId: undefined,
     queuedPromptIds: [],
+    queuedPromptMeta: {},
     model: undefined,
     profile: undefined,
     thinkingEffort: undefined,
@@ -414,6 +430,7 @@ export function createViewState(sessionId: string): SessionViewState {
     resyncFailed: false,
     resyncAttempt: 0,
     loaded: false,
+    transcriptReady: false,
     loadError: undefined,
     hasMoreHistory: false,
     oldestMessageId: undefined,
@@ -428,9 +445,17 @@ export interface FloorEntry {
   readonly preview: string;
 }
 
+export interface QueuedPromptMeta {
+  readonly appendTiming: DeferredAppendTiming;
+  readonly revision?: number;
+}
+
 export interface QueuedPromptPreview {
   readonly promptId: string;
   readonly text: string;
+  /** Effective append timing; absent on older servers, displays as agent_idle. */
+  readonly appendTiming?: DeferredAppendTiming;
+  readonly revision?: number;
 }
 
 export interface SpawnInstruction {

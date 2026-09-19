@@ -1,7 +1,6 @@
 import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { StepRequest, type StepRequestOptions, type TurnSeed } from '#/agent/loop/stepRequest';
-import { gateImageFormatParts } from '#/agent/media/image-compress';
 import type { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 
 abstract class UserMessageStepRequest extends StepRequest {
@@ -12,16 +11,11 @@ abstract class UserMessageStepRequest extends StepRequest {
     message: ContextMessage,
     private readonly captions: readonly string[],
     private readonly reminders: IAgentSystemReminderService,
-    providerType: string | undefined,
     options?: StepRequestOptions,
   ) {
     super(options);
     this.ownerPromptId = message.id ?? newMessageId();
-    this.message = {
-      ...message,
-      id: this.ownerPromptId,
-      content: gateImageFormatParts(message.content, providerType),
-    };
+    this.message = { ...message, id: this.ownerPromptId };
   }
 
   override get turnSeed(): TurnSeed {
@@ -50,10 +44,10 @@ export class PromptStepRequest extends UserMessageStepRequest {
     message: ContextMessage,
     captions: readonly string[],
     reminders: IAgentSystemReminderService,
-    providerType: string | undefined,
+    _providerType: string | undefined,
     private readonly alreadyMaterialized = false,
   ) {
-    super(message, captions, reminders, providerType, { admission: 'newTurn' });
+    super(message, captions, reminders, { admission: 'newTurn' });
   }
 
   override get turnSeed(): TurnSeed {
@@ -80,12 +74,12 @@ export class SteerStepRequest extends UserMessageStepRequest {
     message: ContextMessage,
     captions: readonly string[],
     reminders: IAgentSystemReminderService,
-    providerType: string | undefined,
+    _providerType: string | undefined,
     private readonly recordSteer: (message: ContextMessage) => void,
     private readonly forgetSteer: (request: SteerStepRequest) => void,
     admission: 'activeTurnOnly' | 'activeOrNewTurn' = 'activeTurnOnly',
   ) {
-    super(message, captions, reminders, providerType, {
+    super(message, captions, reminders, {
       mergeable: true,
       turnScoped: false,
       admission,

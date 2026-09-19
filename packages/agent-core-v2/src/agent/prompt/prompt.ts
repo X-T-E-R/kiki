@@ -5,6 +5,7 @@ import type { Turn, TurnResult } from '#/agent/loop/loop';
 import type { ContentPart } from '#/kosong/contract/message';
 import type { Hooks } from '#/hooks';
 import type { SessionHistoryMutationLease } from '#/session/historyMutation/historyMutation';
+import type { GoalFollowUpTiming } from '#/agent/goal/types';
 
 export interface PromptSubmitContext {
   readonly promptMessage: ContextMessage;
@@ -26,6 +27,8 @@ export interface PromptSubmitContext {
  * the replacement. A yielded goal pauses on prompt launch failure and blocks
  * on a blocked prompt; neither case silently restarts its continuation.
  */
+export type DeferredAppendTiming = 'agent_idle' | 'subagents_done' | 'tasks_done';
+
 export interface PromptExecutionBinding {
   readonly profile?: string;
   readonly model?: string;
@@ -34,6 +37,8 @@ export interface PromptExecutionBinding {
   readonly planMode?: boolean;
   readonly swarmMode?: boolean;
   readonly goalObjective?: string;
+  readonly goalFollowUpTiming?: GoalFollowUpTiming;
+  readonly goalInitialStatus?: 'active' | 'paused';
   /** Prompt-bound control; resume does not launch an autonomous continuation. */
   readonly goalControl?: 'pause' | 'resume' | 'cancel';
 }
@@ -42,6 +47,7 @@ export interface PromptInput {
   readonly id?: string;
   readonly message: ContextMessage;
   readonly execution?: PromptExecutionBinding;
+  readonly appendTiming?: DeferredAppendTiming;
   readonly deferredDisabledTools?: readonly string[];
   readonly historyMutationLease?: SessionHistoryMutationLease;
   readonly alreadyMaterialized?: boolean;
@@ -68,6 +74,8 @@ export interface PromptSnapshot {
   readonly createdAt: string;
   readonly state: PromptState;
   readonly message: ContextMessage;
+  readonly appendTiming?: DeferredAppendTiming;
+  readonly revision?: number;
 }
 
 export interface PromptHandle extends PromptSnapshot {
@@ -83,6 +91,7 @@ export interface PromptQueueSnapshot {
 export interface PromptPayload {
   readonly input: readonly ContentPart[];
   readonly execution?: PromptExecutionBinding;
+  readonly appendTiming?: DeferredAppendTiming;
   /**
    * Client-managed session tool denylist (full-replace semantics), applied
    * before the prompt is enqueued. Omit to keep the current value; `[]`
@@ -122,6 +131,7 @@ export interface PromptReservation extends IDisposable {
     message: ContextMessage,
     execution?: PromptExecutionBinding,
     deferredDisabledTools?: readonly string[],
+    appendTiming?: DeferredAppendTiming,
   ): Promise<PromptHandle>;
 }
 
@@ -143,8 +153,15 @@ export interface IAgentPromptService {
   submitAndWait(payload: PromptPayload, signal?: AbortSignal): Promise<PromptTerminalResult>;
   submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined>;
   list(): PromptQueueSnapshot;
+  hasReadyPending(): boolean;
+  resumeRecoveredQueue(): void;
   /** Replaces caller-visible content in place; text-only edits retain existing non-text attachments. */
   replace(promptId: string, content: readonly ContentPart[]): PromptHandle;
+  changeTiming(
+    promptId: string,
+    appendTiming: DeferredAppendTiming,
+    expectedRevision?: number,
+  ): PromptHandle;
   move(promptId: string, targetIndex: number): void;
   steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]>;
   abort(promptId: string, reason?: Error): boolean;

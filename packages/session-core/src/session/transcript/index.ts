@@ -6,6 +6,7 @@ export {
   type Block,
   type FloorEntry,
   type NoticeBlock,
+  type QueuedPromptMeta,
   type QueuedPromptPreview,
   type QuestionBlock,
   type QuestionOutcome,

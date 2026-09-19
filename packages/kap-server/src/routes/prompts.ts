@@ -52,6 +52,8 @@ import {
   promptSteerResultSchema,
   promptSubmissionSchema,
   promptSubmitResultSchema,
+  promptTimingRequestSchema,
+  promptTimingResultSchema,
   type PromptSkillActivation,
 } from '../protocol/rest-prompt';
 import { z } from 'zod';
@@ -283,6 +285,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             req.body.plan_mode === undefined &&
             req.body.swarm_mode === undefined &&
             req.body.goal_objective === undefined &&
+            req.body.goal_follow_up_timing === undefined &&
+            req.body.goal_initial_status === undefined &&
             req.body.goal_control === undefined
             ? undefined
             : {
@@ -292,6 +296,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
                 planMode: req.body.plan_mode,
                 swarmMode: req.body.swarm_mode,
                 goalObjective: req.body.goal_objective,
+                goalFollowUpTiming: req.body.goal_follow_up_timing,
+                goalInitialStatus: req.body.goal_initial_status,
                 goalControl: req.body.goal_control,
               };
         validatePromptRuntimeControls(resolved.accessor, execution);
@@ -328,6 +334,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
               input: parts,
               skills: req.body.skills,
               execution,
+              appendTiming: req.body.append_timing,
               deferredDisabledTools,
             });
           } catch (error) {
@@ -344,6 +351,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
                 status: result.state,
                 content: projectPromptContentParts(parts),
                 created_at: result.created_at,
+                append_timing: result.append_timing,
+                revision: result.revision,
               },
               req.id,
             ),
@@ -360,7 +369,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           content: parts,
           toolCalls: [],
           origin: { kind: 'user' },
-        }, execution, deferredDisabledTools);
+        }, execution, deferredDisabledTools, req.body.append_timing);
         enqueued = true;
         const staging = preparedMedia;
         void Promise.race([handle.launched, handle.completion]).then(
@@ -420,12 +429,14 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         z.object({}).strict(),
         promptMoveRequestSchema,
         promptReplaceRequestSchema,
+        promptTimingRequestSchema,
       ]),
       success: {
         data: z.union([
           promptAbortResponseSchema,
           promptMoveResultSchema,
           promptReplaceResultSchema,
+          promptTimingResultSchema,
           promptSteerResultSchema,
         ]),
       },
@@ -435,7 +446,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         [ErrorCode.PROMPT_NOT_FOUND]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
       },
-      description: 'Abort, move, replace, or steer a prompt',
+      description: 'Abort, move, replace, retime, or steer a prompt',
       tags: ['prompts'],
       operationId: 'promptAction',
     },
@@ -446,7 +457,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         const { session_id, tail } = req.params as { session_id: string; tail: string };
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['abort', 'move', 'replace', 'steer'] as const,
+          allowedActions: ['abort', 'move', 'replace', 'timing', 'steer'] as const,
           resourceLabel: 'prompt',
         });
         if (parsed.kind !== 'action') {
@@ -511,6 +522,17 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             target_index: move.data.target_index,
             queued_prompt_ids: resolved.prompt.list().pending.map((prompt) => prompt.id),
           }, req.id));
+        } else if (parsed.action === 'timing') {
+          const timing = promptTimingRequestSchema.safeParse(req.body);
+          if (!timing.success) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'append_timing is required');
+          }
+          const handle = resolved.prompt.changeTiming(
+            parsed.id,
+            timing.data.append_timing,
+            timing.data.expected_revision,
+          );
+          reply.send(okEnvelope(projectPromptHandle(handle), req.id));
         } else if (parsed.action === 'abort') {
           resolved.prompt.abort(parsed.id);
           requestLog(req)?.info({ session_id, prompt_id: parsed.id }, 'prompt aborted');
@@ -559,6 +581,8 @@ export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][num
     status,
     content: projectPromptContentParts(content),
     created_at: prompt.createdAt,
+    append_timing: prompt.appendTiming ?? 'agent_idle',
+    revision: prompt.revision ?? 0,
   };
 }
 

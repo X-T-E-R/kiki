@@ -258,6 +258,8 @@ export const goalSnapshotSchema = z.object({
   objective: z.string(),
   completionCriterion: z.string().optional(),
   status: goalStatusSchema,
+  followUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
+  controlRevision: z.number().int().nonnegative().optional(),
   turnsUsed: z.number(),
   tokensUsed: z.number(),
   wallClockMs: z.number(),
@@ -426,6 +428,10 @@ export const taskInfoBaseSchema = z.object({
   stopReason: z.string().optional(),
   terminalNotificationSuppressed: z.boolean().optional(),
   timeoutMs: z.number().optional(),
+  lifetime: z.enum(['finite', 'service']).optional(),
+  ownerAgentId: z.string().optional(),
+  ownerTurnId: z.number().int().nonnegative().optional(),
+  goalId: z.string().optional(),
 });
 
 export const processTaskInfoSchema = taskInfoBaseSchema.extend({

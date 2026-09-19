@@ -347,6 +347,12 @@ export function useNewSessionDraft({
     initialPrompt?: string;
     initialAttachments?: readonly ComposerAttachment[];
     initialSkill?: DraftSkillHandoff;
+    /**
+     * A `/goal …` prefix send carries its objective out-of-band: the draft
+     * state only catches up on the next render, which is too late for the
+     * handoff below.
+     */
+    goalObjectiveOverride?: string;
   }) => {
     const context = sendContextRef.current;
     if (context.busy || context.agentProfileCatalogPending || profileCatalogTransitionRef.current) {
@@ -393,7 +399,7 @@ export function useNewSessionDraft({
             permissionMode: context.permissionMode,
             planMode: context.planMode,
             swarmMode: context.swarmMode,
-            goalObjective: context.goalObjective,
+            goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
           },
           replace: false,
         });
@@ -404,11 +410,17 @@ export function useNewSessionDraft({
       });
   }, [client, navigate, t]);
 
-  const send = useCallback((text: string, composerAttachments: readonly ComposerAttachment[]) => {
+  const send = useCallback((
+    text: string,
+    composerAttachments: readonly ComposerAttachment[],
+    options?: { readonly goalObjective?: string },
+  ) => {
     if (buildPromptContent(text, composerAttachments) === null) return;
+    if (options?.goalObjective !== undefined) setGoalObjective(options.goalObjective);
     return createThenNavigate({
       initialPrompt: text.trim(),
       initialAttachments: composerAttachments,
+      goalObjectiveOverride: options?.goalObjective,
     });
   }, [createThenNavigate]);
 

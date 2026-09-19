@@ -87,6 +87,58 @@ describe('AgentTranscriptLiveAdapter', () => {
     });
   });
 
+  it('carries deferred-append timing and revision through the queue lifecycle', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
+
+    feed(
+      ev({
+        type: 'prompt.queued',
+        promptId: 'p1',
+        content: [{ type: 'text', text: 'later' }],
+        queueLength: 1,
+        appendTiming: 'tasks_done',
+        revision: 1,
+      }),
+    );
+    expect(tx.getPrompt('p1')).toMatchObject({ status: 'queued', appendTiming: 'tasks_done', revision: 1 });
+
+    feed(
+      ev({
+        type: 'prompt.timing_changed',
+        promptId: 'p1',
+        appendTiming: 'subagents_done',
+        revision: 2,
+        changedAt: '2026-01-01T00:00:01.000Z',
+      }),
+    );
+    expect(tx.getPrompt('p1')).toMatchObject({
+      status: 'queued',
+      appendTiming: 'subagents_done',
+      revision: 2,
+      content: [{ type: 'text', text: 'later' }],
+    });
+
+    const replaced = tx.apply(
+      liveAdapter.map(
+        ev({
+          type: 'prompt.replaced',
+          promptId: 'p1',
+          content: [{ type: 'text', text: 'now' }],
+          replacedAt: '2026-01-01T00:00:02.000Z',
+          appendTiming: 'subagents_done',
+          revision: 3,
+        }),
+      ),
+    );
+    expect(replaced.accepted.length).toBe(1);
+    expect(tx.getPrompt('p1')).toMatchObject({ appendTiming: 'subagents_done', revision: 3 });
+
+    feed(ev({ type: 'prompt.started', promptId: 'p1' }));
+    expect(tx.getPrompt('p1')).toMatchObject({ status: 'running', appendTiming: 'subagents_done', revision: 3 });
+  });
+
   it('projects a full turn: headers, delta appends, flush, tool frames', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');
@@ -869,6 +921,10 @@ describe('AgentTranscriptLiveAdapter', () => {
       description: 'ls -la',
       status: 'running',
       detached: false,
+      lifetime: 'service' as const,
+      ownerAgentId: 'main',
+      ownerTurnId: 7,
+      goalId: 'goal-1',
       startedAt: 1_700_000_000_000,
       endedAt: null,
     };
@@ -895,6 +951,10 @@ describe('AgentTranscriptLiveAdapter', () => {
       kind: 'shell',
       state: 'completed',
       detached: false,
+      lifetime: 'service',
+      ownerAgentId: 'main',
+      ownerTurnId: 7,
+      goalId: 'goal-1',
       description: 'ls -la',
       outputTail: 'a\nb\n',
     });
@@ -1213,6 +1273,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       objective: 'ship it',
       status: 'active',
       completionCriterion: 'tests green',
+      followUpTiming: 'tasks_done' as const,
+      controlRevision: 4,
       turnsUsed: 3,
       tokensUsed: 1234,
       wallClockMs: 5000,
@@ -1225,6 +1287,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       objective: 'ship it',
       status: 'active',
       completionCriterion: 'tests green',
+      followUpTiming: 'tasks_done',
+      controlRevision: 4,
       budgetUsed: 1234,
       budgetLimit: 50000,
     });

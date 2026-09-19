@@ -5,6 +5,7 @@ import type {
   AgentTaskInfo,
   AgentTaskInfoBase,
   AgentTaskStatus,
+  TaskLifetime,
 } from './types';
 
 export { AgentTaskPersistence } from './persist';
@@ -14,6 +15,7 @@ export type {
   AgentTaskInfoBase,
   AgentTaskKind,
   AgentTaskStatus,
+  TaskLifetime,
 } from './types';
 
 export interface AgentTaskLoadOptions {
@@ -31,6 +33,7 @@ export interface AgentTaskOutputSnapshot {
 
 export interface RegisterAgentTaskOptions {
   readonly detached?: boolean;
+  readonly lifetime?: TaskLifetime;
   readonly timeoutMs?: number;
   readonly detachTimeoutMs?: number;
   readonly autoBackgroundOnTimeout?: boolean;
@@ -47,6 +50,7 @@ export interface AgentTaskTrackOptions {
   readonly idPrefix?: string;
   readonly description: string;
   readonly detached?: boolean;
+  readonly lifetime?: TaskLifetime;
   readonly timeoutMs?: number;
   readonly detachTimeoutMs?: number;
   readonly signal?: AbortSignal;

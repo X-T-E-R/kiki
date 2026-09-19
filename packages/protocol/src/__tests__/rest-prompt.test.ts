@@ -11,6 +11,8 @@ import {
   promptSubmitResultSchema,
   promptSteerRequestSchema,
   promptSteerResultSchema,
+  promptTimingRequestSchema,
+  promptTimingResultSchema,
 } from '../rest/prompt';
 
 describe('promptSubmissionSchema', () => {
@@ -32,6 +34,36 @@ describe('promptSubmissionSchema', () => {
       metadata: { source: 'cli' },
     });
     expect(parsed.metadata).toEqual({ source: 'cli' });
+  });
+
+  it('accepts deferred-append timing and goal scheduling controls', () => {
+    const parsed = promptSubmissionSchema.parse({
+      content: [{ type: 'text', text: 'hi' }],
+      append_timing: 'tasks_done',
+      goal_follow_up_timing: 'subagents_done',
+      goal_initial_status: 'paused',
+    });
+    expect(parsed.append_timing).toBe('tasks_done');
+    expect(parsed.goal_follow_up_timing).toBe('subagents_done');
+    expect(parsed.goal_initial_status).toBe('paused');
+  });
+
+  it('rejects an unknown append_timing', () => {
+    expect(
+      promptSubmissionSchema.safeParse({
+        content: [{ type: 'text', text: 'hi' }],
+        append_timing: 'immediate' as unknown,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects agent_idle as a goal follow-up timing', () => {
+    expect(
+      promptSubmissionSchema.safeParse({
+        content: [{ type: 'text', text: 'hi' }],
+        goal_follow_up_timing: 'agent_idle' as unknown,
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts image + text mixed content', () => {
@@ -298,5 +330,38 @@ describe('promptAbortResponseSchema', () => {
   it('parses { aborted: false } idempotent shape (used with envelope.code=40903)', () => {
     const parsed = promptAbortResponseSchema.parse({ aborted: false });
     expect(parsed.aborted).toBe(false);
+  });
+});
+
+describe('promptTimingSchema', () => {
+  it('requires an append_timing and allows an optional expected_revision', () => {
+    expect(promptTimingRequestSchema.parse({ append_timing: 'subagents_done' })).toEqual({
+      append_timing: 'subagents_done',
+    });
+    expect(
+      promptTimingRequestSchema.parse({ append_timing: 'agent_idle', expected_revision: 2 }),
+    ).toEqual({ append_timing: 'agent_idle', expected_revision: 2 });
+    expect(promptTimingRequestSchema.safeParse({}).success).toBe(false);
+    expect(
+      promptTimingRequestSchema.safeParse({ append_timing: 'later' }).success,
+    ).toBe(false);
+    expect(
+      promptTimingRequestSchema.safeParse({ append_timing: 'agent_idle', expected_revision: -1 })
+        .success,
+    ).toBe(false);
+  });
+
+  it('mirrors PromptItem and carries the authoritative append_timing and revision', () => {
+    const parsed = promptTimingResultSchema.parse({
+      prompt_id: 'prompt_queued',
+      user_message_id: 'prompt_queued',
+      status: 'queued',
+      content: [{ type: 'text', text: 'queued' }],
+      created_at: '2026-06-09T00:00:01.000Z',
+      append_timing: 'tasks_done',
+      revision: 3,
+    });
+    expect(parsed.append_timing).toBe('tasks_done');
+    expect(parsed.revision).toBe(3);
   });
 });

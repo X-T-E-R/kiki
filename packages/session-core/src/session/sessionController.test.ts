@@ -898,6 +898,7 @@ describe('SessionController transcript authority', () => {
       submitPrompt: vi.fn(),
       replacePrompt: vi.fn(),
       movePrompt: vi.fn(),
+      timingPrompt: vi.fn(),
       getTranscriptOps: vi.fn(async () => ({
         session_id: 'session_test',
         agent_id: 'main',
@@ -1772,6 +1773,49 @@ describe('SessionController transcript authority', () => {
 
     expect(client.movePrompt).toHaveBeenCalledWith('session_test', 'p3', { target_index: 0 });
     expect(controller.getState().queuedPromptIds).toEqual(['p3', 'p1', 'p2']);
+    controller.close();
+  });
+
+  it('re-times a queued prompt with the known revision and applies the reply', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 1,
+      ops: [
+        {
+          op: 'prompt.upsert' as const,
+          prompt: {
+            promptId: 'p1',
+            status: 'queued' as const,
+            userMessageId: 'm1',
+            content: [{ type: 'text', text: 'parked' }],
+            createdAt: '2026-01-01T00:00:00.000Z',
+            queuePosition: 0,
+            appendTiming: 'agent_idle' as const,
+            revision: 3,
+          },
+        },
+      ],
+    }));
+    flushAll();
+    client.timingPrompt.mockResolvedValueOnce({
+      prompt_id: 'p1',
+      user_message_id: 'm1',
+      status: 'queued',
+      content: [{ type: 'text', text: 'parked' }],
+      created_at: '2026-01-01T00:00:00.000Z',
+      append_timing: 'tasks_done',
+      revision: 4,
+    });
+
+    await controller.setQueuedTiming('p1', 'tasks_done');
+
+    expect(client.timingPrompt).toHaveBeenCalledWith('session_test', 'p1', {
+      append_timing: 'tasks_done',
+      expected_revision: 3,
+    });
+    expect(controller.getState().queuedPromptMeta['p1']).toEqual({ appendTiming: 'tasks_done', revision: 4 });
     controller.close();
   });
 

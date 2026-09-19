@@ -3,6 +3,7 @@ import type {
   ApprovalResolveResult,
   CancelTaskQuery,
   ConfigResponse,
+  DeferredAppendTiming,
   MessageContent,
   PageResponse,
   PatchConfigRequest,
@@ -16,6 +17,8 @@ import type {
   PromptSteerResult,
   PromptSubmission,
   PromptSubmitResult,
+  PromptTimingRequest,
+  PromptTimingResult,
   QuestionDismissResult,
   QuestionResolveRequest,
   QuestionResolveResult,
@@ -43,6 +46,7 @@ export const API_CODES = {
   INVALID_RESPONSE: -3,
   TIMEOUT: -2,
   SUCCESS: 0,
+  REQUEST_INVALID: 40001,
   UNAUTHORIZED: 40101,
   SESSION_NOT_FOUND: 40401,
   PROMPT_NOT_FOUND: 40402,
@@ -369,6 +373,8 @@ export interface AgentTranscriptPrompt {
   readonly queuePosition?: number;
   readonly abortedBeforeStart?: boolean;
   readonly steeredAt?: string;
+  readonly appendTiming?: DeferredAppendTiming;
+  readonly revision?: number;
 }
 
 export interface AgentTranscriptMeta {
@@ -378,6 +384,8 @@ export interface AgentTranscriptMeta {
     readonly completionCriterion?: string;
     readonly budgetUsed?: number;
     readonly budgetLimit?: number;
+    readonly followUpTiming?: 'subagents_done' | 'tasks_done';
+    readonly controlRevision?: number;
   };
   readonly modes?: {
     readonly plan?: { readonly reviewPath?: string; readonly version?: number };
@@ -432,6 +440,7 @@ export interface SessionTransport {
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse>;
   movePrompt(sessionId: string, promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
   replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
+  timingPrompt(sessionId: string, promptId: string, body: PromptTimingRequest): Promise<PromptTimingResult>;
   steerPrompt(sessionId: string, promptId: string): Promise<PromptSteerResult>;
   resolveApproval(
     sessionId: string,

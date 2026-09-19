@@ -20,6 +20,10 @@ export class StepRequestQueue {
     return this.items.some((item) => !item.aborted);
   }
 
+  pendingKinds(): readonly string[] {
+    return this.items.filter((item) => !item.aborted).map((item) => item.kind);
+  }
+
   takeNextBatch(): StepRequestBatch | undefined {
     this.discardAborted();
     if (this.items.length === 0) return undefined;

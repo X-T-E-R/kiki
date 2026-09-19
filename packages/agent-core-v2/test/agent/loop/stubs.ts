@@ -70,7 +70,7 @@ export function stubLoopWithHooks(options: StubLoopOptions = {}): StubLoop {
       return { assigned: Promise.resolve({ turn, step }), abort: (reason) => step.cancel(reason) };
     },
     async run() { return { type: 'completed', steps: 0, truncated: false }; },
-    status() { return { state: active !== undefined ? 'running' : 'idle', activeTurnId: active?.id, pendingTurnIds: [], hasPendingRequests: queue.hasPendingRequests() }; },
+    status() { return { state: active !== undefined ? 'running' : 'idle', activeTurnId: active?.id, pendingTurnIds: [], hasPendingRequests: queue.hasPendingRequests(), pendingRequestKinds: queue.pendingKinds() }; },
     cancel(turnId, reason) { cancels.push({ turnId, reason }); if (active === undefined || (turnId !== undefined && active.id !== turnId)) return false; active.cancel(reason); return true; },
     cancelFromUser(turnId) { stub.cancel(turnId); },
     tryAcquireQuiescence: () => toDisposable(() => {}),

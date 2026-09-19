@@ -1,5 +1,6 @@
 import type {
   ApprovalRequest,
+  DeferredAppendTiming,
   GoalSnapshot,
   PermissionMode,
   PromptItem,
@@ -50,6 +51,7 @@ import {
   type Block,
   type NoticeBlock,
   type QuestionBlock,
+  type QueuedPromptMeta,
   type SessionViewState,
   type ShellBlock,
   type SkillBlock,
@@ -1595,6 +1597,8 @@ function mergeTranscriptPromptBlocks(
       status: prompt.status,
       content: parts.length > 0 ? parts : [{ type: 'text', text: projection.text }],
       created_at: prompt.createdAt,
+      append_timing: prompt.appendTiming,
+      revision: prompt.revision,
     };
     next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined)];
   }
@@ -2190,6 +2194,7 @@ export function appendLocalUserMessage(
     status: PromptStatus;
     media?: readonly MediaRef[];
     clientRequestId?: string;
+    appendTiming?: DeferredAppendTiming;
   },
 ): SessionViewState {
   const item: PromptItem = {
@@ -2205,6 +2210,16 @@ export function appendLocalUserMessage(
         ? state.queuedPromptIds
         : [...state.queuedPromptIds, input.promptId]
       : state.queuedPromptIds.filter((id) => id !== input.promptId);
+  const queuedPromptMeta = { ...state.queuedPromptMeta };
+  if (input.status === 'queued') {
+    const existing = queuedPromptMeta[input.promptId];
+    queuedPromptMeta[input.promptId] = {
+      appendTiming: input.appendTiming ?? existing?.appendTiming ?? 'agent_idle',
+      revision: existing?.revision,
+    };
+  } else {
+    delete queuedPromptMeta[input.promptId];
+  }
   let blocks = upsertPromptItemBlocks(state.blocks, item, input.media);
   if (input.clientRequestId !== undefined) {
     blocks = blocks.map((block) =>
@@ -2217,6 +2232,7 @@ export function appendLocalUserMessage(
     busy: input.status === 'running' ? true : state.busy,
     activePromptId: input.status === 'running' ? input.promptId : state.activePromptId,
     queuedPromptIds,
+    queuedPromptMeta,
     blocks: [...blocks],
   });
 }
@@ -2227,6 +2243,8 @@ function projectGoalSnapshot(goal: {
   readonly completionCriterion?: string;
   readonly budgetUsed?: number;
   readonly budgetLimit?: number;
+  readonly followUpTiming?: 'subagents_done' | 'tasks_done';
+  readonly controlRevision?: number;
 }): GoalSnapshot {
   const tokenBudget = goal.budgetLimit ?? null;
   const tokensUsed = goal.budgetUsed ?? 0;
@@ -2235,6 +2253,8 @@ function projectGoalSnapshot(goal: {
     objective: goal.objective,
     completionCriterion: goal.completionCriterion,
     status: goal.status,
+    followUpTiming: goal.followUpTiming,
+    controlRevision: goal.controlRevision,
     turnsUsed: 0,
     tokensUsed,
     wallClockMs: 0,
@@ -2357,14 +2377,25 @@ export function projectAgentTranscriptView(
   const parsedTurnStartedAt =
     runningTurn?.startedAt === undefined ? Number.NaN : Date.parse(runningTurn.startedAt);
   const meta = snapshot.meta.agent;
-  const queuedPromptIds = prompts
+  const queuedPrompts = prompts
     .filter((prompt) => prompt.status === 'queued')
     .toSorted(
       (left, right) =>
         (left.queuePosition ?? Number.MAX_SAFE_INTEGER) -
         (right.queuePosition ?? Number.MAX_SAFE_INTEGER),
-    )
-    .map((prompt) => prompt.promptId);
+    );
+  const queuedPromptIds = queuedPrompts.map((prompt) => prompt.promptId);
+  const previousQueuedMeta = previous.queuedPromptMeta;
+  const queuedPromptMeta: Record<string, QueuedPromptMeta> = {};
+  for (const prompt of queuedPrompts) {
+    const existing = previousQueuedMeta[prompt.promptId];
+    const appendTiming = prompt.appendTiming ?? existing?.appendTiming ?? 'agent_idle';
+    const revision = prompt.revision ?? existing?.revision;
+    queuedPromptMeta[prompt.promptId] =
+      existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision
+        ? existing
+        : { appendTiming, revision };
+  }
   let running: TranscriptPrompt | undefined;
   for (const prompt of prompts) {
     if (running === undefined && prompt.status === 'running') running = prompt;
@@ -2390,6 +2421,7 @@ export function projectAgentTranscriptView(
     version: previous.version + 1,
     blocks: stableBlocks,
     loaded: true,
+    transcriptReady: true,
     loadError: undefined,
     busy: agentBusyFromMeta(source) === true,
     turnStartedAt: Number.isNaN(parsedTurnStartedAt) ? undefined : parsedTurnStartedAt,
@@ -2402,6 +2434,7 @@ export function projectAgentTranscriptView(
     planMode: snapshot.meta.modes?.plan !== undefined,
     swarmMode: snapshot.meta.modes?.swarm !== undefined,
     queuedPromptIds,
+    queuedPromptMeta,
     activePromptId: running?.promptId,
     pendingInteraction,
     todos: todos.at(-1)?.items ?? [],

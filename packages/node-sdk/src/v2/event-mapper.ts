@@ -40,6 +40,11 @@ const DROPPED_DOMAIN_EVENT_TYPES: ReadonlySet<string> = new Set([
   'prompt.aborted',
   'prompt.started',
   'prompt.steered',
+  'prompt.queued',
+  'prompt.enqueued',
+  'prompt.replaced',
+  'prompt.timing_changed',
+  'prompt.launch_committed',
   'prompt.moved',
 ]);
 

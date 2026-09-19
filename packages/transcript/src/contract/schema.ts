@@ -259,6 +259,10 @@ export const transcriptTaskSchema = z.object({
   kind: z.enum(['shell', 'subagent', 'tool', 'other']),
   state: z.enum(['running', 'completed', 'failed', 'timed_out', 'killed', 'lost']),
   detached: z.boolean(),
+  lifetime: z.enum(['finite', 'service']).optional(),
+  ownerAgentId: agentIdSchema.optional(),
+  ownerTurnId: z.number().int().nonnegative().optional(),
+  goalId: z.string().optional(),
   name: z.string().optional(),
   subagentName: z.string().optional(),
   description: z.string().optional(),
@@ -276,6 +280,8 @@ export const goalMetaSchema = z.object({
   objective: z.string(),
   status: z.enum(['active', 'paused', 'blocked', 'complete']),
   completionCriterion: z.string().optional(),
+  followUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
+  controlRevision: z.number().int().nonnegative().optional(),
   budgetUsed: z.number().optional(),
   budgetLimit: z.number().optional(),
 });
@@ -426,6 +432,8 @@ export const transcriptPromptSchema = z.object({
   queuePosition: z.number().int().nonnegative().optional(),
   abortedBeforeStart: z.boolean().optional(),
   steeredAt: z.string().optional(),
+  appendTiming: z.enum(['agent_idle', 'subagents_done', 'tasks_done']).optional(),
+  revision: z.number().int().nonnegative().optional(),
 });
 
 export const agentTranscriptSnapshotSchema = z.object({

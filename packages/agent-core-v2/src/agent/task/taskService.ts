@@ -27,9 +27,10 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { ContextMessage, TaskOrigin } from '#/agent/contextMemory/types';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { MessageStepRequest } from '#/agent/loop/stepRequest';
+import { MessageStepRequest, type StepRequestAdmission } from '#/agent/loop/stepRequest';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { goalKey } from '#/agent/goal/goalOps';
 import { ITaskService, type ITaskHandle, TERMINAL_TASK_STATES } from '#/app/task/task';
 import {
   TERMINAL_STATUSES,
@@ -59,7 +60,14 @@ import {
 } from './task';
 import { resolveAgentTaskConfig } from './configSection';
 import { AgentTaskPersistence } from './persist';
-import { taskKey, TaskNotified, TaskStarted, TaskTerminated, TaskWaitDelivered } from './taskOps';
+import {
+  taskKey,
+  TaskNotified,
+  TaskSettlementReady,
+  TaskStarted,
+  TaskTerminated,
+  TaskWaitDelivered,
+} from './taskOps';
 import { formatTaskList } from '#/agent/tools/task/task-list/taskListTool';
 import '#/agent/tools/task/task-output/taskOutputTool';
 import '#/agent/tools/task/task-stop/taskStopTool';
@@ -136,6 +144,8 @@ interface ManagedTask extends BufferedTaskOutput {
   status: AgentTaskStatus;
   options: RegisterAgentTaskOptions & { description?: string };
   readonly startedAt: number;
+  readonly ownerTurnId?: number;
+  readonly goalId?: string;
   endedAt: number | null;
   foregroundRelease?: ForegroundRelease;
   stopReason?: string;
@@ -201,12 +211,13 @@ export class TaskNotificationStepRequest extends MessageStepRequest {
     message: ContextMessage,
     private readonly onWillDeliver?: () => void,
     private readonly renderContent?: (delivery: object) => readonly ContentPart[],
+    admission: StepRequestAdmission = 'activeOrNewTurn',
   ) {
     super(message, {
       kind: 'task_notification',
       mergeable: true,
       turnScoped: false,
-      admission: 'activeOrNewTurn',
+      admission,
     });
   }
 
@@ -260,7 +271,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     @IAtomicDocumentStore atomicDocs: IAtomicDocumentStore,
     @IFileSystemStorageService byteStore: IFileSystemStorageService,
     @ISessionContext session: ISessionContext,
-    @IAgentScopeContext scopeContext: IAgentScopeContext,
+    @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @ITaskService private readonly taskService: ITaskService,
     @IEventBus private readonly eventBus: IEventBus,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -369,6 +380,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const timeoutMs = options.timeoutMs ?? task.timeoutMs;
     const entryOptions: RegisterAgentTaskOptions = {
       detached,
+      lifetime: options.lifetime,
       timeoutMs,
       detachTimeoutMs: options.detachTimeoutMs,
       autoBackgroundOnTimeout: options.autoBackgroundOnTimeout,
@@ -386,6 +398,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       status: 'running',
       options: entryOptions,
       startedAt: Date.now(),
+      ownerTurnId: this.loop.status().activeTurnId,
+      goalId: this.currentGoal()?.goalId,
       endedAt: null,
       foregroundRelease: detached ? undefined : createForegroundRelease(),
       abortController: new AbortController(),
@@ -509,8 +523,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       retainedOutputBytes: 0,
       outputLimitTripped: false,
       status: 'running',
-      options: { detached, timeoutMs, detachTimeoutMs: options.detachTimeoutMs, signal: detached ? undefined : options.signal, description: options.description },
+      options: {
+        detached,
+        lifetime: options.lifetime,
+        timeoutMs,
+        detachTimeoutMs: options.detachTimeoutMs,
+        signal: detached ? undefined : options.signal,
+        description: options.description,
+      },
       startedAt: Date.now(),
+      ownerTurnId: this.loop.status().activeTurnId,
+      goalId: this.currentGoal()?.goalId,
       endedAt: null,
       foregroundRelease: detached ? undefined : createForegroundRelease(),
       abortController: new AbortController(),
@@ -1296,7 +1319,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         } catch {}
       }
       this.recordTaskTerminated(info, outputTail);
-      await this.notifyAgentTask(info);
+      try {
+        await this.notifyAgentTask(info);
+      } finally {
+        this.eventBus.publish(new TaskSettlementReady({ info }));
+      }
     })().catch((error) => {
       this.log.error('task notification delivery failed', { taskId: info.taskId, error });
     });
@@ -1342,6 +1369,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       },
       () => this.fireNotificationHook(context.notification),
       context.renderContent,
+      this.notificationAdmission(info),
     );
     this.pendingNotificationRequests.set(key, request);
     try {
@@ -1358,6 +1386,15 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       this.clearPendingNotification(key, request);
       throw error;
     }
+  }
+
+  private currentGoal(): ReturnType<typeof goalKey.initial> {
+    return this.states.has(goalKey) ? this.states.get(goalKey) : null;
+  }
+
+  private notificationAdmission(info: AgentTaskInfo): StepRequestAdmission {
+    const goal = this.currentGoal();
+    return goal !== null || info.goalId !== undefined ? 'activeOrNextTurn' : 'activeOrNewTurn';
   }
 
   private restoreAgentTaskNotifications(): Promise<void> {
@@ -1533,6 +1570,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       stopReason: entry.stopReason,
       terminalNotificationSuppressed: entry.terminalNotificationSuppressed,
       timeoutMs: entry.options.timeoutMs,
+      lifetime: entry.options.lifetime,
+      ownerAgentId: this.scopeContext.agentId,
+      ownerTurnId: entry.ownerTurnId,
+      goalId: entry.goalId,
     };
     if (entry.toInfoFn) return entry.toInfoFn(base);
     return entry.task!.toInfo(base);

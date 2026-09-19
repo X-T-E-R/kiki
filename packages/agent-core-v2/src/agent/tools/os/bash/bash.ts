@@ -44,6 +44,10 @@ export const BashInputSchema = z
       .boolean()
       .optional()
       .describe('Whether to run the command as a background task.'),
+    lifetime: z
+      .enum(['finite', 'service'])
+      .optional()
+      .describe('Whether background work is finite or a long-running service.'),
     disable_timeout: z
       .boolean()
       .optional()
@@ -52,8 +56,15 @@ export const BashInputSchema = z
       ),
   })
   .superRefine((val, ctx) => {
-    if (val.timeout === undefined) return;
     const isBackground = val.run_in_background === true;
+    if (val.lifetime !== undefined && !isBackground) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['lifetime'],
+        message: 'lifetime is only valid when run_in_background is true',
+      });
+    }
+    if (val.timeout === undefined) return;
     if (!isValidTimeoutValue(val.timeout, isBackground)) {
       const cap = isBackground ? MAX_BACKGROUND_TIMEOUT_S : MAX_TIMEOUT_S;
       ctx.addIssue({

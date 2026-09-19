@@ -232,6 +232,7 @@ export class BashTool implements IBashTool {
         new ProcessTask(proc, command, description, onProcessOutput, () => lease.dispose()),
         {
           detached: startsInBackground,
+          lifetime: startsInBackground ? (args.lifetime ?? 'finite') : undefined,
           timeoutMs,
           detachTimeoutMs: this.detachTimeoutMs(),
           autoBackgroundOnTimeout: this.allowBackground() && this.autoBackgroundOnTimeout(),

@@ -1,5 +1,7 @@
 export type GoalStatus = 'active' | 'paused' | 'blocked' | 'complete';
 
+export type GoalFollowUpTiming = 'subagents_done' | 'tasks_done';
+
 export type GoalActor = 'user' | 'model' | 'runtime' | 'system';
 
 export interface GoalBudgetLimits {
@@ -26,6 +28,8 @@ export interface GoalSnapshot {
   readonly objective: string;
   readonly completionCriterion?: string;
   readonly status: GoalStatus;
+  readonly followUpTiming?: GoalFollowUpTiming;
+  readonly controlRevision?: number;
   readonly turnsUsed: number;
   readonly tokensUsed: number;
   readonly wallClockMs: number;
@@ -56,5 +60,15 @@ export interface GoalChange {
 export interface CreateGoalInput {
   readonly objective: string;
   readonly completionCriterion?: string;
+  readonly followUpTiming?: GoalFollowUpTiming;
+  readonly initialStatus?: Extract<GoalStatus, 'active' | 'paused'>;
   readonly replace?: boolean;
+}
+
+export interface UpdateGoalInput {
+  readonly goalId: string;
+  readonly expectedRevision?: number;
+  readonly objective?: string;
+  readonly completionCriterion?: string | null;
+  readonly followUpTiming?: GoalFollowUpTiming;
 }

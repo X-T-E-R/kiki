@@ -4,6 +4,7 @@ import type { AttachmentSource } from '../model/attachment';
 import type { ToolCallFrame } from '../model/frame';
 import { projectInteractionEndState, type TranscriptInteraction } from '../model/interaction';
 import type { GoalMeta, GoalStatus } from '../model/meta';
+import type { TranscriptPrompt, TranscriptPromptAppendTiming } from '../model/prompt';
 import type { TranscriptTask } from '../model/task';
 import type { TodoItem } from '../model/todo';
 import type { StepHeader, TurnHeader, TranscriptOperation } from '../ops/operation';
@@ -47,7 +48,7 @@ export interface PendingSteer {
 }
 
 export interface TranscriptWireAdapterCheckpoint {
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly agentId: string;
   readonly turns: readonly string[];
   readonly turnIds: readonly string[];
@@ -81,6 +82,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly lastRecordTime?: number;
   readonly currentTurnId?: string;
   readonly currentPromptId?: string;
+  readonly prompts?: readonly [string, TranscriptPrompt][];
 }
 
 export class TranscriptWireAdapter {
@@ -109,6 +111,7 @@ export class TranscriptWireAdapter {
   readonly #projectedTaskNotificationIds = new Set<string>();
   readonly #unpairedSteerCredits = new Map<string, Map<string, number>>();
   readonly #executions = new Map<string, TranscriptTurnExecution>();
+  readonly #prompts = new Map<string, TranscriptPrompt>();
   #goal: GoalMeta | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
   #recordOrdinal = 0;
@@ -124,7 +127,7 @@ export class TranscriptWireAdapter {
 
   checkpoint(): TranscriptWireAdapterCheckpoint {
     return {
-      version: 1,
+      version: 2,
       agentId: this.agentId,
       turns: [...this.#turns],
       turnIds: [...this.#turnIds],
@@ -158,11 +161,12 @@ export class TranscriptWireAdapter {
       lastRecordTime: this.#lastRecordTime,
       currentTurnId: this.#currentTurnId,
       currentPromptId: this.#currentPromptId,
+      prompts: [...this.#prompts],
     };
   }
 
   restore(checkpoint: TranscriptWireAdapterCheckpoint): void {
-    if (checkpoint.version !== 1 || checkpoint.agentId !== this.agentId) {
+    if ((checkpoint.version !== 1 && checkpoint.version !== 2) || checkpoint.agentId !== this.agentId) {
       throw new Error('transcript adapter checkpoint is incompatible');
     }
     this.#turns.splice(0, this.#turns.length, ...checkpoint.turns);
@@ -203,6 +207,7 @@ export class TranscriptWireAdapter {
     this.#lastRecordTime = checkpoint.lastRecordTime;
     this.#currentTurnId = checkpoint.currentTurnId;
     this.#currentPromptId = checkpoint.currentPromptId;
+    replaceMap(this.#prompts, checkpoint.prompts ?? []);
   }
 
   add(record: TranscriptWireRecord): TranscriptFact[] {
@@ -282,7 +287,125 @@ export class TranscriptWireAdapter {
         },
       ];
     }
+    if (record.type.startsWith('prompt.')) return this.promptRecord(record);
     return this.supplemental(record, ordinal);
+  }
+
+  private promptRecord(record: TranscriptWireRecord): TranscriptOperation[] {
+    const promptId = stringOf(record['promptId']) ?? stringOf(record['activePromptId']);
+    if (promptId === undefined) return [];
+    if (record.type === 'prompt.enqueued') {
+      const message = objectOf(record['message']);
+      const prompt: TranscriptPrompt = {
+        promptId,
+        status: 'queued',
+        userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
+        content: projectPromptContent(message?.['content']),
+        createdAt: promptRecordTime(record, ['createdAt']) ?? isoOf(record.time) ?? new Date(0).toISOString(),
+        queuePosition: numberOf(record['queueIndex']),
+        appendTiming: promptAppendTimingOf(record['appendTiming']),
+        revision: numberOf(record['revision']),
+      };
+      return [this.storePrompt(prompt)];
+    }
+    const previous = this.#prompts.get(promptId);
+    if (record.type === 'prompt.replaced') {
+      const content = projectPromptContent(record['content']);
+      return [
+        this.storePrompt({
+          ...promptOrMinimal(previous, promptId, record),
+          status: previous?.status ?? 'queued',
+          content: content.length > 0 ? content : previous?.content,
+          revision: numberOf(record['revision']) ?? previous?.revision,
+        }),
+      ];
+    }
+    if (record.type === 'prompt.timing_changed') {
+      return [
+        this.storePrompt({
+          ...promptOrMinimal(previous, promptId, record),
+          appendTiming: promptAppendTimingOf(record['appendTiming']) ?? previous?.appendTiming,
+          revision: numberOf(record['revision']) ?? previous?.revision,
+        }),
+      ];
+    }
+    if (record.type === 'prompt.moved') {
+      const ids = stringArrayOf(record['queuedPromptIds']);
+      if (ids.length === 0) return [];
+      const operations: TranscriptOperation[] = [];
+      for (const [queuePosition, id] of ids.entries()) {
+        const prior = this.#prompts.get(id) ?? minimalPrompt(id, record);
+        operations.push(
+          this.storePrompt({
+            ...prior,
+            status: prior.status === 'running' ? prior.status : 'queued',
+            queuePosition,
+          }),
+        );
+      }
+      return operations;
+    }
+    if (record.type === 'prompt.launch_committed') {
+      return [
+        this.storePrompt({
+          ...promptOrMinimal(previous, promptId, record),
+          status: 'running',
+          queuePosition: undefined,
+          revision: numberOf(record['revision']) ?? previous?.revision,
+        }),
+      ];
+    }
+    if (record.type === 'prompt.completed') {
+      const reason = stringOf(record['reason']);
+      const status: TranscriptPrompt['status'] =
+        reason === 'failed' || reason === 'blocked' ? reason : 'completed';
+      return [
+        this.storePrompt({
+          ...promptOrMinimal(previous, promptId, record),
+          status,
+          finishedAt: promptRecordTime(record, ['finishedAt']) ?? previous?.finishedAt,
+        }),
+      ];
+    }
+    if (record.type === 'prompt.aborted') {
+      return [
+        this.storePrompt({
+          ...promptOrMinimal(previous, promptId, record),
+          status: 'aborted',
+          finishedAt: promptRecordTime(record, ['abortedAt']) ?? previous?.finishedAt,
+          abortedBeforeStart:
+            record['beforeStart'] === true ? true : previous?.abortedBeforeStart,
+        }),
+      ];
+    }
+    if (record.type === 'prompt.steered') {
+      const activePromptId = stringOf(record['activePromptId']) ?? promptId;
+      const steeredAt = promptRecordTime(record, ['steeredAt']) ?? isoOf(record.time) ?? new Date(0).toISOString();
+      const content = projectPromptContent(record['content']);
+      const activePrior =
+        this.#prompts.get(activePromptId) ?? minimalPrompt(activePromptId, record);
+      const active: TranscriptPrompt = {
+        ...activePrior,
+        status: isTerminalPromptStatus(activePrior.status) ? activePrior.status : 'running',
+        content: content.length > 0 ? content : activePrior.content,
+        steeredAt,
+      };
+      const operations: TranscriptOperation[] = [this.storePrompt(active)];
+      for (const id of stringArrayOf(record['promptIds'])) {
+        if (id === activePromptId) continue;
+        const prior = this.#prompts.get(id) ?? minimalPrompt(id, record);
+        operations.push(
+          this.storePrompt({ ...prior, status: 'completed', finishedAt: steeredAt, steeredAt }),
+        );
+      }
+      return operations;
+    }
+    return [];
+  }
+
+  private storePrompt(prompt: TranscriptPrompt): TranscriptOperation {
+    this.#prompts.set(prompt.promptId, prompt);
+    return { op: 'prompt.upsert', prompt };
   }
 
   private supplemental(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
@@ -333,10 +456,13 @@ export class TranscriptWireAdapter {
       ];
     }
     if (record.type === 'goal.create') {
+      const status = stringOf(record['status']);
       this.#goal = {
         objective: stringOf(record['objective']) ?? '',
-        status: 'active',
+        status: isGoalStatus(status) ? status : 'active',
         completionCriterion: stringOf(record['completionCriterion']),
+        followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? 'subagents_done',
+        controlRevision: numberOf(record['controlRevision']) ?? 1,
         budgetUsed: 0,
       };
       return [
@@ -348,8 +474,15 @@ export class TranscriptWireAdapter {
       if (this.#goal !== undefined) {
         const status = stringOf(record['status']);
         const tokenBudget = numberOf(objectOf(record['budgetLimits'])?.['tokenBudget']);
+        const completionCriterion = record['completionCriterion'];
         this.#goal = {
           ...this.#goal,
+          objective: stringOf(record['objective']) ?? this.#goal.objective,
+          completionCriterion: completionCriterion === null
+            ? undefined
+            : stringOf(completionCriterion) ?? this.#goal.completionCriterion,
+          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? this.#goal.followUpTiming,
+          controlRevision: numberOf(record['controlRevision']) ?? this.#goal.controlRevision,
           status: isGoalStatus(status) ? status : this.#goal.status,
           budgetUsed: numberOf(record['tokensUsed']) ?? this.#goal.budgetUsed,
           budgetLimit: tokenBudget ?? this.#goal.budgetLimit,
@@ -420,6 +553,10 @@ export class TranscriptWireAdapter {
         kind: taskKindOf(info?.['kind']),
         state,
         detached: booleanOf(info?.['detached']) ?? previous?.detached ?? true,
+        lifetime: taskLifetimeOf(info?.['lifetime']) ?? previous?.lifetime,
+        ownerAgentId: stringOf(info?.['ownerAgentId']) ?? previous?.ownerAgentId,
+        ownerTurnId: numberOf(info?.['ownerTurnId']) ?? previous?.ownerTurnId,
+        goalId: stringOf(info?.['goalId']) ?? previous?.goalId,
         name: stringOf(info?.['collaborationTaskName']) ?? previous?.name,
         subagentName: stringOf(info?.['profile']) ?? previous?.subagentName,
         description: stringOf(info?.['description']) ?? previous?.description,
@@ -1612,6 +1749,14 @@ function durableRecord(type: string): boolean {
     type === 'turn.prompt' ||
     type === 'turn.ended' ||
     type === 'task.notified' ||
+    type === 'prompt.enqueued' ||
+    type === 'prompt.replaced' ||
+    type === 'prompt.timing_changed' ||
+    type === 'prompt.moved' ||
+    type === 'prompt.launch_committed' ||
+    type === 'prompt.completed' ||
+    type === 'prompt.aborted' ||
+    type === 'prompt.steered' ||
     type.startsWith('context.') ||
     type.startsWith('executor.') ||
     type.startsWith('subagent.')
@@ -1888,10 +2033,18 @@ function isGoalStatus(value: string | undefined): value is GoalStatus {
   return value === 'active' || value === 'paused' || value === 'blocked' || value === 'complete';
 }
 
+function goalFollowUpTimingOf(value: unknown): 'subagents_done' | 'tasks_done' | undefined {
+  return value === 'subagents_done' || value === 'tasks_done' ? value : undefined;
+}
+
 function taskKindOf(value: unknown): TranscriptTask['kind'] {
   if (value === 'process') return 'shell';
   if (value === 'agent') return 'subagent';
   return 'other';
+}
+
+function taskLifetimeOf(value: unknown): TranscriptTask['lifetime'] {
+  return value === 'finite' || value === 'service' ? value : undefined;
 }
 
 function taskStateOf(value: unknown): TranscriptTask['state'] | undefined {
@@ -1988,6 +2141,81 @@ function stringOf(value: unknown): string | undefined {
 
 function numberOf(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function stringArrayOf(value: unknown): string[] {
+  return arrayOf(value).flatMap((entry) => {
+    const text = stringOf(entry);
+    return text === undefined ? [] : [text];
+  });
+}
+
+function promptAppendTimingOf(value: unknown): TranscriptPromptAppendTiming | undefined {
+  return value === 'agent_idle' || value === 'subagents_done' || value === 'tasks_done'
+    ? value
+    : undefined;
+}
+
+function promptRecordTime(record: TranscriptWireRecord, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+    const numeric = numberOf(value);
+    if (numeric !== undefined) return new Date(numeric).toISOString();
+  }
+  return undefined;
+}
+
+function minimalPrompt(promptId: string, record: TranscriptWireRecord): TranscriptPrompt {
+  return {
+    promptId,
+    status: 'queued',
+    createdAt:
+      promptRecordTime(record, ['createdAt', 'replacedAt', 'changedAt', 'committedAt', 'steeredAt']) ??
+      isoOf(record.time) ??
+      new Date(0).toISOString(),
+  };
+}
+
+function promptOrMinimal(
+  previous: TranscriptPrompt | undefined,
+  promptId: string,
+  record: TranscriptWireRecord,
+): TranscriptPrompt {
+  return previous ?? minimalPrompt(promptId, record);
+}
+
+function isTerminalPromptStatus(status: TranscriptPrompt['status']): boolean {
+  return (
+    status === 'completed' || status === 'failed' || status === 'aborted' || status === 'blocked'
+  );
+}
+
+function projectPromptContent(value: unknown): unknown[] {
+  const parts: unknown[] = [];
+  for (const raw of arrayOf(value)) {
+    const part = objectOf(raw);
+    if (part === undefined) continue;
+    if (stringOf(part['type']) === 'text') {
+      parts.push({ type: 'text', text: stringOf(part['text']) ?? '' });
+      continue;
+    }
+    const media = mediaOf(part);
+    if (media === undefined) continue;
+    parts.push({
+      type: media.kind,
+      source:
+        media.source === undefined
+          ? undefined
+          : media.source.kind === 'url'
+            ? { kind: 'url', url: media.source.url }
+            : media.source.kind === 'file'
+              ? { kind: 'file', file_id: media.source.fileId }
+              : { kind: 'session_media', file_id: media.source.fileId },
+      name: media.name,
+    });
+  }
+  return parts;
 }
 
 function replaceSet<T>(target: Set<T>, values: readonly T[]): void {

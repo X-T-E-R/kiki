@@ -1,6 +1,6 @@
 import { createDecorator } from "#/_base/di/instantiation";
 import type { SkillActivationOrigin } from '#/agent/contextMemory/types';
-import type { PromptExecutionBinding, PromptLaunchResult } from '#/agent/prompt/prompt';
+import type { DeferredAppendTiming, PromptExecutionBinding, PromptLaunchResult } from '#/agent/prompt/prompt';
 import type { ContentPart } from '#/kosong/contract/message';
 
 export interface SkillActivationInput {
@@ -18,6 +18,7 @@ export interface PromptWithSkillsInput {
   readonly input: readonly ContentPart[];
   readonly skills: readonly PromptSkillActivation[];
   readonly execution?: PromptExecutionBinding;
+  readonly appendTiming?: DeferredAppendTiming;
   readonly deferredDisabledTools?: readonly string[];
 }
 
@@ -26,6 +27,8 @@ export interface PromptWithSkillsResult {
   readonly prompt_id: string;
   readonly created_at: string;
   readonly state: 'running' | 'queued' | 'blocked';
+  readonly append_timing: DeferredAppendTiming;
+  readonly revision: number;
 }
 
 export interface IAgentSkillService {

@@ -200,8 +200,6 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
           planMode={state.planMode}
           swarmMode={state.swarmMode}
           goalObjective={state.goalObjective}
-          goalStatus={undefined}
-          goalControl={undefined}
           efforts={state.supportedEfforts}
           effort={state.effectiveEffort}
           busyPlaceholder={t('new.creating')}
@@ -216,7 +214,6 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
           onChangePlanMode={state.setPlanMode}
           onChangeSwarmMode={state.setSwarmMode}
           onChangeGoalObjective={state.setGoalObjective}
-          onChangeGoalControl={() => {}}
           onChangeEffort={state.setEffortOverride}
           onSend={state.send}
           onActivateSkill={state.activateSkill}

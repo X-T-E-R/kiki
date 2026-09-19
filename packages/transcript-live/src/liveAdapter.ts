@@ -85,6 +85,7 @@ import {
 
 import { toLegacyPhase } from './legacyPhase';
 import { projectPromptContentParts } from './promptProjection';
+import type { DeferredAppendTiming } from '@kiki/protocol';
 
 export interface LiveAdapterInteraction {
   readonly id: string;
@@ -96,15 +97,35 @@ export interface LiveAdapterInteraction {
 
 type PlanRevisionEvent = { readonly type: 'plan.revision' } & PlanRevision;
 
+interface PromptSchedulingFields {
+  readonly appendTiming?: DeferredAppendTiming;
+  readonly revision?: number;
+}
+
 type AgentActivityUpdatedEvent = { readonly type: 'agent.activity.updated' } & AgentActivityUpdated;
-type PromptSubmittedEvent = { readonly type: 'prompt.submitted' } & PromptSubmitted;
+type PromptSubmittedEvent = { readonly type: 'prompt.submitted' } & PromptSubmitted & PromptSchedulingFields;
 type PromptStartedEvent = { readonly type: 'prompt.started' } & PromptStarted;
 type PromptCompletedEvent = { readonly type: 'prompt.completed' } & PromptCompleted;
 type PromptAbortedEvent = { readonly type: 'prompt.aborted' } & PromptAborted;
 type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
-type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued;
-type PromptReplacedEvent = { readonly type: 'prompt.replaced' } & PromptReplaced;
+type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued & PromptSchedulingFields;
+type PromptReplacedEvent = { readonly type: 'prompt.replaced' } & PromptReplaced & PromptSchedulingFields;
 type PromptMovedEvent = { readonly type: 'prompt.moved' } & PromptMoved;
+interface PromptTimingChangedPayload {
+  readonly promptId: string;
+  readonly appendTiming: DeferredAppendTiming;
+  readonly revision: number;
+  readonly changedAt: string;
+}
+type PromptTimingChangedEvent = {
+  readonly type: 'prompt.timing_changed';
+  readonly time: number;
+  serialize(): {
+    readonly type: string;
+    readonly time: number;
+    readonly [key: string]: unknown;
+  };
+} & PromptTimingChangedPayload;
 type TaskNotifiedEvent = { readonly type: 'task.notified' } & TaskNotified;
 
 export type LiveAdapterBusEvent =
@@ -143,6 +164,7 @@ export type LiveAdapterBusEvent =
   | PromptQueuedEvent
   | PromptReplacedEvent
   | PromptMovedEvent
+  | PromptTimingChangedEvent
   | ({ readonly type: 'hook.result' } & HookResult)
   | ({ readonly type: 'skill.activated' } & SkillActivated)
   | ({ readonly type: 'plugin_command.activated' } & PluginCommandActivated)
@@ -333,6 +355,8 @@ export class AgentTranscriptLiveAdapter {
         return this.onPromptReplaced(event);
       case 'prompt.moved':
         return this.onPromptMoved(event);
+      case 'prompt.timing_changed':
+        return this.onPromptTimingChanged(event);
       case 'prompt.completed':
         return this.onPromptCompleted(event);
       case 'prompt.aborted':
@@ -1037,6 +1061,10 @@ export class AgentTranscriptLiveAdapter {
       description: string;
       status: TranscriptTask['state'];
       detached?: boolean;
+      lifetime?: 'finite' | 'service';
+      ownerAgentId?: string;
+      ownerTurnId?: number;
+      goalId?: string;
       agentId?: string;
       profile?: string;
       collaborationTaskName?: string;
@@ -1051,6 +1079,10 @@ export class AgentTranscriptLiveAdapter {
       kind: mapTaskKind(info.kind),
       state: info.status,
       detached: info.detached ?? prev?.detached ?? true,
+      lifetime: info.lifetime ?? prev?.lifetime,
+      ownerAgentId: info.ownerAgentId ?? prev?.ownerAgentId,
+      ownerTurnId: info.ownerTurnId ?? prev?.ownerTurnId,
+      goalId: info.goalId ?? prev?.goalId,
       name: info.collaborationTaskName ?? prev?.name,
       subagentName: info.profile ?? prev?.subagentName,
       description: info.description,
@@ -1329,6 +1361,8 @@ export class AgentTranscriptLiveAdapter {
       objective: string;
       status: 'active' | 'paused' | 'blocked' | 'complete';
       completionCriterion?: string;
+      followUpTiming?: 'subagents_done' | 'tasks_done';
+      controlRevision?: number;
       tokensUsed: number;
       budget: { tokenBudget: number | null };
     } | null;
@@ -1345,6 +1379,8 @@ export class AgentTranscriptLiveAdapter {
             objective: snapshot.objective,
             status: snapshot.status,
             completionCriterion: snapshot.completionCriterion,
+            followUpTiming: snapshot.followUpTiming,
+            controlRevision: snapshot.controlRevision,
             budgetUsed: snapshot.tokensUsed,
             budgetLimit: snapshot.budget.tokenBudget ?? undefined,
           },
@@ -1485,6 +1521,8 @@ export class AgentTranscriptLiveAdapter {
       queuePosition: event.status === 'queued' ? prev?.queuePosition : undefined,
       abortedBeforeStart: prev?.abortedBeforeStart,
       steeredAt: prev?.steeredAt,
+      appendTiming: event.appendTiming ?? prev?.appendTiming,
+      revision: event.revision ?? prev?.revision,
     }));
     return [{ op: 'prompt.upsert', prompt }];
   }
@@ -1505,6 +1543,25 @@ export class AgentTranscriptLiveAdapter {
       queuePosition: prev?.queuePosition,
       abortedBeforeStart: prev?.abortedBeforeStart,
       steeredAt: prev?.steeredAt,
+      appendTiming: event.appendTiming ?? prev?.appendTiming,
+      revision: event.revision ?? prev?.revision,
+    }));
+    return [{ op: 'prompt.upsert', prompt }];
+  }
+
+  private onPromptTimingChanged(event: PromptTimingChangedEvent): TranscriptOperation[] {
+    const prompt = this.upsertPrompt(event.promptId, (prev) => ({
+      promptId: event.promptId,
+      status: prev?.status ?? 'queued',
+      userMessageId: prev?.userMessageId,
+      content: prev?.content,
+      createdAt: prev?.createdAt ?? event.changedAt,
+      finishedAt: prev?.finishedAt,
+      queuePosition: prev?.queuePosition,
+      abortedBeforeStart: prev?.abortedBeforeStart,
+      steeredAt: prev?.steeredAt,
+      appendTiming: event.appendTiming,
+      revision: event.revision,
     }));
     return [{ op: 'prompt.upsert', prompt }];
   }
@@ -1518,6 +1575,8 @@ export class AgentTranscriptLiveAdapter {
       createdAt: prev?.createdAt ?? nowIso(),
       finishedAt: prev?.finishedAt,
       steeredAt: prev?.steeredAt,
+      appendTiming: prev?.appendTiming,
+      revision: prev?.revision,
     }));
     return [{ op: 'prompt.upsert', prompt }];
   }
@@ -1533,6 +1592,8 @@ export class AgentTranscriptLiveAdapter {
       queuePosition: prev?.queuePosition,
       abortedBeforeStart: prev?.abortedBeforeStart,
       steeredAt: prev?.steeredAt,
+      appendTiming: event.appendTiming ?? prev?.appendTiming,
+      revision: event.revision ?? prev?.revision,
     }));
     return [{ op: 'prompt.upsert', prompt }];
   }
@@ -1550,6 +1611,8 @@ export class AgentTranscriptLiveAdapter {
         queuePosition,
         abortedBeforeStart: prev?.abortedBeforeStart,
         steeredAt: prev?.steeredAt,
+        appendTiming: prev?.appendTiming,
+        revision: prev?.revision,
       }));
       ops.push({ op: 'prompt.upsert', prompt });
     }
@@ -1565,6 +1628,8 @@ export class AgentTranscriptLiveAdapter {
       createdAt: prev?.createdAt ?? event.finishedAt,
       finishedAt: event.finishedAt,
       steeredAt: prev?.steeredAt,
+      appendTiming: prev?.appendTiming,
+      revision: prev?.revision,
     }));
     return [{ op: 'prompt.upsert', prompt }];
   }
@@ -1579,6 +1644,8 @@ export class AgentTranscriptLiveAdapter {
       finishedAt: event.abortedAt,
       abortedBeforeStart: event.beforeStart === true ? true : undefined,
       steeredAt: prev?.steeredAt,
+      appendTiming: prev?.appendTiming,
+      revision: prev?.revision,
     }));
     return [{ op: 'prompt.upsert', prompt }];
   }
@@ -1601,6 +1668,8 @@ export class AgentTranscriptLiveAdapter {
       createdAt: prev?.createdAt ?? event.steeredAt,
       finishedAt: prev?.finishedAt,
       steeredAt: event.steeredAt,
+      appendTiming: prev?.appendTiming,
+      revision: prev?.revision,
     }));
     ops.push({ op: 'prompt.upsert', prompt: active });
     for (const promptId of event.promptIds) {
@@ -1612,6 +1681,8 @@ export class AgentTranscriptLiveAdapter {
         createdAt: prev?.createdAt ?? event.steeredAt,
         finishedAt: event.steeredAt,
         steeredAt: event.steeredAt,
+        appendTiming: prev?.appendTiming,
+        revision: prev?.revision,
       }));
       ops.push({ op: 'prompt.upsert', prompt: steered });
     }

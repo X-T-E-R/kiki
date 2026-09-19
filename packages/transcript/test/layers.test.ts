@@ -2289,6 +2289,161 @@ describe('TranscriptWireAdapter', () => {
     ]);
     expect(countResult.changedIds).toEqual(new Set(['toolCallCount']));
   });
+
+  it('recovers the prompt queue content, timing and order from durable wire facts', () => {
+    const transcript = replay([
+      {
+        type: 'prompt.enqueued',
+        schemaVersion: 1,
+        promptId: 'p1',
+        userMessageId: 'm1',
+        createdAt: '2026-06-09T00:00:00.000Z',
+        message: { id: 'm1', content: [{ type: 'text', text: 'first' }] },
+        alreadyMaterialized: false,
+        appendTiming: 'agent_idle',
+        revision: 1,
+        queueIndex: 0,
+        time: 1_000,
+      },
+      {
+        type: 'prompt.enqueued',
+        schemaVersion: 1,
+        promptId: 'p2',
+        userMessageId: 'm2',
+        createdAt: '2026-06-09T00:00:01.000Z',
+        message: { id: 'm2', content: [{ type: 'text', text: 'second' }] },
+        alreadyMaterialized: false,
+        appendTiming: 'tasks_done',
+        revision: 1,
+        queueIndex: 1,
+        time: 1_001,
+      },
+      {
+        type: 'prompt.timing_changed',
+        promptId: 'p2',
+        appendTiming: 'subagents_done',
+        revision: 2,
+        changedAt: '2026-06-09T00:00:02.000Z',
+        time: 1_002,
+      },
+      {
+        type: 'prompt.moved',
+        promptId: 'p1',
+        targetIndex: 1,
+        queuedPromptIds: ['p2', 'p1'],
+        movedAt: '2026-06-09T00:00:03.000Z',
+        time: 1_003,
+      },
+      {
+        type: 'prompt.launch_committed',
+        launchId: 'launch-p2',
+        promptId: 'p2',
+        revision: 3,
+        committedAt: '2026-06-09T00:00:04.000Z',
+        time: 1_004,
+      },
+      {
+        type: 'prompt.replaced',
+        promptId: 'p1',
+        content: [{ type: 'text', text: 'edited' }],
+        replacedAt: '2026-06-09T00:00:05.000Z',
+        revision: 2,
+        time: 1_005,
+      },
+      {
+        type: 'prompt.completed',
+        promptId: 'p1',
+        finishedAt: '2026-06-09T00:00:06.000Z',
+        reason: 'completed',
+        time: 1_006,
+      },
+      {
+        type: 'prompt.steered',
+        activePromptId: 'p2',
+        promptIds: ['p4'],
+        content: [{ type: 'text', text: 'merged' }],
+        steeredAt: '2026-06-09T00:00:07.000Z',
+        time: 1_007,
+      },
+      {
+        type: 'prompt.aborted',
+        promptId: 'p3',
+        abortedAt: '2026-06-09T00:00:08.000Z',
+        beforeStart: true,
+        time: 1_008,
+      },
+    ]);
+
+    const prompts = new Map(transcript.snapshot().prompts.map((entry) => [entry.promptId, entry]));
+    expect(prompts.get('p1')).toMatchObject({
+      status: 'completed',
+      content: [{ type: 'text', text: 'edited' }],
+      revision: 2,
+      finishedAt: '2026-06-09T00:00:06.000Z',
+    });
+    expect(prompts.get('p2')).toMatchObject({
+      status: 'running',
+      queuePosition: undefined,
+      appendTiming: 'subagents_done',
+      revision: 3,
+    });
+    expect(prompts.get('p2')?.content).toEqual([{ type: 'text', text: 'merged' }]);
+    expect(prompts.get('p4')).toMatchObject({
+      status: 'completed',
+      steeredAt: '2026-06-09T00:00:07.000Z',
+    });
+    expect(prompts.get('p3')).toMatchObject({ status: 'aborted', abortedBeforeStart: true });
+  });
+
+  it('restores the prompt queue through an adapter checkpoint', () => {
+    const prefix: TranscriptWireRecord[] = [
+      {
+        type: 'prompt.enqueued',
+        schemaVersion: 1,
+        promptId: 'p1',
+        userMessageId: 'm1',
+        createdAt: '2026-06-09T00:00:00.000Z',
+        message: { id: 'm1', content: [{ type: 'text', text: 'first' }] },
+        alreadyMaterialized: false,
+        appendTiming: 'agent_idle',
+        revision: 1,
+        queueIndex: 0,
+        time: 1_000,
+      },
+      {
+        type: 'prompt.timing_changed',
+        promptId: 'p1',
+        appendTiming: 'tasks_done',
+        revision: 2,
+        changedAt: '2026-06-09T00:00:01.000Z',
+        time: 1_001,
+      },
+    ];
+    const tail: TranscriptWireRecord[] = [
+      {
+        type: 'prompt.launch_committed',
+        launchId: 'launch-p1',
+        promptId: 'p1',
+        revision: 3,
+        committedAt: '2026-06-09T00:00:02.000Z',
+        time: 1_002,
+      },
+    ];
+    const source = new AgentTranscriptDraft('main');
+    const sourceReducer = new TranscriptFactReducer(source);
+    const sourceAdapter = new TranscriptWireAdapter('main');
+    for (const record of prefix) sourceReducer.apply(sourceAdapter.add(record));
+
+    const resumed = new AgentTranscriptDraft('main');
+    resumed.seed(source.snapshot());
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(sourceAdapter.checkpoint());
+    for (const record of tail) resumedReducer.apply(resumedAdapter.add(record));
+
+    const full = replay([...prefix, ...tail]);
+    expect(resumed.snapshot().prompts).toEqual(full.snapshot().prompts);
+  });
 });
 
 type DifferentialCommand =

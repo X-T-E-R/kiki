@@ -178,6 +178,8 @@ const STRINGS = {
     sendAnyway: 'Send anyway',
     swarmTitlePrefix: 'Swarm mode',
     goalActive: 'goal · active',
+    goalFollowUpSubagents: 'follow-up · Subagents done',
+    queueRecoveredDismiss: 'Later',
     objectivePlaceholder: 'Objective (optional)',
     noMatches: 'No matches',
     systemReminder: 'System reminder',
@@ -352,6 +354,8 @@ const STRINGS = {
     sendAnyway: '仍要发送',
     swarmTitlePrefix: '集群模式',
     goalActive: '目标 · 进行中',
+    goalFollowUpSubagents: '追加时机 · 子代理完成时',
+    queueRecoveredDismiss: '稍后',
     objectivePlaceholder: '目标（可选）',
     noMatches: '没有匹配',
     systemReminder: '系统提醒',
@@ -838,9 +842,13 @@ async function scenarioSubagents() {
   await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
   await ensureRailOpen();
   await page.locator('[data-subagent-id="agent-research"]').click();
-  await page.waitForURL(/\/agent\/agent-research$/, { timeout: 10_000 });
+  // Subagent panels open as preview-workspace tabs by default — no route change.
+  // The tab renders the agent detail panel; the transcript stays on the
+  // fullscreen /agent/ route (covered by subagents-burst).
+  const agentTabPanel = page.locator('[data-preview-tabpanel="panel:agent-research"]');
+  await agentTabPanel.waitFor({ timeout: 10_000 });
   await waitForText('Protocol map complete.');
-  await waitForText('Read');
+  await agentTabPanel.locator('[data-agent-panel-container]').waitFor({ timeout: 10_000 });
   await page.waitForTimeout(500);
   await shot('subagents-agent-page');
   await page.setViewportSize({ width: 700, height: 760 });
@@ -872,13 +880,13 @@ async function scenarioSubagents() {
 
 async function scenarioGoalSwarm() {
   await selectSession('Fixture: goal + swarm');
-  // Goal state is already visible in the composer chip; the right rail no
+  // Goal state floats above the composer as its own card; the right rail no
   // longer carries the objective as resident prose.
-  const goalChip = page.locator('[data-goal-chip]');
-  await goalChip.waitFor({ timeout: 10_000 });
-  const initialGoalChipText = await goalChip.textContent();
-  if (initialGoalChipText === null || !initialGoalChipText.includes(S.goalActive)) {
-    throw new Error(`goal chip must be visible on load, got "${initialGoalChipText}"`);
+  const goalCard = page.locator('[data-goal-card]');
+  await goalCard.waitFor({ timeout: 10_000 });
+  const initialGoalCardText = await goalCard.textContent();
+  if (initialGoalCardText === null || !initialGoalCardText.includes('Prepare the release evidence bundle')) {
+    throw new Error(`goal card must be visible on load, got "${initialGoalCardText}"`);
   }
   const railText = await page.locator('[data-session-rail]').innerText();
   if (railText.includes('Prepare the release evidence bundle')) {
@@ -898,14 +906,74 @@ async function scenarioGoalSwarm() {
   if (submission?.swarm_mode !== true || submission?.goal_objective !== 'Ship the fixture release') {
     throw new Error('PromptSubmission did not carry swarm_mode + goal_objective');
   }
-  // The live goal keeps a resident trace on the chip band, with its run-state
-  // controls attached — nothing has to be reopened to see or steer it.
-  const goalChipText = await goalChip.textContent();
-  if (goalChipText === null || !goalChipText.includes(S.goalActive)) {
-    throw new Error(`goal chip must trace the run state, got "${goalChipText}"`);
+  // The card tracks the goal as it evolves — the updated objective and the
+  // follow-up timing stay visible without reopening anything.
+  await page.waitForFunction(
+    () => document.querySelector('[data-goal-card]')?.textContent?.includes('Ship the fixture release') === true,
+    undefined,
+    { timeout: 10_000 },
+  );
+  const goalCardText = await goalCard.textContent();
+  if (goalCardText === null || !goalCardText.includes(S.goalFollowUpSubagents)) {
+    throw new Error(`goal card must trace the follow-up timing, got "${goalCardText}"`);
   }
   await page.waitForTimeout(400);
   await shot('goal-swarm');
+}
+
+async function scenarioGoalQueue() {
+  await selectSession('Fixture: goal + queue');
+  // The goal rides above the composer as a card with its follow-up timing.
+  const card = page.locator('[data-goal-card]');
+  await card.waitFor({ timeout: 10_000 });
+  const cardText = await card.textContent();
+  if (cardText === null || !cardText.includes('Prepare the release evidence bundle')) {
+    throw new Error(`goal card must show the objective, got "${cardText}"`);
+  }
+  if (!cardText.includes(S.goalFollowUpSubagents)) {
+    throw new Error(`goal card must show the follow-up timing, got "${cardText}"`);
+  }
+  // The restored queue is gated: the recovery bar asks before anything resumes.
+  const hold = page.locator('[data-recovery-hold]');
+  await hold.waitFor({ timeout: 10_000 });
+  await shot('goal-queue-recovery-hold');
+  await hold.locator(`button:has-text("${S.queueRecoveredDismiss}")`).click();
+  await page.waitForSelector('[data-recovery-hold]', { state: 'detached', timeout: 5000 });
+  // The strip collapses to a summary row at rest; expand it to reach the rows.
+  await page.click(`button[aria-label="${S.queueExpandAria}"]`);
+  // Each queued row carries its own append-timing segments, seeded differently.
+  const changelog = page.locator('[data-timing-picker="prompt_fx_gq_changelog"]');
+  const artifacts = page.locator('[data-timing-picker="prompt_fx_gq_artifacts"]');
+  await changelog.waitFor({ timeout: 10_000 });
+  await artifacts.waitFor({ timeout: 10_000 });
+  const checkedTiming = (picker) =>
+    picker.locator('[role="radio"][aria-checked="true"]').getAttribute('data-timing');
+  if ((await checkedTiming(changelog)) !== 'agent_idle') {
+    throw new Error(`changelog row must start on agent_idle, got "${await checkedTiming(changelog)}"`);
+  }
+  if ((await checkedTiming(artifacts)) !== 'tasks_done') {
+    throw new Error(`artifacts row must start on tasks_done, got "${await checkedTiming(artifacts)}"`);
+  }
+  // Re-time the first row: the fixture bumps the revision and the segment moves.
+  await changelog.locator('[data-timing="tasks_done"]').click();
+  await changelog.locator('[data-timing="tasks_done"][aria-checked="true"]').waitFor({ timeout: 5000 });
+  await shot('goal-queue-retimed');
+  // Arm goal mode from the composer toolbar; the chip explains the next send.
+  await page.click('[data-goal-mode-toggle]');
+  await page.locator('[data-goal-armed]').waitFor({ timeout: 5000 });
+  await page.waitForTimeout(400); // let the chip's enter animation settle
+  await shot('goal-queue-goal-armed');
+  // Mobile pass: card, strip, and the timing segments must survive 390px.
+  await resizeViewport(390);
+  // Below lg the rail becomes an overlay that covers the dock — close it so
+  // the card and strip are what the shot judges.
+  const rail = page.locator('[data-session-rail]');
+  if ((await rail.count()) > 0 && (await rail.isVisible())) {
+    await page.keyboard.press('Escape');
+    await rail.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+  }
+  await shot('goal-queue-mobile');
+  await resizeViewport(1440);
 }
 
 async function scenarioToolPipeline() {
@@ -1676,6 +1744,36 @@ async function scenarioSettingsBrowserEditable() {
   await mainAgents.scrollIntoViewIfNeeded();
   await page.waitForTimeout(300);
   await shot('settings-browser-editable');
+}
+
+async function scenarioSettingsCommunication() {
+  await page.goto(`${WEB_URL}/settings/communication?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  const card = page.locator('#st-card-append-timing');
+  await card.waitFor({ state: 'visible', timeout: 10_000 });
+  const idle = card.locator('[data-append-timing="agent_idle"]');
+  const tasks = card.locator('[data-append-timing="tasks_done"]');
+  if ((await idle.getAttribute('aria-pressed')) !== 'true') {
+    throw new Error('default append timing must start on agent_idle');
+  }
+  await tasks.click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-append-timing="tasks_done"]')?.getAttribute('aria-pressed') === 'true',
+    undefined,
+    { timeout: 5000 },
+  );
+  await card.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  await shot('settings-communication');
+  // The store is localStorage-backed and this browser context outlives the
+  // scenario — restore the default so later walks queue on agent_idle again.
+  await idle.click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-append-timing="agent_idle"]')?.getAttribute('aria-pressed') === 'true',
+    undefined,
+    { timeout: 5000 },
+  );
 }
 
 async function scenarioWorkspaces() {
@@ -2744,6 +2842,7 @@ async function scenarioSubagentApproval() {
   if (await page.locator('[data-approval-id="approval_fixture_child"]').count() !== 0) throw new Error('resolved child approval still exposes pending actions');
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 });
   // Focusing the child retains that same archived approval, without pending actions.
+  // Subagent panels open as preview-workspace tabs by default — no route change.
   const childCard = page.locator('[data-subagent-id="agent-worker"]');
   const childRail = page.locator('[data-agent-id="agent-worker"]');
   if (await childCard.count() > 0) {
@@ -2752,7 +2851,7 @@ async function scenarioSubagentApproval() {
     await childRail.waitFor({ timeout: 10_000 });
     await childRail.click();
   }
-  await page.waitForURL(/\/agent\/agent-worker$/, { timeout: 10_000 });
+  await page.locator('[data-preview-tabpanel="panel:agent-worker"]').waitFor({ timeout: 10_000 });
   await revealResolvedApproval();
   if (await page.locator('[data-approval-id="approval_fixture_child"]').count() !== 0) throw new Error('resolved child approval still exposes pending actions');
   await page.waitForTimeout(400);
@@ -3713,6 +3812,7 @@ const SCENARIOS = [
   ['subagent-approval', scenarioSubagentApproval],
   ['subagents-burst', scenarioSubagentsBurst],
   ['goal-swarm', scenarioGoalSwarm],
+  ['goal-queue', scenarioGoalQueue],
   ['tool-pipeline', scenarioToolPipeline],
   ['question-card', scenarioQuestionCard],
   ['busy-rail', scenarioBusyRail],
@@ -3739,6 +3839,7 @@ const SCENARIOS = [
   ['settings-write', scenarioSettingsWrite],
   ['settings-invalid', scenarioSettingsInvalid],
   ['settings-browser-editable', scenarioSettingsBrowserEditable],
+  ['settings-communication', scenarioSettingsCommunication],
   ['settings-workspaces', scenarioWorkspaces],
   ['settings-agents', scenarioSettingsAgents],
   ['settings-nbsearch', scenarioSettingsNbSearch],

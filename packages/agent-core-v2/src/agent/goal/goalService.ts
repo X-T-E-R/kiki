@@ -28,6 +28,8 @@ import { ContinuationStepRequest, MessageStepRequest } from '#/agent/loop/stepRe
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IAgentTaskService, type AgentTaskInfo } from '#/agent/task/task';
+import { TaskSettlementReady } from '#/agent/task/taskOps';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
@@ -74,6 +76,7 @@ import type {
   GoalSnapshot,
   GoalStatus,
   GoalToolResult,
+  UpdateGoalInput,
 } from './types';
 
 const MAX_GOAL_OBJECTIVE_LENGTH = 4000;
@@ -243,6 +246,10 @@ export const goalGoalTurnTargetsKey = defineState<Map<number, string>>(
   'goal.goalTurnTargets',
   () => new Map(),
 );
+export const goalGoalTurnRevisionsKey = defineState<Map<number, number>>(
+  'goal.goalTurnRevisions',
+  () => new Map(),
+);
 export const goalExhaustedTurnBudgetGoalsKey = defineState<Map<number, string>>(
   'goal.exhaustedTurnBudgetGoals',
   () => new Map(),
@@ -271,6 +278,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     @IAgentContextInjectorService injector: IAgentContextInjectorService,
     @IAgentLoopService private readonly loopService: IAgentLoopService,
     @IAgentPromptService private readonly prompts: IAgentPromptService,
+    @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
@@ -295,6 +303,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.states.contributeState(goalBudgetGraceTurnsKey);
     this.states.contributeState(goalPendingContinuationGoalsKey);
     this.states.contributeState(goalGoalTurnTargetsKey);
+    this.states.contributeState(goalGoalTurnRevisionsKey);
     this.states.contributeState(goalExhaustedTurnBudgetGoalsKey);
     this.states.contributeState(goalLiveWallClockStartedAtKey);
     this.states.contributeState(goalResumeContinuationKey);
@@ -365,12 +374,12 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     );
     this._register(
       toolExecutor.onBeforeExecuteTool((event) => {
-        if (this.isStaleGoalToolCall(event)) {
-          event.veto({ output: GOAL_STALE_TOOL_RESULT });
-          return;
-        }
         if (this.budgetGraceTurns.has(event.turnId)) {
           event.veto({ output: GOAL_BUDGET_TOOLS_REJECTED_MESSAGE });
+          return;
+        }
+        if (this.isStaleGoalToolCall(event)) {
+          event.veto({ output: GOAL_STALE_TOOL_RESULT });
         }
       }),
     );
@@ -394,6 +403,12 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         );
       }),
     );
+    this._register(this.eventBus.subscribe(TaskSettlementReady, () => {
+      const state = this.goalState;
+      if (state === null || state.status !== 'active') return;
+      if (!this.canLaunchContinuation()) return;
+      this.launchContinuationTurn(state.goalId);
+    }));
     this._register(this.eventBus.subscribe(PromptCompleted, (event) => {
       if (event.reason === 'completed' || this.yieldedGoalId === undefined) return;
       const goalId = this.yieldedGoalId;
@@ -444,6 +459,10 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
 
   private get goalTurnTargets(): Map<number, string> {
     return this.states.get(goalGoalTurnTargetsKey);
+  }
+
+  private get goalTurnRevisions(): Map<number, number> {
+    return this.states.get(goalGoalTurnRevisionsKey);
   }
 
   private get exhaustedTurnBudgetGoals(): Map<number, string> {
@@ -498,22 +517,66 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.assertSupportedAgent();
     const objective = this.validateObjective(input.objective);
     this.prepareForGoalCreation(input.replace === true);
-    const wallClockResumedAt = Date.now();
+    const status = input.initialStatus ?? 'active';
+    const wallClockResumedAt = status === 'active' ? Date.now() : undefined;
     void this.dispatcher.dispatch(
       new GoalCreate({
         goalId: randomUUID(),
         objective,
         completionCriterion: normalizeCompletionCriterion(input.completionCriterion),
         wallClockResumedAt,
+        status,
+        followUpTiming: input.followUpTiming ?? 'subagents_done',
+        controlRevision: 1,
       }),
     );
-    this.liveWallClockStartedAt = this.deadlineScheduler.now();
-    this.adoptStarterTurn(actor);
+    if (status === 'active') this.liveWallClockStartedAt = this.deadlineScheduler.now();
+    if (status === 'active') this.adoptStarterTurn(actor);
     const state = this.requireState();
-    this.refreshWallClockDeadline(state);
+    if (status === 'active') this.refreshWallClockDeadline(state);
     this.emitGoalUpdated(this.toSnapshot(state));
     this.telemetry.track2('goal_created', { actor, replace: input.replace === true });
     return this.toSnapshot(state);
+  }
+
+  async updateGoal(input: UpdateGoalInput, actor: GoalActor = 'user'): Promise<GoalSnapshot> {
+    this.assertSupportedAgent();
+    const state = this.requireState();
+    if (state.goalId !== input.goalId) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The goal changed before the edit was applied');
+    }
+    const controlRevision = state.controlRevision ?? 1;
+    if (input.expectedRevision !== undefined && input.expectedRevision !== controlRevision) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The goal definition revision changed');
+    }
+    const objective = input.objective === undefined ? undefined : this.validateObjective(input.objective);
+    const completionCriterion = input.completionCriterion === undefined
+      ? undefined
+      : input.completionCriterion === null
+        ? null
+        : normalizeCompletionCriterion(input.completionCriterion) ?? null;
+    if (
+      objective === undefined &&
+      completionCriterion === undefined &&
+      input.followUpTiming === undefined
+    ) {
+      return this.toSnapshot(state);
+    }
+    this.cancelPendingContinuation(true, abortError('Goal definition changed'));
+    void this.dispatcher.dispatch(new GoalUpdate({
+      goalId: state.goalId,
+      objective,
+      completionCriterion,
+      followUpTiming: input.followUpTiming,
+      controlRevision: controlRevision + 1,
+      actor,
+    }));
+    const next = this.requireState();
+    this.emitGoalUpdated(this.toSnapshot(next));
+    if (next.status === 'active' && this.canLaunchContinuation()) {
+      this.launchContinuationTurn(next.goalId);
+    }
+    return this.toSnapshot(next);
   }
 
   private validateObjective(value: string): string {
@@ -551,7 +614,9 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         `Cannot pause a goal in status "${state.status}"`,
       );
     }
-    return this.applyLifecycle(state, 'paused', input.reason, actor);
+    return this.applyLifecycle(state, 'paused', input.reason, actor, {
+      preserveLiveContinuation: true,
+    });
   }
 
   async pauseActiveGoal(
@@ -561,7 +626,9 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.assertSupportedAgent();
     const state = this.goalState;
     if (state === null || state.status !== 'active') return null;
-    return this.applyLifecycle(state, 'paused', input.reason, actor);
+    return this.applyLifecycle(state, 'paused', input.reason, actor, {
+      preserveLiveContinuation: true,
+    });
   }
 
   async resumeGoal(input: ResumeGoalInput = {}, actor: GoalActor = 'user'): Promise<GoalSnapshot> {
@@ -653,6 +720,9 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.assertSupportedAgent();
     const state = this.goalState;
     if (state === null || state.status !== 'active') return null;
+    if (this.tasks.list(true).some((task) => task.kind === 'agent' && task.goalId === state.goalId)) {
+      throw new Error2(ErrorCodes.GOAL_STATUS_INVALID, 'Cannot complete the goal while its subagents are still running');
+    }
     this.dispatchCompletion(state, input.reason, actor);
     const completed = this.requireState();
     const snapshot = this.toSnapshot(completed);
@@ -720,6 +790,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   private handleTurnLaunched(turnId: number, origin: TurnStarted['origin']): void {
     this.liveTurnId = turnId;
     this.goalTurnTargets.delete(turnId);
+    this.goalTurnRevisions.delete(turnId);
     this.exhaustedTurnBudgetGoals.delete(turnId);
     if (!this.goalDrivenTurns.has(turnId)) {
       const state = this.goalState;
@@ -731,6 +802,11 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       } else if (state?.status === 'active' && this.blockIfBudgetReached(state) === null) {
         this.goalDrivenTurns.set(turnId, state.goalId);
       }
+    }
+    const state = this.goalState;
+    const targetGoalId = this.goalTurnTargets.get(turnId) ?? this.goalDrivenTurns.get(turnId);
+    if (state !== null && targetGoalId === state.goalId) {
+      this.goalTurnRevisions.set(turnId, state.controlRevision ?? 1);
     }
     this.pendingContinuationGoals.delete(turnId);
     this.goalOutcomeToolResultTurns.delete(turnId);
@@ -744,6 +820,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     if (state === null || state.status !== 'active') return;
     const goalId = this.goalDrivenTurns.get(turnId);
     if (actor === 'model') this.goalTurnTargets.set(turnId, state.goalId);
+    this.goalTurnRevisions.set(turnId, state.controlRevision ?? 1);
     if (this.toSnapshot(state).budget.turnBudgetReached) {
       this.exhaustedTurnBudgetGoals.set(turnId, state.goalId);
     } else {
@@ -881,6 +958,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.budgetGraceTurns.delete(turnId);
     this.pendingContinuationGoals.delete(turnId);
     this.goalTurnTargets.delete(turnId);
+    this.goalTurnRevisions.delete(turnId);
     this.exhaustedTurnBudgetGoals.delete(turnId);
     return { goalId, lifecycleGoalId, starterTurn };
   }
@@ -930,7 +1008,13 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   private launchContinuationTurn(goalId: string, stepCapped = false): void {
     if (!this.isActiveGoal(goalId)) return;
     if (this.pendingContinuation !== undefined) return;
-    if (this.states.get(promptLaunchingKey) || this.prompts.list().pending.length > 0) {
+    const state = this.goalState;
+    if (
+      state === null ||
+      !this.isFollowUpReady(state) ||
+      this.states.get(promptLaunchingKey) ||
+      this.prompts.hasReadyPending()
+    ) {
       this.yieldedGoalId = goalId;
       return;
     }
@@ -973,7 +1057,23 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   private canLaunchContinuation(): boolean {
     if (this.liveTurnId !== undefined || this.pendingContinuation !== undefined) return false;
     const status = this.loopService.status();
-    return status.state === 'idle' && !status.hasPendingRequests;
+    const pendingKinds = status.pendingRequestKinds;
+    const onlyTaskNotifications =
+      pendingKinds !== undefined &&
+      pendingKinds.length > 0 &&
+      pendingKinds.every((kind) => kind === 'task_notification');
+    return (
+      status.state === 'idle' &&
+      status.pendingTurnIds.length === 0 &&
+      (!status.hasPendingRequests || onlyTaskNotifications)
+    );
+  }
+
+  private isFollowUpReady(state: GoalState): boolean {
+    const active = this.tasks.list(true);
+    if (active.some((task) => task.kind === 'agent')) return false;
+    if ((state.followUpTiming ?? 'subagents_done') === 'subagents_done') return true;
+    return !active.some(isGoalBlockingFiniteTask);
   }
 
   private isActiveGoal(goalId: string): boolean {
@@ -986,7 +1086,10 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     if (!isGoalMutationTool(toolName)) return false;
     const goalId = this.goalTurnTarget(ctx.turnId);
     if (goalId === undefined) return false;
-    return this.goalState?.goalId !== goalId;
+    const state = this.goalState;
+    if (state?.goalId !== goalId) return true;
+    const revision = this.goalTurnRevisions.get(ctx.turnId);
+    return revision !== undefined && revision !== (state.controlRevision ?? 1);
   }
 
   private goalTurnTarget(turnId: number): string | undefined {
@@ -1077,7 +1180,14 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       this.liveWallClockStartedAt = undefined;
     }
     void this.dispatcher.dispatch(
-      new GoalUpdate({ status, reason, wallClockMs, wallClockResumedAt, actor }),
+      new GoalUpdate({
+        status,
+        reason,
+        wallClockMs,
+        wallClockResumedAt,
+        controlRevision: (state.controlRevision ?? 1) + 1,
+        actor,
+      }),
     );
     const next = this.requireState();
     if (status === 'active') this.adoptStarterTurn(actor);
@@ -1151,6 +1261,8 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       objective: state.objective,
       completionCriterion: state.completionCriterion,
       status: state.status,
+      followUpTiming: state.followUpTiming ?? 'subagents_done',
+      controlRevision: state.controlRevision ?? 1,
       turnsUsed: state.turnsUsed,
       tokensUsed: state.tokensUsed,
       wallClockMs,
@@ -1237,6 +1349,10 @@ function computeBudgetReport(state: GoalState, wallClockMs: number): GoalBudgetR
 
 function matchesGoal(state: GoalState, goalId: string | undefined): boolean {
   return goalId === undefined || state.goalId === goalId;
+}
+
+function isGoalBlockingFiniteTask(task: AgentTaskInfo): boolean {
+  return task.kind === 'agent' || (task.kind === 'process' && task.lifetime !== 'service');
 }
 
 function isGoalMutationTool(toolName: string): boolean {

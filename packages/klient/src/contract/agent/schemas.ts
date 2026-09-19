@@ -44,12 +44,15 @@ export const promptExecutionBindingSchema = z.object({
   planMode: z.boolean().optional(),
   swarmMode: z.boolean().optional(),
   goalObjective: z.string().optional(),
+  goalFollowUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
+  goalInitialStatus: z.enum(['active', 'paused']).optional(),
   goalControl: z.enum(['pause', 'resume', 'cancel']).optional(),
 });
 
 export const promptPayloadSchema = z.object({
   input: z.array(promptPartSchema),
   execution: promptExecutionBindingSchema.optional(),
+  appendTiming: z.enum(['agent_idle', 'subagents_done', 'tasks_done']).optional(),
   // Mirrors `PromptPayload.disabledTools` in the engine (client-managed
   // session denylist, full-replace).
   disabledTools: z.array(z.string()).optional(),
@@ -75,6 +78,8 @@ export const promptWithSkillsResultSchema = z.object({
   prompt_id: z.string(),
   created_at: z.string(),
   state: z.enum(['running', 'queued', 'blocked']),
+  append_timing: z.enum(['agent_idle', 'subagents_done', 'tasks_done']),
+  revision: z.number().int().nonnegative(),
 });
 
 /** Same shape as `SteerPayload` in the engine. */

@@ -230,6 +230,7 @@ export function bindSessionTranscript(
   const processEvent = (agentId: string, event: TranscriptWireRecord): void => {
     if (event.type === 'context.spliced') return;
     const liveOwned =
+      event.type.startsWith('prompt.') ||
       event.type === 'subagent.spawned' ||
       event.type === 'subagent.started' ||
       event.type === 'subagent.completed' ||
@@ -441,12 +442,18 @@ function promptFromSnapshot(
   snapshot: PromptSnapshot,
   status: Extract<TranscriptPrompt['status'], 'running' | 'queued'>,
 ): TranscriptPrompt {
+  const scheduling = snapshot as PromptSnapshot & {
+    readonly appendTiming?: TranscriptPrompt['appendTiming'];
+    readonly revision?: number;
+  };
   return {
     promptId: snapshot.id,
     status,
     userMessageId: snapshot.userMessageId,
     content: projectPromptContentParts(snapshot.message.content),
     createdAt: snapshot.createdAt,
+    appendTiming: scheduling.appendTiming,
+    revision: scheduling.revision,
   };
 }
 

@@ -1061,6 +1061,8 @@ describe('bindSessionTranscript', () => {
           createdAt: '2026-01-01T00:00:00.000Z',
           state: 'running',
           message: { role: 'user', content: [{ type: 'text', text: 'go' }] },
+          appendTiming: 'subagents_done',
+          revision: 4,
         },
         pending: [
           {
@@ -1069,6 +1071,8 @@ describe('bindSessionTranscript', () => {
             createdAt: '2026-01-01T00:00:01.000Z',
             state: 'pending',
             message: { role: 'user', content: [{ type: 'text', text: 'later' }] },
+            appendTiming: 'tasks_done',
+            revision: 2,
           },
         ],
       },
@@ -1082,10 +1086,52 @@ describe('bindSessionTranscript', () => {
     expect(store.getAgent('main')?.getPrompt('p-run')).toMatchObject({
       promptId: 'p-run',
       status: 'running',
+      appendTiming: 'subagents_done',
+      revision: 4,
     });
     expect(store.getAgent('main')?.getPrompt('p-queue')).toMatchObject({
       promptId: 'p-queue',
       status: 'queued',
+      appendTiming: 'tasks_done',
+      revision: 2,
+    });
+    binding.dispose();
+  });
+
+  it('projects live prompt queue timing through the live adapter', () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+
+    main.bus.emit(
+      ev({
+        type: 'prompt.queued',
+        promptId: 'p1',
+        content: [{ type: 'text', text: 'later' }],
+        queueLength: 1,
+        appendTiming: 'tasks_done',
+        revision: 1,
+      }) as unknown as Event2<any>,
+    );
+    main.bus.emit(
+      ev({
+        type: 'prompt.timing_changed',
+        promptId: 'p1',
+        appendTiming: 'subagents_done',
+        revision: 2,
+        changedAt: '2026-01-01T00:00:01.000Z',
+      }) as unknown as Event2<any>,
+    );
+
+    expect(store.getAgent('main')?.getPrompt('p1')).toMatchObject({
+      status: 'queued',
+      appendTiming: 'subagents_done',
+      revision: 2,
+      content: [{ type: 'text', text: 'later' }],
     });
     binding.dispose();
   });

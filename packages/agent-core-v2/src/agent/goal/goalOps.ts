@@ -7,6 +7,7 @@ import { defineState } from '#/state/state';
 import type {
   GoalBudgetLimits,
   GoalChange,
+  GoalFollowUpTiming,
   GoalSnapshot,
   GoalStatus,
 } from './types';
@@ -16,6 +17,8 @@ export interface GoalState {
   readonly objective: string;
   readonly completionCriterion?: string;
   readonly status: GoalStatus;
+  readonly followUpTiming: GoalFollowUpTiming;
+  readonly controlRevision: number;
   readonly turnsUsed: number;
   readonly tokensUsed: number;
   readonly wallClockMs: number;
@@ -29,6 +32,8 @@ export type GoalModelState = GoalState | null;
 const GoalStatusSchema = z.enum(['active', 'paused', 'blocked', 'complete']);
 
 const GoalActorSchema = z.enum(['user', 'model', 'runtime', 'system']);
+
+const GoalFollowUpTimingSchema = z.enum(['subagents_done', 'tasks_done']);
 
 const GoalBudgetLimitsSchema = z
   .object({
@@ -45,6 +50,8 @@ const goalCreateSchema = z
     completionCriterion: z.string().optional(),
     wallClockResumedAt: z.number().finite().nonnegative().optional(),
     status: GoalStatusSchema.optional(),
+    followUpTiming: GoalFollowUpTimingSchema.optional(),
+    controlRevision: z.number().int().nonnegative().optional(),
     actor: GoalActorSchema.optional(),
     budgetLimits: GoalBudgetLimitsSchema.optional(),
   })
@@ -62,6 +69,10 @@ const goalUpdateSchema = z
     goalId: z.string().optional(),
     status: GoalStatusSchema.optional(),
     reason: z.string().optional(),
+    objective: z.string().optional(),
+    completionCriterion: z.string().nullable().optional(),
+    followUpTiming: GoalFollowUpTimingSchema.optional(),
+    controlRevision: z.number().int().nonnegative().optional(),
     turnsUsed: z.number().finite().nonnegative().optional(),
     tokensUsed: z.number().finite().nonnegative().optional(),
     wallClockMs: z.number().finite().nonnegative().optional(),
@@ -114,7 +125,9 @@ export const goalKey = defineState('goal', (): GoalModelState => null).replayabl
     goalId: e.goalId,
     objective: e.objective,
     completionCriterion: e.completionCriterion,
-    status: 'active' as const,
+    status: e.status ?? 'active',
+    followUpTiming: e.followUpTiming ?? 'subagents_done',
+    controlRevision: e.controlRevision ?? 1,
     turnsUsed: 0,
     tokensUsed: 0,
     wallClockMs: 0,
@@ -123,6 +136,12 @@ export const goalKey = defineState('goal', (): GoalModelState => null).replayabl
   }))
   .on(GoalUpdate, (s, e) => {
     if (s === null) return;
+    if (e.objective !== undefined) s.objective = e.objective;
+    if (e.completionCriterion !== undefined) {
+      s.completionCriterion = e.completionCriterion ?? undefined;
+    }
+    if (e.followUpTiming !== undefined) s.followUpTiming = e.followUpTiming;
+    if (e.controlRevision !== undefined) s.controlRevision = e.controlRevision;
     if (e.status !== undefined && e.status !== s.status) {
       s.status = e.status;
       s.terminalReason = e.status === 'active' ? undefined : e.reason;

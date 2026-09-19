@@ -20,6 +20,8 @@ export interface AgentTaskSettlement {
   readonly stopReason?: string;
 }
 
+export type TaskLifetime = 'finite' | 'service';
+
 export interface AgentTaskInfoBase {
   readonly taskId: string;
   readonly description: string;
@@ -30,6 +32,10 @@ export interface AgentTaskInfoBase {
   readonly stopReason?: string;
   readonly terminalNotificationSuppressed?: boolean;
   readonly timeoutMs?: number;
+  readonly lifetime?: TaskLifetime;
+  readonly ownerAgentId?: string;
+  readonly ownerTurnId?: number;
+  readonly goalId?: string;
 }
 
 export interface ProcessTaskInfo extends AgentTaskInfoBase {

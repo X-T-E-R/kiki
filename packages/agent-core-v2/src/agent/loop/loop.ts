@@ -129,6 +129,7 @@ export interface AgentLoopStatus {
   readonly activeTurnId?: number;
   readonly pendingTurnIds: readonly number[];
   readonly hasPendingRequests: boolean;
+  readonly pendingRequestKinds?: readonly string[];
   readonly activeTraceId?: string;
 }
 

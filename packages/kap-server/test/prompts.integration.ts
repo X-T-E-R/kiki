@@ -671,6 +671,8 @@ describe('server-v2 /api prompts', () => {
       },
     });
     expect(projected.content).toEqual([{ type: 'text', text: 'Review this change.' }]);
+    expect(projected.append_timing).toBe('agent_idle');
+    expect(projected.revision).toBe(0);
     const plain = projectPromptSnapshot({
       id: 'msg_2',
       userMessageId: 'msg_2',
@@ -684,6 +686,52 @@ describe('server-v2 /api prompts', () => {
       },
     });
     expect(plain.content).toEqual([{ type: 'text', text: 'plain question' }]);
+    expect(plain.append_timing).toBe('agent_idle');
+    expect(plain.revision).toBe(0);
+  });
+
+  it('projects the effective scheduling revision captured on the prompt snapshot', () => {
+    const scheduled = projectPromptSnapshot({
+      id: 'msg_3',
+      userMessageId: 'msg_3',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      state: 'pending',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'wait for tasks' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      appendTiming: 'tasks_done',
+      revision: 5,
+    } as unknown as Parameters<typeof projectPromptSnapshot>[0]);
+    expect(scheduled.append_timing).toBe('tasks_done');
+    expect(scheduled.revision).toBe(5);
+  });
+
+  it('rejects an unknown append_timing on the timing action with 40001', async () => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'active' }],
+    });
+    expect(active.body.code, active.body.msg).toBe(0);
+    const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'queued' }],
+    });
+    expect(queued.body.code, queued.body.msg).toBe(0);
+
+    const rejected = await call<unknown>(
+      'POST',
+      `/api/sessions/${id}/prompts/${queued.body.data.prompt_id}:timing`,
+      { append_timing: 'later' },
+    );
+    expect(rejected.body.code).toBe(40001);
+    await getLiveSessionById(server!.core.accessor, id)!
+      .accessor.get(IAgentLifecycleService)
+      .get('main')!
+      .accessor.get(IAgentPromptService)
+      .drain();
   });
 
   it('honors a client-chosen prompt_id on submit', async () => {
@@ -1344,7 +1392,7 @@ describe('server-v2 /api prompts', () => {
     return buf;
   }
 
-  it('replaces an inline base64 image in an unsupported format with a text notice', async () => {
+  it('materializes an unsupported inline image as a model-independent file reference', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
@@ -1364,9 +1412,10 @@ describe('server-v2 /api prompts', () => {
 
     const content = submitted.body.data.content as PromptContentPart[];
     expect(content).toHaveLength(1);
-    const notice = content[0];
-    if (notice?.type !== 'text') throw new Error('expected a text notice');
-    expect(notice.text).toContain('image/avif');
+    expect(content[0]).toMatchObject({
+      type: 'image',
+      source: { kind: 'session_media' },
+    });
   });
 
   it('accepts a HEIC image against the configured default model before any model binds', async () => {
@@ -1397,7 +1446,7 @@ describe('server-v2 /api prompts', () => {
     expect(content[0]?.type).toBe('image');
   });
 
-  it('still replaces that HEIC image with a notice when the default model is not a Kimi one', async () => {
+  it('materializes HEIC when the default model does not accept it directly', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
@@ -1417,12 +1466,13 @@ describe('server-v2 /api prompts', () => {
 
     const content = submitted.body.data.content as PromptContentPart[];
     expect(content).toHaveLength(1);
-    const notice = content[0];
-    if (notice?.type !== 'text') throw new Error('expected a text notice');
-    expect(notice.text).toContain('image/heic');
+    expect(content[0]).toMatchObject({
+      type: 'image',
+      source: { kind: 'session_media' },
+    });
   });
 
-  it('replaces an uploaded image file in an unsupported format with a text notice', async () => {
+  it('preserves an uploaded unsupported image as a file reference', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
     const form = new FormData();
@@ -1442,13 +1492,14 @@ describe('server-v2 /api prompts', () => {
 
     const content = submitted.body.data.content as PromptContentPart[];
     expect(content).toHaveLength(1);
-    const notice = content[0];
-    if (notice?.type !== 'text') throw new Error('expected a text notice');
-    expect(notice.text).toContain('image/avif');
-    expect(notice.text).toContain('photo.avif');
+    expect(content[0]).toMatchObject({
+      type: 'image',
+      source: { kind: 'session_media' },
+      name: 'photo.avif',
+    });
   });
 
-  it('replaces a remote image URL with an unsupported extension with a text notice', async () => {
+  it('preserves a remote image URL for request-time policy handling', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
@@ -1459,10 +1510,10 @@ describe('server-v2 /api prompts', () => {
 
     const content = submitted.body.data.content as PromptContentPart[];
     expect(content).toHaveLength(1);
-    const notice = content[0];
-    if (notice?.type !== 'text') throw new Error('expected a text notice');
-    expect(notice.text).toContain('image/avif');
-    expect(notice.text).toContain('https://example.com/pic.avif');
+    expect(content[0]).toEqual({
+      type: 'image',
+      source: { kind: 'url', url: 'https://example.com/pic.avif' },
+    });
   });
 
   async function uploadFile(
@@ -1517,7 +1568,7 @@ describe('server-v2 /api prompts', () => {
     expect(await readFile(attachedPath)).toEqual(pdfBytes);
   });
 
-  it('materializes an uploaded SVG image as a path-referenced attachment', async () => {
+  it('preserves an uploaded SVG image as a file reference', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
     const svgBytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>');
@@ -1528,20 +1579,16 @@ describe('server-v2 /api prompts', () => {
     });
     expect(submitted.body.code).toBe(0);
 
-    const content = submitted.body.data.content as Array<{ type: string; text?: string }>;
+    const content = submitted.body.data.content as PromptContentPart[];
     expect(content).toHaveLength(1);
-    const notice = content[0];
-    expect(notice?.type).toBe('text');
-    expect(notice?.text).not.toContain('[Image omitted');
-    expect(notice?.text).toContain('"vector.svg"');
-    expect(notice?.text).toContain('image/svg+xml');
-    const attachedPath = attachedPathFrom(notice?.text ?? '');
-    expect(attachedPath.replaceAll('\\', '/')).toContain('/attachments/');
-    expect(attachedPath.endsWith(`${uploaded.id}-vector.svg`)).toBe(true);
-    expect(await readFile(attachedPath)).toEqual(svgBytes);
+    expect(content[0]).toMatchObject({
+      type: 'image',
+      source: { kind: 'session_media' },
+      name: 'vector.svg',
+    });
   });
 
-  it('persists an inline base64 image in an unsupported format as a path-referenced attachment', async () => {
+  it('persists an unsupported inline image as a file reference', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
     const data = avifBytes();
@@ -1560,17 +1607,12 @@ describe('server-v2 /api prompts', () => {
     });
     expect(submitted.body.code).toBe(0);
 
-    const content = submitted.body.data.content as Array<{ type: string; text?: string }>;
+    const content = submitted.body.data.content as PromptContentPart[];
     expect(content).toHaveLength(1);
-    const notice = content[0];
-    expect(notice?.type).toBe('text');
-    expect(notice?.text).not.toContain('[Image omitted');
-    expect(notice?.text).toContain('"image.avif"');
-    expect(notice?.text).toContain('image/avif');
-    const attachedPath = attachedPathFrom(notice?.text ?? '');
-    expect(attachedPath.replaceAll('\\', '/')).toContain('/attachments/');
-    expect(attachedPath.endsWith('-image.avif')).toBe(true);
-    expect(await readFile(attachedPath)).toEqual(data);
+    expect(content[0]).toMatchObject({
+      type: 'image',
+      source: { kind: 'session_media' },
+    });
   });
 
   it('sanitizes an attachment file name before materializing it', async () => {
@@ -1814,6 +1856,12 @@ describe('server-v2 /api prompts', () => {
   });
 
   it('rejects a queued profile switch while the active binding is route-locked', async () => {
+    await mkdir(join(home as string, 'agents'), { recursive: true });
+    await writeFile(
+      join(home as string, 'agents', 'coder.md'),
+      ['---', 'name: coder', 'description: test profile for the route-lock rejection', '---', '', 'You are a test coder.', ''].join('\n'),
+      'utf-8',
+    );
     const id = await createSession(home as string);
     await createMainAgent(id);
     const session = getLiveSessionById(server!.core.accessor, id);
@@ -2068,6 +2116,12 @@ describe('server-v2 /api prompts', () => {
   });
 
   it('shares disabled_tools with agents created after the request', async () => {
+    await mkdir(join(home as string, 'agents'), { recursive: true });
+    await writeFile(
+      join(home as string, 'agents', 'coder.md'),
+      ['---', 'name: coder', 'description: test profile for the tool-policy inheritance', '---', '', 'You are a test coder.', ''].join('\n'),
+      'utf-8',
+    );
     const id = await createSession(home as string);
     await createMainAgent(id);
 

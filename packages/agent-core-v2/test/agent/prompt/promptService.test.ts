@@ -25,6 +25,7 @@ import {
   PromptStarted,
   PromptSteered,
   PromptSubmitted,
+  promptQueueKey,
   promptResolutionKey,
 } from '#/agent/prompt/promptService';
 import {
@@ -34,6 +35,7 @@ import {
 } from '#/agent/profile/profile';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IAgentTaskService, type AgentTaskInfo } from '#/agent/task/task';
 import { AgentSystemReminderService } from '#/agent/systemReminder/systemReminderService';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
@@ -196,11 +198,14 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       agentMeta = next;
     },
   };
+  let activeTasks: readonly AgentTaskInfo[] = [];
+  const taskService = { list: vi.fn(() => activeTasks) };
   const ix = createServices(disposables, {
     strict: true, additionalServices: (reg) => {
       registerStateServices(reg);
       reg.defineInstance(IAgentContextMemoryService, context);
       reg.defineInstance(IAgentLoopService, loop);
+      reg.definePartialInstance(IAgentTaskService, taskService);
       reg.definePartialInstance(IAgentProfileService, profile);
       reg.definePartialInstance(IAgentPlanService, plan);
       reg.definePartialInstance(IAgentSwarmService, swarm);
@@ -238,6 +243,9 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     dispatcher: ix.get(IEventDispatcher),
     states: ix.get(IAgentStateService),
     intake,
+    setActiveTasks: (value: readonly AgentTaskInfo[]) => {
+      activeTasks = value;
+    },
     setProviderType: (value: string | undefined) => {
       providerTypeOverride = value;
     },
@@ -399,12 +407,75 @@ describe('AgentPromptService', () => {
     ]);
   });
 
+  it('projects queued content, replacements, timing and order into durable prompt state', async () => {
+    const { prompt, states } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    await prompt.enqueue({ id: 'first', message: message('first'), appendTiming: 'tasks_done' });
+    await prompt.enqueue({ id: 'second', message: message('second') });
+    prompt.replace('first', [{ type: 'text', text: 'edited' }]);
+    prompt.changeTiming('first', 'subagents_done', 1);
+    prompt.move('second', 0);
+
+    const persisted = states.get(promptQueueKey);
+    expect(persisted.order).toEqual(['second', 'first']);
+    expect(persisted.entries.get('first')).toMatchObject({
+      appendTiming: 'subagents_done',
+      revision: 2,
+      message: { content: [{ type: 'text', text: 'edited' }] },
+    });
+
+    prompt.abort('second');
+    expect(states.get(promptQueueKey).order).toEqual(['first']);
+  });
+
   it('keeps later prompts in FIFO order while active', async () => {
     const { prompt } = harness();
     await prompt.enqueue({ message: message('active') });
     const first = await prompt.enqueue({ message: message('one') });
     const second = await prompt.enqueue({ message: message('two') });
     expect(prompt.list().pending.map((item) => item.id)).toEqual([first.id, second.id]);
+  });
+
+  it('launches the first ready prompt in manual order across all timing levels', async () => {
+    const { prompt, loop, setActiveTasks } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    setActiveTasks([
+      { taskId: 'agent-1', description: 'agent', status: 'running', startedAt: 1, endedAt: null, kind: 'agent' },
+      { taskId: 'process-1', description: 'build', status: 'running', startedAt: 1, endedAt: null, kind: 'process', command: 'build', pid: 1, exitCode: null, lifetime: 'finite' },
+      { taskId: 'service-1', description: 'server', status: 'running', startedAt: 1, endedAt: null, kind: 'process', command: 'server', pid: 2, exitCode: null, lifetime: 'service' },
+    ]);
+    const tasksDone = await prompt.enqueue({ id: 'tasks', message: message('tasks'), appendTiming: 'tasks_done' });
+    const idle = await prompt.enqueue({ id: 'idle', message: message('idle'), appendTiming: 'agent_idle' });
+    const subagentsDone = await prompt.enqueue({ id: 'subagents', message: message('subagents'), appendTiming: 'subagents_done' });
+
+    loop.settleActive();
+    await idle.launched;
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['tasks', 'subagents']);
+
+    setActiveTasks([{ taskId: 'process-1', description: 'build', status: 'running', startedAt: 1, endedAt: null, kind: 'process', command: 'build', pid: 1, exitCode: null, lifetime: 'finite' }]);
+    loop.settleActive();
+    await subagentsDone.launched;
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['tasks']);
+
+    setActiveTasks([{ taskId: 'service-1', description: 'server', status: 'running', startedAt: 1, endedAt: null, kind: 'process', command: 'server', pid: 2, exitCode: null, lifetime: 'service' }]);
+    loop.settleActive();
+    await tasksDone.launched;
+    expect(prompt.list().pending).toEqual([]);
+  });
+
+  it('changes queued timing in place with revision checks', async () => {
+    const { prompt, setActiveTasks } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    setActiveTasks([{ taskId: 'agent-1', description: 'agent', status: 'running', startedAt: 1, endedAt: null, kind: 'agent' }]);
+    const queued = await prompt.enqueue({ id: 'queued', message: message('queued'), appendTiming: 'subagents_done' });
+
+    const changed = prompt.changeTiming('queued', 'agent_idle', 0);
+    expect(changed).toBe(queued);
+    expect(changed.appendTiming).toBe('agent_idle');
+    expect(changed.revision).toBe(1);
+    expect(() => prompt.changeTiming('queued', 'tasks_done', 0)).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.REQUEST_INVALID }),
+    );
   });
 
   it('moves queued prompts to an exact final index and publishes the resulting order', async () => {
@@ -921,7 +992,7 @@ describe('AgentPromptService', () => {
     expect(parts).toEqual([{ type: 'image_url', imageUrl: { url: heicUrl } }]);
   });
 
-  it('replaces an unsupported prompt image with a text notice at the history funnel', async () => {
+  it('preserves an unsupported prompt image for request-time preparation', async () => {
     const { prompt, context, loop } = harness();
     const avifUrl = `data:image/avif;base64,${Buffer.from([1, 2, 3]).toString('base64')}`;
     const handle = await prompt.enqueue({
@@ -938,13 +1009,12 @@ describe('AgentPromptService', () => {
 
     const appended = context.get();
     expect(appended).toHaveLength(1);
-    const parts = appended[0]!.content;
-    expect(parts.some((part) => part.type === 'image_url')).toBe(false);
-    expect(parts[0]).toMatchObject({ type: 'text' });
-    expect((parts[0] as { text: string }).text).toContain('image/avif');
+    expect(appended[0]!.content).toEqual([
+      { type: 'image_url', imageUrl: { url: avifUrl } },
+    ]);
   });
 
-  it('gates steered prompt images too', async () => {
+  it('preserves steered prompt images for request-time preparation', async () => {
     const { prompt, context, loop } = harness();
     const active = await prompt.enqueue({ message: message('active') });
     await active.launched;
@@ -963,10 +1033,7 @@ describe('AgentPromptService', () => {
 
     const appended = context.get();
     const parts = appended.flatMap((entry) => entry.content);
-    expect(parts.some((part) => part.type === 'image_url')).toBe(false);
-    expect(
-      parts.some((part) => part.type === 'text' && part.text.includes('image/avif')),
-    ).toBe(true);
+    expect(parts).toContainEqual({ type: 'image_url', imageUrl: { url: avifUrl } });
   });
 
   it('materializes daemon-ref media at steer intake', async () => {

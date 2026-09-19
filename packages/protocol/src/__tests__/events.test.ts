@@ -219,6 +219,91 @@ describe('events / display re-exports', () => {
     expect(moved.type).toBe('prompt.moved');
   });
 
+  it('carries deferred-append timing and revision on the queue lifecycle events', () => {
+    const queued = eventSchema.parse({
+      type: 'prompt.queued',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      promptId: 'prompt_1',
+      content: [{ type: 'text', text: 'queued' }],
+      queueLength: 2,
+      appendTiming: 'tasks_done',
+      revision: 3,
+    });
+    const replaced = eventSchema.parse({
+      type: 'prompt.replaced',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      promptId: 'prompt_1',
+      content: [{ type: 'text', text: 'replacement' }],
+      replacedAt: '2026-06-11T00:00:01.000Z',
+      message: { role: 'user' },
+      revision: 4,
+    });
+    const timing = eventSchema.parse({
+      type: 'prompt.timing_changed',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      promptId: 'prompt_1',
+      appendTiming: 'subagents_done',
+      revision: 5,
+      changedAt: '2026-06-11T00:00:02.000Z',
+    });
+
+    expect((queued as { appendTiming?: string }).appendTiming).toBe('tasks_done');
+    expect((queued as { revision?: number }).revision).toBe(3);
+    expect((replaced as { revision?: number }).revision).toBe(4);
+    expect((timing as { appendTiming: string }).appendTiming).toBe('subagents_done');
+    expect((timing as { revision: number }).revision).toBe(5);
+  });
+
+  it('validates the durable prompt queue facts', () => {
+    const enqueued = eventSchema.parse({
+      type: 'prompt.enqueued',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      schemaVersion: 1,
+      promptId: 'prompt_1',
+      userMessageId: 'msg_1',
+      createdAt: '2026-06-11T00:00:00.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'queued' }] },
+      execution: { model: 'kimi-code/k2' },
+      goalId: 'goal_1',
+      deferredDisabledTools: ['Bash'],
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 1,
+      queueIndex: 0,
+    });
+    const launch = eventSchema.parse({
+      type: 'prompt.launch_committed',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      launchId: 'launch_1',
+      promptId: 'prompt_1',
+      revision: 1,
+      committedAt: '2026-06-11T00:00:01.000Z',
+    });
+
+    expect((enqueued as { queueIndex: number }).queueIndex).toBe(0);
+    expect((enqueued as { appendTiming: string }).appendTiming).toBe('agent_idle');
+    expect((launch as { launchId: string }).launchId).toBe('launch_1');
+  });
+
+  it('rejects a prompt.timing_changed event with an unknown timing', () => {
+    const result = eventSchema.safeParse({
+      type: 'prompt.timing_changed',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      promptId: 'prompt_1',
+      appendTiming: 'immediate',
+      revision: 1,
+      changedAt: '2026-06-11T00:00:02.000Z',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('validates prompt.started events', () => {
     const started = eventSchema.parse({
       type: 'prompt.started',

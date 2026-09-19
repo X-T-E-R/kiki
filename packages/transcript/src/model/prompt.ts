@@ -8,6 +8,8 @@ export type TranscriptPromptStatus =
   | 'failed'
   | 'aborted';
 
+export type TranscriptPromptAppendTiming = 'agent_idle' | 'subagents_done' | 'tasks_done';
+
 export interface TranscriptPrompt {
   readonly promptId: PromptId;
   readonly status: TranscriptPromptStatus;
@@ -23,4 +25,8 @@ export interface TranscriptPrompt {
   readonly abortedBeforeStart?: boolean;
   /** Set when the prompt was rerouted by a steer. */
   readonly steeredAt?: string;
+  /** Effective deferred-append timing; absent on older projections. */
+  readonly appendTiming?: TranscriptPromptAppendTiming;
+  /** Scheduling revision; absent on older projections. */
+  readonly revision?: number;
 }

@@ -40,6 +40,7 @@ import {
   overlaySnapshotSubagentFields,
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
+  queuedPromptPreviews,
   resolveActiveFloorId,
   sessionAgentForestFromAgentSnapshots,
   splitSystemReminders,
@@ -4099,5 +4100,115 @@ describe('external executor turn metadata', () => {
       snapshotWithExecution({ executorId: '', protocol: 'acp-v1' }),
     );
     expect(projected.turnExecutions['t1']).toBeUndefined();
+  });
+});
+
+describe('queued prompt scheduling projection', () => {
+  it('projects appendTiming + revision per queued prompt and falls back to agent_idle', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        prompts: [
+          {
+            promptId: 'p-timed',
+            status: 'queued',
+            createdAt: FIXED_AT,
+            queuePosition: 0,
+            appendTiming: 'tasks_done',
+            revision: 4,
+          },
+          { promptId: 'p-plain', status: 'queued', createdAt: FIXED_AT_1, queuePosition: 1 },
+        ],
+      }),
+    );
+    expect(projected.queuedPromptIds).toEqual(['p-timed', 'p-plain']);
+    expect(projected.queuedPromptMeta['p-timed']).toEqual({ appendTiming: 'tasks_done', revision: 4 });
+    expect(projected.queuedPromptMeta['p-plain']).toEqual({ appendTiming: 'agent_idle', revision: undefined });
+    const previews = queuedPromptPreviews(projected);
+    expect(previews[0]?.appendTiming).toBe('tasks_done');
+    expect(previews[0]?.revision).toBe(4);
+    expect(previews[1]?.appendTiming).toBe('agent_idle');
+  });
+
+  it('marks the transcript ready only once a snapshot projects, not at shell load', () => {
+    const fresh = createViewState('session_test');
+    expect(fresh.loaded).toBe(false);
+    expect(fresh.transcriptReady).toBe(false);
+    const shell = applyTranscriptShell('session_test', {
+      as_of_seq: 4,
+      epoch: 'e1',
+      session,
+      messages: { items: [], has_more: false },
+      in_flight_turn: null,
+      pending_approvals: [],
+      pending_questions: [],
+    }, fresh);
+    expect(shell.loaded).toBe(true);
+    expect(shell.transcriptReady).toBe(false);
+    const projected = projectAgentTranscriptView(shell, 'main', emptySnapshot());
+    expect(projected.transcriptReady).toBe(true);
+  });
+
+  it('drops the meta entry once the prompt leaves the queue', () => {
+    const queued = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        prompts: [
+          { promptId: 'p-timed', status: 'queued', createdAt: FIXED_AT, appendTiming: 'tasks_done', revision: 4 },
+        ],
+      }),
+    );
+    const drained = projectAgentTranscriptView(
+      queued,
+      'main',
+      emptySnapshot({
+        prompts: [{ promptId: 'p-timed', status: 'running', createdAt: FIXED_AT }],
+      }),
+    );
+    expect(drained.queuedPromptIds).toEqual([]);
+    expect(drained.queuedPromptMeta['p-timed']).toBeUndefined();
+  });
+
+  it('seeds the meta entry from a local echo so the strip shows the pick before reconcile', () => {
+    const state = appendLocalUserMessage(createViewState('session_test'), {
+      userMessageId: 'um-timed',
+      promptId: 'p-timed',
+      text: 'queued with a timing pick',
+      createdAt: FIXED_AT,
+      status: 'queued',
+      appendTiming: 'subagents_done',
+    });
+    expect(state.queuedPromptMeta['p-timed']).toEqual({ appendTiming: 'subagents_done', revision: undefined });
+    const running = appendLocalUserMessage(state, {
+      userMessageId: 'um-timed',
+      promptId: 'p-timed',
+      text: 'queued with a timing pick',
+      createdAt: FIXED_AT,
+      status: 'running',
+    });
+    expect(running.queuedPromptMeta['p-timed']).toBeUndefined();
+  });
+
+  it('carries goal followUpTiming and controlRevision into the projected snapshot', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        meta: {
+          goal: {
+            objective: 'Ship the batch',
+            status: 'paused',
+            followUpTiming: 'tasks_done',
+            controlRevision: 9,
+          },
+        },
+      }),
+    );
+    expect(projected.goal?.objective).toBe('Ship the batch');
+    expect(projected.goal?.status).toBe('paused');
+    expect(projected.goal?.followUpTiming).toBe('tasks_done');
+    expect(projected.goal?.controlRevision).toBe(9);
   });
 });

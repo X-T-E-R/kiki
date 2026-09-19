@@ -122,7 +122,10 @@ describe('Event public types', () => {
         case 'prompt.aborted':
         case 'prompt.steered':
         case 'prompt.queued':
+        case 'prompt.enqueued':
         case 'prompt.replaced':
+        case 'prompt.timing_changed':
+        case 'prompt.launch_committed':
         case 'prompt.moved':
         case 'agent.disposed':
         case 'event.session.history_rewritten':

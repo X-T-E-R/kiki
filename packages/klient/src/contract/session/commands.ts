@@ -7,6 +7,7 @@ import {
   promptSubmissionSchema, promptSubmitResultSchema, promptAbortResponseSchema,
   promptMoveRequestSchema, promptMoveResultSchema, promptReplaceRequestSchema,
   promptReplaceResultSchema, promptSteerResultSchema,
+  promptTimingRequestSchema, promptTimingResultSchema,
   questionResolveRequestSchema, questionResolveResultSchema, questionDismissResultSchema,
 } from '@kiki/protocol';
 
@@ -24,6 +25,7 @@ export const sessionCommandContract = {
   abort: { method: 'POST', suffix: '/prompts/{target}:abort', input: targetInput, output: promptAbortResponseSchema, okCodes: [0, 40903] },
   move: { method: 'POST', suffix: '/prompts/{target}:move', input: targetBodyInput(promptMoveRequestSchema), output: promptMoveResultSchema, okCodes: [0] },
   replace: { method: 'POST', suffix: '/prompts/{target}:replace', input: targetBodyInput(promptReplaceRequestSchema), output: promptReplaceResultSchema, okCodes: [0] },
+  timing: { method: 'POST', suffix: '/prompts/{target}:timing', input: targetBodyInput(promptTimingRequestSchema), output: promptTimingResultSchema, okCodes: [0] },
   steer: { method: 'POST', suffix: '/prompts/{target}:steer', input: targetInput, output: promptSteerResultSchema, okCodes: [0] },
   approve: { method: 'POST', suffix: '/approvals/{target}', input: targetBodyInput(approvalResolveRequestSchema), output: approvalResolveResultSchema, okCodes: [0] },
   answer: { method: 'POST', suffix: '/questions/{target}', input: targetBodyInput(questionResolveRequestSchema), output: questionResolveResultSchema, okCodes: [0] },

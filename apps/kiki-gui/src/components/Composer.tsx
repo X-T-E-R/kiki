@@ -185,8 +185,7 @@ export function Composer({
   planGate,
   swarmMode,
   goalObjective,
-  goalStatus,
-  goalControl,
+  goalMode = false,
   efforts,
   effort,
   contextUsage,
@@ -214,7 +213,7 @@ export function Composer({
   onChangePlanGate,
   onChangeSwarmMode,
   onChangeGoalObjective,
-  onChangeGoalControl,
+  onChangeGoalMode,
   onChangeEffort,
   onSend,
   onAbort,
@@ -267,8 +266,12 @@ export function Composer({
   /** PromptSubmission.swarm_mode — enables concurrent subagent orchestration. */
   swarmMode: boolean;
   goalObjective: string;
-  goalStatus: 'active' | 'paused' | 'blocked' | 'complete' | undefined;
-  goalControl: 'pause' | 'resume' | 'cancel' | undefined;
+  /**
+   * Goal mode (composer toggle): the next plain message is sent with
+   * `goal_objective` set to its text. Rendered as a toolbar toggle plus an
+   * armed chip above the input; only when `onChangeGoalMode` is wired.
+   */
+  goalMode?: boolean;
   /** support_efforts of the effective model; effort UI hides when absent. */
   efforts: readonly string[] | undefined;
   effort: string | undefined;
@@ -325,15 +328,22 @@ export function Composer({
   onChangePlanGate?: (gate: PromptPlanGate) => void;
   onChangeSwarmMode: (on: boolean) => void;
   onChangeGoalObjective: (objective: string) => void;
-  onChangeGoalControl: (control: 'pause' | 'resume' | 'cancel' | undefined) => void;
+  /** Goal-mode toggle; when absent the composer hides the goal toggle button. */
+  onChangeGoalMode?: (on: boolean) => void;
   onChangeEffort: (effort: string | undefined) => void;
   /**
    * Fire the prompt. Returning the submission's promise lets the composer
    * hold its send latch until the round settles (accepted or failed), so a
    * second click/Enter during the in-flight gap cannot double-send; a
-   * rejection restores the button for retry.
+   * rejection restores the button for retry. `options.goalObjective` rides
+   * the submission as `goal_objective` (a `/goal …` prefix or an armed goal
+   * mode), creating the session goal with the message.
    */
-  onSend: (text: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
+  onSend: (
+    text: string,
+    attachments: readonly ComposerAttachment[],
+    options?: { readonly goalObjective?: string },
+  ) => void | Promise<unknown>;
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
   /**
@@ -701,13 +711,14 @@ export function Composer({
       !pendingAttachments &&
       !turnInFlight;
 
-  // The chips band (quote/annotations/attachments/errors/typo guard) only
-  // exists with content; it gates the wrapper's top padding above the input.
+  // The chips band (quote/annotations/goal-mode/attachments/errors/typo
+  // guard) only exists with content; it gates the wrapper's top padding above
+  // the input.
   const hasChips =
     queueEditing ||
     (quote !== undefined && quote !== null) ||
     (annotations !== undefined && annotations.length > 0) ||
-    goalStatus !== undefined ||
+    (goalMode && onChangeGoalMode !== undefined) ||
     attachments.length > 0 ||
     attachmentError !== null ||
     slashConfirm !== null;
@@ -1097,12 +1108,19 @@ export function Composer({
         return;
       }
       if (classified.item.kind === 'action' && classified.item.action !== undefined) {
+        // `/goal <text>` sends instead of opening the panel: the args become
+        // the goal objective and ride the prompt as `goal_objective`. A bare
+        // `/goal` keeps the old behavior (opens the mode panel's goal field).
+        if (classified.item.action === 'goal' && classified.args !== '') {
+          sendPrompt(classified.args, { goalObjective: classified.args });
+          return;
+        }
         onChange('');
         runAction(classified.item.action);
         return;
       }
     }
-    void sendPrompt(text.trim());
+    void sendPrompt(text.trim(), goalMode && onChangeGoalMode !== undefined ? { goalObjective: text.trim() } : undefined);
   };
 
   /**
@@ -1127,18 +1145,22 @@ export function Composer({
       });
   };
 
-  const sendPrompt = (content: string) => {
+  const sendPrompt = (content: string, options?: { readonly goalObjective?: string }) => {
+    // Keep the two-argument call shape for plain sends: existing callers and
+    // test spies assert on exactly (text, attachments).
+    const deliver = (prepared: string) =>
+      options === undefined ? onSend(prepared, attachments) : onSend(prepared, attachments, options);
     if (!vscodeRuntime) {
       runAgentTurn(async () => {
         recordSubmission();
-        await onSend(content, attachments);
+        await deliver(content);
       });
       return;
     }
     runAgentTurn(async () => {
       const prepared = await vscodeHost.preparePrompt(content, vscodeConversationId, true);
       recordSubmission();
-      await onSend(prepared, attachments);
+      await deliver(prepared);
     });
   };
 
@@ -1447,45 +1469,26 @@ export function Composer({
               ))}
             </div>
           ) : null}
-          {/* Goal run-state: the only mode setting that keeps a resident trace,
-              because pause/resume/cancel act on a run rather than configure the
-              next prompt. Setting the objective lives in the mode panel. */}
-          {goalStatus !== undefined ? (
+          {/* Goal mode armed: the next message becomes the session goal. The
+              run-state card (pause/resume/cancel/edit) lives above the
+              composer dock — see GoalCard. */}
+          {goalMode && onChangeGoalMode !== undefined ? (
             <div
-              data-goal-chip
+              data-goal-armed
               role="group"
-              aria-label={t('composer.goalChipAria', {
-                status: t(`composer.goalStatus.${goalStatus}`),
-              })}
+              aria-label={t('composer.goalArmedAria')}
               className="anim-enter mx-3.5 mt-2 flex w-fit items-center gap-1.5 rounded-full border border-accent/50 bg-accent-soft/60 py-0.5 pr-1 pl-2.5 text-[11px] font-medium text-accent"
             >
-              <span title={goalObjective === '' ? undefined : goalObjective}>
-                {t('composer.goal')} · {t(`composer.goalStatus.${goalStatus}`)}
-              </span>
-              {goalStatus !== 'complete'
-                ? (goalStatus === 'paused'
-                    ? ([['resume', '▶'], ['cancel', '✕']] as const)
-                    : ([['pause', '⏸'], ['cancel', '✕']] as const)
-                  ).map(([control, glyph]) => (
-                    <button
-                      key={control}
-                      type="button"
-                      aria-pressed={goalControl === control}
-                      aria-label={t(`composer.goalControl.${control}`)}
-                      title={t(`composer.goalControl.${control}`)}
-                      onClick={() => {
-                        onChangeGoalControl(goalControl === control ? undefined : control);
-                      }}
-                      className={`flex h-4 w-4 items-center justify-center rounded-full text-[9px] transition-colors ${
-                        goalControl === control
-                          ? 'bg-accent text-white'
-                          : 'text-accent/70 hover:bg-accent/15 hover:text-accent'
-                      }`}
-                    >
-                      <span aria-hidden>{glyph}</span>
-                    </button>
-                  ))
-                : null}
+              <span>{t('composer.goalArmedChip')}</span>
+              <button
+                type="button"
+                aria-label={t('composer.goalDisarmAria')}
+                title={t('composer.goalDisarmAria')}
+                onClick={() => { onChangeGoalMode(false); }}
+                className="flex h-4 w-4 items-center justify-center rounded-full text-[9px] text-accent/70 transition-colors hover:bg-accent/15 hover:text-accent"
+              >
+                <span aria-hidden>✕</span>
+              </button>
             </div>
           ) : null}
           {attachments.length > 0 ? (
@@ -1787,6 +1790,24 @@ export function Composer({
                 goalOpen={goalOpen}
                 onGoalOpenChange={setGoalOpen}
               />
+              {onChangeGoalMode !== undefined ? (
+                <button
+                  type="button"
+                  data-goal-mode-toggle
+                  aria-pressed={goalMode}
+                  aria-label={t('composer.goalArmedAria')}
+                  title={t('composer.goalModeTitle')}
+                  onClick={() => { onChangeGoalMode(!goalMode); }}
+                  className={`flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
+                    goalMode
+                      ? 'border-accent bg-accent-soft text-accent'
+                      : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
+                  }`}
+                >
+                  <span aria-hidden className="text-[10px]">◎</span>
+                  {t('composer.goal')}
+                </button>
+              ) : null}
               {onChangeAgentProfile !== undefined && agentProfile !== undefined ? (
                 <div className="min-w-0">
                   <SearchableSelect

@@ -7,6 +7,7 @@
 import type {
   ApprovalDecision,
   ApprovalScope,
+  DeferredAppendTiming,
   MessageContent,
   PermissionMode,
   PromptPlanGate,
@@ -1113,6 +1114,12 @@ export class SessionController {
     swarmMode?: boolean;
     goalObjective?: string;
     goalControl?: 'pause' | 'resume' | 'cancel';
+    /**
+     * Deferred-append timing for this message when it lands in the queue
+     * (consumed only when the prompt actually parks; running prompts ignore
+     * it). Defaults to the server-side `agent_idle` when omitted.
+     */
+    appendTiming?: DeferredAppendTiming;
   }): Promise<PromptSubmitResult> {
     assertSessionWritable(this.state);
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
@@ -1130,6 +1137,7 @@ export class SessionController {
           ? input.goalObjective.trim()
           : undefined,
       goal_control: input.goalControl,
+      append_timing: input.appendTiming,
     });
     const projection = projectMessageContent(result.content);
     this.setState(
@@ -1140,6 +1148,7 @@ export class SessionController {
         createdAt: result.created_at,
         status: result.status,
         media: projection.media,
+        appendTiming: result.append_timing ?? input.appendTiming,
       }),
     );
     return result;
@@ -1269,6 +1278,29 @@ export class SessionController {
       ...this.state,
       version: this.state.version + 1,
       queuedPromptIds: result.queued_prompt_ids,
+    });
+  }
+
+  /**
+   * Re-time a parked prompt (`POST …:timing`). Sends the last known scheduling
+   * revision as `expected_revision` so a concurrent retime (another client,
+   * the engine itself) fails with 40001 instead of silently winning; the
+   * authoritative reply (and the trailing reconcile) repaints the strip.
+   */
+  async setQueuedTiming(promptId: string, appendTiming: DeferredAppendTiming): Promise<void> {
+    assertSessionWritable(this.state);
+    const expected = this.state.queuedPromptMeta[promptId]?.revision;
+    const result = await this.client.timingPrompt(this.sessionId, promptId, {
+      append_timing: appendTiming,
+      expected_revision: expected,
+    });
+    this.setState({
+      ...this.state,
+      version: this.state.version + 1,
+      queuedPromptMeta: {
+        ...this.state.queuedPromptMeta,
+        [promptId]: { appendTiming: result.append_timing ?? appendTiming, revision: result.revision },
+      },
     });
   }
 

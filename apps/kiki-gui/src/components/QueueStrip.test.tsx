@@ -306,3 +306,57 @@ describe('QueueStrip reorder', () => {
     expect(handleOf(container, 0).disabled).toBe(false);
   });
 });
+
+describe('QueueStrip timing picker', () => {
+  it('marks the row timing pressed and defaults to agent_idle when absent', async () => {
+    const { container } = await renderStrip({
+      items: [
+        { promptId: 'p1', text: 'one', appendTiming: 'subagents_done', revision: 3 },
+        { promptId: 'p2', text: 'two' },
+      ],
+      onChangeTiming: () => {},
+    });
+    const first = container.querySelector('[data-timing-picker="p1"]')!;
+    expect(first.getAttribute('role')).toBe('radiogroup');
+    expect(first.querySelector('[data-timing="subagents_done"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(first.querySelector('[data-timing="agent_idle"]')?.getAttribute('aria-checked')).toBe('false');
+    // Older servers omit the field; the display falls back to agent_idle.
+    const second = container.querySelector('[data-timing-picker="p2"]')!;
+    expect(second.querySelector('[data-timing="agent_idle"]')?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('calls onChangeTiming with the picked timing and ignores the current one', async () => {
+    const onChangeTiming = vi.fn();
+    const { container } = await renderStrip({
+      items: [{ promptId: 'p1', text: 'one', appendTiming: 'agent_idle' }],
+      onChangeTiming,
+    });
+    const picker = container.querySelector('[data-timing-picker="p1"]')!;
+    await click(picker.querySelector('[data-timing="tasks_done"]')!);
+    expect(onChangeTiming).toHaveBeenCalledExactlyOnceWith('p1', 'tasks_done');
+    await click(picker.querySelector('[data-timing="agent_idle"]')!);
+    expect(onChangeTiming).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the picker until the parent wires onChangeTiming', async () => {
+    const { container } = await renderStrip();
+    expect(container.querySelector('[data-timing-picker]')).toBeNull();
+  });
+
+  it('disables the picker while a row action is in flight', async () => {
+    const gate = deferred<void>();
+    const onChangeTiming = vi.fn(() => gate.promise);
+    const { container } = await renderStrip({
+      items: [{ promptId: 'p1', text: 'one' }],
+      onChangeTiming,
+    });
+    const picker = container.querySelector('[data-timing-picker="p1"]')!;
+    await click(picker.querySelector('[data-timing="tasks_done"]')!);
+    expect(onChangeTiming).toHaveBeenCalledExactlyOnceWith('p1', 'tasks_done');
+    expect(picker.querySelectorAll<HTMLButtonElement>('button:disabled')).toHaveLength(3);
+    await act(async () => {
+      gate.resolve();
+    });
+    expect(picker.querySelectorAll<HTMLButtonElement>('button:disabled')).toHaveLength(0);
+  });
+});

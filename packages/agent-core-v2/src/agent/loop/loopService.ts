@@ -235,6 +235,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       activeTurnId: this.activeTurnJob?.turn.id,
       pendingTurnIds: this.pendingTurns.map((job) => job.turn.id),
       hasPendingRequests: this.hasPendingRequests(),
+      pendingRequestKinds: [
+        ...(this.activeTurnJob?.queue.pendingKinds() ?? []),
+        ...this.standaloneStepQueue.pendingKinds(),
+        ...this.pendingTurns.flatMap((job) => job.queue.pendingKinds()),
+        ...this.heldAdmissions.filter(({ request }) => !request.aborted).map(({ request }) => request.kind),
+      ],
       activeTraceId: this.activeRequestTrace?.traceId,
     };
   }

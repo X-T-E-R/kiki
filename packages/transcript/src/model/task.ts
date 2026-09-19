@@ -17,6 +17,10 @@ export interface TranscriptTask {
   readonly state: TaskState;
   /** Foreground→background transition: `!shell` detach, task tool backgrounding. */
   readonly detached: boolean;
+  readonly lifetime?: 'finite' | 'service';
+  readonly ownerAgentId?: AgentId;
+  readonly ownerTurnId?: number;
+  readonly goalId?: string;
   readonly name?: string;
   readonly subagentName?: string;
   /** Human-readable one-liner (command line, agent description, …). */

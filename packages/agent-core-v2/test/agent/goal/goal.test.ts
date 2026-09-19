@@ -344,7 +344,40 @@ describe('AgentGoalService', () => {
 
       expect(snapshot.objective).toBe('Ship feature X');
       expect(snapshot.status).toBe('active');
+      expect(snapshot.followUpTiming).toBe('subagents_done');
+      expect(snapshot.controlRevision).toBe(1);
       expect(goals.getGoal().goal?.goalId).toBe(snapshot.goalId);
+    });
+
+    it('creates a paused goal and edits its versioned definition without resetting usage', async () => {
+      const created = await goals.createGoal({
+        objective: 'first',
+        followUpTiming: 'tasks_done',
+        initialStatus: 'paused',
+      });
+      const edited = await goals.updateGoal({
+        goalId: created.goalId,
+        expectedRevision: created.controlRevision,
+        objective: 'second',
+        completionCriterion: 'verified',
+        followUpTiming: 'subagents_done',
+      });
+
+      expect(edited).toMatchObject({
+        goalId: created.goalId,
+        objective: 'second',
+        completionCriterion: 'verified',
+        followUpTiming: 'subagents_done',
+        controlRevision: 2,
+        status: 'paused',
+        turnsUsed: 0,
+        tokensUsed: 0,
+      });
+      await expect(goals.updateGoal({
+        goalId: created.goalId,
+        expectedRevision: 1,
+        objective: 'stale',
+      })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
     });
 
     it('stores a completion criterion when provided', async () => {
@@ -956,12 +989,13 @@ describe('AgentGoalService core workflow hooks', () => {
     });
   });
 
-  it('aborts a live continuation when the user pauses the goal', async () => {
+  it('preserves a live continuation while preventing future turns when the user pauses the goal', async () => {
     const abort = await startLiveContinuation();
 
     await goals.pauseGoal();
 
-    expect(abort).toHaveBeenCalledOnce();
+    expect(abort).not.toHaveBeenCalled();
+    expect(goals.getGoal().goal?.status).toBe('paused');
   });
 
   it('aborts a live continuation when the user cancels the goal', async () => {
@@ -1114,6 +1148,35 @@ describe('AgentGoalService core workflow hooks', () => {
       status: 'active',
       turnsUsed: 0,
       tokensUsed: 0,
+    });
+  });
+
+  it('rejects a stale goal mutation from a turn that predates a definition edit', async () => {
+    const created = await goals.createGoal({ objective: 'old task' });
+    const oldTurn = makeTurn(47);
+    eventBus.publish(new TurnStarted({ turnId: oldTurn.id, origin: USER_PROMPT_ORIGIN }));
+    const edited = await goals.updateGoal({
+      goalId: created.goalId,
+      expectedRevision: created.controlRevision,
+      objective: 'new task',
+    });
+    const toolCall: ToolCall = {
+      type: 'function',
+      id: 'call_stale_goal_revision',
+      name: 'UpdateGoal',
+      arguments: JSON.stringify({ status: 'complete' }),
+    };
+
+    const results = await executeToolCall(toolExecutor, oldTurn, toolCall);
+
+    expect(results[0]!.result.output).toBe(
+      'Goal changed since this turn started; ignored stale goal tool call.',
+    );
+    expect(goals.getGoal().goal).toMatchObject({
+      goalId: created.goalId,
+      objective: 'new task',
+      controlRevision: edited.controlRevision,
+      status: 'active',
     });
   });
 
@@ -1315,6 +1378,41 @@ describe('AgentGoalService core workflow hooks', () => {
     });
     expect(JSON.stringify(context.get().at(-1)?.content)).toContain('Continue working toward');
     expect(JSON.stringify(context.get().at(-1)?.content)).toContain('TaskWait');
+  });
+
+  it('waits for every subagent result and coalesces the final notification with one continuation turn', async () => {
+    let settleFirst!: (value: { result: string }) => void;
+    let settleSecond!: (value: { result: string }) => void;
+    const firstCompletion = new Promise<{ result: string }>((resolve) => { settleFirst = resolve; });
+    const secondCompletion = new Promise<{ result: string }>((resolve) => { settleSecond = resolve; });
+    const tasks = ctx!.get(IAgentTaskService);
+    tasks.registerTask(new SubagentTask({
+      agentId: 'sub-1',
+      profileName: 'worker',
+      completion: firstCompletion,
+    }, 'first', new AbortController()));
+    tasks.registerTask(new SubagentTask({
+      agentId: 'sub-2',
+      profileName: 'worker',
+      completion: secondCompletion,
+    }, 'second', new AbortController()));
+    await goals.createGoal({ objective: 'finish delegated work' });
+
+    const turn = makeTurn(1);
+    eventBus.publish(new TurnStarted({ turnId: turn.id, origin: USER_PROMPT_ORIGIN }));
+    await runGoalStep(loopService, turn);
+    endTurn(eventBus, turn);
+    expect(loopService.launches).toEqual([]);
+
+    settleFirst({ result: 'first done' });
+    await vi.waitFor(() => expect(tasks.list(true)).toHaveLength(1));
+    expect(loopService.launches).toEqual([]);
+
+    settleSecond({ result: 'second done' });
+    await vi.waitFor(() => expect(loopService.launches).toHaveLength(1));
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+    expect(context.get().filter((message) => message.origin?.kind === 'task')).toHaveLength(2);
+    expect(context.get().filter((message) => message.origin?.kind === 'system_trigger')).toHaveLength(1);
   });
 
   it('blocks the next continuation only after the final allowed turn ends', async () => {

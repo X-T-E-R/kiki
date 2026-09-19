@@ -27,6 +27,7 @@ import type {
   FsSearchResponse,
   GetTaskQuery,
   GetTerminalResponse,
+  GoalFollowUpTiming,
   GoalSnapshot,
   ListMcpServersResponse,
   ListModelsResponse,
@@ -72,6 +73,8 @@ import type {
   PromptSteerResult,
   PromptSubmission,
   PromptSubmitResult,
+  PromptTimingRequest,
+  PromptTimingResult,
   QuestionDismissResult,
   QuestionRequest,
   QuestionResolveRequest,
@@ -90,7 +93,8 @@ import type {
   Workspace,
 } from '@kiki/protocol';
 
-import { RPCError, type SessionViewFacade } from '@kiki/klient';
+import { RPCError, type HttpRestCronTask, type SessionViewFacade } from '@kiki/klient';
+import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 import type { UsageResponseWire } from './usageV2';
@@ -360,6 +364,38 @@ export type NamedAgentSubagentLease = ProtocolNamedAgentSubagentLease;
 export type NamedAgentProfile = ProtocolNamedAgentProfile;
 export type ListNamedAgentProfilesResponse = ProtocolListNamedAgentProfilesResponse;
 export type UpdateNamedAgentProfileRequest = ProtocolUpdateNamedAgentProfileRequest;
+
+/**
+ * Goal-control inputs mirrored from the engine's goal service (the klient
+ * agent facade types them out of agent-core, which apps must not import).
+ * `updateAgentGoal` rides `expectedRevision` for optimistic concurrency: a
+ * stale revision fails with 40001 so the editor can reload and re-apply.
+ */
+export interface CreateAgentGoalInput {
+  readonly objective: string;
+  readonly completionCriterion?: string;
+  readonly followUpTiming?: GoalFollowUpTiming;
+  readonly initialStatus?: 'active' | 'paused';
+  readonly replace?: boolean;
+}
+
+export interface UpdateAgentGoalInput {
+  readonly goalId: string;
+  readonly expectedRevision?: number;
+  readonly objective?: string;
+  readonly completionCriterion?: string | null;
+  readonly followUpTiming?: GoalFollowUpTiming;
+}
+
+/**
+ * Aggregated cron task from `GET /api/cron` (typed in klient's rest facade —
+ * see `HttpRestCronTask`). Paused tasks carry `next_fire_at: null` and sort last.
+ */
+export type CronTask = HttpRestCronTask;
+
+export interface ListCronTasksResponse {
+  readonly items: readonly CronTask[];
+}
 
 /**
  * Installed-plugin summary from `GET /api/plugins` (mirrors the
@@ -787,6 +823,39 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.goal(sessionId));
   }
 
+  /**
+   * Goal control rides the main agent's facade (goal ownership is main-agent
+   * only). `GET /sessions/{id}/goal` stays the read path — it resolves the
+   * real goalId the transcript projection cannot carry.
+   */
+  createAgentGoal(sessionId: string, input: CreateAgentGoalInput): Promise<GoalSnapshot> {
+    return this.run(() => this.klient.session(sessionId).agent(MAIN_AGENT_ID).createGoal(input));
+  }
+
+  updateAgentGoal(sessionId: string, input: UpdateAgentGoalInput): Promise<GoalSnapshot> {
+    return this.run(() => this.klient.session(sessionId).agent(MAIN_AGENT_ID).updateGoal(input));
+  }
+
+  pauseAgentGoal(sessionId: string): Promise<GoalSnapshot> {
+    return this.run(() => this.klient.session(sessionId).agent(MAIN_AGENT_ID).pauseGoal());
+  }
+
+  resumeAgentGoal(sessionId: string): Promise<GoalSnapshot> {
+    return this.run(() => this.klient.session(sessionId).agent(MAIN_AGENT_ID).resumeGoal());
+  }
+
+  cancelAgentGoal(sessionId: string): Promise<GoalSnapshot> {
+    return this.run(() => this.klient.session(sessionId).agent(MAIN_AGENT_ID).cancelGoal());
+  }
+
+  /**
+   * Cold-recovery release: no-op unless the engine is holding a restored
+   * queue (`recoveryHold`), so a stale click is harmless.
+   */
+  resumeRecoveredQueue(sessionId: string): Promise<void> {
+    return this.run(() => this.klient.session(sessionId).agent(MAIN_AGENT_ID).resumeRecoveredPromptQueue());
+  }
+
   /** Older-history pages: `?before_id=<oldest loaded message id>&page_size=N`. */
   listMessages(
     sessionId: string,
@@ -824,6 +893,15 @@ export class KikiClient {
    */
   steerPrompt(sessionId: string, promptId: string): Promise<PromptSteerResult> {
     return this.sessions.steerPrompt(sessionId, promptId);
+  }
+
+  /**
+   * Re-time a queued prompt (`POST …/prompts/{pid}:timing`). The body carries
+   * the last known scheduling `revision` as `expected_revision` so a stale
+   * client loses with 40001 instead of silently overwriting a newer pick.
+   */
+  timingPrompt(sessionId: string, promptId: string, body: PromptTimingRequest): Promise<PromptTimingResult> {
+    return this.sessions.timingPrompt(sessionId, promptId, body);
   }
 
   listPendingApprovals(sessionId: string): Promise<ApprovalRequest[]> {
@@ -1149,6 +1227,29 @@ export class KikiClient {
       ...result,
       items: [...result.items],
     }));
+  }
+
+  /** `GET /api/cron` — every workspace's scheduled tasks, next-fire order. */
+  listCronTasks(query: { session_id?: string } = {}): Promise<ListCronTasksResponse> {
+    return this.run(this.rest.cron.list(query));
+  }
+
+  /** `sessionId` disambiguates a task id shared by several sessions (else 40001). */
+  pauseCronTask(taskId: string, sessionId?: string): Promise<{ readonly task: CronTask }> {
+    return this.run(this.rest.cron.pause(taskId, { session_id: sessionId }));
+  }
+
+  resumeCronTask(taskId: string, sessionId?: string): Promise<{ readonly task: CronTask }> {
+    return this.run(this.rest.cron.resume(taskId, { session_id: sessionId }));
+  }
+
+  /** Fire the task once immediately; its schedule is untouched. */
+  runCronTask(taskId: string, sessionId?: string): Promise<{ readonly triggered: true }> {
+    return this.run(this.rest.cron.run(taskId, { session_id: sessionId }));
+  }
+
+  deleteCronTask(taskId: string, sessionId?: string): Promise<{ readonly deleted: true }> {
+    return this.run(this.rest.cron.remove(taskId, { session_id: sessionId }));
   }
 
   /**

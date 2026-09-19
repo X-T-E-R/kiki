@@ -137,8 +137,6 @@ async function renderComposer(
                 planMode={false}
                 swarmMode={false}
                 goalObjective=""
-                goalStatus={undefined}
-                goalControl={undefined}
                 efforts={undefined}
                 effort={undefined}
                 attachments={[]}
@@ -148,7 +146,6 @@ async function renderComposer(
                 onChangePlanMode={() => {}}
                 onChangeSwarmMode={() => {}}
                 onChangeGoalObjective={() => {}}
-                onChangeGoalControl={() => {}}
                 onChangeEffort={() => {}}
                 onSend={() => {}}
                 {...nextProps}
@@ -775,42 +772,62 @@ describe('Composer mode dropdown', () => {
   });
 });
 
-describe('Composer goal run-state chip', () => {
-  it('traces a live goal and drives pause/cancel through onChangeGoalControl', async () => {
-    const onChangeGoalControl = vi.fn();
-    const { container } = await renderComposer({
-      goalStatus: 'active',
-      goalObjective: 'Ship the batch',
-      onChangeGoalControl,
+describe('Composer goal mode', () => {
+  it('sends `/goal <text>` as a goal prompt instead of opening the panel', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: '/goal ship the batch', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
-    const chip = container.querySelector<HTMLElement>('[data-goal-chip]');
-    expect(chip?.textContent).toContain('goal · active');
-    expect(chip?.getAttribute('aria-label')).toBe('Goal — active');
-    const pause = container.querySelector<HTMLButtonElement>('[data-goal-chip] button[aria-label="pause"]')!;
-    await click(pause);
-    expect(onChangeGoalControl).toHaveBeenCalledWith('pause');
-    expect(
-      container.querySelector('[data-goal-chip] button[aria-label="cancel"]'),
-    ).not.toBeNull();
+    await settle();
+    expect(onSend).toHaveBeenCalledWith('ship the batch', [], { goalObjective: 'ship the batch' });
+    // The send path consumes the draft; the plan panel stays closed.
+    expect(container.querySelector('[data-plan-select] [aria-expanded="true"]')).toBeNull();
   });
 
-  it('offers resume instead of pause while paused, and nothing once complete', async () => {
-    const paused = await renderComposer({ goalStatus: 'paused' });
-    expect(
-      paused.container.querySelector('[data-goal-chip] button[aria-label="resume"]'),
-    ).not.toBeNull();
-    expect(
-      paused.container.querySelector('[data-goal-chip] button[aria-label="pause"]'),
-    ).toBeNull();
-
-    const complete = await renderComposer({ goalStatus: 'complete' });
-    expect(complete.container.querySelector('[data-goal-chip]')).not.toBeNull();
-    expect(complete.container.querySelectorAll('[data-goal-chip] button')).toHaveLength(0);
+  it('keeps bare `/goal` on the action path (opens the mode panel goal field)', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: '/goal', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-plan-select] [aria-expanded="true"]')).not.toBeNull();
   });
 
-  it('disappears with no goal on the session', async () => {
+  it('arms goal mode from the toolbar, flags the next message, and disarms from the chip', async () => {
+    const onSend = vi.fn();
+    const onChangeGoalMode = vi.fn();
+    const { container, rerender } = await renderComposer({ onSend, onChangeGoalMode });
+    const toggle = container.querySelector<HTMLButtonElement>('[data-goal-mode-toggle]')!;
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    await act(async () => { toggle.click(); });
+    expect(onChangeGoalMode).toHaveBeenCalledWith(true);
+
+    // The parent owns the flag; rerender with the armed state it would set.
+    await rerender({ onSend, onChangeGoalMode, goalMode: true, value: 'fix the flaky suite' });
+    expect(container.querySelector('[data-goal-armed]')?.textContent).toContain(
+      'this message becomes the objective',
+    );
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+    expect(onSend).toHaveBeenCalledWith('fix the flaky suite', [], { goalObjective: 'fix the flaky suite' });
+
+    const disarm = container.querySelector<HTMLButtonElement>('[data-goal-armed] button')!;
+    await act(async () => { disarm.click(); });
+    expect(onChangeGoalMode).toHaveBeenLastCalledWith(false);
+  });
+
+  it('hides the toggle when no goal-mode handler is wired', async () => {
     const { container } = await renderComposer();
-    expect(container.querySelector('[data-goal-chip]')).toBeNull();
+    expect(container.querySelector('[data-goal-mode-toggle]')).toBeNull();
+    expect(container.querySelector('[data-goal-armed]')).toBeNull();
   });
 });
 
@@ -1382,8 +1399,6 @@ function StatefulHarness({
       planMode={false}
       swarmMode={false}
       goalObjective=""
-      goalStatus={undefined}
-      goalControl={undefined}
       efforts={undefined}
       effort={undefined}
       attachments={[]}
@@ -1393,13 +1408,15 @@ function StatefulHarness({
       onChangePlanMode={() => {}}
       onChangeSwarmMode={() => {}}
       onChangeGoalObjective={() => {}}
-      onChangeGoalControl={() => {}}
       onChangeEffort={() => {}}
       value={text}
       onChange={setText}
-      onSend={(sentText, sentAttachments) => {
+      onSend={(sentText, sentAttachments, sentOptions) => {
         setText('');
-        onSend?.(sentText, sentAttachments);
+        // Keep the spy's arity faithful: plain sends assert on exactly
+        // (text, attachments).
+        if (sentOptions === undefined) onSend?.(sentText, sentAttachments);
+        else onSend?.(sentText, sentAttachments, sentOptions);
       }}
       {...props}
     />

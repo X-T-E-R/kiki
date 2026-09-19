@@ -386,6 +386,7 @@ function createFakeTaskService(
       startedAt: entry.startedAt,
       endedAt: entry.endedAt,
       stopReason: entry.stopReason,
+      lifetime: entry.options.lifetime,
     });
   };
 
@@ -926,9 +927,11 @@ describe('BashTool', () => {
         command: 'watch',
         run_in_background: true,
         description: 'watch files',
+        lifetime: 'service',
         disable_timeout: true,
       }).success,
     ).toBe(true);
+    expect(BashInputSchema.safeParse({ command: 'watch', lifetime: 'service' }).success).toBe(false);
   });
 
   it('describes the cwd, command, run_in_background, description, and disable_timeout parameters', () => {
@@ -1760,6 +1763,25 @@ describe('BashTool background mode', () => {
     expect(result.output).not.toContain('TaskStop');
     expect(result.output).not.toContain('block=false');
     expect(service.list(false)).toHaveLength(1);
+    expect(service.list(false)[0]?.lifetime).toBe('finite');
+  });
+
+  it('marks an explicit long-running background command as a service', async () => {
+    const { runner } = createTestRunner(processWithOutput());
+    const { service } = createFakeTaskService();
+    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service);
+
+    await executeTool(
+      tool,
+      context({
+        command: 'watch',
+        run_in_background: true,
+        description: 'watch files',
+        lifetime: 'service',
+      }),
+    );
+
+    expect(service.list(false)[0]?.lifetime).toBe('service');
   });
 
   it('kills a spawned background command when the task limit is reached', async () => {

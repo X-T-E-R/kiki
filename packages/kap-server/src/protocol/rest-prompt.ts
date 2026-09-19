@@ -21,6 +21,15 @@ export const promptSkillActivationSchema = z.object({
 });
 export type PromptSkillActivation = z.infer<typeof promptSkillActivationSchema>;
 
+export const deferredAppendTimingSchema = z.enum(['agent_idle', 'subagents_done', 'tasks_done']);
+export type DeferredAppendTiming = z.infer<typeof deferredAppendTimingSchema>;
+
+export const goalFollowUpTimingSchema = z.enum(['subagents_done', 'tasks_done']);
+export type GoalFollowUpTiming = z.infer<typeof goalFollowUpTimingSchema>;
+
+export const goalInitialStatusSchema = z.enum(['active', 'paused']);
+export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
+
 export const promptSubmissionSchema = z.object({
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
@@ -34,6 +43,9 @@ export const promptSubmissionSchema = z.object({
   swarm_mode: z.boolean().optional(),
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),
+  goal_follow_up_timing: goalFollowUpTimingSchema.optional(),
+  goal_initial_status: goalInitialStatusSchema.optional(),
+  append_timing: deferredAppendTimingSchema.optional(),
   disabled_tools: z.array(z.string()).optional(),
   prompt_id: z.string().min(1).optional(),
   skills: z.array(promptSkillActivationSchema).min(1).optional(),
@@ -61,6 +73,8 @@ export const promptItemSchema = z.object({
   status: promptStatusSchema,
   content: z.array(messageContentSchema).min(1),
   created_at: isoDateTimeSchema,
+  append_timing: deferredAppendTimingSchema.optional(),
+  revision: z.number().int().nonnegative().optional(),
 });
 export type PromptItem = z.infer<typeof promptItemSchema>;
 
@@ -80,6 +94,15 @@ export type PromptReplaceRequest = z.infer<typeof promptReplaceRequestSchema>;
 
 export const promptReplaceResultSchema = promptItemSchema;
 export type PromptReplaceResult = z.infer<typeof promptReplaceResultSchema>;
+
+export const promptTimingRequestSchema = z.object({
+  append_timing: deferredAppendTimingSchema,
+  expected_revision: z.number().int().nonnegative().optional(),
+});
+export type PromptTimingRequest = z.infer<typeof promptTimingRequestSchema>;
+
+export const promptTimingResultSchema = promptItemSchema;
+export type PromptTimingResult = z.infer<typeof promptTimingResultSchema>;
 
 export const promptMoveRequestSchema = z.object({
   target_index: z.number().int().nonnegative(),

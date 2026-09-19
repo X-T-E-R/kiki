@@ -37,7 +37,23 @@ import {
 export const agentGoalContract = {
   getGoal: { input: z.tuple([]), output: z.object({ goal: goalSnapshotSchema.nullable() }) },
   createGoal: {
-    input: z.tuple([z.object({ objective: z.string(), completionCriterion: z.string().optional(), replace: z.boolean().optional() })]),
+    input: z.tuple([z.object({
+      objective: z.string(),
+      completionCriterion: z.string().optional(),
+      followUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
+      initialStatus: z.enum(['active', 'paused']).optional(),
+      replace: z.boolean().optional(),
+    })]),
+    output: goalSnapshotSchema,
+  },
+  updateGoal: {
+    input: z.tuple([z.object({
+      goalId: z.string(),
+      expectedRevision: z.number().int().nonnegative().optional(),
+      objective: z.string().optional(),
+      completionCriterion: z.string().nullable().optional(),
+      followUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
+    })]),
     output: goalSnapshotSchema,
   },
   pauseGoal: { input: z.tuple([]), output: goalSnapshotSchema },
@@ -58,6 +74,7 @@ export const agentPromptContract = {
     input: z.tuple([steerPayloadSchema]),
     output: maybe(promptLaunchResultSchema),
   },
+  resumeRecoveredQueue: { input: z.tuple([]), output: noResult },
 } satisfies ServiceContract;
 
 export const agentSkillContract = {

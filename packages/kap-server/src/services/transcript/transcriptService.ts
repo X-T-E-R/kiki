@@ -1648,7 +1648,7 @@ async function readTranscriptProjectionCheckpoint(
       !Number.isSafeInteger(value.nextByteOffset) ||
       value.nextByteOffset < 0 ||
       value.nextByteOffset > fileSize ||
-      value.adapter?.version !== 1 ||
+      (value.adapter?.version !== 1 && value.adapter?.version !== 2) ||
       !Array.isArray(value.acceptedDurableFacts)
     ) {
       return undefined;

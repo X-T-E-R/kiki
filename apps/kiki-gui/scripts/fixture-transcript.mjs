@@ -868,6 +868,38 @@ export class TranscriptProjector {
                 createdAt: payload.createdAt ?? at,
                 finishedAt: payload.finishedAt,
                 steeredAt: payload.steeredAt,
+                appendTiming: payload.appendTiming,
+                revision: payload.revision,
+              },
+            },
+          ],
+        };
+        break;
+      }
+      case 'prompt.timing_changed': {
+        // Timing is a queue-side annotation, not new content: keep the parked
+        // record and restamp only appendTiming + revision (prompt.upsert
+        // replaces, so the previous fields ride along).
+        const id = payload.promptId ?? payload.prompt_id ?? promptId;
+        if (id === undefined) break;
+        const prev = agent.snapshot.prompts.find((entry) => entry.promptId === id);
+        // A timing change for a prompt the fixture never parked carries no
+        // content to restamp — skip rather than emit a hollow upsert.
+        if (prev === undefined) break;
+        projected = {
+          agentId,
+          ops: [
+            {
+              op: 'prompt.upsert',
+              prompt: {
+                promptId: id,
+                status: prev?.status ?? 'queued',
+                ...(prev?.userMessageId !== undefined ? { userMessageId: prev.userMessageId } : {}),
+                content: prev?.content,
+                createdAt: prev?.createdAt ?? at,
+                ...(prev?.queuePosition !== undefined ? { queuePosition: prev.queuePosition } : {}),
+                appendTiming: payload.appendTiming,
+                revision: payload.revision,
               },
             },
           ],

@@ -154,9 +154,15 @@ export class AgentSkillService extends Service implements IAgentSkillService {
           kind: 'user',
           skillActivations: prepared.map((activation) => activation.entry),
         },
-      }, input.execution, input.deferredDisabledTools);
+      }, input.execution, input.deferredDisabledTools, input.appendTiming);
       if (handle.state === 'pending') {
-        return { prompt_id: handle.id, created_at: handle.createdAt, state: 'queued' };
+        return {
+          prompt_id: handle.id,
+          created_at: handle.createdAt,
+          state: 'queued',
+          append_timing: handle.appendTiming ?? 'agent_idle',
+          revision: handle.revision ?? 0,
+        };
       }
       const turn = await handle.launched;
       if (turn === undefined && handle.state !== 'blocked') {
@@ -167,6 +173,8 @@ export class AgentSkillService extends Service implements IAgentSkillService {
         prompt_id: handle.id,
         created_at: handle.createdAt,
         state: handle.state === 'blocked' ? 'blocked' : 'running',
+        append_timing: handle.appendTiming ?? 'agent_idle',
+        revision: handle.revision ?? 0,
       };
     } finally {
       reservation.dispose();

@@ -34,12 +34,27 @@
 
 import { useEffect, useId, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
 
+import type { DeferredAppendTiming } from '@kiki/protocol';
 import type { QueuedPromptPreview } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
 
 /** The armed remove falls back to idle after this long without the second click. */
 const REMOVE_ARM_TIMEOUT_MS = 5_000;
 const QUEUE_DRAG_MIME = 'application/x-kiki-queue-prompt';
+
+const QUEUE_TIMINGS: readonly DeferredAppendTiming[] = ['agent_idle', 'subagents_done', 'tasks_done'];
+
+const TIMING_SHORT_KEY = {
+  agent_idle: 'timing.short.agentIdle',
+  subagents_done: 'timing.short.subagentsDone',
+  tasks_done: 'timing.short.tasksDone',
+} as const;
+
+const TIMING_HINT_KEY = {
+  agent_idle: 'timing.hint.agentIdle',
+  subagents_done: 'timing.hint.subagentsDone',
+  tasks_done: 'timing.hint.tasksDone',
+} as const;
 
 export function QueueStrip({
   items,
@@ -49,6 +64,7 @@ export function QueueStrip({
   onEdit,
   editingPromptId,
   onMove,
+  onChangeTiming,
   sendNowDisabled = false,
 }: {
   readonly items: readonly QueuedPromptPreview[];
@@ -68,6 +84,11 @@ export function QueueStrip({
    * only appear when wired.
    */
   readonly onMove?: (promptId: string, targetIndex: number) => Promise<void> | void;
+  /**
+   * Re-time a parked prompt (wire `:timing`). Optional: the per-row timing
+   * picker only appears when wired.
+   */
+  readonly onChangeTiming?: (promptId: string, timing: DeferredAppendTiming) => Promise<void> | void;
   /** Steer is a send-equivalent; disable it while the session is resyncing. */
   readonly sendNowDisabled?: boolean;
 }) {
@@ -210,7 +231,7 @@ export function QueueStrip({
         key={item.promptId}
         onDragOver={(event) => { rowDragOver(event, index); }}
         onDrop={rowDrop}
-        className={`anim-enter group flex items-center gap-2 rounded-lg border bg-panel px-2.5 py-1.5 ${
+        className={`anim-enter group flex flex-wrap items-center gap-2 rounded-lg border bg-panel px-2.5 py-1.5 ${
           isEditing ? 'border-amber-ink/60 ring-1 ring-amber-rule/60' : 'border-amber-rule/30'
         } ${dragId === item.promptId ? 'opacity-50' : ''}`}
       >
@@ -234,10 +255,44 @@ export function QueueStrip({
         </span>
         <span
           title={item.text === '' ? undefined : item.text}
-          className="min-w-0 flex-1 truncate text-[12px] text-ink"
+          className="min-w-0 flex-1 basis-36 truncate text-[12px] text-ink"
         >
           {item.text === '' ? t('sv.queueNoText') : item.text}
         </span>
+        {onChangeTiming !== undefined && !isEditing ? (
+          <span
+            role="radiogroup"
+            aria-label={t('queue.timingAria')}
+            data-timing-picker={item.promptId}
+            className="flex shrink-0 items-center gap-px rounded-full border border-amber-rule/40 bg-panel/70 p-px"
+          >
+            {QUEUE_TIMINGS.map((timing) => {
+              const currentTiming = item.appendTiming ?? 'agent_idle';
+              return (
+              <button
+                key={timing}
+                type="button"
+                role="radio"
+                aria-checked={timing === currentTiming}
+                data-timing={timing}
+                disabled={pending}
+                title={t(TIMING_HINT_KEY[timing])}
+                onClick={() => {
+                  if (timing === currentTiming) return;
+                  run(item.promptId, (id) => onChangeTiming(id, timing));
+                }}
+                className={`rounded-full px-1.5 py-px text-[9.5px] font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none ${
+                  timing === currentTiming
+                    ? 'bg-amber-ink text-white'
+                    : 'text-amber-ink/70 hover:bg-amber-rule/20 hover:text-amber-ink'
+                }`}
+              >
+                {t(TIMING_SHORT_KEY[timing])}
+              </button>
+              );
+            })}
+          </span>
+        ) : null}
         {isEditing ? (
           <span className="shrink-0 rounded-full border border-amber-rule/60 bg-amber-card px-2 py-0.5 text-[10.5px] font-medium text-amber-ink">
             {t('queue.editingBadge')}

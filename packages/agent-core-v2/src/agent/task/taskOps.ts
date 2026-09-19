@@ -41,6 +41,15 @@ export class TaskTerminatedNotice extends Event2<TaskTerminatedNoticePayload> {
 }
 export interface TaskTerminatedNotice extends TaskTerminatedNoticePayload {}
 
+export interface TaskSettlementReadyPayload {
+  readonly info: AgentTaskInfo;
+}
+
+export class TaskSettlementReady extends Event2<TaskSettlementReadyPayload> {
+  static override readonly type = 'task.settlement_ready';
+}
+export interface TaskSettlementReady extends TaskSettlementReadyPayload {}
+
 const taskNotifiedSchema: z.ZodType<AgentTaskNotificationContext> = z.object({
   notificationType: z.string(),
   title: z.string(),

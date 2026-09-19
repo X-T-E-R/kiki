@@ -1,19 +1,39 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
   agentNotifyParentPatch,
   runtimeConfigDraftFromConfig,
+  subscribeSettings,
+  settingsSnapshot,
+  settingsServerSnapshot,
   threadCommunicationPatch,
   tokenCountingPatch,
+  writeSettings,
+  type DefaultAppendTiming,
   type TokenCountingStrategy,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { PRIMARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { useSavedTick } from './useSavedTick';
+
+const APPEND_TIMINGS: readonly DefaultAppendTiming[] = ['agent_idle', 'subagents_done', 'tasks_done'];
+
+const APPEND_TIMING_LABEL_KEY = {
+  agent_idle: 'timing.agentIdle',
+  subagents_done: 'timing.subagentsDone',
+  tasks_done: 'timing.tasksDone',
+} as const;
+
+const APPEND_TIMING_HINT_KEY = {
+  agent_idle: 'timing.hint.agentIdle',
+  subagents_done: 'timing.hint.subagentsDone',
+  tasks_done: 'timing.hint.tasksDone',
+} as const;
 
 export function ThreadCommunicationCard() {
   const { client } = useConnection();
@@ -232,12 +252,60 @@ export function TokenCountingCard() {
   );
 }
 
+/**
+ * Local-only card: the default append timing for messages sent while the
+ * agent is busy. Writes straight to the desktop settings store (no server
+ * round-trip); the queue strip re-times individual messages on top of it.
+ */
+export function DefaultAppendTimingCard() {
+  const { t } = useI18n();
+  const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
+  const [tick, ping] = useSavedTick();
+
+  return (
+    <SectionCard id="st-card-append-timing" title={t('st.communication.appendTimingTitle')}>
+      <div className="space-y-4">
+        <Hint>{t('st.communication.appendTimingHint')}</Hint>
+        <div>
+          <span id="default-append-timing-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
+            {t('st.communication.appendTiming')}
+          </span>
+          <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="default-append-timing-label">
+            {APPEND_TIMINGS.map((timing) => (
+              <button
+                key={timing}
+                type="button"
+                data-append-timing={timing}
+                aria-pressed={settings.defaultAppendTiming === timing}
+                title={t(APPEND_TIMING_HINT_KEY[timing])}
+                onClick={() => {
+                  writeSettings({ defaultAppendTiming: timing });
+                  ping();
+                }}
+                className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
+                  settings.defaultAppendTiming === timing
+                    ? 'border-accent bg-accent-soft text-accent'
+                    : 'border-hairline text-ink-soft hover:border-hairline-strong'
+                }`}
+              >
+                {t(APPEND_TIMING_LABEL_KEY[timing])}
+              </button>
+            ))}
+            <SavedTick show={tick} />
+          </div>
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
 export function CommunicationSection() {
   return (
     <>
       <ThreadCommunicationCard />
       <NotifyParentCard />
       <TokenCountingCard />
+      <DefaultAppendTimingCard />
     </>
   );
 }

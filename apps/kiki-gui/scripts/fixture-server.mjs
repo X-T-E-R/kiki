@@ -186,6 +186,26 @@ function fixtureModelsFromBody(providerId, models) {
   }));
 }
 
+/**
+ * Scenarios seed models in config shape (`provider` + `model` alias), but both
+ * the `/models` REST route and the `modelResolver` RPC serve the wire shape
+ * (`id` / `provider_id` / `remote_id`) and the fixture validates RPC output
+ * against the production schema. Normalize at load so both paths agree.
+ */
+function normalizeFixtureModel(entry) {
+  if (entry === null || typeof entry !== 'object') return entry;
+  if (typeof entry.id === 'string' && typeof entry.provider_id === 'string') return entry;
+  const alias = typeof entry.model === 'string' ? entry.model : entry.id;
+  if (typeof alias !== 'string') return entry;
+  const { provider, model, ...rest } = entry;
+  return {
+    id: alias,
+    provider_id: provider ?? alias.split('/')[0] ?? 'fixture',
+    remote_id: alias.slice(alias.lastIndexOf('/') + 1),
+    ...rest,
+  };
+}
+
 /** Deep-replace the `$SID` placeholder with the concrete session id. */
 function bind(value, sessionId) {
   if (typeof value === 'string') return value === '$SID' ? sessionId : value;
@@ -469,7 +489,7 @@ class FixtureServer {
       providers: {},
     });
     this.providers = structuredClone(data.providers ?? []);
-    this.models = structuredClone(data.models ?? []);
+    this.models = structuredClone(data.models ?? []).map(normalizeFixtureModel);
     // A scenario that declares `models: []` means an unconfigured server, not
     // "unset" — without this the /models fallback below makes an empty catalog
     // unrepresentable (first-run guidance can never be exercised).
@@ -1411,7 +1431,7 @@ class FixtureServer {
       const provider = fixtureProviderFromBody(nextId, body, current.has_api_key, current.request_identity);
       this.providers = this.providers.map((entry) => entry.id === currentId ? provider : entry);
       this.models = [
-        ...this.models.filter((model) => model.provider !== currentId),
+        ...this.models.filter((model) => model.provider_id !== currentId),
         ...fixtureModelsFromBody(nextId, body.models ?? []),
       ];
       const providers = { ...(this.config.providers ?? {}) };
@@ -1428,7 +1448,7 @@ class FixtureServer {
     if (providerMatch !== null && method === 'DELETE') {
       const providerId = decodeURIComponent(providerMatch[1]);
       this.providers = this.providers.filter((provider) => provider.id !== providerId);
-      this.models = this.models.filter((model) => model.provider !== providerId);
+      this.models = this.models.filter((model) => model.provider_id !== providerId);
       const providers = { ...(this.config.providers ?? {}) };
       delete providers[providerId];
       this.config.providers = providers;
@@ -2105,6 +2125,12 @@ class FixtureServer {
       const item = { prompt_id: promptId, user_message_id: userMessageId, status: 'running', content: body.content, created_at: createdAt, text };
       // A parked turn owns the session — park behind it like the real server.
       if (session.scriptRunning || session.activePrompt !== null) {
+        // kap-server stamps the requested defer timing onto the parked item;
+        // the queue surface reads it back from the transcript projection.
+        if (typeof body.append_timing === 'string') {
+          item.append_timing = body.append_timing;
+          item.revision = 0;
+        }
         session.queuedPrompts.push(item);
         this.debug(`prompt "${text}" queued as ${promptId} (active=${session.activePrompt?.prompt_id ?? 'none'}, queue=${session.queuedPrompts.length})`);
         this.emitTranscriptFromFrame(session, {
@@ -2115,9 +2141,19 @@ class FixtureServer {
             userMessageId,
             content: body.content,
             createdAt,
+            ...(item.append_timing !== undefined
+              ? { appendTiming: item.append_timing, revision: item.revision }
+              : {}),
           },
         }, { promptId, userMessageId, content: body.content });
-        return this.envelope(res, { prompt_id: promptId, user_message_id: userMessageId, status: 'queued', content: body.content, created_at: createdAt });
+        return this.envelope(res, {
+          prompt_id: promptId,
+          user_message_id: userMessageId,
+          status: 'queued',
+          content: body.content,
+          created_at: createdAt,
+          ...(item.append_timing !== undefined ? { append_timing: item.append_timing, revision: item.revision } : {}),
+        });
       }
       this.debug(`prompt "${text}" running as ${promptId}`);
       // Real v2 publishes turn.started before the HTTP reply. Scenarios use this
@@ -2248,6 +2284,50 @@ class FixtureServer {
         prompt_id: promptId,
         target_index: clamped,
         queued_prompt_ids: queuedPromptIds,
+      });
+    }
+    const timingMatch = /^\/prompts\/([^/]+):timing$/.exec(tail);
+    if (timingMatch !== null) {
+      // Mirrors kap-server: re-time a QUEUED prompt. The reply is the updated
+      // PromptItem and prompt.timing_changed carries the same values to the
+      // transcript projection. A stale expected_revision answers 40001 with
+      // the authoritative item so the caller can reseed instead of guessing.
+      const promptId = timingMatch[1];
+      const item = session.queuedPrompts.find((entry) => entry.prompt_id === promptId);
+      if (item === undefined || body === undefined || typeof body.append_timing !== 'string') {
+        return this.envelope(res, null, 40402, 'prompt.not_found');
+      }
+      const revision = item.revision ?? 0;
+      if (body.expected_revision !== undefined && body.expected_revision !== revision) {
+        return this.envelope(
+          res,
+          {
+            prompt_id: item.prompt_id,
+            user_message_id: item.user_message_id,
+            status: 'queued',
+            content: item.content,
+            created_at: item.created_at,
+            append_timing: item.append_timing ?? 'agent_idle',
+            revision,
+          },
+          40001,
+          'request.invalid',
+        );
+      }
+      item.append_timing = body.append_timing;
+      item.revision = revision + 1;
+      this.emit(session.record.id, {
+        type: 'prompt.timing_changed',
+        payload: { promptId, appendTiming: item.append_timing, revision: item.revision, changedAt: now() },
+      });
+      return this.envelope(res, {
+        prompt_id: item.prompt_id,
+        user_message_id: item.user_message_id,
+        status: 'queued',
+        content: item.content,
+        created_at: item.created_at,
+        append_timing: item.append_timing,
+        revision: item.revision,
       });
     }
     if (tail === '/approvals') {

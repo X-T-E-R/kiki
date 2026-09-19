@@ -6,6 +6,8 @@ export interface GoalMeta {
   readonly objective: string;
   readonly status: GoalStatus;
   readonly completionCriterion?: string;
+  readonly followUpTiming?: 'subagents_done' | 'tasks_done';
+  readonly controlRevision?: number;
   readonly budgetUsed?: number;
   readonly budgetLimit?: number;
 }

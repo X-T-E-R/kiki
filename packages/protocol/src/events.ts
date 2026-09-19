@@ -10,6 +10,7 @@ import {
 } from './session';
 import { isoDateTimeSchema } from './time';
 import { configResponseSchema, type ConfigResponse } from './rest/config';
+import { deferredAppendTimingSchema, type DeferredAppendTiming } from './rest/prompt';
 import {
   providerRefreshChangeSchema,
   providerRefreshFailureSchema,
@@ -200,6 +201,8 @@ export interface GoalSnapshot {
   readonly objective: string;
   readonly completionCriterion?: string;
   readonly status: GoalStatus;
+  readonly followUpTiming?: 'subagents_done' | 'tasks_done';
+  readonly controlRevision?: number;
   readonly turnsUsed: number;
   readonly tokensUsed: number;
   readonly wallClockMs: number;
@@ -382,6 +385,10 @@ export interface TaskInfoBase {
   readonly stopReason?: string;
   readonly terminalNotificationSuppressed?: boolean;
   readonly timeoutMs?: number;
+  readonly lifetime?: 'finite' | 'service';
+  readonly ownerAgentId?: string;
+  readonly ownerTurnId?: number;
+  readonly goalId?: string;
 }
 
 export interface ProcessTaskInfo extends TaskInfoBase {
@@ -978,6 +985,10 @@ export interface PromptSubmittedEvent {
   readonly status: 'running' | 'queued' | 'blocked';
   readonly content: readonly MessageContent[];
   readonly createdAt: string;
+  /** Effective deferred-append timing; absent on producers older than the field. */
+  readonly appendTiming?: DeferredAppendTiming;
+  /** Scheduling revision captured at accept time; absent on older producers. */
+  readonly revision?: number;
 }
 
 export interface PromptQueuedEvent {
@@ -985,6 +996,9 @@ export interface PromptQueuedEvent {
   readonly promptId: string;
   readonly content: readonly MessageContent[];
   readonly queueLength: number;
+  /** Effective deferred-append timing; absent on producers older than the field. */
+  readonly appendTiming?: DeferredAppendTiming;
+  readonly revision?: number;
 }
 
 /** A queued prompt left the queue and became the agent's active turn. */
@@ -998,6 +1012,50 @@ export interface PromptReplacedEvent {
   readonly promptId: string;
   readonly content: readonly MessageContent[];
   readonly replacedAt: string;
+  /** Recoverable post-replace message; absent on producers older than the field. */
+  readonly message?: unknown;
+  readonly revision?: number;
+}
+
+export interface PromptTimingChangedEvent {
+  readonly type: 'prompt.timing_changed';
+  readonly promptId: string;
+  readonly appendTiming: DeferredAppendTiming;
+  readonly revision: number;
+  readonly changedAt: string;
+}
+
+/**
+ * Durable in-memory-queue fact: the complete information needed to rebuild a
+ * pending entry after a restart. Durable-only (never fanned out live); the
+ * observable `prompt.submitted`/`prompt.queued` carry the live view.
+ */
+export interface PromptEnqueuedEvent {
+  readonly type: 'prompt.enqueued';
+  readonly schemaVersion: number;
+  readonly promptId: string;
+  readonly userMessageId: string;
+  readonly createdAt: string;
+  readonly message: unknown;
+  readonly execution?: unknown;
+  readonly goalId?: string;
+  readonly deferredDisabledTools?: readonly string[];
+  readonly alreadyMaterialized: boolean;
+  readonly appendTiming: DeferredAppendTiming;
+  readonly revision: number;
+  readonly queueIndex: number;
+}
+
+/**
+ * Durable launch boundary fact: the prompt crossed the point where its launch
+ * side effects (runtime controls, model turn) must not be blindly replayed.
+ */
+export interface PromptLaunchCommittedEvent {
+  readonly type: 'prompt.launch_committed';
+  readonly launchId: string;
+  readonly promptId: string;
+  readonly revision: number;
+  readonly committedAt: string;
 }
 
 export interface PromptCompletedEvent {
@@ -1108,6 +1166,9 @@ export type AgentEvent =
   | PromptStartedEvent
   | PromptReplacedEvent
   | PromptMovedEvent
+  | PromptTimingChangedEvent
+  | PromptEnqueuedEvent
+  | PromptLaunchCommittedEvent
   | PromptCompletedEvent
   | PromptAbortedEvent
   | PromptSteeredEvent;
@@ -1286,6 +1347,8 @@ export const goalSnapshotSchema = z.object({
   objective: z.string(),
   completionCriterion: z.string().optional(),
   status: goalStatusSchema,
+  followUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
+  controlRevision: z.number().int().nonnegative().optional(),
   turnsUsed: z.number(),
   tokensUsed: z.number(),
   wallClockMs: z.number(),
@@ -1473,6 +1536,10 @@ export const taskInfoBaseSchema = z.object({
   stopReason: z.string().optional(),
   terminalNotificationSuppressed: z.boolean().optional(),
   timeoutMs: z.number().optional(),
+  lifetime: z.enum(['finite', 'service']).optional(),
+  ownerAgentId: z.string().optional(),
+  ownerTurnId: z.number().int().nonnegative().optional(),
+  goalId: z.string().optional(),
 }) satisfies z.ZodType<TaskInfoBase>;
 
 export const processTaskInfoSchema = taskInfoBaseSchema.extend({
@@ -1968,6 +2035,8 @@ export const promptSubmittedEventSchema = z.object({
   status: z.enum(['running', 'queued', 'blocked']),
   content: z.array(messageContentSchema),
   createdAt: isoDateTimeSchema,
+  appendTiming: deferredAppendTimingSchema.optional(),
+  revision: z.number().int().nonnegative().optional(),
 }) satisfies z.ZodType<PromptSubmittedEvent>;
 
 export const promptQueuedEventSchema = z.object({
@@ -1975,6 +2044,8 @@ export const promptQueuedEventSchema = z.object({
   promptId: z.string(),
   content: z.array(messageContentSchema),
   queueLength: z.number().int().nonnegative(),
+  appendTiming: deferredAppendTimingSchema.optional(),
+  revision: z.number().int().nonnegative().optional(),
 }) satisfies z.ZodType<PromptQueuedEvent>;
 
 export const promptStartedEventSchema = z.object({
@@ -1987,7 +2058,41 @@ export const promptReplacedEventSchema = z.object({
   promptId: z.string(),
   content: z.array(messageContentSchema),
   replacedAt: isoDateTimeSchema,
+  message: z.unknown().optional(),
+  revision: z.number().int().nonnegative().optional(),
 }) satisfies z.ZodType<PromptReplacedEvent>;
+
+export const promptTimingChangedEventSchema = z.object({
+  type: z.literal('prompt.timing_changed'),
+  promptId: z.string(),
+  appendTiming: deferredAppendTimingSchema,
+  revision: z.number().int().nonnegative(),
+  changedAt: isoDateTimeSchema,
+}) satisfies z.ZodType<PromptTimingChangedEvent>;
+
+export const promptEnqueuedEventSchema = z.object({
+  type: z.literal('prompt.enqueued'),
+  schemaVersion: z.number().int().nonnegative(),
+  promptId: z.string(),
+  userMessageId: z.string(),
+  createdAt: isoDateTimeSchema,
+  message: z.unknown(),
+  execution: z.unknown().optional(),
+  goalId: z.string().optional(),
+  deferredDisabledTools: z.array(z.string()).optional(),
+  alreadyMaterialized: z.boolean(),
+  appendTiming: deferredAppendTimingSchema,
+  revision: z.number().int().nonnegative(),
+  queueIndex: z.number().int().nonnegative(),
+}) satisfies z.ZodType<PromptEnqueuedEvent>;
+
+export const promptLaunchCommittedEventSchema = z.object({
+  type: z.literal('prompt.launch_committed'),
+  launchId: z.string(),
+  promptId: z.string(),
+  revision: z.number().int().nonnegative(),
+  committedAt: isoDateTimeSchema,
+}) satisfies z.ZodType<PromptLaunchCommittedEvent>;
 
 export const promptCompletedEventSchema = z.object({
   type: z.literal('prompt.completed'),
@@ -2101,6 +2206,9 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   promptStartedEventSchema,
   promptReplacedEventSchema,
   promptMovedEventSchema,
+  promptTimingChangedEventSchema,
+  promptEnqueuedEventSchema,
+  promptLaunchCommittedEventSchema,
   promptCompletedEventSchema,
   promptAbortedEventSchema,
   promptSteeredEventSchema,

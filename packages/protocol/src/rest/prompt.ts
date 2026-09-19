@@ -23,6 +23,10 @@
  *     Body:  { prompt_ids: string[] } for the collection route
  *     Reply: { steered: true, prompt_ids: string[] }
  *
+ *   POST /v1/sessions/{sid}/prompts/{pid}:timing
+ *     Body:  { append_timing, expected_revision? }
+ *     Reply: PromptItem (authoritative post-change entry)
+ *
  *   POST /v1/sessions/{sid}/prompts/{pid}:abort
  *     Body:  empty
  *     Reply: { aborted: true, at_seq: number }   (envelope code 0)
@@ -46,6 +50,20 @@ export type PromptPermissionMode = z.infer<typeof promptPermissionModeSchema>;
 export const promptPlanGateSchema = z.enum(['free', 'gated']);
 export type PromptPlanGate = z.infer<typeof promptPlanGateSchema>;
 
+// Closed set of deferred-append timings a queued prompt can wait on. A newer
+// server always reports the effective `append_timing` on every `PromptItem`;
+// older responses omit it and callers fall back to `agent_idle`.
+export const deferredAppendTimingSchema = z.enum(['agent_idle', 'subagents_done', 'tasks_done']);
+export type DeferredAppendTiming = z.infer<typeof deferredAppendTimingSchema>;
+
+// A goal's automatic continuation is at least as strict as `subagents_done`;
+// `agent_idle` and immediate appends are user-message concepts only.
+export const goalFollowUpTimingSchema = z.enum(['subagents_done', 'tasks_done']);
+export type GoalFollowUpTiming = z.infer<typeof goalFollowUpTimingSchema>;
+
+export const goalInitialStatusSchema = z.enum(['active', 'paused']);
+export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
+
 export const promptSubmissionSchema = z.object({
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
@@ -61,6 +79,11 @@ export const promptSubmissionSchema = z.object({
   swarm_mode: z.boolean().optional(),
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),
+  goal_follow_up_timing: goalFollowUpTimingSchema.optional(),
+  goal_initial_status: goalInitialStatusSchema.optional(),
+  // Deferred-append timing for this submission; omitted means `agent_idle`.
+  // Consumed when the prompt is dequeued, never while it is queued.
+  append_timing: deferredAppendTimingSchema.optional(),
   // Client-managed session tool denylist: full-replace on every submit; the
   // bound profile's own deny always survives. Omit to keep the persisted
   // value, send `[]` to clear the client portion.
@@ -93,6 +116,10 @@ export const promptItemSchema = z.object({
   status: promptStatusSchema,
   content: z.array(messageContentSchema).min(1),
   created_at: isoDateTimeSchema,
+  // Always populated by a server that supports deferred-append timing; absent
+  // on older responses, where callers should assume `agent_idle`.
+  append_timing: deferredAppendTimingSchema.optional(),
+  revision: z.number().int().nonnegative().optional(),
 });
 export type PromptItem = z.infer<typeof promptItemSchema>;
 
@@ -112,6 +139,15 @@ export type PromptReplaceRequest = z.infer<typeof promptReplaceRequestSchema>;
 
 export const promptReplaceResultSchema = promptItemSchema;
 export type PromptReplaceResult = z.infer<typeof promptReplaceResultSchema>;
+
+export const promptTimingRequestSchema = z.object({
+  append_timing: deferredAppendTimingSchema,
+  expected_revision: z.number().int().nonnegative().optional(),
+});
+export type PromptTimingRequest = z.infer<typeof promptTimingRequestSchema>;
+
+export const promptTimingResultSchema = promptItemSchema;
+export type PromptTimingResult = z.infer<typeof promptTimingResultSchema>;
 
 export const promptMoveRequestSchema = z.object({
   target_index: z.number().int().nonnegative(),

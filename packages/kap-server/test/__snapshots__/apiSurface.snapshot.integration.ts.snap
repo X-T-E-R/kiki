@@ -22,6 +22,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
   "routes": [
     [
       "DELETE",
+      "/api/cron/{task_id}",
+    ],
+    [
+      "DELETE",
       "/api/external-delegation/seats/{seat_id}",
     ],
     [
@@ -87,6 +91,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/connections",
+    ],
+    [
+      "GET",
+      "/api/cron",
     ],
     [
       "GET",
@@ -403,6 +411,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/config",
+    ],
+    [
+      "POST",
+      "/api/cron/{tail}",
     ],
     [
       "POST",
