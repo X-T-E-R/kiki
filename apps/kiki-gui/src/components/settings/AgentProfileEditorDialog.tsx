@@ -1,9 +1,9 @@
 import { useState } from 'react';
 
-import { errorText } from '@kiki/session-core/i18n';
+import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { parseNamedAgentTools } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
-import type { NamedAgentProfile } from '../../lib/client';
+import type { NamedAgentProfile, UpdateNamedAgentProfileRequest } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { FeedbackLine, type Feedback } from '../controls';
@@ -11,13 +11,115 @@ import { useDirtyReporter } from '../dirtyGuard';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 
 /**
+ * Three-way state of one frontmatter tool list. `inherit` writes nothing (the
+ * layer does not restrict), `empty` writes an explicit empty list, and `list`
+ * writes the parsed names. The engine keeps an absent field and `[]` apart —
+ * `parseStringList` returns `undefined` for one and `[]` for the other, and an
+ * empty `tools` list forbids every tool — so the editor must round-trip all
+ * three instead of collapsing them into "no text".
+ */
+type ToolFieldMode = 'inherit' | 'empty' | 'list';
+
+interface ToolFieldValue {
+  readonly mode: ToolFieldMode;
+  readonly text: string;
+}
+
+const TOOL_FIELD_MODES: readonly ToolFieldMode[] = ['inherit', 'empty', 'list'];
+
+/** `tools` reads as an allow list: an empty one denies every tool. */
+const TOOLS_MODE_LABELS: Readonly<Record<ToolFieldMode, I18nKey>> = {
+  inherit: 'st.namedAgents.inherit',
+  empty: 'st.tools.disabled',
+  list: 'st.tools.allowlist',
+};
+
+/** `disallowedTools` reads as a deny list: an empty one denies nothing. */
+const DISALLOWED_TOOLS_MODE_LABELS: Readonly<Record<ToolFieldMode, I18nKey>> = {
+  inherit: 'st.namedAgents.inherit',
+  empty: 'st.auth.none',
+  list: 'st.tools.disabled',
+};
+
+function toolFieldFrom(value: readonly string[] | undefined): ToolFieldValue {
+  if (value === undefined) return { mode: 'inherit', text: '' };
+  return { mode: value.length === 0 ? 'empty' : 'list', text: value.join(', ') };
+}
+
+function toolFieldsEqual(left: ToolFieldValue, right: ToolFieldValue): boolean {
+  if (left.mode !== right.mode) return false;
+  return left.mode !== 'list' || left.text === right.text;
+}
+
+/** `null` deletes the frontmatter field, `[]` writes an empty list. */
+function toolFieldBody(field: ToolFieldValue): string[] | null {
+  if (field.mode === 'inherit') return null;
+  if (field.mode === 'empty') return [];
+  return parseNamedAgentTools(field.text) ?? [];
+}
+
+/** A list-mode field with no name at all names nothing to allow or deny. */
+function toolFieldUnnamed(field: ToolFieldValue): boolean {
+  return field.mode === 'list' && parseNamedAgentTools(field.text) === null;
+}
+
+/**
+ * One frontmatter tool list with its three-way mode picker. The mode carries
+ * the meaning the textarea alone cannot: nothing written, an explicit empty
+ * list, or the names below.
+ */
+function ToolListField({
+  field,
+  fieldKey,
+  label,
+  labels,
+  onChange,
+}: {
+  field: ToolFieldValue;
+  fieldKey: 'tools' | 'disallowedTools';
+  label: string;
+  labels: Readonly<Record<ToolFieldMode, I18nKey>>;
+  onChange: (next: ToolFieldValue) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="space-y-1" data-tool-field={fieldKey}>
+      <label className="block text-[11px] font-medium text-ink-soft">
+        {label}
+        <select
+          data-tool-field-mode={fieldKey}
+          className={`${INPUT} mt-1`}
+          value={field.mode}
+          onChange={(event) => { onChange({ ...field, mode: event.target.value as ToolFieldMode }); }}
+        >
+          {TOOL_FIELD_MODES.map((mode) => (
+            <option key={mode} value={mode}>{t(labels[mode])}</option>
+          ))}
+        </select>
+      </label>
+      {field.mode === 'list' ? (
+        <textarea
+          data-tool-field-list={fieldKey}
+          className={`${INPUT} min-h-16 font-mono`}
+          value={field.text}
+          placeholder={t('st.namedAgents.toolsPlaceholder')}
+          onChange={(event) => { onChange({ ...field, text: event.target.value }); }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * Dedicated pop-up editor for one named agent profile (main or subagent).
  * Collects every field the structured PATCH contract opens — description,
  * when-to-use, pinned model, thinking effort, service tier, tool lists, and
  * per-route model aliases — and saves them in one shot, replacing the old
- * scattered inline fieldset. Read-only projections (budgets, spawn
- * constraints, model profiles) stay on the row's technical-details fold; the
- * raw-file editor remains a separate entry.
+ * scattered inline fieldset. Only the fields the user actually touched ride
+ * the PATCH: an untouched `tools: []` must stay an empty list (deny every
+ * tool) instead of being re-serialized as "no such field". Read-only
+ * projections (budgets, spawn constraints, model profiles) stay on the row's
+ * technical-details fold; the raw-file editor remains a separate entry.
  */
 export function AgentProfileEditorDialog({
   profile,
@@ -41,8 +143,8 @@ export function AgentProfileEditorDialog({
     modelAlias: profile.pinned_model_alias ?? '',
     thinkingEffort: profile.thinking_effort ?? '',
     serviceTier: (profile.service_tier ?? '') as NamedAgentProfile['service_tier'] | '',
-    tools: (profile.tools ?? []).join(', '),
-    disallowedTools: (profile.disallowed_tools ?? []).join(', '),
+    tools: toolFieldFrom(profile.tools),
+    disallowedTools: toolFieldFrom(profile.disallowed_tools),
     routeAliases: Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])),
   }));
   const [description, setDescription] = useState(baseline.description);
@@ -54,39 +156,58 @@ export function AgentProfileEditorDialog({
   const [disallowedTools, setDisallowedTools] = useState(baseline.disallowedTools);
   const [routeAliases, setRouteAliases] = useState(baseline.routeAliases);
 
+  const changedRoutes = profile.routes.filter((route) =>
+    (routeAliases[route.id] ?? '') !== (baseline.routeAliases[route.id] ?? ''));
   const dirty = description !== baseline.description
     || whenToUse !== baseline.whenToUse
     || modelAlias !== baseline.modelAlias
     || thinkingEffort !== baseline.thinkingEffort
     || serviceTier !== baseline.serviceTier
-    || tools !== baseline.tools
-    || disallowedTools !== baseline.disallowedTools
-    || Object.entries(baseline.routeAliases).some(([id, value]) => (routeAliases[id] ?? '') !== value);
+    || !toolFieldsEqual(tools, baseline.tools)
+    || !toolFieldsEqual(disallowedTools, baseline.disallowedTools)
+    || changedRoutes.length > 0;
   useDirtyReporter(`agent-profile-editor:${profile.source}:${profile.name}`, dirty);
 
+  const canSave = dirty
+    && description.trim() !== ''
+    && !toolFieldUnnamed(tools)
+    && !toolFieldUnnamed(disallowedTools)
+    && profile.workspace_id !== undefined;
+
   const save = async () => {
-    if (profile.workspace_id === undefined) return;
+    if (profile.workspace_id === undefined || !canSave) return;
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await client.updateNamedAgentProfile(profile.name, {
+      const body: UpdateNamedAgentProfileRequest = {
         scope: profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra',
         workspace_id: profile.workspace_id,
         source_file: profile.source_file,
-        description: description.trim(),
-        when_to_use: whenToUse.trim() === '' ? null : whenToUse.trim(),
-        pinned_model_alias: modelAlias.trim() === '' ? null : modelAlias.trim(),
-        thinking_effort: thinkingEffort === '' ? null : thinkingEffort,
-        service_tier: serviceTier === '' ? null : serviceTier,
-        tools: parseNamedAgentTools(tools),
-        disallowed_tools: parseNamedAgentTools(disallowedTools),
-        routes: profile.routes.map((route) => ({
+        description: description !== baseline.description ? description.trim() : undefined,
+        when_to_use: whenToUse !== baseline.whenToUse
+          ? (whenToUse.trim() === '' ? null : whenToUse.trim())
+          : undefined,
+        pinned_model_alias: modelAlias !== baseline.modelAlias
+          ? (modelAlias.trim() === '' ? null : modelAlias.trim())
+          : undefined,
+        thinking_effort: thinkingEffort !== baseline.thinkingEffort
+          ? (thinkingEffort === '' ? null : thinkingEffort)
+          : undefined,
+        service_tier: serviceTier !== baseline.serviceTier
+          ? (serviceTier === '' ? null : serviceTier)
+          : undefined,
+        tools: toolFieldsEqual(tools, baseline.tools) ? undefined : toolFieldBody(tools),
+        disallowed_tools: toolFieldsEqual(disallowedTools, baseline.disallowedTools)
+          ? undefined
+          : toolFieldBody(disallowedTools),
+        routes: changedRoutes.length === 0 ? undefined : changedRoutes.map((route) => ({
           id: route.id,
-          model_alias: routeAliases[route.id]?.trim() === ''
+          model_alias: (routeAliases[route.id] ?? '').trim() === ''
             ? null
-            : routeAliases[route.id]?.trim(),
+            : (routeAliases[route.id] ?? '').trim(),
         })),
-      });
+      };
+      const echoed = await client.updateNamedAgentProfile(profile.name, body);
       onSaved(echoed);
       onClose();
     } catch (error) {
@@ -139,14 +260,20 @@ export function AgentProfileEditorDialog({
             </select>
           </label>
         </div>
-        <label className="block text-[11px] font-medium text-ink-soft">
-          {t('st.namedAgents.tools')}
-          <textarea className={`${INPUT} mt-1 min-h-16 font-mono`} value={tools} placeholder={t('st.namedAgents.toolsPlaceholder')} onChange={(event) => { setTools(event.target.value); }} />
-        </label>
-        <label className="block text-[11px] font-medium text-ink-soft">
-          {t('st.namedAgents.disallowedTools')}
-          <textarea className={`${INPUT} mt-1 min-h-16 font-mono`} value={disallowedTools} placeholder={t('st.namedAgents.toolsPlaceholder')} onChange={(event) => { setDisallowedTools(event.target.value); }} />
-        </label>
+        <ToolListField
+          field={tools}
+          fieldKey="tools"
+          label={t('st.namedAgents.tools')}
+          labels={TOOLS_MODE_LABELS}
+          onChange={setTools}
+        />
+        <ToolListField
+          field={disallowedTools}
+          fieldKey="disallowedTools"
+          label={t('st.namedAgents.disallowedTools')}
+          labels={DISALLOWED_TOOLS_MODE_LABELS}
+          onChange={setDisallowedTools}
+        />
         {profile.routes.map((route) => (
           <label key={route.id} className="block text-[11px] font-medium text-ink-soft">
             {t('st.namedAgents.routeModel', { route: route.id })}
@@ -160,7 +287,7 @@ export function AgentProfileEditorDialog({
         ))}
       </fieldset>
       <div className="mt-4 flex flex-wrap gap-2">
-        <button type="button" className={PRIMARY_BUTTON} disabled={description.trim() === '' || saving} onClick={() => void save()}>
+        <button type="button" className={PRIMARY_BUTTON} disabled={!canSave || saving} onClick={() => void save()}>
           {saving ? t('common.saving') : t('common.save')}
         </button>
         <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={onClose}>

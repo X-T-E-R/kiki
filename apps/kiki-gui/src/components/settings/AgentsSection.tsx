@@ -328,7 +328,10 @@ function NamedAgentProfileRow({
           ) : null}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <div title={toggleTitle}>
+          {/* The toggle writes the server-level disable list, which is keyed by
+              profile name alone — so it covers this profile in every workspace.
+              Say so next to the switch instead of hiding it in a tooltip. */}
+          <div className="flex items-center gap-1.5" title={toggleTitle}>
             <Toggle
               label={t('st.namedAgents.enabled')}
               checked={!profile.disabled}
@@ -340,6 +343,12 @@ function NamedAgentProfileRow({
                 });
               }}
             />
+            <span
+              data-toggle-scope="server"
+              className="shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint"
+            >
+              {t('st.scope.label')} · {t('st.scope.server')}
+            </span>
           </div>
           <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">
             {profile.source}{writable ? '' : ` · ${t('st.namedAgents.readOnly')}`}
@@ -361,6 +370,11 @@ function NamedAgentProfileRow({
           ) : null}
         </div>
       </div>
+      {profile.source !== 'builtin' ? (
+        <p data-toggle-scope-hint className="mt-1 text-[10.5px] text-ink-faint">
+          {t('st.namedAgents.namedToggleHint')}
+        </p>
+      ) : null}
       {editorOpen ? (
         <AgentProfileEditorDialog
           profile={profile}

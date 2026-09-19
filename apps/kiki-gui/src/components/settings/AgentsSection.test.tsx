@@ -193,6 +193,13 @@ describe('default main profile settings', () => {
     const edit = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
     await act(async () => { edit.click(); });
     const dialog = document.body.querySelector('[role="dialog"]')!;
+    // The save button stays disabled until the draft differs from the profile.
+    const description = dialog.querySelector<HTMLTextAreaElement>('textarea')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(description, 'Fixture failure draft');
+      description.dispatchEvent(new Event('input', { bubbles: true }));
+    });
     const save = [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
     await act(async () => { save.click(); });
     await settle();
@@ -230,6 +237,26 @@ describe('default main profile settings', () => {
     expect(rejectedRow?.querySelector('[data-agent-capabilities]')).toBeNull();
     expect(rejectedRow?.querySelector<HTMLButtonElement>('[data-new-session-href]')?.disabled).toBe(true);
     expect(rejectedRow?.textContent).not.toContain('Overrides the built-in');
+  });
+
+  it('marks a workspace profile switch as the server-wide, name-keyed switch it is', async () => {
+    const workspaceProfile: NamedAgentProfile = {
+      ...profile,
+      name: 'ws-helper',
+      source: 'workspace',
+      source_file: '/fixture/.kiki/agents/ws-helper.md',
+      main: true,
+    };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [workspaceProfile] });
+    client.patchConfig.mockResolvedValue({ disabled_named_profiles: ['ws-helper'] });
+    await render();
+    const row = container.querySelector('[data-agent-profile="ws-helper"]')!;
+    // The scope is spelled out next to the switch, not only in its tooltip.
+    expect(row.querySelector('[data-toggle-scope="server"]')?.textContent).toBe('Scope · Server');
+    expect(row.querySelector('[data-toggle-scope-hint]')?.textContent).toContain('everywhere');
+    await act(async () => row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledWith({ disabled_named_profiles: ['ws-helper'] });
   });
 
   it('invalidates effective catalog caches after toggling discovery without disabling the main entry', async () => {
@@ -271,5 +298,145 @@ describe('default main profile settings', () => {
     expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('model profile: fixture/model-b');
     expect(queries.getQueryState(['agentProfiles', 'cwd', '/fixture', 'effective'])?.isInvalidated).toBe(true);
     expect(queries.getQueryState(['agentCapabilities', { workspace_id: 'ws-one', profile: 'agent' }])?.isInvalidated).toBe(true);
+  });
+});
+
+/**
+ * Tool-list fidelity: an absent `tools` field ("this layer does not restrict"),
+ * `tools: []` ("no tool at all") and a named list are three engine states, so an
+ * untouched field must never be re-serialized and a touched one must land on the
+ * state the user picked.
+ */
+describe('profile editor tool-list fidelity', () => {
+  const toolsMode = (dialog: HTMLElement) =>
+    dialog.querySelector<HTMLSelectElement>('[data-tool-field-mode="tools"]')!;
+  const toolsList = (dialog: HTMLElement) =>
+    dialog.querySelector<HTMLTextAreaElement>('[data-tool-field-list="tools"]');
+  const disallowedMode = (dialog: HTMLElement) =>
+    dialog.querySelector<HTMLSelectElement>('[data-tool-field-mode="disallowedTools"]')!;
+  const disallowedList = (dialog: HTMLElement) =>
+    dialog.querySelector<HTMLTextAreaElement>('[data-tool-field-list="disallowedTools"]');
+  const descriptionField = (dialog: HTMLElement) => dialog.querySelector<HTMLTextAreaElement>('textarea')!;
+
+  async function openEditor(overrides: Partial<NamedAgentProfile>): Promise<HTMLElement> {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, ...overrides }] });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    const edit = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
+    await act(async () => { edit.click(); });
+    return document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+  }
+
+  async function setSelect(select: HTMLSelectElement, value: string): Promise<void> {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+      setter.call(select, value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  async function setText(
+    target: HTMLTextAreaElement | HTMLInputElement,
+    value: string,
+  ): Promise<void> {
+    await act(async () => {
+      const prototype = target instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')!.set!;
+      setter.call(target, value);
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  async function save(dialog: HTMLElement): Promise<Record<string, unknown>> {
+    const button = [...dialog.querySelectorAll('button')].find((item) => item.textContent === 'Save')!;
+    expect(button.disabled).toBe(false);
+    await act(async () => { button.click(); });
+    await settle();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledTimes(1);
+    const [name, body] = client.updateNamedAgentProfile.mock.calls[0] as [string, Record<string, unknown>];
+    expect(name).toBe('agent');
+    return body;
+  }
+
+  it('keeps an untouched `tools: []` out of the patch instead of clearing the field', async () => {
+    const dialog = await openEditor({ tools: [] });
+    expect(toolsMode(dialog).value).toBe('empty');
+    expect(toolsList(dialog)).toBeNull();
+    await setText(descriptionField(dialog), 'Touched description');
+    const body = await save(dialog);
+    expect(body['description']).toBe('Touched description');
+    expect(body['tools']).toBeUndefined();
+    // The wire body is JSON, where an `undefined` field disappears entirely —
+    // which is what keeps "deny every tool" from turning into "unrestricted".
+    expect(JSON.parse(JSON.stringify(body))).not.toHaveProperty('tools');
+    expect(body['disallowed_tools']).toBeUndefined();
+  });
+
+  it('keeps an untouched named list and its text', async () => {
+    const dialog = await openEditor({ tools: ['Read', 'Bash'] });
+    expect(toolsMode(dialog).value).toBe('list');
+    expect(toolsList(dialog)!.value).toBe('Read, Bash');
+    await setText(descriptionField(dialog), 'Touched description');
+    const body = await save(dialog);
+    expect(body['tools']).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(body))).not.toHaveProperty('tools');
+  });
+
+  it('keeps an untouched absent field absent and writes the list the user types', async () => {
+    const dialog = await openEditor({ tools: undefined });
+    expect(toolsMode(dialog).value).toBe('inherit');
+    expect(toolsList(dialog)).toBeNull();
+    await setSelect(toolsMode(dialog), 'list');
+    await setText(toolsList(dialog)!, 'Read, Bash');
+    await setText(descriptionField(dialog), 'Touched description');
+    const body = await save(dialog);
+    expect(body['tools']).toEqual(['Read', 'Bash']);
+  });
+
+  it('writes an explicit empty list when the allow list moves to the deny state', async () => {
+    const dialog = await openEditor({ tools: ['Read'] });
+    await setSelect(toolsMode(dialog), 'empty');
+    await setText(descriptionField(dialog), 'Touched description');
+    const body = await save(dialog);
+    expect(body['tools']).toEqual([]);
+  });
+
+  it('clears the field when the allow list returns to inherit', async () => {
+    const dialog = await openEditor({ tools: ['Read'] });
+    await setSelect(toolsMode(dialog), 'inherit');
+    await setText(descriptionField(dialog), 'Touched description');
+    const body = await save(dialog);
+    expect(body['tools']).toBeNull();
+  });
+
+  it('refuses a named-list state that names nothing until the user fills it in', async () => {
+    const dialog = await openEditor({ tools: [] });
+    await setSelect(toolsMode(dialog), 'list');
+    await setText(descriptionField(dialog), 'Touched description');
+    const button = [...dialog.querySelectorAll('button')].find((item) => item.textContent === 'Save')!;
+    expect(button.disabled).toBe(true);
+    await setSelect(toolsMode(dialog), 'empty');
+    expect(button.disabled).toBe(false);
+  });
+
+  it('tracks the disallowed list three-way as well', async () => {
+    const dialog = await openEditor({ disallowed_tools: [] });
+    expect(disallowedMode(dialog).value).toBe('empty');
+    await setText(descriptionField(dialog), 'Touched description');
+    const untouched = await save(dialog);
+    expect(untouched['disallowed_tools']).toBeUndefined();
+  });
+
+  it('writes the deny list the user picks', async () => {
+    const dialog = await openEditor({ disallowed_tools: ['WebSearch'] });
+    expect(disallowedMode(dialog).value).toBe('list');
+    expect(disallowedList(dialog)!.value).toBe('WebSearch');
+    await setSelect(disallowedMode(dialog), 'empty');
+    await setText(descriptionField(dialog), 'Touched description');
+    const body = await save(dialog);
+    expect(body['disallowed_tools']).toEqual([]);
+    expect(body['tools']).toBeUndefined();
   });
 });

@@ -7,6 +7,7 @@ import {
   type NamedAgentLeaseDetailLabel,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
+import { loadAgentProfileCatalog, type AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
 import { useOptionalConnection } from '../../state/connection';
 import { FilePathLink } from '../mediaPreview';
 import type { AgentIdentity } from './types';
@@ -15,6 +16,50 @@ export interface ProfileDetailSectionsProps {
   readonly profile?: AgentPanelProfile;
   readonly identity?: AgentIdentity;
   readonly query?: AgentCapabilitiesQuery;
+}
+
+interface DefinitionLookup {
+  /** The definition the shown profile is bound to, keyed by its own workspace
+   *  scope and source file. */
+  readonly bound?: NamedAgentProfile;
+  /** A same-named definition from another source file. Never stands in for the
+   *  bound one; rendered on its own, labelled by its file. */
+  readonly other?: NamedAgentProfile;
+}
+
+function lookupDefinition(
+  items: readonly NamedAgentProfile[],
+  name: string | undefined,
+  sourceFile: string | undefined,
+): DefinitionLookup {
+  if (name === undefined) return {};
+  const sameName = items.filter((candidate) => candidate.name === name);
+  const bound = sourceFile === undefined
+    ? sameName.find((candidate) => candidate.source_file === undefined)
+    : sameName.find((candidate) => candidate.source_file === sourceFile);
+  if (bound !== undefined) return { bound };
+  return sameName[0] === undefined ? {} : { other: sameName[0] };
+}
+
+/**
+ * Where an effective model/effort value came from, as far as the panel can
+ * prove it. The panel response does not carry a source for the owner profile,
+ * so a locked value is the profile binding and an unlocked one is only
+ * attributed when the bound definition declares exactly that value — anything
+ * else stays "not reported" instead of claiming a source.
+ */
+function valueOrigin(
+  effective: string | undefined,
+  declared: string | undefined,
+  locked: boolean,
+): { readonly locked: boolean; readonly labelKey: I18nKey } {
+  if (locked) return { locked: true, labelKey: 'diagnostics.source.profile' };
+  return {
+    locked: false,
+    labelKey: declared !== undefined && declared === effective
+      ? 'diagnostics.source.profile'
+      : 'diagnostics.unknown',
+  };
 }
 
 const LEASE_LABEL_MAP: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
@@ -50,23 +95,35 @@ export function ProfileDetailSections({
   const profileName = profile?.name ?? identity?.profile;
   const sourceFile = profile?.source_file ?? identity?.sourceFile;
 
-  const [catalogProfile, setCatalogProfile] = useState<NamedAgentProfile | undefined>(undefined);
+  // The definition this profile is bound to is addressed by its own workspace
+  // scope (when the query carries one) and by its source file — a same-named
+  // profile from another workspace or directory must never stand in for it.
+  const workspaceId = query !== undefined && 'workspace_id' in query ? query.workspace_id : undefined;
+  const cwd = query !== undefined && 'cwd' in query ? query.cwd : undefined;
+
+  const [catalogItems, setCatalogItems] = useState<readonly NamedAgentProfile[]>([]);
 
   useEffect(() => {
-    if (!profileName || !client) return;
+    if (!client || profileName === undefined) return;
+    const mode: AgentProfileCatalogMode = workspaceId !== undefined
+      ? { mode: 'workspace', workspaceId }
+      : cwd !== undefined
+        ? { mode: 'cwd', cwd }
+        : { mode: 'global' };
     let cancelled = false;
-    client
-      .listNamedAgentProfiles({ expand: true })
-      .then((res) => {
-        if (cancelled) return;
-        const found = res.items.find((p) => p.name === profileName);
-        if (found) setCatalogProfile(found);
+    loadAgentProfileCatalog(client, mode)
+      .then((result) => {
+        if (!cancelled) setCatalogItems(result.items);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setCatalogItems([]);
+      });
     return () => {
       cancelled = true;
     };
-  }, [profileName, client]);
+  }, [client, profileName, workspaceId, cwd]);
+
+  const definition = lookupDefinition(catalogItems, profileName, sourceFile);
 
   const [rawText, setRawText] = useState<string | null>(null);
   const [rawLoading, setRawLoading] = useState(false);
@@ -101,33 +158,36 @@ export function ProfileDetailSections({
   const route = profile?.route;
   const definitionId = profile?.definition_id;
   const description = profile?.description ?? identity?.description ?? identity?.summary;
-  const whenToUse = catalogProfile?.when_to_use;
+  const bound = definition.bound;
+  const whenToUse = bound?.when_to_use;
 
   const effectiveModel = profile?.model ?? identity?.model;
-  const pinnedModel = catalogProfile?.pinned_model_alias ?? profile?.locked_model;
+  const pinnedModel = bound?.pinned_model_alias ?? profile?.locked_model;
   const isModelLocked = Boolean(profile?.locked_model);
+  const modelOrigin = valueOrigin(effectiveModel, bound?.pinned_model_alias, isModelLocked);
 
   const effectiveEffort = profile?.thinking_effort ?? identity?.thinkingEffort;
-  const pinnedEffort = catalogProfile?.thinking_effort ?? profile?.locked_effort;
+  const pinnedEffort = bound?.thinking_effort ?? profile?.locked_effort;
   const isEffortLocked = Boolean(profile?.locked_effort);
+  const effortOrigin = valueOrigin(effectiveEffort, bound?.thinking_effort, isEffortLocked);
 
-  const serviceTier = profile?.service_tier ?? catalogProfile?.service_tier;
-  const contextBudget = catalogProfile?.context_budget;
-  const maxCompletionTokens = catalogProfile?.max_completion_tokens;
-  const requestParams = catalogProfile?.request_params;
+  const serviceTier = profile?.service_tier ?? bound?.service_tier;
+  const contextBudget = bound?.context_budget;
+  const maxCompletionTokens = bound?.max_completion_tokens;
+  const requestParams = bound?.request_params;
 
-  const tools = profile?.tools ?? catalogProfile?.tools;
-  const disallowedTools = profile?.disallowed_tools ?? catalogProfile?.disallowed_tools;
+  const tools = profile?.tools ?? bound?.tools;
+  const disallowedTools = profile?.disallowed_tools ?? bound?.disallowed_tools;
   const toolAllowPolicies = profile?.tool_allow_policies;
   const executionRestriction = profile?.execution_restriction;
 
-  const spawnConstraints = profile?.spawn_constraints ?? catalogProfile?.spawn_constraints;
-  const subagents = catalogProfile?.subagents;
+  const spawnConstraints = profile?.spawn_constraints ?? bound?.spawn_constraints;
+  const subagents = bound?.subagents;
 
   return (
     <div data-profile-detail className="space-y-3.5 text-[11.5px]">
       {/* 1. 身份与来源 */}
-      <details open className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="identity" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.identity')}
         </summary>
@@ -183,8 +243,77 @@ export function ProfileDetailSections({
         </div>
       </details>
 
+      {/* 1b. 磁盘上的同名定义：与上面这份绑定定义不是同一个文件时单列 */}
+      {definition.other ? (
+        <details data-disk-definition className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+          <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+            {t('st.namedAgents.sourceFile')} · {definition.other.source_file ?? t('st.namedAgents.builtin')}
+          </summary>
+          <div className="mt-2 space-y-1 break-all font-mono text-[10.5px] text-ink-soft">
+            {definition.other.description !== undefined ? (
+              <p>
+                <span className="text-ink-faint">{t('agentPanel.profileDescription')}: </span>
+                {definition.other.description}
+              </p>
+            ) : null}
+            {definition.other.when_to_use !== undefined ? (
+              <p>
+                <span className="text-ink-faint">{t('st.namedAgents.whenToUse')}: </span>
+                {definition.other.when_to_use}
+              </p>
+            ) : null}
+            {definition.other.pinned_model_alias !== undefined ? (
+              <p>
+                <span className="text-ink-faint">{t('st.namedAgents.modelPin')}: </span>
+                {definition.other.pinned_model_alias}
+              </p>
+            ) : null}
+            {definition.other.thinking_effort !== undefined ? (
+              <p>
+                <span className="text-ink-faint">{t('st.namedAgents.defaultModelThinkingEffort')}: </span>
+                {definition.other.thinking_effort}
+              </p>
+            ) : null}
+            {definition.other.service_tier !== undefined ? (
+              <p>
+                <span className="text-ink-faint">{t('st.namedAgents.serviceTier')}: </span>
+                {definition.other.service_tier}
+              </p>
+            ) : null}
+            {definition.other.context_budget !== undefined ? (
+              <p>
+                <span className="text-ink-faint">{t('st.namedAgents.contextBudget')}: </span>
+                {definition.other.context_budget}
+              </p>
+            ) : null}
+            {definition.other.max_completion_tokens !== undefined ? (
+              <p>
+                <span className="text-ink-faint">{t('st.namedAgents.maxCompletionTokens')}: </span>
+                {definition.other.max_completion_tokens}
+              </p>
+            ) : null}
+            {definition.other.tools !== undefined ? (
+              <p>
+                <span className="text-ink-faint">{t('st.namedAgents.tools')}: </span>
+                {definition.other.tools.length === 0
+                  ? t('st.tools.disabled')
+                  : definition.other.tools.join(', ')}
+              </p>
+            ) : null}
+            {definition.other.disallowed_tools !== undefined
+              && definition.other.disallowed_tools.length > 0 ? (
+                <p>
+                  <span className="text-ink-faint">{t('st.namedAgents.disallowedTools')}: </span>
+                  {definition.other.disallowed_tools.join(', ')}
+                </p>
+              ) : null}
+            <p className="text-ink-faint">{t('st.namedAgents.projectionHint')}</p>
+          </div>
+        </details>
+      ) : null}
+
       {/* 2. 意图与定位 */}
-      <details open className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="intent" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.intent')}
         </summary>
@@ -211,7 +340,7 @@ export function ProfileDetailSections({
       </details>
 
       {/* 3. 模型与推理（三列：声明值 ← 生效值 ← 来源/锁定） */}
-      <details open className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="model" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.model')}
         </summary>
@@ -231,7 +360,7 @@ export function ProfileDetailSections({
                 {effectiveModel ?? t('agentPanel.unknownModel')}
               </div>
               <div className="text-right">
-                {isModelLocked ? (
+                {modelOrigin.locked ? (
                   <span
                     className="rounded bg-amber-card px-1 py-0.2 text-[9px] text-amber-ink border border-amber-rule/30"
                     title={t('agentPanel.locked')}
@@ -239,7 +368,7 @@ export function ProfileDetailSections({
                     🔒 {t('agentPanel.locked')}
                   </span>
                 ) : (
-                  <span className="text-ink-faint text-[9.5px]">{t('diagnostics.source.profile')}</span>
+                  <span data-value-origin="model" className="text-ink-faint text-[9.5px]">{t(modelOrigin.labelKey)}</span>
                 )}
               </div>
             </div>
@@ -250,7 +379,7 @@ export function ProfileDetailSections({
                 {effectiveEffort ?? t('agentPanel.default')}
               </div>
               <div className="text-right">
-                {isEffortLocked ? (
+                {effortOrigin.locked ? (
                   <span
                     className="rounded bg-amber-card px-1 py-0.2 text-[9px] text-amber-ink border border-amber-rule/30"
                     title={t('agentPanel.locked')}
@@ -258,7 +387,7 @@ export function ProfileDetailSections({
                     🔒 {t('agentPanel.locked')}
                   </span>
                 ) : (
-                  <span className="text-ink-faint text-[9.5px]">{t('diagnostics.source.profile')}</span>
+                  <span data-value-origin="effort" className="text-ink-faint text-[9.5px]">{t(effortOrigin.labelKey)}</span>
                 )}
               </div>
             </div>
@@ -292,13 +421,13 @@ export function ProfileDetailSections({
           </div>
 
           {/* Model profiles list */}
-          {catalogProfile?.model_profiles && catalogProfile.model_profiles.length > 0 ? (
+          {bound?.model_profiles && bound.model_profiles.length > 0 ? (
             <div className="space-y-1 pt-1">
               <div className="text-[10px] font-semibold uppercase text-ink-faint">
                 {t('st.namedAgents.modelProfile')}
               </div>
               <div className="space-y-1">
-                {catalogProfile.model_profiles.map((mp) => {
+                {bound.model_profiles.map((mp) => {
                   const summary = summarizeNamedAgentModelProfile(mp);
                   return (
                     <div
@@ -321,7 +450,7 @@ export function ProfileDetailSections({
       </details>
 
       {/* 4. 工具与策略 */}
-      <details open className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="tools" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.tools')}
         </summary>
@@ -392,7 +521,7 @@ export function ProfileDetailSections({
       </details>
 
       {/* 5. 派生能力 */}
-      <details open className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details open data-profile-section="subagents" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.subagents')}
         </summary>
@@ -487,7 +616,7 @@ export function ProfileDetailSections({
       </details>
 
       {/* 6. 原始文件 */}
-      <details className="rounded-lg border border-hairline bg-paper/40 p-2.5">
+      <details data-profile-section="raw" className="rounded-lg border border-hairline bg-paper/40 p-2.5">
         <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.raw')}
         </summary>

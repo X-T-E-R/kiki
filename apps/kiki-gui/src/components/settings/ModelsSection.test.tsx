@@ -275,3 +275,80 @@ describe('ModelCatalogCard row editor', () => {
     expect(container.textContent).toContain('future: future backend message');
   });
 });
+
+/**
+ * Collapsing a row is a peek, not a close: the editor stays mounted behind
+ * `display: none` with its draft, baseline and dirty flag intact, and only an
+ * explicit Close — confirmed while dirty — drops the draft.
+ */
+describe('ModelCatalogCard row editor draft retention', () => {
+  const editToggle = (container: HTMLElement) => container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
+  )!;
+  const nameInput = (container: HTMLElement) => container.querySelector<HTMLInputElement>(
+    'input[aria-label="Display name for kimi-code/kimi-k2"]',
+  )!;
+  const editorWrapper = (container: HTMLElement) => container.querySelector<HTMLElement>(
+    '[data-model-row-editor="kimi-code/kimi-k2"]',
+  );
+  const buttonByText = (container: HTMLElement, text: string) =>
+    [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === text)!;
+
+  async function openEditor(container: HTMLElement): Promise<void> {
+    await act(async () => { editToggle(container).click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  }
+
+  it('hides a collapsed editor without dropping its draft', async () => {
+    const container = await renderCard();
+    await openEditor(container);
+    await act(async () => { setInputValue(nameInput(container), 'K2 Thinking'); });
+    expect(buttonByText(container, 'Save').disabled).toBe(false);
+
+    await act(async () => { editToggle(container).click(); });
+    expect(editorWrapper(container)!.style.display).toBe('none');
+    expect(nameInput(container).value).toBe('K2 Thinking');
+    expect(container.querySelector('[data-collapsed-draft]')?.textContent).toBe('Unsaved');
+
+    await act(async () => { editToggle(container).click(); });
+    expect(editorWrapper(container)!.style.display).toBe('');
+    expect(nameInput(container).value).toBe('K2 Thinking');
+    expect(buttonByText(container, 'Save').disabled).toBe(false);
+    expect(updateModel).not.toHaveBeenCalled();
+  });
+
+  it('keeps a draft that survives the collapse when the discard is refused', async () => {
+    const container = await renderCard();
+    await openEditor(container);
+    await act(async () => { setInputValue(nameInput(container), 'K2 Thinking'); });
+    await act(async () => { editToggle(container).click(); });
+    await act(async () => { editToggle(container).click(); });
+
+    await act(async () => { buttonByText(container, 'Close').click(); });
+    expect(container.querySelector('[role="alertdialog"]')).not.toBeNull();
+    await act(async () => { buttonByText(container, 'Keep editing').click(); });
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(nameInput(container).value).toBe('K2 Thinking');
+    expect(buttonByText(container, 'Save').disabled).toBe(false);
+  });
+
+  it('drops the draft only when the explicit close is confirmed', async () => {
+    const container = await renderCard();
+    await openEditor(container);
+    await act(async () => { setInputValue(nameInput(container), 'K2 Thinking'); });
+    await act(async () => { buttonByText(container, 'Close').click(); });
+    await act(async () => { buttonByText(container, 'Discard and leave').click(); });
+    expect(editorWrapper(container)).toBeNull();
+    expect(container.querySelector('input[aria-label="Display name for kimi-code/kimi-k2"]')).toBeNull();
+    expect(updateModel).not.toHaveBeenCalled();
+  });
+
+  it('closes a clean editor without asking', async () => {
+    const container = await renderCard();
+    await openEditor(container);
+    await act(async () => { buttonByText(container, 'Close').click(); });
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(editorWrapper(container)).toBeNull();
+  });
+});

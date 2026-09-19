@@ -26,6 +26,7 @@ import { formatTokens } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ChipSelect } from '../ChipSelect';
+import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { ContextStepper, ImagePolicyEditor, MsUnitInput } from '../ProviderFields';
@@ -583,7 +584,30 @@ function ModelRow({
   onSaved: () => Promise<void>;
 }) {
   const { t } = useI18n();
-  const [editing, setEditing] = useState(false);
+  // Collapsing the row hides the editor (`display: none`) instead of unmounting
+  // it, so a half-finished draft, its baseline and its dirty flag survive a peek
+  // at the catalog. Only the editor's own Close button unmounts it — after the
+  // discard confirmation when the draft is dirty.
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorMounted, setEditorMounted] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const toggleEditor = () => {
+    if (editorMounted) {
+      setEditorOpen((value) => !value);
+      return;
+    }
+    setEditorMounted(true);
+    setEditorOpen(true);
+  };
+  const requestClose = () => {
+    if (editorDirty) {
+      setConfirmingDiscard(true);
+      return;
+    }
+    setEditorMounted(false);
+    setEditorOpen(false);
+  };
   return (
     <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
       <div className="flex items-center gap-3">
@@ -607,6 +631,14 @@ function ModelRow({
                 {t('st.models.default')}
               </span>
             ) : null}
+            {editorMounted && !editorOpen && editorDirty ? (
+              <span
+                data-collapsed-draft
+                className="ml-2 rounded-full border border-amber-rule/40 bg-amber-card px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-amber-ink"
+              >
+                {t('st.dirty.badge')}
+              </span>
+            ) : null}
           </p>
           <p className="truncate font-mono text-[10.5px] text-ink-faint">
             {item.remote_id} · {formatTokens(item.max_context_size)} {t('st.models.context')}
@@ -623,21 +655,40 @@ function ModelRow({
         <button
           type="button"
           aria-label={t('st.models.editAria', { model: item.id })}
-          aria-expanded={editing}
+          aria-expanded={editorOpen}
           title={t('st.models.editTitle')}
-          onClick={() => { setEditing((value) => !value); }}
+          onClick={toggleEditor}
           className="shrink-0 text-[10px] text-ink-faint transition-colors hover:text-ink"
         >
-          <span aria-hidden className={`inline-block transition-transform ${editing ? 'rotate-90' : ''}`}>▶</span>
+          <span aria-hidden className={`inline-block transition-transform ${editorOpen ? 'rotate-90' : ''}`}>▶</span>
         </button>
       </div>
-      {editing ? (
-        <ModelCatalogRowEditor
-          item={item}
-          inheritedImageTypes={provider?.images?.accepted_types}
-          onSaved={onSaved}
-        />
+      {editorMounted ? (
+        <div data-model-row-editor={item.id} style={editorOpen ? undefined : { display: 'none' }}>
+          <ModelCatalogRowEditor
+            item={item}
+            inheritedImageTypes={provider?.images?.accepted_types}
+            onSaved={onSaved}
+            onDirtyChange={setEditorDirty}
+            onClose={requestClose}
+          />
+        </div>
       ) : null}
+      <ConfirmDialog
+        open={confirmingDiscard}
+        overlayId={`catalog-model-discard:${item.id}`}
+        title={t('st.dirty.leaveTitle')}
+        body={t('st.dirty.leaveBody')}
+        confirmLabel={t('st.dirty.leaveConfirm')}
+        cancelLabel={t('st.dirty.stay')}
+        onConfirm={() => {
+          setConfirmingDiscard(false);
+          setEditorDirty(false);
+          setEditorMounted(false);
+          setEditorOpen(false);
+        }}
+        onCancel={() => { setConfirmingDiscard(false); }}
+      />
     </div>
   );
 }
@@ -649,15 +700,21 @@ function ModelRow({
  * rebuilding anything from the list projection. Saving sends only the fields
  * the user changed together with the revision that read returned, so a
  * concurrent edit surfaces as a conflict instead of a silent overwrite.
+ * Closing is explicit: the parent keeps this editor mounted while the row is
+ * collapsed, and only a Close that survives the discard guard drops the draft.
  */
 function ModelCatalogRowEditor({
   item,
   inheritedImageTypes,
   onSaved,
+  onDirtyChange,
+  onClose,
 }: {
   item: ModelCatalogItem;
   inheritedImageTypes: readonly string[] | undefined;
   onSaved: () => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
+  onClose: () => void;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
@@ -682,6 +739,9 @@ function ModelCatalogRowEditor({
 
   const dirty = draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline);
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
+  // The row owns the collapse/close decision, and the draft stays dirty while
+  // the editor is hidden, so the parent needs this flag either way.
+  useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
 
   if (entityQuery.isError) return <InlineError error={entityQuery.error} />;
   if (entity === undefined || draft === null || baseline === null) {
@@ -792,6 +852,9 @@ function ModelCatalogRowEditor({
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
           {saving ? t('common.saving') : t('common.save')}
+        </button>
+        <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={onClose}>
+          {t('common.close')}
         </button>
         {dirty ? (
           <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span>
