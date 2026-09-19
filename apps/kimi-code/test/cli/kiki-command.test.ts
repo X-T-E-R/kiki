@@ -17,7 +17,8 @@ import {
   runDelegationCommand,
   type DelegationRuntimeDependencies,
 } from '../../src/kiki/delegation';
-import { doctor } from '../../src/kiki/doctor';
+import type { DoctorDeps, DoctorOptions } from '../../src/cli/sub/doctor';
+import { doctor, registerDoctorCommand } from '../../src/kiki/doctor';
 import { resolveKikiHome } from '../../src/kiki/home';
 import { mcpCommandConfig, upsertMcpServer } from '../../src/kiki/install';
 import { createSeatOnConnection } from '../../src/kiki/seat';
@@ -139,6 +140,102 @@ describe('kiki command helpers', () => {
     });
     const names = await readdir(root);
     expect(names.filter((name) => name.startsWith('mcp.json.bak.'))).toHaveLength(1);
+  });
+
+  it('routes kiki doctor --agents and kiki doctor agents to handleDoctor while preserving default doctor report', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-doctor-test-'));
+    roots.push(root);
+    const customHome = join(root, 'custom-home');
+
+    const calls: { target: string; home?: string; options?: unknown }[] = [];
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const exits: number[] = [];
+
+    const fakeReport = {
+      daemon: { reachable: true, url: 'http://127.0.0.1:58627', serverId: 'server-1' },
+      token: { path: join(customHome, 'server.token'), exists: true, secure: true },
+      seats: [],
+    };
+
+    const deps = {
+      doctorReport: async (homeDir: string) => {
+        calls.push({ target: 'daemon', home: homeDir });
+        return fakeReport;
+      },
+      handleDoctor: async (docDeps: Partial<DoctorDeps>, options: DoctorOptions) => {
+        calls.push({ target: 'handleDoctor', home: docDeps.kimiHomeDir ? docDeps.kimiHomeDir() : undefined, options });
+        return 0;
+      },
+      stdout: { write: (chunk: string) => stdoutChunks.push(chunk) > 0 },
+      stderr: { write: (chunk: string) => stderrChunks.push(chunk) > 0 },
+      exit: (code: number) => {
+        exits.push(code);
+      },
+    };
+
+    // 1. Default `kiki doctor` produces daemon report JSON
+    const p1 = new Command('kiki').exitOverride();
+    registerDoctorCommand(p1, deps);
+    await p1.parseAsync(['node', 'kiki', 'doctor']);
+    expect(calls).toEqual([{ target: 'daemon', home: resolveKikiHome() }]);
+    expect(stdoutChunks.join('')).toContain('server-1');
+    calls.length = 0;
+    stdoutChunks.length = 0;
+
+    // 2. Default `kiki doctor --home <dir>` targets the specified home
+    const p2 = new Command('kiki').exitOverride();
+    registerDoctorCommand(p2, deps);
+    await p2.parseAsync(['node', 'kiki', 'doctor', '--home', customHome]);
+    expect(calls).toEqual([{ target: 'daemon', home: customHome }]);
+    expect(stdoutChunks.join('')).toContain('custom-home');
+    calls.length = 0;
+    stdoutChunks.length = 0;
+
+    // 3. `kiki doctor --agents` runs handleDoctor with default home
+    const p3 = new Command('kiki').exitOverride();
+    registerDoctorCommand(p3, deps);
+    await p3.parseAsync(['node', 'kiki', 'doctor', '--agents']);
+    expect(calls).toEqual([{ target: 'handleDoctor', home: resolveKikiHome(), options: {} }]);
+    calls.length = 0;
+
+    // 4. `kiki doctor --agents --home <dir>` runs handleDoctor with specified home
+    const p4 = new Command('kiki').exitOverride();
+    registerDoctorCommand(p4, deps);
+    await p4.parseAsync(['node', 'kiki', 'doctor', '--agents', '--home', customHome]);
+    expect(calls).toEqual([{ target: 'handleDoctor', home: customHome, options: {} }]);
+    calls.length = 0;
+
+    // 5. `kiki doctor agents` subcommand runs handleDoctor
+    const p5 = new Command('kiki').exitOverride();
+    registerDoctorCommand(p5, deps);
+    await p5.parseAsync(['node', 'kiki', 'doctor', 'agents']);
+    expect(calls).toEqual([{ target: 'handleDoctor', home: resolveKikiHome(), options: {} }]);
+    calls.length = 0;
+
+    // 6. `kiki doctor agents --home <dir>` subcommand runs handleDoctor with specified home
+    const p6 = new Command('kiki').exitOverride();
+    registerDoctorCommand(p6, deps);
+    await p6.parseAsync(['node', 'kiki', 'doctor', 'agents', '--home', customHome]);
+    expect(calls).toEqual([{ target: 'handleDoctor', home: customHome, options: {} }]);
+    calls.length = 0;
+
+    // 7. Error exit code propagation
+    const failDeps = {
+      ...deps,
+      handleDoctor: async () => 1,
+    };
+    const p7 = new Command('kiki').exitOverride();
+    registerDoctorCommand(p7, failDeps);
+    await p7.parseAsync(['node', 'kiki', 'doctor', 'agents']);
+    expect(exits).toEqual([1]);
+
+    // 8. Help output contains both --agents and agents subcommand
+    const p8 = new Command('kiki').exitOverride();
+    const doctorCmd = registerDoctorCommand(p8, deps);
+    const help = doctorCmd.helpInformation();
+    expect(help).toContain('--agents');
+    expect(help).toContain('agents [options]');
   });
 });
 
