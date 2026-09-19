@@ -334,10 +334,13 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
                         {session.title !== '' ? session.title : session.last_prompt ?? session.id}
                       </button>
                     ))}
+                    {/* "View all sessions" opens the session list itself — the
+                        sidebar (a drawer below md). It used to land on the
+                        workspaces settings page, which lists no sessions. */}
                     <button
                       type="button"
                       data-recent-more
-                      onClick={() => { void navigate('/settings/workspaces'); }}
+                      onClick={onToggleSidebar}
                       className="rounded-full border border-dashed border-hairline-strong px-3 py-1 text-[11.5px] text-ink-faint transition-colors hover:border-accent hover:text-accent"
                     >
                       {t('new.recentMore')}

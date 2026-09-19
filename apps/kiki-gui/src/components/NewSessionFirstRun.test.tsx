@@ -3,11 +3,14 @@
 /**
  * First-run surface of /new: the native folder picker in the workspace
  * popover, the empty-catalog explanation, and the provider-readiness rule
- * behind the hero guidance card.
+ * behind the hero guidance card. Also covers the hero footer's
+ * "view all sessions" affordance, which must reveal the session list.
  */
 
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { MemoryRouter, useLocation } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { AuthSummary } from '@kiki/protocol';
@@ -18,6 +21,79 @@ import {
   needsProviderSetup,
   type NewSessionDraftState,
 } from './NewSessionDraft';
+import { NewSessionPage } from './NewSessionPage';
+
+const listSessions = vi.fn();
+
+vi.mock('../state/connection', () => ({
+  useConnection: () => ({ client: { listSessions } }),
+}));
+
+vi.mock('./Composer', () => ({ Composer: () => null }));
+
+// The hero publishes its footer through the shell's slots; a detached node
+// would swallow the portal, so the stub owns a real (body-attached) one.
+vi.mock('./ConversationShell', () => {
+  const heroFooter = document.createElement('div');
+  heroFooter.id = 'first-run-hero-footer';
+  document.body.append(heroFooter);
+  // One stable slots object: a fresh identity per render would make the
+  // shell's slot bookkeeping (and any consumer memo) churn every render.
+  const slots = { header: null, dock: null, heroFooter, rail: null, footer: null, preview: null };
+  return {
+    useConversationShell: () => ({ slots }),
+    useRegisterSeat: () => {},
+  };
+});
+
+// Only the draft hook is stubbed: this file also exercises the real
+// WorkspacePickerFields and needsProviderSetup helpers.
+vi.mock('./NewSessionDraft', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./NewSessionDraft')>();
+  return {
+    ...actual,
+    useNewSessionDraft: () => ({
+      draft: '',
+      attachments: [],
+      busy: false,
+      error: null,
+      workspaceId: '',
+      cwd: '',
+      permissionMode: 'manual',
+      planMode: false,
+      swarmMode: false,
+      goalObjective: '',
+      modelOverride: undefined,
+      agentProfile: '',
+      workspaces: [],
+      workspacesLoading: false,
+      effectiveWorkspace: undefined,
+      agentProfileCatalogMode: { mode: 'none' },
+      agentProfileCatalogPending: false,
+      needsProviderSetup: false,
+      canBrowseForWorkspace: false,
+      browseForWorkspace: async () => {},
+      serverDefaultModel: undefined,
+      inheritedDefault: undefined,
+      modelSource: undefined,
+      supportedEfforts: [],
+      effectiveEffort: undefined,
+      updateDraft: () => {},
+      setAttachments: () => {},
+      selectWorkspace: () => {},
+      setCwd: () => {},
+      setPermissionMode: () => {},
+      setPlanMode: () => {},
+      setSwarmMode: () => {},
+      setGoalObjective: () => {},
+      setModelOverride: () => {},
+      setAgentProfile: () => {},
+      setEffortOverride: () => {},
+      send: () => {},
+      activateSkill: () => {},
+    }),
+  };
+});
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -139,5 +215,56 @@ describe('needsProviderSetup', () => {
   it('stays silent while a probe is in flight or failed', () => {
     expect(needsProviderSetup(undefined, [])).toBe(false);
     expect(needsProviderSetup(auth(), undefined)).toBe(false);
+  });
+});
+
+let currentPath = '';
+
+function LocationProbe() {
+  currentPath = useLocation().pathname;
+  return null;
+}
+
+async function mountNewSessionPage(onToggleSidebar: () => void): Promise<HTMLDivElement> {
+  listSessions.mockReset().mockResolvedValue({
+    items: [{ id: 'session-one', title: 'Earlier session' }],
+  });
+  document.querySelector('#first-run-hero-footer')!.replaceChildren();
+  const container = document.createElement('div');
+  document.body.append(container);
+  containers.push(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <I18nProvider>
+          <MemoryRouter initialEntries={['/new']}>
+            <LocationProbe />
+            <NewSessionPage onToggleSidebar={onToggleSidebar} />
+          </MemoryRouter>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  return container;
+}
+
+describe('the /new recent-sessions strip', () => {
+  it('opens the session list instead of the workspaces settings page', async () => {
+    const onToggleSidebar = vi.fn();
+    await mountNewSessionPage(onToggleSidebar);
+    const more = document.querySelector<HTMLButtonElement>('#first-run-hero-footer [data-recent-more]')!;
+    expect(more.textContent).toBe('View all sessions →');
+
+    await act(async () => {
+      more.click();
+    });
+
+    // The session list is the sidebar; workspaces settings lists no sessions.
+    expect(onToggleSidebar).toHaveBeenCalledTimes(1);
+    expect(currentPath).toBe('/new');
   });
 });

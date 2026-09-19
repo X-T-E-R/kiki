@@ -493,6 +493,45 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-subagent-timeout')).not.toBeNull();
   });
 
+  it('keeps one timeout editor on the subagents leaf and mirrors it read-only', async () => {
+    client.getConfig.mockResolvedValueOnce({
+      subagent: { timeoutMs: 3_600_000, maxDirectChildren: 16, maxTotalSubagents: 0 },
+    });
+    client.patchConfig.mockClear();
+    const container = await renderSettings('/settings/subagents');
+    await flush();
+    const limits = container.querySelector('#st-card-subagent-limits')!;
+    const mirror = container.querySelector('#st-card-subagent-timeout')!;
+
+    // The execution-limits card owns the only editable timeout field.
+    const limitsTimeout = limits.querySelector<HTMLInputElement>('input')!;
+    expect(limitsTimeout.value).toBe('1');
+    expect(limitsTimeout.disabled).toBe(false);
+
+    // The timeout card shows the same effective value, read-only.
+    const mirrorTimeout = mirror.querySelector<HTMLInputElement>('input')!;
+    expect(mirrorTimeout.value).toBe('1');
+    expect(mirrorTimeout.disabled).toBe(true);
+    const editLink = mirror.querySelector<HTMLButtonElement>('[data-subagent-timeout-edit]')!;
+    expect(editLink.textContent).toBe('Subagent execution limits →');
+    expect([...mirror.querySelectorAll('button')].every((button) => button === editLink || button.disabled)).toBe(true);
+
+    // Display-only: even a forced input event never writes the domain.
+    await setInput(mirrorTimeout, '9');
+    await flush();
+    expect(client.patchConfig).not.toHaveBeenCalled();
+
+    // The one explanation of when the value takes effect is the accurate one:
+    // later dispatches, no restart.
+    expect(mirror.textContent).toContain('applies to subsequent launches or resumes');
+    expect(mirror.textContent).not.toContain('restart');
+
+    // The link lands on the editor card, which the page flashes.
+    await click(editLink);
+    await flush();
+    expect(container.querySelector('#st-card-subagent-limits')!.className).toContain('settings-card-flash');
+  });
+
   it('keeps only the main-agent card on the agents leaf and uses the workspace catalog', async () => {
     const container = await renderSettings('/settings/agents');
     await flush();

@@ -49,6 +49,8 @@ import {
   restartRequirementSnapshot,
   runtimeConfigDraftFromConfig,
   searchSettings,
+  SEARCH_SETTINGS_TABS,
+  searchTabForCard,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
   SETTINGS_SEARCH_SPEC,
@@ -862,6 +864,32 @@ describe('settings search index', () => {
     // Every tab owns at least one searchable card; no orphan tabs.
     for (const tab of AI_SETTINGS_TABS) {
       expect(aiEntries.some((entry) => entry.tab === tab), tab).toBe(true);
+    }
+  });
+
+  it('assigns every search-entry card to the tab that mounts it', () => {
+    const searchEntries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'search');
+    expect(searchEntries.length).toBeGreaterThan(0);
+    // A hit without the tab lands on the default sub-page and flashes a card
+    // the page keeps hidden, so every one of these targets must carry its tab.
+    for (const entry of searchEntries) {
+      expect(entry.tab, entry.cardId).toBeDefined();
+      expect(entry.tab).toBe(searchTabForCard(entry.cardId));
+    }
+    for (const tab of SEARCH_SETTINGS_TABS) {
+      expect(searchEntries.some((entry) => entry.tab === tab), tab).toBe(true);
+    }
+  });
+
+  it('resolves every indexed target back to its own section and card anchor', () => {
+    for (const entry of SETTINGS_SEARCH_SPEC) {
+      const resolved = resolveSettingsRoute(entry.section, `#${entry.cardId}`);
+      expect(resolved.status, entry.cardId).toBe('ok');
+      if (resolved.status !== 'ok') continue;
+      // A target that resolves elsewhere is a broken link: the page would
+      // render another section (or the unknown-setting page) under this hit.
+      expect(resolved.section, entry.cardId).toBe(entry.section);
+      expect(resolved.cardId, entry.cardId).toBe(entry.cardId);
     }
   });
 });

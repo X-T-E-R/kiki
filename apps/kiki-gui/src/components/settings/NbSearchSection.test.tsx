@@ -10,11 +10,13 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { NbSearchCapabilities } from '@kiki/protocol';
+import { SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
 import type { KikiConfigResponse } from '../../lib/client';
 import { NbSearchSection } from './NbSearchSection';
+import { CARD_ID_TO_TAB, NB_SEARCH_TABS } from './nbSearch/types';
 
 const getConfig = vi.fn();
 const patchConfig = vi.fn();
@@ -941,5 +943,32 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
     expect(saveButton.disabled).toBe(false);
+  });
+});
+
+/**
+ * The settings search index (session-core) and this leaf's own anchor→tab map
+ * declare the same target twice. A hit navigates with `?tab=`, so an indexed
+ * card that carries no tab — or a tab this leaf does not mount it in — flashes
+ * a panel the page keeps hidden.
+ */
+describe('search-leaf targets match the settings search index', () => {
+  it('points every indexed search card at the tab this leaf mounts it in', async () => {
+    const entries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'search');
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(entry.tab, entry.cardId).toBe(CARD_ID_TO_TAB[entry.cardId]);
+    }
+    for (const tab of NB_SEARCH_TABS) {
+      expect(entries.some((entry) => entry.tab === tab), tab).toBe(true);
+    }
+    // Rendering a hit's target must actually mount the card it flashes.
+    for (const entry of entries) {
+      const container = await renderSection(`/settings/search?tab=${entry.tab}`);
+      const panel = container.querySelector(`#nb-search-panel-${entry.tab}`);
+      expect(panel, entry.cardId).not.toBeNull();
+      expect(panel!.className, entry.cardId).not.toContain('hidden');
+      expect(panel!.querySelector(`#${entry.cardId}`), entry.cardId).not.toBeNull();
+    }
   });
 });
