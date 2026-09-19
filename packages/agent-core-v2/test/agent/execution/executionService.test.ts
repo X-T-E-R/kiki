@@ -382,6 +382,12 @@ describe('AgentExecutionService', () => {
 
     expect(order).toEqual(['hook', 'provider']);
     expect(service.status()).toEqual({ state: 'running', turnId: 41 });
+    await expect(service.steer({
+      role: 'user',
+      content: [{ type: 'text', text: 'queued for next external resume' }],
+      toolCalls: [],
+      origin: { kind: 'agent_message', messageId: 'external-message', senderAgentId: 'main', senderTaskName: 'root' },
+    })).resolves.toBe(false);
     expect(service.cancel('stop')).toBe(true);
     expect(cancel).toHaveBeenCalledWith('stop');
     expect(service.status()).toEqual({ state: 'cancelling', turnId: 41 });
@@ -646,5 +652,57 @@ describe('NativeAgentExecutorSession', () => {
       usage: undefined,
     });
     ix.dispose();
+  });
+
+  it('materializes a running native steer at the next loop step boundary and rejects idle steering', async () => {
+    let state: 'idle' | 'running' = 'running';
+    let request: Parameters<IAgentLoopService['enqueue']>[0] | undefined;
+    const enqueue = vi.fn<IAgentLoopService['enqueue']>((input) => {
+      request = input;
+      return { assigned: new Promise(() => {}), abort: () => false };
+    });
+    const loop = {
+      _serviceBrand: undefined,
+      enqueue,
+      status: () => ({
+        state,
+        activeTurnId: state === 'running' ? 17 : undefined,
+        pendingTurnIds: [],
+        hasPendingRequests: false,
+      }),
+    } as unknown as IAgentLoopService;
+    const session = new NativeAgentExecutorSession({
+      id: 'native-agent',
+      accessor: { get: () => { throw new Error('unexpected accessor'); } },
+    }, loop, { drain: async () => {} } as unknown as IAgentPromptService);
+    const message = {
+      id: 'agent-message-1',
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: 'message from parent' }],
+      toolCalls: [],
+      origin: {
+        kind: 'agent_message' as const,
+        messageId: 'agent-message-1',
+        senderAgentId: 'main',
+        senderTaskName: 'root',
+      },
+    };
+
+    const delivered = session.steer(message);
+    await vi.waitFor(() => expect(request).toBeDefined());
+    let settled = false;
+    void delivered.then(() => { settled = true; });
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(request?.kind).toBe('steer');
+    request!.onWillMaterialize();
+    expect(request!.resolveContextMessages({})).toEqual([message]);
+    request!.markMaterialized();
+    await expect(delivered).resolves.toBe(true);
+
+    state = 'idle';
+    await expect(session.steer({ ...message, id: 'agent-message-2' })).resolves.toBe(false);
+    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 });

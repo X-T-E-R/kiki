@@ -6,6 +6,7 @@ import type {
   RunAgentOptions,
 } from '#/session/subagent/subagent';
 import type { AgentExecutionStatus } from '#/app/agentExecutor/agentExecutor';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 
 export interface AgentExecutionRunContext {
   readonly signal: AbortSignal;
@@ -20,6 +21,7 @@ export interface IAgentExecutionService {
   ): Promise<AgentRunHandle>;
 
   status(): AgentExecutionStatus;
+  steer?(message: ContextMessage): Promise<boolean>;
   cancel(reason?: unknown): boolean;
   settled(): Promise<void>;
   shutdown(reason?: unknown): Promise<void>;

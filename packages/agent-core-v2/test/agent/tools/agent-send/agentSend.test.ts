@@ -52,6 +52,7 @@ describe('AgentSend', () => {
       targetTaskName: ANON_ID,
       content: 'continue with the open files',
       idempotencyKey: TOOL_CALL_ID,
+      waitForRunningDelivery: true,
     });
   });
 

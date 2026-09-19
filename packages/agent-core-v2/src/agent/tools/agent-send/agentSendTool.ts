@@ -73,6 +73,7 @@ export class AgentSendTool implements IAgentSendTool {
         targetTaskName,
         content: args.message,
         idempotencyKey: context.toolCallId,
+        waitForRunningDelivery: true,
       });
       if (acceptance.payloadConflict) {
         return failure(

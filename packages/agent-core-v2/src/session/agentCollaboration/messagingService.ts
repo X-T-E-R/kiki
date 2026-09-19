@@ -13,14 +13,22 @@ import {
   IAgentCollaborationMessageStore,
   IAgentCollaborationMessagingService,
   type AgentMessageAcceptance,
+  type QueuedAgentMessage,
 } from './messageMailbox';
 
 const DELIVERY_HOOK_ID = 'agent-collaboration-message-delivery';
 const MISSING_TARGET_REASON = 'target agent is not registered in the session';
 
+interface ClaimedAgentMessage {
+  readonly queued: QueuedAgentMessage;
+  flushed: boolean;
+}
+
 export class AgentCollaborationMessagingService extends Disposable implements IAgentCollaborationMessagingService {
   declare readonly _serviceBrand: undefined;
   private readonly subscriptions = this._register(new DisposableMap<string>());
+  private readonly deliveryTails = new Map<string, Promise<void>>();
+  private readonly claimed = new Map<string, ClaimedAgentMessage>();
 
   constructor(
     @IAgentCollaborationMessageStore private readonly store: IAgentCollaborationMessageStore,
@@ -35,15 +43,29 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     void this.discardUnregisteredTargetMessages().catch(() => {});
   }
 
-  send(input: {
+  async send(input: {
     readonly sourceAgentId: string;
     readonly sourceTaskName: string;
     readonly targetAgentId: string;
     readonly targetTaskName: string;
     readonly content: string;
     readonly idempotencyKey: string;
+    readonly waitForRunningDelivery?: boolean;
   }): Promise<AgentMessageAcceptance> {
-    return this.store.accept({ sessionId: this.session.sessionId, ...input });
+    const { waitForRunningDelivery, ...messageInput } = input;
+    const storedInput = { sessionId: this.session.sessionId, ...messageInput };
+    const acceptance = await this.store.accept(storedInput);
+    if (acceptance.delivery === 'delivered' || acceptance.payloadConflict) return acceptance;
+    const handle = this.lifecycle.get(input.targetAgentId);
+    if (handle === undefined) return acceptance;
+    const delivery = this.serializeDelivery(handle.id, () => this.deliverRunning(handle));
+    if (waitForRunningDelivery !== true) {
+      void delivery.catch(() => {});
+      return acceptance;
+    }
+    await delivery;
+    const refreshed = await this.store.accept(storedInput);
+    return { ...acceptance, delivery: refreshed.delivery };
   }
 
   private async discardUnregisteredTargetMessages(): Promise<void> {
@@ -70,42 +92,86 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     this.subscriptions.set(handle.id, execution.hooks.onWillRun.register(
       DELIVERY_HOOK_ID,
       async (_context, next) => {
-        await this.deliver(handle);
+        await this.serializeDelivery(handle.id, () => this.deliverBeforeRun(handle));
         await next();
       },
     ));
   }
 
-  private async deliver(handle: IAgentScopeHandle): Promise<void> {
+  private async deliverRunning(handle: IAgentScopeHandle): Promise<void> {
+    const execution = handle.accessor.get(IAgentExecutionService);
+    const steer = execution.steer?.bind(execution);
+    if (execution.status().state !== 'running' || steer === undefined) return;
+    await this.deliver(handle, steer);
+  }
+
+  private deliverBeforeRun(handle: IAgentScopeHandle): Promise<void> {
+    const memory = handle.accessor.get(IAgentContextMemoryService);
+    return this.deliver(handle, async (message) => {
+      memory.appendObservable(message);
+      return true;
+    });
+  }
+
+  private async deliver(
+    handle: IAgentScopeHandle,
+    apply: (message: ContextMessage) => Promise<boolean>,
+  ): Promise<void> {
     const memory = handle.accessor.get(IAgentContextMemoryService);
     const wire = handle.accessor.get(IWireService);
     for (;;) {
-      const queued = await this.store.nextQueued(this.session.sessionId, handle.id);
-      if (queued === undefined) return;
-      const { message, claim } = queued;
+      let pending = this.claimed.get(handle.id);
+      if (pending === undefined) {
+        const queued = await this.store.nextQueued(this.session.sessionId, handle.id);
+        if (queued === undefined) return;
+        pending = { queued, flushed: false };
+        this.claimed.set(handle.id, pending);
+      }
+      const { message, claim } = pending.queued;
       const alreadyApplied = memory.get().some((entry) =>
         entry.origin?.kind === 'agent_message' && entry.origin.messageId === message.messageId,
       );
-      if (!alreadyApplied) {
-        const origin: AgentMessageOrigin = {
-          kind: 'agent_message',
-          messageId: message.messageId,
-          senderAgentId: message.sourceAgentId,
-          senderTaskName: message.sourceTaskName,
-        };
-        const contextMessage: ContextMessage = {
-          id: message.messageId,
-          role: 'user',
-          content: [{ type: 'text', text: visibleAgentMessage(message) }],
-          toolCalls: [],
-          origin,
-        };
-        memory.appendObservable(contextMessage);
+      if (!alreadyApplied && !await apply(toContextMessage(message))) return;
+      if (!pending.flushed) {
+        await wire.flush();
+        pending.flushed = true;
       }
-      await wire.flush();
       await this.store.markDelivered(claim);
+      if (this.claimed.get(handle.id) === pending) this.claimed.delete(handle.id);
     }
   }
+
+  private serializeDelivery(agentId: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.deliveryTails.get(agentId) ?? Promise.resolve();
+    const current = previous.then(task);
+    const tail = current.then(() => {}, () => {});
+    this.deliveryTails.set(agentId, tail);
+    void tail.then(() => {
+      if (this.deliveryTails.get(agentId) === tail) this.deliveryTails.delete(agentId);
+    });
+    return current;
+  }
+}
+
+function toContextMessage(message: {
+  readonly messageId: string;
+  readonly sourceAgentId: string;
+  readonly sourceTaskName: string;
+  readonly content: string;
+}): ContextMessage {
+  const origin: AgentMessageOrigin = {
+    kind: 'agent_message',
+    messageId: message.messageId,
+    senderAgentId: message.sourceAgentId,
+    senderTaskName: message.sourceTaskName,
+  };
+  return {
+    id: message.messageId,
+    role: 'user',
+    content: [{ type: 'text', text: visibleAgentMessage(message) }],
+    toolCalls: [],
+    origin,
+  };
 }
 
 function visibleAgentMessage(message: {

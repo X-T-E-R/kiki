@@ -223,6 +223,56 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
+  it('injects AgentSend into a running target at its next step boundary before acknowledging delivery', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    target.setRunning(true);
+    const lifecycle = lifecycleHarness([target.handle]);
+    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+
+    const delivery = service.send(sendInput('running steer', 'running-steer'));
+    await waitUntil(() => target.pendingSteers() === 1);
+    let settled = false;
+    void delivery.then(() => { settled = true; });
+    await drain();
+
+    expect(settled).toBe(false);
+    expect(target.messages).toEqual([]);
+    target.beginNextStep();
+
+    await expect(delivery).resolves.toMatchObject({ delivery: 'delivered' });
+    expect(target.messages.map((message) => message.content[0])).toEqual([
+      { type: 'text', text: 'Message from agent "root" (main):\n\nrunning steer' },
+    ]);
+    expect(target.operations).toEqual(['appendObservable', 'flush']);
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    service.dispose();
+  });
+
+  it('keeps a raced running delivery queued until the target runs again without waking it', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    target.setRunning(true);
+    const lifecycle = lifecycleHarness([target.handle]);
+    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+
+    const delivery = service.send(sendInput('after race', 'running-race'));
+    await waitUntil(() => target.pendingSteers() === 1);
+    target.setRunning(false);
+
+    await expect(delivery).resolves.toMatchObject({ delivery: 'queued' });
+    expect(target.messages).toEqual([]);
+    expect(lifecycle.service.create).not.toHaveBeenCalled();
+
+    await target.execution.hooks.onWillRun.run({ signal });
+
+    expect(target.messages.map((message) => message.content[0])).toEqual([
+      { type: 'text', text: 'Message from agent "root" (main):\n\nafter race' },
+    ]);
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    service.dispose();
+  });
+
   it('resumes an interrupted claim while the original handler remains in flight', async () => {
     const homeDir = tempDir();
     const seed = bootstrap(homeDir);
@@ -843,6 +893,7 @@ function sendInput(content: string, idempotencyKey: string) {
     targetTaskName: 'target',
     content,
     idempotencyKey,
+    waitForRunningDelivery: true,
   };
 }
 
@@ -936,6 +987,11 @@ function lifecycleHarness(initial: readonly IAgentScopeHandle[]) {
 function agentHandle(agentId: string) {
   const messages: ContextMessage[] = [];
   const operations: string[] = [];
+  const pendingSteers: Array<{
+    readonly message: ContextMessage;
+    readonly resolve: (delivered: boolean) => void;
+  }> = [];
+  let state: 'idle' | 'running' = 'idle';
   const memory: AgentContextMemory = {
     _serviceBrand: undefined,
     get: () => messages,
@@ -950,7 +1006,13 @@ function agentHandle(agentId: string) {
   const execution = {
     _serviceBrand: undefined,
     run: async () => { throw new Error('unexpected run'); },
-    status: () => ({ state: 'idle' as const }),
+    status: () => state === 'running'
+      ? { state: 'running' as const, turnId: 1 }
+      : { state: 'idle' as const },
+    steer: (message: ContextMessage) => {
+      if (state !== 'running') return Promise.resolve(false);
+      return new Promise<boolean>((resolve) => pendingSteers.push({ message, resolve }));
+    },
     cancel: () => false,
     settled: () => Promise.resolve(),
     shutdown: () => Promise.resolve(),
@@ -974,5 +1036,23 @@ function agentHandle(agentId: string) {
     },
     dispose: () => {},
   };
-  return { handle, execution, messages, operations };
+  return {
+    handle,
+    execution,
+    messages,
+    operations,
+    setRunning(running: boolean) {
+      state = running ? 'running' : 'idle';
+      if (!running) {
+        for (const pending of pendingSteers.splice(0)) pending.resolve(false);
+      }
+    },
+    pendingSteers: () => pendingSteers.length,
+    beginNextStep() {
+      for (const pending of pendingSteers.splice(0)) {
+        memory.appendObservable(pending.message);
+        pending.resolve(true);
+      }
+    },
+  };
 }

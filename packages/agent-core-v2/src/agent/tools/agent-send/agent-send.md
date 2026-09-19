@@ -1,6 +1,6 @@
-Queue a message in a direct child agent's mailbox; if the child is running, the message is injected into its active turn as early as possible.
+Queue a message in a direct child agent's mailbox. A running native child receives it in its active turn; other messages remain queued until the child's next run.
 
-If the child is running, the message is steered into the active turn: it is injected at the next step boundary and the engine guarantees it is delivered. If the child is idle (or a race just ended its turn), the message waits in the mailbox until that child runs again — an idle child is not woken by this tool.
+If a child using the native executor is running, the message is steered into the active turn: it is injected at the next step boundary and acknowledged only after delivery. External executor sessions cannot accept mailbox messages mid-turn, so a message to a running external child waits until its next AgentRun or resume. If the child is idle (or a race just ended its turn), the message also waits until that child runs again — an idle child is not woken by this tool.
 
 Who you can address:
 

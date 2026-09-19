@@ -71,6 +71,7 @@ export interface IAgentCollaborationMessagingService {
     readonly targetTaskName: string;
     readonly content: string;
     readonly idempotencyKey: string;
+    readonly waitForRunningDelivery?: boolean;
   }): Promise<AgentMessageAcceptance>;
 }
 

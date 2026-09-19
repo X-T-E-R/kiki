@@ -1,5 +1,7 @@
 import type { AgentExecutorAgentContext, AgentExecutorSession } from '#/app/agentExecutor/agentExecutor';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { createHooks } from '#/hooks';
 import type {
@@ -8,6 +10,27 @@ import type {
   RunAgentOptions,
 } from '#/session/subagent/subagent';
 import { runAgentTurn } from '#/session/subagent/runAgentTurn';
+
+class AgentMessageStepRequest extends MessageStepRequest {
+  readonly delivered: Promise<boolean>;
+  private resolveDelivered!: (delivered: boolean) => void;
+
+  constructor(message: ContextMessage) {
+    super(message, {
+      kind: 'steer',
+      mergeable: true,
+      turnScoped: false,
+      admission: 'activeTurnOnly',
+    });
+    this.delivered = new Promise((resolve) => {
+      this.resolveDelivered = resolve;
+    });
+  }
+
+  protected override onSettled(): void {
+    this.resolveDelivered(this.state === 'materialized');
+  }
+}
 
 export class NativeAgentExecutorSession implements AgentExecutorSession {
   readonly hooks = createHooks<{ onWillRun: { signal: AbortSignal } }, 'onWillRun'>([
@@ -33,6 +56,19 @@ export class NativeAgentExecutorSession implements AgentExecutorSession {
     return status.state === 'running'
       ? { state: 'running' as const, turnId: status.activeTurnId }
       : { state: 'idle' as const };
+  }
+
+  async steer(message: ContextMessage): Promise<boolean> {
+    if (this.loop.status().state !== 'running') return false;
+    const request = new AgentMessageStepRequest(message);
+    try {
+      this.loop.enqueue(request);
+    } catch (error) {
+      request.abort();
+      if (this.loop.status().state !== 'running') return false;
+      throw error;
+    }
+    return request.delivered;
   }
 
   cancel(reason?: unknown): boolean {

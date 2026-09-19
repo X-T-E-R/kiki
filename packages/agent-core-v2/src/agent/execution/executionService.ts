@@ -5,6 +5,7 @@ import {
   ScopeActivation,
 } from '#/_base/di/scope';
 import { linkAbortSignal } from '#/_base/utils/abort';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService, type ProfileBindingSnapshot } from '#/agent/profile/profile';
@@ -126,6 +127,13 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
       return turnId === undefined ? { state: 'starting' } : { state: 'running', turnId };
     }
     return this.session?.status() ?? { state: 'idle' };
+  }
+
+  steer(message: ContextMessage): Promise<boolean> {
+    if (this.status().state !== 'running') return Promise.resolve(false);
+    return this.session instanceof NativeAgentExecutorSession
+      ? this.session.steer(message)
+      : Promise.resolve(false);
   }
 
   cancel(reason?: unknown): boolean {
