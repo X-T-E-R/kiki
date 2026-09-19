@@ -3404,11 +3404,15 @@ async function scenarioPreviewWorkbench() {
   await page.waitForTimeout(300);
   const remaining = await page.locator('[data-preview-tab]').count();
   if (remaining !== 1) throw new Error(`close-others should leave 1 tab, saw ${remaining}`);
-  // Collapse hides the panel; the header toggle brings it back.
+  // Collapsing hides the panel in place (mounted editors keep their buffers);
+  // the header toggle brings it back.
   await page.getByRole('button', { name: S.previewCollapse }).click();
-  await page.waitForSelector('[data-preview-workspace]', { state: 'detached', timeout: 5000 });
+  await page.waitForSelector('[data-preview-workspace][hidden]', { state: 'attached', timeout: 5000 });
+  if (await page.locator('[data-preview-workspace]').isVisible()) {
+    throw new Error('collapsed preview workspace is still visible');
+  }
   await page.locator('[data-preview-toggle]').click();
-  await page.waitForSelector('[data-preview-workspace]', { timeout: 5000 });
+  await page.waitForSelector('[data-preview-workspace]', { state: 'visible', timeout: 5000 });
   await shot('preview-workbench-reopened');
 
   await page.getByRole('link', { name: 'taskService.ts:1063', exact: true }).click();

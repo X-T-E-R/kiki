@@ -10,7 +10,9 @@
  * between the conversation column and the right rail; without a shell (unit
  * tests, static pages) it renders as a fixed right overlay. Dirty buffers
  * report upward so tab dots, close confirmations, the app-level dirty guard,
- * and the beforeunload guard all read one set.
+ * and the beforeunload guard all read one set. Collapsing the panel hides it
+ * rather than unmounting it, so open buffers keep their drafts (and stay in
+ * that dirty set); closing the last tab is what unmounts the workspace.
  */
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
@@ -236,13 +238,17 @@ export function MediaPreviewProvider({
     }
   }, [api, apiRef]);
 
-  const panel = panelOpen && tabsState.tabs.length > 0 ? (
+  // Collapsing is a hide, not a close: the workspace stays mounted (hidden) so
+  // every tab's editor buffer, unsaved draft and pending autosave survive.
+  // Only closing the last tab unmounts it (after the discard confirmation).
+  const panel = tabsState.tabs.length > 0 ? (
     <PreviewWorkspace
       tabs={tabsState.tabs}
       active={tabsState.active}
       navigation={navigation}
       dirtyPaths={dirtyPaths}
       width={width}
+      hidden={!panelOpen}
       sessionViewState={sessionViewState}
       agentForest={agentForest}
       onOpenSubagent={onOpenSubagent}

@@ -21,6 +21,9 @@ const cancelTask = vi.fn();
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({ client: { listTasks, getTask, cancelTask } }),
+  // No live session controller in these fixtures: the agent panel reports
+  // "not reported" instead of borrowing another agent's data.
+  useOptionalControllerRegistry: () => null,
 }));
 
 const containers: HTMLDivElement[] = [];

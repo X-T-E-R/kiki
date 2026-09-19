@@ -7,6 +7,9 @@
  * get the download fallback. Text files are editable where a write channel
  * exists (desktop); everything degrades to read-only otherwise. Every tab's
  * view stays mounted while hidden so editor buffers survive tab switches.
+ * Collapsing the panel hides it in place for the same reason: the mounted
+ * editor controller keeps its draft and its pending autosave, so re-opening
+ * the panel never costs unsaved edits. Only closing the last tab unmounts.
  */
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -52,6 +55,13 @@ export interface PreviewWorkspaceProps {
   readonly onWidthChange: (width: number, final: boolean) => void;
   readonly onOpenImage: (src: string, name?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
+  /**
+   * Collapsed (not closed): the panel keeps every tab view — and the editor
+   * buffer behind it — mounted and hides itself instead. Unmounting here would
+   * dispose the host-file editor controller, dropping the draft and canceling
+   * its pending autosave. Defaults to false.
+   */
+  readonly hidden?: boolean;
   readonly overlay?: boolean;
   /** Session workspace cwd — anchors "Copy relative path" and the @-mention. */
   readonly cwd?: string;
@@ -114,6 +124,7 @@ export function PreviewWorkspace({
   onWidthChange,
   onOpenImage,
   reportDirty,
+  hidden = false,
   overlay = false,
   cwd,
   sessionId,
@@ -167,11 +178,16 @@ export function PreviewWorkspace({
     ? 'fixed inset-0 z-40 flex h-screen w-screen flex-col bg-panel'
     : `preview-workspace ${overlay ? 'preview-workspace--overlay' : ''}`;
 
-  const containerStyle = isFullscreen ? undefined : { width };
+  // Inline `display:none` rather than the `hidden` class: the class rules on
+  // `.preview-workspace` set a display of their own, so only an inline style
+  // reliably wins regardless of stylesheet order.
+  const hiddenStyle = hidden ? { display: 'none' as const } : undefined;
+  const containerStyle = isFullscreen ? hiddenStyle : { width, ...hiddenStyle };
 
   return (
     <aside
       data-preview-workspace
+      hidden={hidden}
       aria-label={t('preview.title')}
       className={containerClasses}
       style={containerStyle}

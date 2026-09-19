@@ -16,7 +16,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import { I18nProvider } from '../i18n';
-import { MediaPartList, MediaPreviewProvider, useMediaPreview } from './mediaPreview';
+import { MediaPartList, MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
 import { relativeToCwd } from './PreviewWorkspace';
@@ -265,6 +265,84 @@ describe('PreviewWorkspace', () => {
     });
     expect(writeMock).toHaveBeenCalledWith('/work/src/server.ts', 'edited content');
     expect(workspace().querySelector('[aria-label="Unsaved changes"]')).toBeNull();
+  });
+
+  it('keeps the mounted editor and its unsaved draft across a panel collapse', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <PreviewToggleButton />
+        <OpenButton path="/work/src/server.ts" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/src/server.ts');
+    const editor = workspace().querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(editor, 'collapsed draft');
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(workspace().querySelector('[aria-label="Unsaved changes"]')).not.toBeNull();
+
+    // Collapsing hides the panel in place: the editor (and the controller
+    // behind it) must stay mounted, not be torn down with its draft.
+    await act(async () => {
+      workspace()
+        .querySelector('[aria-label="Collapse preview panel"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const collapsed = workspace();
+    expect(collapsed.hasAttribute('hidden')).toBe(true);
+    expect(collapsed.style.display).toBe('none');
+    expect(collapsed.querySelector('[data-testid="editor"]')).toBe(editor);
+
+    // Re-opening the panel shows the same buffer with the draft intact.
+    await act(async () => {
+      probe.container
+        .querySelector('[data-preview-toggle]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const reopened = workspace();
+    expect(reopened.hasAttribute('hidden')).toBe(false);
+    expect(reopened.style.display).not.toBe('none');
+    const restored = reopened.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+    expect(restored).toBe(editor);
+    expect(restored.value).toBe('collapsed draft');
+    expect(reopened.querySelector('[aria-label="Unsaved changes"]')).not.toBeNull();
+  });
+
+  it('an autosave armed before collapsing still fires while the panel is hidden', async () => {
+    vi.useFakeTimers();
+    try {
+      const probe = makeRoot();
+      await renderSettled(
+        probe.root,
+        <MediaPreviewProvider cwd="/work">
+          <PreviewToggleButton />
+          <OpenButton path="/work/src/server.ts" />
+        </MediaPreviewProvider>,
+      );
+      await openFile(probe.container, '/work/src/server.ts');
+      const editor = workspace().querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+        setter.call(editor, 'autosaved while hidden');
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => {
+        workspace()
+          .querySelector('[aria-label="Collapse preview panel"]')!
+          .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(writeMock).not.toHaveBeenCalled();
+      // The 5s debounce survives the collapse instead of being cancelled by a
+      // controller dispose.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_100); });
+      expect(writeMock).toHaveBeenCalledWith('/work/src/server.ts', 'autosaved while hidden');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('closing a dirty tab asks before discarding', async () => {
