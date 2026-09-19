@@ -908,13 +908,14 @@ async function scenarioGoalSwarm() {
   if (railText.includes('Prepare the release evidence bundle')) {
     throw new Error('right rail still renders the goal objective as resident prose');
   }
-  // Swarm and the objective are two rows of the [plan ▾] panel now.
+  // Swarm and the goal controls: swarm is toggled in the [plan ▾] panel,
+  // while the objective is set via the composer's armed goal mode.
   await openPlanPanel();
   await page.click(`[data-mode-switch="swarm"][title^="${S.swarmTitlePrefix}"]`);
-  await page.click('[data-goal-open]');
-  await page.fill(`input[placeholder="${S.objectivePlaceholder}"]`, 'Ship the fixture release');
   await closePlanPanel();
-  await sendPrompt('Advance the release goal.');
+  await page.click('[data-goal-mode-toggle]');
+  await page.locator('[data-goal-armed]').waitFor({ timeout: 5000 });
+  await sendPrompt('Ship the fixture release');
   await waitForText('Swarm mode is on and the goal state is live.');
   const inspected = await control({ action: 'session', session_id: 'session_fixture_goal_swarm' });
   const submission = inspected.data?.last_prompt_submission;
@@ -2871,6 +2872,13 @@ async function scenarioTurnPolish() {
   await sendPrompt('Abort me mid-stream.');
   await waitForText('half-finished sentence', 20_000);
   await page.mouse.click(720, 300); // non-editable focus
+  // Escape arbitration: the first Escape closes the open rail drawer; the
+  // subsequent Escape reaches the session controller to abort mid-stream.
+  const rail = page.locator('[data-session-rail]');
+  if ((await rail.count()) > 0 && (await rail.isVisible())) {
+    await page.keyboard.press('Escape');
+    await rail.waitFor({ state: 'detached', timeout: 5000 });
+  }
   await page.keyboard.press('Escape'); // abort mid-stream
   await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
   const stoppedMark = page.locator('[data-block-id^="agent-frame-"], [data-block-id^="assistant-"]', { hasText: S.stopped });
