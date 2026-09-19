@@ -161,4 +161,64 @@ describe('prompt field inspection', () => {
     expect(explore.profile).toBe('explore');
     expect(explore.validation.profileCount).toBeGreaterThanOrEqual(5);
   });
+
+  it('lets a same-name user profile win over the shipped built-in without an override flag', async () => {
+    await mkdir(join(homeDir, 'agents'), { recursive: true });
+    await writeFile(join(homeDir, 'agents', 'explore.md'), profileFileText('user explore value'), 'utf8');
+
+    const report = await inspectPromptFields({ homeDir, cwd: workDir, osHomeDir, profile: 'explore' });
+
+    expect(report.profile).toBe('explore');
+    expect(report.fields.find((field) => field.id === 'system.shared')).toMatchObject({
+      status: 'effective',
+      value: 'user explore value',
+    });
+  });
+
+  it('reflects edits to the materialized built-in copy on disk', async () => {
+    await mkdir(join(homeDir, 'agents', 'builtin'), { recursive: true });
+    await writeFile(
+      join(homeDir, 'agents', 'builtin', 'explore.md'),
+      profileFileText('edited builtin copy value'),
+      'utf8',
+    );
+
+    const report = await inspectPromptFields({ homeDir, cwd: workDir, osHomeDir, profile: 'explore' });
+
+    expect(report.profile).toBe('explore');
+    expect(report.fields.find((field) => field.id === 'system.shared')).toMatchObject({
+      status: 'effective',
+      value: 'edited builtin copy value',
+    });
+  });
+
+  it('ranks agents/*.md above the materialized agents/builtin copy', async () => {
+    await mkdir(join(homeDir, 'agents', 'builtin'), { recursive: true });
+    await writeFile(join(homeDir, 'agents', 'explore.md'), profileFileText('user explore value'), 'utf8');
+    await writeFile(
+      join(homeDir, 'agents', 'builtin', 'explore.md'),
+      profileFileText('edited builtin copy value'),
+      'utf8',
+    );
+
+    const report = await inspectPromptFields({ homeDir, cwd: workDir, osHomeDir, profile: 'explore' });
+
+    expect(report.fields.find((field) => field.id === 'system.shared')).toMatchObject({
+      status: 'effective',
+      value: 'user explore value',
+    });
+  });
 });
+
+function profileFileText(sharedValue: string): string {
+  return [
+    '---',
+    'description: Custom explore profile',
+    'prompt_overrides:',
+    '  fields:',
+    `    system.shared: ${sharedValue}`,
+    '---',
+    '',
+    'Custom explore body.',
+  ].join('\n');
+}

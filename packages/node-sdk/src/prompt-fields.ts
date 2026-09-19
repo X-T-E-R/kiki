@@ -102,7 +102,6 @@ export interface PromptFieldInspection {
 
 interface InspectionProfile {
   readonly name: string;
-  readonly override?: boolean;
   readonly sourcePath?: string;
   readonly systemPromptMode?: 'replace' | 'prepend' | 'append' | 'inherit';
   readonly executor?: string;
@@ -401,7 +400,6 @@ async function loadProfiles(
 function fromAgentFile(profile: AgentFileDefinition): InspectionProfile {
   return {
     name: profile.name,
-    override: profile.override,
     sourcePath: profile.path,
     systemPromptMode: profile.systemPromptMode,
     executor: profile.executor,
@@ -414,7 +412,6 @@ function fromAgentFile(profile: AgentFileDefinition): InspectionProfile {
 function fromAgentProfile(profile: AgentProfile): InspectionProfile {
   return {
     name: profile.name,
-    override: profile.override,
     sourcePath: profile.sourcePath,
     systemPromptMode: profile.systemPromptMode,
     executor: profile.executor,
@@ -428,7 +425,6 @@ function fromAgentProfile(profile: AgentProfile): InspectionProfile {
 function fromShippedAgentProfile(profile: AgentProfile): InspectionProfile {
   return {
     name: profile.name,
-    override: profile.override,
     systemPromptMode: profile.systemPromptMode,
     executor: profile.executor,
     promptOverrides: profile.promptOverrides,
@@ -445,33 +441,21 @@ function resolveProfile(
   disabledNamed: ReadonlySet<string>,
 ): InspectionProfile | undefined {
   if (disabledNamed.has(name) && name !== 'agent') return undefined;
-  const builtin = candidates.find((candidate) => !candidate.fileBacked);
-  const files = candidates.filter((candidate) => candidate.fileBacked);
-  for (const [index, candidate] of files.entries()) {
-    if (builtin !== undefined && candidate.override !== true) continue;
-    return resolveInheritedProfile(candidate, files, index, builtin);
-  }
-  return builtin === undefined || disabledBuiltin.has(name) ? undefined : builtin;
+  const chain = disabledBuiltin.has(name)
+    ? candidates.filter((candidate) => candidate.fileBacked)
+    : candidates;
+  return chain.length === 0 ? undefined : resolveInheritedProfile(chain, 0);
 }
 
 function resolveInheritedProfile(
-  candidate: InspectionProfile,
-  files: readonly InspectionProfile[],
+  chain: readonly InspectionProfile[],
   index: number,
-  builtin: InspectionProfile | undefined,
 ): InspectionProfile {
+  const candidate = chain[index]!;
   if (candidate.systemPromptMode !== 'inherit') return candidate;
-  let lowerIndex = index + 1;
-  if (builtin !== undefined) {
-    for (;;) {
-      const lower = files[lowerIndex];
-      if (lower === undefined || lower.override === true) break;
-      lowerIndex += 1;
-    }
-  }
-  const lower = files[lowerIndex] === undefined
-    ? builtin
-    : resolveInheritedProfile(files[lowerIndex]!, files, lowerIndex, builtin);
+  const lower = chain[index + 1] === undefined
+    ? undefined
+    : resolveInheritedProfile(chain, index + 1);
   if (lower === undefined) {
     throw new Error(`Agent profile "${candidate.name}" uses system_prompt_mode "inherit" but has no lower-priority base profile.`);
   }
