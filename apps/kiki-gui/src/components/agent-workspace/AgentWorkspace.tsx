@@ -18,7 +18,7 @@ import { useCallback, useMemo, useSyncExternalStore, type RefObject } from 'reac
 import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 
-import type { ModelCatalogItem } from '@kiki/protocol';
+import type { AgentCapabilityTarget, ModelCatalogItem } from '@kiki/protocol';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -39,6 +39,7 @@ import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { revealSubagentCard } from '../ActivityHistory';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
+import { DispatchPolicyBadges } from '../agent-panel/AgentIdentitySection';
 import { useConversationShell } from '../ConversationShell';
 import { ContextMeter } from '../ContextMeter';
 import { MediaPreviewProvider, PreviewToggleButton } from '../mediaPreview';
@@ -138,6 +139,7 @@ function AgentWorkspaceHeader({
   contextTokens,
   maxContextTokens,
   cumulativeTokens,
+  dispatchTargets,
   crumbs,
   forest,
   models,
@@ -159,6 +161,7 @@ function AgentWorkspaceHeader({
   contextTokens: number | undefined;
   maxContextTokens: number | undefined;
   cumulativeTokens: number | undefined;
+  dispatchTargets: readonly AgentCapabilityTarget[] | undefined;
   crumbs: readonly AgentTreeNode[];
   forest: AgentForest;
   models: readonly ModelCatalogItem[];
@@ -208,6 +211,7 @@ function AgentWorkspaceHeader({
             {t('subagent.effort', { effort })}
           </span>
         ) : null}
+        <DispatchPolicyBadges targets={dispatchTargets} />
         {contextTokens !== undefined &&
         maxContextTokens !== undefined &&
         maxContextTokens > 0 ? (
@@ -294,7 +298,7 @@ export function AgentWorkspace({
   previewApiRef,
 }: AgentWorkspaceProps) {
   const { t } = useI18n();
-  const { client } = useConnection();
+  const { client, klient } = useConnection();
   const { slots } = useConversationShell();
   const { sessionId, agentId } = target;
 
@@ -329,6 +333,12 @@ export function AgentWorkspace({
     queryKey: ['models'],
     queryFn: () => client.listModels(),
     staleTime: 60_000,
+  });
+  const capabilitiesQuery = useQuery({
+    queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
+    queryFn: ({ signal }) => klient.global.agentPanel.read({ session_id: sessionId, agent_id: agentId }, { signal }),
+    enabled: sessionState.loaded && !sessionState.resyncing,
+    retry: false,
   });
 
   const handleLoadOlder = useCallback(async (): Promise<boolean> => {
@@ -484,6 +494,7 @@ export function AgentWorkspace({
               contextTokens={displayContextTokens}
               maxContextTokens={displayMaxContextTokens}
               cumulativeTokens={cumulativeTokens}
+              dispatchTargets={capabilitiesQuery.data?.targets}
               crumbs={crumbs}
               forest={forest}
               models={modelsQuery.data?.items ?? []}

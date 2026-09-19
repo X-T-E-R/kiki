@@ -275,6 +275,9 @@ function NamedAgentProfileRow({
   }
   const stringSubagents = (profile.subagents ?? []).filter((lease): lease is string => typeof lease === 'string');
   const leaseSubagents = (profile.subagents ?? []).filter((lease): lease is NamedAgentSubagentLease => typeof lease !== 'string');
+  const subagentPolicyLabel = profile.subagent_policy === undefined
+    ? t('diagnostics.unknown')
+    : t(`agentPanel.subagentPolicy.${profile.subagent_policy}` as I18nKey);
   const subagentChipClass = 'rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint';
 
   // A built-in shadowed by an overriding same-name file profile collapses to
@@ -292,6 +295,12 @@ function NamedAgentProfileRow({
           <p className="font-mono text-[12.5px] text-ink-faint">{profile.name}</p>
           <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">
             {profile.source}
+          </span>
+          <span
+            data-subagent-policy={profile.subagent_policy ?? 'unknown'}
+            className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint"
+          >
+            {subagentPolicyLabel}
           </span>
           <span className="min-w-0 truncate text-[10.5px] text-ink-faint" title={overriddenBy.file}>
             {t('st.namedAgents.overriddenByFile', { file: overriddenBy.file })}
@@ -359,6 +368,12 @@ function NamedAgentProfileRow({
           </div>
           <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">
             {profile.source}{writable ? '' : ` · ${t('st.namedAgents.readOnly')}`}
+          </span>
+          <span
+            data-subagent-policy={profile.subagent_policy ?? 'unknown'}
+            className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint"
+          >
+            {subagentPolicyLabel}
           </span>
           {shippedEntry !== undefined ? (
             <ShippedProfileControls
@@ -499,6 +514,9 @@ function NamedAgentProfileRow({
               );
             })}
             {spawnSummary !== '' ? <p>{t('st.namedAgents.spawnConstraints')}: {spawnSummary}</p> : null}
+            <p data-technical-subagent-policy>
+              {t('agentPanel.subagentPolicy')}: {subagentPolicyLabel}
+            </p>
             {profile.subagents?.map((lease, index) => {
               if (typeof lease === 'string') {
                 return <p key={lease}>{t('st.namedAgents.subagentLease')}: {lease}</p>;

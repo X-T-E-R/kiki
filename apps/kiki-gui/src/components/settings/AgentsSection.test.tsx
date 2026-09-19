@@ -22,6 +22,7 @@ const profile: NamedAgentProfile = {
   pinned_model_alias: 'fixture/model-a',
   thinking_effort: 'medium',
   service_tier: 'flex',
+  subagent_policy: 'advisory',
   context_budget: 4096,
   max_completion_tokens: 512,
   request_params: { temperature: 0.2, stream: true },
@@ -89,6 +90,28 @@ describe('default main profile settings', () => {
     await settle();
     expect(client.getAgentCapabilities).toHaveBeenCalledWith({ workspace_id: 'ws-one', profile: 'agent' }, expect.any(AbortSignal));
     expect(row?.textContent).toContain('directory-helper');
+  });
+
+  it('shows the projected advisory profile policy and repeats it in technical details', async () => {
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-subagent-policy="advisory"]')?.textContent).toBe('Advisory');
+    expect(row.querySelector('[data-technical-subagent-policy]')?.textContent).toContain('Dispatch policy: Advisory');
+  });
+
+  it('shows Not reported when an older profile response omits the policy field', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, subagent_policy: undefined }] });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-subagent-policy="unknown"]')?.textContent).toBe('Not reported');
+    expect(row.querySelector('[data-technical-subagent-policy]')?.textContent).toContain('Dispatch policy: Not reported');
+  });
+
+  it('shows the projected strict profile policy', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, subagent_policy: 'strict' }] });
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-subagent-policy="strict"]')?.textContent).toBe('Strict');
   });
 
   it('shows top-level budgets, request params, and model-profile projections', async () => {

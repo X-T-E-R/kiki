@@ -103,6 +103,9 @@ export function SubagentDefaultTargetCard() {
   const summaryChips: string[] = [];
   if (selectedProfile !== undefined) {
     summaryChips.push(selectedProfile.source);
+    summaryChips.push(selectedProfile.subagent_policy === undefined
+      ? t('diagnostics.unknown')
+      : t(`agentPanel.subagentPolicy.${selectedProfile.subagent_policy}`));
     if (selectedProfile.pinned_model_alias !== undefined && selectedProfile.pinned_model_alias !== '') {
       summaryChips.push(`${t('st.namedAgents.modelPin')} ${selectedProfile.pinned_model_alias}`);
     }

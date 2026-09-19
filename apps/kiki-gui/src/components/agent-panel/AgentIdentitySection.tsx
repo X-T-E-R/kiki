@@ -1,13 +1,109 @@
 import { memo, useState } from 'react';
+import type { AgentCapabilityTarget } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import type { AgentIdentity, AgentTokenUsage, AgentTreeMetrics } from './types';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
 import { agentUsageCacheHitRate } from './cacheRate';
 
+function dispatchPolicyClass(policy: AgentCapabilityTarget['dispatch_policy']): string {
+  return policy === 'strict'
+    ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
+    : policy === 'advisory'
+      ? 'border-accent/30 bg-accent-soft text-accent'
+      : 'border-hairline bg-paper text-ink-faint';
+}
+
+function recommendationClass(status: AgentCapabilityTarget['recommendation_status']): string {
+  switch (status) {
+    case 'preferred':
+      return 'border-success/30 bg-success/10 text-success';
+    case 'allowed_nonpreferred':
+      return 'border-amber-rule/40 bg-amber-card text-amber-ink';
+    case 'blocked':
+      return 'border-danger/30 bg-danger/10 text-danger';
+    default:
+      return 'border-hairline bg-paper text-ink-faint';
+  }
+}
+
+export function DispatchPolicyBadges({
+  targets,
+  className = '',
+}: {
+  readonly targets?: readonly AgentCapabilityTarget[];
+  readonly className?: string;
+}) {
+  const { t } = useI18n();
+  const states = targets === undefined || targets.length === 0 ? [undefined] : targets;
+  const isUnreported = (target: AgentCapabilityTarget | undefined) => target === undefined || (
+    target.dispatch_policy === undefined &&
+    target.recommendation_status === undefined &&
+    target.advisory_deviation === undefined
+  );
+  const hasUnreported = states.some(isUnreported);
+  const reportedStates = states.filter((target): target is AgentCapabilityTarget => !isUnreported(target));
+  const policies = [...new Set(reportedStates.map((target) => target.dispatch_policy))];
+  const recommendations = new Map<string, {
+    status: AgentCapabilityTarget['recommendation_status'];
+    deviation: boolean | undefined;
+  }>();
+  for (const target of reportedStates) {
+    recommendations.set(
+      `${target.recommendation_status ?? 'unknown'}:${String(target.advisory_deviation)}`,
+      { status: target.recommendation_status, deviation: target.advisory_deviation },
+    );
+  }
+
+  return (
+    <div data-dispatch-policy-badges className={`flex flex-wrap items-center gap-1 ${className}`}>
+      {policies.map((policy) => (
+        <span
+          key={policy ?? 'unknown'}
+          data-dispatch-policy={policy ?? 'unknown'}
+          className={`rounded-full border px-1.5 py-px font-mono text-[9.5px] ${dispatchPolicyClass(policy)}`}
+        >
+          {policy === undefined ? t('diagnostics.unknown') : t(`diagnostics.policy.${policy}`)}
+        </span>
+      ))}
+      {[...recommendations.values()].map(({ status, deviation }) => {
+        const complete = status !== undefined && deviation !== undefined;
+        const label = !complete || status === 'unconfigured'
+          ? t('diagnostics.unknown')
+          : status === 'preferred'
+            ? t('diagnostics.preferred')
+            : status === 'allowed_nonpreferred'
+              ? t('diagnostics.allowedNonpreferred')
+              : t('diagnostics.blocked');
+        return (
+          <span
+            key={`${status ?? 'unknown'}:${String(deviation)}`}
+            data-recommendation-status={status ?? 'unknown'}
+            data-advisory-deviation={deviation === undefined ? 'unknown' : String(deviation)}
+            className={`rounded-full border px-1.5 py-px font-mono text-[9.5px] ${complete ? recommendationClass(status) : recommendationClass(undefined)}`}
+          >
+            {label}
+          </span>
+        );
+      })}
+      {hasUnreported ? (
+        <span
+          data-dispatch-policy="unknown"
+          data-recommendation-status="unknown"
+          data-advisory-deviation="unknown"
+          className={`rounded-full border px-1.5 py-px font-mono text-[9.5px] ${dispatchPolicyClass(undefined)}`}
+        >
+          {t('diagnostics.unknown')}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export interface AgentIdentitySectionProps {
   readonly identity: AgentIdentity;
   readonly usage?: AgentTokenUsage;
   readonly treeMetrics?: AgentTreeMetrics;
+  readonly dispatchTargets?: readonly AgentCapabilityTarget[];
   readonly onOpenTreeSelect?: () => void;
   readonly onOpenUsageDetail?: () => void;
 }
@@ -16,6 +112,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
   identity,
   usage,
   treeMetrics,
+  dispatchTargets,
   onOpenTreeSelect,
   onOpenUsageDetail,
 }: AgentIdentitySectionProps) {
@@ -146,6 +243,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
               </>
             ) : null}
           </div>
+          <DispatchPolicyBadges targets={dispatchTargets} className="mt-1.5" />
         </div>
 
         <div className="flex flex-col items-end gap-1 shrink-0">
