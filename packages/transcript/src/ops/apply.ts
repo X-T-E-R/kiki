@@ -743,6 +743,10 @@ function applyMetaMerge(state: AgentState, meta: TranscriptMetaMerge): ApplyResu
     activity: meta.activity ?? state.meta.activity,
     modes: modes !== undefined && modes.plan === undefined && modes.swarm === undefined ? undefined : modes,
     agent,
+    promptQueueHold:
+      meta.promptQueueHold === null
+        ? undefined
+        : (meta.promptQueueHold ?? state.meta.promptQueueHold),
   };
   if (transcriptValueEquals(next, state.meta)) return { state, changed: false };
   return { state: { ...state, meta: next }, changed: true };

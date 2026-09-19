@@ -193,7 +193,9 @@ export function bindSessionTranscript(
       } catch {
         continue;
       }
-      const ops: ReturnType<AgentTranscriptLiveAdapter['seedPrompt']> = [];
+      const ops: ReturnType<AgentTranscriptLiveAdapter['seedPrompt']> = [
+        { op: 'meta.merge', meta: { promptQueueHold: snapshot.hold ?? null } },
+      ];
       if (snapshot.active !== undefined) {
         ops.push(...liveAdapter.seedPrompt(promptFromSnapshot(snapshot.active, 'running')));
       }

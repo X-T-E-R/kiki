@@ -123,9 +123,16 @@ export const promptItemSchema = z.object({
 });
 export type PromptItem = z.infer<typeof promptItemSchema>;
 
+export const promptQueueHoldSchema = z.object({
+  reason: z.literal('recovery'),
+  count: z.number().int().nonnegative(),
+});
+export type PromptQueueHold = z.infer<typeof promptQueueHoldSchema>;
+
 export const promptListResponseSchema = z.object({
   active: promptItemSchema.nullable(),
   queued: z.array(promptItemSchema),
+  recovery_hold: promptQueueHoldSchema.optional(),
 });
 export type PromptListResponse = z.infer<typeof promptListResponseSchema>;
 

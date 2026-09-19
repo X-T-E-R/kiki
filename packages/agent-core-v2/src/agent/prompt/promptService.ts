@@ -52,6 +52,7 @@ import {
   type PromptInput,
   type PromptLaunchResult,
   type PromptPayload,
+  type PromptQueueHold,
   type PromptQueueSnapshot,
   type PromptReservation,
   type PromptSnapshot,
@@ -161,6 +162,16 @@ export class PromptQueued extends Event2<PromptQueuedPayload> {
   static override readonly observable = true;
 }
 export interface PromptQueued extends PromptQueuedPayload {}
+
+export interface PromptQueueHoldChangedPayload {
+  readonly hold: PromptQueueHold | null;
+}
+
+export class PromptQueueHoldChanged extends Event2<PromptQueueHoldChangedPayload> {
+  static override readonly type = 'prompt.queue_hold_changed';
+  static override readonly observable = true;
+}
+export interface PromptQueueHoldChanged extends PromptQueueHoldChangedPayload {}
 
 export interface PromptEnqueuedPayload {
   readonly schemaVersion: 1;
@@ -662,6 +673,7 @@ export class AgentPromptService implements IAgentPromptService {
     this.publishSubmitted(record, queued ? 'queued' : 'running');
     if (queued) {
       this.publishQueued(record);
+      if (this.recoveryHold) this.publishQueueHoldChanged();
       void this.startNext();
       return record.handle;
     }
@@ -799,7 +811,11 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   list(): PromptQueueSnapshot {
-    return { active: this.active === undefined ? undefined : snapshot(this.active), pending: this.pending.map(snapshot) };
+    return {
+      active: this.active === undefined ? undefined : snapshot(this.active),
+      pending: this.pending.map(snapshot),
+      hold: this.queueHold(),
+    };
   }
 
   hasReadyPending(): boolean {
@@ -809,7 +825,12 @@ export class AgentPromptService implements IAgentPromptService {
   resumeRecoveredQueue(): void {
     if (!this.recoveryHold) return;
     this.recoveryHold = false;
+    this.publishQueueHoldChanged();
     void this.startNext();
+  }
+
+  private queueHold(): PromptQueueHold | undefined {
+    return this.recoveryHold ? { reason: 'recovery', count: this.pending.length } : undefined;
   }
 
   private isTimingReady(timing: DeferredAppendTiming): boolean {
@@ -861,6 +882,7 @@ export class AgentPromptService implements IAgentPromptService {
       this.pending.push(record);
     }
     this.recoveryHold = this.pending.length > 0;
+    if (this.recoveryHold) this.publishQueueHoldChanged();
   }
 
   replace(promptId: string, content: readonly ContentPart[]): PromptHandle {
@@ -1020,6 +1042,7 @@ export class AgentPromptService implements IAgentPromptService {
       void this.dispatcher.dispatch(
         new PromptSteered({ activePromptId: activeAtEntry?.id ?? selected[0]!.id, promptIds: selected.map((x) => x.id), content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString() }),
       );
+      if (this.recoveryHold) this.publishQueueHoldChanged();
       return selected.map((item) => item.handle);
     } finally {
       for (const item of selected) this.steeringPromptIds.delete(item.id);
@@ -1034,6 +1057,7 @@ export class AgentPromptService implements IAgentPromptService {
     item.state = 'cancelled'; item.launchedDeferred.resolve(undefined);
     item.completionDeferred.resolve({ promptId, result: undefined, state: 'cancelled' });
     this.publishAborted(promptId, true);
+    if (this.recoveryHold) this.publishQueueHoldChanged();
     return true;
   }
 
@@ -1260,6 +1284,9 @@ export class AgentPromptService implements IAgentPromptService {
   private publishStarted(record: Record): void {
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
     void this.dispatcher.dispatch(new PromptStarted({ agentId: this.scopeContext.agentId, promptId: record.id }));
+  }
+  private publishQueueHoldChanged(): void {
+    void this.dispatcher.dispatch(new PromptQueueHoldChanged({ hold: this.queueHold() ?? null }));
   }
   private publishAborted(promptId: string, beforeStart: boolean): void { void this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart })); }
 }

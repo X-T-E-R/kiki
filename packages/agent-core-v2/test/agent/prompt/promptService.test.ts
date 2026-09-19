@@ -22,6 +22,7 @@ import {
   PromptEnqueued,
   PromptMoved,
   PromptQueued,
+  PromptQueueHoldChanged,
   PromptReplaced,
   PromptStarted,
   PromptSteered,
@@ -719,8 +720,10 @@ describe('AgentPromptService', () => {
     expect(loop.launches).toEqual([0]);
   });
 
-  it('restores a replaced goal-creation objective from durable prompt state', async () => {
-    const { prompt, goal, dispatcher } = harness();
+  it('rebuilds and releases the observable recovery hold from durable prompt state', async () => {
+    const { prompt, goal, dispatcher, eventBus } = harness();
+    const holds: Array<{ readonly reason: 'recovery'; readonly count: number } | null> = [];
+    eventBus.subscribe(PromptQueueHoldChanged, (event) => holds.push(event.hold));
     goal.createGoal.mockImplementation(async ({ objective }) => {
       const snapshot = goalSnapshot(objective);
       goal.getGoal.mockReturnValue({ goal: snapshot });
@@ -749,11 +752,22 @@ describe('AgentPromptService', () => {
     }));
 
     await dispatcher.hooks.onDidRestore.run({});
-    prompt.resumeRecoveredQueue();
+    expect(prompt.list()).toMatchObject({
+      active: undefined,
+      pending: [{ id: 'recovered', revision: 1 }],
+      hold: { reason: 'recovery', count: 1 },
+    });
+    await vi.waitFor(() => {
+      expect(holds).toEqual([{ reason: 'recovery', count: 1 }]);
+    });
 
-    await vi.waitFor(() =>
-      expect(goal.createGoal).toHaveBeenCalledWith({ objective: 'restored objective' }),
-    );
+    prompt.resumeRecoveredQueue();
+    expect(prompt.list().hold).toBeUndefined();
+
+    await vi.waitFor(() => {
+      expect(holds).toEqual([{ reason: 'recovery', count: 1 }, null]);
+      expect(goal.createGoal).toHaveBeenCalledWith({ objective: 'restored objective' });
+    });
   });
 
   it('applies each queued execution binding only when its turn starts', async () => {

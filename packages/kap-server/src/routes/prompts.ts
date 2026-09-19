@@ -558,6 +558,7 @@ function projectPromptList(snapshot: PromptQueueSnapshot) {
   return {
     active: snapshot.active === undefined ? null : projectPromptSnapshot(snapshot.active),
     queued: snapshot.pending.map(projectPromptSnapshot),
+    recovery_hold: snapshot.hold,
   };
 }
 

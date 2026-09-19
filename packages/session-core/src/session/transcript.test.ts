@@ -4131,6 +4131,17 @@ describe('queued prompt scheduling projection', () => {
     expect(previews[1]?.appendTiming).toBe('agent_idle');
   });
 
+  it('projects and clears the recovery queue hold from transcript meta', () => {
+    const held = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({ meta: { promptQueueHold: { reason: 'recovery', count: 2 } } }),
+    );
+    expect(held.promptQueueHold).toEqual({ reason: 'recovery', count: 2 });
+    const released = projectAgentTranscriptView(held, 'main', emptySnapshot());
+    expect(released.promptQueueHold).toBeUndefined();
+  });
+
   it('marks the transcript ready only once a snapshot projects, not at shell load', () => {
     const fresh = createViewState('session_test');
     expect(fresh.loaded).toBe(false);

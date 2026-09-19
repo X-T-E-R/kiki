@@ -392,6 +392,10 @@ export interface AgentTranscriptMeta {
     readonly swarm?: { readonly trigger?: string };
   };
   readonly activity?: 'idle' | 'turn' | 'disposing' | 'unknown';
+  readonly promptQueueHold?: {
+    readonly reason: 'recovery';
+    readonly count: number;
+  };
   readonly agent?: {
     readonly model?: string;
     readonly thinkingEffort?: string;

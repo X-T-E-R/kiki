@@ -2,6 +2,7 @@ import {
   PromptAborted,
   PromptCompleted,
   PromptQueued,
+  PromptQueueHoldChanged,
   PromptReplaced,
   PromptStarted,
   PromptSteered,
@@ -18,6 +19,7 @@ import {
 
 const ENGINE_PROMPT_EVENTS = [
   PromptQueued,
+  PromptQueueHoldChanged,
   PromptStarted,
   PromptSubmitted,
   PromptReplaced,
@@ -49,10 +51,19 @@ describe('events-zod prompt lifecycle coverage', () => {
     ).toEqual([]);
   });
 
-  it('parses a prompt.started frame', () => {
+  it('parses prompt queue state frames', () => {
     expect(
       agentEventSchema.parse({ type: 'prompt.started', promptId: 'prompt_1' }),
     ).toEqual({ type: 'prompt.started', promptId: 'prompt_1' });
+    expect(
+      agentEventSchema.parse({
+        type: 'prompt.queue_hold_changed',
+        hold: { reason: 'recovery', count: 1 },
+      }),
+    ).toEqual({
+      type: 'prompt.queue_hold_changed',
+      hold: { reason: 'recovery', count: 1 },
+    });
   });
 });
 

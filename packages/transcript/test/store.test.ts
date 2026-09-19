@@ -923,6 +923,16 @@ describe('AgentTranscript', () => {
     expect(tx.getMeta().modes).toBeUndefined();
   });
 
+  it('meta.merge projects and clears the recovery queue hold', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'meta.merge', meta: { promptQueueHold: { reason: 'recovery', count: 2 } } },
+    ]);
+    expect(tx.getMeta().promptQueueHold).toEqual({ reason: 'recovery', count: 2 });
+    tx.apply([{ op: 'meta.merge', meta: { promptQueueHold: null } }]);
+    expect(tx.getMeta().promptQueueHold).toBeUndefined();
+  });
+
   it('meta.merge shallow-merges the agent status key one level deep', () => {
     const tx = new AgentTranscript('main');
     tx.apply([

@@ -125,15 +125,22 @@ export interface AgentStatusMeta {
   readonly phase?: AgentPhaseMeta;
 }
 
+export interface PromptQueueHoldMeta {
+  readonly reason: 'recovery';
+  readonly count: number;
+}
+
 export interface TranscriptMeta {
   readonly goal?: GoalMeta;
   readonly modes?: ModesMeta;
   readonly activity?: ActivityMeta;
   readonly agent?: AgentStatusMeta;
+  readonly promptQueueHold?: PromptQueueHoldMeta;
 }
 
-/** Contract shape of a `meta.merge` payload — like {@link TranscriptMeta}, but mode keys and `goal` may be `null` to clear. */
-export type TranscriptMetaMerge = Omit<TranscriptMeta, 'modes' | 'goal'> & {
+/** Contract shape of a `meta.merge` payload — like {@link TranscriptMeta}, but clearable keys may be `null`. */
+export type TranscriptMetaMerge = Omit<TranscriptMeta, 'modes' | 'goal' | 'promptQueueHold'> & {
   readonly modes?: ModesMetaMerge;
   readonly goal?: GoalMeta | null;
+  readonly promptQueueHold?: PromptQueueHoldMeta | null;
 };

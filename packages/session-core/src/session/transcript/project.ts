@@ -2434,6 +2434,7 @@ export function projectAgentTranscriptView(
     planMode: snapshot.meta.modes?.plan !== undefined,
     swarmMode: snapshot.meta.modes?.swarm !== undefined,
     queuedPromptIds,
+    promptQueueHold: snapshot.meta.promptQueueHold,
     queuedPromptMeta,
     activePromptId: running?.promptId,
     pendingInteraction,

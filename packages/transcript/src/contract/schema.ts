@@ -382,17 +382,24 @@ export const agentStatusMetaSchema = z.object({
   phase: agentPhaseMetaSchema.optional(),
 });
 
+export const promptQueueHoldMetaSchema = z.object({
+  reason: z.literal('recovery'),
+  count: z.number().int().nonnegative(),
+});
+
 export const transcriptMetaSchema = z.object({
   goal: goalMetaSchema.optional(),
   modes: modesMetaSchema.optional(),
   activity: z.enum(['idle', 'turn', 'disposing', 'unknown']).optional(),
   agent: agentStatusMetaSchema.optional(),
+  promptQueueHold: promptQueueHoldMetaSchema.optional(),
 });
 
-/** `goal` set to `null` in a merge clears the goal (same convention as mode keys). */
+/** Clearable fields set to `null` in a merge are removed from the materialized meta. */
 export const transcriptMetaMergeSchema = transcriptMetaSchema.extend({
   goal: goalMetaSchema.nullable().optional(),
   modes: modesMetaMergeSchema.optional(),
+  promptQueueHold: promptQueueHoldMetaSchema.nullable().optional(),
 });
 
 export const attachmentSchema = z.object({

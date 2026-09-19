@@ -83,9 +83,15 @@ export interface PromptHandle extends PromptSnapshot {
   readonly completion: Promise<PromptCompletion>;
 }
 
+export interface PromptQueueHold {
+  readonly reason: 'recovery';
+  readonly count: number;
+}
+
 export interface PromptQueueSnapshot {
   readonly active: PromptSnapshot | undefined;
   readonly pending: readonly PromptSnapshot[];
+  readonly hold?: PromptQueueHold;
 }
 
 export interface PromptPayload {

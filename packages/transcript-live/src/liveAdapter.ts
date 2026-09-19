@@ -26,6 +26,7 @@ import type {
   PromptCompleted,
   PromptMoved,
   PromptQueued,
+  PromptQueueHoldChanged,
   PromptReplaced,
   PromptStarted,
   PromptSteered,
@@ -109,6 +110,9 @@ type PromptCompletedEvent = { readonly type: 'prompt.completed' } & PromptComple
 type PromptAbortedEvent = { readonly type: 'prompt.aborted' } & PromptAborted;
 type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
 type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued & PromptSchedulingFields;
+type PromptQueueHoldChangedEvent = {
+  readonly type: 'prompt.queue_hold_changed';
+} & PromptQueueHoldChanged;
 type PromptReplacedEvent = { readonly type: 'prompt.replaced' } & PromptReplaced & PromptSchedulingFields;
 type PromptMovedEvent = { readonly type: 'prompt.moved' } & PromptMoved;
 interface PromptTimingChangedPayload {
@@ -162,6 +166,7 @@ export type LiveAdapterBusEvent =
   | PromptAbortedEvent
   | PromptSteeredEvent
   | PromptQueuedEvent
+  | PromptQueueHoldChangedEvent
   | PromptReplacedEvent
   | PromptMovedEvent
   | PromptTimingChangedEvent
@@ -351,6 +356,8 @@ export class AgentTranscriptLiveAdapter {
         return this.onPromptStarted(event);
       case 'prompt.queued':
         return this.onPromptQueued(event);
+      case 'prompt.queue_hold_changed':
+        return this.onPromptQueueHoldChanged(event);
       case 'prompt.replaced':
         return this.onPromptReplaced(event);
       case 'prompt.moved':
@@ -1547,6 +1554,10 @@ export class AgentTranscriptLiveAdapter {
       revision: event.revision ?? prev?.revision,
     }));
     return [{ op: 'prompt.upsert', prompt }];
+  }
+
+  private onPromptQueueHoldChanged(event: PromptQueueHoldChangedEvent): TranscriptOperation[] {
+    return [{ op: 'meta.merge', meta: { promptQueueHold: event.hold } }];
   }
 
   private onPromptTimingChanged(event: PromptTimingChangedEvent): TranscriptOperation[] {

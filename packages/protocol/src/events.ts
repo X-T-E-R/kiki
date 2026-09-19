@@ -10,7 +10,12 @@ import {
 } from './session';
 import { isoDateTimeSchema } from './time';
 import { configResponseSchema, type ConfigResponse } from './rest/config';
-import { deferredAppendTimingSchema, type DeferredAppendTiming } from './rest/prompt';
+import {
+  deferredAppendTimingSchema,
+  promptQueueHoldSchema,
+  type DeferredAppendTiming,
+  type PromptQueueHold,
+} from './rest/prompt';
 import {
   providerRefreshChangeSchema,
   providerRefreshFailureSchema,
@@ -1001,6 +1006,11 @@ export interface PromptQueuedEvent {
   readonly revision?: number;
 }
 
+export interface PromptQueueHoldChangedEvent {
+  readonly type: 'prompt.queue_hold_changed';
+  readonly hold: PromptQueueHold | null;
+}
+
 /** A queued prompt left the queue and became the agent's active turn. */
 export interface PromptStartedEvent {
   readonly type: 'prompt.started';
@@ -1163,6 +1173,7 @@ export type AgentEvent =
   | CronFiredEvent
   | PromptSubmittedEvent
   | PromptQueuedEvent
+  | PromptQueueHoldChangedEvent
   | PromptStartedEvent
   | PromptReplacedEvent
   | PromptMovedEvent
@@ -2048,6 +2059,11 @@ export const promptQueuedEventSchema = z.object({
   revision: z.number().int().nonnegative().optional(),
 }) satisfies z.ZodType<PromptQueuedEvent>;
 
+export const promptQueueHoldChangedEventSchema = z.object({
+  type: z.literal('prompt.queue_hold_changed'),
+  hold: promptQueueHoldSchema.nullable(),
+}) satisfies z.ZodType<PromptQueueHoldChangedEvent>;
+
 export const promptStartedEventSchema = z.object({
   type: z.literal('prompt.started'),
   promptId: z.string(),
@@ -2203,6 +2219,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   cronFiredEventSchema,
   promptSubmittedEventSchema,
   promptQueuedEventSchema,
+  promptQueueHoldChangedEventSchema,
   promptStartedEventSchema,
   promptReplacedEventSchema,
   promptMovedEventSchema,

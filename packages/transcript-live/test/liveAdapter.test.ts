@@ -87,6 +87,23 @@ describe('AgentTranscriptLiveAdapter', () => {
     });
   });
 
+  it('maps recovery hold changes onto transcript meta', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    expect(
+      liveAdapter.map(
+        ev({
+          type: 'prompt.queue_hold_changed',
+          hold: { reason: 'recovery', count: 2 },
+        }),
+      ),
+    ).toEqual([
+      { op: 'meta.merge', meta: { promptQueueHold: { reason: 'recovery', count: 2 } } },
+    ]);
+    expect(liveAdapter.map(ev({ type: 'prompt.queue_hold_changed', hold: null }))).toEqual([
+      { op: 'meta.merge', meta: { promptQueueHold: null } },
+    ]);
+  });
+
   it('carries deferred-append timing and revision through the queue lifecycle', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

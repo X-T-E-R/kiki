@@ -196,6 +196,12 @@ describe('events / display re-exports', () => {
       content: [{ type: 'text', text: 'queued' }],
       queueLength: 2,
     });
+    const held = eventSchema.parse({
+      type: 'prompt.queue_hold_changed',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      hold: { reason: 'recovery', count: 2 },
+    });
     const replaced = eventSchema.parse({
       type: 'prompt.replaced',
       agentId: 'main',
@@ -215,6 +221,7 @@ describe('events / display re-exports', () => {
     });
 
     expect(queued.type).toBe('prompt.queued');
+    expect(held).toMatchObject({ hold: { reason: 'recovery', count: 2 } });
     expect(replaced.type).toBe('prompt.replaced');
     expect(moved.type).toBe('prompt.moved');
   });

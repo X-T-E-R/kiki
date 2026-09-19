@@ -972,6 +972,14 @@ export const promptQueuedEventSchema = z.object({
   queueLength: z.number().int().nonnegative(),
 });
 
+export const promptQueueHoldChangedEventSchema = z.object({
+  type: z.literal('prompt.queue_hold_changed'),
+  hold: z.object({
+    reason: z.literal('recovery'),
+    count: z.number().int().nonnegative(),
+  }).nullable(),
+});
+
 export const promptStartedEventSchema = z.object({
   type: z.literal('prompt.started'),
   promptId: z.string(),
@@ -1094,6 +1102,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   cronFiredEventSchema,
   promptSubmittedEventSchema,
   promptQueuedEventSchema,
+  promptQueueHoldChangedEventSchema,
   promptStartedEventSchema,
   promptReplacedEventSchema,
   promptMovedEventSchema,

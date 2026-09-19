@@ -1713,6 +1713,7 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'prompt.aborted',
   'prompt.steered',
   'prompt.queued',
+  'prompt.queue_hold_changed',
   'prompt.enqueued',
   'prompt.replaced',
   'prompt.timing_changed',

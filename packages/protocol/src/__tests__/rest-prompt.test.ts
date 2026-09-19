@@ -257,9 +257,11 @@ describe('promptListResponseSchema', () => {
           created_at: '2026-06-09T00:00:01.000Z',
         },
       ],
+      recovery_hold: { reason: 'recovery', count: 1 },
     });
     expect(parsed.active?.status).toBe('running');
     expect(parsed.queued[0]?.status).toBe('queued');
+    expect(parsed.recovery_hold).toEqual({ reason: 'recovery', count: 1 });
   });
 });
 

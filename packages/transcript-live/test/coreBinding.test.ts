@@ -114,7 +114,7 @@ describe('bindSessionTranscript', () => {
       this.disposeHandlers.add(cb);
       return { dispose: () => this.disposeHandlers.delete(cb) };
     }
-    add(id: string, opts?: { loopStatus?: unknown; tasks?: readonly unknown[]; prompts?: { active?: unknown; pending?: readonly unknown[] } }): FakeAgentHandle {
+    add(id: string, opts?: { loopStatus?: unknown; tasks?: readonly unknown[]; prompts?: { active?: unknown; pending?: readonly unknown[]; hold?: unknown } }): FakeAgentHandle {
       const bus = new FakeBus();
       const handle: FakeAgentHandle = {
         id,
@@ -139,7 +139,13 @@ describe('bindSessionTranscript', () => {
               return { list: () => opts?.tasks ?? [] };
             }
             if (token === IAgentPromptService) {
-              return { list: () => ({ active: opts?.prompts?.active, pending: opts?.prompts?.pending ?? [] }) };
+              return {
+                list: () => ({
+                  active: opts?.prompts?.active,
+                  pending: opts?.prompts?.pending ?? [],
+                  hold: opts?.prompts?.hold,
+                }),
+              };
             }
             return undefined;
           },
@@ -1051,7 +1057,7 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
-  it('seeds active and queued prompts from the prompt service on attach', () => {
+  it('seeds active, queued, and recovery-held prompt state on attach', () => {
     const agents = new FakeAgents();
     agents.add('main', {
       prompts: {
@@ -1075,6 +1081,7 @@ describe('bindSessionTranscript', () => {
             revision: 2,
           },
         ],
+        hold: { reason: 'recovery', count: 1 },
       },
     });
     const store = new TranscriptStore('s1');
@@ -1094,6 +1101,10 @@ describe('bindSessionTranscript', () => {
       status: 'queued',
       appendTiming: 'tasks_done',
       revision: 2,
+    });
+    expect(store.getAgent('main')?.getMeta().promptQueueHold).toEqual({
+      reason: 'recovery',
+      count: 1,
     });
     binding.dispose();
   });

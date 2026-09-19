@@ -16,7 +16,9 @@ import {
   IAgentProfileService,
   IAgentPromptService,
   IAgentToolPolicyService,
+  IEventDispatcher,
   IBootstrapService,
+  PromptEnqueued,
   IFileService,
   ISessionContext,
   ISessionMetadata,
@@ -520,6 +522,41 @@ describe('server-v2 /api prompts', () => {
       expect(list.body.data.active.prompt_id).toBe(submitted.body.data.prompt_id);
     }
     expect(Array.isArray(list.body.data.queued)).toBe(true);
+  });
+
+  it('projects a replay-restored recovery hold through the prompt list', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+    const dispatcher = main.accessor.get(IEventDispatcher);
+    await dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'recovered-prompt',
+      userMessageId: 'recovered-prompt',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'recover me' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 0,
+    }));
+    await dispatcher.hooks.onDidRestore.run({});
+
+    const list = await call<{
+      active: PromptItemWire | null;
+      queued: PromptItemWire[];
+      recovery_hold?: { reason: 'recovery'; count: number };
+    }>('GET', `/api/sessions/${id}/prompts`);
+
+    expect(list.body.code).toBe(0);
+    expect(list.body.data.queued.map((prompt) => prompt.prompt_id)).toEqual(['recovered-prompt']);
+    expect(list.body.data.recovery_hold).toEqual({ reason: 'recovery', count: 1 });
   });
 
   it('applies an optional plan_gate override before prompt execution', async () => {

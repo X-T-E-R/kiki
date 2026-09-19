@@ -339,6 +339,7 @@ export interface SessionViewState {
   readonly pendingInteraction: SessionPendingInteraction;
   readonly activePromptId: string | undefined;
   readonly queuedPromptIds: readonly string[];
+  readonly promptQueueHold: { readonly reason: 'recovery'; readonly count: number } | undefined;
   /**
    * Per-queued-prompt scheduling state (effective `append_timing` plus the
    * scheduling `revision` used as the optimistic-concurrency token for
@@ -409,6 +410,7 @@ export function createViewState(sessionId: string): SessionViewState {
     pendingInteraction: 'none',
     activePromptId: undefined,
     queuedPromptIds: [],
+    promptQueueHold: undefined,
     queuedPromptMeta: {},
     model: undefined,
     profile: undefined,
