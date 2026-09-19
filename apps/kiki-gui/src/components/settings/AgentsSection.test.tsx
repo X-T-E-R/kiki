@@ -252,7 +252,9 @@ describe('default main profile settings', () => {
     await render();
     const row = container.querySelector('[data-agent-profile="ws-helper"]')!;
     // The scope is spelled out next to the switch, not only in its tooltip.
-    expect(row.querySelector('[data-toggle-scope="server"]')?.textContent).toBe('Scope · Server');
+    expect(row.querySelector('[data-toggle-scope="server"]')?.textContent).toBe(
+      'Server-wide · affects every profile with this name',
+    );
     expect(row.querySelector('[data-toggle-scope-hint]')?.textContent).toContain('everywhere');
     await act(async () => row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
     await settle();
@@ -362,6 +364,11 @@ describe('profile editor tool-list fidelity', () => {
 
   it('keeps an untouched `tools: []` out of the patch instead of clearing the field', async () => {
     const dialog = await openEditor({ tools: [] });
+    expect([...toolsMode(dialog).options].map((option) => option.textContent)).toEqual([
+      'Inherit',
+      'Deny all',
+      'Allow list only',
+    ]);
     expect(toolsMode(dialog).value).toBe('empty');
     expect(toolsList(dialog)).toBeNull();
     await setText(descriptionField(dialog), 'Touched description');
@@ -417,12 +424,21 @@ describe('profile editor tool-list fidelity', () => {
     await setText(descriptionField(dialog), 'Touched description');
     const button = [...dialog.querySelectorAll('button')].find((item) => item.textContent === 'Save')!;
     expect(button.disabled).toBe(true);
+    expect(dialog.querySelector('[data-tool-field-error="tools"]')?.textContent).toContain(
+      'Enter at least one tool name',
+    );
     await setSelect(toolsMode(dialog), 'empty');
     expect(button.disabled).toBe(false);
+    expect(dialog.querySelector('[data-tool-field-error="tools"]')).toBeNull();
   });
 
   it('tracks the disallowed list three-way as well', async () => {
     const dialog = await openEditor({ disallowed_tools: [] });
+    expect([...disallowedMode(dialog).options].map((option) => option.textContent)).toEqual([
+      'Inherit',
+      'Do not deny any tools',
+      'Deny listed tools',
+    ]);
     expect(disallowedMode(dialog).value).toBe('empty');
     await setText(descriptionField(dialog), 'Touched description');
     const untouched = await save(dialog);

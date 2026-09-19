@@ -275,6 +275,22 @@ describe('events / display re-exports', () => {
       revision: 1,
       queueIndex: 0,
     });
+    const goalCreation = eventSchema.parse({
+      type: 'prompt.enqueued',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      schemaVersion: 1,
+      promptId: 'prompt_goal',
+      userMessageId: 'msg_goal',
+      createdAt: '2026-06-11T00:00:00.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'create goal' }] },
+      execution: { goalObjective: 'create goal' },
+      goalId: null,
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 1,
+      queueIndex: 1,
+    });
     const launch = eventSchema.parse({
       type: 'prompt.launch_committed',
       agentId: 'main',
@@ -287,6 +303,7 @@ describe('events / display re-exports', () => {
 
     expect((enqueued as { queueIndex: number }).queueIndex).toBe(0);
     expect((enqueued as { appendTiming: string }).appendTiming).toBe('agent_idle');
+    expect((goalCreation as { goalId: string | null }).goalId).toBeNull();
     expect((launch as { launchId: string }).launchId).toBe('launch_1');
   });
 

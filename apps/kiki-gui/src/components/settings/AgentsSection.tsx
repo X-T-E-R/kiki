@@ -347,7 +347,7 @@ function NamedAgentProfileRow({
               data-toggle-scope="server"
               className="shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint"
             >
-              {t('st.scope.label')} · {t('st.scope.server')}
+              {t('st.namedAgents.namedToggleScope')}
             </span>
           </div>
           <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">

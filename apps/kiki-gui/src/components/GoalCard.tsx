@@ -70,12 +70,15 @@ export function GoalCard({
   const [conflict, setConflict] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState<'refresh' | 'save' | 'pause' | 'resume' | 'cancel' | null>(null);
+  const [armedResume, setArmedResume] = useState(false);
   const [armedCancel, setArmedCancel] = useState(false);
-  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
     () => () => {
-      if (armTimerRef.current !== null) clearTimeout(armTimerRef.current);
+      if (resumeTimerRef.current !== null) clearTimeout(resumeTimerRef.current);
+      if (cancelTimerRef.current !== null) clearTimeout(cancelTimerRef.current);
     },
     [],
   );
@@ -163,14 +166,30 @@ export function GoalCard({
       });
   };
 
+  const clickResume = () => {
+    if (goal.status !== 'blocked') {
+      act('resume', onResume);
+      return;
+    }
+    if (!armedResume) {
+      setArmedResume(true);
+      if (resumeTimerRef.current !== null) clearTimeout(resumeTimerRef.current);
+      resumeTimerRef.current = setTimeout(() => { setArmedResume(false); }, CANCEL_ARM_TIMEOUT_MS);
+      return;
+    }
+    if (resumeTimerRef.current !== null) clearTimeout(resumeTimerRef.current);
+    setArmedResume(false);
+    act('resume', onResume);
+  };
+
   const clickCancel = () => {
     if (!armedCancel) {
       setArmedCancel(true);
-      if (armTimerRef.current !== null) clearTimeout(armTimerRef.current);
-      armTimerRef.current = setTimeout(() => { setArmedCancel(false); }, CANCEL_ARM_TIMEOUT_MS);
+      if (cancelTimerRef.current !== null) clearTimeout(cancelTimerRef.current);
+      cancelTimerRef.current = setTimeout(() => { setArmedCancel(false); }, CANCEL_ARM_TIMEOUT_MS);
       return;
     }
-    if (armTimerRef.current !== null) clearTimeout(armTimerRef.current);
+    if (cancelTimerRef.current !== null) clearTimeout(cancelTimerRef.current);
     setArmedCancel(false);
     act('cancel', onCancel);
   };
@@ -235,15 +254,28 @@ export function GoalCard({
                 {t('goal.pause')}
               </button>
             ) : null}
-            {goal.status === 'paused' ? (
+            {goal.status === 'paused' || goal.status === 'blocked' ? (
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => { act('resume', onResume); }}
-                title={t('goal.resumeTitle')}
+                onClick={clickResume}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && armedResume) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setArmedResume(false);
+                  }
+                }}
+                title={
+                  armedResume
+                    ? t('goal.resumeConfirm')
+                    : goal.status === 'blocked'
+                      ? t('goal.resumeBlockedTitle')
+                      : t('goal.resumeTitle')
+                }
                 className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
               >
-                {t('goal.resume')}
+                {armedResume ? t('goal.resumeConfirm') : t('goal.resume')}
               </button>
             ) : null}
             <button
@@ -253,6 +285,7 @@ export function GoalCard({
               onKeyDown={(event) => {
                 if (event.key === 'Escape' && armedCancel) {
                   event.preventDefault();
+                  event.stopPropagation();
                   setArmedCancel(false);
                 }
               }}

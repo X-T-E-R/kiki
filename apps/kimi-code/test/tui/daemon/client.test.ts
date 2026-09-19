@@ -18,13 +18,14 @@ function fakeKlient() {
     acquireConsumer: vi.fn(),
     releaseConsumer: vi.fn(),
   };
-  const session = vi.fn(() => ({ agent: vi.fn(() => agent), interactions, agents: vi.fn() }));
+  const commands = { timing: vi.fn() };
+  const session = vi.fn(() => ({ agent: vi.fn(() => agent), interactions, commands, agents: vi.fn() }));
   const klient = {
     global: { sessions, kosong: { listModels: vi.fn() } },
     session,
     close: vi.fn(),
   };
-  return { klient, sessions, agent, interactions };
+  return { klient, sessions, agent, interactions, commands };
 }
 
 function requestUrl(input: string | URL | Request): string {
@@ -52,6 +53,27 @@ describe('DaemonClient', () => {
 
     expect(fake.sessions.create).toHaveBeenCalledWith({ workDir: 'C:\\repo' });
     expect(fake.agent.runShellCommand).toHaveBeenCalledWith({ command: 'pwd' });
+  });
+
+  it('delegates queued prompt timing changes through the session command transport', async () => {
+    const fake = fakeKlient();
+    fake.commands.timing.mockResolvedValue({
+      prompt_id: 'prompt-1',
+      append_timing: 'subagents_done',
+      revision: 2,
+    });
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580',
+      token: 'secret',
+      klient: fake.klient as never,
+    });
+
+    await expect(client.timingPrompt('session-1', 'prompt-1', {
+      append_timing: 'subagents_done',
+    })).resolves.toMatchObject({ prompt_id: 'prompt-1', append_timing: 'subagents_done' });
+    expect(fake.commands.timing).toHaveBeenCalledWith('prompt-1', {
+      append_timing: 'subagents_done',
+    });
   });
 
   it('lists daemon sessions through the klient keyset facade', async () => {

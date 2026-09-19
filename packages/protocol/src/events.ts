@@ -1038,7 +1038,7 @@ export interface PromptEnqueuedEvent {
   readonly createdAt: string;
   readonly message: unknown;
   readonly execution?: unknown;
-  readonly goalId?: string;
+  readonly goalId?: string | null;
   readonly deferredDisabledTools?: readonly string[];
   readonly alreadyMaterialized: boolean;
   readonly appendTiming: DeferredAppendTiming;
@@ -2078,7 +2078,7 @@ export const promptEnqueuedEventSchema = z.object({
   createdAt: isoDateTimeSchema,
   message: z.unknown(),
   execution: z.unknown().optional(),
-  goalId: z.string().optional(),
+  goalId: z.string().nullable().optional(),
   deferredDisabledTools: z.array(z.string()).optional(),
   alreadyMaterialized: z.boolean(),
   appendTiming: deferredAppendTimingSchema,

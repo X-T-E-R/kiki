@@ -387,6 +387,11 @@ export interface UpdateAgentGoalInput {
   readonly followUpTiming?: GoalFollowUpTiming;
 }
 
+export interface ResumeAgentGoalInput {
+  readonly continueIfPaused?: boolean;
+  readonly continueIfBlocked?: boolean;
+}
+
 /**
  * Aggregated cron task from `GET /api/cron` (typed in klient's rest facade —
  * see `HttpRestCronTask`). Paused tasks carry `next_fire_at: null` and sort last.
@@ -840,8 +845,8 @@ export class KikiClient {
     return this.run(() => this.klient.session(sessionId).agent(MAIN_AGENT_ID).pauseGoal());
   }
 
-  resumeAgentGoal(sessionId: string): Promise<GoalSnapshot> {
-    return this.run(() => this.klient.session(sessionId).agent(MAIN_AGENT_ID).resumeGoal());
+  resumeAgentGoal(sessionId: string, input: ResumeAgentGoalInput = {}): Promise<GoalSnapshot> {
+    return this.run(() => this.klient.session(sessionId).agent(MAIN_AGENT_ID).resumeGoal(input));
   }
 
   cancelAgentGoal(sessionId: string): Promise<GoalSnapshot> {

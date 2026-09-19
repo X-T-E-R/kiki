@@ -319,10 +319,12 @@ describe('QueueStrip timing picker', () => {
     const first = container.querySelector('[data-timing-picker="p1"]')!;
     expect(first.getAttribute('role')).toBe('radiogroup');
     expect(first.querySelector('[data-timing="subagents_done"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(first.querySelector('[data-timing="subagents_done"]')?.textContent).toBe('after subagents');
     expect(first.querySelector('[data-timing="agent_idle"]')?.getAttribute('aria-checked')).toBe('false');
     // Older servers omit the field; the display falls back to agent_idle.
     const second = container.querySelector('[data-timing-picker="p2"]')!;
     expect(second.querySelector('[data-timing="agent_idle"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(second.querySelector('[data-timing="agent_idle"]')?.textContent).toBe('when idle');
   });
 
   it('calls onChangeTiming with the picked timing and ignores the current one', async () => {

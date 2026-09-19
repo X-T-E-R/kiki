@@ -86,6 +86,14 @@ async function click(element: Element): Promise<void> {
   });
 }
 
+async function keyDown(element: Element, key: string): Promise<KeyboardEvent> {
+  const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+  await act(async () => {
+    element.dispatchEvent(event);
+  });
+  return event;
+}
+
 async function settle(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -112,18 +120,36 @@ describe('GoalCard', () => {
     expect(onResume).toHaveBeenCalledTimes(1);
   });
 
+  it('requires confirmation before resuming a blocked goal and lets Escape disarm it', async () => {
+    const onResume = vi.fn(() => Promise.resolve());
+    const { container } = await renderCard({ goal: goalFixture({ status: 'blocked' }), onResume });
+    const resume = container.querySelector('button[title^="Resume this blocked goal"]')!;
+    await click(resume);
+    expect(onResume).not.toHaveBeenCalled();
+    const armed = container.querySelector('button[title="Resume goal?"]')!;
+    const escape = await keyDown(armed, 'Escape');
+    expect(escape.defaultPrevented).toBe(true);
+    expect(container.querySelector('button[title="Resume goal?"]')).toBeNull();
+    await click(container.querySelector('button[title^="Resume this blocked goal"]')!);
+    await click(container.querySelector('button[title="Resume goal?"]')!);
+    expect(onResume).toHaveBeenCalledTimes(1);
+  });
+
   it('hides itself once the goal is complete', async () => {
     const { container } = await renderCard({ goal: goalFixture({ status: 'complete' }) });
     expect(container.querySelector('[data-goal-card]')).toBeNull();
   });
 
-  it('arms cancel on the first click and cancels on the second', async () => {
+  it('arms cancel, lets Escape disarm it, and cancels on the confirmed click', async () => {
     const onCancel = vi.fn(() => Promise.resolve());
     const { container } = await renderCard({ onCancel });
     await click(container.querySelector('button[title^="Cancel the goal"]')!);
     expect(onCancel).not.toHaveBeenCalled();
-    const armed = container.querySelector('button[title="Cancel goal?"]')!;
-    await click(armed);
+    const escape = await keyDown(container.querySelector('button[title="Cancel goal?"]')!, 'Escape');
+    expect(escape.defaultPrevented).toBe(true);
+    expect(container.querySelector('button[title="Cancel goal?"]')).toBeNull();
+    await click(container.querySelector('button[title^="Cancel the goal"]')!);
+    await click(container.querySelector('button[title="Cancel goal?"]')!);
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 

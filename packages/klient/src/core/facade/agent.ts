@@ -19,6 +19,7 @@ import type { IAgentPluginCommandService } from '@kiki/agent-core-v2/agent/plugi
 import type { IAgentPluginService } from '@kiki/agent-core-v2/agent/plugin/agentPlugin';
 import type { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
 import type { IAgentPromptService } from '@kiki/agent-core-v2/agent/prompt/prompt';
+import type { ResumeGoalInput } from '@kiki/agent-core-v2/agent/goal/goal';
 import type { IAgentTokenCountingService } from '@kiki/agent-core-v2/agent/tokenCounting/tokenCounting';
 import type { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
 import type { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
@@ -102,7 +103,7 @@ export interface AgentFacade {
   createGoal(input: import('@kiki/agent-core-v2/agent/goal/types').CreateGoalInput): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
   updateGoal(input: import('@kiki/agent-core-v2/agent/goal/types').UpdateGoalInput): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
   pauseGoal(): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
-  resumeGoal(): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
+  resumeGoal(input?: ResumeGoalInput): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
   cancelGoal(): Promise<import('@kiki/agent-core-v2/agent/goal/types').GoalSnapshot>;
   getUsage(): Promise<UsageStatus>;
   getContext(): Promise<AgentContextData>;
@@ -200,7 +201,12 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     createGoal: (input) => call(scope, 'agentGoalService', 'createGoal', [input]) as ReturnType<AgentFacade['createGoal']>,
     updateGoal: (input) => call(scope, 'agentGoalService', 'updateGoal', [input]) as ReturnType<AgentFacade['updateGoal']>,
     pauseGoal: () => call(scope, 'agentGoalService', 'pauseGoal', []) as ReturnType<AgentFacade['pauseGoal']>,
-    resumeGoal: () => call(scope, 'agentGoalService', 'resumeGoal', []) as ReturnType<AgentFacade['resumeGoal']>,
+    resumeGoal: (input) => call(
+      scope,
+      'agentGoalService',
+      'resumeGoal',
+      input === undefined ? [] : [input],
+    ) as ReturnType<AgentFacade['resumeGoal']>,
     cancelGoal: () => call(scope, 'agentGoalService', 'cancelGoal', []) as ReturnType<AgentFacade['cancelGoal']>,
     getUsage: () => call(scope, 'agentUsageService', 'status', []) as Promise<UsageStatus>,
     getContext: async () => {

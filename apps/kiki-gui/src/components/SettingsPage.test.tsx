@@ -521,9 +521,9 @@ describe('SettingsPage batch-3 leaves', () => {
     await flush();
     expect(client.patchConfig).not.toHaveBeenCalled();
 
-    // The one explanation of when the value takes effect is the accurate one:
-    // later dispatches, no restart.
-    expect(mirror.textContent).toContain('applies to subsequent launches or resumes');
+    expect(mirror.textContent).toContain('this card only shows the effective value');
+    expect(mirror.textContent).toContain('applies to later subagent dispatches in every session');
+    expect(mirror.textContent).toContain('KIMI_SUBAGENT_TIMEOUT_MS');
     expect(mirror.textContent).not.toContain('restart');
 
     // The link lands on the editor card, which the page flashes.

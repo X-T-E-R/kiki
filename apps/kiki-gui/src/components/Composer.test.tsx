@@ -786,7 +786,21 @@ describe('Composer goal mode', () => {
     expect(container.querySelector('[data-plan-select] [aria-expanded="true"]')).toBeNull();
   });
 
-  it('keeps bare `/goal` on the action path (opens the mode panel goal field)', async () => {
+  it('uses bare `/goal` to arm goal mode when the live-session toggle is available', async () => {
+    const onSend = vi.fn();
+    const onChangeGoalMode = vi.fn();
+    const { container } = await renderComposer({ value: '/goal', onSend, onChangeGoalMode });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await settle();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onChangeGoalMode).toHaveBeenCalledWith(true);
+    expect(container.querySelector('[data-plan-select] [aria-expanded="true"]')).toBeNull();
+  });
+
+  it('keeps bare `/goal` on the objective panel for the new-session fallback', async () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: '/goal', onSend });
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
@@ -828,6 +842,16 @@ describe('Composer goal mode', () => {
     const { container } = await renderComposer();
     expect(container.querySelector('[data-goal-mode-toggle]')).toBeNull();
     expect(container.querySelector('[data-goal-armed]')).toBeNull();
+  });
+
+  it('hides the persistent objective field when goal mode owns live-session creation', async () => {
+    const { container } = await renderComposer({
+      onChangeGoalMode: vi.fn(),
+      onChangeGoalObjective: undefined,
+    });
+    await click(container.querySelector<HTMLButtonElement>('[data-plan-select] > button')!);
+    expect(container.querySelector('[data-goal-open]')).toBeNull();
+    expect(container.querySelector('[data-goal-objective]')).toBeNull();
   });
 });
 

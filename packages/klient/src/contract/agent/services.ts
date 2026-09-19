@@ -57,7 +57,14 @@ export const agentGoalContract = {
     output: goalSnapshotSchema,
   },
   pauseGoal: { input: z.tuple([]), output: goalSnapshotSchema },
-  resumeGoal: { input: z.tuple([]), output: goalSnapshotSchema },
+  resumeGoal: {
+    input: z.tuple([z.object({
+      reason: z.string().optional(),
+      continueIfPaused: z.boolean().optional(),
+      continueIfBlocked: z.boolean().optional(),
+    }).optional()]),
+    output: goalSnapshotSchema,
+  },
   cancelGoal: { input: z.tuple([]), output: goalSnapshotSchema },
 } satisfies ServiceContract;
 

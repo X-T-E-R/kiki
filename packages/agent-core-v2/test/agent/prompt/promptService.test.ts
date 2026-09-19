@@ -19,6 +19,7 @@ import {
   AgentPromptService,
   PromptAborted,
   PromptCompleted,
+  PromptEnqueued,
   PromptMoved,
   PromptQueued,
   PromptReplaced,
@@ -90,6 +91,29 @@ function bundledMessage(
     content: [{ type: 'text', text: `<skill>${skillName}</skill>` }, { type: 'text', text: user }, ...extra],
     toolCalls: [],
     origin: { kind: 'user', skillActivations: [{ activationId: `act-${skillName}`, skillName }] },
+  };
+}
+
+function goalSnapshot(objective: string) {
+  return {
+    goalId: 'created-goal',
+    objective,
+    status: 'active' as const,
+    turnsUsed: 0,
+    tokensUsed: 0,
+    wallClockMs: 0,
+    budget: {
+      tokenBudget: null,
+      turnBudget: null,
+      wallClockBudgetMs: null,
+      remainingTokens: null,
+      remainingTurns: null,
+      remainingWallClockMs: null,
+      tokenBudgetReached: false,
+      turnBudgetReached: false,
+      wallClockBudgetReached: false,
+      overBudget: false,
+    },
   };
 }
 
@@ -627,6 +651,109 @@ describe('AgentPromptService', () => {
     });
     expect(profile.setModel).toHaveBeenCalledWith('replacement-model');
     expect(inputs[1]).toEqual([{ type: 'text', text: 'new text' }]);
+  });
+
+  it('syncs the goal objective of a queued goal-creation prompt when its message is replaced', async () => {
+    const { prompt, goal, loop, states, eventBus } = harness({ manualTurnResult: true });
+    goal.createGoal.mockImplementation(async ({ objective }) => {
+      const snapshot = goalSnapshot(objective);
+      goal.getGoal.mockReturnValue({ goal: snapshot });
+      return snapshot;
+    });
+    const replaced: Array<{ promptId: string; execution?: unknown }> = [];
+    eventBus.subscribe(PromptReplaced, (event) => {
+      replaced.push({ promptId: event.promptId, execution: event.execution });
+    });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({
+      id: 'queued',
+      message: message('start the goal'),
+      execution: { goalObjective: 'old objective' },
+    });
+
+    prompt.replace('queued', [{ type: 'text', text: '  new objective  ' }]);
+
+    expect(replaced).toEqual([
+      { promptId: 'queued', execution: { goalObjective: 'new objective' } },
+    ]);
+    expect(
+      (states.get(promptQueueKey).entries.get('queued') as { execution?: { goalObjective?: string } })
+        .execution?.goalObjective,
+    ).toBe('new objective');
+
+    loop.settleActive();
+    await queued.launched;
+    expect(goal.createGoal).toHaveBeenCalledWith({ objective: 'new objective' });
+  });
+
+  it('leaves ordinary and already-bound queued executions unchanged when their message is replaced', async () => {
+    const { prompt, goal, loop, states, eventBus } = harness({ manualTurnResult: true });
+    const replaced: Array<{ promptId: string; execution?: unknown }> = [];
+    eventBus.subscribe(PromptReplaced, (event) => {
+      replaced.push({ promptId: event.promptId, execution: event.execution });
+    });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    await prompt.enqueue({ id: 'ordinary', message: message('ordinary') });
+    goal.getGoal.mockReturnValue({ goal: goalSnapshot('existing objective') });
+    await prompt.enqueue({
+      id: 'bound',
+      message: message('bound'),
+      execution: { goalObjective: 'existing objective', goalControl: 'pause' },
+    });
+
+    prompt.replace('ordinary', [{ type: 'text', text: 'edited ordinary' }]);
+    prompt.replace('bound', [{ type: 'text', text: 'edited bound' }]);
+
+    expect(replaced).toEqual([
+      { promptId: 'ordinary', execution: undefined },
+      { promptId: 'bound', execution: undefined },
+    ]);
+    const entries = states.get(promptQueueKey).entries;
+    expect((entries.get('ordinary') as { execution?: unknown }).execution).toBeUndefined();
+    expect(
+      (entries.get('bound') as { execution?: { goalObjective?: string } }).execution?.goalObjective,
+    ).toBe('existing objective');
+    expect(goal.createGoal).not.toHaveBeenCalled();
+    expect(loop.launches).toEqual([0]);
+  });
+
+  it('restores a replaced goal-creation objective from durable prompt state', async () => {
+    const { prompt, goal, dispatcher } = harness();
+    goal.createGoal.mockImplementation(async ({ objective }) => {
+      const snapshot = goalSnapshot(objective);
+      goal.getGoal.mockReturnValue({ goal: snapshot });
+      return snapshot;
+    });
+    await dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'recovered',
+      userMessageId: 'recovered',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      message: message('start the goal'),
+      execution: { goalObjective: 'old objective' },
+      goalId: null,
+      alreadyMaterialized: true,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 0,
+    }));
+    await dispatcher.dispatch(new PromptReplaced({
+      promptId: 'recovered',
+      content: [{ type: 'text', text: 'restored objective' }],
+      message: message('restored objective'),
+      execution: { goalObjective: 'restored objective' },
+      revision: 1,
+      replacedAt: '2026-01-01T00:00:01.000Z',
+    }));
+
+    await dispatcher.hooks.onDidRestore.run({});
+    prompt.resumeRecoveredQueue();
+
+    await vi.waitFor(() =>
+      expect(goal.createGoal).toHaveBeenCalledWith({ objective: 'restored objective' }),
+    );
   });
 
   it('applies each queued execution binding only when its turn starts', async () => {

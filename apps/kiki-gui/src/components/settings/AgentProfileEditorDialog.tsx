@@ -29,16 +29,16 @@ const TOOL_FIELD_MODES: readonly ToolFieldMode[] = ['inherit', 'empty', 'list'];
 
 /** `tools` reads as an allow list: an empty one denies every tool. */
 const TOOLS_MODE_LABELS: Readonly<Record<ToolFieldMode, I18nKey>> = {
-  inherit: 'st.namedAgents.inherit',
-  empty: 'st.tools.disabled',
-  list: 'st.tools.allowlist',
+  inherit: 'st.namedAgents.toolsModeInherit',
+  empty: 'st.namedAgents.toolsModeDenyAll',
+  list: 'st.namedAgents.toolsModeList',
 };
 
 /** `disallowedTools` reads as a deny list: an empty one denies nothing. */
 const DISALLOWED_TOOLS_MODE_LABELS: Readonly<Record<ToolFieldMode, I18nKey>> = {
-  inherit: 'st.namedAgents.inherit',
-  empty: 'st.auth.none',
-  list: 'st.tools.disabled',
+  inherit: 'st.namedAgents.toolsModeInherit',
+  empty: 'st.namedAgents.disallowedToolsModeNone',
+  list: 'st.namedAgents.disallowedToolsModeDeny',
 };
 
 function toolFieldFrom(value: readonly string[] | undefined): ToolFieldValue {
@@ -105,6 +105,11 @@ function ToolListField({
           placeholder={t('st.namedAgents.toolsPlaceholder')}
           onChange={(event) => { onChange({ ...field, text: event.target.value }); }}
         />
+      ) : null}
+      {fieldKey === 'tools' && toolFieldUnnamed(field) ? (
+        <p role="alert" data-tool-field-error="tools" className="text-[10.5px] text-danger">
+          {t('st.namedAgents.toolsListRequired')}
+        </p>
       ) : null}
     </div>
   );

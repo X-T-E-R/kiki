@@ -89,7 +89,9 @@ function SubagentTimeoutCard() {
             ariaLabel={t('st.sidecar.subagentTimeout')}
           />
         )}
-        <Hint>{t('st.subagentLimits.hint')}</Hint>
+        <Hint>{t('st.subagentTimeout.readOnly')}</Hint>
+        <Hint>{t('st.subagentTimeout.effective')}</Hint>
+        <Hint>{t('st.subagentTimeout.envBound')}</Hint>
         <button
           type="button"
           data-subagent-timeout-edit

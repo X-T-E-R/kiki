@@ -15,6 +15,8 @@ import type {
   PromptSteerResult,
   PromptSubmission,
   PromptSubmitResult,
+  PromptTimingRequest,
+  PromptTimingResult,
   QuestionDismissResult,
   QuestionResolveRequest,
   QuestionResolveResult,
@@ -236,6 +238,10 @@ export class DaemonClient implements SessionTransport {
 
   replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult> {
     return this.sessions.replacePrompt(sessionId, promptId, body);
+  }
+
+  timingPrompt(sessionId: string, promptId: string, body: PromptTimingRequest): Promise<PromptTimingResult> {
+    return this.sessions.timingPrompt(sessionId, promptId, body);
   }
 
   steerPrompt(sessionId: string, promptId: string): Promise<PromptSteerResult> {

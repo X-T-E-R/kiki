@@ -203,6 +203,7 @@ export interface PromptReplacedPayload {
   readonly promptId: string;
   readonly content: ContentPart[];
   readonly message: ContextMessage;
+  readonly execution?: PromptExecutionBinding;
   readonly revision: number;
   readonly replacedAt: string;
 }
@@ -211,6 +212,7 @@ const promptReplacedSchema = z.object({
   promptId: z.string().min(1),
   content: z.custom<ContentPart[]>(),
   message: z.custom<ContextMessage>(),
+  execution: z.custom<PromptExecutionBinding>().optional(),
   revision: z.number().int().nonnegative(),
   replacedAt: z.string(),
 });
@@ -375,7 +377,12 @@ export const promptQueueKey = defineState<PersistedPromptQueueState>(
   .on(PromptReplaced, (state, event) => {
     const entry = state.entries.get(event.promptId) as PromptEnqueuedPayload | undefined;
     if (entry === undefined) return;
-    state.entries.set(event.promptId, { ...entry, message: event.message, revision: event.revision });
+    state.entries.set(event.promptId, {
+      ...entry,
+      message: event.message,
+      execution: event.execution ?? entry.execution,
+      revision: event.revision,
+    });
   })
   .on(PromptTimingChanged, (state, event) => {
     const entry = state.entries.get(event.promptId) as PromptEnqueuedPayload | undefined;
@@ -418,7 +425,7 @@ interface Record extends PromptSnapshot {
   message: ContextMessage;
   appendTiming: DeferredAppendTiming;
   revision: number;
-  readonly execution?: PromptExecutionBinding;
+  execution?: PromptExecutionBinding;
   readonly goalId?: string | null;
   readonly deferredDisabledTools?: readonly string[];
   readonly alreadyMaterialized: boolean;
@@ -867,16 +874,30 @@ export class AgentPromptService implements IAgentPromptService {
       content: replacePromptContent(item.message, content),
     };
     item.revision += 1;
+    const execution = this.syncGoalCreationObjective(item, content);
     void this.dispatcher.dispatch(
       new PromptReplaced({
         promptId: item.id,
         content: stripBundledSkillBlocks(item.message),
         message: item.message,
+        execution,
         revision: item.revision,
         replacedAt: new Date().toISOString(),
       }),
     );
     return item.handle;
+  }
+
+  private syncGoalCreationObjective(
+    item: Record,
+    content: readonly ContentPart[],
+  ): PromptExecutionBinding | undefined {
+    if (item.execution?.goalObjective === undefined || item.goalId !== null) return undefined;
+    const objective = promptMetadataTextFromContentParts(content);
+    if (objective === undefined) return undefined;
+    const execution = { ...item.execution, goalObjective: objective };
+    item.execution = execution;
+    return execution;
   }
 
   changeTiming(

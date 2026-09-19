@@ -60,6 +60,7 @@ import {
   resolveRunningSubagentTask,
   sessionHasStartedConversation,
   parseSessionCreateHandoff,
+  promptGoalObjective,
   replaceQueuedPrompt,
   resolveSessionCreateSubmission,
   resolveSessionSeatPhase,
@@ -68,6 +69,7 @@ import {
   shouldClearModeOverride,
   shouldClearPendingProfileOnSendError,
   shouldCloseSessionChromeOnEscape,
+  shouldHandleGlobalAbortOnEscape,
   shouldHandleApprovalShortcut,
   isTerminalShortcut,
 } from './SessionView';
@@ -469,13 +471,31 @@ describe('parseSessionCreateHandoff', () => {
     });
   });
 
-  it('resolves the legacy first prompt and defaults its attachments', () => {
+  it('resolves the legacy first prompt and preserves an explicit goal binding', () => {
     expect(resolveSessionCreateSubmission({ initialPrompt: 'hello' })).toEqual({
       kind: 'prompt',
       text: 'hello',
       attachments: [],
+      goalObjective: undefined,
+    });
+    expect(resolveSessionCreateSubmission({
+      initialPrompt: 'ship safely',
+      goalObjective: 'ship safely',
+    })).toEqual({
+      kind: 'prompt',
+      text: 'ship safely',
+      attachments: [],
+      goalObjective: 'ship safely',
     });
     expect(resolveSessionCreateSubmission({})).toBeUndefined();
+  });
+});
+
+describe('promptGoalObjective', () => {
+  it('binds a goal only for the explicitly goal-armed submission', () => {
+    expect(promptGoalObjective()).toBeUndefined();
+    expect(promptGoalObjective({})).toBeUndefined();
+    expect(promptGoalObjective({ goalObjective: 'ship safely' })).toBe('ship safely');
   });
 });
 
@@ -772,6 +792,27 @@ describe('shouldCloseSessionChromeOnEscape', () => {
       overlayOpen: false,
       terminalFocused: false,
     })).toBe(false);
+  });
+});
+
+describe('shouldHandleGlobalAbortOnEscape', () => {
+  const ready = {
+    key: 'Escape',
+    defaultPrevented: false,
+    overlayOpen: false,
+    terminalFocused: false,
+    terminalOpen: false,
+    inFormField: false,
+  };
+
+  it('aborts only when no nearer interaction consumed Escape', () => {
+    expect(shouldHandleGlobalAbortOnEscape(ready)).toBe(true);
+    expect(shouldHandleGlobalAbortOnEscape({ ...ready, defaultPrevented: true })).toBe(false);
+    expect(shouldHandleGlobalAbortOnEscape({ ...ready, overlayOpen: true })).toBe(false);
+    expect(shouldHandleGlobalAbortOnEscape({ ...ready, terminalFocused: true })).toBe(false);
+    expect(shouldHandleGlobalAbortOnEscape({ ...ready, terminalOpen: true })).toBe(false);
+    expect(shouldHandleGlobalAbortOnEscape({ ...ready, inFormField: true })).toBe(false);
+    expect(shouldHandleGlobalAbortOnEscape({ ...ready, key: 'Enter' })).toBe(false);
   });
 });
 

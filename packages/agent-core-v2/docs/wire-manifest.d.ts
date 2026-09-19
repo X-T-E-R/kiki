@@ -693,6 +693,16 @@ interface PromptReplacedPayload {
     isError?: boolean;
     note?: string;
   };
+  /** PromptExecutionBinding */
+  execution?: {
+    profile?: string;
+    model?: string;
+    thinking?: string;
+    swarmMode?: boolean;
+    goalObjective?: string;
+    goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
+    goalInitialStatus?: 'active' | 'paused';
+  };
   revision: number;
   replacedAt: string;
 }

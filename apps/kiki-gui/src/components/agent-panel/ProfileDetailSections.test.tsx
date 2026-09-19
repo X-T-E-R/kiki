@@ -149,9 +149,11 @@ describe('running profile definition lookup', () => {
 
     const disk = container.querySelector<HTMLElement>('[data-disk-definition]')!;
     expect(disk).not.toBeNull();
+    expect(disk.textContent).toContain('Current on-disk version');
     expect(disk.textContent).toContain(OTHER_FILE);
     expect(disk.textContent).toContain('OTHER definition when-to-use');
     expect(disk.textContent).toContain('999');
+    expect(disk.textContent).toContain('The running agent is bound to a different definition');
   });
 
   it('keys the identity-only panel by the identity source file as well', async () => {

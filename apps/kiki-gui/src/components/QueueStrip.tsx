@@ -328,6 +328,7 @@ export function QueueStrip({
               onKeyDown={(event) => {
                 if (event.key === 'Escape' && armed) {
                   event.preventDefault();
+                  event.stopPropagation();
                   setArmedRemoveId(null);
                 }
               }}

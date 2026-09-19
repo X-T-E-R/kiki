@@ -184,7 +184,7 @@ export function Composer({
   planMode,
   planGate,
   swarmMode,
-  goalObjective,
+  goalObjective = '',
   goalMode = false,
   efforts,
   effort,
@@ -265,7 +265,7 @@ export function Composer({
   planGate?: PromptPlanGate;
   /** PromptSubmission.swarm_mode — enables concurrent subagent orchestration. */
   swarmMode: boolean;
-  goalObjective: string;
+  goalObjective?: string;
   /**
    * Goal mode (composer toggle): the next plain message is sent with
    * `goal_objective` set to its text. Rendered as a toolbar toggle plus an
@@ -327,7 +327,7 @@ export function Composer({
   /** Session plan-gate pick; required for the PlanSelect gate row to show. */
   onChangePlanGate?: (gate: PromptPlanGate) => void;
   onChangeSwarmMode: (on: boolean) => void;
-  onChangeGoalObjective: (objective: string) => void;
+  onChangeGoalObjective?: (objective: string) => void;
   /** Goal-mode toggle; when absent the composer hides the goal toggle button. */
   onChangeGoalMode?: (on: boolean) => void;
   onChangeEffort: (effort: string | undefined) => void;
@@ -821,8 +821,12 @@ export function Composer({
         onChangePlanMode(!planMode);
         break;
       case 'goal':
-        setPlanOpen(true);
-        setGoalOpen(true);
+        if (onChangeGoalMode !== undefined) {
+          onChangeGoalMode(true);
+        } else {
+          setPlanOpen(true);
+          setGoalOpen(true);
+        }
         break;
       case 'new':
         void navigate('/new');
@@ -1108,9 +1112,8 @@ export function Composer({
         return;
       }
       if (classified.item.kind === 'action' && classified.item.action !== undefined) {
-        // `/goal <text>` sends instead of opening the panel: the args become
-        // the goal objective and ride the prompt as `goal_objective`. A bare
-        // `/goal` keeps the old behavior (opens the mode panel's goal field).
+        // `/goal <text>` sends immediately with the args as `goal_objective`.
+        // A bare `/goal` arms the next message when goal mode is available.
         if (classified.item.action === 'goal' && classified.args !== '') {
           sendPrompt(classified.args, { goalObjective: classified.args });
           return;
@@ -2374,7 +2377,7 @@ function PlanSelect({
   swarmMode: boolean;
   onChangeSwarmMode: (on: boolean) => void;
   goalObjective: string;
-  onChangeGoalObjective: (objective: string) => void;
+  onChangeGoalObjective?: (objective: string) => void;
   goalOpen: boolean;
   onGoalOpenChange: (open: boolean) => void;
 }) {
@@ -2388,13 +2391,12 @@ function PlanSelect({
   ];
   const label =
     segments.length > 0 ? segments.join(t('composer.modeSegmentSeparator')) : t('composer.plan');
-  const active = planMode || swarmMode || goalObjective !== '';
+  const active = planMode || swarmMode ||
+    (onChangeGoalObjective !== undefined && goalObjective !== '');
 
   const close = (refocus = false) => {
     setOpen(false);
-    // An abandoned empty objective field collapses; a filled one stays open so
-    // reopening the panel shows what will ride the next prompt.
-    if (goalObjective === '') onGoalOpenChange(false);
+    if (onChangeGoalObjective !== undefined && goalObjective === '') onGoalOpenChange(false);
     if (refocus) triggerRef.current?.focus();
   };
 
@@ -2419,7 +2421,7 @@ function PlanSelect({
     if (!open) return;
     const root = rootRef.current;
     if (root === null) return;
-    const goalField = goalOpen
+    const goalField = goalOpen && onChangeGoalObjective !== undefined
       ? root.querySelector<HTMLElement>('[data-goal-objective]')
       : null;
     (goalField ?? root.querySelector<HTMLElement>('[data-mode-row]'))?.focus();
@@ -2517,7 +2519,7 @@ function PlanSelect({
               </span>
             </button>
           ))}
-          {goalOpen ? (
+          {onChangeGoalObjective !== undefined ? goalOpen ? (
             <div className="mt-1 border-t border-hairline px-2.5 pt-1 pb-0.5">
               <label
                 htmlFor="composer-goal-objective"
@@ -2554,7 +2556,7 @@ function PlanSelect({
                 {goalObjective === '' ? t('composer.goalOpen') : goalObjective}
               </span>
             </button>
-          )}
+          ) : null}
         </div>
       ) : null}
     </div>

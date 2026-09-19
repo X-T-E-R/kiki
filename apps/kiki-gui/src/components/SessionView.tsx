@@ -650,6 +650,7 @@ export type SessionCreateSubmission =
       readonly kind: 'prompt';
       readonly text: string;
       readonly attachments: readonly ComposerAttachment[];
+      readonly goalObjective?: string;
     }
   | {
       readonly kind: 'skill';
@@ -705,6 +706,7 @@ export function resolveSessionCreateSubmission(
     kind: 'prompt',
     text: handoff.initialPrompt,
     attachments: handoff.initialAttachments ?? [],
+    goalObjective: handoff.goalObjective,
   };
 }
 
@@ -925,6 +927,25 @@ export function shouldCloseSessionChromeOnEscape(input: {
   if (input.key !== 'Escape') return false;
   if (input.defaultPrevented || input.overlayOpen || input.terminalFocused) return false;
   return true;
+}
+
+export function shouldHandleGlobalAbortOnEscape(input: {
+  key: string;
+  defaultPrevented: boolean;
+  overlayOpen: boolean;
+  terminalFocused: boolean;
+  terminalOpen: boolean;
+  inFormField: boolean;
+}): boolean {
+  if (input.key !== 'Escape') return false;
+  return !input.defaultPrevented && !input.overlayOpen && !input.terminalFocused &&
+    !input.terminalOpen && !input.inFormField;
+}
+
+export function promptGoalObjective(
+  options?: { readonly goalObjective?: string },
+): string | undefined {
+  return options?.goalObjective;
 }
 
 export function agentTranscriptPoll(_input: {
@@ -1178,9 +1199,6 @@ export function SessionView({
   const [swarmOverride, setSwarmOverride] = useState(
     restoredComposer.swarmMode ?? initialOptionsRef.current.swarmMode,
   );
-  const [goalObjective, setGoalObjective] = useState(
-    restoredComposer.goalObjective ?? initialOptionsRef.current.goalObjective ?? '',
-  );
   // Goal mode (composer toggle): the next plain message becomes the goal. A
   // successful goal send disarms it; run-state control lives on the GoalCard.
   const [goalMode, setGoalMode] = useState(false);
@@ -1404,7 +1422,7 @@ export function SessionView({
       planMode: planOverride,
       planGate: planGateOverride,
       swarmMode: swarmOverride,
-      goalObjective,
+      goalObjective: '',
       modelOverride,
       effortOverride,
     });
@@ -1415,7 +1433,6 @@ export function SessionView({
     planOverride,
     planGateOverride,
     swarmOverride,
-    goalObjective,
     modelOverride,
     effortOverride,
   ]);
@@ -1634,26 +1651,21 @@ export function SessionView({
     const onKeyDown = (event: KeyboardEvent) => {
       if (controller === null) return;
       const target = event.target as HTMLElement | null;
-      if (
-        target !== null &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
       if (event.key === 'Escape') {
-        if (anyOverlayOpen()) return;
-        if (isTerminalEscapeTarget(event.target)) return;
-        if (terminalOpen) return;
         const inFormField =
           target !== null &&
           (target.tagName === 'INPUT' ||
             target.tagName === 'SELECT' ||
             target.isContentEditable ||
             (target.tagName === 'TEXTAREA' && !Object.hasOwn(target.dataset, 'composer')));
-        if (inFormField) return;
+        if (!shouldHandleGlobalAbortOnEscape({
+          key: event.key,
+          defaultPrevented: event.defaultPrevented,
+          overlayOpen: anyOverlayOpen(),
+          terminalFocused: isTerminalEscapeTarget(event.target),
+          terminalOpen,
+          inFormField,
+        })) return;
         const current = controller.getState();
         if (current.busy && current.activePromptId !== undefined) {
           event.preventDefault();
@@ -1666,6 +1678,15 @@ export function SessionView({
               );
             });
         }
+        return;
+      }
+      if (
+        target !== null &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
         return;
       }
       if (
@@ -1733,9 +1754,6 @@ export function SessionView({
           model: effectiveModel,
           thinking: effectiveEffort,
         });
-        // A `/goal …` prefix or an armed goal mode overrides the mode panel's
-        // objective field for this send.
-        const effectiveGoalObjective = options?.goalObjective ?? goalObjective;
         // Returned to the composer: it holds its send latch until this round
         // settles, which is what blocks a rapid duplicate send (and releases
         // for a retry when the submit fails).
@@ -1752,7 +1770,7 @@ export function SessionView({
             planMode,
             planGate,
             swarmMode,
-            goalObjective: effectiveGoalObjective,
+            goalObjective: promptGoalObjective(options),
             appendTiming: liveSettings.defaultAppendTiming,
           })
           .then(() => {
@@ -1761,12 +1779,6 @@ export function SessionView({
             setAttachments([]);
             setQuote(null);
             setAnnotations([]);
-            if (options?.goalObjective !== undefined) {
-              // The sent objective is now the session goal: sync the mode
-              // panel's field with reality so a follow-up plain send does not
-              // re-assert a stale one.
-              setGoalObjective(options.goalObjective);
-            }
             setGoalMode(false);
             if (profileSwitch.profile !== undefined) {
               setPendingProfile(undefined);
@@ -1786,7 +1798,7 @@ export function SessionView({
               detail: error instanceof Error ? error.stack : undefined,
               retry: {
                 run: () => {
-                  void actions?.send(text, composerAttachments);
+                  void actions?.send(text, composerAttachments, options);
                 },
               },
             });
@@ -1956,7 +1968,6 @@ export function SessionView({
     planMode,
     planGate,
     swarmMode,
-    goalObjective,
     liveSettings.defaultAppendTiming,
     quote,
     annotations,
@@ -2375,7 +2386,13 @@ export function SessionView({
     // recoverable in the composer (and in localStorage across reloads).
     updateDraft(submission.text);
     updateAttachments(submission.attachments);
-    actions.send(submission.text, submission.attachments);
+    actions.send(
+      submission.text,
+      submission.attachments,
+      submission.goalObjective === undefined
+        ? undefined
+        : { goalObjective: submission.goalObjective },
+    );
   }, [
     controller,
     actions,
@@ -2464,7 +2481,10 @@ export function SessionView({
     [client, sessionId],
   );
   const handleGoalPause = useCallback(() => client.pauseAgentGoal(sessionId), [client, sessionId]);
-  const handleGoalResume = useCallback(() => client.resumeAgentGoal(sessionId), [client, sessionId]);
+  const handleGoalResume = useCallback(
+    () => client.resumeAgentGoal(sessionId, { continueIfPaused: true, continueIfBlocked: true }),
+    [client, sessionId],
+  );
   const handleGoalCancel = useCallback(() => client.cancelAgentGoal(sessionId), [client, sessionId]);
 
   // Cold-recovery hold: the engine parks a queue restored from disk until a
@@ -2548,7 +2568,6 @@ export function SessionView({
             planMode={planMode}
             planGate={planGate}
             swarmMode={swarmMode}
-            goalObjective={goalObjective}
             goalMode={goalMode}
             efforts={supportedEfforts}
             effort={effectiveEffort}
@@ -2578,7 +2597,6 @@ export function SessionView({
             onChangePlanMode={setPlanOverride}
             onChangePlanGate={setPlanGateOverride}
             onChangeSwarmMode={setSwarmOverride}
-            onChangeGoalObjective={setGoalObjective}
             onChangeGoalMode={setGoalMode}
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}
@@ -2611,7 +2629,6 @@ export function SessionView({
     planMode,
     planGate,
     swarmMode,
-    goalObjective,
     goalMode,
     supportedEfforts,
     effectiveEffort,

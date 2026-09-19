@@ -247,7 +247,7 @@ export function ProfileDetailSections({
       {definition.other ? (
         <details data-disk-definition className="rounded-lg border border-hairline bg-paper/40 p-2.5">
           <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
-            {t('st.namedAgents.sourceFile')} · {definition.other.source_file ?? t('st.namedAgents.builtin')}
+            {t('st.namedAgents.diskVersion')} · {definition.other.source_file ?? t('st.namedAgents.builtin')}
           </summary>
           <div className="mt-2 space-y-1 break-all font-mono text-[10.5px] text-ink-soft">
             {definition.other.description !== undefined ? (
@@ -307,7 +307,7 @@ export function ProfileDetailSections({
                   {definition.other.disallowed_tools.join(', ')}
                 </p>
               ) : null}
-            <p className="text-ink-faint">{t('st.namedAgents.projectionHint')}</p>
+            <p className="text-ink-faint">{t('st.namedAgents.diskVersionHint')}</p>
           </div>
         </details>
       ) : null}
