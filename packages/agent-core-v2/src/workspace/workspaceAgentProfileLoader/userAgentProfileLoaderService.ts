@@ -44,6 +44,7 @@ export class UserAgentProfileLoaderService
   protected readonly priority = AGENT_PROFILE_SOURCE_PRIORITY.user;
 
   private defaultProfile: AgentProfile;
+  private lastGoodSystemMd: AgentProfile | undefined;
   private readonly watchDebounce = this._register(new TimeoutTimer());
   private readonly watchReady: Promise<void>;
 
@@ -97,23 +98,34 @@ export class UserAgentProfileLoaderService
         this.log.warn(message, error);
       },
     );
-    const systemMd = await loadSystemMdProfile(
+    const systemFailures: NonNullable<AgentProfileContribution['skipped']>[number][] = [];
+    const loadedSystemMd = await loadSystemMdProfile(
       this.fs,
       this.bootstrap.userAgentProfileHomeDir,
       this.builtin.getDefault(),
-      (message) => this.log.warn(message),
+      (message) => { this.log.warn(message); },
+      (failure) => systemFailures.push(failure),
     );
+    const systemMd = systemFailures.length > 0 ? this.lastGoodSystemMd : loadedSystemMd;
+    if (systemFailures.length > 0 && systemMd !== undefined) {
+      this.log.warn(`agent profile loader "user" is keeping the last good SYSTEM.md profile at ${systemMd.sourcePath}`);
+    }
+    const discovery = await discoverAgentFiles(this.fs, roots, (message) => { this.log.warn(message); }, {
+      includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID),
+    });
+    this.lastGoodSystemMd = systemMd;
     this.defaultProfile = systemMd ?? this.builtin.getDefault();
     const contribution = profilesFromDiscovery(
-      await discoverAgentFiles(this.fs, roots, (message) => this.log.warn(message), {
-        includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID),
-      }),
+      discovery,
       (context) => this.defaultProfile.renderSystemPrompt(context),
       (context) => this.builtin.getDefault().renderSystemPrompt(context),
       { registry: this.executors, allowExternal: true },
     );
-    if (systemMd === undefined) return contribution;
-    return { ...contribution, profiles: [...contribution.profiles, systemMd] };
+    return {
+      ...contribution,
+      profiles: systemMd === undefined ? contribution.profiles : [...contribution.profiles, systemMd],
+      skipped: [...(contribution.skipped ?? []), ...systemFailures],
+    };
   }
 
   private async watchUserAgentRoots(): Promise<void> {

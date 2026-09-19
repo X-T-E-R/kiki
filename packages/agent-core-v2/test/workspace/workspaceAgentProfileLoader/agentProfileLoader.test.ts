@@ -1413,6 +1413,51 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('keeps the last good SYSTEM.md on YAML errors while refreshing sibling files', async () => {
+    await withFixture(async (fixture) => {
+      const systemPath = join(fixture.homeDir, 'SYSTEM.md');
+      const siblingPath = await writeAgent(join(fixture.homeDir, 'agents'), 'sibling.md', agentMd('sibling', 'before'));
+      await writeAgent(join(fixture.homeDir, 'agents', 'builtin'), 'agent.md', agentMd('agent', 'managed fallback'));
+      await writeFile(systemPath, '---\nmodel_alias: pinned\ntools: []\n---\nGOOD SYSTEM');
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        await writeFile(systemPath, '---\nmodel_alias: [broken\n---\nBAD SYSTEM');
+        await writeFile(siblingPath, agentMd('sibling', 'after'));
+        await stack.userLoader.reload();
+        expect(stack.catalog.getDefault().modelAlias).toBe('pinned');
+        expect(stack.catalog.getDefault().tools).toEqual([]);
+        expect(stack.catalog.getDefault().systemPrompt({})).toBe('GOOD SYSTEM');
+        expect(stack.userLoader.getDefaultProfile().systemPrompt({})).toBe('GOOD SYSTEM');
+        expect(stack.catalog.get('sibling')?.description).toBe('after');
+        expect(stack.registry.entries().find((entry) => entry.sourceId === 'user')?.contribution.skipped).toEqual(
+          expect.arrayContaining([expect.objectContaining({ path: systemPath, code: 'agent_profile.system_invalid' })]),
+        );
+        expect(stack.warnings.some((warning) => warning.includes('last good') && warning.includes('SYSTEM.md'))).toBe(true);
+        await writeFile(systemPath, '---\nmodel_alias: repaired\n---\nREPAIRED SYSTEM');
+        await stack.userLoader.reload();
+        expect(stack.catalog.getDefault().modelAlias).toBe('repaired');
+        await rm(systemPath);
+        await stack.userLoader.reload();
+        expect(stack.catalog.getDefault().description).toBe('managed fallback');
+      });
+    });
+  });
+
+  it('lets ordinary user definitions shadow materialized files regardless of filename order', async () => {
+    await withFixture(async (fixture) => {
+      const managed = await writeAgent(join(fixture.homeDir, 'agents', 'builtin'), 'aaa.md', agentMd('general', 'managed'));
+      const user = await writeAgent(join(fixture.homeDir, 'agents'), 'zzz.md', agentMd('general', 'user'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.get('general')?.description).toBe('user');
+        expect(stack.warnings.some((warning) => warning.includes(managed) && warning.includes(user))).toBe(true);
+        await rm(user);
+        await stack.userLoader.reload();
+        expect(stack.catalog.get('general')?.description).toBe('managed');
+      });
+    });
+  });
+
   it('replaces the builtin default system prompt with user-level SYSTEM.md', async () => {
     await withFixture(async (fixture) => {
       await writeFile(

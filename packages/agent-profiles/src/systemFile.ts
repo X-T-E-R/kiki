@@ -7,7 +7,8 @@ import {
 } from './agentProfile';
 import { parseAgentFileText } from './agentFile';
 import { agentProfileFromFile } from './agentProfileFromFile';
-import { FrontmatterError, parseFrontmatter } from './frontmatter';
+import { parseFrontmatter } from './frontmatter';
+import type { SkippedAgentFile } from './agentFileTypes';
 import type { HostFs } from './hostFs';
 import { isHostFsUnavailable } from './hostFs';
 import { isFilePath } from './paths';
@@ -23,22 +24,28 @@ export async function loadSystemMdProfile(
   brandHome: string,
   builtinDefault: AgentProfile,
   warn: (message: string) => void,
+  onError?: (failure: SkippedAgentFile) => void,
 ): Promise<AgentProfile | undefined> {
   const path = join(brandHome, SYSTEM_MD_FILENAME);
+  const report = (phase: string, error: unknown): void => {
+    const reason = `agent SYSTEM.md ${phase} failed: ${String(error)} [${path}]`;
+    warn(reason);
+    onError?.({ path, reason, code: 'agent_profile.system_invalid' });
+  };
   let text: string;
   try {
     if (!(await isFilePath(fs, path))) return undefined;
     text = await fs.readFile(path);
   } catch (error) {
     if (isHostFsUnavailable(error)) throw error;
-    warn(`agent SYSTEM.md load failed: ${String(error)} [${path}]`);
+    report('load', error);
     return undefined;
   }
   if (text.trim().length === 0) return undefined;
   try {
     return parseSystemMdProfile(text, path, builtinDefault, warn);
   } catch (error) {
-    warn(`agent SYSTEM.md parse failed: ${String(error)} [${path}]`);
+    report('parse', error);
     return undefined;
   }
 }
@@ -57,20 +64,12 @@ export function parseSystemMdProfile(
 export function isUpgradedSystemMd(text: string, path: string, warn: (message: string) => void): boolean {
   const firstLine = text.split(/\r?\n/, 1)[0]?.trim();
   if (firstLine !== '---') return false;
-  try {
-    const parsed = parseFrontmatter(text);
-    if (isRecord(parsed.data)) return true;
-    warn(
-      `agent SYSTEM.md frontmatter is not a mapping; treating the file as a legacy prompt [${path}]`,
-    );
-    return false;
-  } catch (error) {
-    const detail = error instanceof FrontmatterError ? error.message : String(error);
-    warn(
-      `agent SYSTEM.md frontmatter parse failed (${detail}); treating the file as a legacy prompt [${path}]`,
-    );
-    return false;
-  }
+  const parsed = parseFrontmatter(text);
+  if (isRecord(parsed.data)) return true;
+  warn(
+    `agent SYSTEM.md frontmatter is not a mapping; treating the file as a legacy prompt [${path}]`,
+  );
+  return false;
 }
 
 function loadUpgradedSystemMd(

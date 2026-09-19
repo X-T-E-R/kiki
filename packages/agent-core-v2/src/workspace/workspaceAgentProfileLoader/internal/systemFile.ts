@@ -14,6 +14,7 @@ export function loadSystemMdProfile(
   brandHome: string,
   builtinDefault: AgentProfile,
   warn: (message: string) => void,
+  onError?: Parameters<typeof loadProfile>[4],
 ): Promise<AgentProfile | undefined> {
-  return loadProfile(agentProfilesHostFs(fs), brandHome, builtinDefault, warn) as Promise<AgentProfile | undefined>;
+  return loadProfile(agentProfilesHostFs(fs), brandHome, builtinDefault, warn, onError) as Promise<AgentProfile | undefined>;
 }

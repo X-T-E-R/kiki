@@ -266,16 +266,17 @@ describe('loadSystemMdProfile', () => {
     expect(warnings.some((message) => message.includes('not a mapping'))).toBe(true);
   });
 
-  it('treats a SYSTEM.md with invalid frontmatter as a legacy prompt', async () => {
-    await writeFile(
-      join(home, SYSTEM_MD_FILENAME),
-      '---\n: not yaml\n---\nlegacy after invalid yaml\n',
-    );
+  it('reports invalid upgraded YAML instead of loading it as a legacy prompt', async () => {
+    const path = join(home, SYSTEM_MD_FILENAME);
+    await writeFile(path, '---\nmodel_alias: [broken\n---\ninvalid yaml body\n');
     const { warnings, warn } = collectWarnings();
+    const failures: Array<{ path: string; reason: string }> = [];
 
-    const profile = await loadProfile(hostFs, BUILTIN_DEFAULT, warn);
+    const profile = await loadSystemMdProfile(hostFs, home, BUILTIN_DEFAULT, warn, (failure) => failures.push(failure));
 
-    expect(profile?.systemPrompt({})).toContain('legacy after invalid yaml');
-    expect(warnings.some((message) => message.includes('frontmatter parse failed'))).toBe(true);
+    expect(profile).toBeUndefined();
+    expect(failures).toEqual([{ path, reason: expect.stringContaining('SYSTEM.md parse failed'), code: 'agent_profile.system_invalid' }]);
+    expect(warnings.some((message) => message.includes('SYSTEM.md parse failed'))).toBe(true);
+    expect(warnings.join(' ')).not.toContain('legacy prompt');
   });
 });
