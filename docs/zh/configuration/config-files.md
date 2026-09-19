@@ -101,7 +101,9 @@ timeout = 5
 | `merge_all_available_skills` | `boolean` | `true` | 是否合并所有目录中的 Agent Skills |
 | `extra_skill_dirs` | `array<string>` | — | 额外 Skill 搜索目录，叠加到默认目录之上 |
 | `extra_agent_dirs` | `array<string>` | — | 额外自定义 Agent 搜索目录，叠加到默认目录之上 |
-| `disabled_builtin_profiles` | `array<string>` | `[]` | 从 subagent 发现与派发列表中移除的内置 profile 名称：`agent`、`coder`、`explore` 或 `plan`。派发已禁用 profile 时按未知角色报错。禁用 `agent` 不影响 main agent 的默认绑定；文件 profile 与已禁用内置 profile 同名时不再需要 `override: true` |
+| `skip_builtin_profile_installation` | `array<string>` | — | 启动时不安装到 `agents/builtin/` 的内置模板名称。已有受管理副本仍可使用并继续接收安全更新；它不是运行时禁用开关。只要声明了此键（包括 `[]`），就优先于下面的弃用别名 |
+| `disabled_builtin_profiles` | `array<string>` | `[]` | `skip_builtin_profile_installation` 的弃用别名；新键缺失时仍会读取，并产生迁移警告。保留列表内容、重命名键即可 |
+| `disabled_named_profiles` | `array<string>` | `[]` | 从 subagent 发现与派发列表中隐藏的 profile 名称，不区分文件来源。默认 main `agent` 绑定仍可使用 |
 | `builtin_product_skills` | `boolean` | `true` | 是否向模型提供 Kiki 产品 Skills：`kiki-ops` 负责产品使用与配置，`kiki-profile` 负责创建和修改 agent profile。关闭后两者的名称和描述都不再进入系统提示词，代价是失去这些任务的引导流程 |
 | `providers` | `table` | `{}` | API 供应商表 → [`providers`](#providers) |
 | `models` | `table` | — | 模型别名表 → [`models`](#models) |
@@ -398,6 +400,7 @@ retry = false
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
+| `default_profile` | `string` | `general` | `AgentRun` 省略 `profile`、`route` 和 `profile_file` 时采用的目标 profile。即使 `[subagent]` 只配置了部分字段，缺失字段仍继承此默认值。设为 `""` 才要求显式指定目标（严格模式） |
 | `deny_models` | `string[]` | — | alias 解析后应用于所有 subagent 模型绑定的黑名单，无论该 alias 来自派发参数还是 profile pin |
 | `max_direct_children` | `integer` | `16` | 每个派遣者同时在途的直属子 Agent 执行数上限，包括启动中和取消中；`0` 表示不限 |
 | `max_total_subagents` | `integer` | `0` | 单棵会话树同时在途的子 Agent 执行总数上限，包括孙代及更深后代，不含 main；`0` 表示不限 |

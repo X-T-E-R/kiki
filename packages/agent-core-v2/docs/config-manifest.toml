@@ -8,45 +8,46 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (38 sections · 1 overlay(s))
-#   agentExecutors           src/app/agentExecutor/configSection.ts
-#   agents                   src/session/agentCollaboration/configSection.ts
-#   background               src/agent/task/configSection.ts
-#   builtinProductSkills     src/app/skillCatalog/configSection.ts
-#   cron                     src/app/cron/configSection.ts
-#   defaultPermissionMode    src/agent/permissionMode/configSection.ts
-#   defaultPlanMode          src/features/plan/configSection.ts
-#   disabledBuiltinProfiles  src/workspace/workspaceAgentProfileLoader/configSection.ts
-#   disabledNamedProfiles    src/workspace/workspaceAgentProfileLoader/configSection.ts
-#   experimental             src/app/flag/flag.ts
-#   extraAgentDirs           src/workspace/workspaceAgentProfileLoader/configSection.ts
-#   extraSkillDirs           src/app/skillCatalog/configSection.ts
-#   hooks                    src/features/externalHooks/configSection.ts
-#   identity                 src/app/agentIdentity/configSection.ts
-#   image                    src/agent/media/configSection.ts
-#   loopControl              src/agent/loop/configSection.ts
-#   mcp                      src/app/mcpConfig/configSection.ts
-#   mergeAllAvailableSkills  src/app/skillCatalog/configSection.ts
-#   modelCatalog             src/app/kosongConfig/configSection.ts
-#   models                   src/app/kosongConfig/configSection.ts
-#   nbSearch                 src/app/nbSearch/configSection.ts
-#   nbSearchSource           src/app/nbSearch/configSection.ts
-#   permission               src/agent/permissionRules/configSection.ts
-#   plan                     src/features/plan/configSection.ts
-#   plugins                  src/app/plugin/configSection.ts
-#   prompt                   src/app/prompt/configSection.ts
-#   providers                src/app/kosongConfig/configSection.ts
-#   requestIdentity          src/app/kosongConfig/configSection.ts
-#   retry                    src/agent/stepRetry/configSection.ts
-#   sessionResidency         src/app/sessionManager/configSection.ts
-#   sessionTitle             src/session/sessionTitle/configSection.ts
-#   subagent                 src/session/subagent/configSection.ts
-#   task                     src/agent/task/configSection.ts
-#   thinking                 src/app/kosongConfig/configSection.ts
-#   threadCommunication      src/app/threadCommunication/configSection.ts
-#   tokenCounting            src/agent/tokenCounting/configSection.ts
-#   tools                    src/agent/toolPolicy/configSection.ts
-#   workspaceInstance        src/workspace/workspaceInstance/configSection.ts
+# Index (39 sections · 1 overlay(s))
+#   agentExecutors                  src/app/agentExecutor/configSection.ts
+#   agents                          src/session/agentCollaboration/configSection.ts
+#   background                      src/agent/task/configSection.ts
+#   builtinProductSkills            src/app/skillCatalog/configSection.ts
+#   cron                            src/app/cron/configSection.ts
+#   defaultPermissionMode           src/agent/permissionMode/configSection.ts
+#   defaultPlanMode                 src/features/plan/configSection.ts
+#   disabledBuiltinProfiles         src/workspace/workspaceAgentProfileLoader/configSection.ts
+#   disabledNamedProfiles           src/workspace/workspaceAgentProfileLoader/configSection.ts
+#   experimental                    src/app/flag/flag.ts
+#   extraAgentDirs                  src/workspace/workspaceAgentProfileLoader/configSection.ts
+#   extraSkillDirs                  src/app/skillCatalog/configSection.ts
+#   hooks                           src/features/externalHooks/configSection.ts
+#   identity                        src/app/agentIdentity/configSection.ts
+#   image                           src/agent/media/configSection.ts
+#   loopControl                     src/agent/loop/configSection.ts
+#   mcp                             src/app/mcpConfig/configSection.ts
+#   mergeAllAvailableSkills         src/app/skillCatalog/configSection.ts
+#   modelCatalog                    src/app/kosongConfig/configSection.ts
+#   models                          src/app/kosongConfig/configSection.ts
+#   nbSearch                        src/app/nbSearch/configSection.ts
+#   nbSearchSource                  src/app/nbSearch/configSection.ts
+#   permission                      src/agent/permissionRules/configSection.ts
+#   plan                            src/features/plan/configSection.ts
+#   plugins                         src/app/plugin/configSection.ts
+#   prompt                          src/app/prompt/configSection.ts
+#   providers                       src/app/kosongConfig/configSection.ts
+#   requestIdentity                 src/app/kosongConfig/configSection.ts
+#   retry                           src/agent/stepRetry/configSection.ts
+#   sessionResidency                src/app/sessionManager/configSection.ts
+#   sessionTitle                    src/session/sessionTitle/configSection.ts
+#   skipBuiltinProfileInstallation  src/workspace/workspaceAgentProfileLoader/configSection.ts
+#   subagent                        src/session/subagent/configSection.ts
+#   task                            src/agent/task/configSection.ts
+#   thinking                        src/app/kosongConfig/configSection.ts
+#   threadCommunication             src/app/threadCommunication/configSection.ts
+#   tokenCounting                   src/agent/tokenCounting/configSection.ts
+#   tools                           src/agent/toolPolicy/configSection.ts
+#   workspaceInstance               src/workspace/workspaceInstance/configSection.ts
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
 
 # ##########################################################################
@@ -586,6 +587,14 @@ max_queued_restores = 8
 
 [session_title]
 # model: string
+
+# ##########################################################################
+# skipBuiltinProfileInstallation (config.toml: skip_builtin_profile_installation)
+#   owner: src/workspace/workspaceAgentProfileLoader/configSection.ts
+#   scope: core
+# ##########################################################################
+
+# skip_builtin_profile_installation: string[]
 
 # ##########################################################################
 # subagent

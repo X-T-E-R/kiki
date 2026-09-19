@@ -123,11 +123,10 @@ export async function runV2Print(
   removeTerminationCleanup = installPromptTerminationCleanup(promptProcess, cleanup);
 
   try {
-    const defaultModel = await klient.global.config.get<string | undefined>('defaultModel');
     for (const diagnostic of await klient.global.config.diagnostics()) {
       if (diagnostic.severity === 'warning') stderr.write(`Warning: ${diagnostic.message}\n`);
     }
-    const resolved = await resolvePrintSession(klient, host.osHomeDir, opts, workDir, defaultModel, stderr);
+    const resolved = await resolvePrintSession(klient, host.osHomeDir, opts, workDir, stderr);
     restorePermission = resolved.restorePermission;
     activeAgent = resolved.agent;
     activeSession = resolved.session;
@@ -157,7 +156,6 @@ async function resolvePrintSession(
   osHomeDir: string,
   opts: CLIOptions,
   workDir: string,
-  defaultModel: string | undefined,
   stderr: PromptOutput,
 ): Promise<ResolvedPrintSession> {
   let agentProfileName = opts.agent;
@@ -219,16 +217,15 @@ async function resolvePrintSession(
     stderr.write(`No sessions to continue under "${workDir}"; starting a fresh session.\n`);
   }
 
-  const model = requireConfiguredModel(opts.model, defaultModel);
   const created = await klient.global.sessions.create({
     workDir,
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
-    mainAgentBinding: { profile: agentProfileName ?? 'agent', model, thinking: opts.thinking },
+    mainAgentBinding: { profile: agentProfileName ?? 'agent', model: opts.model, thinking: opts.thinking },
   });
   const session = klient.session(created.id);
   const agent = session.agent('main');
   await agent.setPermission('auto', { broadcast: false });
-  return { sessionId: created.id, session, agent, restorePermission: async () => {}, goalModel: model };
+  return { sessionId: created.id, session, agent, restorePermission: async () => {}, goalModel: await agent.getModel() };
 }
 
 async function runPrintTurn(

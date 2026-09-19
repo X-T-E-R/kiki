@@ -101,7 +101,9 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `merge_all_available_skills` | `boolean` | `true` | Whether to merge Agent Skills from all available directories |
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |
 | `extra_agent_dirs` | `array<string>` | — | Extra custom agent search directories, layered on top of the default directories |
-| `disabled_builtin_profiles` | `array<string>` | `[]` | Built-in profile names to remove from subagent discovery and dispatch: `agent`, `coder`, `explore`, or `plan`. Dispatching a disabled profile fails as an unknown role. Disabling `agent` leaves the main agent's default binding available; a same-name file profile no longer needs `override: true` when its built-in is disabled |
+| `skip_builtin_profile_installation` | `array<string>` | — | Built-in template names not to install under `agents/builtin/` at startup. Already managed copies remain active and continue receiving safe updates; this is not a runtime disable switch. When present, including `[]`, this key takes precedence over the deprecated alias below |
+| `disabled_builtin_profiles` | `array<string>` | `[]` | Deprecated alias for `skip_builtin_profile_installation`; still read when the new key is absent and emits a migration warning. Rename it without changing the list |
+| `disabled_named_profiles` | `array<string>` | `[]` | Profile names to hide from subagent discovery and dispatch, regardless of file source. The default main `agent` binding remains available |
 | `builtin_product_skills` | `boolean` | `true` | Whether Kiki's product skills are offered to the model: `kiki-ops` for product usage and configuration, and `kiki-profile` for agent profile authoring. Turning them off removes both names and descriptions from the system prompt, at the cost of those guided workflows |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |
@@ -402,6 +404,7 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
+| `default_profile` | `string` | `general` | Target profile when `AgentRun` omits `profile`, `route`, and `profile_file`. Missing fields inherit this default even in a partial `[subagent]` table. Set `""` to require an explicit target (strict mode) |
 | `deny_models` | `string[]` | — | Denylist applied to every subagent model binding after alias resolution, whether the alias came from the dispatch or from a profile pin |
 | `max_direct_children` | `integer` | `16` | Maximum simultaneous dispatched child runs per caller, including startup and cancellation; `0` disables this limit |
 | `max_total_subagents` | `integer` | `0` | Maximum simultaneous dispatched subagent runs throughout one session tree, including grandchildren and deeper descendants but not main; `0` disables this limit |

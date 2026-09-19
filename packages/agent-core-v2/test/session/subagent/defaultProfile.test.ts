@@ -60,7 +60,11 @@ describe('resolveDefaultSubagentProfileName', () => {
   it('treats an empty value as strict (require explicit target)', () => {
     expect(resolveDefaultSubagentProfileName(configWithSubagent({ defaultProfile: '' }))).toBeUndefined();
     expect(resolveDefaultSubagentProfileName(configWithSubagent({ defaultProfile: '   ' }))).toBeUndefined();
-    expect(resolveDefaultSubagentProfileName(configWithSubagent(undefined))).toBeUndefined();
+  });
+
+  it('inherits general when the section or only defaultProfile is missing', () => {
+    expect(resolveDefaultSubagentProfileName(configWithSubagent(undefined))).toBe('general');
+    expect(resolveDefaultSubagentProfileName(configWithSubagent({ timeoutMs: 1000 }))).toBe('general');
   });
 });
 

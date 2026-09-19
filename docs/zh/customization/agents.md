@@ -6,15 +6,16 @@ subagent 接受 main agent 给出的任务描述，在自己的独立上下文�
 
 ## 内置 subagent
 
-Kiki 内置三种 subagent，开箱即用，分别面向不同任务形态：
+全新安装包含主 `agent` profile 和两个 subagent profile；旧安装还可能保留兼容 profile：
 
-- **`coder`**：默认 subagent，通用软件工程助手，可以读写文件、执行命令、搜索代码并落地具体改动。
-- **`explore`**：代码库探索专用，只做只读操作，不修改任何文件。适合在不改动文件的前提下快速搜索、阅读和总结仓库。
-- **`plan`**：实现规划与架构设计专用，连 Shell 命令都不提供，专注于"想清楚怎么做"而不是"动手做"。
+- **`general`**：默认 subagent，通用助手，可以读写文件、执行命令和搜索代码，但不能继续派发子 Agent。
+- **`explore`**：只读代码库探索、搜索与总结专用。
+- **`coder`**（遗留）：为旧安装保留的软件工程 profile。
+- **`plan`**（遗留）：为旧安装保留的规划与架构 profile。
 
 `coder` subagent 与 main agent 共享大部分工具集：可以在后台执行 Shell 命令、维护待办列表、进入 Plan 模式、调用 Agent Skills，也可以用 `TaskWait` 等待后台任务。它没有 `AgentRun`、`AgentList` 或 `AgentSend`；要嵌套派发，需要在自定义 profile 里显式列出这些工具。它也没有 `AskUserQuestion`——脱离上下文的提问无人回答——因此它改用 `AgentNotify` 向父 Agent 报告阻塞与问题。如果它结束自己的轮次时仍有后台任务在运行，那么只有在这些后台任务全部落定后，这次运行才会回报完成——main agent 拿到结果时，背后的工作也已经真正完成。
 
-顶层配置 [`disabled_builtin_profiles`](../configuration/config-files.md#顶层字段) 会从 subagent 发现与派发列表中移除指定的内置 profile（`agent`、`coder`、`explore` 或 `plan`）。禁用 `agent` 不会影响 main agent 使用默认绑定启动；文件 profile 与已禁用内置 profile 同名时，不再需要 `override: true`。
+顶层配置 [`skip_builtin_profile_installation`](../configuration/config-files.md#顶层字段) 会跳过向 `agents/builtin/` 安装指定的内置模板，但不会禁用或删除已有副本。旧键 `disabled_builtin_profiles` 仍作为弃用别名读取，并产生警告；两个键同时存在时，新键优先，即使它的值是 `[]`。若要从 subagent 发现与派发列表中隐藏已安装的 profile，请改用 `disabled_named_profiles`；默认 main `agent` 绑定仍可使用。
 
 ## 调用方式
 
@@ -28,7 +29,7 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 默认的 v2 引擎（Kiki 桌面端和 `kiki` CLI/TUI）会给主 `agent` profile 提供三个子 Agent 工具，不需要实验开关：`AgentRun`、`AgentList` 和 `AgentSend`。内置的 `coder` 与 `explore` profile 没有它们。每个调用方只能列出和发消息给自己直接创建的子 Agent；孙级或别人创建的子 Agent 都不是有效目标。已退役的 `AgentSwarm` 可调用工具不再支持新调用，但历史 swarm 子 Agent 记录仍可读取。
 
-`AgentRun` 用来启动新的子 Agent，或继续已有的。每次调用都必须提供 `prompt` 和用于界面展示、长度为 3–5 个词的短 `description`。新派生还可以设置 `profile`（默认 `coder`）、`profile_file`（显式 subagent role Markdown 文件，绝对路径或工作区相对路径；它是 role 定义而非共享提示词模板，并且与 `profile`、`route`、`resume` 互斥）、`route`、`name`、`background`、`model_alias` 和 `effort`。`allow_model_change` 仅在 `resume` 同时显式传入 `model_alias` 时有意义；该 alias 解析到不同规范模型时必须传入它。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续直属子 Agent 时，把 `resume` 设为它的名称或 agent id；它与 `name`、`profile`、`profile_file` 和 `route` 互斥。省略 `effort` 会保留已保存的 effort，也可以传入让下一次空闲运行使用。省略 `model_alias` 会保留已保存的模型；切换到不同规范模型必须传 `allow_model_change: true`，而解析到同一规范模型则不产生变化。调用方、role、route 与 executor 限制仍会强制执行。外部 executor 不支持修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。新派生项的模型来自 `model_alias` 参数或生效 profile / route / caller lease 上的 pin，参数优先；两者都没有时调用以 `model.not_configured` 失败，不会创建子 Agent。effort 独立解析：工具 `effort` → profile `thinking_effort` → 所绑定模型自身的默认档位。显式传入未知 `model_alias` 时会报错。传入 `background: true` 可让任务在后台运行，否则父 Agent 会等待结果。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIMI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。
+`AgentRun` 用来启动新的子 Agent，或继续已有的。每次调用都必须提供 `prompt` 和用于界面展示、长度为 3–5 个词的短 `description`。新派生还可以设置 `profile`（默认使用 `[subagent].default_profile`，通常为 `general`；配置显式留空时必须指定目标）、`profile_file`（显式 subagent role Markdown 文件，绝对路径或工作区相对路径；它是 role 定义而非共享提示词模板，并且与 `profile`、`route`、`resume` 互斥）、`route`、`name`、`background`、`model_alias` 和 `effort`。`allow_model_change` 仅在 `resume` 同时显式传入 `model_alias` 时有意义；该 alias 解析到不同规范模型时必须传入它。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续直属子 Agent 时，把 `resume` 设为它的名称或 agent id；它与 `name`、`profile`、`profile_file` 和 `route` 互斥。省略 `effort` 会保留已保存的 effort，也可以传入让下一次空闲运行使用。省略 `model_alias` 会保留已保存的模型；切换到不同规范模型必须传 `allow_model_change: true`，而解析到同一规范模型则不产生变化。调用方、role、route 与 executor 限制仍会强制执行。外部 executor 不支持修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。新派生项的模型来自 `model_alias` 参数或生效 profile / route / caller lease 上的 pin，参数优先；两者都没有时调用以 `model.not_configured` 失败，不会创建子 Agent。effort 独立解析：工具 `effort` → profile `thinking_effort` → 所绑定模型自身的默认档位。显式传入未知 `model_alias` 时会报错。传入 `background: true` 可让任务在后台运行，否则父 Agent 会等待结果。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIMI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。
 
 `AgentList` 返回这些直属子 Agent，包括保留的历史 swarm 条目。默认 `include_finished=false` 列出运行中的，以及没有跟踪任务的；需要已经结束或失败的，再传 `true`。最多返回 50 条，运行中的排在前面。
 
@@ -67,7 +68,7 @@ subagent 的权限规则继承自 main agent：main agent 通过 `/permission` �
 
 ## 自定义 Agent
 
-除了三个内置 subagent，你还可以用 Markdown 文件定义自己的 Agent。每个文件描述一个 Agent：文件顶部的 Frontmatter（YAML 元数据）声明名称、描述和工具权限，文件正文是它的系统提示词。自定义 Agent 可以作为 subagent 被委派 —— main agent 会自动发现它们，与内置 subagent 并列 —— 也可以在启动时选为 main agent。
+除了随附的 profile，你还可以用 Markdown 文件定义自己的 Agent。每个文件描述一个 Agent：文件顶部的 Frontmatter（YAML 元数据）声明名称、描述和工具权限，文件正文是它的系统提示词。自定义 Agent 可以作为 subagent 被委派 —— main agent 会自动发现它们，与内置 subagent 并列 —— 也可以在启动时选为 main agent。
 
 ### 派遣能力可见性
 
@@ -85,7 +86,7 @@ GUI 的 main agent 选择器使用当前工作区或工作目录的有效 Agent 
 
 ### Agent 目录
 
-Kiki 按作用域发现 Agent 文件，作用域越具体，优先级越高：**显式（`--agent-file`）> 项目 > 额外 > 用户 > Plugin > 内置**。两个文件定义了相同的 `name` 时，高优先级作用域胜出。每个目录都会递归扫描 `.md` 文件。
+Kiki 按作用域发现 Agent 文件，作用域越具体，优先级越高：**显式（`--agent-file`）> 项目 > 额外 > 普通用户文件 > 内置副本（用户作用域）> Plugin**。两个文件定义了相同的 `name` 时，高优先级作用域胜出。每个目录都会递归扫描 `.md` 文件。
 
 **用户级**（对所有项目生效）：
 - `$KIKI_HOME/agents/`（默认：`~/.kiki/agents/`）
@@ -105,12 +106,12 @@ extra_agent_dirs = ["~/team-agents", ".agents/team-agents"]
 
 用户、项目和 `extra_agent_dirs` 根目录下的 Agent Markdown 文件都会被文件系统监听。新增、修改或删除后，经过约 200 ms 去抖会自动重载，因此运行中的会话无需执行 `/reload` 或重启 CLI，就能派发新出现的角色。`$KIKI_HOME/SYSTEM.md` 也以相同方式监听。已经创建的 `AgentRun` 工具实例会保留角色描述列表的冻结快照，因此展示可能暂时滞后，但实际派发会立即使用重载后的 profile。
 
-**Plugin 级**：已启用 plugin 在其 manifest 的 `agents` 字段中声明的目录（省略时自动采用 plugin 根下的 `agents/` 目录），见[插件 Agent](./plugins.md#插件-agent)。Plugin Agent 优先级仅高于内置 Agent。
+**Plugin 级**：已启用 plugin 在其 manifest 的 `agents` 字段中声明的目录（省略时自动采用 plugin 根下的 `agents/` 目录），见[插件 Agent](./plugins.md#插件-agent)。Plugin 定义优先级低于用户文件，也低于已安装的内置副本。
 
-**内置 Agent** 随 CLI 分发，优先级最低。目录中发现的文件不会仅凭同名覆盖内置 Agent；如确需替换，必须在 Frontmatter 中声明 `override: true`。通过 `--agent-file` 加载的文件视为显式启动意图，可以覆盖同名内置 Agent，优先级高于所有目录作用域，且仅对本次启动生效。另外，`$KIKI_HOME/SYSTEM.md` 可永久覆盖默认 main agent 的系统提示词（它不参与 Agent 文件发现），其优先级交互见下文 SYSTEM.md 小节。
+**内置副本** 安装在 `$KIKI_HOME/agents/builtin/`，作为用户作用域的文件加载。它们在两个用户目录中的普通文件之后扫描，因此同名用户定义始终优先，无需 `override: true`，也不受文件名字母序或安装时间影响。同名冲突诊断会列出双方路径。通过 `--agent-file` 加载的文件优先于所有目录作用域，且仅对本次启动生效。另可通过 `$KIKI_HOME/SYSTEM.md` 永久覆盖默认 main agent 的系统提示词，优先级交互见下文。
 
 ::: warning 信任模型
-Agent 文件属于提示词配置，而项目级文件来自仓库本身 —— 包括你刚刚 clone、尚不可信的仓库。项目作用域的文件可以完全接管内置 Agent：命名为 `agent.md` 并声明 `override: true` 会替换**默认 main agent 的整个系统提示词**，`coder.md` 加 `override: true` 则会替换默认 subagent 类型。与 `AGENTS.md` 内容（作为参考资料注入提示词）不同，override 文件**就是**系统提示词本身，且不写 `tools` 的文件保留全部工具。在不熟悉的仓库中运行 Kiki 之前，请以对待脚本同样的谨慎检查其中的 `.kiki/agents/` 与 `.agents/agents/` 目录。
+Agent 文件属于提示词配置，而项目级文件来自仓库本身 —— 包括你刚刚 clone、尚不可信的仓库。项目作用域的文件可以完全接管内置 Agent：名为 `agent.md` 的文件可以替换**默认 main agent 的整个系统提示词**，`general.md` 可以替换默认 subagent 类型，无需声明 `override: true`。与 `AGENTS.md` 内容（作为参考资料注入提示词）不同，override 文件**就是**系统提示词本身，且不写 `tools` 的文件保留全部工具。在不熟悉的仓库中运行 Kiki 之前，请以对待脚本同样的谨慎检查其中的 `.kiki/agents/` 与 `.agents/agents/` 目录。
 :::
 
 ### Agent 文件格式
@@ -142,13 +143,13 @@ disallowedTools:
 | `name` | 否 | kebab-case 唯一标识。缺省时取文件名（去掉扩展名，如 `review.md` → `review`）；解析后名字缺失或不是 kebab-case 的文件会被跳过并告警 |
 | `description` | 是 | Agent 的用途。main agent 挑选 subagent 时会看到，请围绕委派决策来写 |
 | `whenToUse` | 否 | 补充说明何时应使用该 Agent |
-| `override` | 否 | 是否允许覆盖同名内置 Agent，默认 `false`。`--agent-file` 属于显式启动意图，无需设置此字段 |
+| `override` | 否 | 遗留覆盖元数据，默认 `false`。胜出者由文件优先级决定；同名用户文件替换已安装的内置副本无需设置此字段 |
 | `main` | 否 | 策展标记。为 `true` 时该 profile 可作为 main agent 候选，默认不出现在 `AgentRun` 工具的角色列表里。这不是授权门：`--agent`、`--agent-file`、MCP 和 SDK 仍可按名绑定目录中的任意 profile |
 | `delegation_notice` | 否 | `auto`（默认）在该 profile 作为 subagent 或独立宿主 Agent 运行时注入按位置区分的委派说明；`off` 关闭。main agent 绑定从不注入 |
 | `model_alias` | 否 | `[models]` 中区分大小写的精确 alias。它就是该 profile 的模型 pin：派发未指定模型时绑定它；没有它的 profile 只能由显式 `model_alias` 的派发使用 |
 | `thinking_effort` | 否 | 该 profile 作为新子 Agent 启动时请求的 thinking effort，与模型选择器独立解析 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
-| `allowed_models` | 否 | 该 role 允许绑定的模型 alias 白名单。写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。字段存在且非空时，绑定结果必须是其中一员。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。这份名单只能**收紧**机器已经允许的集合，不能重新放行 `[subagent].deny_models` 或本文件 `deny_models` 禁止的模型。只写一项就是把该 role 钉死到那个 alias 的做法，不必再为“只改模型”单独建 route sidecar。省略字段或写成空列表表示不再额外限制 |
+| `allowed_models` | 否 | 该 role 允许绑定的模型 alias 白名单。写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。字段存在且非空时，绑定结果必须是其中一员。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。这份名单只能**收紧**机器已经允许的集合，不能重新放行 `[subagent].deny_models` 或本文件 `deny_models` 禁止的模型。只写一项就是把该 role 钉死到那个 alias 的做法，不必再为“只改模型”单独建 route sidecar。省略字段或写 `"*"` 表示不再额外限制；`[]` 表示不允许任何模型，会阻止自动派发。Caller lease 与 `spawn_constraints` 中语义相同。旧文件若用空列表表示不限制，请改成 `"*"` |
 | `deny_models` | 否 | 该 role 禁止绑定的模型 alias 名单，写法与 `allowed_models` 相同。自动派发会被拒绝；人类显式选择放行并给一次性提示。机器级 `[subagent].deny_models` 仍拒绝所有路径，包括人类 |
 | `allowed_efforts` | 否 | 该 role 允许的 thinking effort 白名单，写法与 `tools` 相同。角色级与匹配到的 `model_profiles` 条目求交。自动派发（`AgentRun`）超出交集即拒绝；人类显式选择放行并给一次性提示 |
 | `model_profiles` | 否 | 该角色在某个模型上的跑法。只支持 YAML mapping 列表。必填 `alias`；可选 `when`、`thinking_effort`、`allowed_efforts`、`prompt_mode`（`prepend` / `append` / `wrap`）、`prompt`、`prompt_overrides`、`service_tier`、`request_params`、`context_budget` 与 `max_completion_tokens`。`when` 只给派发方看，渲进 `AgentRun` 工具说明，不写进子 Agent 自己的提示词。带 `prompt_mode` 的条目在角色正文之后、模型 cognition overlay 之前组合；`wrap` 要求正文恰好一次 `${parent_prompt}`（或其别名 `${base_prompt}`）。本机 `[models]` 表解析不到的 alias 既不出现在工具说明里，也不生效。重复 alias 会全部保留在文件里，overlay 只匹配第一条解析成功的。旧键 `recommended_models` 仍接受为弃用别名并在加载期 warn；两键同时出现时 `model_profiles` 胜 |
@@ -272,6 +273,8 @@ subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比
 
 两个 flag 都仅在新建会话时有效——都不能与 `--session`/`--continue` 组合。Agent 在会话创建时绑定，恢复会话时会自动还原已绑定的 Agent，因此恢复时不需要（也不允许）携带这些 flag。
 
+在 print 模式下，显式 `--model` 优先于所选 profile 的 `model_alias`。省略 `--model` 时，引擎先使用 profile 的模型 pin，仅在 profile 未指定模型时使用 `default_model`。因此，钉死模型的 profile 无需全局默认模型也能运行；与 main agent 不同，subagent 从不回退到 `default_model`。
+
 例如：
 
 ```sh
@@ -285,7 +288,7 @@ kiki -p --agent reviewer "审查这个分支上的改动"
 
 ### 用 SYSTEM.md 覆盖 main agent 的系统提示词
 
-希望永久覆盖默认 main agent、而不必每次启动都传入 `--agent` 或 `--agent-file` 时，可以写一份 `$KIKI_HOME/SYSTEM.md`（默认：`~/.kiki/SYSTEM.md`，随 `KIKI_HOME` 移动）。文件缺失或为空时不生效；读取失败时会告警并回退到内置提示词。SYSTEM.md 在包括交互式 TUI 会话在内的所有启动方式下生效。
+希望永久覆盖默认 main agent、而不必每次启动都传入 `--agent` 或 `--agent-file` 时，可以写一份 `$KIKI_HOME/SYSTEM.md`（默认：`~/.kiki/SYSTEM.md`，随 `KIKI_HOME` 移动）。文件缺失或为空时不生效。读取或解析失败会产生带路径的诊断；若当前进程曾成功加载该文件，则保留它最后一次有效的 profile，其他 Agent 文件仍正常重载。开头为 `---` 的文件出现 YAML 语法错误时，绝不会被重新解释为遗留提示词。修复文件可替换保留的版本，删除文件则移除覆盖；没有历史有效版本时，跳过这份非法覆盖。SYSTEM.md 在包括交互式 TUI 会话在内的所有启动方式下生效。
 
 解析方式看文件第一行：
 

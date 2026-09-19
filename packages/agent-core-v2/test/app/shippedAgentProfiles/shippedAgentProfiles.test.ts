@@ -8,6 +8,7 @@ import type { IConfigService } from '#/app/config/config';
 import { ILogService } from '#/_base/log/log';
 import {
   DISABLED_BUILTIN_PROFILES_SECTION,
+  SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION,
   type DisabledBuiltinProfilesConfig,
 } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import {
@@ -35,13 +36,14 @@ function logStub(): ILogService {
   } as unknown as ILogService;
 }
 
-function configStub(options?: { disabledBuiltin?: readonly string[] }): IConfigService {
+function configStub(options?: { disabledBuiltin?: readonly string[]; skipInstallation?: readonly string[] }): IConfigService {
   return {
     _serviceBrand: undefined,
     ready: Promise.resolve(),
     onDidChangeConfiguration: () => ({ dispose: () => {} }),
     onDidSectionChange: () => ({ dispose: () => {} }),
     get: (domain: string) => {
+      if (domain === SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION) return options?.skipInstallation;
       if (domain === DISABLED_BUILTIN_PROFILES_SECTION) {
         const value: DisabledBuiltinProfilesConfig = options?.disabledBuiltin
           ? [...options.disabledBuiltin]
@@ -177,6 +179,24 @@ describe('ShippedAgentProfileManagerService', () => {
     expect(await activeExists('plan')).toBe(false);
     const entry = (await service.status()).find((candidate) => candidate.templateId === 'plan')!;
     expect(entry.status).toBe('disabled');
+  });
+
+  it('uses the renamed policy only for installation and leaves managed copies active', async () => {
+    const templates = [template('agent', agentText('v1'))];
+    const skipped = manager(templates, configStub({ skipInstallation: ['agent'] }));
+    await skipped.ready;
+    expect(await activeExists('agent')).toBe(false);
+    skipped.dispose();
+
+    const installed = manager(templates, configStub({ disabledBuiltin: ['agent'], skipInstallation: [] }));
+    await installed.ready;
+    expect(await activeText('agent')).toBe(agentText('v1'));
+    installed.dispose();
+
+    const updated = manager([template('agent', agentText('v2'))], configStub({ skipInstallation: ['agent'] }));
+    await updated.ready;
+    expect(await activeText('agent')).toBe(agentText('v2'));
+    expect((await updated.status())[0]).toMatchObject({ status: 'clean', managed: true });
   });
 
   it('advances unmodified managed files to the installed original and keeps a backup', async () => {

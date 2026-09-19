@@ -181,7 +181,12 @@ describe('runV2Print', () => {
     vi.unstubAllEnvs();
   });
 
-  it('runs the real print host and facade against a local streaming provider', async () => {
+  it.each([
+    { label: 'profile pin beats global default', defaultModel: 'fallback', profileModel: 'example', explicitModel: undefined, expectedModel: 'gpt-4o-mini' },
+    { label: 'profile pin works without global default', defaultModel: undefined, profileModel: 'example', explicitModel: undefined, expectedModel: 'gpt-4o-mini' },
+    { label: 'explicit CLI model beats profile pin', defaultModel: 'fallback', profileModel: 'example', explicitModel: 'fallback', expectedModel: 'gpt-4o-fallback' },
+    { label: 'global default fills an unpinned profile', defaultModel: 'fallback', profileModel: undefined, explicitModel: undefined, expectedModel: 'gpt-4o-fallback' },
+  ])('runs the real print host with engine model resolution: $label', async ({ defaultModel, profileModel, explicitModel, expectedModel }) => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-print-live-'));
     const homeDir = join(root, 'home');
     const workDir = join(root, 'work');
@@ -204,21 +209,27 @@ describe('runV2Print', () => {
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workDir);
     try {
       await writeFile(join(homeDir, 'config.toml'), [
-        'default_model = "example"',
+        defaultModel === undefined ? '' : `default_model = "${defaultModel}"`,
         '[providers.example]', 'type = "openai"', `base_url = "http://127.0.0.1:${address.port}/v1"`, 'api_key = "test-only"',
         '[models.example]', 'provider = "example"', 'model = "gpt-4o-mini"', 'protocol = "openai"',
         'max_context_size = 32000', 'max_output_size = 128', 'capabilities = ["tool_use"]',
+        '[models.fallback]', 'provider = "example"', 'model = "gpt-4o-fallback"', 'protocol = "openai"',
+        'max_context_size = 32000', 'max_output_size = 128', 'capabilities = ["tool_use"]',
         '[task]', 'print_background_mode = "exit"',
       ].join('\n'));
+      await writeFile(join(homeDir, 'SYSTEM.md'), profileModel === undefined
+        ? 'You are a test agent.'
+        : `---\nmodel_alias: ${profileModel}\n---\nYou are a test agent.`);
       const actual = await vi.importActual<typeof import('@kiki/agent-core-v2')>('@kiki/agent-core-v2');
       const main = await vi.importActual<typeof import('@kiki/agent-core-v2/session/agentLifecycle/mainAgent')>('@kiki/agent-core-v2/session/agentLifecycle/mainAgent');
       mocks.bootstrap.mockImplementation(actual.bootstrap);
       mocks.ensureMainAgent.mockImplementation(main.ensureMainAgent);
       mocks.resolveKikiHome.mockReturnValue(homeDir);
       const stdout = writer(); const stderr = writer();
-      await runV2Print(opts({ model: 'example' }) as never, 'test', { stdout, stderr });
+      await runV2Print(opts({ model: explicitModel }) as never, 'test', { stdout, stderr });
       expect(stdout.text()).toContain('LOCAL_PRINT_OK');
       expect(requests).toHaveLength(1);
+      expect(JSON.parse(requests[0]!).model).toBe(expectedModel);
       expect(JSON.parse(requests[0]!).messages).toEqual(expect.arrayContaining([expect.objectContaining({ role: 'user' })]));
       expect(stderr.text()).not.toContain('print event delivery failed');
     } finally {
@@ -374,7 +385,7 @@ describe('runV2Print', () => {
     expect(sessions.create).toHaveBeenCalledWith({
       workDir: process.cwd(),
       additionalDirs: undefined,
-      mainAgentBinding: { profile: 'reviewer', model: 'k2' },
+      mainAgentBinding: { profile: 'reviewer', model: undefined },
     });
     const profile = agentServices.get(IAgentProfileService) as { bind: ReturnType<typeof vi.fn> };
     expect(profile.bind).not.toHaveBeenCalled();
@@ -406,7 +417,7 @@ describe('runV2Print', () => {
     expect(sessions.create).toHaveBeenCalledWith({
       workDir: process.cwd(),
       additionalDirs: undefined,
-      mainAgentBinding: { profile: 'file-reviewer', model: 'k2' },
+      mainAgentBinding: { profile: 'file-reviewer', model: undefined },
     });
     const profile = agentServices.get(IAgentProfileService) as { bind: ReturnType<typeof vi.fn> };
     expect(profile.bind).not.toHaveBeenCalled();

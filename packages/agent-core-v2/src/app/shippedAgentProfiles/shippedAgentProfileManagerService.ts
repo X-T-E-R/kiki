@@ -14,7 +14,9 @@ import { IConfigService } from '#/app/config/config';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import {
   DISABLED_BUILTIN_PROFILES_SECTION,
+  SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION,
   type DisabledBuiltinProfilesConfig,
+  type SkipBuiltinProfileInstallationConfig,
 } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import { SYSTEM_MD_FILENAME } from '@kiki/agent-profiles/systemFile';
 import { isHostFsMissing } from '@kiki/agent-profiles/hostFs';
@@ -197,7 +199,7 @@ export class ShippedAgentProfileManagerService
     const nextSkipped: Record<string, SkipReason> = {};
     const nextTemplates: Record<string, ManagedStateRecord> = {};
     const legacyInstall = await this.detectLegacyInstall();
-    const disabled = this.disabledBuiltinNames();
+    const disabled = this.skippedInstallationNames();
     for (const template of this.templates) {
       try {
         const record = manifest.templates[template.id];
@@ -374,9 +376,7 @@ export class ShippedAgentProfileManagerService
     } catch (error) {
       if (!isHostFsMissing(error)) throw error;
     }
-    const config = this.config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION);
-    if ((config ?? []).length > 0) return true;
-    return false;
+    return this.skippedInstallationNames().size > 0;
   }
 
   private materializesFor(template: ShippedAgentProfileTemplate, legacyInstall: boolean): boolean {
@@ -385,9 +385,10 @@ export class ShippedAgentProfileManagerService
       : template.materializeOnFreshInstall;
   }
 
-  private disabledBuiltinNames(): ReadonlySet<string> {
-    const config = this.config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION);
-    return new Set(config ?? []);
+  private skippedInstallationNames(): ReadonlySet<string> {
+    const current = this.config.get<SkipBuiltinProfileInstallationConfig>(SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION);
+    const legacy = this.config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION);
+    return new Set(current ?? legacy ?? []);
   }
 
   private async systemMdExists(): Promise<boolean> {
