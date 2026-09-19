@@ -1459,14 +1459,32 @@ fn canonicalize_missing_tail(path: &Path, original: &io::Error) -> Result<PathBu
 
 #[cfg(target_os = "windows")]
 fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
-    // explorer.exe reads its own argv — no shell parses this argument — and an
-    // OsString keeps non-UTF-8 paths intact (display() would lossy them).
-    let mut select = std::ffi::OsString::from("/select,");
-    select.push(path.as_os_str());
-    std::process::Command::new("explorer")
-        .arg(select)
-        .spawn()
-        .map_err(|error| format!("Cannot reveal host path {}: {error}", path.display()))?;
+    // `explorer /select,` mangles forward slashes (server paths arrive both
+    // ways), commas, and trailing dots, and silently opens the wrong folder on
+    // failure. Parse a PIDL and ask the shell to select the item instead —
+    // the same mechanism Electron/VS Code use.
+    use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    let mut text = path.to_string_lossy().replace('/', "\\");
+    if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+        text = format!("\\\\{rest}");
+    } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        text = rest.to_string();
+    }
+    let wide = wide_null(std::ffi::OsStr::new(&text));
+    // SAFETY: `wide` is a NUL-terminated UTF-16 buffer that outlives both
+    // calls; the returned PIDL is owned by us and freed with ILFree.
+    let pidl = unsafe { ILCreateFromPathW(wide.as_ptr()) };
+    if pidl.is_null() {
+        return Err(format!("Cannot reveal host path {}", path.display()));
+    }
+    let result = unsafe { SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0) };
+    unsafe { ILFree(pidl) };
+    if result < 0 {
+        return Err(format!(
+            "Cannot reveal host path {}: shell error {result}",
+            path.display()
+        ));
+    }
     Ok(())
 }
 
