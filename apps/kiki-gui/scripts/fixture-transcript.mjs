@@ -843,18 +843,15 @@ export class TranscriptProjector {
       }
       case 'prompt.submitted':
       case 'prompt.queued':
-      case 'prompt.completed':
-      case 'prompt.aborted': {
+      case 'prompt.completed': {
         const id = payload.promptId ?? payload.prompt_id ?? promptId;
         if (id === undefined) break;
         const status =
           type === 'prompt.completed'
             ? 'completed'
-            : type === 'prompt.aborted'
-              ? 'aborted'
-              : type === 'prompt.queued'
-                ? 'queued'
-                : 'running';
+            : type === 'prompt.queued'
+              ? 'queued'
+              : 'running';
         projected = {
           agentId,
           ops: [
@@ -870,6 +867,31 @@ export class TranscriptProjector {
                 steeredAt: payload.steeredAt,
                 appendTiming: payload.appendTiming,
                 revision: payload.revision,
+              },
+            },
+          ],
+        };
+        break;
+      }
+      case 'prompt.aborted': {
+        const id = payload.promptId ?? payload.prompt_id ?? promptId;
+        if (id === undefined) break;
+        // Mirror the wire adapter: the upsert replaces, so the prior record
+        // rides along and only the terminal fields are restamped — including
+        // beforeStart, which the GUI projection reads to drop never-started
+        // prompts from the timeline entirely.
+        const prev = agent.snapshot.prompts.find((entry) => entry.promptId === id);
+        if (prev === undefined) break;
+        projected = {
+          agentId,
+          ops: [
+            {
+              op: 'prompt.upsert',
+              prompt: {
+                ...prev,
+                status: 'aborted',
+                finishedAt: payload.abortedAt ?? payload.finishedAt ?? at,
+                ...(payload.beforeStart === true ? { abortedBeforeStart: true } : {}),
               },
             },
           ],

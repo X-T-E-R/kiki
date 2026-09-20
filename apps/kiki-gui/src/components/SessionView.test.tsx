@@ -152,7 +152,7 @@ describe('QueueStrip', () => {
     expect(html).toBe('');
   });
 
-  it('collapses a multi-prompt list behind an aria-wired count header', () => {
+  it('renders a multi-prompt list expanded behind an aria-wired count header', () => {
     const html = renderToStaticMarkup(
       <I18nProvider>
         <QueueStrip
@@ -166,9 +166,9 @@ describe('QueueStrip', () => {
         />
       </I18nProvider>,
     );
-    expect(html).toMatch(/aria-expanded="false" aria-controls="[^"]+" aria-label="Show or hide the queued prompts"/);
-    // The list stays in the tree (so reconcile keeps row identity) but hidden.
-    expect(html).toMatch(/<ol id="[^"]+" hidden=""/);
+    expect(html).toMatch(/aria-expanded="true" aria-controls="[^"]+" aria-label="Show or hide the queued prompts"/);
+    // The list is visible by default; the header can collapse it on demand.
+    expect(html).not.toMatch(/<ol id="[^"]+" hidden=""/);
   });
 
   it('shows a single queued prompt without a collapse toggle', () => {

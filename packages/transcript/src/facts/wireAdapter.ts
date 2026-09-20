@@ -83,6 +83,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly currentTurnId?: string;
   readonly currentPromptId?: string;
   readonly prompts?: readonly [string, TranscriptPrompt][];
+  readonly hiddenPromptIds?: readonly string[];
 }
 
 export class TranscriptWireAdapter {
@@ -112,6 +113,7 @@ export class TranscriptWireAdapter {
   readonly #unpairedSteerCredits = new Map<string, Map<string, number>>();
   readonly #executions = new Map<string, TranscriptTurnExecution>();
   readonly #prompts = new Map<string, TranscriptPrompt>();
+  readonly #hiddenPromptIds = new Set<string>();
   #goal: GoalMeta | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
   #recordOrdinal = 0;
@@ -162,6 +164,7 @@ export class TranscriptWireAdapter {
       currentTurnId: this.#currentTurnId,
       currentPromptId: this.#currentPromptId,
       prompts: [...this.#prompts],
+      hiddenPromptIds: [...this.#hiddenPromptIds],
     };
   }
 
@@ -208,6 +211,7 @@ export class TranscriptWireAdapter {
     this.#currentTurnId = checkpoint.currentTurnId;
     this.#currentPromptId = checkpoint.currentPromptId;
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
+    replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
   }
 
   add(record: TranscriptWireRecord): TranscriptFact[] {
@@ -296,6 +300,11 @@ export class TranscriptWireAdapter {
     if (promptId === undefined) return [];
     if (record.type === 'prompt.enqueued') {
       const message = objectOf(record['message']);
+      const originKind = stringOf(objectOf(message?.['origin'])?.['kind']) ?? 'user';
+      if (originKind !== 'user') {
+        this.#hiddenPromptIds.add(promptId);
+        return [];
+      }
       const prompt: TranscriptPrompt = {
         promptId,
         status: 'queued',
@@ -308,6 +317,7 @@ export class TranscriptWireAdapter {
       };
       return [this.storePrompt(prompt)];
     }
+    if (this.#hiddenPromptIds.has(promptId)) return [];
     const previous = this.#prompts.get(promptId);
     if (record.type === 'prompt.replaced') {
       const content = projectPromptContent(record['content']);
@@ -334,6 +344,7 @@ export class TranscriptWireAdapter {
       if (ids.length === 0) return [];
       const operations: TranscriptOperation[] = [];
       for (const [queuePosition, id] of ids.entries()) {
+        if (this.#hiddenPromptIds.has(id)) continue;
         const prior = this.#prompts.get(id) ?? minimalPrompt(id, record);
         operations.push(
           this.storePrompt({
@@ -392,7 +403,7 @@ export class TranscriptWireAdapter {
       };
       const operations: TranscriptOperation[] = [this.storePrompt(active)];
       for (const id of stringArrayOf(record['promptIds'])) {
-        if (id === activePromptId) continue;
+        if (id === activePromptId || this.#hiddenPromptIds.has(id)) continue;
         const prior = this.#prompts.get(id) ?? minimalPrompt(id, record);
         operations.push(
           this.storePrompt({ ...prior, status: 'completed', finishedAt: steeredAt, steeredAt }),

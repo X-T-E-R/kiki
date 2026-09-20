@@ -196,10 +196,11 @@ export function bindSessionTranscript(
       const ops: ReturnType<AgentTranscriptLiveAdapter['seedPrompt']> = [
         { op: 'meta.merge', meta: { promptQueueHold: snapshot.hold ?? null } },
       ];
-      if (snapshot.active !== undefined) {
+      if (snapshot.active !== undefined && isUserOriginPrompt(snapshot.active)) {
         ops.push(...liveAdapter.seedPrompt(promptFromSnapshot(snapshot.active, 'running')));
       }
       for (const pending of snapshot.pending) {
+        if (!isUserOriginPrompt(pending)) continue;
         ops.push(...liveAdapter.seedPrompt(promptFromSnapshot(pending, 'queued')));
       }
       applyOps(agent.id, ops);
@@ -438,6 +439,10 @@ export function bindSessionTranscript(
       earlyResolves.clear();
     },
   };
+}
+
+function isUserOriginPrompt(snapshot: PromptSnapshot): boolean {
+  return (snapshot.message.origin?.kind ?? 'user') === 'user';
 }
 
 function promptFromSnapshot(

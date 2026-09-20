@@ -2218,14 +2218,19 @@ class FixtureServer {
       const queuedIndex = session.queuedPrompts.findIndex((item) => item.prompt_id === promptId);
       if (queuedIndex >= 0) {
         const [aborted] = session.queuedPrompts.splice(queuedIndex, 1);
-        this.emit(session.record.id, {
+        // Mirror the engine's PromptAborted for a pending prompt: the session
+        // event and the transcript fact both carry beforeStart.
+        const frame = {
           type: 'prompt.aborted',
           payload: {
             promptId,
             userMessageId: aborted?.user_message_id ?? promptId,
             abortedAt: now(),
+            beforeStart: true,
           },
-        });
+        };
+        this.emit(session.record.id, frame);
+        this.emitTranscriptFromFrame(session, frame, { promptId, userMessageId: aborted?.user_message_id ?? promptId });
         return this.envelope(res, { aborted: true, at_seq: session.seq });
       }
       if (session.activePrompt?.prompt_id === promptId || session.scriptRunning) {

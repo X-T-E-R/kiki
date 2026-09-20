@@ -1034,8 +1034,8 @@ export class AgentPromptService implements IAgentPromptService {
           for (const item of selected) {
             item.state = state;
             item.completionDeferred.resolve({ promptId: item.id, result, state });
-            if (state === 'cancelled') this.publishAborted(item.id, false);
-            else this.publishCompleted(item.id, state);
+            if (state === 'cancelled') this.publishAborted(item, false);
+            else this.publishCompleted(item, state);
           }
         });
       }
@@ -1056,7 +1056,7 @@ export class AgentPromptService implements IAgentPromptService {
     const [item] = this.pending.splice(index, 1) as [Record];
     item.state = 'cancelled'; item.launchedDeferred.resolve(undefined);
     item.completionDeferred.resolve({ promptId, result: undefined, state: 'cancelled' });
-    this.publishAborted(promptId, true);
+    this.publishAborted(item, true);
     if (this.recoveryHold) this.publishQueueHoldChanged();
     return true;
   }
@@ -1127,7 +1127,7 @@ export class AgentPromptService implements IAgentPromptService {
         if (!item.alreadyMaterialized) this.appendPrompt(message, captions);
         item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
         item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'blocked' });
-        this.publishCompleted(item.id, 'blocked'); return;
+        this.publishCompleted(item, 'blocked'); return;
       }
       if (!this.isTimingReady(item.appendTiming)) {
         this.pending.splice(Math.min(candidateIndex, this.pending.length), 0, item);
@@ -1158,7 +1158,7 @@ export class AgentPromptService implements IAgentPromptService {
       item.state = 'failed';
       item.launchedDeferred.resolve(undefined);
       item.completionDeferred.resolve({ promptId: item.id, result: { type: 'failed', steps: 0, error }, state: 'failed' });
-      this.publishCompleted(item.id, 'failed');
+      this.publishCompleted(item, 'failed');
     } finally {
       admission.dispose();
       this.launching = false;
@@ -1173,7 +1173,7 @@ export class AgentPromptService implements IAgentPromptService {
     item.state = state; item.completionDeferred.resolve({ promptId: item.id, result, state });
     for (const child of this.steered.get(item.id) ?? []) { child.state = state; child.completionDeferred.resolve({ promptId: child.id, result, state }); }
     this.steered.delete(item.id);
-    if (state === 'cancelled') this.publishAborted(item.id, false); else this.publishCompleted(item.id, state);
+    if (state === 'cancelled') this.publishAborted(item, false); else this.publishCompleted(item, state);
     void this.startNext();
   }
 
@@ -1257,7 +1257,10 @@ export class AgentPromptService implements IAgentPromptService {
     const { delivery: _delivery, ...rest } = ctx.result; ctx.result = rest as ExecutableToolResult;
     if (delivery.kind === 'steer') await this.inject(delivery.message as ContextMessage);
   }
-  private publishCompleted(promptId: string, reason: 'completed' | 'failed' | 'blocked'): void { void this.dispatcher.dispatch(new PromptCompleted({ promptId, finishedAt: new Date().toISOString(), reason })); }
+  private publishCompleted(record: Record, reason: 'completed' | 'failed' | 'blocked'): void {
+    if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
+    void this.dispatcher.dispatch(new PromptCompleted({ promptId: record.id, finishedAt: new Date().toISOString(), reason }));
+  }
   private publishQueued(record: Record): void {
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
     void this.dispatcher.dispatch(new PromptQueued({
@@ -1288,7 +1291,10 @@ export class AgentPromptService implements IAgentPromptService {
   private publishQueueHoldChanged(): void {
     void this.dispatcher.dispatch(new PromptQueueHoldChanged({ hold: this.queueHold() ?? null }));
   }
-  private publishAborted(promptId: string, beforeStart: boolean): void { void this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart })); }
+  private publishAborted(record: Record, beforeStart: boolean): void {
+    if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
+    void this.dispatcher.dispatch(new PromptAborted({ promptId: record.id, abortedAt: new Date().toISOString(), beforeStart }));
+  }
 }
 
 function snapshot(item: Record): PromptSnapshot {

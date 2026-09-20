@@ -976,6 +976,53 @@ describe('AgentPromptService', () => {
     expect(started).toEqual(['active']);
   });
 
+  it('suppresses lifecycle events for non-user-origin prompts', async () => {
+    const { prompt, eventBus, loop } = harness({ manualTurnResult: true });
+    const submitted: string[] = [];
+    const started: string[] = [];
+    const completed: string[] = [];
+    const aborted: string[] = [];
+    eventBus.subscribe(PromptSubmitted, (e) => submitted.push(e.promptId));
+    eventBus.subscribe(PromptStarted, (e) => started.push(e.promptId));
+    eventBus.subscribe(PromptCompleted, (e) => completed.push(e.promptId));
+    eventBus.subscribe(PromptAborted, (e) => aborted.push(e.promptId));
+
+    const cronMessage = (text: string) => ({
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text }],
+      toolCalls: [],
+      origin: {
+        kind: 'cron_job' as const,
+        jobId: 'j1',
+        cron: '* * * * *',
+        recurring: true,
+        coalescedCount: 0,
+        stale: false,
+      },
+    });
+
+    const active = await prompt.enqueue({ id: 'cron-active', message: cronMessage('run') });
+    await active.launched;
+    const queued = await prompt.enqueue({ id: 'cron-queued', message: cronMessage('later') });
+    expect(prompt.abort(queued.id)).toBe(true);
+    loop.settleActive();
+    await active.completion;
+
+    expect(submitted).toEqual([]);
+    expect(started).toEqual([]);
+    expect(completed).toEqual([]);
+    expect(aborted).toEqual([]);
+
+    const user = await prompt.enqueue({ id: 'user-1', message: message('hi') });
+    await user.launched;
+    loop.settleActive();
+    await user.completion;
+    expect(submitted).toEqual(['user-1']);
+    expect(started).toEqual(['user-1']);
+    expect(completed).toEqual(['user-1']);
+    expect(aborted).toEqual([]);
+  });
+
   it('atomically rejects steer when any id is not pending', async () => {
     const { prompt } = harness();
     await prompt.enqueue({ message: message('active') });

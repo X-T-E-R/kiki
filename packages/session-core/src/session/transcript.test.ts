@@ -107,7 +107,11 @@ describe('classifyTranscriptText', () => {
         role: 'user',
         origin: { kind: 'cron_job' },
       }),
-    ).toMatchObject({ lane: 'system', systemVariant: 'cron_job' });
+    ).toMatchObject({
+      lane: 'system',
+      systemVariant: 'cron_job',
+      text: 'Run the nightly report.',
+    });
     expect(
       classifyTranscriptText({
         text: 'Earlier context summarized',
@@ -1099,6 +1103,40 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
         id: 'agent-marker-skill-loaded-1',
         text: 'skill',
         i18n: { key: 'transcript.marker.skill' },
+      }),
+    ]);
+  });
+
+  it('suppresses the redundant live cron marker and preserves interruption ownership', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'marker',
+            markerId: 'cron-fired-1',
+            marker: 'cron.fired',
+            payload: { origin: { kind: 'cron_job', jobId: 'nightly' } },
+            at: FIXED_AT,
+          },
+          {
+            kind: 'marker',
+            markerId: 'turn:7:interruption',
+            marker: 'interruption',
+            payload: { turnId: 7, reason: 'user_cancelled' },
+            at: FIXED_AT_1,
+          },
+        ],
+      }),
+    );
+    expect(projected.blocks).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        id: 'agent-marker-turn:7:interruption',
+        createdAt: FIXED_AT_1,
+        turnId: 't7',
+        i18n: { key: 'transcript.marker.interruption' },
       }),
     ]);
   });
@@ -3164,6 +3202,46 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(
       projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued' && block.text === 'B: fail me.'),
     ).toBe(true);
+  });
+
+  it('anchors a terminal prompt notice to its materialized turn and finish time', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't9',
+            ordinal: 9,
+            state: 'failed',
+            origin: {
+              kind: 'user',
+              payload: { promptId: 'p-failed', userMessageId: 'um-failed' },
+            },
+            prompt: 'fail this turn',
+            startedAt: FIXED_AT,
+            endedAt: FIXED_AT_1,
+            steps: [],
+          },
+        ],
+        prompts: [
+          {
+            promptId: 'p-failed',
+            status: 'failed',
+            userMessageId: 'um-failed',
+            createdAt: FIXED_AT,
+            finishedAt: FIXED_AT_1,
+          },
+        ],
+      }),
+    );
+    expect(projected.blocks.find((block) => block.id === 'notice-failed-p-failed')).toMatchObject({
+      kind: 'notice',
+      tone: 'danger',
+      createdAt: FIXED_AT_1,
+      turnId: 't9',
+    });
   });
 
   it('shows a danger taskref notice with the error for lost and timed_out background tasks', () => {

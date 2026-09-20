@@ -1109,6 +1109,61 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
+  it('skips non-user-origin prompts when seeding on attach', () => {
+    const agents = new FakeAgents();
+    agents.add('main', {
+      prompts: {
+        active: {
+          id: 'p-cron',
+          userMessageId: 'm-cron',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          state: 'running',
+          message: {
+            role: 'user',
+            origin: { kind: 'cron_job', jobId: 'j1', cron: '* * * * *', recurring: true, coalescedCount: 0, stale: false },
+            content: [{ type: 'text', text: '<cron-fire jobId="j1"><prompt>nightly</prompt></cron-fire>' }],
+          },
+          revision: 1,
+        },
+        pending: [
+          {
+            id: 'p-cron-queued',
+            userMessageId: 'm-cron-queued',
+            createdAt: '2026-01-01T00:00:01.000Z',
+            state: 'pending',
+            message: {
+              role: 'user',
+              origin: { kind: 'cron_job', jobId: 'j2', cron: '0 * * * *', recurring: true, coalescedCount: 0, stale: false },
+              content: [{ type: 'text', text: '<cron-fire jobId="j2"><prompt>hourly</prompt></cron-fire>' }],
+            },
+            revision: 1,
+          },
+          {
+            id: 'p-user',
+            userMessageId: 'm-user',
+            createdAt: '2026-01-01T00:00:02.000Z',
+            state: 'pending',
+            message: { role: 'user', content: [{ type: 'text', text: 'later' }] },
+            revision: 1,
+          },
+        ],
+      },
+    });
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    binding.seedPrompts('main');
+    expect(store.getAgent('main')?.getPrompt('p-cron')).toBeUndefined();
+    expect(store.getAgent('main')?.getPrompt('p-cron-queued')).toBeUndefined();
+    expect(store.getAgent('main')?.getPrompt('p-user')).toMatchObject({
+      promptId: 'p-user',
+      status: 'queued',
+    });
+    binding.dispose();
+  });
+
   it('projects live prompt queue timing through the live adapter', () => {
     const agents = new FakeAgents();
     const main = agents.add('main');

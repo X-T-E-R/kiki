@@ -119,7 +119,19 @@ const BASH_INPUT_RE = /<bash-input>([\s\S]*?)<\/bash-input>/i;
 const BASH_STDOUT_RE = /<bash-stdout>([\s\S]*?)<\/bash-stdout>/i;
 const BASH_STDERR_RE = /<bash-stderr>([\s\S]*?)<\/bash-stderr>/i;
 const CRON_FIRE_RE = /<cron-fire\b[\s\S]*?<\/cron-fire>/i;
+const CRON_PROMPT_RE = /<prompt>\s*([\s\S]*?)\s*<\/prompt>/i;
 const TASK_NOTIFICATION_RE = /<notification\b([^>]*)>([\s\S]*?)<\/notification>/i;
+
+function extractCronPrompt(text: string): string {
+  const prompt = CRON_PROMPT_RE.exec(text)?.[1];
+  if (prompt !== undefined) return prompt.trim();
+  const envelope = CRON_FIRE_RE.exec(text)?.[0];
+  if (envelope === undefined) return text;
+  return envelope
+    .replace(/^<cron-fire\b[^>]*>\s*/i, '')
+    .replace(/\s*<\/cron-fire>$/i, '')
+    .trim();
+}
 
 function unescapeXml(text: string): string {
   return text
@@ -250,7 +262,7 @@ export function classifyTranscriptText(input: {
     return {
       lane: 'system',
       origin,
-      text: split.text,
+      text: kind === 'cron_job' ? extractCronPrompt(split.text) : split.text,
       reminders: split.reminders,
       systemVariant: asSystemVariant(kind),
     };
@@ -283,7 +295,7 @@ export function classifyTranscriptText(input: {
     return {
       lane: 'system',
       origin,
-      text: split.text,
+      text: extractCronPrompt(split.text),
       reminders: split.reminders,
       systemVariant: 'cron_job',
     };

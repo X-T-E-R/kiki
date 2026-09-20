@@ -227,6 +227,8 @@ export interface NoticeBlock {
   readonly id: string;
   readonly text: string;
   readonly tone: 'neutral' | 'danger';
+  readonly createdAt?: string;
+  readonly turnId?: string;
   readonly i18n?: { readonly key: I18nKey; readonly params?: I18nParams };
 }
 

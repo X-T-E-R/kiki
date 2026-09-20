@@ -1,11 +1,10 @@
 /**
  * Compact history presentation: terminal interaction facts (resolved
- * approvals/questions), terminal prompt dividers, goal/plan markers, settled
+ * approvals/questions), terminal prompt notices, transcript markers, settled
  * subagent lifecycle entries and compact subagent cards stay INLINE in the
  * timeline at their original position. Runs of ≥2 consecutive compact
  * entries fold into an expandable summary row so notification piles stop
- * flooding the log; failed or cancelled entries never fold (the caller's
- * predicate excludes them).
+ * flooding the log; failure-bearing runs retain a danger summary.
  */
 
 import { memo, useState, type ReactNode } from 'react';
@@ -21,28 +20,28 @@ import type {
 import { useI18n } from '../i18n';
 import { RelativeTime } from './RelativeTime';
 
-/** Marker notices (goal/plan/swarm …) are the neutral, transcript-owned ones.
- * Interruption markers ('agent-marker-*-interruption' or id ending with interruption)
- * are user turn stops and must remain standalone/unfolded.
- */
+/** Marker notices (goal/plan/swarm/interruption …) are the neutral, transcript-owned ones. */
 export function isMarkerNotice(block: NoticeBlock): boolean {
+  return block.tone === 'neutral' && block.id.startsWith('agent-marker-');
+}
+
+export function isInterruptionNotice(block: NoticeBlock): boolean {
   return (
-    block.tone === 'neutral' &&
-    block.id.startsWith('agent-marker-') &&
-    !block.id.includes('interruption') &&
-    block.i18n?.key !== 'transcript.marker.interruption'
+    block.id.includes('interruption') ||
+    block.i18n?.key === 'transcript.marker.interruption'
   );
 }
 
-/**
- * Terminal-prompt divider ("Prompt aborted"): session-core's
- * mergeTranscriptPromptBlocks projects one neutral notice per aborted/failed
- * prompt. It is a terminal lifecycle fact like a resolved interaction, so it
- * may fold — left out of the compact set it both piles at the tail itself
- * and breaks runs of adjacent compact entries.
- */
 export function isAbortedPromptNotice(block: NoticeBlock): boolean {
   return block.tone === 'neutral' && block.id.startsWith('notice-aborted-');
+}
+
+export function isFailedPromptNotice(block: NoticeBlock): boolean {
+  return block.tone === 'danger' && block.id.startsWith('notice-failed-');
+}
+
+export function isTerminalPromptNotice(block: NoticeBlock): boolean {
+  return isAbortedPromptNotice(block) || isFailedPromptNotice(block);
 }
 
 /**
@@ -84,9 +83,9 @@ export type GroupedDisplayNode = DisplayNode | HistoryRun;
 
 /**
  * Fold runs of ≥2 consecutive compact entries. Single compact entries stay
- * individual one-liners; any non-compact node (user/assistant/tool, pending
- * interaction, failed entry) breaks the run, so a group never spans a user
- * message and never swallows a failure.
+ * individual one-liners; any non-compact node (user/assistant/tool or pending
+ * interaction) breaks the run, so a group never spans a user message. The
+ * caller decides which terminal failures are historical enough to compact.
  */
 export function groupHistoryRuns(
   nodes: readonly DisplayNode[],
@@ -206,17 +205,27 @@ export function HistoryRunRow({
 }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
+  const failureCount = run.nodes.filter(
+    (node) => node.kind === 'notice' && isFailedPromptNotice(node),
+  ).length;
+  const hasFailures = failureCount > 0;
   return (
-    <div data-history-run={run.id} data-history-run-member-ids={run.nodes.map((node) => node.id).join(' ')}>
+    <div
+      data-history-run={run.id}
+      data-history-run-member-ids={run.nodes.map((node) => node.id).join(' ')}
+      data-history-run-failures={hasFailures ? failureCount : undefined}
+    >
       <button
         type="button"
         aria-expanded={expanded}
         onClick={() => { setExpanded((value) => !value); }}
         className="anim-enter group flex w-full items-center gap-3 py-1"
       >
-        <span className="h-px flex-1 bg-hairline" />
-        <span className="flex items-center gap-1.5 text-[11px] text-ink-faint transition-colors group-hover:text-ink">
-          {t('activity.history', { count: run.nodes.length })}
+        <span className={`h-px flex-1 ${hasFailures ? 'bg-danger/30' : 'bg-hairline'}`} />
+        <span className={`flex items-center gap-1.5 text-[11px] transition-colors ${hasFailures ? 'font-medium text-danger group-hover:text-danger' : 'text-ink-faint group-hover:text-ink'}`}>
+          {hasFailures
+            ? t('activity.historyWithFailures', { count: run.nodes.length, failureCount })
+            : t('activity.history', { count: run.nodes.length })}
           <span
             aria-hidden
             className={`text-[9px] transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
@@ -224,7 +233,7 @@ export function HistoryRunRow({
             ▶
           </span>
         </span>
-        <span className="h-px flex-1 bg-hairline" />
+        <span className={`h-px flex-1 ${hasFailures ? 'bg-danger/30' : 'bg-hairline'}`} />
       </button>
       {expanded ? (
         <div data-history-run-members className="flex flex-col gap-1">

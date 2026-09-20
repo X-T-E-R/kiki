@@ -594,8 +594,11 @@ describe('media preview wiring', () => {
 // virtualizer and the collapse hook's observer path (the hook's synchronous
 // first measure is what the collapse tests drive).
 
-function transcriptState(blocks: Block[]): SessionViewState {
-  return { ...createViewState('session_test'), loaded: true, blocks };
+function transcriptState(
+  blocks: Block[],
+  overrides: Partial<SessionViewState> = {},
+): SessionViewState {
+  return { ...createViewState('session_test'), loaded: true, blocks, ...overrides };
 }
 
 function noopActions(): Promise<void> {
@@ -605,12 +608,13 @@ function noopActions(): Promise<void> {
 async function renderTranscript(
   blocks: Block[],
   rowActions?: TranscriptRowActions,
+  stateOverrides?: Partial<SessionViewState>,
 ): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
   await renderSettled(
     root,
     <Transcript
-      state={transcriptState(blocks)}
+      state={transcriptState(blocks, stateOverrides)}
       onLoadOlder={() => Promise.resolve(false)}
       onResolveApproval={() => noopActions()}
       onAnswerQuestion={() => noopActions()}
@@ -621,11 +625,13 @@ async function renderTranscript(
   return container;
 }
 
-function userBlock(overrides: Partial<Extract<Block, { kind: 'user' }>> & { id: string; text: string }): Block {
+function userBlock(
+  overrides: Partial<Extract<Block, { kind: 'user' }>> & { id: string; text: string },
+): Extract<Block, { kind: 'user' }> {
   return { kind: 'user', createdAt: '2026-01-01T00:00:00.000Z', ...overrides };
 }
 
-function assistantBlock(id: string, text: string): Block {
+function assistantBlock(id: string, text: string): Extract<Block, { kind: 'assistant' }> {
   return { kind: 'assistant', id, text, streaming: false, createdAt: '2026-01-01T00:00:01.000Z' };
 }
 
@@ -1192,7 +1198,7 @@ describe('message row actions', () => {
     expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'regenerate', 'fork']);
   });
 
-  it('hides edit/fork on user rows without a wire identity or with a parked prompt', async () => {
+  it('hides edit/fork on a user row without a wire identity', async () => {
     const rowActions: TranscriptRowActions = {
       disabled: false,
       onEditMessage: () => undefined,
@@ -1200,15 +1206,40 @@ describe('message row actions', () => {
       onFork: () => undefined,
     };
     const container = await renderTranscript(
-      [
-        userBlock({ id: 'turn-1-prompt', text: 'placeholder without id' }),
-        userBlock({ id: 'user-m9', text: 'parked', userMessageId: 'm9', promptStatus: 'queued' }),
-      ],
+      [userBlock({ id: 'turn-1-prompt', text: 'placeholder without id' })],
       rowActions,
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
     expect(rowActionButtons(rows[0]!)).toEqual(['copy']);
-    expect(rowActionButtons(rows[1]!)).toEqual(['copy']);
+  });
+
+  it('omits queued prompts until they start while keeping blocked prompts visible', async () => {
+    const anchor = assistantBlock('assistant-anchor', 'existing reply');
+    const queued = userBlock({
+      id: 'user-queued',
+      text: 'queued duplicate',
+      userMessageId: 'm-queued',
+      promptId: 'p-queued',
+      promptStatus: 'queued',
+    });
+    const queuedContainer = await renderTranscript([anchor, queued]);
+    expect(queuedContainer.querySelector('[data-block-id="user-queued"]')).toBeNull();
+    expect(queuedContainer.textContent).not.toContain('queued duplicate');
+
+    const startedContainer = await renderTranscript([
+      anchor,
+      { ...queued, promptStatus: 'running' },
+    ]);
+    expect(startedContainer.querySelector('[data-block-id="user-queued"]')).not.toBeNull();
+    expect(startedContainer.textContent).toContain('queued duplicate');
+
+    const blockedContainer = await renderTranscript([
+      anchor,
+      { ...queued, id: 'user-blocked', text: 'blocked prompt', promptStatus: 'blocked' },
+    ]);
+    expect(blockedContainer.querySelector('[data-block-id="user-blocked"]')).not.toBeNull();
+    expect(blockedContainer.textContent).toContain('blocked prompt');
+    expect(blockedContainer.textContent).toContain('Blocked');
   });
 
   it('keeps fork on a settled journal user even if a later regenerate prompt is still running', async () => {
@@ -2791,17 +2822,58 @@ describe('terminal pile-up folding (timeline tail)', () => {
     };
   }
 
-  // The projection's terminal-prompt divider (mergeTranscriptPromptBlocks in
-  // session-core): neutral notice, id `notice-aborted-<promptId>`.
-  function abortedNoticeBlock(promptId: string): Block {
+  function markerNoticeBlock(id: string): Block {
+    return {
+      kind: 'notice',
+      id: `agent-marker-${id}`,
+      text: id,
+      tone: 'neutral',
+      i18n: { key: 'transcript.marker.goal' },
+    };
+  }
+
+  function abortedNoticeBlock(promptId: string, turnId?: string): Block {
     return {
       kind: 'notice',
       id: `notice-aborted-${promptId}`,
       text: 'Prompt aborted',
       tone: 'neutral',
       i18n: { key: 'notice.promptAborted' },
+      turnId,
     };
   }
+
+  function failedNoticeBlock(promptId: string, turnId?: string): Block {
+    return {
+      kind: 'notice',
+      id: `notice-failed-${promptId}`,
+      text: 'Prompt failed',
+      tone: 'danger',
+      i18n: { key: 'notice.promptFailed' },
+      turnId,
+    };
+  }
+
+  function interruptionNoticeBlock(turnId: string): Block {
+    return {
+      kind: 'notice',
+      id: `agent-marker-${turnId}-interruption`,
+      text: 'interruption',
+      tone: 'neutral',
+      i18n: { key: 'transcript.marker.interruption' },
+      turnId,
+    };
+  }
+
+  const stoppedTail = {
+    turnId: 't-latest',
+    state: 'cancelled',
+    endedAt: '2026-01-01T09:00:00.000Z',
+    durationMs: 12_000,
+    ttftMs: undefined,
+    usage: undefined,
+    tokensPerSecond: undefined,
+  } as const;
 
   it('folds the answered-question + aborted-divider pile at the timeline tail', async () => {
     const container = await renderTranscript([
@@ -2812,7 +2884,6 @@ describe('terminal pile-up folding (timeline tail)', () => {
       answeredQuestionBlock('question-q2', 'Ship the second part?'),
       abortedNoticeBlock('prompt-2'),
     ]);
-    // The whole terminal pile folds behind ONE summary row…
     const run = container.querySelector('[data-history-run]');
     expect(run?.getAttribute('data-history-run-member-ids')?.split(' ')).toEqual([
       'question-q1',
@@ -2820,10 +2891,8 @@ describe('terminal pile-up folding (timeline tail)', () => {
       'question-q2',
       'notice-aborted-prompt-2',
     ]);
-    // …leaving no answered-question line or aborted divider loose at the bottom.
     expect(container.querySelectorAll('[data-history-line]')).toHaveLength(0);
     expect(container.textContent).not.toContain('Prompt aborted');
-    // Expanding the run brings every member back, in order.
     await act(async () => {
       flushSync(() => {
         click(run!.querySelector('button')!);
@@ -2832,6 +2901,73 @@ describe('terminal pile-up folding (timeline tail)', () => {
     expect(container.querySelectorAll('[data-history-run-members] > div')).toHaveLength(4);
     expect(container.querySelectorAll('[data-history-line]')).toHaveLength(2);
     expect(container.textContent).toContain('Prompt aborted');
+  });
+
+  it('folds the full historical failure pile behind a danger summary and keeps the latest tail', async () => {
+    const before = Array.from({ length: 4 }, (_, index) => markerNoticeBlock(`before-${index}`));
+    const after = Array.from({ length: 12 }, (_, index) => markerNoticeBlock(`after-${index}`));
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'u-pile', text: 'run the old work', turnId: 't-old' }),
+        { ...assistantBlock('a-pile', 'old work ended'), turnId: 't-old' },
+        ...before,
+        failedNoticeBlock('old-1', 't-old-1'),
+        failedNoticeBlock('old-2', 't-old-2'),
+        failedNoticeBlock('old-3', 't-old-3'),
+        abortedNoticeBlock('old-abort', 't-old-4'),
+        failedNoticeBlock('old-4', 't-old-5'),
+        interruptionNoticeBlock('t-old-6'),
+        ...after,
+      ],
+      undefined,
+      { turnTail: stoppedTail },
+    );
+
+    const run = container.querySelector('[data-history-run]');
+    expect(run?.getAttribute('data-history-run-member-ids')?.split(' ')).toHaveLength(22);
+    expect(run?.getAttribute('data-history-run-failures')).toBe('4');
+    expect(run?.textContent).toContain('4 failed');
+    expect(container.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(0);
+    expect(container.textContent).not.toContain('Prompt failed');
+    expect(container.textContent).not.toContain('Prompt aborted');
+    expect(container.querySelector('[data-turn-tail-state="cancelled"]')).not.toBeNull();
+
+    await act(async () => {
+      flushSync(() => {
+        click(run!.querySelector('button')!);
+      });
+    });
+    expect(container.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(4);
+    expect(container.textContent).toContain('Prompt failed');
+    expect(container.textContent).toContain('Prompt aborted');
+    expect(container.textContent).toContain('You stopped this turn');
+    expect(container.querySelector('[data-turn-tail-state="cancelled"]')).not.toBeNull();
+  });
+
+  it('keeps the latest-turn failure and interruption marker unfolded beside the failed tail', async () => {
+    const currentTail = {
+      ...stoppedTail,
+      state: 'failed',
+      error: 'Provider rejected the request',
+    } as const;
+    const container = await renderTranscript(
+      [
+        { ...assistantBlock('a-current', 'latest attempt'), turnId: 't-latest' },
+        markerNoticeBlock('historical-neighbour'),
+        failedNoticeBlock('latest', 't-latest'),
+        abortedNoticeBlock('latest-aborted', 't-latest'),
+        interruptionNoticeBlock('t-latest'),
+      ],
+      undefined,
+      { turnTail: currentTail },
+    );
+
+    expect(container.querySelector('[data-history-run]')).toBeNull();
+    expect(container.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(1);
+    expect(container.textContent).toContain('Prompt failed');
+    expect(container.textContent).toContain('Prompt aborted');
+    expect(container.textContent).toContain('You stopped this turn');
+    expect(container.querySelector('[data-turn-tail-state="failed"]')).not.toBeNull();
   });
 
   it('keeps a lone aborted divider as a single line (fold threshold is two)', async () => {
@@ -2855,8 +2991,58 @@ describe('terminal pile-up folding (timeline tail)', () => {
       'question-q1',
       'notice-aborted-prompt-1',
     ]);
-    // The pending card keeps its full interactive form, outside the fold.
     expect(container.textContent).toContain('Pick one');
     expect(container.querySelector('[data-history-line]')).toBeNull();
+  });
+
+  it('projects a cron injection once at its turn anchor without leaking the envelope', async () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't-cron',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'cron', payload: { kind: 'cron_job', jobId: 'nightly' } },
+          prompt: '<cron-fire jobId="nightly">\n<prompt>\nRun the nightly report.\n</prompt>\n</cron-fire>',
+          startedAt: '2026-01-01T00:00:05.000Z',
+          endedAt: '2026-01-01T00:00:06.000Z',
+          steps: [],
+        },
+        {
+          kind: 'marker',
+          markerId: 'cron-fired-1',
+          marker: 'cron.fired',
+          payload: { origin: { kind: 'cron_job', jobId: 'nightly' } },
+          at: '2026-01-01T00:00:06.000Z',
+        },
+      ],
+    });
+    const cronSystem = blocks.find(
+      (block) => block.kind === 'system' && block.variant === 'cron_job',
+    );
+    expect(cronSystem).toMatchObject({
+      kind: 'system',
+      text: 'Run the nightly report.',
+      createdAt: '2026-01-01T00:00:05.000Z',
+      turnId: 't-cron',
+    });
+    expect(blocks).toHaveLength(1);
+    expect(blocks.some((block) => block.kind === 'user')).toBe(false);
+    expect(blocks.some((block) => block.id === 'agent-marker-cron-fired-1')).toBe(false);
+
+    const container = await renderTranscript(blocks);
+    expect(container.querySelector('[data-history-run]')).toBeNull();
+    expect(container.querySelectorAll('[data-system="cron_job"]')).toHaveLength(1);
+    expect(container.textContent).toContain('Scheduled job');
+    expect(container.textContent).not.toContain('Run the nightly report.');
+    expect(container.textContent).not.toContain('cron.fired');
+    expect(container.textContent).not.toContain('<cron-fire');
+    await act(async () => {
+      click(container.querySelector('[data-system="cron_job"] button')!);
+    });
+    expect(container.textContent).toContain('Run the nightly report.');
+    expect(container.textContent).not.toContain('<cron-fire');
   });
 });

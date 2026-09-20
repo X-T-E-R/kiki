@@ -146,7 +146,6 @@ const STRINGS = {
     workspaceRenameTitle: 'Rename workspace',
     removeButton: 'Unregister',
     save: 'Save',
-    queuedChip: 'Queued — starts when the current turn finishes',
     onePromptQueued: '1 prompt queued',
     queueBarPattern: /prompts? queued/,
     promptAborted: 'Prompt aborted',
@@ -193,7 +192,6 @@ const STRINGS = {
     systemReminder: 'System reminder',
     fromSubagentApprover: 'from subagent Approver',
     queuePromptAria: 'Queue prompt',
-    cancelQueuedAria: 'Cancel queued prompt',
     sendNow: 'Send now',
     removeQueued: 'Remove',
     clearQueue: 'Clear all',
@@ -330,7 +328,6 @@ const STRINGS = {
     workspaceRenameTitle: '重命名工作区',
     removeButton: '注销',
     save: '保存',
-    queuedChip: '已排队 — 当前轮次结束后开始',
     onePromptQueued: '1 条消息已排队',
     queueBarPattern: /条消息已排队/,
     promptAborted: '消息已中止',
@@ -377,7 +374,6 @@ const STRINGS = {
     systemReminder: '系统提醒',
     fromSubagentApprover: '来自子代理 Approver',
     queuePromptAria: '加入队列',
-    cancelQueuedAria: '取消排队的消息',
     sendNow: '立即追加',
     removeQueued: '移除',
     clearQueue: '全部清除',
@@ -956,24 +952,30 @@ async function scenarioGoalQueue() {
   await shot('goal-queue-recovery-hold');
   await hold.locator(`button:has-text("${S.queueRecoveredDismiss}")`).click();
   await page.waitForSelector('[data-recovery-hold]', { state: 'detached', timeout: 5000 });
-  // The strip collapses to a summary row at rest; expand it to reach the rows.
-  await page.click(`button[aria-label="${S.queueExpandAria}"]`);
-  // Each queued row carries its own append-timing segments, seeded differently.
-  const changelog = page.locator('[data-timing-picker="prompt_fx_gq_changelog"]');
-  const artifacts = page.locator('[data-timing-picker="prompt_fx_gq_artifacts"]');
+  // The strip defaults to expanded, so each queued row's own append-timing
+  // dropdown is reachable directly; the fixture seeds them differently.
+  const changelog = page.locator('select[data-timing-picker="prompt_fx_gq_changelog"]');
+  const artifacts = page.locator('select[data-timing-picker="prompt_fx_gq_artifacts"]');
   await changelog.waitFor({ timeout: 10_000 });
   await artifacts.waitFor({ timeout: 10_000 });
-  const checkedTiming = (picker) =>
-    picker.locator('[role="radio"][aria-checked="true"]').getAttribute('data-timing');
-  if ((await checkedTiming(changelog)) !== 'agent_idle') {
-    throw new Error(`changelog row must start on agent_idle, got "${await checkedTiming(changelog)}"`);
+  if ((await changelog.inputValue()) !== 'agent_idle') {
+    throw new Error(`changelog row must start on agent_idle, got "${await changelog.inputValue()}"`);
   }
-  if ((await checkedTiming(artifacts)) !== 'tasks_done') {
-    throw new Error(`artifacts row must start on tasks_done, got "${await checkedTiming(artifacts)}"`);
+  if ((await artifacts.inputValue()) !== 'tasks_done') {
+    throw new Error(`artifacts row must start on tasks_done, got "${await artifacts.inputValue()}"`);
   }
-  // Re-time the first row: the fixture bumps the revision and the segment moves.
-  await changelog.locator('[data-timing="tasks_done"]').click();
-  await changelog.locator('[data-timing="tasks_done"][aria-checked="true"]').waitFor({ timeout: 5000 });
+  // Re-time the first row: the select is React-controlled, so its value snaps
+  // back until the fixture's revision bump lands; the row action also disables
+  // the select while the round trip is pending. Poll for both settled signals.
+  await changelog.selectOption('tasks_done');
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('select[data-timing-picker="prompt_fx_gq_changelog"]');
+      return el !== null && !el.disabled && el.value === 'tasks_done';
+    },
+    undefined,
+    { timeout: 5000 },
+  );
   await shot('goal-queue-retimed');
   // Arm goal mode from the composer toolbar; the chip explains the next send.
   await page.click('[data-goal-mode-toggle]');
@@ -2399,19 +2401,19 @@ async function scenarioQueue() {
   await page.fill('textarea', 'B: wait your turn.');
   await page.click(`button[aria-label="${S.queuePromptAria}"]`);
   console.log('[flow] queued via the busy Send button');
-  // The parked prompt surfaces immediately: one user block + Queued chip + bar.
-  await page.waitForSelector(`text=${S.queuedChip}`, { timeout: 10_000 });
+  // The parked prompt surfaces in the queue bar only — the transcript stays
+  // clean until the prompt actually starts running.
+  await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 10_000 });
   const bBlocks = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: wait your turn.' });
-  if ((await bBlocks.count()) !== 1) throw new Error(`expected one B user block, saw ${await bBlocks.count()}`);
-  await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 5000 });
+  if ((await bBlocks.count()) !== 0) {
+    throw new Error(`queued prompt leaked into the transcript: ${await bBlocks.count()} block(s)`);
+  }
   await shot('queue-queued');
-  // Release A → B promotes to running; the chip and bar clear.
+  // Release A → B promotes to running: its user block lands in the transcript
+  // exactly once and the queue bar clears.
   await control({ action: 'release', session_id: 'session_fixture_queue' });
   await waitForText('B runs after A.');
-  await page.waitForSelector(`text=${S.queuedChip}`, {
-    state: 'detached',
-    timeout: 10_000,
-  });
+  await bBlocks.waitFor({ timeout: 10_000 });
   if ((await bBlocks.count()) !== 1) {
     const ids = await page.evaluate(() =>
       Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((n) => n.getAttribute('data-block-id')),
@@ -2421,17 +2423,25 @@ async function scenarioQueue() {
   }
   if ((await page.locator(`text=${S.queueBarPattern}`).count()) !== 0) throw new Error('queue bar still visible after promotion');
   await shot('queue-promoted');
-  // Cancelling a parked prompt keeps its block but drops the chip.
+  // Removing a parked prompt leaves no transcript trace at all: it never
+  // started, so there is no user block and no aborted marker.
   await sendPrompt('A: hold the floor.');
   await page.waitForSelector(`text=${S.working}`, { timeout: 10_000 });
   await sendPrompt('B: cancel me.');
-  await page.waitForSelector(`text=${S.queuedChip}`, { timeout: 10_000 });
-  await page.click(`button[aria-label="${S.cancelQueuedAria}"]`);
-  await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
-  const cancelled = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: cancel me.' });
-  if ((await cancelled.count()) !== 1) throw new Error('cancelled queued prompt lost its user block');
-  if ((await page.locator(`text=${S.queuedChip}`).count()) !== 0) {
-    throw new Error('Queued chip survived the cancellation');
+  await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 10_000 });
+  const cancelRow = page.locator('[data-queue-strip] li', { hasText: 'B: cancel me.' });
+  await cancelRow.locator(`button[aria-label="${S.removeQueued}"]`).click();
+  await cancelRow.locator(`button[aria-label="${S.queueRemoveConfirm}"]`).click();
+  await page.waitForSelector('[data-queue-strip]', { state: 'detached', timeout: 10_000 });
+  if ((await page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: cancel me.' }).count()) !== 0) {
+    const ids = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((n) => n.getAttribute('data-block-id')),
+    );
+    console.log('[debug] block ids at removal leak:', JSON.stringify(ids));
+    throw new Error('removed queued prompt leaked into the transcript');
+  }
+  if ((await page.locator(`text=${S.queueBarPattern}`).count()) !== 0) {
+    throw new Error('queue bar survived the removal');
   }
   await shot('queue-cancelled');
   await control({ action: 'release', session_id: 'session_fixture_queue' });
@@ -2451,23 +2461,30 @@ async function scenarioQueue() {
   if ((await strip.locator('li').count()) !== 2) {
     throw new Error(`expected 2 queue-strip rows, saw ${await strip.locator('li').count()}`);
   }
-  // Multi-prompt default: the list collapses behind the count header…
+  // Multi-prompt default: the rows stay expanded under the count header…
   const collapseToggle = strip.locator(`button[aria-label="${S.queueExpandAria}"]`);
+  if ((await collapseToggle.getAttribute('aria-expanded')) !== 'true') {
+    throw new Error('queue strip did not default to expanded with 2 prompts');
+  }
+  if ((await strip.locator('li:visible').count()) !== 2) {
+    throw new Error('expanded queue strip hid its rows');
+  }
+  // Let the rows' anim-enter fade finish before the shot.
+  await page.waitForTimeout(600);
+  await shot('queue-two-rows');
+  // …and the header collapses them on demand, then expands them again.
+  await collapseToggle.click();
   if ((await collapseToggle.getAttribute('aria-expanded')) !== 'false') {
-    throw new Error('queue strip did not default to collapsed with 2 prompts');
+    throw new Error('queue strip toggle did not collapse');
   }
   if ((await strip.locator('li:visible').count()) !== 0) {
     throw new Error('collapsed queue strip still shows rows');
   }
   await shot('queue-collapsed');
-  // …and the header expands it again for row actions.
   await collapseToggle.click();
   if ((await strip.locator('li:visible').count()) !== 2) {
-    throw new Error('queue strip toggle did not expand the rows');
+    throw new Error('queue strip toggle did not re-expand the rows');
   }
-  // Let the rows' anim-enter fade finish before the shot.
-  await page.waitForTimeout(600);
-  await shot('queue-two-rows');
 
   // Edit round-trip: the row's Edit parks its text in the composer (banner +
   // confirm icon + row badge), Enter replaces the prompt AT ITS SLOT.
@@ -2529,22 +2546,24 @@ async function scenarioQueue() {
   await shot('queue-reordered');
 
   // Send now (wire steer): B leaves the queue immediately while A keeps
-  // running; the strip drops to one row and B's transcript chip detaches.
-  // Chip queries are scoped to the transcript log: the strip header copy
-  // itself matches the chip's "…queued — starts when…" substring.
-  const transcriptChips = page.locator('[role="log"]').locator(`text=${S.queuedChip}`);
+  // running; the strip drops to one row and B's user block lands in the
+  // transcript. C stays parked without any transcript trace.
   await strip.locator('li', { hasText: 'B: steer me in.' })
     .locator(`button[aria-label="${S.sendNow}"]`)
     .click();
   await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 10_000 });
   if ((await strip.locator('li').count()) !== 1) throw new Error('steered prompt stayed in the strip');
-  if ((await transcriptChips.count()) !== 1) {
-    throw new Error('steered prompt kept its Queued chip');
+  const steeredBlock = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: steer me in.' });
+  await steeredBlock.waitFor({ timeout: 10_000 });
+  if ((await steeredBlock.count()) !== 1) throw new Error('steered prompt landed in the transcript twice');
+  const parkedBlock = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'C: clear me out. (edited)' });
+  if ((await parkedBlock.count()) !== 0) {
+    throw new Error('still-queued prompt leaked into the transcript');
   }
   await shot('queue-steered');
 
-  // Clear all empties the queue: confirm the dialog, then the strip and every
-  // Queued chip disappear.
+  // Clear all empties the queue: confirm the dialog, then the strip and the
+  // bar disappear; the cleared prompt never touches the transcript.
   await page.getByRole('button', { name: S.clearQueue }).click();
   const clearDialog = page.getByRole('alertdialog', { name: S.queueClearTitle });
   await clearDialog.waitFor({ timeout: 5000 });
@@ -2553,8 +2572,8 @@ async function scenarioQueue() {
   if ((await page.locator(`text=${S.queueBarPattern}`).count()) !== 0) {
     throw new Error('queue bar survived Clear all');
   }
-  if ((await transcriptChips.count()) !== 0) {
-    throw new Error('a Queued chip survived Clear all');
+  if ((await parkedBlock.count()) !== 0) {
+    throw new Error('cleared queued prompt leaked into the transcript');
   }
   await shot('queue-cleared');
 
@@ -2565,7 +2584,7 @@ async function scenarioQueue() {
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
   await sendPrompt('C: remove me too.');
   await page.waitForSelector(`text=${S.twoPromptsQueued}`, { timeout: 10_000 });
-  await strip.locator(`button[aria-label="${S.queueExpandAria}"]`).click();
+  // The strip defaults to expanded, so the row actions are directly reachable.
   const removeRow = strip.locator('li', { hasText: 'B: remove me.' });
   await removeRow.locator(`button[aria-label="${S.removeQueued}"]`).click();
   // Armed, not executed: both rows are still there and the button now asks.
@@ -2667,9 +2686,10 @@ async function scenarioBurst() {
     `[check] mid-burst prompt POST initiation: ${latency.toFixed(1)}ms (idle baseline ${idleLatency.toFixed(1)}ms)`,
   );
   // The second prompt parked behind the parked turn (A holds a release gate
-  // after the storm, so B deterministically lands in the server queue).
+  // after the storm, so B deterministically lands in the server queue). A
+  // queued prompt shows in the strip only — never in the transcript.
   try {
-    await page.waitForSelector(`text=${S.queuedChip}`, { timeout: 30_000 });
+    await page.waitForSelector('[data-queue-strip] li', { timeout: 30_000 });
   } catch (error) {
     const ids = await page.evaluate(() =>
       Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((n) => n.getAttribute('data-block-id')),

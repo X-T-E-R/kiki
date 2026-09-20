@@ -470,7 +470,7 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
   return undefined;
 }
 
-const HIDDEN_SPLICE_MARKERS = new Set(['undo', 'clear']);
+const HIDDEN_MARKERS = new Set(['undo', 'clear', 'cron.fired']);
 const MARKER_SUMMARY_KEYS = {
   compaction: 'transcript.marker.compaction',
   hook: 'transcript.marker.hook',
@@ -494,48 +494,43 @@ function markerToBlock(item: {
   at?: string;
   payload?: unknown;
 }): Block | undefined {
-  if (HIDDEN_SPLICE_MARKERS.has(item.marker)) return undefined;
+  if (HIDDEN_MARKERS.has(item.marker)) return undefined;
   const summaryKey = MARKER_SUMMARY_KEYS[item.marker as keyof typeof MARKER_SUMMARY_KEYS];
+  const payload = item.payload;
+  const payloadRecord = typeof payload === 'object' && payload !== null
+    ? payload as Record<string, unknown>
+    : undefined;
+  const base = {
+    kind: 'notice' as const,
+    id: `agent-marker-${item.markerId}`,
+    tone: 'neutral' as const,
+    createdAt: item.at,
+    turnId: normalizeTurnId(payloadRecord?.['turnId']),
+  };
 
   // Skill activation payloads may contain the complete loaded skill document.
   // The marker is timeline chrome, not a second copy of that document.
   if (item.marker === 'skill' && summaryKey !== undefined) {
     return {
-      kind: 'notice',
-      id: `agent-marker-${item.markerId}`,
+      ...base,
       text: item.marker,
-      tone: 'neutral',
       i18n: { key: summaryKey },
     };
   }
 
-  const payload = item.payload;
   const text =
     typeof payload === 'string'
       ? payload
-      : typeof payload === 'object' && payload !== null
-        ? typeof (payload as { text?: unknown }).text === 'string'
-          ? (payload as { text: string }).text
-          : typeof (payload as { message?: unknown }).message === 'string'
-            ? (payload as { message: string }).message
-            : undefined
-        : undefined;
-  if (text !== undefined && text.trim() !== '') {
-    return { kind: 'notice', id: `agent-marker-${item.markerId}`, text, tone: 'neutral' };
-  }
-  if (summaryKey === undefined) {
-    return {
-      kind: 'notice',
-      id: `agent-marker-${item.markerId}`,
-      text: item.marker,
-      tone: 'neutral',
-    };
-  }
+      : typeof payloadRecord?.['text'] === 'string'
+        ? payloadRecord['text']
+        : typeof payloadRecord?.['message'] === 'string'
+          ? payloadRecord['message']
+          : undefined;
+  if (text !== undefined && text.trim() !== '') return { ...base, text };
+  if (summaryKey === undefined) return { ...base, text: item.marker };
   return {
-    kind: 'notice',
-    id: `agent-marker-${item.markerId}`,
+    ...base,
     text: item.marker,
-    tone: 'neutral',
     i18n: { key: summaryKey },
   };
 }
@@ -667,7 +662,7 @@ function blockTimelineMs(block: Block): number | undefined {
     case 'shell':
       return block.startedAt !== undefined && block.startedAt > 0 ? block.startedAt : undefined;
     case 'notice':
-      return undefined;
+      return timestampMs(block.createdAt);
   }
 }
 
@@ -692,6 +687,7 @@ function blockTurnId(block: Block): string | undefined {
     case 'skill':
     case 'tool':
     case 'shell':
+    case 'notice':
       return block.turnId;
     case 'subagent':
       return block.parentTurnId;
@@ -701,8 +697,6 @@ function blockTurnId(block: Block): string | undefined {
       return normalizeTurnId(block.request.turn_id);
     case 'question':
       return normalizeTurnId(block.request.turn_id);
-    case 'notice':
-      return undefined;
   }
 }
 
@@ -1558,16 +1552,24 @@ function mergeTranscriptPromptBlocks(
       const isFailed = prompt.status === 'failed';
       const noticeId = isFailed ? `notice-failed-${prompt.promptId}` : `notice-aborted-${prompt.promptId}`;
       if (!next.some((block) => block.id === noticeId)) {
-        next = [
-          ...next,
-          {
-            kind: 'notice',
-            id: noticeId,
-            text: isFailed ? 'Prompt failed' : 'Prompt aborted',
-            tone: isFailed ? 'danger' : 'neutral',
-            i18n: { key: isFailed ? 'notice.promptFailed' : 'notice.promptAborted' },
-          },
-        ];
+        const promptUser = next.find(
+          (block): block is UserBlock =>
+            block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
+        ) ?? previous.find(
+          (block): block is UserBlock =>
+            block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
+        );
+        const notice: NoticeBlock = {
+          kind: 'notice',
+          id: noticeId,
+          text: isFailed ? 'Prompt failed' : 'Prompt aborted',
+          tone: isFailed ? 'danger' : 'neutral',
+          createdAt: prompt.finishedAt ?? prompt.createdAt,
+          turnId: promptUser?.turnId,
+          i18n: { key: isFailed ? 'notice.promptFailed' : 'notice.promptAborted' },
+        };
+        next = [...next];
+        insertByTimeline(next, notice);
       }
       continue;
     }

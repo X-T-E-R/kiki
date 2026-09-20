@@ -56,8 +56,9 @@ import {
   HistoryLine,
   HistoryRunRow,
   historyRunsEqual,
-  isAbortedPromptNotice,
+  isInterruptionNotice,
   isMarkerNotice,
+  isTerminalPromptNotice,
   type GroupedDisplayNode,
 } from './ActivityHistory';
 import { FloorNavRail } from './FloorNavRail';
@@ -186,7 +187,7 @@ export interface TranscriptRowActions {
 
 const UserMessage = memo(function UserMessage({
   block,
-  onCancelQueued,
+  onCancelQueued: _onCancelQueued,
   rowActions,
 }: {
   block: UserBlock;
@@ -273,28 +274,9 @@ const UserMessage = memo(function UserMessage({
           <span aria-hidden className="text-[9px]">{expanded ? '▴' : '▾'}</span>
         </button>
       ) : null}
-      {block.promptStatus === 'queued' || block.promptStatus === 'blocked' ? (
-        <span
-          className={`mt-1 mr-1 flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] font-medium ${
-            block.promptStatus === 'queued'
-              ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
-              : 'border-danger/30 bg-danger/5 text-danger'
-          }`}
-        >
-          {block.promptStatus === 'queued' ? t('transcript.queuedChip') : t('transcript.blocked')}
-          {block.promptStatus === 'queued' &&
-          block.promptId !== undefined &&
-          onCancelQueued !== undefined ? (
-            <button
-              type="button"
-              aria-label={t('transcript.cancelQueuedAria')}
-              title={t('transcript.cancelQueuedTitle')}
-              onClick={() => { onCancelQueued(block.promptId!); }}
-              className="rounded-full text-amber-ink/70 transition-colors hover:text-danger"
-            >
-              ×
-            </button>
-          ) : null}
+      {block.promptStatus === 'blocked' ? (
+        <span className="mt-1 mr-1 flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/5 px-2 py-0.5 text-[10.5px] font-medium text-danger">
+          {t('transcript.blocked')}
         </span>
       ) : null}
     </div>
@@ -1086,17 +1068,22 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
 }
 
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
-  const { t } = useI18n();
+  const { t, time } = useI18n();
   const text = block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
+  const title = time.absoluteTime(block.createdAt);
   if (block.tone === 'danger') {
     return (
-      <div className="anim-enter rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-[12px] text-danger">
+      <div
+        data-notice-tone={block.tone}
+        title={title}
+        className="anim-enter rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-[12px] text-danger"
+      >
         {text}
       </div>
     );
   }
   return (
-    <div className="anim-enter flex items-center gap-3 py-1">
+    <div data-notice-tone={block.tone} title={title} className="anim-enter flex items-center gap-3 py-1">
       <span className="h-px flex-1 bg-hairline" />
       <span className="text-[11px] text-ink-faint">{text}</span>
       <span className="h-px flex-1 bg-hairline" />
@@ -1334,14 +1321,6 @@ function displayNodeTurnId(node: GroupedDisplayNode): string | undefined {
 }
 
 /**
- * Compact-history predicate: which nodes may fold into a history run. Only
- * TERMINAL facts qualify — resolved approvals/questions, terminal prompt
- * dividers, goal/plan markers, settled subagent lifecycle events and
- * compact-form subagent cards. Failed or cancelled entries stay individually
- * visible (never swallowed); pending interactions keep their full cards and
- * break the run.
- */
-/**
  * Background-task terminal notifications project as `system` blocks (variant
  * 'task') whose text leads with the producer's title line — `Background agent
  * failed`, a format agent-core owns — or, for stripped-XML history, carries a
@@ -1359,6 +1338,7 @@ function isCompactHistoryNode(
   node: DisplayNode,
   forest: AgentForest | undefined,
   cardForms: ReadonlyMap<string, SubagentCardForm>,
+  visibleTailTurnId: string | undefined,
 ): boolean {
   switch (node.kind) {
     case 'approval':
@@ -1366,9 +1346,19 @@ function isCompactHistoryNode(
     case 'question':
       return node.outcome !== undefined;
     case 'notice':
-      return isMarkerNotice(node) || isAbortedPromptNotice(node);
+      if (
+        visibleTailTurnId !== undefined &&
+        node.turnId === visibleTailTurnId &&
+        (isTerminalPromptNotice(node) || isInterruptionNotice(node))
+      ) {
+        return false;
+      }
+      return isMarkerNotice(node) || isTerminalPromptNotice(node);
     case 'system':
-      return node.variant === 'task' && !isFailedTaskNotificationText(node.text);
+      return (
+        node.variant === 'cron_job' ||
+        (node.variant === 'task' && !isFailedTaskNotificationText(node.text))
+      );
     case 'subagent-event':
       return (
         node.event === 'spawned' ||
@@ -1944,7 +1934,11 @@ export function Transcript({
 }) {
   const { t } = useI18n();
   const { blocks, loaded, loadError } = state;
-  const nodes = useMemo(() => groupBlocks(blocks), [blocks]);
+  const timelineBlocks = useMemo(
+    () => blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
+    [blocks],
+  );
+  const nodes = useMemo(() => groupBlocks(timelineBlocks), [timelineBlocks]);
   // The forest prop is rebuilt per publish upstream; stabilize it by content
   // so row memos survive unrelated deltas (Finding: forest identity).
   const stableForest = useStableForest(forest);
@@ -1960,12 +1954,16 @@ export function Transcript({
       return next;
     });
   }, []);
-  // Fold runs of consecutive terminal history entries (resolved interactions,
-  // markers, settled lifecycle events, compact subagent cards) into one
-  // expandable summary row. Runs never span a user message or a failure.
+  const visibleTailTurnId = state.busy ? undefined : state.turnTail?.turnId;
+  // Fold historical terminal entries into one expandable summary row. Failures
+  // keep a danger summary; terminal notices for the visible latest tail remain
+  // standalone so the current outcome is never hidden.
   const groupedNodes = useMemo(
-    () => groupHistoryRuns(nodes, (node) => isCompactHistoryNode(node, stableForest, cardForms)),
-    [nodes, stableForest, cardForms],
+    () => groupHistoryRuns(
+      nodes,
+      (node) => isCompactHistoryNode(node, stableForest, cardForms, visibleTailTurnId),
+    ),
+    [nodes, stableForest, cardForms, visibleTailTurnId],
   );
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
@@ -2197,7 +2195,7 @@ export function Transcript({
     );
   }
 
-  if (blocks.length === 0 && !state.busy) {
+  if (timelineBlocks.length === 0 && !state.busy) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
         <Wordmark size="lg" />
@@ -2268,7 +2266,7 @@ export function Transcript({
         </div>
       </div>
       <FloorNavRail
-        blocks={blocks}
+        blocks={timelineBlocks}
         nodeIndexes={nodeIndexes}
         scrollRef={scrollRef}
         virtualizer={virtualizer}

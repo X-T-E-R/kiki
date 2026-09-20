@@ -2444,6 +2444,90 @@ describe('TranscriptWireAdapter', () => {
     const full = replay([...prefix, ...tail]);
     expect(resumed.snapshot().prompts).toEqual(full.snapshot().prompts);
   });
+
+  it('hides non-user-origin prompts from replay, tail records and checkpoint restore', () => {
+    const records: TranscriptWireRecord[] = [
+      {
+        type: 'prompt.enqueued',
+        schemaVersion: 1,
+        promptId: 'cron1',
+        userMessageId: 'mc1',
+        createdAt: '2026-06-09T00:00:00.000Z',
+        message: {
+          id: 'mc1',
+          origin: { kind: 'cron_job', jobId: 'j1', cron: '* * * * *', recurring: true, coalescedCount: 0, stale: false },
+          content: [{ type: 'text', text: '<cron-fire jobId="j1"><prompt>nightly</prompt></cron-fire>' }],
+        },
+        alreadyMaterialized: false,
+        appendTiming: 'agent_idle',
+        revision: 1,
+        queueIndex: 0,
+        time: 1_000,
+      },
+      {
+        type: 'prompt.launch_committed',
+        launchId: 'launch-cron1',
+        promptId: 'cron1',
+        revision: 2,
+        committedAt: '2026-06-09T00:00:01.000Z',
+        time: 1_001,
+      },
+      {
+        type: 'prompt.enqueued',
+        schemaVersion: 1,
+        promptId: 'u1',
+        userMessageId: 'mu1',
+        createdAt: '2026-06-09T00:00:02.000Z',
+        message: { id: 'mu1', content: [{ type: 'text', text: 'visible' }] },
+        alreadyMaterialized: false,
+        appendTiming: 'agent_idle',
+        revision: 1,
+        queueIndex: 1,
+        time: 1_002,
+      },
+      {
+        type: 'prompt.moved',
+        promptId: 'u1',
+        targetIndex: 0,
+        queuedPromptIds: ['cron1', 'u1'],
+        movedAt: '2026-06-09T00:00:03.000Z',
+        time: 1_003,
+      },
+      {
+        type: 'prompt.completed',
+        promptId: 'cron1',
+        finishedAt: '2026-06-09T00:00:04.000Z',
+        reason: 'completed',
+        time: 1_004,
+      },
+    ];
+    const transcript = replay(records);
+    const prompts = new Map(transcript.snapshot().prompts.map((entry) => [entry.promptId, entry]));
+    expect(prompts.has('cron1')).toBe(false);
+    expect(prompts.get('u1')).toMatchObject({ status: 'queued', queuePosition: 1 });
+
+    const sourceAdapter = new TranscriptWireAdapter('main');
+    const source = new AgentTranscriptDraft('main');
+    const sourceReducer = new TranscriptFactReducer(source);
+    for (const record of records) sourceReducer.apply(sourceAdapter.add(record));
+
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(sourceAdapter.checkpoint());
+    const resumed = new AgentTranscriptDraft('main');
+    resumed.seed(source.snapshot());
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.apply(
+      resumedAdapter.add({
+        type: 'prompt.aborted',
+        promptId: 'cron1',
+        abortedAt: '2026-06-09T00:00:05.000Z',
+        beforeStart: false,
+        time: 1_005,
+      }),
+    );
+    const resumedPrompts = new Map(resumed.snapshot().prompts.map((entry) => [entry.promptId, entry]));
+    expect(resumedPrompts.has('cron1')).toBe(false);
+  });
 });
 
 type DifferentialCommand =
