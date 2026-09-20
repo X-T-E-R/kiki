@@ -4,7 +4,6 @@ import type { KimiConfig, ModelAlias, ProviderType } from '#/config';
 import {
   catalogBaseUrl,
   catalogProviderModels,
-  inferWireType,
   resolveCatalogImport,
   type Catalog,
   type CatalogImportInvalidReason,
@@ -13,7 +12,7 @@ import {
   type CatalogProviderEntry,
 } from './catalog-base';
 
-export { catalogBaseUrl, catalogProviderModels, inferWireType, resolveCatalogImport };
+export { catalogBaseUrl, catalogProviderModels, resolveCatalogImport };
 export type { CatalogImportInvalidReason, CatalogImportResolution };
 export type { Catalog, CatalogModel, CatalogProviderEntry };
 

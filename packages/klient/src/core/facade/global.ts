@@ -264,12 +264,6 @@ export interface GlobalAuthFacade {
   flow(provider?: string): Promise<OAuthFlowSnapshot | undefined>;
   cancelLogin(provider?: string): Promise<OAuthLoginCancelResponse>;
   logout(provider?: string): Promise<OAuthLogoutResponse>;
-  /**
-   * @deprecated Use `kosong.refreshProviders({ scope: 'oauth' })` — the
-   * kosong facade owns provider-model refresh; this alias remains for one
-   * release cycle.
-   */
-  refreshProviderModels(): Promise<RefreshProviderModelsResponse>;
 }
 
 export interface GlobalFlagsFacade {
@@ -642,8 +636,6 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         call('oauthService', 'cancelLogin', [provider]) as Promise<OAuthLoginCancelResponse>,
       logout: (provider) =>
         call('oauthService', 'logout', [provider]) as Promise<OAuthLogoutResponse>,
-      refreshProviderModels: () =>
-        call('oauthService', 'refreshOAuthProviderModels', []) as Promise<RefreshProviderModelsResponse>,
     },
 
     flags: {

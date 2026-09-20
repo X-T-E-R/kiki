@@ -231,16 +231,6 @@ function resolveCatalogWire(entry: CatalogProviderEntry): ProviderType | undefin
   return 'openai';
 }
 
-/**
- * @deprecated Use {@link resolveCatalogImport}. This compatibility wrapper
- * answers only the wire (`undefined` when the entry is not importable) and
- * is kept until the next major release for downstream consumers of the
- * previous public API.
- */
-export function inferWireType(entry: CatalogProviderEntry): ProviderType | undefined {
-  return resolveCatalogWire(entry);
-}
-
 function inferDeclaredWireType(entry: CatalogProviderEntry): ProviderType | undefined {
   if (isWireType(entry.type)) return entry.type;
   const npm = (entry.npm ?? '').toLowerCase();
