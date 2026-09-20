@@ -1,8 +1,8 @@
-# @moonshot-ai/kaos
+# @kiki/kaos
 
-Execution environment abstraction used by Kimi Code.
+Execution environment abstraction used by Kiki.
 
-Part of the [Kimi Code](https://github.com/MoonshotAI/kimi-code) monorepo.
+Part of the [Kiki](https://github.com/X-T-E-R/kiki) monorepo.
 
 See the main repository for documentation, issues, and contribution guidelines.
 

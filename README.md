@@ -1,27 +1,30 @@
-# Kimi Code CLI
+# Kiki
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://moonshotai.github.io/kimi-code/en/) <br>
-[Documentation](https://moonshotai.github.io/kimi-code/en/) · [Issues](https://github.com/MoonshotAI/kimi-code/issues) · [中文](README.zh-CN.md)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/en/) <br>
+[Documentation](https://x-t-e-r.github.io/kiki/en/) · [Issues](https://github.com/X-T-E-R/kiki/issues) · [中文](README.zh-CN.md)
 
-![Demo of using Kimi Code](./docs/media/intro.gif)
+## What is Kiki
 
-## What is Kimi Code CLI
+Kiki is a local agent workspace: it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It ships in three forms that share one daemon and one session store — a desktop app, a terminal CLI/TUI, and a browser UI served by the local server. It works out of the box with Moonshot AI's Kimi models and can also be configured to use other compatible providers.
 
-Kimi Code CLI is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It works out of the box with Moonshot AI’s Kimi models and can also be configured to use other compatible providers.
+Kiki began as a fork of [Kimi Code](https://github.com/MoonshotAI/kimi-code) and is now developed independently.
 
 ## Install
 
-Download the appropriate build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases).
+Download the appropriate build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases):
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Kimi Code CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
+- **Desktop app (recommended):** `Kiki_*_x64-setup.exe` for Windows.
+- **CLI:** the `kiki` executable for your platform, from the `kiki-v<version>` release assets.
 
-Then, run it with a new shell session:
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because the Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
+
+Then verify it with a new shell session:
 
 ```sh
-kimi --version
+kiki --version
 ```
 
-For npm install and uninstall, see [Getting Started](https://moonshotai.github.io/kimi-code/en/guides/getting-started).
+The CLI is not published to npm; use the release artifacts, or run from source while developing. See [Installation](https://x-t-e-r.github.io/kiki/en/getting-started/installation) for update channels and details.
 
 ## Quick Start
 
@@ -29,10 +32,11 @@ Open a project and start the interactive UI:
 
 ```sh
 cd your-project
-kimi
+kiki        # terminal UI
+kiki web    # browser UI
 ```
 
-On first launch, run `/login` inside Kimi Code CLI and choose either Kimi Code OAuth or a Moonshot AI Open Platform API key. After login, try your first task:
+On first launch, run `/login` and choose either Kimi Code OAuth or a Moonshot AI Open Platform API key. After login, try your first task:
 
 ```
 Take a look at this project and explain its main directories.
@@ -40,28 +44,31 @@ Take a look at this project and explain its main directories.
 
 ## Key Features
 
-- **Single-binary distribution.** Install with one command: no Node.js setup, PATH gymnastics, or global module conflicts.
-- **Blazing-fast startup.** The TUI is ready in milliseconds, so starting a session never feels heavy.
-- **Purpose-built TUI.** A carefully tuned interface, optimized end to end for long, focused agent sessions.
-- **Video input.** Drop a screen recording or demo clip into the chat and let the agent watch what is hard to describe in words — turn a reference clip into a LUT, a long video into a short, a screen recording into working code, and more.
-- **AI-native MCP configuration.** Add, edit, and authenticate Model Context Protocol servers conversationally with `/kiki-ops Configure MCP`, without hand-editing JSON.
+- **Three forms, one workspace.** Desktop app, terminal TUI, and browser UI share the same daemon, sessions, and configuration — switch between them freely.
+- **Subagents for focused, parallel work.** Dispatch subagents in isolated contexts while keeping the main conversation clean, and watch them live in the agent panel.
+- **Background tasks and message queue.** Long-running work detaches into background tasks; messages sent while the agent is busy queue up with per-message timing control.
+- **Goal mode.** Start a message with `/goal` to pin an objective the agent pursues across turns, with pause, edit, and cancel controls.
+- **Task board.** Track requirements and tasks per workspace, linked to the sessions that work on them.
+- **Scheduled tasks.** Cron jobs fire prompts into sessions on a schedule, managed from a global panel.
+- **Provider and model management.** Configure providers, models, and thinking effort from the settings UI; Kimi works out of the box.
+- **Video input.** Drop a screen recording or demo clip into the chat and let the agent watch what is hard to describe in words.
+- **AI-native MCP configuration.** Add, edit, and authenticate Model Context Protocol servers conversationally with `/kiki-ops`, without hand-editing JSON.
 - **Rich plugin ecosystem.** Install skills, MCP servers, and data sources from the marketplace or any GitHub repo, with each install's trust level surfaced up front.
-- **Subagents for focused, parallel work.** Dispatch built-in `coder`, `explore`, and `plan` subagents in isolated contexts while keeping the main conversation clean.
 - **Lifecycle hooks.** Run local commands at key points to gate risky tool calls, audit decisions, trigger desktop notifications, or connect to your own automation.
-- **Editor & IDE integration (ACP).** Drive a Kimi Code CLI session straight from Zed, JetBrains, or any [Agent Client Protocol](https://agentclientprotocol.com/) client with `kimi acp`.
+- **Editor & IDE integration (ACP).** Drive a Kiki session straight from Zed, JetBrains, or any [Agent Client Protocol](https://agentclientprotocol.com/) client with `kiki acp`.
 
 ## Use it in your editor (ACP)
 
-Kimi Code CLI speaks the [Agent Client Protocol](https://agentclientprotocol.com/), so ACP-compatible editors and IDEs (Zed, JetBrains, …) can drive a session over stdio. Log in once, then point your editor at the `kimi acp` subcommand — no extra login needed.
+Kiki speaks the [Agent Client Protocol](https://agentclientprotocol.com/), so ACP-compatible editors and IDEs (Zed, JetBrains, …) can drive a session over stdio. Log in once, then point your editor at the `kiki acp` subcommand — no extra login needed.
 
 For Zed, add this to `~/.config/zed/settings.json`:
 
 ```json
 {
   "agent_servers": {
-    "Kimi Code CLI": {
+    "Kiki": {
       "type": "custom",
-      "command": "kimi",
+      "command": "kiki",
       "args": ["acp"],
       "env": {}
     }
@@ -69,24 +76,24 @@ For Zed, add this to `~/.config/zed/settings.json`:
 }
 ```
 
-Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://moonshotai.github.io/kimi-code/en/guides/ides) for JetBrains setup and troubleshooting, and the [`kimi acp` reference](https://moonshotai.github.io/kimi-code/en/reference/kimi-acp) for the full capability matrix.
+Then open a new conversation in Zed's Agent panel. See the [ACP guide](https://x-t-e-r.github.io/kiki/en/server/acp) for JetBrains setup and troubleshooting.
 
 ## Docs
 
-- [Getting Started](https://moonshotai.github.io/kimi-code/en/guides/getting-started)
-- [Interaction and approvals](https://moonshotai.github.io/kimi-code/en/guides/interaction)
-- [Sessions](https://moonshotai.github.io/kimi-code/en/guides/sessions)
-- [Using in IDEs (ACP)](https://moonshotai.github.io/kimi-code/en/guides/ides)
-- [Configuration](https://moonshotai.github.io/kimi-code/en/configuration/config-files)
-- [Command reference](https://moonshotai.github.io/kimi-code/en/reference/kimi-command)
+- [Installation](https://x-t-e-r.github.io/kiki/en/getting-started/installation)
+- [First launch](https://x-t-e-r.github.io/kiki/en/getting-started/first-launch)
+- [Desktop app](https://x-t-e-r.github.io/kiki/en/getting-started/desktop-app)
+- [Interaction and approvals](https://x-t-e-r.github.io/kiki/en/guides/interaction)
+- [Configuration](https://x-t-e-r.github.io/kiki/en/configuration/config-files)
+- [Command reference](https://x-t-e-r.github.io/kiki/en/reference/command)
 
 ## Develop
 
 Requirements: Node.js ≥ 24.15.0, pnpm 10.33.0.
 
 ```sh
-git clone https://github.com/MoonshotAI/kimi-code.git
-cd kimi-code
+git clone https://github.com/X-T-E-R/kiki.git
+cd kiki
 pnpm install
 ```
 
@@ -102,12 +109,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 
 ## Community
 
-- [Issues](https://github.com/MoonshotAI/kimi-code/issues)
+- [Issues](https://github.com/X-T-E-R/kiki/issues)
 - For security vulnerabilities, see [SECURITY.md](SECURITY.md).
 
 ## Acknowledgements
 
-Our TUI is built on top of [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui). We thank the authors of `pi-tui` for their valuable work.
+Kiki's TUI is built on top of [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui), and the project began as a fork of [Kimi Code](https://github.com/MoonshotAI/kimi-code). We thank the authors of both for their valuable work.
 
 ## License
 

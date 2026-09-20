@@ -23,11 +23,11 @@ Start at the owner for the feature, then follow its links to implementation and 
 | Area | Maintainer entry | Stable or user-facing view |
 | --- | --- | --- |
 | Agent engine, scopes, services, features | [`packages/agent-core-v2/AGENTS.md`](packages/agent-core-v2/AGENTS.md) | [`packages/agent-core-v2/docs/features.md`](packages/agent-core-v2/docs/features.md), [`packages/agent-core-v2/docs/service-design.md`](packages/agent-core-v2/docs/service-design.md) |
-| kap-server REST, WebSocket, and debug surfaces | [`packages/kap-server/AGENTS.md`](packages/kap-server/AGENTS.md) | [`packages/kap-server/README.md`](packages/kap-server/README.md), [`docs/en/reference/server-api.md`](docs/en/reference/server-api.md) |
+| kap-server REST, WebSocket, and debug surfaces | [`packages/kap-server/AGENTS.md`](packages/kap-server/AGENTS.md) | [`packages/kap-server/README.md`](packages/kap-server/README.md), [`docs/en/server/rest-api.md`](docs/en/server/rest-api.md) |
 | Klient contracts and transports | [`packages/klient/AGENTS.md`](packages/klient/AGENTS.md) | [`packages/klient/README.md`](packages/klient/README.md) |
 | Transcript contract and projections | [`packages/transcript/AGENTS.md`](packages/transcript/AGENTS.md) | [`docs/en/guides/sessions.md`](docs/en/guides/sessions.md) |
-| CLI and terminal UI | [`apps/kimi-code/AGENTS.md`](apps/kimi-code/AGENTS.md) | [`apps/kimi-code/README.md`](apps/kimi-code/README.md), [`docs/en/reference/kimi-command.md`](docs/en/reference/kimi-command.md) |
-| Kiki GUI runtime client | [`apps/kiki-gui/package.json`](apps/kiki-gui/package.json) and adjacent source/tests | [`docs/en/guides/kiki-runtime.md`](docs/en/guides/kiki-runtime.md), [`apps/kiki-gui/docs/server-heartbeat.md`](apps/kiki-gui/docs/server-heartbeat.md) |
+| CLI and terminal UI | [`apps/kimi-code/AGENTS.md`](apps/kimi-code/AGENTS.md) | [`apps/kimi-code/README.md`](apps/kimi-code/README.md), [`docs/en/reference/command.md`](docs/en/reference/command.md) |
+| Kiki GUI runtime client | [`apps/kiki-gui/package.json`](apps/kiki-gui/package.json) and adjacent source/tests | [`docs/en/server/local-server.md`](docs/en/server/local-server.md), [`apps/kiki-gui/docs/server-heartbeat.md`](apps/kiki-gui/docs/server-heartbeat.md) |
 | Embedded persistence | [`packages/minidb/AGENTS.md`](packages/minidb/AGENTS.md) | [`packages/minidb/README.md`](packages/minidb/README.md) |
 
 For a new deep feature, add or update the nearest owner entry rather than growing this table into a second architecture document.

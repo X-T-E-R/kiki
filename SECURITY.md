@@ -10,7 +10,7 @@ Please do not open a public issue for suspected security vulnerabilities. Report
 
 Include:
 
-- Affected version (output of `kimi --version`)
+- Affected version (output of `kiki --version`)
 - Reproduction steps
 - Impact assessment
 - Any suggested mitigation

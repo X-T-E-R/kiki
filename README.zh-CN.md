@@ -1,41 +1,42 @@
-# Kimi Code CLI
+# Kiki
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://moonshotai.github.io/kimi-code/zh/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/zh/) <br>
+[文档](https://x-t-e-r.github.io/kiki/zh/) · [问题反馈](https://github.com/X-T-E-R/kiki/issues) · [English](README.md)
 
-[Documentation](https://moonshotai.github.io/kimi-code/zh/) · [Issues](https://github.com/MoonshotAI/kimi-code/issues) · [English](README.md)
+## Kiki 是什么
 
+Kiki 是一个本地 agent 工作台：它能读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步。它以三种形态提供——桌面应用、终端 CLI/TUI、本地服务器承载的浏览器 UI——三者共享同一个守护进程和同一份会话数据。Kiki 开箱即用地支持 Moonshot AI 的 Kimi 模型，也可以配置其他兼容供应商。
 
-![Kimi Code 的使用演示](./docs/media/intro.gif)
-
-
-## 什么是 Kimi Code CLI
-
-Kimi Code CLI 是一个运行在终端里的 AI 编程 agent，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。开箱即用对接 Moonshot AI 的 Kimi 模型，也可指向其他兼容厂商。
+Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，现已独立发展。
 
 ## 安装
 
-请从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载适合当前平台的构建。
+从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载对应构建：
 
-> Windows 用户首次启动前还需要安装 [Git for Windows](https://gitforwindows.org/)，Kimi Code CLI 会使用其中的 Git Bash 作为 Shell 环境。如果 Git Bash 安装在非标准路径，请把 `KIMI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
+- **桌面应用（推荐）**：Windows 安装包 `Kiki_*_x64-setup.exe`。
+- **CLI**：在 `kiki-v<版本号>` 的 Release 资产中选择对应平台的 `kiki` 可执行文件。
 
-随后在新的终端会话中运行：
+> 在 Windows 上，首次启动前请先安装 [Git for Windows](https://gitforwindows.org/)，因为 Kiki CLI 使用自带的 Git Bash 作为 shell 环境。如果 Git Bash 安装在自定义位置，请将 `KIMI_SHELL_PATH` 设置为 `bash.exe` 的绝对路径。
+
+然后在一个新的终端会话中验证：
 
 ```sh
-kimi --version
+kiki --version
 ```
 
-npm 安装、升级、卸载方式，见[快速上手](https://moonshotai.github.io/kimi-code/zh/guides/getting-started)。
+CLI 未发布到 npm；请使用 Release 产物，或在开发时从源码运行。更新渠道等细节见[安装](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)。
 
-## 快速开始
+## 快速上手
 
 进入项目目录并启动交互界面：
 
 ```sh
 cd your-project
-kimi
+kiki        # 终端界面
+kiki web    # 浏览器界面
 ```
 
-首次启动时，在 Kimi Code CLI 里输入 `/login`，选择 Kimi Code OAuth 或 Moonshot AI Open Platform API 密钥登录。登录完成后，可以先让它熟悉项目：
+首次启动后，运行 `/login`，选择 Kimi Code OAuth 或 Moonshot AI 开放平台的 API 密钥。登录后试试第一个任务：
 
 ```
 帮我看一下这个项目的目录结构，简单介绍一下每个目录是做什么的
@@ -43,29 +44,31 @@ kimi
 
 ## 核心特性
 
-- **二进制发行，零环境依赖** 一行命令安装，不需要预装 Node.js，不用折腾 PATH，也不会和全局模块冲突。
-- **极速启动** TUI 在毫秒级就绪，开一个新会话没有任何心智负担。
-- **精致的 TUI 体验** 端到端打磨的交互界面，专为长时间、专注的 Agent 会话优化。
-- **视频也能输入** 把屏幕录像、演示视频拖进对话，让 Agent 看那些难以用文字描述的东西——把参考片段做成 LUT、把长视频剪成短视频、把录屏变成代码，等等。
-- **AI-native 的 MCP 配置** 通过 `/kiki-ops 帮我配置 MCP` 对话式添加、编辑、认证 MCP 服务器，无需手写 JSON。
-- **丰富的插件生态** 从插件市场或任意 GitHub 仓库安装 skills、MCP 服务器和数据源，每次安装都会标明来源的信任级别。
-- **子 Agent 聚焦并行工作** 内置 `coder`、`explore`、`plan` 子 Agent 在隔离上下文中处理子任务，主对话保持清爽。
-- **生命周期 hooks** 在关键节点执行本地命令：拦截高风险工具调用、审计决策、发送桌面通知，或对接你自己的自动化脚本。
-- **编辑器 / IDE 集成（ACP）** 用 `kimi acp` 让 Zed、JetBrains 等任意 [Agent Client Protocol](https://agentclientprotocol.com/) 客户端直接驱动会话。
+- **三种形态，一个工作台**。桌面应用、终端 TUI 与浏览器 UI 共享同一个守护进程、会话与配置，可随时切换。
+- **子代理并行作业**。在隔离上下文中派发子代理处理子任务，主对话保持清爽，并可在 agent 面板实时观察。
+- **后台任务与消息队列**。耗时工作可转为后台任务；agent 忙碌时发送的消息会排队，每条消息可单独调整开始时机。
+- **目标模式**。以 `/goal` 开头的消息会锁定一个目标，agent 跨轮次持续推进，支持暂停、编辑与取消。
+- **任务看板**。按工作区跟踪需求与任务，并关联到处理它们的会话。
+- **定时任务**。cron 作业按计划把 prompt 注入会话，在全局面板统一管理。
+- **供应商与模型管理**。在设置界面配置供应商、模型与思考强度；Kimi 开箱即用。
+- **视频也能输入**。把屏幕录像、演示视频拖进对话，让 agent 看那些难以用文字描述的东西。
+- **AI 原生 MCP 配置**。用 `/kiki-ops` 以对话方式添加、编辑、认证 MCP 服务器，无需手改 JSON。
+- **丰富的插件生态**。从市场或任意 GitHub 仓库安装 skill、MCP 服务器与数据源，每次安装都会明示信任级别。
+- **生命周期 hooks**。在关键节点执行本地命令：拦截高风险工具调用、审计决策、触发桌面通知，或对接你自己的自动化脚本。
+- **编辑器与 IDE 集成（ACP）**。通过 `kiki acp`，从 Zed、JetBrains 或任何 [Agent Client Protocol](https://agentclientprotocol.com/) 客户端直接驱动 Kiki 会话。
 
+## 在编辑器中使用（ACP）
 
-## 在编辑器里使用（ACP）
-
-Kimi Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，ACP 兼容的编辑器 / IDE（Zed、JetBrains……）可以通过 stdio 直接驱动会话。登录一次后，把编辑器指向 `kimi acp` 子命令即可，无需重复登录。
+Kiki 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，ACP 兼容的编辑器与 IDE（Zed、JetBrains 等）可以通过 stdio 驱动会话。只需登录一次，然后把编辑器指向 `kiki acp` 子命令，无需重复登录。
 
 以 Zed 为例，在 `~/.config/zed/settings.json` 中加入：
 
 ```json
 {
   "agent_servers": {
-    "Kimi Code CLI": {
+    "Kiki": {
       "type": "custom",
-      "command": "kimi",
+      "command": "kiki",
       "args": ["acp"],
       "env": {}
     }
@@ -73,24 +76,24 @@ Kimi Code CLI 支持 [Agent Client Protocol](https://agentclientprotocol.com/)�
 }
 ```
 
-随后在 Zed 的 Agent 面板新建对话即可。JetBrains 配置与排障见[在 IDE 中使用](https://moonshotai.github.io/kimi-code/zh/guides/ides)，完整能力矩阵见 [`kimi acp` 参考](https://moonshotai.github.io/kimi-code/zh/reference/kimi-acp)。
+然后在 Zed 的 Agent 面板中新建对话。JetBrains 的配置与故障排查见 [ACP 指南](https://x-t-e-r.github.io/kiki/zh/server/acp)。
 
 ## 文档
 
-- [快速上手](https://moonshotai.github.io/kimi-code/zh/guides/getting-started)
-- [交互与审批](https://moonshotai.github.io/kimi-code/zh/guides/interaction)
-- [会话](https://moonshotai.github.io/kimi-code/zh/guides/sessions)
-- [在 IDE 中使用（ACP）](https://moonshotai.github.io/kimi-code/zh/guides/ides)
-- [配置](https://moonshotai.github.io/kimi-code/zh/configuration/config-files)
-- [命令参考](https://moonshotai.github.io/kimi-code/zh/reference/kimi-command)
+- [安装](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)
+- [首次启动](https://x-t-e-r.github.io/kiki/zh/getting-started/first-launch)
+- [桌面应用](https://x-t-e-r.github.io/kiki/zh/getting-started/desktop-app)
+- [交互与审批](https://x-t-e-r.github.io/kiki/zh/guides/interaction)
+- [配置](https://x-t-e-r.github.io/kiki/zh/configuration/config-files)
+- [命令参考](https://x-t-e-r.github.io/kiki/zh/reference/command)
 
-## 本地开发
+## 开发
 
 环境要求：Node.js ≥ 24.15.0，pnpm 10.33.0。
 
 ```sh
-git clone https://github.com/MoonshotAI/kimi-code.git
-cd kimi-code
+git clone https://github.com/X-T-E-R/kiki.git
+cd kiki
 pnpm install
 ```
 
@@ -99,20 +102,20 @@ pnpm dev:cli    # 以开发模式运行 CLI
 pnpm test       # 运行测试
 pnpm typecheck  # TypeScript 检查
 pnpm lint       # 运行 oxlint
-pnpm build      # 构建所有包
+pnpm build      # 构建全部包
 ```
 
-完整贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+完整的贡献指南见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 社区
 
-- [Issues](https://github.com/MoonshotAI/kimi-code/issues)
-- 安全漏洞反馈，请见 [SECURITY.md](SECURITY.md)。
+- [问题反馈](https://github.com/X-T-E-R/kiki/issues)
+- 安全漏洞反馈请参见 [SECURITY.md](SECURITY.md)。
 
 ## 致谢
 
-我们的 TUI 构建在 [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui) 之上。我们衷心感谢 `pi-tui` 作者的工作。
+Kiki 的 TUI 构建于 [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui) 之上，项目最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork。感谢两个项目的作者们做出的宝贵工作。
 
 ## 许可证
 
-基于 [MIT](LICENSE) 协议发布。
+基于 [MIT 许可证](LICENSE)发布。

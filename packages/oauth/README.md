@@ -1,8 +1,8 @@
-# @moonshot-ai/kimi-code-oauth
+# @kiki/oauth
 
-OAuth toolkit for Kimi Code managed authentication.
+OAuth toolkit for Kiki's managed Kimi Code authentication.
 
-Part of the [Kimi Code](https://github.com/MoonshotAI/kimi-code) monorepo.
+Part of the [Kiki](https://github.com/X-T-E-R/kiki) monorepo.
 
 See the main repository for documentation, issues, and contribution guidelines.
 

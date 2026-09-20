@@ -20,8 +20,8 @@ Kiki requires VS Code 1.100.0 or later.
 3. Click the Kiki icon in the Activity Bar
 4. Sign in with the Kimi service, or use a provider already configured in the shared `config.toml`
 
-The extension loads the shared Kiki GUI and attaches to a local Kimi web server. If
-no running server is registered, it starts `kimi web`, so the `kimi` executable
+The extension loads the shared Kiki GUI and attaches to a local Kiki web server. If
+no running server is registered, it starts `kiki web`, so the `kiki` executable
 must be available on `PATH`. When the extension and terminal app resolve to the
 same `KIKI_HOME`, they share configuration, login state, and sessions. The
 system-level `KIKI_HOME` environment variable is supported; there is no

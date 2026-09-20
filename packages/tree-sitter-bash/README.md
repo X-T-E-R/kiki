@@ -1,4 +1,4 @@
-# @moonshot-ai/tree-sitter-bash
+# @kiki/tree-sitter-bash
 
 A pure-TypeScript bash parser that produces a syntax tree whose named node
 types match [tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash)
@@ -19,7 +19,7 @@ types match [tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash)
 ## API
 
 ```ts
-import { parse } from '@moonshot-ai/tree-sitter-bash';
+import { parse } from '@kiki/tree-sitter-bash';
 
 const result = parse('git status && rm -rf /');
 if (result.ok) {

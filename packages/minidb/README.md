@@ -465,7 +465,7 @@ without a server, `ClusterDb` shards the key space over N ordinary minidb
 directories (each with its own WAL, snapshot, and `db.lock`):
 
 ```js
-import { ClusterDb } from '@moonshot-ai/minidb/cluster';
+import { ClusterDb } from '@kiki/minidb/cluster';
 
 const db = await ClusterDb.open({ dir: './data', shardCount: 16, valueCodec: 'json' });
 await db.set('user:1', { name: 'alice' });      // routed by hash to one shard

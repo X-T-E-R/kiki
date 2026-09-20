@@ -1,4 +1,4 @@
-# `@moonshot-ai/acp-client`
+# `@kiki/acp-client`
 
 Outbound ACP v1 client and child-process lifecycle engine for external agent executors.
 
@@ -11,7 +11,7 @@ This package owns ACP transport, process lifecycle, remote-session opening, canc
 ## Main API
 
 ```ts
-import { AcpProcessClient } from '@moonshot-ai/acp-client';
+import { AcpProcessClient } from '@kiki/acp-client';
 
 const client = new AcpProcessClient(hostProcessService, {
   id: 'grok-acp',
