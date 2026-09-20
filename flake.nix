@@ -1,5 +1,5 @@
 {
-  description = "Kimi Code CLI";
+  description = "Kiki CLI";
 
   inputs = {
     # Pinned to the 25.11 release channel because nixpkgs-unstable currently
@@ -42,7 +42,7 @@
           node
         else
           throw ''
-            Kimi Code requires Node.js >= ${minNodeVersion},
+            Kiki requires Node.js >= ${minNodeVersion},
             but nixpkgs only offers ${node.version}.
             Pin a newer nixpkgs revision or update minNodeVersion in flake.nix.
           '';
@@ -126,10 +126,10 @@
             else if pkgs.stdenv.hostPlatform.isDarwin then
               "darwin-x64"
             else
-              throw "Unsupported Kimi Code native target for ${pkgs.stdenv.hostPlatform.system}";
+              throw "Unsupported Kiki native target for ${pkgs.stdenv.hostPlatform.system}";
 
-          kimi-code = pkgs.stdenv.mkDerivation (finalAttrs: {
-            pname = "kimi-code";
+          kiki = pkgs.stdenv.mkDerivation (finalAttrs: {
+            pname = "kiki";
             version = appPackageJson.version;
 
             src = lib.fileset.toSource {
@@ -202,37 +202,37 @@
               runHook preInstall
 
               install -Dm755 \
-                "apps/kimi-code/dist-native/bin/${nativeTarget}/kimi" \
-                "$out/bin/kimi"
+                "apps/kimi-code/dist-native/bin/${nativeTarget}/kiki" \
+                "$out/bin/kiki"
 
               runHook postInstall
             '';
 
             postInstall = ''
-              wrapProgram $out/bin/kimi --prefix PATH : ${lib.makeBinPath [ pkgs.ripgrep pkgs.fd ]}
+              wrapProgram $out/bin/kiki --prefix PATH : ${lib.makeBinPath [ pkgs.ripgrep pkgs.fd ]}
             '';
 
             meta = {
-              description = "Kimi Code CLI";
-              homepage = "https://github.com/MoonshotAI/kimi-code";
+              description = "Kiki CLI";
+              homepage = "https://github.com/X-T-E-R/kiki";
               license = lib.licenses.mit;
-              mainProgram = "kimi";
+              mainProgram = "kiki";
               platforms = systems;
             };
           });
         in
         {
-          inherit kimi-code;
-          default = kimi-code;
+          inherit kiki;
+          default = kiki;
         }
       );
 
       apps = forAllSystems (pkgs: {
-        kimi-code = {
+        kiki = {
           type = "app";
-          program = "${self.packages.${pkgs.system}.kimi-code}/bin/kimi";
+          program = "${self.packages.${pkgs.system}.kiki}/bin/kiki";
         };
-        default = self.apps.${pkgs.system}.kimi-code;
+        default = self.apps.${pkgs.system}.kiki;
       });
 
       devShells = forAllSystems (pkgs: {

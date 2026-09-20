@@ -49,7 +49,7 @@ describe('web asset cache policy', () => {
     const missingApp = Fastify();
     try {
       await expect(registerWebAssetRoutes(missingApp, missingDir)).rejects.toThrow(
-        `Kimi web assets were not found at ${missingDir}`,
+        `Kiki web assets were not found at ${missingDir}`,
       );
     } finally {
       await missingApp.close();

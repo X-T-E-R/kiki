@@ -43,12 +43,12 @@ describe('terminal notification helpers', () => {
 
     emitTerminalNotification(
       terminal,
-      { title: 'Kimi Code', body: 'Approval\nrequired' },
+      { title: 'Kiki', body: 'Approval\nrequired' },
       { supportsOsc9: true, insideTmux: false },
     );
 
     expect(terminal.write).toHaveBeenCalledTimes(1);
-    expect(terminal.write).toHaveBeenCalledWith(']9;Kimi Code: Approval required');
+    expect(terminal.write).toHaveBeenCalledWith(']9;Kiki: Approval required');
   });
 
   it('falls back to a bare BEL when the terminal does not support OSC 9', () => {
@@ -56,7 +56,7 @@ describe('terminal notification helpers', () => {
 
     emitTerminalNotification(
       terminal,
-      { title: 'Kimi Code', body: 'Approval required' },
+      { title: 'Kiki', body: 'Approval required' },
       { supportsOsc9: false, insideTmux: false },
     );
 
@@ -69,12 +69,12 @@ describe('terminal notification helpers', () => {
 
     emitTerminalNotification(
       terminal,
-      { title: 'Kimi Code', body: 'Approval required' },
+      { title: 'Kiki', body: 'Approval required' },
       { supportsOsc9: true, insideTmux: true },
     );
 
     expect(terminal.write).toHaveBeenCalledTimes(1);
-    expect(terminal.write).toHaveBeenCalledWith('Ptmux;]9;Kimi Code: Approval required\\');
+    expect(terminal.write).toHaveBeenCalledWith('Ptmux;]9;Kiki: Approval required\\');
   });
 
   it('skips the tmux wrap when falling back to BEL', () => {
@@ -82,7 +82,7 @@ describe('terminal notification helpers', () => {
 
     emitTerminalNotification(
       terminal,
-      { title: 'Kimi Code', body: 'Approval required' },
+      { title: 'Kiki', body: 'Approval required' },
       { supportsOsc9: false, insideTmux: true },
     );
 

@@ -37,7 +37,7 @@ const OPTIONS: readonly TrustPromptOption[] = [
   {
     value: 'distrust',
     label: "Don't trust",
-    description: 'Exit Kimi Code. Asked again next launch.',
+    description: 'Exit Kiki. Asked again next launch.',
   },
 ];
 

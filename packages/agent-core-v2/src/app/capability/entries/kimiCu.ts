@@ -633,7 +633,7 @@ function createWindowsKimiCuEntry(ctx: CapabilityEntryContext): CapabilityEntry 
           throw error;
         }
         throw new Error(
-          'Kimi Computer Use plugin files are still in use by the current Kimi Code process. Restart Kimi Code, then install again.',
+          'Kimi Computer Use plugin files are still in use by the current Kiki process. Restart Kiki, then install again.',
           { cause: error },
         );
       }

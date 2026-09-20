@@ -112,7 +112,7 @@ export async function collectWebAssets({ appRoot, target }) {
     target,
     root: WEB_ASSETS_DIR,
     requiredFile: 'index.html',
-    missingMessage: `Kimi web build output was not found at ${resolve(appRoot, WEB_ASSETS_DIR)}. Run \`${buildCommand}\` before building native SEA assets. App root: ${appRoot}`,
+    missingMessage: `Kiki web build output was not found at ${resolve(appRoot, WEB_ASSETS_DIR)}. Run \`${buildCommand}\` before building native SEA assets. App root: ${appRoot}`,
     assetKey: webAssetKey,
   });
 }

@@ -317,7 +317,7 @@ describe('DaemonTUI commands', () => {
       now: new Date('2026-01-01T00:00:00.000Z'),
     });
 
-    expect(markdown).toContain('# Kimi Loaded Transcript View');
+    expect(markdown).toContain('# Kiki Loaded Transcript View');
     expect(markdown).toContain('Includes only loaded user and assistant text');
     expect(markdown).toContain('question with image');
     expect(markdown).toContain('answer');

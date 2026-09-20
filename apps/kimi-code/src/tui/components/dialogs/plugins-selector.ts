@@ -45,7 +45,7 @@ const WEB_BRIDGE_ENTRY: PluginMarketplaceEntry = {
   source: WEB_BRIDGE_URL,
   tier: 'official',
   homepage: WEB_BRIDGE_URL,
-  description: 'Control your real browser from Kimi Code — navigate, click, type, and screenshot',
+  description: 'Control your real browser from Kiki — navigate, click, type, and screenshot',
 };
 
 // Only the hardcoded pinned row should open the WebBridge install page. Match

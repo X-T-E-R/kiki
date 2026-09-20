@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/moonshot-ai/kimi-code/blob/main/apps/kimi-code/src/tui/theme/theme-schema.json",
-  "title": "Kimi Code Custom Theme",
-  "description": "Schema for Kimi Code TUI custom theme definitions",
+  "title": "Kiki Custom Theme",
+  "description": "Schema for Kiki TUI custom theme definitions",
   "type": "object",
   "required": ["name"],
   "properties": {

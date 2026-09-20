@@ -87,7 +87,7 @@ export function defaultSeaSource(target) {
 export function readKimiServerVersion(packageJsonPath = KIMI_PACKAGE_JSON) {
   const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
   if (typeof parsed.version !== 'string' || parsed.version.trim() === '') {
-    throw new Error(`Kimi Code package version is missing from ${packageJsonPath}`);
+    throw new Error(`Kiki package version is missing from ${packageJsonPath}`);
   }
   return parsed.version;
 }

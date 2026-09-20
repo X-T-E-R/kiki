@@ -154,7 +154,7 @@ export function buildWebCommand(cmd: Command): Command {
     )
     .option(
       '--web-title <title>',
-      'Set a custom browser tab title for this web UI instance (default: "<workspace dir> | Kimi Code").',
+      'Set a custom browser tab title for this web UI instance (default: "<workspace dir> | Kiki").',
     )
     .option('--no-open', 'Do not open the web UI in the default browser.', true)
     .action(async (opts: WebCliOptions) => {
@@ -208,7 +208,7 @@ function formatReadyLine(
   const notice = dangerousBypassAuth
     ? `${formatDangerNoticeLines().join('\n')}\n`
     : '';
-  return `${notice}Kimi server: ${buildOpenableUrl(origin, token)}\n`;
+  return `${notice}Kiki server: ${buildOpenableUrl(origin, token)}\n`;
 }
 
 /**
@@ -469,7 +469,7 @@ export function formatReadyBanner(
   const logo = ['▐█▛█▛█▌', '▐█████▌'] as const;
   const lines: string[] = [
     '',
-    `  ${primary(logo[0])}  ${title('Kimi server ready')}  ${dim(getVersion())}`,
+    `  ${primary(logo[0])}  ${title('Kiki server ready')}  ${dim(getVersion())}`,
     `  ${primary(logo[1])}  ${dim('Local web UI is available from this machine.')}`,
     '',
   ];

@@ -170,7 +170,7 @@ export interface ServerStartOptions {
    * Custom browser tab title for this web UI instance (the CLI's
    * `--web-title`). Surfaced as `web_title` in `GET /api/meta` so the web
    * UI can distinguish multiple instances on different machines. Instance-level
-   * and frozen at boot; omit to let the UI fall back to `<workspace dir> | Kimi Code`.
+   * and frozen at boot; omit to let the UI fall back to `<workspace dir> | Kiki`.
    */
   readonly webTitle?: string;
   /**
@@ -580,9 +580,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     await app.register(swagger, {
       openapi: {
         info: {
-          title: 'Kimi Code Server API',
+          title: 'Kiki Server API',
           description:
-            'REST API for the Kimi Code local server. All JSON responses are wrapped in a uniform envelope `{ code, msg, data, request_id }`.',
+            'REST API for the Kiki local server. All JSON responses are wrapped in a uniform envelope `{ code, msg, data, request_id }`.',
           version: serverVersion,
         },
         tags: [

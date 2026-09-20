@@ -1,7 +1,7 @@
 {
   "name": "kimi-datasource",
   "version": "3.3.0",
-  "description": "Finance, macro, enterprise, academic, and legal data tools for Kimi Code.",
+  "description": "Finance, macro, enterprise, academic, and legal data tools for Kiki.",
   "keywords": ["finance", "data-source", "mcp", "legal"],
   "mcpServers": {
     "data": {

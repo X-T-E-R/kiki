@@ -120,7 +120,7 @@ describe('web assets', () => {
     };
 
     expect(() => getNativeWebAssetsDir({ source })).toThrow(
-      'Embedded Kimi web assets were not found',
+      'Embedded Kiki web assets were not found',
     );
   });
 
@@ -137,7 +137,7 @@ describe('web assets', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kiki-required-web-assets-'));
     try {
       expect(() => requireServerWebAssetsDir(dir)).toThrow(
-        `Kimi web assets were not found at ${dir}`,
+        `Kiki web assets were not found at ${dir}`,
       );
       writeFileSync(join(dir, 'index.html'), '<html></html>');
       expect(requireServerWebAssetsDir(dir)).toBe(dir);

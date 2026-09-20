@@ -68,7 +68,7 @@ const child = spawn(
 );
 
 child.on('error', async (error) => {
-  console.error(`Failed to start Kimi Code dev CLI: ${error.message}`);
+  console.error(`Failed to start Kiki dev CLI: ${error.message}`);
   await marketplaceServer?.close();
   process.exit(1);
 });

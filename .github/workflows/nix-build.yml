@@ -87,7 +87,7 @@ jobs:
         run: exit 1
 
   nix-build:
-    name: nix build .#kimi-code
+    name: nix build .#kiki
     needs: check-workspace-sync
     runs-on: ubuntu-latest
 
@@ -105,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           LOG_FILE="$(mktemp)"
-          if nix build .#kimi-code --print-build-logs 2>&1 | tee "$LOG_FILE"; then
+          if nix build .#kiki --print-build-logs 2>&1 | tee "$LOG_FILE"; then
             echo "BUILD_FAILED=false" >> "$GITHUB_OUTPUT"
           else
             echo "BUILD_FAILED=true" >> "$GITHUB_OUTPUT"

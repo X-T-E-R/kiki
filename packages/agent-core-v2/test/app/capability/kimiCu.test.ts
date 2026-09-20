@@ -663,7 +663,7 @@ describe('kimi-cu entry', () => {
     );
 
     await expect(entry.install(() => undefined)).rejects.toThrow(
-      'Kimi Computer Use plugin files are still in use by the current Kimi Code process. Restart Kimi Code, then install again.',
+      'Kimi Computer Use plugin files are still in use by the current Kiki process. Restart Kiki, then install again.',
     );
   });
 

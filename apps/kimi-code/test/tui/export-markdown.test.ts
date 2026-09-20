@@ -291,7 +291,7 @@ describe('buildExportMarkdown', () => {
     expect(md).toContain('work_dir: /home/user/project');
     expect(md).toContain('message_count: 2');
     expect(md).toContain('token_count: 1234');
-    expect(md).toContain('# Kimi Session Export');
+    expect(md).toContain('# Kiki Session Export');
     expect(md).toContain('## Overview');
     expect(md).toContain('Hello world');
     expect(md).toContain('## Turn 1');

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { wsOperations, type WsOperationDefinition } from './ws-control';
 
 const ASYNCAPI_VERSION = '3.1.0';
-const DEFAULT_TITLE = 'Kimi Code WebSocket API';
+const DEFAULT_TITLE = 'Kiki WebSocket API';
 const DEFAULT_VERSION = '0.1.0';
 const DEFAULT_SERVER_HOST = 'localhost';
 const DEFAULT_WS_PATH = '/api/ws';
@@ -37,7 +37,7 @@ export function createAsyncApiDocument(
       title,
       version,
       description:
-        'WebSocket protocol for Kimi Code daemon control frames, acknowledgements, system frames, and session event streaming.',
+        'WebSocket protocol for Kiki daemon control frames, acknowledgements, system frames, and session event streaming.',
     },
     defaultContentType: 'application/json',
     servers: {
@@ -45,7 +45,7 @@ export function createAsyncApiDocument(
         host: serverHost,
         protocol: serverProtocol,
         pathname: wsPath,
-        description: 'Kimi Code daemon WebSocket endpoint.',
+        description: 'Kiki daemon WebSocket endpoint.',
       },
     },
     channels: {

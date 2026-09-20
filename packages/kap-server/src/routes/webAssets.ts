@@ -29,7 +29,7 @@ async function assertWebAssets(assetsDir: string): Promise<void> {
     }
   } catch {
     throw new Error(
-      `Kimi web assets were not found at ${assetsDir}. Run the package build before starting the server.`,
+      `Kiki web assets were not found at ${assetsDir}. Run the package build before starting the server.`,
     );
   }
 }

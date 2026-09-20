@@ -234,7 +234,7 @@ export function buildExportMarkdown(input: BuildExportMarkdownInput): string {
     `token_count: ${String(tokenCount)}`,
     '---',
     '',
-    '# Kimi Session Export',
+    '# Kiki Session Export',
     '',
   ];
 

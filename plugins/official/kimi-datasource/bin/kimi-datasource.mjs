@@ -299,7 +299,7 @@ async function loadAccessToken() {
   } catch (err) {
     if (isNotFound(err)) {
       throw new Error(
-        `Kimi Code credentials file not found: ${credentialsFile}\nRun /login in Kimi Code first.`,
+        `Kimi Code credentials file not found: ${credentialsFile}\nRun /login in Kiki first.`,
       );
     }
     if (err instanceof SyntaxError) {

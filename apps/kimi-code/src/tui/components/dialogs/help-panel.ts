@@ -110,7 +110,7 @@ export class HelpPanelComponent extends Container implements Focusable {
       currentTheme.boldFg('primary', ' help ') + muted('· Esc / Enter / q to cancel · ↑↓ scroll'),
       '',
       // Greeting
-      `  ${dim('Sure, Kimi is ready to help! Just send a message to get started.')}`,
+      `  ${dim('Sure, Kiki is ready to help! Just send a message to get started.')}`,
       '',
       // Section: keyboard shortcuts
       `  ${currentTheme.bold('Keyboard shortcuts')}`,

@@ -170,7 +170,7 @@ export function getNativeWebAssetsDir(options: WebAssetOptions = {}): string | n
   const target = currentTarget();
   const manifest = options.manifest ?? getEmbeddedWebAssetManifest(source, target);
   if (manifest === null) {
-    throw new Error(`Embedded Kimi web assets were not found for ${target}.`);
+    throw new Error(`Embedded Kiki web assets were not found for ${target}.`);
   }
 
   const cacheRoot = getWebAssetCacheRoot(manifest, options);
@@ -202,6 +202,6 @@ export function requireServerWebAssetsDir(
     if (statSync(join(assetsDir, 'index.html')).isFile()) return assetsDir;
   } catch {}
   throw new Error(
-    `Kimi web assets were not found at ${assetsDir}. Run the package build before starting the server.`,
+    `Kiki web assets were not found at ${assetsDir}. Run the package build before starting the server.`,
   );
 }

@@ -157,7 +157,7 @@ describe('kimi doctor', () => {
     expect(code).toBe(1);
     expect(stdout.join('')).toBe('');
     const err = stderr.join('');
-    expect(err).toContain('Kimi doctor found 1 issue.');
+    expect(err).toContain('Kiki doctor found 1 issue.');
     expect(err).toContain(`ERROR config.toml  ${resolve(dir, 'missing.toml')}`);
     expect(err).toContain('File does not exist.');
     expect(err).not.toContain('tui.toml');
@@ -239,7 +239,7 @@ max_context_size = 0
     expect(code).toBe(1);
     expect(stdout.join('')).toBe('');
     const err = stderr.join('');
-    expect(err).toContain('Kimi doctor found 2 issues.');
+    expect(err).toContain('Kiki doctor found 2 issues.');
     expect(err).toContain(`ERROR config.toml  ${join(dir, 'config.toml')}`);
     expect(err).toContain('max_context_size');
     expect(err).toContain(`ERROR tui.toml     ${join(dir, 'tui.toml')}`);
@@ -618,7 +618,7 @@ model_preference: secondary
     expect(err).toContain('OK config.toml');
     expect(err).toContain('ERROR agents');
     expect(err).toContain('agent profile check unavailable');
-    expect(err).toContain('Kimi doctor found 1 issue.');
+    expect(err).toContain('Kiki doctor found 1 issue.');
   });
 
   it('surfaces parser conflict warnings and counts them in the summary', async () => {

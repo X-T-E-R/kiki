@@ -2317,8 +2317,8 @@ export function buildLoadedTranscriptMarkdown(input: {
     tokenCount: input.tokenCount,
     now: input.now,
   }).replace(
-    '# Kimi Session Export',
-    '# Kimi Loaded Transcript View\n\n> Includes only loaded user and assistant text. Tools, media, and other blocks are omitted.',
+    '# Kiki Session Export',
+    '# Kiki Loaded Transcript View\n\n> Includes only loaded user and assistant text. Tools, media, and other blocks are omitted.',
   );
 }
 

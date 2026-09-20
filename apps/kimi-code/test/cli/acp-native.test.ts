@@ -78,7 +78,7 @@ describe('kimi acp', () => {
     expect(optsArg).toEqual(
       expect.objectContaining({
         homeDir: getDataDir(),
-        agentInfo: { name: 'Kimi Code CLI', version: expect.any(String) },
+        agentInfo: { name: 'Kiki CLI', version: expect.any(String) },
       }),
     );
     expect(exitSpy).toHaveBeenCalledWith(0);

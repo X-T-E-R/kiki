@@ -60,7 +60,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       method: 'GET',
       path: '/config',
       success: { data: configResponseSchema },
-      description: 'Get the global Kimi configuration (secrets redacted)',
+      description: 'Get the global Kiki configuration (secrets redacted)',
       tags: ['config'],
     },
     async (req, reply) => {
@@ -80,7 +80,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
       },
-      description: 'Update the global Kimi configuration (merge by default)',
+      description: 'Update the global Kiki configuration (merge by default)',
       tags: ['config'],
     },
     async (req, reply) => {

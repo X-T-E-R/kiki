@@ -102,7 +102,7 @@ describe('ws-control — AsyncAPI document', () => {
     expect(doc['asyncapi']).toBe('3.1.0');
     expect(doc['defaultContentType']).toBe('application/json');
     expect(doc['info']).toMatchObject({
-      title: 'Kimi Code WebSocket API',
+      title: 'Kiki WebSocket API',
       version: '1.2.3',
     });
 
