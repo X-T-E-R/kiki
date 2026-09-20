@@ -29,30 +29,6 @@ describe('shipped agent profiles', () => {
     expect(isToolActive({ ...agent, disallowedTools: [tool] }, tool)).toBe(false);
   });
 
-  it.each([
-    'AgentRun',
-    'AgentSwarm',
-    'spawn_agent',
-    'list_agents',
-    'wait_agent',
-    'followup_task',
-    'interrupt_agent',
-    'send_message',
-    'CronCreate',
-    'CronList',
-    'CronDelete',
-    'EnterPlanMode',
-    'ExitPlanMode',
-  ])('keeps the shipped coder from dispatching, scheduling, or planning via %s', (tool) => {
-    expect(source().get('coder')?.tools).not.toContain(tool);
-  });
-
-  it('keeps the shipped coder able to do the delegated coding work', () => {
-    expect(source().get('coder')?.tools).toEqual(
-      expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash']),
-    );
-  });
-
   it('keeps the shipped general profile a strict leaf with editing tools', () => {
     const general = source().get('general')!;
     expect(general.tools).toEqual(

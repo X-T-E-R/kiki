@@ -16,7 +16,7 @@ import { SectionCard } from './SectionCard';
 
 type AgentIdentityDraft = Pick<
   RuntimeConfigDraft,
-  'identityName' | 'identitySlug' | 'extraAgentDirs' | 'disabledBuiltinProfiles'
+  'identityName' | 'identitySlug' | 'extraAgentDirs' | 'disabledNamedProfiles'
 >;
 
 function StringListEditor({ label, values, onChange, placeholder }: {
@@ -82,7 +82,7 @@ export function AgentRuntimeCard() {
         identityName: projected.identityName,
         identitySlug: projected.identitySlug,
         extraAgentDirs: projected.extraAgentDirs,
-        disabledBuiltinProfiles: projected.disabledBuiltinProfiles,
+        disabledNamedProfiles: projected.disabledNamedProfiles,
       });
     }
   }, [configQuery.data, dirty]);
@@ -113,7 +113,7 @@ export function AgentRuntimeCard() {
         identityName: projected.identityName,
         identitySlug: projected.identitySlug,
         extraAgentDirs: projected.extraAgentDirs,
-        disabledBuiltinProfiles: projected.disabledBuiltinProfiles,
+        disabledNamedProfiles: projected.disabledNamedProfiles,
       });
       setDirty(false);
       if (identityChanged) markRestartRequired(['identity']);
@@ -139,7 +139,7 @@ export function AgentRuntimeCard() {
             </label>
           </div>
           <StringListEditor label={t('st.agentIdentity.extraAgentDirs')} values={draft.extraAgentDirs} placeholder="C:\agents" onChange={(extraAgentDirs) => { updateDraft({ ...draft, extraAgentDirs }); }} />
-          <StringListEditor label={t('st.agentIdentity.disabledProfiles')} values={draft.disabledBuiltinProfiles} placeholder="profile-name" onChange={(disabledBuiltinProfiles) => { updateDraft({ ...draft, disabledBuiltinProfiles }); }} />
+          <StringListEditor label={t('st.agentIdentity.disabledProfiles')} values={draft.disabledNamedProfiles} placeholder="profile-name" onChange={(disabledNamedProfiles) => { updateDraft({ ...draft, disabledNamedProfiles }); }} />
         </fieldset>
         <div className="flex flex-wrap items-center gap-3 border-t border-hairline pt-3">
           <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>

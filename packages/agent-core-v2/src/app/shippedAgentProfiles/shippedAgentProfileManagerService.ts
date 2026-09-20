@@ -13,9 +13,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import {
-  DISABLED_BUILTIN_PROFILES_SECTION,
   SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION,
-  type DisabledBuiltinProfilesConfig,
   type SkipBuiltinProfileInstallationConfig,
 } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import { SYSTEM_MD_FILENAME } from '@kiki/agent-profiles/systemFile';
@@ -198,7 +196,6 @@ export class ShippedAgentProfileManagerService
     const manifest = this.manifestValue!;
     const nextSkipped: Record<string, SkipReason> = {};
     const nextTemplates: Record<string, ManagedStateRecord> = {};
-    const legacyInstall = await this.detectLegacyInstall();
     const disabled = this.skippedInstallationNames();
     for (const template of this.templates) {
       try {
@@ -228,7 +225,7 @@ export class ShippedAgentProfileManagerService
           );
           continue;
         }
-        if (!this.materializesFor(template, legacyInstall)) continue;
+        if (!template.materializeOnFreshInstall) continue;
         nextTemplates[template.id] = await this.materialize(template);
       } catch (error) {
         this.reconcileFailures = true;
@@ -368,27 +365,10 @@ export class ShippedAgentProfileManagerService
     return this.adoptedByUserFile(template);
   }
 
-  private async detectLegacyInstall(): Promise<boolean> {
-    if (await this.systemMdExists()) return true;
-    const agentsRoot = join(this.bootstrap.userAgentProfileHomeDir, 'agents');
-    try {
-      if ((await this.fs.readdir(agentsRoot)).length > 0) return true;
-    } catch (error) {
-      if (!isHostFsMissing(error)) throw error;
-    }
-    return this.skippedInstallationNames().size > 0;
-  }
-
-  private materializesFor(template: ShippedAgentProfileTemplate, legacyInstall: boolean): boolean {
-    return legacyInstall
-      ? template.materializeOnLegacyInstall
-      : template.materializeOnFreshInstall;
-  }
-
   private skippedInstallationNames(): ReadonlySet<string> {
-    const current = this.config.get<SkipBuiltinProfileInstallationConfig>(SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION);
-    const legacy = this.config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION);
-    return new Set(current ?? legacy ?? []);
+    return new Set(
+      this.config.get<SkipBuiltinProfileInstallationConfig>(SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION) ?? [],
+    );
   }
 
   private async systemMdExists(): Promise<boolean> {

@@ -122,7 +122,6 @@ interface ParsedInspectionConfig {
   readonly models: ModelsSection;
   readonly defaultModel?: string;
   readonly extraAgentDirs: readonly string[];
-  readonly disabledBuiltinProfiles: ReadonlySet<string>;
   readonly disabledNamedProfiles: ReadonlySet<string>;
   readonly warnings: readonly string[];
 }
@@ -152,7 +151,6 @@ export async function inspectPromptFields(
     const profile = resolveProfile(
       profileName,
       profiles.candidates.get(profileName) ?? [],
-      config.disabledBuiltinProfiles,
       config.disabledNamedProfiles,
     );
     if (profile === undefined) throw new Error(`Agent profile "${profileName}" is not available.`);
@@ -275,7 +273,6 @@ async function readInspectionConfig(
         ? transformed['defaultModel']
         : undefined,
       extraAgentDirs: stringArray(transformed['extraAgentDirs']),
-      disabledBuiltinProfiles: new Set(stringArray(transformed['disabledBuiltinProfiles'])),
       disabledNamedProfiles: new Set(stringArray(transformed['disabledNamedProfiles'])),
       warnings,
     };
@@ -291,7 +288,6 @@ function emptyConfig(warnings: string[]): ParsedInspectionConfig {
     prompt: {},
     models: {},
     extraAgentDirs: [],
-    disabledBuiltinProfiles: new Set(),
     disabledNamedProfiles: new Set(),
     warnings,
   };
@@ -437,14 +433,10 @@ function fromShippedAgentProfile(profile: AgentProfile): InspectionProfile {
 function resolveProfile(
   name: string,
   candidates: readonly InspectionProfile[],
-  disabledBuiltin: ReadonlySet<string>,
   disabledNamed: ReadonlySet<string>,
 ): InspectionProfile | undefined {
   if (disabledNamed.has(name) && name !== 'agent') return undefined;
-  const chain = disabledBuiltin.has(name)
-    ? candidates.filter((candidate) => candidate.fileBacked)
-    : candidates;
-  return chain.length === 0 ? undefined : resolveInheritedProfile(chain, 0);
+  return candidates.length === 0 ? undefined : resolveInheritedProfile(candidates, 0);
 }
 
 function resolveInheritedProfile(

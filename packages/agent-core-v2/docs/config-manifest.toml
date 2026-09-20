@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (39 sections · 1 overlay(s))
+# Index (38 sections · 1 overlay(s))
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
 #   background                      src/agent/task/configSection.ts
@@ -16,7 +16,6 @@
 #   cron                            src/app/cron/configSection.ts
 #   defaultPermissionMode           src/agent/permissionMode/configSection.ts
 #   defaultPlanMode                 src/features/plan/configSection.ts
-#   disabledBuiltinProfiles         src/workspace/workspaceAgentProfileLoader/configSection.ts
 #   disabledNamedProfiles           src/workspace/workspaceAgentProfileLoader/configSection.ts
 #   experimental                    src/app/flag/flag.ts
 #   extraAgentDirs                  src/workspace/workspaceAgentProfileLoader/configSection.ts
@@ -168,14 +167,6 @@ manual_tick = false
 default_plan_mode = false
 
 # ##########################################################################
-# disabledBuiltinProfiles (config.toml: disabled_builtin_profiles)
-#   owner: src/workspace/workspaceAgentProfileLoader/configSection.ts
-#   scope: core
-# ##########################################################################
-
-disabled_builtin_profiles = []
-
-# ##########################################################################
 # disabledNamedProfiles (config.toml: disabled_named_profiles)
 #   owner: src/workspace/workspaceAgentProfileLoader/configSection.ts
 #   scope: core
@@ -256,12 +247,9 @@ extra_skill_dirs = []
 #   owner: src/agent/loop/configSection.ts
 #   scope: core
 #   hooks: custom toToml · stripEnv
-#   deprecations (old key is ignored + warns; rename manually):
-#     max_retries_per_step -> max_attempts_per_step
-#     max_steps_per_run -> max_steps_per_turn
 #   env:
 #     max_steps_per_turn <- KIMI_LOOP_MAX_STEPS_PER_TURN (custom parse)
-#     max_attempts_per_step <- KIMI_LOOP_MAX_ATTEMPTS_PER_STEP (custom parse; deprecated fallback KIMI_LOOP_MAX_RETRIES_PER_STEP)
+#     max_attempts_per_step <- KIMI_LOOP_MAX_ATTEMPTS_PER_STEP (custom parse)
 #     compaction_soft_context_size <- KIMI_LOOP_COMPACTION_SOFT_CONTEXT_SIZE (custom parse)
 # ##########################################################################
 

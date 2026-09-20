@@ -11,10 +11,7 @@ import type { ServiceIdentifier } from '#/_base/di/instantiation';
 import { InstantiationService } from '#/_base/di/instantiationService';
 import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { ILogService } from '#/_base/log/log';
-import {
-  DISABLED_BUILTIN_PROFILES_SECTION,
-  EXTRA_AGENT_DIRS_SECTION,
-} from '#/workspace/workspaceAgentProfileLoader/configSection';
+import { EXTRA_AGENT_DIRS_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import { UserAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoaderService';
 import type { PluginAgentRoot, PluginReloadEvent } from '#/app/plugin/types';
 import {
@@ -73,11 +70,9 @@ import { stubBootstrap } from '../../app/bootstrap/stubs';
 
 function configStub(): IConfigService & {
   setExtraAgentDirs(dirs: readonly string[]): void;
-  setDisabledBuiltinProfiles(names: readonly string[]): void;
   fireSectionChange(domain: string): void;
 } {
   let extraAgentDirs: readonly string[] = [];
-  let disabledBuiltinProfiles: readonly string[] = [];
   const sectionChangeListeners: Array<(event: unknown) => void> = [];
   return {
     _serviceBrand: undefined,
@@ -89,7 +84,6 @@ function configStub(): IConfigService & {
     },
     get: (domain: string) => {
       if (domain === EXTRA_AGENT_DIRS_SECTION) return [...extraAgentDirs];
-      if (domain === DISABLED_BUILTIN_PROFILES_SECTION) return [...disabledBuiltinProfiles];
       return undefined;
     },
     inspect: () => ({
@@ -106,9 +100,6 @@ function configStub(): IConfigService & {
     setExtraAgentDirs: (dirs: readonly string[]) => {
       extraAgentDirs = [...dirs];
     },
-    setDisabledBuiltinProfiles: (names: readonly string[]) => {
-      disabledBuiltinProfiles = [...names];
-    },
     fireSectionChange: (domain: string) => {
       for (const listener of sectionChangeListeners) {
         listener({ domain, source: 'set', value: undefined, previousValue: undefined });
@@ -116,7 +107,6 @@ function configStub(): IConfigService & {
     },
   } as unknown as IConfigService & {
     setExtraAgentDirs(dirs: readonly string[]): void;
-    setDisabledBuiltinProfiles(names: readonly string[]): void;
     fireSectionChange(domain: string): void;
   };
 }
@@ -313,7 +303,6 @@ function failingReaddirFs(
 
 interface StackOptions {
   readonly extraAgentDirs?: readonly string[];
-  readonly disabledBuiltinProfiles?: readonly string[];
   readonly explicitFiles?: readonly string[];
   readonly pluginAgentRoots?: readonly PluginAgentRoot[];
   readonly pluginReloadEmitter?: Emitter<PluginReloadEvent>;
@@ -330,9 +319,6 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
   const log = logStub(warnings);
   const config = configStub();
   if (opts?.extraAgentDirs !== undefined) config.setExtraAgentDirs(opts.extraAgentDirs);
-  if (opts?.disabledBuiltinProfiles !== undefined) {
-    config.setDisabledBuiltinProfiles(opts.disabledBuiltinProfiles);
-  }
   const bootstrap: IBootstrapService = {
     ...stubBootstrap(fixture.homeDir, {}, { agentFiles: opts?.explicitFiles }),
     osHomeDir: fixture.osHomeDir,
@@ -1462,7 +1448,7 @@ describe('agent profile loaders + session catalog', () => {
     await withFixture(async (fixture) => {
       await writeFile(
         join(fixture.homeDir, 'SYSTEM.md'),
-        'You are a custom main agent. cwd=${cwd} unknown=${nope}',
+        '---\nname: agent\ndescription: Custom main agent\n---\nYou are a custom main agent. cwd=${cwd} unknown=${nope}',
       );
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
@@ -1551,7 +1537,7 @@ describe('agent profile loaders + session catalog', () => {
         'agent.md',
         agentMd('agent', 'user agents dir default', true),
       );
-      await writeFile(join(fixture.homeDir, 'SYSTEM.md'), 'system md prompt');
+      await writeFile(join(fixture.homeDir, 'SYSTEM.md'), '---\nname: agent\ndescription: System default\n---\nsystem md prompt');
       await withStack(fixture, undefined, async (stack) => {
         await stack.ready();
 
@@ -1564,7 +1550,7 @@ describe('agent profile loaders + session catalog', () => {
 
   it('lets a same-name workspace agent file win over user-level SYSTEM.md', async () => {
     await withFixture(async (fixture) => {
-      await writeFile(join(fixture.homeDir, 'SYSTEM.md'), 'system md prompt');
+      await writeFile(join(fixture.homeDir, 'SYSTEM.md'), '---\nname: agent\ndescription: System default\n---\nsystem md prompt');
       await writeAgent(
         join(fixture.workDir, '.kiki', 'agents'),
         'agent.md',
@@ -1581,7 +1567,7 @@ describe('agent profile loaders + session catalog', () => {
 
   it('lets an explicit agent file win over user-level SYSTEM.md', async () => {
     await withFixture(async (fixture) => {
-      await writeFile(join(fixture.homeDir, 'SYSTEM.md'), 'system md prompt');
+      await writeFile(join(fixture.homeDir, 'SYSTEM.md'), '---\nname: agent\ndescription: System default\n---\nsystem md prompt');
       const explicitFile = await writeAgent(
         fixture.workDir,
         'explicit.md',

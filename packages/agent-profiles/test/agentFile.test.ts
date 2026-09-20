@@ -152,13 +152,13 @@ body
     });
   });
 
-  it('parses recommended_models as advisory entries without consuming model_alias', () => {
+  it('parses model_profiles as advisory entries without consuming model_alias', () => {
     const def = parse(`---
 name: solo
 description: d
 model_alias: gpt-5.6-sol
 thinking_effort: high
-recommended_models:
+model_profiles:
   - alias: axon-message/grok-4.6
     when: Scope and acceptance checks are already named and a fast decisive pass beats waiting.
     thinking_effort: high
@@ -184,11 +184,11 @@ body
     ]);
   });
 
-  it('keeps two recommended_models entries that share an alias with different thinking_effort', () => {
+  it('keeps two model_profiles entries that share an alias with different thinking_effort', () => {
     const def = parse(`---
 name: solo
 description: d
-recommended_models:
+model_profiles:
   - alias: shared-model
     when: Fast pass.
     thinking_effort: low
@@ -206,11 +206,9 @@ body
     ]);
   });
 
-  it('accepts alias-only candidates with either model-profile spelling', () => {
-    for (const field of ['recommended_models', 'model_profiles']) {
-      const definition = parse(`---\nname: solo\ndescription: d\n${field}:\n  - alias: other-model\n---\n\nbody\n`);
-      expect(definition.modelProfiles).toEqual([{ alias: 'other-model' }]);
-    }
+  it('accepts alias-only model-profile candidates', () => {
+    const definition = parse('---\nname: solo\ndescription: d\nmodel_profiles:\n  - alias: other-model\n---\n\nbody\n');
+    expect(definition.modelProfiles).toEqual([{ alias: 'other-model' }]);
   });
 
   it('parses independent profile budgets and per-model request overrides', () => {
@@ -238,21 +236,21 @@ body
     expect(() => parse('---\nname: solo\ndescription: d\ncontext_budget: 0\n---\nbody')).toThrow(/positive integer/);
   });
 
-  it('rejects a recommended_models entry with an unknown key', () => {
+  it('rejects a model_profiles entry with an unknown key', () => {
     expect(() =>
       parse(
-        '---\nname: solo\ndescription: d\nrecommended_models:\n  - alias: other-model\n    when: now\n    rank: 1\n---\n\nbody\n',
+        '---\nname: solo\ndescription: d\nmodel_profiles:\n  - alias: other-model\n    when: now\n    rank: 1\n---\n\nbody\n',
       ),
     ).toThrow(/unknown key "rank"/);
   });
 
   it.each([
-    ['bare string', 'recommended_models: other-model'],
-    ['scalar', 'recommended_models: 42'],
-    ['mapping', 'recommended_models:\n  alias: other-model\n  when: now'],
-  ])('rejects recommended_models when it is a %s rather than a list', (_label, field) => {
+    ['bare string', 'model_profiles: other-model'],
+    ['scalar', 'model_profiles: 42'],
+    ['mapping', 'model_profiles:\n  alias: other-model\n  when: now'],
+  ])('rejects model_profiles when it is a %s rather than a list', (_label, field) => {
     expect(() => parse(`---\nname: solo\ndescription: d\n${field}\n---\n\nbody\n`)).toThrow(
-      /"recommended_models"/,
+      /"model_profiles"/,
     );
   });
 
@@ -325,46 +323,12 @@ body
     ).toThrow(/exactly once/);
   });
 
-  it('warns once when only the deprecated recommended_models key is present', () => {
-    const warnings: string[] = [];
-    const def = parseAgentFileText({
+  it('rejects the removed recommended_models key', () => {
+    expect(() => parseAgentFileText({
       path: '/tmp/agents/reviewer.md',
       source: 'project',
-      text: '---\nname: solo\ndescription: d\nrecommended_models:\n  - alias: other-model\n    when: now\n---\n\nbody\n',
-      warn: (message) => warnings.push(message),
-    });
-
-    expect(def.modelProfiles).toEqual([{ alias: 'other-model', when: 'now' }]);
-    expect(warnings).toEqual([
-      expect.stringContaining('recommended_models" in /tmp/agents/reviewer.md is deprecated'),
-    ]);
-  });
-
-  it('prefers model_profiles and warns when both keys are present', () => {
-    const warnings: string[] = [];
-    const def = parseAgentFileText({
-      path: '/tmp/agents/reviewer.md',
-      source: 'project',
-      text: `---
-name: solo
-description: d
-model_profiles:
-  - alias: new-model
-    when: new
-recommended_models:
-  - alias: old-model
-    when: old
----
-
-body
-`,
-      warn: (message) => warnings.push(message),
-    });
-
-    expect(def.modelProfiles).toEqual([{ alias: 'new-model', when: 'new' }]);
-    expect(warnings).toEqual([
-      expect.stringContaining('using "model_profiles"'),
-    ]);
+      text: '---\nname: solo\ndescription: d\nrecommended_models:\n  - alias: other-model\n---\n\nbody\n',
+    })).toThrow('Unknown frontmatter field "recommended_models"');
   });
 
   it.each(['auto', 'default', 'flex', 'priority'] as const)(

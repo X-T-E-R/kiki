@@ -234,7 +234,7 @@ export interface RuntimeConfigProjection {
   };
   readonly identity?: { readonly name?: string; readonly slug?: string };
   readonly extra_agent_dirs?: string[];
-  readonly disabled_builtin_profiles?: string[];
+  readonly skip_builtin_profile_installation?: string[];
   readonly disabled_named_profiles?: string[];
   readonly mcp?: { readonly startupTimeoutMs?: number; readonly toolTimeoutMs?: number };
   readonly plugins?: { readonly marketplaceUrl?: string };
@@ -296,9 +296,9 @@ export function parseKikiConfigResponse(data: unknown): KikiConfigResponse {
   return {
     ...data,
     extra_agent_dirs: parseConfigStringList(data['extra_agent_dirs'], 'extra_agent_dirs'),
-    disabled_builtin_profiles: parseConfigStringList(
-      data['disabled_builtin_profiles'],
-      'disabled_builtin_profiles',
+    skip_builtin_profile_installation: parseConfigStringList(
+      data['skip_builtin_profile_installation'],
+      'skip_builtin_profile_installation',
     ),
     disabled_named_profiles: parseConfigStringList(
       data['disabled_named_profiles'],
@@ -338,7 +338,7 @@ export interface RuntimeConfigPatch {
   };
   readonly identity?: { readonly name?: string; readonly slug?: string };
   readonly extra_agent_dirs?: string[];
-  readonly disabled_builtin_profiles?: string[];
+  readonly skip_builtin_profile_installation?: string[];
   readonly disabled_named_profiles?: string[];
   readonly mcp?: { readonly startup_timeout_ms?: number; readonly tool_timeout_ms?: number };
   readonly plugins?: { readonly marketplace_url?: string };

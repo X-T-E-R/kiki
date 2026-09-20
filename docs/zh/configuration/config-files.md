@@ -101,8 +101,7 @@ timeout = 5
 | `merge_all_available_skills` | `boolean` | `true` | 是否合并所有目录中的 Agent Skills |
 | `extra_skill_dirs` | `array<string>` | — | 额外 Skill 搜索目录，叠加到默认目录之上 |
 | `extra_agent_dirs` | `array<string>` | — | 额外自定义 Agent 搜索目录，叠加到默认目录之上 |
-| `skip_builtin_profile_installation` | `array<string>` | — | 启动时不安装到 `agents/builtin/` 的内置模板名称。已有受管理副本仍可使用并继续接收安全更新；它不是运行时禁用开关。只要声明了此键（包括 `[]`），就优先于下面的弃用别名 |
-| `disabled_builtin_profiles` | `array<string>` | `[]` | `skip_builtin_profile_installation` 的弃用别名；新键缺失时仍会读取，并产生迁移警告。保留列表内容、重命名键即可 |
+| `skip_builtin_profile_installation` | `array<string>` | — | 启动时不安装到 `agents/builtin/` 的内置模板名称。已有受管理副本仍可使用并继续接收安全更新；它不是运行时禁用开关 |
 | `disabled_named_profiles` | `array<string>` | `[]` | 从 subagent 发现与派发列表中隐藏的 profile 名称，不区分文件来源。默认 main `agent` 绑定仍可使用 |
 | `builtin_product_skills` | `boolean` | `true` | 是否向模型提供 Kiki 产品 Skills：`kiki-ops` 负责产品使用与配置，`kiki-profile` 负责创建和修改 agent profile。关闭后两者的名称和描述都不再进入系统提示词，代价是失去这些任务的引导流程 |
 | `providers` | `table` | `{}` | API 供应商表 → [`providers`](#providers) |
@@ -324,8 +323,6 @@ thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析�
 | --- | --- | --- |
 | `default_thinking` | 0.21.0 | 顶层布尔值，由 `[thinking] enabled` 取代。将 `default_thinking = true` 迁移为 `enabled = true`，`default_thinking = false` 迁移为 `enabled = false`。 |
 | `thinking.mode` | 0.21.0 | 可选值 `auto` / `on` / `off`，由 `[thinking] enabled` 取代。`mode = "off"` 改为 `enabled = false`；`mode = "on"` 和 `mode = "auto"` 等价于 `enabled = true`（默认值），可删除该行。 |
-| `loop_control.max_retries_per_step` | 0.32.0 | 由 `loop_control.max_attempts_per_step` 取代（该值本来就是含首次尝试的总尝试次数上限）。旧 key 不再生效，启动时会给出警告，请在 `config.toml` 中手动改名。 |
-| `loop_control.max_steps_per_run` | 0.32.0 | 由 `loop_control.max_steps_per_turn` 取代。旧 key 不再生效，启动时会给出警告，请在 `config.toml` 中手动改名。 |
 
 ## `loop_control`
 
@@ -338,7 +335,7 @@ thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析�
 | `reserved_context_size` | `integer` | — | 预留给模型输出的 token 数；上下文窗口剩余量低于此值时触发自动压缩 |
 | `compaction_max_attempts` | `integer` | `5` | 压缩失败后的最大总请求次数（含首次请求）；重试退避、上下文超限收缩、空响应或截断收缩等所有恢复路径共用同一份预算 |
 
-`max_steps_per_turn` 可被环境变量 `KIMI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。旧的 `KIMI_LOOP_MAX_RETRIES_PER_STEP` 已废弃，但在新变量未设置时仍生效（启动时会给出警告）。
+`max_steps_per_turn` 可被环境变量 `KIMI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。
 
 重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流和 5xx 服务端错误。账户额度耗尽或余额不足导致的 429 不会重试，会立即失败：在充值之前重试不可能成功。
 

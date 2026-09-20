@@ -59,7 +59,7 @@ capabilities = ["image_in", "thinking", "video_in"]
 display_name = "Kimi for Coding"
 
 [loop_control]
-max_retries_per_step = 3
+max_attempts_per_step = 3
 max_ralph_iterations = 0
 reserved_context_size = 50000
 compaction_trigger_ratio = 0.85

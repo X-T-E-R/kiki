@@ -101,8 +101,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `merge_all_available_skills` | `boolean` | `true` | Whether to merge Agent Skills from all available directories |
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |
 | `extra_agent_dirs` | `array<string>` | — | Extra custom agent search directories, layered on top of the default directories |
-| `skip_builtin_profile_installation` | `array<string>` | — | Built-in template names not to install under `agents/builtin/` at startup. Already managed copies remain active and continue receiving safe updates; this is not a runtime disable switch. When present, including `[]`, this key takes precedence over the deprecated alias below |
-| `disabled_builtin_profiles` | `array<string>` | `[]` | Deprecated alias for `skip_builtin_profile_installation`; still read when the new key is absent and emits a migration warning. Rename it without changing the list |
+| `skip_builtin_profile_installation` | `array<string>` | — | Built-in template names not to install under `agents/builtin/` at startup. Already managed copies remain active and continue receiving safe updates; this is not a runtime disable switch |
 | `disabled_named_profiles` | `array<string>` | `[]` | Profile names to hide from subagent discovery and dispatch, regardless of file source. The default main `agent` binding remains available |
 | `builtin_product_skills` | `boolean` | `true` | Whether Kiki's product skills are offered to the model: `kiki-ops` for product usage and configuration, and `kiki-profile` for agent profile authoring. Turning them off removes both names and descriptions from the system prompt, at the cost of those guided workflows |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
@@ -328,8 +327,6 @@ the global [`[thinking]`](#thinking) config.
 | --- | --- | --- |
 | `default_thinking` | 0.21.0 | Top-level boolean, replaced by `[thinking] enabled`. Migrate `default_thinking = true` to `enabled = true`, and `default_thinking = false` to `enabled = false`. |
 | `thinking.mode` | 0.21.0 | One of `auto` / `on` / `off`, replaced by `[thinking] enabled`. `mode = "off"` becomes `enabled = false`; `mode = "on"` and `mode = "auto"` are equivalent to `enabled = true` (the default) and can be removed. |
-| `loop_control.max_retries_per_step` | 0.32.0 | Replaced by `loop_control.max_attempts_per_step` (the value was always a total-attempt limit, including the first try). The old key is ignored and reports a warning on startup; rename it in `config.toml`. |
-| `loop_control.max_steps_per_run` | 0.32.0 | Replaced by `loop_control.max_steps_per_turn`. The old key is ignored and reports a warning on startup; rename it in `config.toml`. |
 
 ## `loop_control`
 
@@ -342,7 +339,7 @@ the global [`[thinking]`](#thinking) config.
 | `reserved_context_size` | `integer` | — | Number of tokens reserved for model output; automatic compaction is triggered when the remaining context window falls below this value |
 | `compaction_max_attempts` | `integer` | `5` | Maximum total requests for a failing compaction, including the initial attempt; every recovery path (retry backoff, context-overflow shrink, empty or truncated shrink) draws on the same budget |
 
-`max_steps_per_turn` can be overridden by the `KIMI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file. The former `KIMI_LOOP_MAX_RETRIES_PER_STEP` variable is deprecated but still honored (with a startup warning) when the new one is unset.
+`max_steps_per_turn` can be overridden by the `KIMI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file.
 
 Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and 5xx server errors. A 429 caused by an exhausted quota or insufficient account balance is not retried and fails immediately, since it cannot succeed until the account is recharged.
 

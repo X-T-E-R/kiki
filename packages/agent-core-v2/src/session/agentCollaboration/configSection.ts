@@ -17,13 +17,7 @@ const AgentsConfigBaseSchema = z.object({
     .optional(),
 }).strict();
 
-export const AgentsConfigSchema = z.preprocess((raw) => {
-  if (typeof raw === 'object' && raw !== null && 'notifyParent' in raw && !('notify_parent' in raw)) {
-    const { notifyParent, ...rest } = raw as Record<string, unknown>;
-    return { ...rest, notify_parent: notifyParent };
-  }
-  return raw;
-}, AgentsConfigBaseSchema);
+export const AgentsConfigSchema = AgentsConfigBaseSchema;
 
 export type AgentsConfig = z.infer<typeof AgentsConfigBaseSchema>;
 

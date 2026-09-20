@@ -216,7 +216,7 @@ describe('KikiClient config responses', () => {
 
     expect(result.agents?.enabled).toBe(false);
     expect(result.model_catalog?.refreshOnStart).toBe(true);
-    expect(result.disabled_builtin_profiles).toEqual([]);
+    expect(result.skip_builtin_profile_installation).toEqual([]);
     expect(result.disabled_named_profiles).toEqual([]);
   });
 
@@ -224,11 +224,11 @@ describe('KikiClient config responses', () => {
     stubConfigResponse(null);
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
     const queryClient = new QueryClient();
-    const cached = { providers: {}, disabled_builtin_profiles: ['explore'] };
+    const cached = { providers: {}, skip_builtin_profile_installation: ['explore'] };
     queryClient.setQueryData(['config'], cached);
 
     await expect(
-      client.patchConfig({ disabled_builtin_profiles: ['agent'] }).then((echoed) => {
+      client.patchConfig({ skip_builtin_profile_installation: ['agent'] }).then((echoed) => {
         queryClient.setQueryData(['config'], echoed);
       }),
     ).rejects.toBeInstanceOf(ApiError);
@@ -244,7 +244,7 @@ describe('KikiClient config responses', () => {
   it('normalizes legacy null and single-string list fields', async () => {
     stubConfigResponse({
       providers: {},
-      disabled_builtin_profiles: null,
+      skip_builtin_profile_installation: null,
       disabled_named_profiles: 'reviewer',
       extra_agent_dirs: 'C:/agents',
       tools: { enabled: ['Read', 'Read'], disabled: null },
@@ -254,7 +254,7 @@ describe('KikiClient config responses', () => {
 
     const result = await client.patchConfig({});
 
-    expect(result.disabled_builtin_profiles).toEqual([]);
+    expect(result.skip_builtin_profile_installation).toEqual([]);
     expect(result.disabled_named_profiles).toEqual(['reviewer']);
     expect(result.extra_agent_dirs).toEqual(['C:/agents']);
     expect(result.tools).toEqual({ enabled: ['Read'], disabled: [] });
@@ -262,7 +262,7 @@ describe('KikiClient config responses', () => {
   });
 
   it('rejects object-valued disabled profile lists', async () => {
-    stubConfigResponse({ providers: {}, disabled_builtin_profiles: { explore: true } });
+    stubConfigResponse({ providers: {}, skip_builtin_profile_installation: { explore: true } });
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
     await expect(client.patchConfig({})).rejects.toBeInstanceOf(ApiError);
   });

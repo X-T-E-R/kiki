@@ -14,7 +14,7 @@ import {
 import { ToolsConfigSchema } from '@kiki/agent-core-v2/agent/toolPolicy/configSection';
 import { PromptConfigSchema, PromptConfigPatchSchema } from '@kiki/agent-core-v2/app/prompt/configSection';
 import {
-  DisabledBuiltinProfilesConfigSchema,
+  SkipBuiltinProfileInstallationConfigSchema,
   DisabledNamedProfilesConfigSchema,
   ExtraAgentDirsConfigSchema,
 } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
@@ -82,7 +82,7 @@ const replaceableConfigDomainSchema = z.enum([
   'identity',
   'request_identity',
   'extra_agent_dirs',
-  'disabled_builtin_profiles',
+  'skip_builtin_profile_installation',
   'disabled_named_profiles',
   'mcp',
   'nb_search',
@@ -147,7 +147,7 @@ export const configResponseSchema = z.object({
   identity: IdentityConfigSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
-  disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
+  skip_builtin_profile_installation: SkipBuiltinProfileInstallationConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
   mcp: McpSectionSchema.optional(),
   plugins: PluginsSectionSchema.optional(),
@@ -204,7 +204,7 @@ export const patchConfigRequestSchema = z.object({
   identity: IdentityConfigSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
-  disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
+  skip_builtin_profile_installation: SkipBuiltinProfileInstallationConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
   mcp: mcpConfigRequestSchema.optional(),
   plugins: pluginsConfigRequestSchema.optional(),

@@ -10,8 +10,6 @@ export const LOOP_MAX_STEPS_PER_TURN_ENV = 'KIMI_LOOP_MAX_STEPS_PER_TURN';
 export const LOOP_MAX_ATTEMPTS_PER_STEP_ENV = 'KIMI_LOOP_MAX_ATTEMPTS_PER_STEP';
 export const LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV =
   'KIMI_LOOP_COMPACTION_SOFT_CONTEXT_SIZE';
-/** Deprecated former name of {@link LOOP_MAX_ATTEMPTS_PER_STEP_ENV}. */
-export const LOOP_MAX_RETRIES_PER_STEP_ENV = 'KIMI_LOOP_MAX_RETRIES_PER_STEP';
 export const DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE = 0;
 
 export const LoopControlSchema = z.object({
@@ -37,7 +35,6 @@ export const loopControlEnvBindings: EnvBindings<LoopControl> = envBindings(Loop
   maxStepsPerTurn: { env: LOOP_MAX_STEPS_PER_TURN_ENV, parse: parseNonNegativeInt },
   maxAttemptsPerStep: {
     env: LOOP_MAX_ATTEMPTS_PER_STEP_ENV,
-    deprecatedEnv: LOOP_MAX_RETRIES_PER_STEP_ENV,
     parse: parseNonNegativeInt,
   },
   compactionSoftContextSize: {
@@ -58,8 +55,4 @@ registerConfigSection(LOOP_CONTROL_SECTION, LoopControlSchema, {
   toToml: loopControlToToml,
   env: loopControlEnvBindings,
   stripEnv: stripLoopControlEnv,
-  deprecations: [
-    { key: 'max_retries_per_step', replacement: 'max_attempts_per_step' },
-    { key: 'max_steps_per_run', replacement: 'max_steps_per_turn' },
-  ],
 });

@@ -17,10 +17,7 @@ import {
   resolveSubagentTimeoutMs,
   DEFAULT_SUBAGENT_TIMEOUT_MS,
 } from '#/session/subagent/configSection';
-import {
-  DISABLED_BUILTIN_PROFILES_SECTION,
-  SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION,
-} from '#/workspace/workspaceAgentProfileLoader/configSection';
+import { SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
 import { stubLog } from '../../_base/log/stubs';
@@ -65,19 +62,7 @@ describe('agent profile configuration through TOML', () => {
     });
   });
 
-  it('loads the installation policy and warns while retaining the deprecated alias', async () => {
-    await withConfig('disabled_builtin_profiles = ["plan"]\nskip_builtin_profile_installation = []', (config) => {
-      expect(config.get(DISABLED_BUILTIN_PROFILES_SECTION)).toEqual(['plan']);
-      expect(config.get(SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION)).toEqual([]);
-      expect(config.diagnostics()).toEqual([expect.objectContaining({
-        domain: DISABLED_BUILTIN_PROFILES_SECTION,
-        severity: 'warning',
-        message: expect.stringContaining('skip_builtin_profile_installation'),
-      })]);
-    });
-  });
-
-  it('does not emit a deprecation warning for the new installation key alone', async () => {
+  it('loads the installation policy without a compatibility alias', async () => {
     await withConfig('skip_builtin_profile_installation = ["general"]', (config) => {
       expect(config.get(SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION)).toEqual(['general']);
       expect(config.diagnostics()).toEqual([]);

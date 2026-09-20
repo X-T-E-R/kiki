@@ -16,26 +16,17 @@
  *  - a top-level key with no registered section passes through the engine
  *    untouched, so it is reported as a non-fatal warning — except the known
  *    schema-less domains the engine consumes directly (`default_model`, …);
- *  - section-declared key renames (`deprecations`) and renamed env vars
- *    (`deprecatedEnv` bindings actually supplying a value) surface as
- *    non-fatal warnings, reusing the engine's own detection
- *    (`collectKeyDeprecations`) and mirroring `ConfigService`'s env-fallback
- *    warning rule.
+ *  - unknown top-level keys are reported as non-fatal warnings, matching the
+ *    engine's treatment of unregistered sections.
  */
 
 import { parse as parseToml } from 'smol-toml';
 import { z } from 'zod';
 
-import {
-  ConfigRegistry,
-  type AnyEnvBindings,
-  type EnvBinding,
-} from '@kiki/agent-core-v2';
-import { collectKeyDeprecations } from '@kiki/agent-core-v2/app/config/deprecations';
+import { ConfigRegistry } from '@kiki/agent-core-v2';
 import {
   camelToSnake,
   describeTomlSyntaxError,
-  isPlainObject,
   transformTomlData,
 } from '@kiki/agent-core-v2/app/config/toml';
 
@@ -74,13 +65,9 @@ class V2ConfigValidationError extends Error {
  * Validate `text` as config.toml against the v2 engine's section registry.
  * Throws on TOML syntax errors and on any registered section failing its
  * schema; returns non-fatal warnings (one per line) for unknown top-level
- * keys, deprecated config keys, and deprecated env vars in use.
+ * keys.
  */
-export function validateConfigTomlV2(
-  text: string,
-  filePath: string,
-  getEnv: (name: string) => string | undefined = (name) => process.env[name],
-): string | undefined {
+export function validateConfigTomlV2(text: string, filePath: string): string | undefined {
   let data: Record<string, unknown> = {};
   if (text.trim().length > 0) {
     try {
@@ -123,63 +110,10 @@ export function validateConfigTomlV2(
   if (issues.length > 0) throw new V2ConfigValidationError(issues);
 
   const warnings: string[] = [];
-  for (const diagnostic of collectKeyDeprecations(data, registry.listSections())) {
-    warnings.push(diagnostic.message);
-  }
-  warnings.push(...collectEnvDeprecations(registry, getEnv));
   if (unknownKeys.length > 0) {
     warnings.push(
       `Unknown top-level ${unknownKeys.length === 1 ? 'key' : 'keys'} ignored by the v2 engine: ${unknownKeys.join(', ')}.`,
     );
   }
   return warnings.length > 0 ? warnings.join('\n') : undefined;
-}
-
-/**
- * Warn about renamed env vars that actually supply a value, mirroring
- * `ConfigService`'s `resolveBinding`: the deprecated name only resolves (and
- * thus only warns) when the primary var is absent or fails to parse.
- */
-function collectEnvDeprecations(
-  registry: ConfigRegistry,
-  getEnv: (name: string) => string | undefined,
-): string[] {
-  const warnings = new Set<string>();
-  for (const section of registry.listSections()) {
-    if (section.env === undefined) continue;
-    walkEnvBindings(section.env, (binding) => {
-      if (typeof binding === 'string' || binding.deprecatedEnv === undefined) return;
-      const primary = getEnv(binding.env);
-      if (
-        primary !== undefined &&
-        (binding.parse === undefined || binding.parse(primary) !== undefined)
-      ) {
-        return;
-      }
-      const deprecated = getEnv(binding.deprecatedEnv);
-      if (deprecated === undefined) return;
-      if (binding.parse !== undefined && binding.parse(deprecated) === undefined) return;
-      warnings.add(
-        `Environment variable ${binding.deprecatedEnv} is deprecated; use ${binding.env} instead.`,
-      );
-    });
-  }
-  return [...warnings];
-}
-
-function isEnvBinding(value: AnyEnvBindings): value is EnvBinding {
-  return typeof value === 'string' || (isPlainObject(value) && 'env' in value);
-}
-
-function walkEnvBindings(
-  bindings: AnyEnvBindings,
-  visit: (binding: EnvBinding) => void,
-): void {
-  if (isEnvBinding(bindings)) {
-    visit(bindings);
-    return;
-  }
-  for (const value of Object.values(bindings)) {
-    if (value !== undefined) walkEnvBindings(value, visit);
-  }
 }

@@ -13,28 +13,9 @@ export type EnvBinding =
   | string
   | {
       readonly env: string;
-      /**
-       * Deprecated former name of `env`. Still honored (with a deprecation
-       * warning) when `env` itself is absent or fails to parse, so existing
-       * setups keep working until the user renames the variable.
-       */
-      readonly deprecatedEnv?: string;
       readonly parse?: (raw: string) => unknown;
       readonly default?: unknown;
     };
-
-/**
- * A declared config-key rename: `key` (snake_case, as written on disk) is
- * deprecated in favor of `replacement`. While the old key is present in the
- * user's config file the service reports a warning diagnostic; the old value
- * is NOT honored — only `replacement` (or the section default) applies.
- */
-export interface ConfigKeyDeprecation {
-  readonly key: string;
-  readonly replacement: string;
-  /** Optional extra guidance appended to the generated warning message. */
-  readonly message?: string;
-}
 
 export type EnvBindings<T> = EnvBinding | { [K in keyof T]?: EnvBinding | EnvBindings<T[K]> };
 
@@ -78,16 +59,9 @@ export function stripEnvBoundFields<T>(bindings: EnvBindings<T>): ConfigStripEnv
 
 function resolvesFromEnv(binding: EnvBinding, getEnv: (name: string) => string | undefined): boolean {
   const parse = typeof binding === 'string' ? undefined : binding.parse;
-  const names =
-    typeof binding === 'string'
-      ? [binding]
-      : binding.deprecatedEnv === undefined
-        ? [binding.env]
-        : [binding.env, binding.deprecatedEnv];
-  return names.some((name) => {
-    const raw = getEnv(name);
-    return raw !== undefined && (parse === undefined || parse(raw) !== undefined);
-  });
+  const name = typeof binding === 'string' ? binding : binding.env;
+  const raw = getEnv(name);
+  return raw !== undefined && (parse === undefined || parse(raw) !== undefined);
 }
 
 export type ConfigFromToml = (rawSnake: unknown) => unknown;
@@ -106,7 +80,6 @@ export interface ConfigSection<T = unknown> {
   readonly stripEnv?: ConfigStripEnv<T>;
   readonly fromToml?: ConfigFromToml;
   readonly toToml?: ConfigToToml;
-  readonly deprecations?: readonly ConfigKeyDeprecation[];
   readonly collectDiagnostics?: ConfigCollectDiagnostics;
   readonly entryKeyed?: ConfigSchema<unknown>;
 }
@@ -119,7 +92,6 @@ export interface RegisterSectionOptions<T> {
   readonly stripEnv?: ConfigStripEnv<T>;
   readonly fromToml?: ConfigFromToml;
   readonly toToml?: ConfigToToml;
-  readonly deprecations?: readonly ConfigKeyDeprecation[];
   readonly collectDiagnostics?: ConfigCollectDiagnostics;
   readonly entryKeyed?: ConfigSchema<unknown>;
 }

@@ -1603,11 +1603,10 @@ describe('SessionEventBroadcaster', () => {
 
       const warnings = [
         {
-          domain: 'loopControl',
-          message:
-            "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'.",
+          domain: 'agents',
+          message: "[agents] 'legacy_key' was removed and is no longer read.",
         },
-        { message: 'Environment variable OLD_VAR is deprecated; use NEW_VAR instead.' },
+        { message: 'Configuration warning from a runtime service.' },
       ];
       eventBus.emit({ type: 'event.config.warning', payload: { warnings } });
 

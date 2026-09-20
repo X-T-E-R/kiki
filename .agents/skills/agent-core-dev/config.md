@@ -159,13 +159,10 @@ registerConfigSection('providers', ProvidersSectionSchema, {
 ```
 
 Each field is an `EnvBinding` — a string (env var name) or
-`{ env, deprecatedEnv?, parse?, default? }`. IConfig resolves every field by
+`{ env, parse?, default? }`. IConfig resolves every field by
 `env > config.toml > default`, sets it on the effective value, and validates the
 section. Empty nested entries (no field resolved) are omitted, so a synthetic
 entry like `__kimi_env__` only appears when at least one of its env vars is set.
-When `deprecatedEnv` is set and `env` itself is absent or fails `parse`, the
-deprecated var still supplies the value and a warning diagnostic is reported —
-use it to rename an env var without breaking existing setups.
 
 `stripEnv(value, raw?, getEnv?)` removes env-derived fields before `set`/`replace`
 persists, so env overrides never leak into `config.toml`. `raw` is the section's
@@ -257,23 +254,9 @@ This means registration order is never a correctness concern — you do not need
 - `validated` — validated `raw`, env-free; the base every live env re-application starts from, so a degraded or removed env value falls back to the file instead of a stale overlay.
 - `effective` — `validated` plus the env overlay, recomputed on load/set; `get()`/`getAll()` re-apply the overlay on a fresh `validated` copy per read rather than caching it.
 
-### Renaming config keys and env vars (deprecations)
+### Removed config keys
 
-Renames are declared once on the section, never hand-rolled in `fromToml`:
-
-```ts
-registerSection(MY_SECTION, MySectionSchema, {
-  deprecations: [{ key: 'old_key', replacement: 'new_key' }], // snake_case, on-disk
-  env: envBindings(MySectionSchema, {
-    newKey: { env: 'KIMI_NEW_KEY', deprecatedEnv: 'KIMI_OLD_KEY', parse },
-  }),
-});
-```
-
-- A deprecated TOML key is **ignored** (its value no longer applies — the schema only knows the new key) and reports a warning `ConfigDiagnostic` while present; the file is never rewritten, so the warning is the migration guide. Diagnostics are recomputed on every load/reload and surface to clients via `IConfigService.diagnostics()` and `onDidChangeDiagnostics` (kap-server republishes them as the global `event.config.warning` WS event).
-- A deprecated env var still **resolves** as a fallback (new var first), with the same warning treatment, and `stripEnvBoundFields` treats it as env-owned for writes.
-- See `src/agent/loop/configSection.ts` for a worked example (`max_retries_per_step` → `max_attempts_per_step`).
-
+Keys that are no longer read can register `collectRemovedKeyDiagnostics` in their owning section. The value is ignored, the file remains unchanged, and the diagnostic explains that the key was removed. Keep `collectRemovedSectionDiagnostics` for removed top-level sections that still need migration guidance.
 ### `KIMI_MODEL_*` env overlay
 
 When `KIMI_MODEL_NAME` is set, the `kosongConfig` wrapper's `kimiModelEnvOverlay` (`src/app/kosongConfig/envOverlay.ts`) injects a reserved model alias (`__kimi_env_model__`) into `effective`, points `defaultModel` at it, and merges the request `modelOverrides`; the reserved provider (`__kimi_env__`) comes from the `providers` section env bindings. The overlay is registered via module-level `registerConfigOverlay` and applied **only to `effective`**, never to `rawSnake`, so it is never persisted. Its `strip` (plus the providers section `stripEnv`) is the final guard so a caller that read `effective` (with the overlay) cannot write the reserved entries or the shell API key back to disk. `config` itself only runs registered overlays — it does not know the `KIMI_MODEL_*` semantics.

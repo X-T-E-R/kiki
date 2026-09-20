@@ -796,7 +796,7 @@ export interface RuntimeConfigDraft {
   identityName: string;
   identitySlug: string;
   extraAgentDirs: string[];
-  disabledBuiltinProfiles: string[];
+  disabledNamedProfiles: string[];
   sessionTitleModel: string;
 }
 
@@ -843,7 +843,7 @@ export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft
     identityName: config.identity?.name ?? '',
     identitySlug: config.identity?.slug ?? '',
     extraAgentDirs: normalizeConfigStringList(config.extra_agent_dirs),
-    disabledBuiltinProfiles: normalizeConfigStringList(config.disabled_builtin_profiles),
+    disabledNamedProfiles: normalizeConfigStringList(config.disabled_named_profiles),
     sessionTitleModel: config.session_title?.model ?? '',
   };
 }
@@ -941,7 +941,7 @@ export function agentNotifyParentPatch(notifyParent: boolean): KikiConfigPatch {
  * back values edited on another leaf from a stale draft.
  */
 export function agentIdentityPatch(
-  draft: Pick<RuntimeConfigDraft, 'identityName' | 'identitySlug' | 'extraAgentDirs' | 'disabledBuiltinProfiles'>,
+  draft: Pick<RuntimeConfigDraft, 'identityName' | 'identitySlug' | 'extraAgentDirs' | 'disabledNamedProfiles'>,
 ): KikiConfigPatch {
   return {
     identity: {
@@ -949,8 +949,8 @@ export function agentIdentityPatch(
       slug: draft.identitySlug.trim() || undefined,
     },
     extra_agent_dirs: normalizeStringList(draft.extraAgentDirs),
-    disabled_builtin_profiles: normalizeStringList(draft.disabledBuiltinProfiles),
-    replace_domains: ['identity', 'extra_agent_dirs', 'disabled_builtin_profiles'],
+    disabled_named_profiles: normalizeStringList(draft.disabledNamedProfiles),
+    replace_domains: ['identity', 'extra_agent_dirs', 'disabled_named_profiles'],
   };
 }
 

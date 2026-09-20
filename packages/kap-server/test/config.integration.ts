@@ -365,7 +365,7 @@ describe('server-v2 /api/config', () => {
       },
       identity: { name: 'Example Agent', slug: 'example-agent' },
       extra_agent_dirs: ['/tmp/example-agents', '/tmp/team-agents'],
-      disabled_builtin_profiles: ['researcher', 'reviewer'],
+      skip_builtin_profile_installation: ['researcher', 'reviewer'],
       disabled_named_profiles: ['reviewer'],
       mcp: { startup_timeout_ms: 5_000, tool_timeout_ms: 6_000 },
       tools: { enabled: ['Read', 'Write'], disabled: ['Bash'] },
@@ -377,7 +377,7 @@ describe('server-v2 /api/config', () => {
         'task',
         'identity',
         'extra_agent_dirs',
-        'disabled_builtin_profiles',
+        'skip_builtin_profile_installation',
         'disabled_named_profiles',
         'mcp',
         'tools',
@@ -405,7 +405,7 @@ describe('server-v2 /api/config', () => {
     });
     expect(after.identity).toEqual({ name: 'Example Agent', slug: 'example-agent' });
     expect(after.extra_agent_dirs).toEqual(['/tmp/example-agents', '/tmp/team-agents']);
-    expect(after.disabled_builtin_profiles).toEqual(['researcher', 'reviewer']);
+    expect(after.skip_builtin_profile_installation).toEqual(['researcher', 'reviewer']);
     expect(after.disabled_named_profiles).toEqual(['reviewer']);
     expect(after.mcp).toEqual({ startupTimeoutMs: 5_000, toolTimeoutMs: 6_000 });
     expect(after.tools).toEqual({ enabled: ['Read', 'Write'], disabled: ['Bash'] });
@@ -421,7 +421,7 @@ describe('server-v2 /api/config', () => {
   it('replace_domains removes omitted runtime fields and clears list domains', async () => {
     await boot([
       'extra_agent_dirs = ["/tmp/example-agents", "/tmp/old-agents"]',
-      'disabled_builtin_profiles = ["researcher", "reviewer"]',
+      'skip_builtin_profile_installation = ["researcher", "reviewer"]',
       'disabled_named_profiles = ["reviewer"]',
       '',
       '[thread_communication]',
@@ -465,7 +465,7 @@ describe('server-v2 /api/config', () => {
       task: { keep_alive_on_exit: false, print_background_mode: 'exit' },
       identity: { name: 'Example Agent' },
       extra_agent_dirs: ['/tmp/example-agents'],
-      disabled_builtin_profiles: [],
+      skip_builtin_profile_installation: [],
       disabled_named_profiles: [],
       mcp: { tool_timeout_ms: 7_000 },
       tools: { enabled: ['Write'] },
@@ -477,7 +477,7 @@ describe('server-v2 /api/config', () => {
         'task',
         'identity',
         'extra_agent_dirs',
-        'disabled_builtin_profiles',
+        'skip_builtin_profile_installation',
         'disabled_named_profiles',
         'mcp',
         'tools',
@@ -491,7 +491,7 @@ describe('server-v2 /api/config', () => {
     expect(after.task).toEqual({ keepAliveOnExit: false, printBackgroundMode: 'exit' });
     expect(after.identity).toEqual({ name: 'Example Agent' });
     expect(after.extra_agent_dirs).toEqual(['/tmp/example-agents']);
-    expect(after.disabled_builtin_profiles).toEqual([]);
+    expect(after.skip_builtin_profile_installation).toEqual([]);
     expect(after.disabled_named_profiles).toEqual([]);
     expect(after.mcp).toEqual({ toolTimeoutMs: 7_000 });
     expect(after.tools).toEqual({ enabled: ['Write'] });
@@ -510,20 +510,20 @@ describe('server-v2 /api/config', () => {
 
   it('PATCH a disabled list domain without replace_domains replaces the array atomically', async () => {
     await boot([
-      'disabled_builtin_profiles = ["coder"]',
+      'skip_builtin_profile_installation = ["coder"]',
       'disabled_named_profiles = ["critic"]',
       '',
     ].join('\n'));
 
-    const first = await patchConfig({ disabled_builtin_profiles: ['explore', 'agent'] });
-    expect(first.disabled_builtin_profiles).toEqual(['explore', 'agent']);
+    const first = await patchConfig({ skip_builtin_profile_installation: ['explore', 'agent'] });
+    expect(first.skip_builtin_profile_installation).toEqual(['explore', 'agent']);
     expect(first.disabled_named_profiles).toEqual(['critic']);
 
-    const second = await patchConfig({ disabled_builtin_profiles: ['agent'] });
-    expect(second.disabled_builtin_profiles).toEqual(['agent']);
+    const second = await patchConfig({ skip_builtin_profile_installation: ['agent'] });
+    expect(second.skip_builtin_profile_installation).toEqual(['agent']);
 
     const after = await getConfig();
-    expect(after.disabled_builtin_profiles).toEqual(['agent']);
+    expect(after.skip_builtin_profile_installation).toEqual(['agent']);
     expect(after.disabled_named_profiles).toEqual(['critic']);
 
     const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
@@ -563,7 +563,7 @@ describe('server-v2 /api/config', () => {
       { task: { max_running_tasks: 0 } },
       { identity: { name: 42 } },
       { extra_agent_dirs: [42] },
-      { disabled_builtin_profiles: [42] },
+      { skip_builtin_profile_installation: [42] },
       { disabled_named_profiles: [42] },
       { mcp: { startup_timeout_ms: 0 } },
       { tools: { enabled: [42] } },

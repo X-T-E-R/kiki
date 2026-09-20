@@ -135,17 +135,11 @@ describe('prompt field inspection', () => {
     );
   });
 
-  it('marks system fields shadowed for a legacy SYSTEM.md body', async () => {
+  it('rejects a legacy SYSTEM.md body without frontmatter', async () => {
     await writeFile(join(homeDir, 'SYSTEM.md'), 'Custom complete system prompt.\n', 'utf8');
 
-    const report = await inspectPromptFields({ homeDir, cwd: workDir, osHomeDir });
-
-    expect(report.validation.systemMdLoaded).toBe(true);
-    expect(report.fields.find((field) => field.id === 'system.language')).toMatchObject({
-      status: 'shadowed',
-      value: undefined,
-    });
-    expect(report.fields.find((field) => field.id === 'system.shared')?.status).toBe('effective');
+    await expect(inspectPromptFields({ homeDir, cwd: workDir, osHomeDir }))
+      .rejects.toThrow('agent SYSTEM.md parse failed');
   });
 
   it('resolves the shipped built-in profiles without any on-disk agent files', async () => {
@@ -159,7 +153,7 @@ describe('prompt field inspection', () => {
 
     const explore = await inspectPromptFields({ homeDir, cwd: workDir, osHomeDir, profile: 'explore' });
     expect(explore.profile).toBe('explore');
-    expect(explore.validation.profileCount).toBeGreaterThanOrEqual(5);
+    expect(explore.validation.profileCount).toBeGreaterThanOrEqual(3);
   });
 
   it('lets a same-name user profile win over the shipped built-in without an override flag', async () => {

@@ -301,12 +301,12 @@ describe('settings persistence and validation', () => {
       task: { maxRunningTasks: 4, keepAliveOnExit: true, printBackgroundMode: 'drain' },
       identity: { name: 'Example Agent', slug: 'example-agent' },
       extra_agent_dirs: ['C:\\agents'],
-      disabled_builtin_profiles: ['reviewer'],
+      disabled_named_profiles: ['reviewer'],
       mcp: { startupTimeoutMs: 30_000, toolTimeoutMs: 60_000 },
       tools: { enabled: ['Read'], disabled: ['Bash'] },
     });
     draft.extraAgentDirs.push(' C:\\agents ', 'D:\\agents');
-    draft.disabledBuiltinProfiles = [];
+    draft.disabledNamedProfiles = [];
 
     // cron is env-driven and never persisted — no patch emits or replaces it.
     const taskPatch = taskRuntimePatch(draft.task);
@@ -336,8 +336,8 @@ describe('settings persistence and validation', () => {
     const identityPatch = agentIdentityPatch(draft);
     expect(identityPatch.identity).toEqual({ name: 'Example Agent', slug: 'example-agent' });
     expect(identityPatch.extra_agent_dirs).toEqual(['C:\\agents', 'D:\\agents']);
-    expect(identityPatch.disabled_builtin_profiles).toEqual([]);
-    expect(identityPatch.replace_domains).toEqual(['identity', 'extra_agent_dirs', 'disabled_builtin_profiles']);
+    expect(identityPatch.disabled_named_profiles).toEqual([]);
+    expect(identityPatch.replace_domains).toEqual(['identity', 'extra_agent_dirs', 'disabled_named_profiles']);
 
     // mcp and tools belong to other leaves — none of the split patches sends
     // or replaces them, so a stale draft can never roll them back.
@@ -359,7 +359,7 @@ describe('settings persistence and validation', () => {
   it('projects malformed config roots and lists to safe canonical defaults', () => {
     expect(runtimeConfigDraftFromConfig(null)).toMatchObject({
       extraAgentDirs: [],
-      disabledBuiltinProfiles: [],
+      disabledNamedProfiles: [],
     });
     expect(toolPolicyDraftFromConfig(null)).toEqual({ toolsEnabled: [], toolsDisabled: [] });
     expect(serverFileSettingsFromConfig('not-a-config')).toMatchObject({
@@ -369,16 +369,16 @@ describe('settings persistence and validation', () => {
 
     expect(() => runtimeConfigDraftFromConfig({
       extra_agent_dirs: { path: 'C:/agents' },
-      disabled_builtin_profiles: 42,
+      disabled_named_profiles: 42,
       tools: { enabled: 'Read', disabled: { Bash: true } },
     })).not.toThrow();
     const draft = runtimeConfigDraftFromConfig({
       extra_agent_dirs: { path: 'C:/agents' },
-      disabled_builtin_profiles: 'reviewer',
+      disabled_named_profiles: 'reviewer',
       tools: { enabled: 'Read', disabled: { Bash: true } },
     });
     expect(draft.extraAgentDirs).toEqual([]);
-    expect(draft.disabledBuiltinProfiles).toEqual(['reviewer']);
+    expect(draft.disabledNamedProfiles).toEqual(['reviewer']);
     const policy = toolPolicyDraftFromConfig({ tools: { enabled: 'Read', disabled: { Bash: true } } });
     expect(policy.toolsEnabled).toEqual(['Read']);
     expect(policy.toolsDisabled).toEqual([]);
@@ -1210,7 +1210,7 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
     expect(Object.keys(threadPatch).toSorted()).toEqual(['replace_domains', 'thread_communication']);
     expect(Object.keys(tokenPatch).toSorted()).toEqual(['replace_domains', 'token_counting']);
     expect(Object.keys(notifyPatch).toSorted()).toEqual(['agents']);
-    expect(Object.keys(identityPatch).toSorted()).toEqual(['disabled_builtin_profiles', 'extra_agent_dirs', 'identity', 'replace_domains']);
+    expect(Object.keys(identityPatch).toSorted()).toEqual(['disabled_named_profiles', 'extra_agent_dirs', 'identity', 'replace_domains']);
     expect(Object.keys(toolsPatch).toSorted()).toEqual(['replace_domains', 'tools']);
     expect(Object.keys(mcpPatch).toSorted()).toEqual(['mcp', 'replace_domains']);
   });

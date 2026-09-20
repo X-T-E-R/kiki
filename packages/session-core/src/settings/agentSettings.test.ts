@@ -62,33 +62,20 @@ describe('experimental flags projection', () => {
 });
 
 describe('disabled profile channels', () => {
-  it('routes built-in profiles through disabled_builtin_profiles', () => {
-    expect(disabledProfilePatch(
-      { disabled_builtin_profiles: ['explore'], disabled_named_profiles: ['reviewer'] },
-      { name: 'agent', source: 'builtin' },
-      false,
-    )).toEqual({ disabled_builtin_profiles: ['explore', 'agent'] });
-    expect(disabledProfilePatch(
-      { disabled_builtin_profiles: ['explore', 'agent'] },
-      { name: 'agent', source: 'builtin' },
-      true,
-    )).toEqual({ disabled_builtin_profiles: ['explore'] });
-  });
-
   it('routes named profiles through disabled_named_profiles, deduped', () => {
     expect(disabledProfilePatch(
       {},
-      { name: 'reviewer', source: 'workspace' },
+      { name: 'reviewer' },
       false,
     )).toEqual({ disabled_named_profiles: ['reviewer'] });
     expect(disabledProfilePatch(
       { disabled_named_profiles: ['reviewer'] },
-      { name: 'reviewer', source: 'user' },
+      { name: 'reviewer' },
       false,
     )).toEqual({ disabled_named_profiles: ['reviewer'] });
     expect(disabledProfilePatch(
       { disabled_named_profiles: ['reviewer', 'frontend'] },
-      { name: 'reviewer', source: 'workspace' },
+      { name: 'reviewer' },
       true,
     )).toEqual({ disabled_named_profiles: ['frontend'] });
   });

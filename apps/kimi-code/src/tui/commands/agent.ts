@@ -14,7 +14,6 @@ export interface SelectableAgentProfile {
 
 interface AgentCatalogConfig {
   readonly extraAgentDirs: readonly string[];
-  readonly disabledBuiltinProfiles: ReadonlySet<string>;
   readonly disabledNamedProfiles: ReadonlySet<string>;
 }
 
@@ -58,7 +57,7 @@ export async function loadSelectableAgentProfiles(
   const enabledBuiltinNames = new Set<string>();
   const merged = new Map<string, SelectableAgentProfile>();
   for (const profile of builtins) {
-    if (config.disabledBuiltinProfiles.has(profile.name)) continue;
+    if (config.disabledNamedProfiles.has(profile.name)) continue;
     enabledBuiltinNames.add(profile.name);
     merged.set(profile.name, {
       name: profile.name,
@@ -160,13 +159,11 @@ async function readAgentCatalogConfig(path: string): Promise<AgentCatalogConfig>
     const parsed = parse(await readFile(path, 'utf8')) as Record<string, unknown>;
     return {
       extraAgentDirs: stringList(parsed['extra_agent_dirs']),
-      disabledBuiltinProfiles: new Set(stringList(parsed['disabled_builtin_profiles'])),
       disabledNamedProfiles: new Set(stringList(parsed['disabled_named_profiles'])),
     };
   } catch {
     return {
       extraAgentDirs: [],
-      disabledBuiltinProfiles: new Set(),
       disabledNamedProfiles: new Set(),
     };
   }

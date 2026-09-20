@@ -54,7 +54,6 @@ const AGENT_FILE_KEYS = new Set([
   'deny_models',
   'allowed_efforts',
   'model_profiles',
-  'recommended_models',
   'service_tier',
   'request_params',
   'context_budget',
@@ -215,7 +214,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     options.path,
     options.warn,
   );
-  const modelProfiles = resolveModelProfiles(frontmatter, options.path, options.warn);
+  const modelProfiles = resolveModelProfiles(frontmatter, options.path);
   const serviceTier = parseServiceTier(frontmatter['service_tier'], options.path);
   let requestParams = parseRequestParams(frontmatter['request_params'], options.path);
   if (
@@ -327,26 +326,9 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
 function resolveModelProfiles(
   frontmatter: Record<string, unknown>,
   filePath: string,
-  warn?: (message: string) => void,
 ): AgentFileDefinition['modelProfiles'] {
-  const hasNew = Object.hasOwn(frontmatter, 'model_profiles');
-  const hasOld = Object.hasOwn(frontmatter, 'recommended_models');
-  if (hasNew && hasOld) {
-    warn?.(
-      `Frontmatter fields "model_profiles" and "recommended_models" in ${filePath} are both set; using "model_profiles"`,
-    );
-    return parseModelProfiles(frontmatter['model_profiles'], 'model_profiles', filePath);
-  }
-  if (hasNew) {
-    return parseModelProfiles(frontmatter['model_profiles'], 'model_profiles', filePath);
-  }
-  if (hasOld) {
-    warn?.(
-      `Frontmatter field "recommended_models" in ${filePath} is deprecated; use "model_profiles"`,
-    );
-    return parseModelProfiles(frontmatter['recommended_models'], 'recommended_models', filePath);
-  }
-  return undefined;
+  if (!Object.hasOwn(frontmatter, 'model_profiles')) return undefined;
+  return parseModelProfiles(frontmatter['model_profiles'], 'model_profiles', filePath);
 }
 
 function parseModelProfiles(

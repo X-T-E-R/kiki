@@ -63,7 +63,6 @@ import {
   LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV,
   LOOP_CONTROL_SECTION,
   LOOP_MAX_ATTEMPTS_PER_STEP_ENV,
-  LOOP_MAX_RETRIES_PER_STEP_ENV,
   LOOP_MAX_STEPS_PER_TURN_ENV,
   type LoopControl,
 } from '#/agent/loop/configSection';
@@ -1107,7 +1106,7 @@ describe('loopControl config section', () => {
     disposables.dispose();
   });
 
-  it('warns and ignores the deprecated max_steps_per_run key without rewriting the file', async () => {
+  it('ignores the removed max_steps_per_run key without warning or rewriting the file', async () => {
     const env: Record<string, string> = { [LOOP_MAX_STEPS_PER_TURN_ENV]: '7' };
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
@@ -1130,12 +1129,7 @@ describe('loopControl config section', () => {
     expect(config.inspect<LoopControl>(LOOP_CONTROL_SECTION).userValue).toEqual({
       maxStepsPerRun: 100,
     });
-    expect(config.diagnostics()).toContainEqual({
-      domain: LOOP_CONTROL_SECTION,
-      severity: 'warning',
-      message:
-        "[loop_control] 'max_steps_per_run' is deprecated and no longer used; rename it to 'max_steps_per_turn'. Run /kiki-ops fix this configuration warning.",
-    });
+    expect(config.diagnostics()).toEqual([]);
     await config.set(LOOP_CONTROL_SECTION, { maxStepsPerTurn: 7 });
     expect(config.get<LoopControl>(LOOP_CONTROL_SECTION).maxStepsPerTurn).toBe(7);
     const onDisk = new TextDecoder().decode(await storage.read('', 'config.toml'));
@@ -1207,7 +1201,7 @@ describe('loopControl config section', () => {
   });
 });
 
-describe('config deprecations', () => {
+describe('config behavior', () => {
   async function createConfig(env: Record<string, string>, toml?: string) {
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
@@ -1238,152 +1232,7 @@ describe('config deprecations', () => {
     }
   });
 
-  it('warns and ignores a deprecated TOML key whose value no longer applies', async () => {
-    const { config, disposables } = await createConfig(
-      {},
-      '[loop_control]\nmax_retries_per_step = 3\n',
-    );
 
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({});
-    expect(config.diagnostics()).toContainEqual({
-      domain: LOOP_CONTROL_SECTION,
-      severity: 'warning',
-      message:
-        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops fix this configuration warning.",
-    });
-
-    disposables.dispose();
-  });
-
-  it('lets the replacement key win when both are present, still warning', async () => {
-    const { config, disposables } = await createConfig(
-      {},
-      '[loop_control]\nmax_retries_per_step = 3\nmax_attempts_per_step = 2\n',
-    );
-
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({ maxAttemptsPerStep: 2 });
-    expect(config.diagnostics()).toContainEqual({
-      domain: LOOP_CONTROL_SECTION,
-      severity: 'warning',
-      message:
-        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops fix this configuration warning.",
-    });
-
-    disposables.dispose();
-  });
-
-  it('resolves a deprecated env var as a fallback with a warning, new var first', async () => {
-    const env: Record<string, string> = { [LOOP_MAX_RETRIES_PER_STEP_ENV]: '4' };
-    const { config, disposables } = await createConfig(env);
-
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({ maxAttemptsPerStep: 4 });
-    expect(config.diagnostics()).toContainEqual({
-      domain: LOOP_CONTROL_SECTION,
-      severity: 'warning',
-      message: `Environment variable ${LOOP_MAX_RETRIES_PER_STEP_ENV} is deprecated; use ${LOOP_MAX_ATTEMPTS_PER_STEP_ENV} instead.`,
-    });
-    env[LOOP_MAX_ATTEMPTS_PER_STEP_ENV] = '2';
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({ maxAttemptsPerStep: 2 });
-
-    disposables.dispose();
-  });
-
-  it('reports no env deprecation when only the replacement var is set', async () => {
-    const env: Record<string, string> = { [LOOP_MAX_ATTEMPTS_PER_STEP_ENV]: '4' };
-    const { config, disposables } = await createConfig(env);
-
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({ maxAttemptsPerStep: 4 });
-    expect(config.diagnostics()).toEqual([]);
-
-    disposables.dispose();
-  });
-
-  it('keeps the deprecated env warning across a no-op reload', async () => {
-    const env: Record<string, string> = { [LOOP_MAX_RETRIES_PER_STEP_ENV]: '4' };
-    const { config, disposables } = await createConfig(env);
-
-    const warning = {
-      domain: LOOP_CONTROL_SECTION,
-      severity: 'warning' as const,
-      message: `Environment variable ${LOOP_MAX_RETRIES_PER_STEP_ENV} is deprecated; use ${LOOP_MAX_ATTEMPTS_PER_STEP_ENV} instead.`,
-    };
-    expect(config.diagnostics()).toContainEqual(warning);
-
-    await config.reload();
-
-    expect(config.diagnostics()).toContainEqual(warning);
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({ maxAttemptsPerStep: 4 });
-
-    disposables.dispose();
-  });
-
-  it('restores the env-owned field on set() when only the deprecated env var is set', async () => {
-    const env: Record<string, string> = { [LOOP_MAX_RETRIES_PER_STEP_ENV]: '2' };
-    const { config, disposables, storage } = await createConfig(
-      env,
-      '[loop_control]\nmax_attempts_per_step = 9\n',
-    );
-
-    await config.set(LOOP_CONTROL_SECTION, { maxAttemptsPerStep: 2, reservedContextSize: 5000 });
-
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({
-      maxAttemptsPerStep: 2,
-      reservedContextSize: 5000,
-    });
-    expect(config.inspect<LoopControl>(LOOP_CONTROL_SECTION).userValue).toEqual({
-      maxAttemptsPerStep: 9,
-      reservedContextSize: 5000,
-    });
-    const onDisk = new TextDecoder().decode(await storage.read('', 'config.toml'));
-    expect(onDisk).toContain('max_attempts_per_step = 9');
-
-    disposables.dispose();
-  });
-
-  it('emits onDidChangeDiagnostics on load and again when the warning clears', async () => {
-    const disposables = new DisposableStore();
-    const ix = disposables.add(new TestInstantiationService());
-    const storage = new InMemoryStorageService();
-    await storage.write(
-      '',
-      'config.toml',
-      new TextEncoder().encode('[loop_control]\nmax_retries_per_step = 3\n'),
-    );
-    ix.stub(ILogService, stubLog());
-    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', {}));
-    ix.stub(IFileSystemStorageService, storage);
-    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
-    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
-    ix.set(IConfigService, new SyncDescriptor(ConfigService));
-    const config = ix.get(IConfigService);
-    const emissions: Array<readonly unknown[]> = [];
-    config.onDidChangeDiagnostics((diagnostics) => {
-      emissions.push(diagnostics);
-    });
-    await config.ready;
-
-    expect(emissions).toHaveLength(1);
-    expect(emissions[0]).toContainEqual({
-      domain: LOOP_CONTROL_SECTION,
-      severity: 'warning',
-      message:
-        "[loop_control] 'max_retries_per_step' is deprecated and no longer used; rename it to 'max_attempts_per_step'. Run /kiki-ops fix this configuration warning.",
-    });
-
-    await storage.write(
-      '',
-      'config.toml',
-      new TextEncoder().encode('[loop_control]\nmax_attempts_per_step = 3\n'),
-    );
-    await config.reload();
-
-    expect(emissions).toHaveLength(2);
-    expect(emissions[1]).toEqual([]);
-    expect(config.diagnostics()).toEqual([]);
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({ maxAttemptsPerStep: 3 });
-
-    disposables.dispose();
-  });
 });
 
 describe('malformed models config entries', () => {

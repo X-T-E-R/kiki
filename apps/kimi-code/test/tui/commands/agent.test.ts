@@ -105,7 +105,7 @@ describe('/agent', () => {
     }
   });
 
-  it('allows a same-name project profile without override when the builtin is disabled', async () => {
+  it('allows a same-name project profile with an explicit override', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kimi-agent-command-disabled-builtin-'));
     try {
       await mkdir(join(dir, '.git'));
@@ -117,12 +117,13 @@ describe('/agent', () => {
           '---',
           'name: agent',
           'description: Project replacement',
+          'override: true',
           '---',
           'Use the project profile.',
         ].join('\n'),
       );
       const configPath = join(dir, 'config.toml');
-      await writeFile(configPath, 'disabled_builtin_profiles = ["agent"]\n');
+      await writeFile(configPath, '');
 
       const profiles = await loadSelectableAgentProfiles({
         harness: { homeDir: join(dir, 'home'), configPath },

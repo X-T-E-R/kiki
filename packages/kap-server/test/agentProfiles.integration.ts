@@ -67,10 +67,10 @@ describe('GET /api/agents', () => {
     if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  it.each(['Custom legacy prompt.', '---\ndescription: Custom default\nsubagents: [explore]\n---\nCustom upgraded prompt.'])('keeps SYSTEM main profiles available when subagent discovery is disabled: %s', async (text) => {
+  it.each(['---\ndescription: Custom default\nsubagents: [explore]\n---\nCustom upgraded prompt.'])('keeps SYSTEM main profiles available when subagent discovery is disabled: %s', async (text) => {
     await writeFile(join(home!, 'SYSTEM.md'), text);
     await writeFile(join(home!, 'config.toml'), [
-      'disabled_named_profiles = ["agent"]', 'disabled_builtin_profiles = ["agent"]',
+      'disabled_named_profiles = ["agent"]', 'skip_builtin_profile_installation = ["agent"]',
       '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
     ].join('\n'));
@@ -132,7 +132,7 @@ describe('GET /api/agents', () => {
     await mkdir(join(home!, 'agents'), { recursive: true });
     const shadowText = '---\nname: agent\ndescription: Shadow default\noverride: true\n---\nShadow prompt.';
     await writeFile(agentPath, shadowText);
-    await writeFile(systemPath, 'Legacy main prompt.');
+    await writeFile(systemPath, '---\ndescription: Legacy main\n---\nLegacy main prompt.');
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
     const query = `cwd=${encodeURIComponent(home!)}`;
@@ -161,10 +161,10 @@ describe('GET /api/agents', () => {
     expect(await readFile(agentPath, 'utf8')).toContain('Edited shadow');
     expect(await readFile(systemPath, 'utf8')).toContain('Restricted main prompt.');
     expect((await patch({ source_file: join(home!, 'unregistered.md'), description: 'Do not create' })).code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
-    const legacy = await patch({ raw_text: 'Edited legacy prompt.\r\n' });
-    expect(legacy.code).toBe(0);
-    expect(legacy.data).toMatchObject({ main: true, source_file: systemPath.replaceAll('\\', '/') });
-    expect(await readFile(systemPath)).toEqual(Buffer.from('Edited legacy prompt.\r\n'));
+    const replaced = await patch({ raw_text: '---\ndescription: Edited default\n---\nEdited system prompt.\r\n' });
+    expect(replaced.code).toBe(0);
+    expect(replaced.data).toMatchObject({ main: true, source_file: systemPath.replaceAll('\\', '/') });
+    expect(await readFile(systemPath)).toEqual(Buffer.from('---\ndescription: Edited default\n---\nEdited system prompt.\r\n'));
   });
 
   it.each(['---\ntools: [Read\n---\nBroken.', '---\ntools: [Read]\nBroken.', '---\n- Read\n---\nBroken.'])('R1 rejects malformed SYSTEM management writes without changing restrictions: %s', async (rawText) => {

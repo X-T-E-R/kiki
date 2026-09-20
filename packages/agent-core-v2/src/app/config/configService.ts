@@ -39,7 +39,7 @@ import {
   type ConfigWriteValidator,
 } from './configWriteValidation';
 import { getConfigOverlayContributions } from './configOverlayContributions';
-import { collectKeyDeprecations, collectRemovedSectionDiagnostics } from './deprecations';
+import { collectRemovedSectionDiagnostics } from './deprecations';
 import { migrateThinkingEffortMaxToHigh } from './migrations';
 import {
   applySectionToToml,
@@ -55,8 +55,6 @@ const CONFIG_SCOPE = '';
 
 type GetEnv = (name: string) => string | undefined;
 
-type OnDeprecatedEnv = (oldName: string, newName: string) => void;
-
 function isEnvBinding(value: unknown): value is EnvBinding {
   return typeof value === 'string' || (isPlainObject(value) && 'env' in value);
 }
@@ -69,23 +67,12 @@ function resolveBinding(
   binding: EnvBinding,
   getEnv: GetEnv,
   existing: unknown,
-  onDeprecatedEnv?: OnDeprecatedEnv,
 ): unknown {
   if (typeof binding !== 'string') {
     const raw = getEnv(binding.env);
     if (raw !== undefined) {
       const parsed = parseBoundRaw(binding, raw);
       if (parsed !== undefined) return parsed;
-    }
-    if (binding.deprecatedEnv !== undefined) {
-      const deprecatedRaw = getEnv(binding.deprecatedEnv);
-      if (deprecatedRaw !== undefined) {
-        const parsed = parseBoundRaw(binding, deprecatedRaw);
-        if (parsed !== undefined) {
-          onDeprecatedEnv?.(binding.deprecatedEnv, binding.env);
-          return parsed;
-        }
-      }
     }
   } else {
     const raw = getEnv(binding);
@@ -101,18 +88,17 @@ function applyEnvBindings(
   target: Record<string, unknown>,
   bindings: AnyEnvBindings,
   getEnv: GetEnv,
-  onDeprecatedEnv?: OnDeprecatedEnv,
 ): void {
   for (const [key, binding] of Object.entries(bindings)) {
     if (isEnvBinding(binding)) {
-      const resolved = resolveBinding(binding, getEnv, target[key], onDeprecatedEnv);
+      const resolved = resolveBinding(binding, getEnv, target[key]);
       if (resolved !== undefined) target[key] = resolved;
     } else if (binding !== undefined) {
       const child: Record<string, unknown> = isPlainObject(target[key])
         ? { ...target[key] }
         : {};
       target[key] = child;
-      applyEnvBindings(child, binding as AnyEnvBindings, getEnv, onDeprecatedEnv);
+      applyEnvBindings(child, binding as AnyEnvBindings, getEnv);
       if (Object.keys(child).length === 0) {
         delete target[key];
       }
@@ -124,13 +110,12 @@ function applySectionEnv(
   base: unknown,
   env: AnyEnvBindings,
   getEnv: GetEnv,
-  onDeprecatedEnv?: OnDeprecatedEnv,
 ): unknown {
   if (isEnvBinding(env)) {
-    return resolveBinding(env, getEnv, base, onDeprecatedEnv);
+    return resolveBinding(env, getEnv, base);
   }
   const target: Record<string, unknown> = isPlainObject(base) ? { ...base } : {};
-  applyEnvBindings(target, env, getEnv, onDeprecatedEnv);
+  applyEnvBindings(target, env, getEnv);
   return target;
 }
 
@@ -148,7 +133,6 @@ function isSameSection(
     existing.fromToml === options.fromToml &&
     existing.toToml === options.toToml &&
     deepEqual(existing.defaultValue, options.defaultValue) &&
-    deepEqual(existing.deprecations, options.deprecations) &&
     existing.collectDiagnostics === options.collectDiagnostics &&
     existing.entryKeyed === options.entryKeyed
   );
@@ -247,7 +231,6 @@ export class ConfigRegistry extends Disposable implements IConfigRegistry {
       stripEnv: options.stripEnv as ConfigSection['stripEnv'],
       fromToml: options.fromToml,
       toToml: options.toToml,
-      deprecations: options.deprecations,
       collectDiagnostics: options.collectDiagnostics,
       entryKeyed: options.entryKeyed,
     });
@@ -596,9 +579,6 @@ export class ConfigService extends Disposable implements IConfigService {
     }
     this.tainted = failed;
     const nextRawSnake = cloneRecord(fileData);
-    for (const diagnostic of collectKeyDeprecations(nextRawSnake, this.registry.listSections())) {
-      this.pushDiagnostic(diagnostic);
-    }
     for (const section of this.registry.listSections()) {
       if (section.collectDiagnostics === undefined) continue;
       const rawSection = nextRawSnake[camelToSnake(section.domain)];
@@ -725,16 +705,7 @@ export class ConfigService extends Disposable implements IConfigService {
       if (section.env === undefined) continue;
       try {
         const base = effective[section.domain];
-        const onDeprecatedEnv: OnDeprecatedEnv | undefined = reportErrors
-          ? (oldName, newName) => {
-              this.pushDiagnostic({
-                domain: section.domain,
-                severity: 'warning',
-                message: `Environment variable ${oldName} is deprecated; use ${newName} instead.`,
-              });
-            }
-          : undefined;
-        const next = applySectionEnv(base, section.env, getEnv, onDeprecatedEnv);
+        const next = applySectionEnv(base, section.env, getEnv);
         effective[section.domain] = this.validateSection(
           section.domain,
           next,
@@ -822,15 +793,8 @@ export class ConfigService extends Disposable implements IConfigService {
     if (section.env !== undefined) {
       const getEnv = (name: string): string | undefined => this.bootstrap.getEnv(name);
       try {
-        const onDeprecatedEnv: OnDeprecatedEnv = (oldName, newName) => {
-          this.pushDiagnostic({
-            domain,
-            severity: 'warning',
-            message: `Environment variable ${oldName} is deprecated; use ${newName} instead.`,
-          });
-        };
         const base = this.effective[domain];
-        const next = applySectionEnv(base, section.env, getEnv, onDeprecatedEnv);
+        const next = applySectionEnv(base, section.env, getEnv);
         this.effective[domain] = this.validateSection(domain, next, true, base);
       } catch (error) {
         this.pushDiagnostic({

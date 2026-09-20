@@ -41,7 +41,6 @@ Agent profile parsing, filesystem discovery, layered catalog projection, dispatc
 | `deny_models` | comma-separated string or string list |
 | `allowed_efforts` | comma-separated string or string list |
 | `model_profiles` | model profile mappings described below |
-| `recommended_models` | deprecated alias for `model_profiles` |
 | `service_tier` | `auto`, `default`, `flex`, or `priority` |
 | `request_params` | scalar string, number, or boolean mapping |
 | `system_prompt_mode` | `replace`, `prepend`, or `append` |

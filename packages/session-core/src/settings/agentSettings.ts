@@ -133,25 +133,17 @@ export function experimentalFlagRows(
     .map((id) => ({ id, effective: effective[id] === true, override: overrides[id] }));
 }
 
-/**
- * Two disable channels: built-in profiles ride `disabled_builtin_profiles`,
- * every named (user/project/extra/…) profile rides `disabled_named_profiles`
- * and is disabled globally by name.
- */
+/** Disable or enable a profile name across every profile source. */
 export function disabledProfilePatch(
-  config: Pick<KikiConfigResponse, 'disabled_builtin_profiles' | 'disabled_named_profiles'>,
-  profile: Pick<NamedAgentProfile, 'name' | 'source'>,
+  config: Pick<KikiConfigResponse, 'disabled_named_profiles'>,
+  profile: Pick<NamedAgentProfile, 'name'>,
   enabled: boolean,
 ): KikiConfigPatch {
-  const current = profile.source === 'builtin'
-    ? (config.disabled_builtin_profiles ?? [])
-    : (config.disabled_named_profiles ?? []);
+  const current = config.disabled_named_profiles ?? [];
   const next = enabled
     ? current.filter((name) => name !== profile.name)
     : [...new Set([...current, profile.name])];
-  return profile.source === 'builtin'
-    ? { disabled_builtin_profiles: next }
-    : { disabled_named_profiles: next };
+  return { disabled_named_profiles: next };
 }
 
 /**

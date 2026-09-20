@@ -14,7 +14,7 @@ pub const IMPORT_CATEGORIES: [&str; 7] = [
     "default_model",
     "default_provider",
     "thinking",
-    "disabled_builtin_profiles",
+    "skip_builtin_profile_installation",
     "disabled_named_profiles",
 ];
 
@@ -23,7 +23,7 @@ const REPLACE_CATEGORIES: [&str; 5] = [
     "default_model",
     "default_provider",
     "thinking",
-    "disabled_builtin_profiles",
+    "skip_builtin_profile_installation",
     "disabled_named_profiles",
 ];
 const COGNITION_SLOTS: [&str; 3] = ["overlay", "steering", "anchor"];
@@ -725,7 +725,7 @@ mod tests {
             r#"# source
 default_model = "shared/source-model"
 default_provider = "shared"
-disabled_builtin_profiles = ["explore", "reviewer"]
+skip_builtin_profile_installation = ["explore", "reviewer"]
 disabled_named_profiles = ["local-agent"]
 
 [providers.shared]
@@ -762,7 +762,7 @@ command = "do-not-import"
             target_home.join("config.toml"),
             r#"# target comment
 default_model = "old/default"
-disabled_builtin_profiles = ["agent"]
+skip_builtin_profile_installation = ["agent"]
 disabled_named_profiles = ["old-local"]
 
 [providers.shared]
@@ -802,7 +802,7 @@ enabled = false
                 "default_model",
                 "default_provider",
                 "thinking",
-                "disabled_builtin_profiles",
+                "skip_builtin_profile_installation",
                 "disabled_named_profiles",
             ]
         );
@@ -821,7 +821,7 @@ enabled = false
         assert!(!imported.contains("[mcp.secret]"));
         let imported_value = toml::from_str::<toml::Value>(&imported).unwrap();
         assert_eq!(
-            imported_value["disabled_builtin_profiles"],
+            imported_value["skip_builtin_profile_installation"],
             toml::Value::Array(vec![
                 toml::Value::String("explore".to_string()),
                 toml::Value::String("reviewer".to_string()),
@@ -873,7 +873,7 @@ enabled = true
         fs::write(
             target_home.join("config.toml"),
             r#"default_provider = "keep"
-disabled_builtin_profiles = ["keep-builtin"]
+skip_builtin_profile_installation = ["keep-builtin"]
 disabled_named_profiles = ["keep-named"]
 [thinking]
 enabled = false
@@ -894,7 +894,7 @@ value = "ignored"
         assert_eq!(result.updated_categories, vec!["default_model"]);
         let imported = fs::read_to_string(target_home.join("config.toml")).unwrap();
         assert!(imported.contains("default_provider = \"keep\""));
-        assert!(imported.contains("disabled_builtin_profiles = [\"keep-builtin\"]"));
+        assert!(imported.contains("skip_builtin_profile_installation = [\"keep-builtin\"]"));
         assert!(imported.contains("disabled_named_profiles = [\"keep-named\"]"));
         assert!(imported.contains("[thinking]"));
         assert!(imported.contains("[permission]"));

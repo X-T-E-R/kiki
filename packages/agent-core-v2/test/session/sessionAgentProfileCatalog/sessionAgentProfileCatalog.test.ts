@@ -17,10 +17,7 @@ import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProf
 import { IConfigService } from '#/app/config/config';
 import type { IFlagService } from '#/app/flag/flag';
 import { SessionAgentProfileCatalogService } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalogService';
-import {
-  DISABLED_BUILTIN_PROFILES_SECTION,
-  DISABLED_NAMED_PROFILES_SECTION,
-} from '#/workspace/workspaceAgentProfileLoader/configSection';
+import { DISABLED_NAMED_PROFILES_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   AgentProfileContribution,
@@ -62,14 +59,11 @@ function profile(name: string, options?: { readonly override?: boolean }): Agent
 }
 
 function configStub(
-  initialDisabled: readonly string[] = [],
   initialDisabledNamed: readonly string[] = [],
 ): {
   readonly service: IConfigService;
-  setDisabled(names: readonly string[]): void;
   setDisabledNamed(names: readonly string[]): void;
 } {
-  let disabled = [...initialDisabled];
   let disabledNamed = [...initialDisabledNamed];
   const sectionChanges = new Emitter<{ readonly domain: string }>();
   return {
@@ -79,7 +73,6 @@ function configStub(
       onDidChangeConfiguration: () => ({ dispose: () => {} }),
       onDidSectionChange: sectionChanges.event,
       get: (domain: string) => {
-        if (domain === DISABLED_BUILTIN_PROFILES_SECTION) return [...disabled];
         if (domain === DISABLED_NAMED_PROFILES_SECTION) return [...disabledNamed];
         return undefined;
       },
@@ -95,10 +88,6 @@ function configStub(
       reload: async () => {},
       diagnostics: () => [],
     } as unknown as IConfigService,
-    setDisabled: (names) => {
-      disabled = [...names];
-      sectionChanges.fire({ domain: DISABLED_BUILTIN_PROFILES_SECTION });
-    },
     setDisabledNamed: (names) => {
       disabledNamed = [...names];
       sectionChanges.fire({ domain: DISABLED_NAMED_PROFILES_SECTION });
@@ -108,7 +97,6 @@ function configStub(
 
 function makeCatalog(
   workspaceKey: string = WORKSPACE_KEY,
-  disabled: readonly string[] = [],
   disabledNamed: readonly string[] = [],
   initialRecords: readonly AgentProfileContributionRecord[] = [],
 ) {
@@ -121,7 +109,7 @@ function makeCatalog(
     return child;
   };
   for (const record of initialRecords) install(record);
-  const config = configStub(disabled, disabledNamed);
+  const config = configStub(disabledNamed);
   const warnings: string[] = [];
   const log = stubLog();
   log.warn = (message: string) => warnings.push(message);
@@ -333,7 +321,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       promptOverrides: { fields: { 'system.language': 'upper' } },
       systemPrompt: () => 'UNRESOLVED',
     });
-    const { container, catalog, warnings } = makeCatalog(WORKSPACE_KEY, [], [], [
+    const { container, catalog, warnings } = makeCatalog(WORKSPACE_KEY, [], [
       {
         sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID,
         priority: AGENT_PROFILE_SOURCE_PRIORITY.builtin,
@@ -383,43 +371,9 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     container.dispose();
   });
 
-  it('leaves legacy disabled-builtin filtering to the shipped-profile manager, not the session catalog', () => {
-    const { container, catalog, config, contribute } = makeCatalog(WORKSPACE_KEY, [
-      'coder',
-      'plan',
-    ]);
-    const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
-    const coderProfile = profile('coder');
-    const exploreProfile = profile('explore');
-    const planProfile = profile('plan');
-    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [
-      defaultProfile,
-      coderProfile,
-      exploreProfile,
-      planProfile,
-    ]);
-
-    expect(catalog.getDefault()).toMatchObject(defaultProfile);
-    expect(catalog.get('coder')).toMatchObject(coderProfile);
-    expect(catalog.get('plan')).toMatchObject(planProfile);
-    expect(catalog.get('explore')).toMatchObject(exploreProfile);
-
-    const seen: string[] = [];
-    const subscription = catalog.onDidChange((sourceId) => seen.push(sourceId));
-    config.setDisabled(['explore']);
-
-    expect(catalog.get('coder')).toMatchObject(coderProfile);
-    expect(catalog.get('explore')).toMatchObject(exploreProfile);
-    expect(seen).toEqual([]);
-    subscription.dispose();
-    catalog.dispose();
-    container.dispose();
-  });
-
   it('filters named profiles, rejects their dispatch selection, and hot-reprojects config changes', () => {
     const { container, catalog, config, contribute } = makeCatalog(
       WORKSPACE_KEY,
-      [],
       ['reviewer'],
     );
     const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
@@ -461,7 +415,6 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
   it('keeps a disabled default profile only on the main-agent binding surface', async () => {
     const { container, catalog, warnings, contribute } = makeCatalog(
       WORKSPACE_KEY,
-      [],
       [DEFAULT_AGENT_PROFILE_NAME],
     );
     const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
@@ -477,21 +430,6 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       `Unknown agent profile: "${DEFAULT_AGENT_PROFILE_NAME}". Available agent profiles: coder`,
     );
     expect(warnings).toEqual([]);
-    catalog.dispose();
-    container.dispose();
-  });
-
-  it('lets a file profile take a disabled builtin name without override: true', () => {
-    const { container, catalog, contribute } = makeCatalog(WORKSPACE_KEY, ['coder']);
-    const fileProfile = profile('coder');
-    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [profile(DEFAULT_AGENT_PROFILE_NAME), profile('coder')]);
-    contribute('workspace', [fileProfile], {
-      priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
-      workspaceKey: WORKSPACE_KEY,
-    });
-
-    expect(catalog.get('coder')).toBe(fileProfile);
-    expect(catalog.inspect('coder')?.sourceId).toBe('workspace');
     catalog.dispose();
     container.dispose();
   });

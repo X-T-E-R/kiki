@@ -6,11 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { IConfigService } from '#/app/config/config';
 import { ILogService } from '#/_base/log/log';
-import {
-  DISABLED_BUILTIN_PROFILES_SECTION,
-  SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION,
-  type DisabledBuiltinProfilesConfig,
-} from '#/workspace/workspaceAgentProfileLoader/configSection';
+import { SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import {
   SHIPPED_AGENT_PROFILE_TEMPLATES,
   type ShippedAgentProfileTemplate,
@@ -36,7 +32,7 @@ function logStub(): ILogService {
   } as unknown as ILogService;
 }
 
-function configStub(options?: { disabledBuiltin?: readonly string[]; skipInstallation?: readonly string[] }): IConfigService {
+function configStub(options?: { skipInstallation?: readonly string[] }): IConfigService {
   return {
     _serviceBrand: undefined,
     ready: Promise.resolve(),
@@ -44,12 +40,6 @@ function configStub(options?: { disabledBuiltin?: readonly string[]; skipInstall
     onDidSectionChange: () => ({ dispose: () => {} }),
     get: (domain: string) => {
       if (domain === SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION) return options?.skipInstallation;
-      if (domain === DISABLED_BUILTIN_PROFILES_SECTION) {
-        const value: DisabledBuiltinProfilesConfig = options?.disabledBuiltin
-          ? [...options.disabledBuiltin]
-          : [];
-        return value;
-      }
       return undefined;
     },
     inspect: () => ({ value: undefined, defaultValue: undefined, userValue: undefined, memoryValue: undefined }),
@@ -64,14 +54,13 @@ function configStub(options?: { disabledBuiltin?: readonly string[]; skipInstall
 function template(
   id: string,
   text: string,
-  options?: { fresh?: boolean; legacy?: boolean },
+  options?: { fresh?: boolean },
 ): ShippedAgentProfileTemplate {
   return {
     id,
     fileName: `${id}.md`,
     text,
     materializeOnFreshInstall: options?.fresh ?? true,
-    materializeOnLegacyInstall: options?.legacy ?? true,
   };
 }
 
@@ -146,14 +135,14 @@ describe('ShippedAgentProfileManagerService', () => {
     }
   });
 
-  it('skips materializing the main profile when SYSTEM.md provides it, and keeps legacy compat profiles', async () => {
+  it('skips materializing the main profile when SYSTEM.md provides it', async () => {
     await writeFile(join(home, 'SYSTEM.md'), 'You are a custom main agent.\n');
     const service = manager();
     await service.ready;
 
     expect(await activeExists('agent')).toBe(false);
     expect((await service.status()).find((entry) => entry.templateId === 'agent')?.status).toBe('adopted');
-    for (const id of ['coder', 'explore', 'general', 'plan']) {
+    for (const id of ['explore', 'general']) {
       expect(await activeExists(id), id).toBe(true);
     }
   });
@@ -171,16 +160,6 @@ describe('ShippedAgentProfileManagerService', () => {
     expect(await readFile(join(home, 'agents', 'explore.md'), 'utf8')).toContain('My explore.');
   });
 
-  it('does not materialize profiles disabled in the legacy config', async () => {
-    await writeFile(join(home, 'SYSTEM.md'), 'custom main\n');
-    const service = manager(SHIPPED_AGENT_PROFILE_TEMPLATES, configStub({ disabledBuiltin: ['plan'] }));
-    await service.ready;
-
-    expect(await activeExists('plan')).toBe(false);
-    const entry = (await service.status()).find((candidate) => candidate.templateId === 'plan')!;
-    expect(entry.status).toBe('disabled');
-  });
-
   it('uses the renamed policy only for installation and leaves managed copies active', async () => {
     const templates = [template('agent', agentText('v1'))];
     const skipped = manager(templates, configStub({ skipInstallation: ['agent'] }));
@@ -188,7 +167,7 @@ describe('ShippedAgentProfileManagerService', () => {
     expect(await activeExists('agent')).toBe(false);
     skipped.dispose();
 
-    const installed = manager(templates, configStub({ disabledBuiltin: ['agent'], skipInstallation: [] }));
+    const installed = manager(templates, configStub({ skipInstallation: [] }));
     await installed.ready;
     expect(await activeText('agent')).toBe(agentText('v1'));
     installed.dispose();
