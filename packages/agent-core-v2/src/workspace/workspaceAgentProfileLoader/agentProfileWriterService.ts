@@ -1,4 +1,4 @@
-import { isUpgradedSystemMd, parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
+import { parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
 
 import { atomicWrite } from '#/_base/utils/fs';
 import { Error2 } from '#/_base/errors/errors';
@@ -120,11 +120,6 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     const staged: StagedWrite[] = [];
     const profileText = await this.fs.readText(profile.sourcePath);
     let nextProfileText = request.rawText ?? profileText;
-    if (system && request.rawText === undefined
-      && !isUpgradedSystemMd(profileText, profile.sourcePath, () => {})) {
-      const eol = preferredEol(profileText);
-      nextProfileText = `---${eol}---${eol}${profileText}`;
-    }
     if (request.description !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'description', request.description);
     }

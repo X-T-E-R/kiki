@@ -31,6 +31,10 @@ function collectWarnings(): { warnings: string[]; warn: (message: string) => voi
   return { warnings, warn: (message) => warnings.push(message) };
 }
 
+function upgradedSystemMd(body: string): string {
+  return `---\n---\n${body}`;
+}
+
 describe('loadSystemMdProfile', () => {
   let home: string;
 
@@ -60,6 +64,14 @@ describe('loadSystemMdProfile', () => {
     await writeFile(join(home, SYSTEM_MD_FILENAME), ' \n\n');
     const { warn } = collectWarnings();
     expect(await loadProfile(hostFs, BUILTIN_DEFAULT, warn)).toBeUndefined();
+  });
+
+  it('rejects SYSTEM.md without frontmatter', async () => {
+    await writeFile(join(home, SYSTEM_MD_FILENAME), 'legacy body');
+    const { warnings, warn } = collectWarnings();
+
+    expect(await loadProfile(hostFs, BUILTIN_DEFAULT, warn)).toBeUndefined();
+    expect(warnings.some((message) => message.includes('SYSTEM.md parse failed'))).toBe(true);
   });
 
   it('degrades to a warning when the file cannot be read', async () => {
@@ -94,7 +106,7 @@ describe('loadSystemMdProfile', () => {
   });
 
   it('synthesizes a default-named override profile that inherits the builtin shape', async () => {
-    await writeFile(join(home, SYSTEM_MD_FILENAME), 'You are a custom main agent.');
+    await writeFile(join(home, SYSTEM_MD_FILENAME), upgradedSystemMd('You are a custom main agent.'));
     const { warn } = collectWarnings();
 
     const profile = await loadProfile(hostFs, BUILTIN_DEFAULT, warn);
@@ -110,7 +122,7 @@ describe('loadSystemMdProfile', () => {
   });
 
   it('empties ${skills} when the builtin default disables the Skill tool', async () => {
-    await writeFile(join(home, SYSTEM_MD_FILENAME), 'skills=${skills}');
+    await writeFile(join(home, SYSTEM_MD_FILENAME), upgradedSystemMd('skills=${skills}'));
     const noSkillBuiltin: AgentProfile = normalizeAgentProfile({
       name: DEFAULT_AGENT_PROFILE_NAME,
       description: 'builtin without Skill',
@@ -125,7 +137,10 @@ describe('loadSystemMdProfile', () => {
   });
 
   it('embeds the builtin default prompt via ${base_prompt}', async () => {
-    await writeFile(join(home, SYSTEM_MD_FILENAME), 'custom header\n\n${base_prompt}');
+    await writeFile(
+      join(home, SYSTEM_MD_FILENAME),
+      upgradedSystemMd('custom header\n\n${base_prompt}'),
+    );
     const { warn } = collectWarnings();
 
     const profile = await loadProfile(hostFs, BUILTIN_DEFAULT, warn);
@@ -136,7 +151,7 @@ describe('loadSystemMdProfile', () => {
   it('embeds the builtin default prompt via ${parent_prompt} and ${builtin_prompt}', async () => {
     await writeFile(
       join(home, SYSTEM_MD_FILENAME),
-      'parent=${parent_prompt}\nbuiltin=${builtin_prompt}',
+      upgradedSystemMd('parent=${parent_prompt}\nbuiltin=${builtin_prompt}'),
     );
     const { warn } = collectWarnings();
 
@@ -146,7 +161,10 @@ describe('loadSystemMdProfile', () => {
   });
 
   it('places plugin instructions where ${plugin_sections} is referenced', async () => {
-    await writeFile(join(home, SYSTEM_MD_FILENAME), 'before\n${plugin_sections}after');
+    await writeFile(
+      join(home, SYSTEM_MD_FILENAME),
+      upgradedSystemMd('before\n${plugin_sections}after'),
+    );
     const { warn } = collectWarnings();
 
     const profile = await loadProfile(hostFs, BUILTIN_DEFAULT, warn);
@@ -159,7 +177,10 @@ describe('loadSystemMdProfile', () => {
   });
 
   it('substitutes ${additional_dirs_info} from the context', async () => {
-    await writeFile(join(home, SYSTEM_MD_FILENAME), 'dirs=${additional_dirs_info}');
+    await writeFile(
+      join(home, SYSTEM_MD_FILENAME),
+      upgradedSystemMd('dirs=${additional_dirs_info}'),
+    );
     const { warn } = collectWarnings();
 
     const profile = await loadProfile(hostFs, BUILTIN_DEFAULT, warn);
@@ -277,16 +298,15 @@ describe('loadSystemMdProfile', () => {
     expect(profile?.systemPrompt({})).toBe('BUILTIN PROMPT');
   });
 
-  it('treats a SYSTEM.md whose frontmatter is not a mapping as a legacy prompt', async () => {
-    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\n- listed\n---\nlegacy body\n');
+  it('rejects a SYSTEM.md whose frontmatter is not a mapping', async () => {
+    await writeFile(join(home, SYSTEM_MD_FILENAME), '---\n- listed\n---\ninvalid body\n');
     const { warnings, warn } = collectWarnings();
 
     const profile = await loadProfile(hostFs, BUILTIN_DEFAULT, warn);
 
-    expect(profile?.systemPrompt({})).toContain('---');
-    expect(profile?.systemPrompt({})).toContain('legacy body');
-    expect(profile?.tools).toEqual(['Read', 'Skill', 'Bash']);
-    expect(warnings.some((message) => message.includes('not a mapping'))).toBe(true);
+    expect(profile).toBeUndefined();
+    expect(warnings.some((message) => message.includes('SYSTEM.md parse failed'))).toBe(true);
+    expect(warnings.join(' ')).not.toContain('legacy prompt');
   });
 
   it('reports invalid upgraded YAML instead of loading it as a legacy prompt', async () => {
