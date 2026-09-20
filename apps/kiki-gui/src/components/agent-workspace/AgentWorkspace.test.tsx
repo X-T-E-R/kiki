@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createRef, type ReactNode } from 'react';
+import { act, createRef, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -16,8 +16,10 @@ import { AgentWorkspace } from './AgentWorkspace';
 
 const harness = vi.hoisted(() => ({
   header: null as HTMLElement | null,
+  shellEnabled: true,
   listModels: vi.fn(),
   readCapabilities: vi.fn(),
+  mediaProviderProps: [] as Array<{ apiRef?: unknown }>,
 }));
 
 vi.mock('../../state/connection', () => ({
@@ -40,23 +42,30 @@ vi.mock('../../state/connection', () => ({
 }));
 
 vi.mock('../ConversationShell', () => ({
-  useConversationShell: () => ({
-    slots: {
-      header: harness.header,
-      dock: null,
-      heroFooter: null,
-      rail: null,
-      footer: null,
-      preview: null,
-    },
-  }),
+  EMPTY_SLOTS: { header: null, dock: null, heroFooter: null, rail: null, footer: null, preview: null },
+  useOptionalConversationShell: () =>
+    harness.shellEnabled
+      ? {
+          slots: {
+            header: harness.header,
+            dock: null,
+            heroFooter: null,
+            rail: null,
+            footer: null,
+            preview: null,
+          },
+        }
+      : null,
 }));
 vi.mock('../ActivityHistory', () => ({ revealSubagentCard: () => true }));
 vi.mock('../AgentBreadcrumb', () => ({ AgentBreadcrumb: () => null, AgentRelations: () => null }));
 vi.mock('../ContextMeter', () => ({ ContextMeter: () => null }));
 vi.mock('../mediaPreview', () => ({
-  MediaPreviewProvider: ({ children }: { children: ReactNode }) => children,
-  PreviewToggleButton: () => null,
+  MediaPreviewProvider: (props: { children?: ReactNode; apiRef?: unknown }) => {
+    harness.mediaProviderProps.push(props);
+    return props.children;
+  },
+  PreviewToggleButton: () => <div data-preview-toggle-probe />,
 }));
 vi.mock('../RightRail', () => ({ RightRail: () => null }));
 vi.mock('../Transcript', () => ({ Transcript: () => null }));
@@ -74,6 +83,18 @@ beforeEach(() => {
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   harness.listModels.mockResolvedValue({ items: [] });
+  harness.readCapabilities.mockResolvedValue({
+    context: 'live',
+    owner: { profile: 'general', agent_id: 'child' },
+    available: true,
+    profile: { name: 'general' },
+    targets: [],
+    tools: [],
+    skills: [],
+    metrics: {},
+  });
+  harness.shellEnabled = true;
+  harness.mediaProviderProps.length = 0;
   container = document.createElement('div');
   header = document.createElement('div');
   document.body.append(container, header);
@@ -147,4 +168,84 @@ it('shows the profile dispatch policy when the workspace has no target rows', as
   expect(header.querySelector('[data-dispatch-policy="strict"]')?.textContent).toBe('Strict policy');
   expect(header.querySelector('[data-dispatch-policy="unknown"]')).toBeNull();
   expect(header.querySelector('[data-recommendation-status="unknown"]')?.textContent).toBe('Not reported');
+});
+
+function testForest(): AgentForest {
+  const main: AgentTreeNode = {
+    agentId: 'main', name: 'main', label: 'Main', status: 'completed', busy: false,
+    toolCallCount: 0, childIds: ['child'],
+  };
+  const child: AgentTreeNode = {
+    agentId: 'child', parentAgentId: 'main', name: 'general', label: 'General',
+    status: 'completed', busy: false, toolCallCount: 0, childIds: [],
+  };
+  return { roots: [main], byId: { main, child } };
+}
+
+function renderWorkspace(overrides: Partial<ComponentProps<typeof AgentWorkspace>> = {}) {
+  const previewRef = createRef<MediaPreviewApi>();
+  return act(async () => root.render(
+    <QueryClientProvider client={queries}>
+      <I18nProvider>
+        <AgentWorkspace
+          target={{ sessionId: 'session', agentId: 'child' }}
+          controller={null}
+          sessionState={{ ...createViewState('session'), loaded: true }}
+          forest={testForest()}
+          navigation={{ openAgent: vi.fn(), openAgentRoute: vi.fn(), openSession: vi.fn() }}
+          railOpen={false}
+          railIsOverlay={false}
+          onToggleRail={vi.fn()}
+          onCloseRail={vi.fn()}
+          onCancelTask={vi.fn()}
+          onStopAgentTask={vi.fn().mockResolvedValue(undefined)}
+          previewApiRef={previewRef}
+          {...overrides}
+        />
+      </I18nProvider>
+    </QueryClientProvider>,
+  ));
+}
+
+it('mounts the owned media preview provider with the shared api ref by default', async () => {
+  const previewRef = createRef<MediaPreviewApi>();
+  await renderWorkspace({ previewApiRef: previewRef });
+  await settle();
+
+  expect(harness.mediaProviderProps.length).toBeGreaterThan(0);
+  expect(harness.mediaProviderProps[0]?.apiRef).toBe(previewRef);
+  expect(header.querySelector('[data-preview-toggle-probe]')).not.toBeNull();
+  expect(header.querySelector('[data-agent-rail-toggle]')).not.toBeNull();
+});
+
+it('embeds into caller-provided slots: no shell, no owned preview provider, no panel toggle', async () => {
+  harness.shellEnabled = false;
+  const localHeader = document.createElement('div');
+  document.body.append(localHeader);
+  try {
+    await renderWorkspace({
+      slots: {
+        header: localHeader,
+        dock: null,
+        heroFooter: null,
+        rail: null,
+        footer: null,
+        preview: null,
+      },
+      inheritMediaPreview: true,
+      showPreviewToggle: false,
+      previewApiRef: undefined,
+    });
+    await settle();
+
+    // The header chrome portals into the provided slot even with no ambient shell.
+    expect(localHeader.querySelector('[data-agent-rail-toggle]')).not.toBeNull();
+    expect(header.querySelector('[data-agent-rail-toggle]')).toBeNull();
+    // Ambient preview provider inherited: no owned provider, no apiRef seat.
+    expect(harness.mediaProviderProps).toHaveLength(0);
+    // The preview-panel toggle is suppressed where the workspace IS the panel.
+    expect(localHeader.querySelector('[data-preview-toggle-probe]')).toBeNull();
+  } finally {
+    localHeader.remove();
+  }
 });

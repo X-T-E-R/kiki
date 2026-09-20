@@ -34,7 +34,8 @@ import {
   type PreviewTab,
   type PreviewTabsState,
 } from '../state/previewWorkspace';
-import type { AgentForest, SessionViewState } from '@kiki/session-core/session';
+import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
+import type { AgentWorkspaceNavigation } from './agent-workspace';
 import { useOptionalConversationShell } from './ConversationShell';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
@@ -109,6 +110,11 @@ export function MediaPreviewProvider({
   agentForest,
   onOpenSubagent,
   apiRef,
+  controller,
+  workspaceSessionState,
+  workspaceNavigation,
+  onCancelTask,
+  onStopAgentTask,
   children,
 }: {
   cwd?: string;
@@ -117,6 +123,19 @@ export function MediaPreviewProvider({
   agentForest?: AgentForest;
   onOpenSubagent?: (agentId: string) => void;
   apiRef?: React.Ref<MediaPreviewApi>;
+  /**
+   * Agent-tab workspace wiring: the shared session runtime plus the
+   * session-level (main) view state, navigation intents and task commands the
+   * embedded AgentWorkspace needs. Absent without a session — panel tabs then
+   * fall back to a plain caption. `workspaceSessionState` defaults to
+   * `sessionViewState` (they differ only where the provider itself is scoped
+   * to one agent, e.g. the agent route page).
+   */
+  controller?: SessionController | null;
+  workspaceSessionState?: SessionViewState;
+  workspaceNavigation?: AgentWorkspaceNavigation;
+  onCancelTask?: (taskId: string, ownerAgentId?: string) => void;
+  onStopAgentTask?: (ownerAgentId: string, taskId: string) => Promise<void>;
   children: ReactNode;
 }) {
   const [image, setImage] = useState<{ src: string; name?: string } | null>(null);
@@ -249,9 +268,13 @@ export function MediaPreviewProvider({
       dirtyPaths={dirtyPaths}
       width={width}
       hidden={!panelOpen}
-      sessionViewState={sessionViewState}
+      sessionViewState={workspaceSessionState ?? sessionViewState}
       agentForest={agentForest}
       onOpenSubagent={onOpenSubagent}
+      controller={controller}
+      workspaceNavigation={workspaceNavigation}
+      onCancelTask={onCancelTask}
+      onStopAgentTask={onStopAgentTask}
       onActivate={(key) => { setTabsState((state) => ({ ...state, active: key })); }}
       onClose={(key) => { requestClose({ kind: 'tab', key }); }}
       onCloseOthers={(key) => { requestClose({ kind: 'others', key }); }}

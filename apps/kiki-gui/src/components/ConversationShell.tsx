@@ -75,7 +75,8 @@ interface ConversationShellContextValue {
 
 const ConversationShellContext = createContext<ConversationShellContextValue | null>(null);
 
-const EMPTY_SLOTS: ConversationShellSlots = {
+/** Slot set with no targets — workspace chrome simply stays unportaled. */
+export const EMPTY_SLOTS: ConversationShellSlots = {
   header: null,
   dock: null,
   heroFooter: null,

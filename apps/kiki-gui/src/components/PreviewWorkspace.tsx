@@ -1,22 +1,31 @@
 /**
  * PreviewWorkspace — the resident multi-tab preview panel. One tab per host
- * file path; tabs close via the × or the context menu (close / close others /
- * close all), reorder by drag, and mark unsaved buffers with a dot. Content
- * routes by extension: images escalate to the lightbox, markdown toggles
- * rendered/source, code/text open in a CodeMirror view, and unknown binaries
- * get the download fallback. Text files are editable where a write channel
- * exists (desktop); everything degrades to read-only otherwise. Every tab's
- * view stays mounted while hidden so editor buffers survive tab switches.
- * Collapsing the panel hides it in place for the same reason: the mounted
- * editor controller keeps its draft and its pending autosave, so re-opening
- * the panel never costs unsaved edits. Only closing the last tab unmounts.
+ * file path or agent panel; tabs close via the × or the context menu (close /
+ * close others / close all), reorder by drag, and mark unsaved buffers with a
+ * dot. Content routes by extension: images escalate to the lightbox, markdown
+ * toggles rendered/source, code/text open in a CodeMirror view, and unknown
+ * binaries get the download fallback. Text files are editable where a write
+ * channel exists (desktop); everything degrades to read-only otherwise. Every
+ * tab's view stays mounted while hidden so editor buffers survive tab
+ * switches. Collapsing the panel hides it in place for the same reason: the
+ * mounted editor controller keeps its draft and its pending autosave, so
+ * re-opening the panel never costs unsaved edits. Only closing the last tab
+ * unmounts.
+ *
+ * Agent (panel) tabs render the same full AgentWorkspace as the agent route
+ * page — identity header, timeline, actions and detail rail — chromed by
+ * tab-local portal slots instead of the app-level shell slots. While wired,
+ * each visible agent tab retains its own transcript view on the shared
+ * controller; the lease drops to the summary baseline when the tab or the
+ * whole panel hides, and is released when the tab closes. The tab context
+ * menu's agent entry opens the same agent on its fullscreen route.
  */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
 import { basenameOf, formatBytes, previewKindOf, type FileReference } from '@kiki/session-core/composer/media';
-import type { AgentForest, SessionViewState } from '@kiki/session-core/session';
+import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import { useHost, type HostAdapter } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
@@ -32,9 +41,10 @@ import {
   previewTabKey,
   type PreviewTab as PreviewTabModel,
 } from '../state/previewWorkspace';
-import { AgentPanelContainer } from './AgentPanelContainer';
+import { AgentWorkspace, type AgentWorkspaceNavigation } from './agent-workspace';
 import { CodeEditor } from './CodeEditor';
 import { ConfirmDialog } from './ConfirmDialog';
+import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 
 export interface PreviewWorkspaceProps {
@@ -46,6 +56,16 @@ export interface PreviewWorkspaceProps {
   readonly sessionViewState?: SessionViewState;
   readonly agentForest?: AgentForest;
   readonly onOpenSubagent?: (agentId: string) => void;
+  /**
+   * Agent-tab workspace wiring (shared runtime, navigation intents, task
+   * commands). All three must be present — together with sessionViewState,
+   * agentForest and sessionId — for a panel tab to render the full
+   * AgentWorkspace; otherwise the tab keeps its plain caption fallback.
+   */
+  readonly controller?: SessionController | null;
+  readonly workspaceNavigation?: AgentWorkspaceNavigation;
+  readonly onCancelTask?: (taskId: string, ownerAgentId?: string) => void;
+  readonly onStopAgentTask?: (ownerAgentId: string, taskId: string) => Promise<void>;
   readonly onActivate: (key: string) => void;
   readonly onClose: (key: string) => void;
   readonly onCloseOthers: (key: string) => void;
@@ -115,6 +135,10 @@ export function PreviewWorkspace({
   sessionViewState,
   agentForest,
   onOpenSubagent,
+  controller,
+  workspaceNavigation,
+  onCancelTask,
+  onStopAgentTask,
   onActivate,
   onClose,
   onCloseOthers,
@@ -271,22 +295,35 @@ export function PreviewWorkspace({
         const key = previewTabKey(tab);
         const isTabActive = key === active;
         if (tab.kind === 'panel') {
+          const workspaceWired =
+            controller != null &&
+            sessionViewState !== undefined &&
+            agentForest !== undefined &&
+            workspaceNavigation !== undefined &&
+            sessionId !== undefined;
           return (
             <div
               key={key}
               role="tabpanel"
               hidden={!isTabActive}
-              className={`min-h-0 flex-1 overflow-auto p-3 ${isTabActive ? 'flex flex-col' : 'hidden'}`}
+              className={`relative min-h-0 flex-1 overflow-hidden ${isTabActive ? 'flex flex-col' : 'hidden'}`}
               data-preview-tabpanel={key}
             >
-              {sessionViewState && agentForest ? (
-                <AgentPanelContainer
-                  state={sessionViewState}
-                  forest={agentForest}
+              {workspaceWired ? (
+                <AgentTabWorkspace
+                  viewId={key}
                   agentId={tab.agentId}
+                  sessionId={sessionId}
+                  controller={controller}
+                  sessionState={sessionViewState}
+                  forest={agentForest}
+                  navigation={workspaceNavigation}
+                  visible={isTabActive && !hidden}
+                  onCancelTask={onCancelTask}
+                  onStopAgentTask={onStopAgentTask}
                 />
               ) : (
-                <div className="p-4 text-center text-[12px] text-ink-faint">
+                <div className="overflow-auto p-4 text-center text-[12px] text-ink-faint">
                   Agent: {tab.title ?? tab.agentId}
                 </div>
               )}
@@ -308,6 +345,7 @@ export function PreviewWorkspace({
         <TabContextMenu
           menu={menu}
           cwd={cwd}
+          workspaceNavigation={workspaceNavigation}
           onCloseMenu={() => { setMenu(null); }}
           onCloseTab={() => { onClose(previewTabKey(menu.tab)); }}
           onCloseOthers={() => { onCloseOthers(previewTabKey(menu.tab)); }}
@@ -315,6 +353,113 @@ export function PreviewWorkspace({
         />
       ) : null}
     </aside>
+  );
+}
+
+/**
+ * AgentTabWorkspace — one panel tab's embedded AgentWorkspace. The tab shell
+ * owns the container concerns: local chrome slots (header/dock/rail portal
+ * targets inside the tabpanel), a per-tab rail that opens as a tab-local
+ * drawer, and the transcript view lease. The lease follows actual visibility:
+ * 'delta' while the tab is active in a shown panel, 'off' once the tab or the
+ * whole panel is hidden (the wildcard 'turn' summary baseline keeps flowing
+ * for background tabs), released when the tab unmounts.
+ */
+function AgentTabWorkspace({
+  viewId,
+  agentId,
+  sessionId,
+  controller,
+  sessionState,
+  forest,
+  navigation,
+  visible,
+  onCancelTask,
+  onStopAgentTask,
+}: {
+  readonly viewId: string;
+  readonly agentId: string;
+  readonly sessionId: string;
+  readonly controller: SessionController;
+  readonly sessionState: SessionViewState;
+  readonly forest: AgentForest;
+  readonly navigation: AgentWorkspaceNavigation;
+  readonly visible: boolean;
+  readonly onCancelTask: ((taskId: string, ownerAgentId?: string) => void) | undefined;
+  readonly onStopAgentTask: ((ownerAgentId: string, taskId: string) => Promise<void>) | undefined;
+}) {
+  const { t } = useI18n();
+  const [railOpen, setRailOpen] = useState(false);
+  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  const [dockSlot, setDockSlot] = useState<HTMLElement | null>(null);
+  const [railSlot, setRailSlot] = useState<HTMLElement | null>(null);
+  const slots = useMemo<ConversationShellSlots>(
+    () => ({
+      header: headerSlot,
+      dock: dockSlot,
+      rail: railSlot,
+      heroFooter: null,
+      footer: null,
+      preview: null,
+    }),
+    [headerSlot, dockSlot, railSlot],
+  );
+
+  // Transcript view lease: one per tab, keyed by the stable tab key. Retain
+  // once per (controller, view, agent); visibility flips go through
+  // updateAgentView so the grade changes in one pass instead of swinging
+  // through an intermediate release/re-retain drop.
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  useEffect(() => {
+    controller.retainAgentView(viewId, agentId, visibleRef.current ? 'delta' : 'off');
+    return () => { controller.releaseAgentView(viewId); };
+  }, [controller, viewId, agentId]);
+  useEffect(() => {
+    controller.updateAgentView(viewId, visible ? 'delta' : 'off');
+  }, [controller, viewId, visible]);
+
+  const closeRail = useCallback(() => { setRailOpen(false); }, []);
+
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col" data-agent-tab-workspace={agentId}>
+      <div ref={setHeaderSlot} className="shrink-0" />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <AgentWorkspace
+          target={{ sessionId, agentId }}
+          controller={controller}
+          sessionState={sessionState}
+          forest={forest}
+          navigation={navigation}
+          railOpen={railOpen}
+          railIsOverlay
+          onToggleRail={() => { setRailOpen((value) => !value); }}
+          onCloseRail={closeRail}
+          onCancelTask={onCancelTask ?? (() => {})}
+          onStopAgentTask={onStopAgentTask ?? (() => Promise.resolve())}
+          slots={slots}
+          inheritMediaPreview
+          showPreviewToggle={false}
+          showBreadcrumb={false}
+        />
+        {railOpen ? (
+          <div
+            role="button"
+            tabIndex={-1}
+            aria-label={t('sv.closePanel')}
+            className="absolute inset-0 z-10 hidden bg-shell/40 lg:block"
+            onClick={closeRail}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') closeRail();
+            }}
+          />
+        ) : null}
+        {/* The rail drawer overlays the timeline only: the header (with its
+            toggle) and the dock stay clickable above it. */}
+        <div ref={setRailSlot} className="absolute inset-y-0 right-0 z-20" />
+      </div>
+      <div ref={setDockSlot} className="shrink-0" />
+    </div>
   );
 }
 
@@ -504,6 +649,7 @@ function PreviewPanelTab({
 function TabContextMenu({
   menu,
   cwd,
+  workspaceNavigation,
   onCloseMenu,
   onCloseTab,
   onCloseOthers,
@@ -511,6 +657,7 @@ function TabContextMenu({
 }: {
   readonly menu: { tab: PreviewTabModel; x: number; y: number };
   readonly cwd: string | undefined;
+  readonly workspaceNavigation: AgentWorkspaceNavigation | undefined;
   readonly onCloseMenu: () => void;
   readonly onCloseTab: () => void;
   readonly onCloseOthers: () => void;
@@ -619,6 +766,17 @@ function TabContextMenu({
       ) : (
         <>
           <div className="mx-1 my-1 border-t border-hairline" />
+          {workspaceNavigation !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="open-agent-route"
+              className={itemClass}
+              onClick={() => { pick(() => { workspaceNavigation.openAgentRoute(tab.agentId); }); }}
+            >
+              {t('subagent.openAgent', { name: tab.title ?? tab.agentId })}
+            </button>
+          ) : null}
           <button
             type="button"
             role="menuitem"

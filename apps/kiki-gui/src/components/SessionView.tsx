@@ -2626,6 +2626,10 @@ export function SessionView({
       agentForest={forest}
       onOpenSubagent={openAgent}
       apiRef={previewRef}
+      controller={controller}
+      workspaceNavigation={agentWorkspaceNavigation}
+      onCancelTask={handleCancelTask}
+      onStopAgentTask={stopAgentTask}
     >
       {slots.header !== null
         ? createPortal(

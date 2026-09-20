@@ -15,6 +15,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
+import {
+  createViewState,
+  type AgentForest,
+  type SessionController,
+} from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { MediaPartList, MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import { ToolCard } from './ToolCard';
@@ -75,6 +80,38 @@ vi.mock('./CodeEditor', () => ({
       onChange={(event) => { onChange(event.target.value); }}
     />
   ),
+}));
+
+// The embedded workspace is probed, not rendered: the retain/release lease and
+// the tab chrome live in PreviewWorkspace itself, and AgentWorkspace has its
+// own test file for its internals.
+const agentWorkspaceHarness = vi.hoisted(() => ({
+  calls: [] as Array<{
+    agentId: string;
+    inheritMediaPreview: unknown;
+    showPreviewToggle: unknown;
+    railIsOverlay: unknown;
+    slotsProvided: boolean;
+  }>,
+}));
+
+vi.mock('./agent-workspace', () => ({
+  AgentWorkspace: (props: {
+    target: { sessionId: string; agentId: string };
+    inheritMediaPreview?: unknown;
+    showPreviewToggle?: unknown;
+    railIsOverlay?: unknown;
+    slots?: unknown;
+  }) => {
+    agentWorkspaceHarness.calls.push({
+      agentId: props.target.agentId,
+      inheritMediaPreview: props.inheritMediaPreview,
+      showPreviewToggle: props.showPreviewToggle,
+      railIsOverlay: props.railIsOverlay,
+      slotsProvided: props.slots !== undefined,
+    });
+    return <div data-agent-workspace={props.target.agentId} />;
+  },
 }));
 
 const roots: Root[] = [];
@@ -647,6 +684,168 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
     expect(workspace().classList.contains('fixed')).toBe(false);
+  });
+});
+
+describe('PreviewWorkspace agent tabs', () => {
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+  beforeEach(() => {
+    agentWorkspaceHarness.calls.length = 0;
+  });
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      act(() => { root.unmount(); });
+    }
+    for (const container of containers.splice(0)) container.remove();
+    document.body.innerHTML = '';
+  });
+
+  function makeController() {
+    return {
+      retainAgentView: vi.fn(),
+      updateAgentView: vi.fn(),
+      releaseAgentView: vi.fn(),
+    };
+  }
+
+  function OpenPanelButton({ agentId, title }: { agentId: string; title?: string }) {
+    const preview = useMediaPreview();
+    return (
+      <button
+        type="button"
+        data-open-panel={agentId}
+        onClick={() => preview?.openAgentPanel(agentId, title)}
+      >
+        open panel
+      </button>
+    );
+  }
+
+  async function renderAgentPreview(
+    controller: ReturnType<typeof makeController>,
+    openRoute: (agentId: string) => void,
+  ) {
+    const probe = makeRoot();
+    const forest: AgentForest = { roots: [], byId: {} };
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider
+        cwd="/work"
+        sessionId="s1"
+        sessionViewState={{ ...createViewState('s1'), loaded: true }}
+        agentForest={forest}
+        controller={controller as unknown as SessionController}
+        workspaceNavigation={{ openAgent: vi.fn(), openAgentRoute: openRoute, openSession: vi.fn() }}
+      >
+        <OpenPanelButton agentId="sub-123" title="Subagent Worker" />
+        <OpenButton path="/work/src/server.ts" />
+      </MediaPreviewProvider>,
+    );
+    return probe;
+  }
+
+  async function openPanel(container: HTMLElement, agentId: string): Promise<void> {
+    await act(async () => {
+      container
+        .querySelector(`[data-open-panel="${agentId}"]`)!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+  }
+
+  it('renders the full agent workspace in a panel tab and retains a delta view', async () => {
+    const controller = makeController();
+    const probe = await renderAgentPreview(controller, vi.fn());
+    await openPanel(probe.container, 'sub-123');
+
+    const panel = workspace().querySelector('[data-preview-tabpanel="panel:sub-123"]');
+    expect(panel?.querySelector('[data-agent-workspace="sub-123"]')).not.toBeNull();
+    expect(controller.retainAgentView).toHaveBeenCalledTimes(1);
+    expect(controller.retainAgentView).toHaveBeenCalledWith('panel:sub-123', 'sub-123', 'delta');
+    const call = agentWorkspaceHarness.calls.at(-1);
+    expect(call?.agentId).toBe('sub-123');
+    expect(call?.inheritMediaPreview).toBe(true);
+    expect(call?.showPreviewToggle).toBe(false);
+    expect(call?.railIsOverlay).toBe(true);
+    expect(call?.slotsProvided).toBe(true);
+  });
+
+  it('drops the view when the tab or panel hides, restores it on show, releases on close', async () => {
+    const controller = makeController();
+    const probe = await renderAgentPreview(controller, vi.fn());
+    await openPanel(probe.container, 'sub-123');
+    expect(controller.retainAgentView).toHaveBeenCalledTimes(1);
+
+    // Switching to another tab hides the workspace: the demand drops to the
+    // summary baseline in one update, without a release/re-retain swing.
+    await openFile(probe.container, '/work/src/server.ts');
+    expect(controller.updateAgentView).toHaveBeenLastCalledWith('panel:sub-123', 'off');
+    expect(controller.retainAgentView).toHaveBeenCalledTimes(1);
+    expect(controller.releaseAgentView).not.toHaveBeenCalled();
+
+    // Re-activating the tab restores the delta demand in one update.
+    await act(async () => {
+      workspace()
+        .querySelector('[data-preview-tab-key="panel:sub-123"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(controller.updateAgentView).toHaveBeenLastCalledWith('panel:sub-123', 'delta');
+    expect(controller.retainAgentView).toHaveBeenCalledTimes(1);
+
+    // Collapsing the whole panel hides the active tab as well.
+    await act(async () => {
+      workspace()
+        .querySelector('[aria-label="Collapse preview panel"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(controller.updateAgentView).toHaveBeenLastCalledWith('panel:sub-123', 'off');
+    expect(controller.releaseAgentView).not.toHaveBeenCalled();
+
+    // Closing the tab releases the lease.
+    await act(async () => {
+      workspace()
+        .querySelector('[data-preview-tab="panel:sub-123"] button')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(controller.releaseAgentView).toHaveBeenCalledWith('panel:sub-123');
+  });
+
+  it('opens the agent on its fullscreen route from the tab context menu', async () => {
+    const controller = makeController();
+    const openRoute = vi.fn();
+    const probe = await renderAgentPreview(controller, openRoute);
+    await openPanel(probe.container, 'sub-123');
+
+    const tab = workspace().querySelector('[data-preview-tab="panel:sub-123"]')!;
+    await act(async () => {
+      tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const item = document.querySelector('[data-menu-item="open-agent-route"]');
+    expect(item?.textContent).toBe('Open Subagent Worker');
+    await act(async () => {
+      item!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(openRoute).toHaveBeenCalledWith('sub-123');
+    expect(document.querySelector('[data-preview-tab-menu]')).toBeNull();
+  });
+
+  it('keeps the plain caption when the workspace is not wired', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="s1">
+        <OpenPanelButton agentId="sub-123" title="Subagent Worker" />
+      </MediaPreviewProvider>,
+    );
+    await openPanel(probe.container, 'sub-123');
+
+    const panel = workspace().querySelector('[data-preview-tabpanel="panel:sub-123"]');
+    expect(panel?.textContent).toContain('Agent: Subagent Worker');
+    expect(panel?.querySelector('[data-agent-workspace]')).toBeNull();
   });
 });
 

@@ -40,7 +40,11 @@ import { useConnection } from '../../state/connection';
 import { revealSubagentCard } from '../ActivityHistory';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
 import { DispatchPolicyBadges } from '../agent-panel/AgentIdentitySection';
-import { useConversationShell } from '../ConversationShell';
+import {
+  EMPTY_SLOTS,
+  useOptionalConversationShell,
+  type ConversationShellSlots,
+} from '../ConversationShell';
 import { ContextMeter } from '../ContextMeter';
 import { MediaPreviewProvider, PreviewToggleButton } from '../mediaPreview';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
@@ -100,7 +104,24 @@ export interface AgentWorkspaceProps {
   readonly onCancelTask: (taskId: string, ownerAgentId?: string) => void;
   readonly onStopAgentTask: (ownerAgentId: string, taskId: string) => Promise<void>;
   /** Shell-shared preview seat; the provider below mounts it, ownership stays outside. */
-  readonly previewApiRef: RefObject<MediaPreviewApi | null>;
+  readonly previewApiRef?: RefObject<MediaPreviewApi | null>;
+  /**
+   * Portal targets for the workspace chrome (header, dock, rail). Defaults to
+   * the ambient ConversationShell slots; an embedding shell (preview tab)
+   * passes local slot elements so the chrome stays inside its own container.
+   */
+  readonly slots?: ConversationShellSlots;
+  /**
+   * Inherit the ambient session-level preview provider instead of mounting an
+   * owned one. Set when the workspace renders inside the preview workspace:
+   * the shell owns the one preview panel, and file/image opens from this
+   * timeline must land there rather than in a nested second workspace.
+   */
+  readonly inheritMediaPreview?: boolean;
+  /** Header preview-panel toggle; suppressed where the workspace IS the panel. */
+  readonly showPreviewToggle?: boolean;
+  /** Header breadcrumb; suppressed in narrow containers (the relations row stays). */
+  readonly showBreadcrumb?: boolean;
 }
 
 export function resolveRunningSubagentTask(input: {
@@ -150,6 +171,8 @@ function AgentWorkspaceHeader({
   onSendMessage,
   onTerminate,
   onChangeModel,
+  showPreviewToggle,
+  showBreadcrumb,
 }: {
   target: AgentWorkspaceTarget;
   name: string;
@@ -173,6 +196,9 @@ function AgentWorkspaceHeader({
   onSendMessage: (text: string) => Promise<void>;
   onTerminate: () => Promise<void>;
   onChangeModel: (model: string) => Promise<void>;
+  showPreviewToggle: boolean;
+  /** Off in narrow containers (tabs): the relations row below keeps the navigation. */
+  showBreadcrumb: boolean;
 }) {
   const { t, time } = useI18n();
   return (
@@ -185,12 +211,14 @@ function AgentWorkspaceHeader({
         >
           {t('sv.backToSession')}
         </button>
-        <div className="min-w-0 flex-1">
-          <AgentBreadcrumb
-            crumbs={crumbs}
-            onOpenSession={navigation.openSession}
-            onOpenAgent={navigation.openAgent}
-          />
+        <div className="min-w-24 flex-1">
+          {showBreadcrumb ? (
+            <AgentBreadcrumb
+              crumbs={crumbs}
+              onOpenSession={navigation.openSession}
+              onOpenAgent={navigation.openAgent}
+            />
+          ) : null}
           <h1 className="truncate font-display text-[15px] font-semibold text-ink">
             {name}
           </h1>
@@ -256,7 +284,7 @@ function AgentWorkspaceHeader({
           onTerminate={onTerminate}
           onChangeModel={onChangeModel}
         />
-        <PreviewToggleButton />
+        {showPreviewToggle ? <PreviewToggleButton /> : null}
         <button
           type="button"
           onClick={onToggleRail}
@@ -298,10 +326,15 @@ export function AgentWorkspace({
   onCancelTask,
   onStopAgentTask,
   previewApiRef,
+  slots: slotsOverride,
+  inheritMediaPreview = false,
+  showPreviewToggle = true,
+  showBreadcrumb = true,
 }: AgentWorkspaceProps) {
   const { t } = useI18n();
   const { client, klient } = useConnection();
-  const { slots } = useConversationShell();
+  const contextSlots = useOptionalConversationShell()?.slots;
+  const slots = slotsOverride ?? contextSlots ?? EMPTY_SLOTS;
   const { sessionId, agentId } = target;
 
   // Live per-agent channel: child-agent frames land in their own sub-store, so
@@ -473,15 +506,8 @@ export function AgentWorkspace({
   // below lg the rail becomes a fixed overlay (see .app-rail in index.css).
   const showBackdrop = railIsOverlay && railOpen;
 
-  return (
-    <MediaPreviewProvider
-      sessionId={sessionId}
-      cwd={sessionState.session?.metadata?.cwd}
-      sessionViewState={agentState}
-      agentForest={forest}
-      onOpenSubagent={navigation.openAgent}
-      apiRef={previewApiRef}
-    >
+  const chrome = (
+    <>
       {slots.header !== null
         ? createPortal(
             <AgentWorkspaceHeader
@@ -507,6 +533,8 @@ export function AgentWorkspace({
               onSendMessage={handleMessageAgent}
               onTerminate={handleTerminateAgent}
               onChangeModel={handleChangeAgentModel}
+              showPreviewToggle={showPreviewToggle}
+              showBreadcrumb={showBreadcrumb}
             />,
             slots.header,
           )
@@ -566,6 +594,29 @@ export function AgentWorkspace({
           }}
         />
       ) : null}
+    </>
+  );
+
+  // Embedded mode (preview tab): the ambient session-level provider already
+  // owns media overlays and the one preview workspace; mounting another
+  // provider here would fork that seat.
+  if (inheritMediaPreview) return chrome;
+
+  return (
+    <MediaPreviewProvider
+      sessionId={sessionId}
+      cwd={sessionState.session?.metadata?.cwd}
+      sessionViewState={agentState}
+      agentForest={forest}
+      onOpenSubagent={navigation.openAgent}
+      apiRef={previewApiRef}
+      controller={controller}
+      workspaceSessionState={sessionState}
+      workspaceNavigation={navigation}
+      onCancelTask={onCancelTask}
+      onStopAgentTask={onStopAgentTask}
+    >
+      {chrome}
     </MediaPreviewProvider>
   );
 }
