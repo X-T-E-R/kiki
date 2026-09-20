@@ -557,6 +557,7 @@ describe('CLI options parsing', () => {
         .map((command) => command.name());
       expect(commandNames).toEqual([
         'export',
+        'session',
         'provider',
         'acp',
         'web',
