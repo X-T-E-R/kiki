@@ -4,6 +4,8 @@
  *
  *   - one row per queued prompt, in drain order (#1 runs first), each with a
  *     truncated preview and a hover/focus-revealed action set:
+ *       Timing   — dropdown picking when the prompt starts (when idle / after
+ *                  subagents / after all tasks; wire `:timing`);
  *       Send now — steer: the server injects the prompt into the RUNNING turn
  *                    immediately (wire `:steer`), it does not wait for the turn
  *                    to end;
@@ -86,7 +88,7 @@ export function QueueStrip({
   readonly onMove?: (promptId: string, targetIndex: number) => Promise<void> | void;
   /**
    * Re-time a parked prompt (wire `:timing`). Optional: the per-row timing
-   * picker only appears when wired.
+   * dropdown only appears when wired.
    */
   readonly onChangeTiming?: (promptId: string, timing: DeferredAppendTiming) => Promise<void> | void;
   /** Steer is a send-equivalent; disable it while the session is resyncing. */
@@ -259,46 +261,33 @@ export function QueueStrip({
         >
           {item.text === '' ? t('sv.queueNoText') : item.text}
         </span>
-        {onChangeTiming !== undefined && !isEditing ? (
-          <span
-            role="radiogroup"
-            aria-label={t('queue.timingAria')}
-            data-timing-picker={item.promptId}
-            className="flex shrink-0 items-center gap-px rounded-full border border-amber-rule/40 bg-panel/70 p-px"
-          >
-            {QUEUE_TIMINGS.map((timing) => {
-              const currentTiming = item.appendTiming ?? 'agent_idle';
-              return (
-              <button
-                key={timing}
-                type="button"
-                role="radio"
-                aria-checked={timing === currentTiming}
-                data-timing={timing}
-                disabled={pending}
-                title={t(TIMING_HINT_KEY[timing])}
-                onClick={() => {
-                  if (timing === currentTiming) return;
-                  run(item.promptId, (id) => onChangeTiming(id, timing));
-                }}
-                className={`rounded-full px-1.5 py-px text-[9.5px] font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none ${
-                  timing === currentTiming
-                    ? 'bg-amber-ink text-white'
-                    : 'text-amber-ink/70 hover:bg-amber-rule/20 hover:text-amber-ink'
-                }`}
-              >
-                {t(TIMING_SHORT_KEY[timing])}
-              </button>
-              );
-            })}
-          </span>
-        ) : null}
         {isEditing ? (
           <span className="shrink-0 rounded-full border border-amber-rule/60 bg-amber-card px-2 py-0.5 text-[10.5px] font-medium text-amber-ink">
             {t('queue.editingBadge')}
           </span>
         ) : (
           <span className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+            {onChangeTiming !== undefined ? (
+              <select
+                aria-label={t('queue.timingAria')}
+                data-timing-picker={item.promptId}
+                disabled={pending}
+                title={t(TIMING_HINT_KEY[item.appendTiming ?? 'agent_idle'])}
+                value={item.appendTiming ?? 'agent_idle'}
+                onChange={(event) => {
+                  const timing = event.target.value as DeferredAppendTiming;
+                  if (timing === (item.appendTiming ?? 'agent_idle')) return;
+                  run(item.promptId, (id) => onChangeTiming(id, timing));
+                }}
+                className="rounded-full border border-amber-rule/50 bg-panel px-1.5 py-0.5 text-[10.5px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/20 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none"
+              >
+                {QUEUE_TIMINGS.map((timing) => (
+                  <option key={timing} value={timing} data-timing={timing}>
+                    {t(TIMING_SHORT_KEY[timing])}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             {onEdit !== undefined && item.text !== '' ? (
               <button
                 type="button"

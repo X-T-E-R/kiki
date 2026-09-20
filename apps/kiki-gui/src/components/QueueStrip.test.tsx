@@ -74,6 +74,16 @@ async function click(element: Element): Promise<void> {
   });
 }
 
+/** Controlled-select change: the native setter bypasses React's value tracker. */
+async function changeSelect(select: HTMLSelectElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+  if (setter === undefined) throw new Error('no native select value setter');
+  await act(async () => {
+    setter.call(select, value);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
 async function keydown(element: Element, key: string): Promise<void> {
   await act(async () => {
     element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
@@ -308,7 +318,7 @@ describe('QueueStrip reorder', () => {
 });
 
 describe('QueueStrip timing picker', () => {
-  it('marks the row timing pressed and defaults to agent_idle when absent', async () => {
+  it('shows the row timing selected, defaults to agent_idle when absent, and rides the hover action set', async () => {
     const { container } = await renderStrip({
       items: [
         { promptId: 'p1', text: 'one', appendTiming: 'subagents_done', revision: 3 },
@@ -316,14 +326,16 @@ describe('QueueStrip timing picker', () => {
       ],
       onChangeTiming: () => {},
     });
-    const first = container.querySelector('[data-timing-picker="p1"]')!;
-    expect(first.getAttribute('role')).toBe('radiogroup');
-    expect(first.querySelector('[data-timing="subagents_done"]')?.getAttribute('aria-checked')).toBe('true');
+    const first = container.querySelector<HTMLSelectElement>('[data-timing-picker="p1"]')!;
+    expect(first.tagName).toBe('SELECT');
+    expect(first.value).toBe('subagents_done');
     expect(first.querySelector('[data-timing="subagents_done"]')?.textContent).toBe('after subagents');
-    expect(first.querySelector('[data-timing="agent_idle"]')?.getAttribute('aria-checked')).toBe('false');
+    // The dropdown lives in the hover/focus-revealed action set like the
+    // edit / send-now / remove buttons.
+    expect(first.closest('[class*="group-hover:opacity-100"]')).not.toBeNull();
     // Older servers omit the field; the display falls back to agent_idle.
-    const second = container.querySelector('[data-timing-picker="p2"]')!;
-    expect(second.querySelector('[data-timing="agent_idle"]')?.getAttribute('aria-checked')).toBe('true');
+    const second = container.querySelector<HTMLSelectElement>('[data-timing-picker="p2"]')!;
+    expect(second.value).toBe('agent_idle');
     expect(second.querySelector('[data-timing="agent_idle"]')?.textContent).toBe('when idle');
   });
 
@@ -333,10 +345,10 @@ describe('QueueStrip timing picker', () => {
       items: [{ promptId: 'p1', text: 'one', appendTiming: 'agent_idle' }],
       onChangeTiming,
     });
-    const picker = container.querySelector('[data-timing-picker="p1"]')!;
-    await click(picker.querySelector('[data-timing="tasks_done"]')!);
+    const picker = container.querySelector<HTMLSelectElement>('[data-timing-picker="p1"]')!;
+    await changeSelect(picker, 'tasks_done');
     expect(onChangeTiming).toHaveBeenCalledExactlyOnceWith('p1', 'tasks_done');
-    await click(picker.querySelector('[data-timing="agent_idle"]')!);
+    await changeSelect(picker, 'agent_idle');
     expect(onChangeTiming).toHaveBeenCalledTimes(1);
   });
 
@@ -352,13 +364,13 @@ describe('QueueStrip timing picker', () => {
       items: [{ promptId: 'p1', text: 'one' }],
       onChangeTiming,
     });
-    const picker = container.querySelector('[data-timing-picker="p1"]')!;
-    await click(picker.querySelector('[data-timing="tasks_done"]')!);
+    const picker = container.querySelector<HTMLSelectElement>('[data-timing-picker="p1"]')!;
+    await changeSelect(picker, 'tasks_done');
     expect(onChangeTiming).toHaveBeenCalledExactlyOnceWith('p1', 'tasks_done');
-    expect(picker.querySelectorAll<HTMLButtonElement>('button:disabled')).toHaveLength(3);
+    expect(picker.disabled).toBe(true);
     await act(async () => {
       gate.resolve();
     });
-    expect(picker.querySelectorAll<HTMLButtonElement>('button:disabled')).toHaveLength(0);
+    expect(picker.disabled).toBe(false);
   });
 });
