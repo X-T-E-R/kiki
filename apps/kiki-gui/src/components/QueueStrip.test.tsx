@@ -199,6 +199,37 @@ describe('QueueStrip edit round-trip', () => {
   });
 });
 
+describe('QueueStrip collapse behavior', () => {
+  it('shows queued rows expanded by default and collapses via the header', async () => {
+    const { container } = await renderStrip();
+    const list = container.querySelector('ol')!;
+    expect(list.hasAttribute('hidden')).toBe(false);
+    await click(container.querySelector('button[aria-label="Show or hide the queued prompts"]')!);
+    expect(list.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('returns to the expanded default after the queue drains to a single row', async () => {
+    const { container, root } = await renderStrip();
+    await click(container.querySelector('button[aria-label="Show or hide the queued prompts"]')!);
+    expect(container.querySelector('ol')!.hasAttribute('hidden')).toBe(true);
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <QueueStrip items={[ITEMS[0]]} onSendNow={() => {}} onRemove={() => {}} onClearAll={() => {}} />
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <QueueStrip items={ITEMS} onSendNow={() => {}} onRemove={() => {}} onClearAll={() => {}} />
+        </I18nProvider>,
+      );
+    });
+    expect(container.querySelector('ol')!.hasAttribute('hidden')).toBe(false);
+  });
+});
+
 describe('QueueStrip reorder', () => {
   it('hides the drag handle for a single queued prompt', async () => {
     const { container } = await renderStrip({ items: [ITEMS[0]], onMove: vi.fn() });

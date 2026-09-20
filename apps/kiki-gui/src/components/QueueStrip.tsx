@@ -20,10 +20,9 @@
  *     onto another row to land before/after it, or focus the handle and move
  *     with ↑/↓ — both go through `:move` (prompt.moved) and the strip
  *     repaints from the server's authoritative order;
- *   - with more than one parked prompt the list defaults to a collapsed count
- *     header (deepseek-harness's QueueDock, MIT); the header toggles
- *     the list, an in-flight composer edit force-expands it, and a single
- *     prompt always shows without a toggle;
+ *   - with more than one parked prompt the list defaults to expanded; the
+ *     count header toggles collapse, an in-flight composer edit force-expands
+ *     it, and a single prompt always shows without a toggle;
  *   - a strip header carrying the drain explanation ("…starts when the current
  *     turn finishes") plus Clear all;
  *   - every row mounts with anim-enter, so pressing Enter while busy produces
@@ -100,7 +99,7 @@ export function QueueStrip({
   // (success removes the row via reconcile; failure keeps it, re-enabled,
   // with the view-level error line explaining why).
   const [pendingIds, setPendingIds] = useState<readonly string[]>([]);
-  const [collapsed, setCollapsed] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
   // Two-step remove: the first click arms the row's button, the second runs.
   const [armedRemoveId, setArmedRemoveId] = useState<string | null>(null);
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -111,10 +110,10 @@ export function QueueStrip({
   useEffect(() => {
     setPendingIds((current) => current.filter((id) => items.some((item) => item.promptId === id)));
   }, [items]);
-  // Auto-collapse as the queue drains to a single row; disarm a remove whose
-  // row left the queue underneath it.
+  // Reset to the expanded default as the queue drains to a single row; disarm
+  // a remove whose row left the queue underneath it.
   useEffect(() => {
-    if (items.length <= 1 && !collapsed) setCollapsed(true);
+    if (items.length <= 1 && collapsed) setCollapsed(false);
     if (armedRemoveId !== null && !items.some((item) => item.promptId === armedRemoveId)) {
       setArmedRemoveId(null);
     }
