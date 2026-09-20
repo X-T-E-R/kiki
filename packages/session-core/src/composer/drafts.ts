@@ -75,11 +75,6 @@ export function clearStoredDrafts(): void {
   }
 }
 
-/** @deprecated Use clearStoredDrafts — name kept for the settings toggle call site. */
-export function clearAllDrafts(): void {
-  clearStoredDrafts();
-}
-
 /** Test-only: forget this-process memory as if the module were freshly imported. */
 export function resetDraftMemoryForTests(): void {
   memory.clear();
