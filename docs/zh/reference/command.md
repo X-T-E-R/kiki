@@ -186,7 +186,7 @@ kiki mcp --workspace <目录>
 
 ### `kiki doctor`
 
-诊断本地 Kiki 连接，不会启动 TUI，也不会修改文件。它会检查 daemon 是否可达、当前 home 的 token 路径与权限、服务端身份以及外部调用方席位列表和每个席位的权限模式。默认使用 `KIKI_HOME` 或 `~/.kiki`；如需检查其他 home，可传入 `--home`。报告以 JSON 输出，也不会启动服务；需要先创建服务时，先运行 `kiki serve` 或 `kiki serve --ensure`。
+诊断本地 Kiki 连接，不会启动 TUI，也不会修改文件。它会检查 daemon 是否可达、当前 home 的 token 路径与权限、服务端身份以及外部调用方席位列表和每个席位的权限模式。默认使用 `KIKI_HOME` 或 `~/.kiki`；如需检查其他 home，可传入 `--home`。报告默认即以 JSON 输出（`--json` 为保留的显式写法，输出相同），也不会启动服务；需要先创建服务时，先运行 `kiki serve` 或 `kiki serve --ensure`。需要校验 `config.toml`、`tui.toml` 与 Agent profile 时，改用 `kiki doctor --agents`（或子命令形式 `kiki doctor agents`），它以可读文本输出结果。
 
 ```sh
 kiki doctor
@@ -232,8 +232,6 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 已移除的 `prompt.shared` 与 `prompt.tools` 键已迁入 `[prompt.overrides]` 下的字段；请按 [提示词字段优先级](../configuration/overrides.md#提示词字段优先级) 迁移旧条目，不要恢复旧键。
 
 ### `kiki migrate-config`
-
-安装后的统一入口为 `kiki`：不带子命令时进入 daemon 支持的 TUI，`kiki -p "提示词"` 继续使用既有非交互 memory 链路。Daemon、席位和 inbound 集成命令也在同一入口提供。不再安装 `kimi` bin，请同步更新命令启动器。
 
 将旧配置和自定义资源复制到 `KIKI_HOME`（默认 `~/.kiki`），不会覆盖已有的 Kiki 文件。只有这条显式迁移命令会读取旧的 `KIMI_CODE_HOME` 环境变量；未显式指定时，默认来源依次为 `--from <目录>`、旧 `KIMI_CODE_HOME` 设置、`~/.kimi-code`。使用 `--home <目录>` 可指定目标。解析 home 路径不会自动执行迁移。
 
@@ -351,7 +349,7 @@ kiki provider <action> [options]
 | 参数 / 选项 | 说明 |
 | --- | --- |
 | `<url>` | Registry 地址 |
-| `--api-key <key>` | 访问 registry 时携带的 Bearer token。未传时回退到环境变量 `KIKI_REGISTRY_API_KEY`，必填 |
+| `--api-key <key>` | 访问 registry 时携带的 Bearer token。必填：未传时回退到环境变量 `KIKI_REGISTRY_API_KEY`，两者都未提供时命令报错退出 |
 
 ```sh
 kiki provider add https://registry.example.com/v1/models/api.json --api-key YOUR_KEY
@@ -403,7 +401,7 @@ kiki provider catalog list anthropic
 | 参数 / 选项 | 说明 |
 | --- | --- |
 | `<providerId>` | catalog 中的供应商 id，如 `anthropic`、`openai` |
-| `--api-key <key>` | 供应商 API key。未传时回退到 `KIKI_REGISTRY_API_KEY`，必填 |
+| `--api-key <key>` | 供应商 API key。必填：未传时回退到 `KIKI_REGISTRY_API_KEY`，两者都未提供时命令报错退出 |
 | `--default-model <modelId>` | 可选，导入后把 `default_model` 设为 `<providerId>/<modelId>` |
 | `--base-url <url>` | 覆盖 catalog 声明的端点；catalog 未提供端点（或仅有环境变量占位符）时必填 |
 | `--url <url>` | 覆盖 catalog 地址，默认 `https://models.dev/api.json` |

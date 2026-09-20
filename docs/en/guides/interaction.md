@@ -6,7 +6,7 @@ The Kiki CLI and TUI run as an interactive terminal user interface built around 
 
 The input box accepts free-form text. Press `Enter` to send, or `Shift-Enter` / `Ctrl-J` to insert a newline. When the input box is empty, press `↑` / `↓` to browse the input history for the current working directory, including previous shell commands.
 
-**Exiting the CLI**: press `Ctrl-D` with the input box empty, press `Ctrl-C` twice while idle, or type `/exit`. Pressing `Ctrl-C` or `Esc` during streaming output interrupts the current turn — it does not exit the program.
+**Exiting the CLI**: press `Ctrl-D` with the input box empty, press `Ctrl-C` twice while idle, or type `/exit`. All three require the agent to be idle — pressing `Ctrl-C` or `Esc` during streaming output only interrupts the current turn, it does not exit the program.
 
 ## Pasting images and video
 
@@ -19,21 +19,21 @@ How to paste:
 - **macOS / Linux**: `Ctrl-V`
 - **Windows**: `Alt-V`
 
-After pasting, the input box shows a placeholder that you can edit like normal text; on submit, the placeholder is replaced with the actual content. A plain-text clipboard falls back to ordinary paste. Media support depends on the current model's multimodal capabilities (`image_in` / `video_in`); it is enabled by default when you are logged in to a Kimi Code account.
+After pasting, the input box shows a placeholder that you can edit like normal text; on submit, the placeholder is replaced with the actual content. A plain-text clipboard falls back to ordinary paste. Media support depends on whether the current model accepts image / video input (the model capability fields `image_in` / `video_in`); it is enabled by default when you are logged in to a Kimi Code account.
 
 ## Slash commands
 
 Anything starting with `/` is treated as a slash command. Typing `/` opens a completion menu that filters in real time as you keep typing; press `Esc` to close the menu. If nothing matches, the input is sent to the agent as a regular message.
 
-Active [Agent Skills](../customization/skills.md) are automatically registered as slash commands: ordinary external Skills are invoked with `/skill:<name>`, external sub-skills appear as dotted commands such as `/parent.child`, and built-in Skills appear directly as `/<name>` in the slash command panel. If an external skill name does not conflict with a system slash command, you can also drop the `skill:` prefix and type `/<name>` directly.
+Active [Agent Skills](../customization/skills.md) (skill packages that extend what the agent can do) are automatically registered as slash commands: ordinary external Skills are invoked with `/skill:<name>`, external sub-skills appear as dotted commands such as `/parent.child`, and built-in Skills appear directly as `/<name>` in the slash command panel. If an external skill name does not conflict with a system slash command, you can also drop the `skill:` prefix and type `/<name>` directly.
 
-Inside a longer prompt, typing `/` after whitespace — including at the start of a later line — opens a skill-only completion menu. You can reference several Skills in one prompt this way: Kiki activates them together and runs them with the prompt as a single turn (one `/undo` reverts the whole submission), and the prompt text is sent unchanged. A Skill mention in a prompt never carries arguments — activation is by name only; arguments remain a standalone `/skill:<name> args` concept. Built-in and plugin commands still only work at the very start of the input.
+Inside a longer prompt, typing `/` after whitespace — including at the start of a later line — opens a skill-only completion menu. You can reference several Skills in one prompt this way: Kiki activates them together and runs them with the prompt as a single turn (one `/undo`, which reverts the previous turn's output, undoes the whole submission), and the prompt text is sent unchanged. A Skill mention in a prompt never carries arguments — activation is by name only; arguments remain a standalone `/skill:<name> args` concept. Built-in and plugin commands still only work at the very start of the input.
 
 Some commands are only available when the agent is idle — you need to press `Esc` to interrupt streaming output or context compression before using them. Mode-toggle and query commands like `/yolo`, `/plan`, `/help`, and `/btw` are always available. For the full list, see [Slash commands reference](../reference/slash-commands.md).
 
 ## File references
 
-Type `@` to trigger file-path completion. Selecting a path inserts its relative form into your message; the agent loads the file content directly when it reads the message. File references work in both git and non-git directories, and folder suggestions end with `/` so you can keep completing paths inside them. If the fast search helper is still downloading, Kiki falls back to a basic filesystem scan. Hidden paths are available, but `.git` is excluded from suggestions.
+Type `@` to trigger file-path completion. Selecting a path inserts its relative form into your message; the agent loads the file content directly when it reads the message. File references work in both git and non-git directories, and folder suggestions end with `/` so you can keep completing paths inside them. While Kiki's fast file-search component is still downloading in the background, Kiki falls back to a basic filesystem scan. Hidden paths are available, but `.git` is excluded from suggestions.
 
 > `@` references and slash commands are two separate mechanisms: `@` gives the agent file context, while `/` invokes built-in features or Skills. After whitespace, `/` offers Skill completions only; use a leading `/` for built-in and plugin commands.
 
@@ -75,7 +75,7 @@ Shell mode lets you run terminal commands without leaving the conversation. The 
 - Run in background: while a command is running, press `Ctrl+B` to move it to a background task.
 - Recall previous commands: with the input box empty in shell mode, press `↑` to browse earlier shell commands; recalling one keeps you in shell mode so it runs as a command again.
 
-In shell mode the input box shows a `!` prompt on the left and the border turns violet. For example, you can run `!gh auth login` to sign in to the GitHub CLI without opening a new terminal, so Kimi can use `gh` afterward.
+In shell mode the input box shows a `!` prompt on the left (in the desktop GUI the border also turns violet). For example, you can run `!git status` to check the repository state without opening a new terminal — the output goes straight into the conversation context.
 
 ## During streaming output
 

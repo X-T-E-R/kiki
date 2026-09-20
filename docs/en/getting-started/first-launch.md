@@ -4,20 +4,20 @@ This page picks up after installation: start Kiki, configure an API source, and 
 
 ## Start Kiki
 
-Move into your project directory and run `kiki` to start the daemon-backed interactive UI:
+Move into your project directory and run `kiki` to start the interactive UI:
 
 ```sh
 cd your-project
 kiki
 ```
 
-When developing from source, run `pnpm dev:cli` from the repository root instead. To run a single instruction without entering the interactive UI, use `-p`:
+When developing from source, run `pnpm dev:cli` from the repository root instead. To run a single instruction without entering the interactive UI, use `-p` (prompt mode):
 
 ```sh
 kiki -p "Take a look at this project's directory structure"
 ```
 
-To resume the previous session, add `-c`:
+To resume the previous session, add `-c` (short for `--continue`; how it differs from `--session` is covered in [Workspaces and sessions](../guides/sessions.md#starting-and-resuming-sessions)):
 
 ```sh
 kiki -c
@@ -27,7 +27,7 @@ kiki -c
 
 On first launch you need to configure an API source. In the interactive UI, enter `/login` to begin the login flow:
 
-```
+```sh
 /login
 ```
 
@@ -50,7 +50,7 @@ Once logged in, describe a task in natural language. A good starting point is to
 Take a look at this project's directory structure and briefly describe what each directory is for.
 ```
 
-Kiki automatically calls file-reading, search, and other tools to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation. For operations that modify files or run shell commands, it asks for your confirmation before proceeding.
+Kiki automatically calls file-reading, search, and other tools (tools are built-in capabilities the agent can invoke — reading files, searching code, running commands) to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation. For operations that modify files or run shell commands, it asks for your confirmation before proceeding.
 
 You can also describe a more concrete task directly:
 
@@ -75,18 +75,18 @@ For a first-time user, the following is all you need to know:
 | `/new` | Start a new session, clearing the current context |
 | `/sessions` | Browse session history and choose one to resume |
 | `/model` | Switch the current model |
-| `/compact` | Manually compress the context to free up tokens |
+| `/compact` | Manually compress the context to free up tokens (a token is the basic unit models use to measure text — how many tokens a conversation takes determines how much context fits) |
 | `/fork` | Fork the current session into an independent copy with full history (you stay in the current session) |
 
 **Most-used keyboard shortcuts**
 
 | Shortcut | Description |
 | --- | --- |
-| `Esc` | Interrupt streaming output / close a popup |
+| `Esc` | Interrupt streaming output (output that appears piece by piece in real time) / close a popup |
 | `Ctrl-C` | Interrupt output; press twice while idle to exit |
 | `Shift-Tab` | Toggle Plan mode |
 | `Ctrl-S` | Inject a message mid-stream without waiting for the current response to finish |
-| `Ctrl-O` | Collapse / expand tool output and compaction summaries |
+| `Ctrl-O` | Collapse / expand tool output and compaction summaries (the summaries generated when context is compressed) |
 
 For the full list, type `/help` or visit [Slash commands](../reference/slash-commands.md) and [Keyboard shortcuts](../reference/keyboard.md).
 

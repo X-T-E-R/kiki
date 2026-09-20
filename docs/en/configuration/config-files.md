@@ -110,19 +110,24 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop-control) |
 | `retry` | `table` | — | Error-specific step retry policies → [`retry`](#retry) |
+| `token_counting` | `table` | — | Which context token count is reported externally → [`token_counting`](#token-counting) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
+| `subagent` | `table` | — | Subagent run defaults and limits → [`subagent`](#subagent) |
 | `agents` | `table` | — | Delegation-notice defaults → [`agents`](#agents) |
 | `thread_communication` | `table` | `{ enabled = false }` | Local peer-thread communication → [`thread_communication`](#thread-communication) |
+| `mcp` | `table` | — | Global MCP server timeout defaults → [`mcp`](#mcp) |
 | `tools` | `table` | — | Global tool switch → [`tools`](#tools) |
 | `image` | `table` | — | Image compression parameters → [`image`](#image) |
-| `services` | `table` | — | Built-in external service configuration → [`services`](#services) |
+| `session_title` | `table` | — | Which model writes AI session titles → [`session_title`](#session-title) |
+| `experimental` | `table` | — | Persistent overrides for experimental-feature flags → [`experimental`](#experimental) |
+| `nb_search_source` | `table` | — | Host option controlling whether the built-in search module reuses the server's local nb-search configuration → [`nb_search`](#nb-search) |
 | `nb_search` | `table` | — | Built-in search and retrieval module behind `WebSearch` and `FetchURL` → [`nb_search`](#nb-search) |
 | `permission` | `table` | — | Initial permission rules → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `retry`, `background`, `agents`, `thread_communication`, `tools`, `image`, `services`, `nb_search`, `permission`, and `prompt`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `retry`, `token_counting`, `background`, `subagent`, `agents`, `thread_communication`, `mcp`, `tools`, `image`, `session_title`, `experimental`, `nb_search`, `permission`, and `prompt`.
 
 ## `providers`
 
@@ -162,13 +167,19 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `support_efforts` | `array<string>` | No | Thinking effort levels the model accepts. For `kimi`, selecting another value at runtime fails; when model resolution carries an unsupported configured or previous value, the session falls back to the target model's `default_effort` and reports that effective value to the UI. A Thinking-capable Kimi model without this field uses boolean `on` / `off`. Other providers pass concrete values unchanged when their protocol has a native effort field; protocols that expose only levels or token budgets perform the required format conversion. Managed and open-platform refreshes may rewrite this field; to pin it manually, set `[models."<alias>".overrides] support_efforts` instead |
 | `default_effort` | `string` | No | Default thinking effort for the model. Managed and open-platform refreshes may rewrite this field; to pin it manually, set `[models."<alias>".overrides] default_effort` instead |
 | `service_tier` | `string` | No | Service tier for every request using this model: `auto`, `default`, `flex`, or `priority`. Overrides profile, route, and per-request tiers, including main-agent and subagent requests. Only `openai_responses` encodes it; other protocols ignore it. Omit to retain the requesting profile or request's tier |
+| `request_params` | `table` | No | Extra request parameters merged into every request for this model (for example `temperature`, `top_p`); values may be strings, numbers, or booleans. Layered values merge by key |
+| `context_budget` | `integer` | No | Upper bound (tokens) applied to the model's effective context window; never above the model's real capacity. Layered values take the smallest |
+| `max_completion_tokens` | `integer` | No | Upper bound on per-request completion tokens. Layered values take the smallest, within the model's output cap |
 | `off_effort` | `string` | No | Effort value sent on the wire to disable thinking (e.g. `none` for xai grok). Only meaningful for models that declare such an encoding (catalog imports set it): turning thinking Off then sends this value instead of omitting the effort field — the only way to actually stop reasoning on models that reason by default |
+| `protocol` | `string` | No | Transport override; currently only `anthropic`, which routes this model's requests through the Anthropic Messages transport. Not accepted in `overrides` |
+| `beta_api` | `boolean` | No | `anthropic` transport only: route requests through the beta Messages API endpoint instead of the standard one. Not accepted in `overrides` |
 | `base_url` | `string` | No | Per-model endpoint override (written by catalog imports for gateway models served away from the provider default). Resolution prefers it over the provider's `base_url`; only takes effect together with `protocol` |
 | `display_name` | `string` | No | Name shown in the UI; falls back to `model` when unset |
 | `aliases` | `array<string>` | No | Extra routing keys for this model. An exact match on any entry resolves to this table key, including names that contain `/`. This is the supported way to keep old names working after you rename a key. The same alias string on two models is an error |
 | `reasoning_key` | `string` | No | `openai` provider only. Override the field name used for reasoning content when the gateway returns it under a non-standard name; by default `reasoning_content`, `reasoning_details`, and `reasoning` are auto-detected |
 | `adaptive_thinking` | `boolean` | No | `anthropic` provider only. Force adaptive thinking on or off, overriding the version inference based on the model name. Omit to infer automatically (Claude ≥ 4.6 uses adaptive) |
 | `prompt_overrides` | `table` | No | Prompt field overrides for this model alias, with optional `files` and `fields`; see [`prompt`](#prompt) |
+| `cognition` | `table` | No | Per-alias prompt files that condition this model → [Model cognition](#model-cognition) |
 
 When an alias contains `.`, use a quoted key:
 
@@ -176,7 +187,7 @@ When an alias contains `.`, use a quoted key:
 [models."gpt-4.1"]
 provider = "openai"
 model = "gpt-4.1"
-max_context_size = 1047576
+max_context_size = 1048576
 ```
 
 ### Model alias resolution
@@ -196,7 +207,7 @@ When you shorten a table key, put the previous name in `aliases` so sessions and
 [models.fast-model]
 provider = "openai"
 model = "fast-model"
-max_context_size = 1047576
+max_context_size = 1048576
 aliases = ["openai/fast-model"]
 ```
 
@@ -514,21 +525,21 @@ Which image formats reach the model depends on the provider the request resolves
 
 Automatic title generation is on by default. Turn it off in the GUI, with `auto_session_title = false` under `[experimental]`, or with `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE=0`.
 
-<!--
 ## `experimental`
 
-`experimental` stores persistent overrides for experimental-feature flags. Currently, `micro_compaction` is the only user-facing entry and defaults to `false`; set it to `true` to enable automatic trimming of older large tool results.
+`experimental` stores persistent overrides for experimental-feature flags, keyed by flag id. Each flag's precedence, highest first: its `KIKI_EXPERIMENTAL_<NAME>` environment variable, this section, the `KIKI_EXPERIMENTAL_FLAG` master switch, then the flag's built-in default.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `micro_compaction` | `boolean` | `false` | Trim older large tool results from context while preserving recent conversation |
--->
+| `auto_session_title` | `boolean` | `true` | Whether an AI session title is generated automatically; see [`session_title`](#session-title) |
+
+Other registered flags can also be overridden here by id, but `auto_session_title` is currently the only user-facing entry.
 
 ## `nb_search`
 
 `nb_search` configures Kiki's built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools. The module is part of the product: it ships with Kiki and needs no separate installation, and its provider instances, credential slots, lanes, and default fetch chain are built in.
 
-Beyond those built-in defaults you supply the credential for the provider you choose, through the environment variable named in its credential slot, and name a default search lane so `WebSearch` runs without an explicit lane argument. Field names and merge behavior follow the module's canonical configuration contract (`@nb-corp/nb-search`), shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
+Beyond those built-in defaults you supply the credential for the provider you choose, through the environment variable named in its credential slot, and name a default search lane so `WebSearch` runs without an explicit lane argument. Field names and merge behavior follow the module's canonical configuration contract, shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -539,7 +550,7 @@ Beyond those built-in defaults you supply the credential for the provider you ch
 | `defaults.fetch_chain` | `array<table>` | No | Fetch pipeline chain by input kind and representation; the built-in default for URLs is `direct.fetch` followed by `jina.reader` |
 | `execution` | `table` | No | Provider-call, concurrency, retry, timeout, inline-output, response-size, redirect, content-size, and quality budgets |
 
-Credential values are never stored in `config.toml`. Put the environment-variable name in a credential slot's `env` field. The Kiki server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki can fill missing variables from the local nb-search `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It only imports variables for matching credential slots and checks the provider, endpoint, slot, and file protection before use. Changes that redirect imported credentials are rejected rather than silently rebinding them. The module does not read variables from another terminal or automatically load separate `.env` files. Neither secret values nor the credential file are sent to the GUI.
+Credential values are never stored in `config.toml`. This is a deliberate exception to the [provider credential](#providers) design, where `api_key` sits in the config file: search-module credentials live in the server process environment instead — each credential slot only names the environment variable in its `env` field, and the value itself is never written into `config.toml`. The Kiki server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki can fill missing variables from the local nb-search `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It only imports variables for matching credential slots and checks the provider, endpoint, slot, and file protection before use. Changes that redirect imported credentials are rejected rather than silently rebinding them. The module does not read variables from another terminal or automatically load separate `.env` files. Neither secret values nor the credential file are sent to the GUI.
 
 By default, settings are layered in this order: the module's built-in defaults, the server's local nb-search configuration, the server environment, then Kiki's `[nb_search]` overrides. The local file is selected by `NB_SEARCH_CONFIG`, or by `config.json` under `NB_SEARCH_HOME` (default: `~/.nb-search`). A missing default file is allowed; an explicit path that is missing or unreadable makes that source unavailable.
 
@@ -624,7 +635,7 @@ dangerous_bash = "default"
 ```
 
 ::: tip
-MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`. The interactive configuration entry point is `/kiki-ops help me configure MCP`; see [Model Context Protocol](../server/mcp.md).
+MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`. The interactive configuration entry point is the built-in `kiki-ops` skill (Kiki's product-usage and configuration Skill): type `/kiki-ops help me configure MCP`; see [Model Context Protocol](../server/mcp.md).
 :::
 
 ## `prompt`

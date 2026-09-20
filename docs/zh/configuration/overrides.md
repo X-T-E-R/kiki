@@ -91,7 +91,7 @@ Thinking effort 按以下顺序解析：
 
 ## 提示词字段优先级
 
-提示词文案字段使用独立的五表面链，不走普通的 CLI / 配置优先级。从低到高依次为全局 `[prompt.overrides]`、模型 `[models."<alias>".prompt_overrides]`、Agent 或 `SYSTEM.md` Frontmatter 的 `prompt_overrides`，以及匹配的 `model_profiles[].prompt_overrides`。`SYSTEM.md` 占用这条链中的 profile 位置，因此共有 4 个优先级层、5 个受支持的配置表面。
+提示词文案字段使用独立的优先级链，不走普通的 CLI / 配置优先级。从低到高依次为全局 `[prompt.overrides]`、模型 `[models."<alias>".prompt_overrides]`、Agent 或 `SYSTEM.md` Frontmatter 的 `prompt_overrides`，以及匹配的 `model_profiles[].prompt_overrides`——共 4 个优先级层。Agent 文件与 `SYSTEM.md` 是共用链中同一位置的两个配置表面，因此合计 5 个受支持的表面。
 
 每个表面都接受 `files` 与 `fields`。文件从 Kiki 主目录读取，按列表顺序应用，随后由同一表面的内联字段覆盖。高层未声明的字段继承低层值，字段值绝不会拼接。外部文件 schema、常用字段示例、turn 快照，以及从已移除 `prompt.shared` / `prompt.tools` 键迁移的方法见 [`prompt`](./config-files.md#prompt)。
 
@@ -110,11 +110,13 @@ KIKI_HOME="$PWD/.kiki-sandbox" kiki
 KIMI_API_KEY = "sk-test"
 ```
 
-**跳过审批运行批处理任务**：
+**本次会话自动批准工具调用**：
 
 ```sh
-kiki --yolo -p "批量重命名以下文件..."
+kiki --yolo
 ```
+
+`--yolo` 作用于交互式会话，不能与 `-p` 组合使用——见上文互斥规则。
 
 **临时进入 Plan 模式**（若想永久生效，在配置文件设 `default_plan_mode = true`）：
 

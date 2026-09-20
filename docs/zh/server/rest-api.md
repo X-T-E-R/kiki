@@ -22,7 +22,7 @@
 - `GET /api/healthz`（探活）
 - 静态 web 资源（非 `/api/` 路径）
 
-携带方式：REST 用 `Authorization: Bearer <token>` 请求头；WebSocket 升级请求可用同一请求头，或子协议 `kimi-code.bearer.<token>`。token 的生成与轮换见[本地服务与 API：鉴权](./local-server.md#鉴权)。
+携带方式：REST 用 `Authorization: Bearer <token>` 请求头；WebSocket 升级请求可用同一请求头，或子协议 `kimi-code.bearer.<token>`（历史协议名，沿用自上游 Kimi Code 时代，为兼容保留）。token 的生成与轮换见[本地服务与 API：鉴权](./local-server.md#鉴权)。
 
 鉴权失败返回 HTTP 401，信封 `code` 为 `40101`。在非 loopback 绑定上，同一来源 60 秒内鉴权失败 10 次会被封禁 60 秒，期间一律返回 HTTP 429（`code` 为 `42901`）。
 
@@ -226,6 +226,26 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `POST /api/workspaces/{workspace_id}/trust` | 授予信任 |
 | `POST /api/workspaces/{workspace_id}/untrust` | 撤销信任 |
 
+### 会话租约与 peer thread
+
+会话租约（lease）是客户端持有的、需定期续期的「在线凭证」：`POST /api/leases` 创建或续期一条租约（默认有效期 60 秒），响应返回 `lease_id` 与 `expires_at`。持有租约可以挂住需要清理的资源（如 PTY 终端与文件监听），并让共享 daemon 在空闲退出判定时保持运行，见 [`kiki serve`](../reference/command.md#kiki-serve) 的 `--idle-exit`。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /api/leases` | 创建或续期租约（body 为可选的 `lease_id`），返回 `lease_id` 与 `expires_at` |
+
+peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_id }` 三元组定位同一台本地主机上的其他会话，读取其已完成轮次或投递消息。工具侧对应 `ThreadList` / `ThreadRead` / `ThreadSend` / `ThreadWait`，概念介绍见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/threads` | 列出可寻址的 thread，可按 `workspace_id` 过滤，游标分页 |
+| `POST /api/threads:read` | 读取一个 thread 已完成的用户与 peer 轮次，可带 `cursor` 续读 |
+| `POST /api/threads:send` | 向另一个 thread 持久投递一条消息（需非空 `idempotency_key`，同一 key 只对应同一条消息） |
+| `POST /api/threads:wait` | 长轮询等待至多 8 条 thread 的活动，`timeout_ms` 最长 60 秒 |
+| `GET /api/workspaces/{workspace_id}/thread-communication` | 读取该工作区 peer thread 通信的持久化覆盖值与生效状态 |
+| `PUT /api/workspaces/{workspace_id}/thread-communication` | 持久化该工作区的启用 / 禁用覆盖值 |
+| `DELETE /api/workspaces/{workspace_id}/thread-communication` | 清除覆盖值 |
+
 ### 文件系统
 
 会话内文件操作为 `POST /api/sessions/{session_id}/fs:{action}`，动作包括 `list` / `read` / `list_many` / `stat` / `stat_many` / `mkdir` / `search` / `grep` / `git_status` / `diff` / `open` / `open-in` / `reveal`，请求体为 JSON。另有：
@@ -300,7 +320,7 @@ PTY 终端接口，仅 loopback 绑定时挂载。
     "succeeded": 1,
     "failed": 1
   },
-  "request_id": "req_..."
+  "request_id": "01JZX4A6E7M8V0R3Q0N2K2M5Q9"
 }
 ```
 

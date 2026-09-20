@@ -46,6 +46,10 @@ JetBrains 系列 IDE（IntelliJ IDEA、PyCharm、WebStorm 等）通过 AI 聊天
 
 如果没有 JetBrains AI 订阅，可以在注册表中启用 `llm.enable.mock.response`，便于在仅使用 ACP 的场景里访问 AI 聊天面板。连按两次 Shift 搜索 "Registry / 注册表" 即可打开。
 
+::: warning 注意
+`llm.enable.mock.response` 开启后，AI 面板返回的是预设的假数据，不是真实模型输出——它只用于在接入 Kiki 之前把面板链路调通。链路调通后请关闭该选项，否则会一直看到假回复。
+:::
+
 在 AI 聊天面板的菜单中点击 "Configure ACP agents"，添加以下配置：
 
 ```json

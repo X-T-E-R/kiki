@@ -2,6 +2,8 @@
 
 Kiki uses environment variables to control a small number of runtime behaviors — relocating the data directory and temporarily switching models without touching the config file.
 
+Variable names come with two prefixes, `KIKI_*` and `KIMI_*` (including `KIMI_CODE_*`), inherited from Kiki's upstream project. There is no blanket mapping between the prefixes: some historical variables gained `KIKI_*` names, while others — such as `KIMI_CODE_BASE_URL` and `KIMI_CODE_OAUTH_HOST` — remain effective under their original names. Treat the exact names listed on this page as authoritative.
+
 ::: warning Important: API keys are not configured here
 Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in `config.toml` under `[providers.<name>]` or the `[providers.<name>.env]` sub-table.
 
@@ -51,6 +53,8 @@ Key names per provider:
 | `OPENAI_API_KEY` | OpenAI (`openai` and `openai_responses`) | None |
 | `OPENAI_BASE_URL` | OpenAI (`openai` and `openai_responses`) | `https://api.openai.com/v1` |
 | `GOOGLE_API_KEY` | Google GenAI, Vertex AI | None |
+| `GOOGLE_GEMINI_BASE_URL` | Google GenAI (`google-genai`) | `https://generativelanguage.googleapis.com` |
+| `GOOGLE_VERTEX_BASE_URL` | Vertex AI (`vertexai`) | SDK regional default `*-aiplatform.googleapis.com` host |
 | `VERTEXAI_API_KEY` | Vertex AI | None |
 | `GOOGLE_CLOUD_PROJECT` | Vertex AI | None |
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI | None |
@@ -101,10 +105,12 @@ Complete variable list:
 | `KIMI_MODEL_DISPLAY_NAME` | No | Name shown in `/model` | Falls back to `KIMI_MODEL_NAME` |
 | `KIMI_MODEL_MAX_OUTPUT_SIZE` | No | Per-request output cap (`anthropic` only); when set, overrides the built-in Claude ceiling | Model default |
 | `KIMI_MODEL_REASONING_KEY` | No | Reasoning field name override (`openai` only) | Auto-detected |
-| `KIMI_MODEL_THINKING_EFFORT` | No | Thinking effort level: `low`/`medium`/`high`/`xhigh`/`max` | — |
+| `KIMI_MODEL_THINKING_EFFORT` | No | Thinking effort for the synthesized temporary model: `low`/`medium`/`high`/`xhigh`/`max`; only read when `KIMI_MODEL_NAME` is set (distinct from the same-named runtime switch below) | — |
 | `KIMI_MODEL_ADAPTIVE_THINKING` | No | Force adaptive thinking on or off (`anthropic` only) | Inferred from model name |
 
 If `KIMI_MODEL_NAME` is set but a required variable is missing, startup fails immediately with a clear error message.
+
+Note that `KIMI_MODEL_THINKING_EFFORT` is read in two independent places: here, to set the temporary model's effort when `KIMI_MODEL_NAME` is set; and as a global runtime switch (below) that forces the effort on the wire for every `kimi`-provider request, regardless of `KIMI_MODEL_NAME`.
 
 ## Runtime switches
 
@@ -141,6 +147,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `NB_SEARCH_EXA_API_KEY` | Credential used by the built-in `exa.default` provider instance | Non-blank string |
 | `NB_SEARCH_TAVILY_API_KEY` | Credential used by the built-in `tavily.default` provider instance | Non-blank string |
 | `NB_SEARCH_JINA_API_KEY` | Optional credential used by the built-in `jina-reader.default` fetch provider instance | Non-blank string |
+| `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE` | Whether an AI session title is generated automatically once the first turn completes; takes precedence over the `[experimental]` entry and `KIKI_EXPERIMENTAL_FLAG` (default on) — see [`session_title`](./config-files.md#session-title) | Enable: `1`/`true`/`yes`/`on`; disable: `0`/`false`/`no`/`off` |
 | `KIKI_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process; a per-feature `KIKI_EXPERIMENTAL_<NAME>` variable or an explicit entry in the `[experimental]` section of `config.toml` takes precedence over it | `1`, `true`, `yes`, `on` |
 | `KIMI_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
 | `KIMI_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `kimi` provider only | Positive integer; `0` or negative disables clamping |
@@ -152,7 +159,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 
 Subagent concurrency has no environment-variable override. Configure [`[subagent]`](./config-files.md#subagent) with `max_direct_children` and `max_total_subagents`; their defaults are `16` and `0` (unlimited), respectively.
 
-`[subagent] default_model` and `default_effort` have no environment-variable equivalents. They are accepted in `config.toml` and currently unused by `AgentRun`.
+`[subagent]` previously accepted `default_model` and `default_effort`; both keys have been removed. They no longer configure anything and only produce a startup warning if present — a subagent's model comes from the dispatch or a profile pin, never from a configured default (see [`subagent`](./config-files.md#subagent)).
 
 ## Diagnostic logs
 

@@ -1,6 +1,6 @@
 # Goals
 
-Goals keep Kiki working toward a defined outcome across turns. Unlike a normal prompt that says what to do next, a goal says what must become true. Use `/goal` when the task has a clear finish line, but the next useful step depends on what the agent learns while it works — for example, fixing a batch of failing tests or tracking down the root cause of a broken build.
+Goals keep Kiki working toward a defined outcome across turns (a turn is one full pass of the agent handling one message). Unlike a normal prompt that says what to do next, a goal says what must become true. Use `/goal` to enter goal mode when the task has a clear finish line, but the next useful step depends on what the agent learns while it works — for example, fixing a batch of failing tests or tracking down the root cause of a broken build.
 
 ## Start a goal
 
@@ -10,7 +10,7 @@ Write the objective after `/goal`:
 /goal Fix bugs listed in the issue tracker.
 ```
 
-Kiki saves the objective, sends it as the next user message, and starts goal mode. After each turn, it checks whether the goal is complete, blocked, paused, or still active.
+Kiki saves the objective, sends it as the next user message, and starts goal mode. After each turn, it checks the goal's four states: complete (done), blocked (cannot make progress), paused (interrupted by you or by an error), or still active.
 
 Goals work best when the objective names the finish line and the evidence that proves it:
 
@@ -54,35 +54,11 @@ That goal does not say what counts as success, what to inspect, or when to stop.
 
 ### When not to use goals
 
-1. Do not use goals for broad topics or open-ended discussions.
+1. Do not use goals for broad topics or open-ended discussions. `/goal Greetings!` is not a goal — the agent marks it complete immediately.
 
-    ::: warning Counterexample
-    ```sh
-    /goal Greetings!
-    ```
-    :::
+2. Do not use goals for tasks that are known to be impossible or unresolvable. If the agent judges a goal impossible, such as `/goal Prove 1 + 1 = 3.`, it marks the goal blocked and explains why.
 
-    Agents will mark the goal as complete immediately for non-goals.
-
-2. Do not use goals for tasks that are known to be impossible or unresolvable.
-
-    ::: warning Counterexample
-    ```sh
-    /goal Prove 1 + 1 = 3.
-    ```
-    :::
-
-    Agents will mark the goal as blocked if the goal seems impossible or unresolvable.
-
-3. Do not use goals with ambiguous or complicated objectives.
-
-    ::: warning Counterexample
-    ```sh
-    /goal Create a videogame in a single HTML file.
-    ```
-    :::
-
-    Agents may complete goals, but also may produce unexpected or surprising outcomes after a long time.
+3. Do not use goals with ambiguous or complicated objectives. A goal with unclear boundaries, like `/goal Create a videogame in a single HTML file.`, may complete — or may produce unexpected results after a long wait.
 
 ## Manage the lifecycle
 
@@ -106,15 +82,13 @@ Write stop conditions into the objective. `/goal` does not have a separate stop-
 
 ## Manage goals in the web UI
 
-The web UI shows the current goal in a strip below the conversation. Select the strip to expand or collapse its details. When a token budget is configured, the header shows its progress; goals without a token budget do not show a progress bar.
+The web UI shows the current goal in a strip below the conversation. Select the strip to expand or collapse its details. When a token budget (a cap on how many tokens the agent may spend on this goal) is configured, the header shows its progress; goals without a token budget do not show a progress bar.
 
 Use the strip actions to pause an active goal, resume a paused or blocked goal, or cancel the current goal. Selecting Resume starts the next goal turn so the agent continues the work. Cancellation requires confirmation because it cannot be resumed afterwards.
 
 ## Queue upcoming goals
 
-Agents sometimes complete a goal too quickly. Users can be disappointed that they can assign only one goal at a time. Many people already know the upcoming goals they want to pursue. They had to wait for the current goal to complete, open the TUI, and submit the next goal manually.
-
-Use `/goal next` when you have more work ready but do not want to interrupt the current goal:
+Agents sometimes complete a goal quickly while the next piece of work is already on your mind — previously you had to wait for the goal to finish, return to the TUI, and submit the next one manually. Use `/goal next` to queue upcoming goals without interrupting the current one:
 
 ```sh
 /goal next Update the release notes after the tests pass
@@ -138,12 +112,12 @@ If the current goal is paused, canceled, or blocked, Kiki does not start the nex
 
 Goal mode is useful for work that can be checked with files, tests, command output, generated artifacts, or a clear written report. It is less useful for a one-off edit or a question that only needs one answer.
 
-In `manual` permission mode, goal work may pause for tool call approval. For unattended work, use a permission mode that matches the risk of the repository and the commands the agent may run.
+The permission mode decides whether tool calls need your approval. In `manual` mode, goal work may pause for tool call approval. For unattended work (no one present to approve or answer questions), use a permission mode that matches the risk of the repository and the commands the agent may run.
 
-In non-interactive prompt mode, only goal creation is supported:
+In non-interactive prompt mode (`kiki -p`, which runs one prompt and exits), only goal creation is supported:
 
 ```sh
 kiki -p "/goal Fix the failing checkout test"
 ```
 
-Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and `6` when it pauses. `/goal next` and other management commands are TUI controls.
+Prompt mode communicates the result through its exit code (the status number a program returns to the caller, used by scripts to branch): `0` when the goal completes, `3` when it blocks, and `6` when it pauses. `/goal next` and other management commands are TUI controls.

@@ -1,10 +1,10 @@
 # 界面导览
 
-Kiki 桌面版与浏览器 GUI 共享同一套界面。一个会话由三个区域组成：对话视图、输入框和右侧栏。本页带你熟悉界面布局；看板、草稿与恢复见[工作区与会话管理](/zh/guides/sessions)，TUI 侧对应操作见[交互与输入](/zh/guides/interaction)。
+Kiki 桌面版与浏览器 GUI（在浏览器中使用的图形界面，与桌面版共享同一套界面）共享同一套界面。一个会话由三个区域组成：对话视图、输入框和右侧栏。本页带你熟悉界面布局；看板、草稿与恢复见[工作区与会话管理](/zh/guides/sessions)，TUI 侧对应操作见[交互与输入](/zh/guides/interaction)。
 
 ## 对话视图
 
-对话视图展示会话时间线：assistant 消息、工具调用、审批、提问和后台任务通知。已解决的问题、审批、标记和完成通知以单行紧凑条目保留在原位；连续条目折叠进可展开的「Activity history」行，失败或取消的条目始终单独可见。文件引用可以预览、打开或在所在文件夹中显示。
+对话视图展示会话时间线：assistant 消息、工具调用、审批、提问和后台任务通知。已解决的问题、审批、标记和完成通知以单行紧凑条目保留在原位；连续多条会折叠进可展开的「活动历史（Activity history）」行，失败或取消的条目始终单独可见。文件引用可以预览、打开或在所在文件夹中显示。
 
 ## 输入框
 
@@ -16,11 +16,11 @@ Kiki 桌面版与浏览器 GUI 共享同一套界面。一个会话由三个区�
 
 ## 右侧栏
 
-主 Agent 的右侧栏包含工作区选择器、任务看板入口（底部固定按钮——见[任务看板](/zh/guides/sessions#requirements-board)），以及展示当前 Agent 工具目录的会话面板。在面板中打开 **Dispatch capabilities** 可以查看 subagent profile、route、executor 及默认模型与思考力度来源；见 [Agent 与 subagent](../customization/agents.md#rebuilding-a-session-context)。
+主 Agent 的右侧栏包含工作区选择器、任务看板入口（底部固定按钮——见[任务看板](/zh/guides/sessions#需求看板)），以及展示当前 Agent 工具目录的会话面板。在面板中打开 **Dispatch capabilities**（派发能力，查看 Agent 如何派发 subagent 的配置面板）可以查看 subagent 的配置档案（profile）、路由（route）与执行器（executor），以及默认模型与思考力度（effort，模型投入多少推理努力）的来源；见 [Agent 与 subagent](../customization/agents.md#重建会话上下文)。
 
 ## 会话与工作区
 
-会话列表按工作区分组；选择一个恢复，或新建草稿。已保存但不再可用的模型、profile 或思考力度会带着诊断信息继续可见，由你选择有效值——GUI 不会悄悄替换成另一个模型。详情见[工作区与会话管理](/zh/guides/sessions)。
+会话列表按工作区分组；选择一个恢复，或新建草稿。已保存但不再可用的模型、Agent 配置档案（profile）或思考力度会带着诊断信息继续可见，由你选择有效值——GUI 不会悄悄替换成另一个模型。详情见[工作区与会话管理](/zh/guides/sessions)。
 
 ## 下一步
 

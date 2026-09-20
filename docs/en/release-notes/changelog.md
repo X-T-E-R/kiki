@@ -6,6 +6,10 @@ outline: 2
 
 This page documents the changes in each Kiki release.
 
+::: info Note
+Early entries on this page originate from the upstream Kimi Code project and use the naming of their time. The command's current name is `kiki`; for environment variables, the exact names in [Environment variables](../configuration/env-vars.md) are authoritative.
+:::
+
 ## 0.37.2 (2026-08-19)
 
 ### Polish

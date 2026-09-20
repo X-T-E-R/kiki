@@ -4,7 +4,7 @@ This page collects typical Kiki scenarios along with ready-to-use prompt example
 
 ## Understanding an unfamiliar project
 
-When taking over an unfamiliar repository, a good first step is to use `kiki --plan` or press `Shift-Tab` to enter Plan mode, so the agent outputs a research plan before touching anything:
+When taking over an unfamiliar repository, a good first step is to enter Plan mode (the mode where the agent outputs an action plan and waits for your confirmation before touching anything), so the agent outputs a research plan before modifying files. Start the CLI with the `--plan` flag, press `Shift-Tab`, or type `/plan` in a session — all three do the same:
 
 ```
 Give me an overview of this repository's architecture. Specifically:
@@ -24,7 +24,7 @@ How does the event loop in src/runtime work? Where do events originate, and what
 How is "permission approval" implemented in this project? Which files are involved, and what are the key types?
 ```
 
-For large-scale investigations, you can have the main agent dispatch **sub-agents** to handle sub-tasks in parallel. See [Agents and sub-agents](../customization/agents.md).
+For large-scale investigations, you can have the main agent (the agent you talk to directly) dispatch **sub-agents** (lower-level agents spawned by the main agent that handle sub-tasks in parallel). See [Agents and sub-agents](../customization/agents.md).
 
 ## Implementing a new feature
 
@@ -99,11 +99,11 @@ Analyze the access logs in logs/ from the past 7 days. For each API path, comput
 Research the main dependency injection options for TypeScript (tsyringe, inversify, awilix). Compare them across three dimensions: API style, decorator requirements, and runtime overhead. Give me a recommendation that fits on one page.
 ```
 
-For batch tasks you know are safe, use `--yolo` or `/yolo` to skip approval prompts, or add pre-approved allowlist rules for specific tools in [Configuration files](../configuration/config-files.md#permission).
+For batch tasks you know are safe, skip the per-call approval prompts: start the CLI with `--yolo` (the whole session runs in YOLO mode; it still asks about sensitive operations), or type `/yolo` in a session to toggle it — both turn on the same YOLO mode. Alternatively, add pre-approved allowlist rules for specific tools in [Configuration files](../configuration/config-files.md#permission).
 
 ## Scheduled tasks and reminders
 
-Inside an interactive session, you can ask the agent to set one-time reminders or recurring tasks. The agent generates a cron expression in your local timezone and re-injects the prompt into the same session when it fires:
+Inside an interactive session, you can ask the agent to set one-time reminders or recurring tasks. The agent generates a cron expression (a standard format for describing "when to run") in your local timezone and re-injects the prompt into the same session when it fires:
 
 ```
 Remind me at 2:30 PM to check the deployment.
@@ -121,7 +121,7 @@ Check the production health endpoint every hour and let me know if anything look
 Come back in about 10 minutes and check whether the build has finished.
 ```
 
-Scheduled tasks are bound to their session — closing the terminal is fine, and they are reloaded and continue firing when you resume the same session with `kiki --session`. They are not carried into brand-new sessions. Recurring tasks expire after 7 days — the agent receives a `stale` signal on the final trigger and decides whether to stop or renew based on your original instructions.
+Scheduled tasks are bound to their session — closing the terminal is fine, and they are reloaded and continue firing when you resume the same session with `kiki --session`. They are not carried into brand-new sessions. Recurring tasks expire after 7 days — on the final trigger the agent receives a "stale" signal and decides whether to stop or renew based on your original instructions.
 
 To see what tasks are currently pending, just ask the agent (it calls the read-only `CronList` tool). To cancel a task, tell the agent to remove it or reference its 8-character ID. For the full tool reference, see [Scheduled tasks](../reference/tools.md#scheduled-tasks). The global kill switch is `KIMI_DISABLE_CRON=1`.
 

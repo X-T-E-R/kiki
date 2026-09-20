@@ -69,7 +69,7 @@ You do not have to set the connection timeout or the single tool-call timeout pe
 
 HTTP and SSE servers support providing static credentials via `headers` or `bearerTokenEnvVar`. When OAuth is needed, run `/kiki-ops help me log in to MCP <server-name>` to complete browser-based authorization.
 
-Plugins can also declare MCP servers in their manifest. Servers declared by a plugin are enabled by default and can be disabled or re-enabled in `/plugins`: disabling or removing stops the tools in open sessions — calls fail with a removal notice — and adding or enabling a server connects it in open sessions right away. See [Plugins](../customization/plugins.md#mcp-servers-in-plugins) for details.
+Plugins can also declare MCP servers in their manifest. Servers declared by a plugin are enabled by default and can be disabled or re-enabled in `/plugins`: disabling or removing stops the tools in open sessions — calls fail with a removal notice — while re-enabling reconnects the server in open sessions immediately and restores its tools, as long as the server already existed when the session was created (this includes re-enabling an `enabled: false` entry in `mcp.json`). A brand-new server still follows the rule above: it only joins sessions created later. See [Plugins](../customization/plugins.md#mcp-servers-in-plugins) for details.
 
 ::: warning Note
 stdio entries in a project-level `.kiki/mcp.json` execute local commands when a session starts. Only enable these in repositories you trust.

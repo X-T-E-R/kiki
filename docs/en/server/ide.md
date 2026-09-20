@@ -46,6 +46,10 @@ JetBrains IDEs (IntelliJ IDEA, PyCharm, WebStorm, etc.) support ACP through the 
 
 If you do not have a JetBrains AI subscription, you can enable `llm.enable.mock.response` in the Registry to access the AI chat panel in ACP-only scenarios. Press Shift twice and search for "Registry" to open it.
 
+::: warning
+With `llm.enable.mock.response` enabled, the AI panel returns canned fake data, not real model output — it only helps you verify the panel wiring before connecting Kiki. Turn it off once the panel works, or you will keep seeing fake replies.
+:::
+
 In the AI chat panel menu, click **Configure ACP agents** and add the following configuration:
 
 ```json

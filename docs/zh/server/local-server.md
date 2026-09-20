@@ -18,7 +18,7 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-不带模式时，`serve` 在前台运行 daemon；`--ensure` 连接已有健康实例，或启动一个新实例并返回连接信息；`--stop` 停止所选 home 下当前可达的实例。`--idle-exit` 默认是 `30m`；活跃客户端 lease 和运行中的派遣会让 daemon 保持运行。工作区信任后，TUI 会自动执行同样的连接或启动逻辑。
+不带模式时，`serve` 在前台运行 daemon；`--ensure` 连接已有健康实例，或启动一个新实例并返回连接信息；`--stop` 停止所选 home 下当前可达的实例。`--idle-exit` 默认是 `30m`；活跃客户端 lease（租约：客户端持有的、需定期续期的「在线凭证」，只要还有效就说明有人在用服务）和运行中的派遣会让 daemon 保持运行。工作区信任后，TUI 会自动执行同样的连接或启动逻辑。
 
 ## 运行兼容性的前台服务
 
@@ -48,41 +48,21 @@ Stop:    Ctrl+C
 
 - **REST**：请求头 `Authorization: Bearer <token>`。
 - **Kiki GUI**：启动横幅里的地址自带 `#token=` 片段，浏览器打开后自动完成登录；该片段不会发送到服务端。
-- **WebSocket**：能自定义请求头的客户端用 `Authorization: Bearer`；浏览器等不能自定义头的客户端改用子协议（WebSocket 握手时声明的协议名）`kimi-code.bearer.<token>`。
+- **WebSocket**：能自定义请求头的客户端用 `Authorization: Bearer`；浏览器等不能自定义头的客户端改用子协议（WebSocket 握手时声明的协议名）`kimi-code.bearer.<token>`（历史协议名，沿用自上游 Kimi Code 时代，为兼容保留）。
 
 token 泄露时运行 `kiki web rotate-token` 轮换：新 token 立即写入 `server.token`，旧 token 即刻失效，正在运行的实例无需重启。
 
 桌面 GUI 使用的就是这个 home token。启动时它会先在实例注册表里找活着的服务实例并直接连接，找不到时才启动自己的 sidecar。因此 GUI 启动的服务其他本机客户端也能用 home token 连上；别处启动的服务也会连同全部会话出现在 GUI 里。
+
+::: warning 注意
+这条警告针对彼此独立预配、互不信任的运行时（例如分属不同 host 身份、各自拥有权限域的两个服务）：不要让这样的两个运行时共享同一个可写 home 目录，不要在它们的 home 之间复制会话目录，也不要复制 `device_id` 让两个 home 冒充同一台 host——会话索引、thread 归属与权限边界都依赖 home 身份的唯一性。同一 home 下的共享 daemon、TUI、桌面 GUI 与并存的服务实例是受支持的协作方式，不在此列。
+:::
 
 如果把服务绑定到非本机地址（`--host`），建议额外设置 `KIKI_PASSWORD` 环境变量作为并列凭证；此时服务端会对鉴权失败自动限流。
 
 ::: danger 警告
 `--dangerous-bypass-auth` 会彻底关闭鉴权，任何能访问该端口的人都能控制你的会话、文件系统和 shell。仅在可信网络或自有鉴权代理之后使用，详见 [kiki 命令参考](../reference/command.md#kiki-web)。
 :::
-
-## 更换 Codex MCP binding 的模型
-
-Codex/Kiki 外部委派安装器会创建带签名的 runtime 目录。手动修改其中的模型设置后，HMAC（用于检测篡改的签名）将不再匹配。请使用已安装的 `kiki-mcp.ps1` launcher 检查并重签 runtime 与 workspace binding，无需删除已委派的会话。
-
-```powershell
-$runtime = '<runtime-dir>'
-$launcher = Join-Path $runtime 'kiki-mcp.ps1'
-
-# 显示 runtime 默认值，以及每个 workspace 的 key、模型、effort 和签名状态。
-& $launcher -RuntimeDir $runtime -ListBindings
-
-# 更改一个现有 workspace binding，并更新新 workspace 使用的默认值。
-& $launcher -RuntimeDir $runtime -ResignBinding '<workspace-key>' `
-  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
-
-# 同时把新模型参数应用到所有现有 binding。
-& $launcher -RuntimeDir $runtime -ResignAllBindings `
-  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
-```
-
-即使 `runtime.json` 的签名已经过期，`-ListBindings` 仍可运行，因此可以直接诊断手动修改模型造成的问题。重签会校验固定的安装字段与产物哈希，使用当前 Windows 用户受 DPAPI 保护的签名密钥，并在改写 binding 前停止受影响且已登记的 workspace KAP。下次启动 MCP 时，KAP 会把新签名的模型与 thinking effort 应用到持久化的委派会话。指定单个 binding 时，其他现有 workspace 会继续使用各自当前已签名的模型；`-ResignAllBindings` 则会更新全部 binding。
-
-Codex MCP 工具调用携带 MCP `progressToken` 时，委派 dispatch 与 continuation 调用会保持打开，并通过 `notifications/progress` 推送轮次开始、已完成工具调用计数和终止状态；未携带 token 的客户端继续使用现有的 `kiki_status` / `kiki_events` 轮询行为。
 
 ## 用 API 驱动一个会话
 

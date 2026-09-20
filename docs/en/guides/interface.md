@@ -1,6 +1,6 @@
 # Interface overview
 
-The Kiki desktop app and the browser GUI share the same interface. A session is built around three areas: the conversation view, the input box, and the right rail. This page orients you in the interface; see [Workspace and session management](/en/guides/sessions) for boards, drafts, and recovery, and [Interaction and input](/en/guides/interaction) for the TUI counterpart.
+The Kiki desktop app and the browser GUI (the same interface used in a browser) share the same interface. A session is built around three areas: the conversation view, the input box, and the right rail. This page orients you in the interface; see [Workspace and session management](/en/guides/sessions) for boards, drafts, and recovery, and [Interaction and input](/en/guides/interaction) for the TUI counterpart.
 
 ## Conversation view
 
@@ -16,11 +16,11 @@ Operations that modify files or run shell commands appear as approval requests i
 
 ## Right rail
 
-The main agent's right rail holds the workspace selector, the requirements board entry (the fixed button at the bottom — see [the task board](/en/guides/sessions#requirements-board)), and the session panel showing the current agent's tool directory. Open **Dispatch capabilities** there to inspect subagent profiles, routes, executors, and default model and thinking-effort sources; see [Agents and subagents](../customization/agents.md#rebuilding-a-session-context).
+The main agent's right rail holds the workspace selector, the requirements board entry (the fixed button at the bottom — see [the task board](/en/guides/sessions#requirements-board)), and the session panel showing the current agent's tool directory. Open **Dispatch capabilities** (the panel showing how the agent dispatches subagents) there to inspect a subagent's profile (configuration file), route, and executor, plus where the default model and thinking effort (how much reasoning the model invests) come from; see [Agents and subagents](../customization/agents.md#rebuilding-a-session-context).
 
 ## Sessions and workspaces
 
-The session list groups sessions by workspace; pick one to resume or start a new draft. Saved model, profile, and effort choices that are no longer available stay visible with a diagnostic so you can select a valid value — the GUI does not silently substitute another model. Details are covered in [Workspace and session management](/en/guides/sessions).
+The session list groups sessions by workspace; pick one to resume or start a new draft. Saved model, profile (the agent's configuration file), and effort choices that are no longer available stay visible with a diagnostic so you can select a valid value — the GUI does not silently substitute another model. Details are covered in [Workspace and session management](/en/guides/sessions).
 
 ## Next steps
 

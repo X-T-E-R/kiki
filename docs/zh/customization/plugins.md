@@ -92,7 +92,7 @@ Plugins 把可复用的 Kiki 能力打包成可安装单元——可以添加 [A
 3. 安装完成后运行 `/reload` 或 `/new` 激活
 
 ::: info 说明
-Kimi Browser Extension 分两步安装：完成上述步骤后，还需要[安装浏览器扩展](#install-the-browser-extension)才能使用。
+Kimi Browser Extension 分两步安装：完成上述步骤后，还需要[安装浏览器扩展](#安装浏览器扩展)才能使用。
 :::
 
 官方插件更新后会在使用旧版时提示更新，不会自动更新，要升级到新版本，重复上述安装步骤即可。

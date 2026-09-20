@@ -22,7 +22,7 @@ All `/api/*` paths (including `/openapi.json` and `/asyncapi.json`) require the 
 - `GET /api/healthz` (liveness probe)
 - Static web assets (non-`/api/` paths)
 
-How to carry it: REST uses the `Authorization: Bearer <token>` header; the WebSocket upgrade accepts the same header or the subprotocol `kimi-code.bearer.<token>`. Token generation and rotation are covered in [Local server and API: Authentication](./local-server.md#authentication).
+How to carry it: REST uses the `Authorization: Bearer <token>` header; the WebSocket upgrade accepts the same header or the subprotocol `kimi-code.bearer.<token>` (a historical protocol name kept from the upstream Kimi Code era for compatibility). Token generation and rotation are covered in [Local server and API: Authentication](./local-server.md#authentication).
 
 Failed authentication returns HTTP 401 with envelope code `40101`. On non-loopback binds, a source that fails authentication 10 times within 60 seconds is banned for 60 seconds, during which every request gets HTTP 429 (code `42901`).
 
@@ -226,6 +226,26 @@ PTY terminal endpoints; mounted only on loopback binds.
 | `POST /api/workspaces/{workspace_id}/trust` | Grant trust |
 | `POST /api/workspaces/{workspace_id}/untrust` | Revoke trust |
 
+### Session leases and peer threads
+
+A session lease is a periodically renewed "online token" a client holds: `POST /api/leases` creates or renews one (default validity 60 seconds) and responds with `lease_id` and `expires_at`. A live lease can hold resources that need cleanup (such as PTY terminals and file watches) and keeps the shared daemon from exiting as idle — see `--idle-exit` under [`kiki serve`](../reference/command.md#kiki-serve).
+
+| Method and path | Description |
+| --- | --- |
+| `POST /api/leases` | Create or renew a lease (body carries an optional `lease_id`); returns `lease_id` and `expires_at` |
+
+The peer-thread endpoints support cross-session collaboration: a thread is addressed by the `{ host_id, workspace_id, session_id }` triple for another session on the same local host, whose completed turns you can read and to which you can deliver messages. The tool-side counterparts are `ThreadList` / `ThreadRead` / `ThreadSend` / `ThreadWait`; for the concepts, see [Agents and Sub-Agents](../customization/agents.md#peer-thread-communication).
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/threads` | List addressable threads, filterable by `workspace_id`; cursor pagination |
+| `POST /api/threads:read` | Read a thread's completed user and peer turns, optionally continuing from a `cursor` |
+| `POST /api/threads:send` | Durably accept a message for another thread (requires a non-empty `idempotency_key`; a key maps to a single message) |
+| `POST /api/threads:wait` | Long-poll for activity on up to 8 threads, `timeout_ms` capped at 60 seconds |
+| `GET /api/workspaces/{workspace_id}/thread-communication` | Read the persisted override and effective thread-communication state for the workspace |
+| `PUT /api/workspaces/{workspace_id}/thread-communication` | Persist the workspace's enable/disable override |
+| `DELETE /api/workspaces/{workspace_id}/thread-communication` | Clear the override |
+
 ### File system
 
 In-session file operations go through `POST /api/sessions/{session_id}/fs:{action}` with JSON bodies; actions are `list` / `read` / `list_many` / `stat` / `stat_many` / `mkdir` / `search` / `grep` / `git_status` / `diff` / `open` / `open-in` / `reveal`. In addition:
@@ -300,7 +320,7 @@ Only a body validation failure fails the whole request (`40001`). Otherwise the 
     "succeeded": 1,
     "failed": 1
   },
-  "request_id": "req_..."
+  "request_id": "01JZX4A6E7M8V0R3Q0N2K2M5Q9"
 }
 ```
 

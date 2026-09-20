@@ -1,6 +1,6 @@
 # Kiki 运行时边界
 
-`kiki` 是产品的 CLI 入口，负责启动 daemon 支持的终端界面、运行非交互 `-p` 请求，并提供 daemon、席位和 MCP 集成命令。安装包不会再安装第二个 `kimi` 可执行文件。启动与迁移方式见[命令参考](../reference/command.md)。
+`kiki` 是产品的 CLI 入口，负责启动 daemon 支持的终端界面、运行非交互 `-p` 请求，并提供 daemon、席位和 MCP 集成命令。安装包不会再安装第二个 `kimi` 可执行文件。启动与迁移方式见[命令参考](../zh/reference/command.md)。
 
 本指南区分继承的实现与 Kiki 自有的集成。包名或源码检查通过，不代表对应 npm 包或桌面版本已经发布。
 
@@ -18,7 +18,7 @@
 | `kap-server`、`@kiki/protocol` 和引擎的会话、配置、认证契约 | 继承与改造 | 既有服务端契约仍在使用；Kiki 增加统一客户端接线，不另建一个引擎。 |
 | `agent-core-v2` 的模型绑定区域 | 改造 | Kiki 负责下游模型/effort 绑定与派遣集成。 |
 | 子 Agent 的显式模型别名和 thinking effort | Kiki 独有 | 工具参数使用 `model_alias` 和 `effort`；Agent 文件使用 `thinking_effort`。 |
-| 按模型进行[提示词调节](../configuration/config-files.md#模型认知) | Kiki 独有 | Overlay、steering 和 anchor 文件挂在模型别名上；未声明的字段不附带或注入默认正文。 |
+| 按模型进行[提示词调节](../zh/configuration/config-files.md#模型认知) | Kiki 独有 | Overlay、steering 和 anchor 文件挂在模型别名上；未声明的字段不附带或注入默认正文。 |
 | `AgentRun`、`AgentList` 和 `AgentSend` | Kiki 独有 | 直属子 Agent 的启动/继续、发现与邮箱操作。 |
 | 本地 peer thread 通信 | Kiki 独有 | Agent 可以协调本机会话；外部 REST/Klient 调用方只能指定消息目标，不能声明 peer 归属。 |
 | `@kiki/gui` 与共享 `@kiki/session-core` 客户端集成 | Kiki 独有与改造 | GUI 和终端会话视图消费共享客户端契约；改造自其他项目的 GUI 内容保留其具体来源标注。 |
@@ -38,17 +38,17 @@
 | `kiki web` | 兼容的前台 REST/WebSocket/web UI 命令，不连接已有共享 daemon。 |
 | `@kiki/gui` | 共享引擎和服务端的浏览器/桌面客户端；GUI workspace 包不安装另一套 CLI。 |
 
-`KIKI_EXPERIMENTAL_FLAG=1` 启用已注册的实验功能，不是引擎或产品选择器。详见[环境变量](../configuration/env-vars.md#运行时开关)。
+`KIKI_EXPERIMENTAL_FLAG=1` 启用已注册的实验功能，不是引擎或产品选择器。详见[环境变量](../zh/configuration/env-vars.md#运行时开关)。
 
 ## 启用 Kiki 独有的 Agent 功能
 
 显式模型与 effort 绑定、直属子 Agent 工具和实验功能选择是不同的能力。需要某项实验时使用该功能自己的开关；总开关会启用全部已注册实验，范围大于单项选择。
 
-[Agent 与子 Agent](../customization/agents.md)说明绑定优先级和生命周期；[配置文件](../configuration/config-files.md#subagent)说明子 Agent 超时与黑名单设置。
+[Agent 与子 Agent](../zh/customization/agents.md)说明绑定优先级和生命周期；[配置文件](../zh/configuration/config-files.md#subagent)说明子 Agent 超时与黑名单设置。
 
 ## 集成 peer thread 通信
 
-Peer thread 通信默认关闭，通过 [`[thread_communication] enabled = true`](../configuration/config-files.md#thread-communication) 启用。引用包含主机、工作区和会话身份，跨主机发送会被拒绝。只有主 Agent 接收 4 个内置 thread 工具。向冷会话发送消息可能恢复该会话并消耗模型额度。
+Peer thread 通信默认关闭，通过 [`[thread_communication] enabled = true`](../zh/configuration/config-files.md#thread-communication) 启用。引用包含主机、工作区和会话身份，跨主机发送会被拒绝。只有主 Agent 接收 4 个内置 thread 工具。向冷会话发送消息可能恢复该会话并消耗模型额度。
 
 服务端在 `/api` 下提供这些路由：
 
@@ -80,7 +80,7 @@ Kiki 维护者负责下游 CLI 身份、客户端集成、home 解析和迁移�
 
 运行时配置、会话和 OAuth 凭据使用 `KIKI_HOME`，默认 `~/.kiki`。支持显式 `--home` 的命令优先使用该选项。旧 `KIMI_CODE_HOME` 设置不是启动回退项。真实 Kimi provider/OAuth 身份与端点保持不变；产品 home 改名不等于改供应商协议。
 
-桌面的兼容 home 设置只选择迁移来源。登录、退出登录和 token 刷新不再作用于单独选择的旧 home。依赖旧凭据前，请执行[显式配置迁移](../reference/command.md#从-kimi-迁移)或重新登录。
+桌面的兼容 home 设置只选择迁移来源。登录、退出登录和 token 刷新不再作用于单独选择的旧 home。依赖旧凭据前，请执行[显式配置迁移](../zh/reference/command.md#kiki-migrate-config)或重新登录。
 
 `kiki migrate-config` 复制受支持的配置、凭据、设备身份和自定义资源，不覆盖已有 Kiki 文件，也不删除来源。`--workspace <目录>` 将项目 `local.toml`、`AGENTS.md`、`mcp.json` 和自定义资源树迁到 `.kiki`。根 `AGENTS.md` 与标准 `.mcp.json` 留在原处并保持既有语义。项目本地 MCP 仍针对选定的当前工作目录，不会隐式合并所有祖先目录中的产品 MCP 文件。
 
@@ -114,7 +114,7 @@ pnpm desktop:import-kimi-config --source-home <绝对路径> --target-home <绝�
 
 ## 下一步
 
-- [开始使用](../getting-started/first-launch.md) — 选择发行包或本地源码构建。
-- [Agent 与子 Agent](../customization/agents.md) — 配置绑定与子 Agent 工具。
-- [环境变量](../configuration/env-vars.md#运行时开关) — 设置运行时选项和实验功能。
-- [`kiki` 命令参考](../reference/command.md) — daemon、inbound 集成与显式迁移。
+- [开始使用](../zh/getting-started/first-launch.md) — 选择发行包或本地源码构建。
+- [Agent 与子 Agent](../zh/customization/agents.md) — 配置绑定与子 Agent 工具。
+- [环境变量](../zh/configuration/env-vars.md#运行时开关) — 设置运行时选项和实验功能。
+- [`kiki` 命令参考](../zh/reference/command.md) — daemon、inbound 集成与显式迁移。

@@ -110,19 +110,24 @@ timeout = 5
 | `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop-control) |
 | `retry` | `table` | — | 按错误定制的单步重试策略 → [`retry`](#retry) |
+| `token_counting` | `table` | — | 对外上报哪种上下文 token 计数 → [`token_counting`](#token-counting) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
+| `subagent` | `table` | — | subagent 运行默认值与限额 → [`subagent`](#subagent) |
 | `agents` | `table` | — | 委派说明默认值 → [`agents`](#agents) |
 | `thread_communication` | `table` | `{ enabled = false }` | 本地 peer thread 通信 → [`thread_communication`](#thread-communication) |
+| `mcp` | `table` | — | MCP server 全局超时默认值 → [`mcp`](#mcp) |
 | `tools` | `table` | — | 全局工具开关 → [`tools`](#tools) |
 | `image` | `table` | — | 图片压缩参数 → [`image`](#image) |
-| `services` | `table` | — | 内置外部服务配置 → [`services`](#services) |
+| `session_title` | `table` | — | 由哪个模型生成会话标题 → [`session_title`](#session-title) |
+| `experimental` | `table` | — | 实验功能 flag 的持久化覆盖 → [`experimental`](#experimental) |
+| `nb_search_source` | `table` | — | 宿主选项：内置搜索模块是否复用服务器本机的 nb-search 配置 → [`nb_search`](#nb-search) |
 | `nb_search` | `table` | — | `WebSearch` 与 `FetchURL` 背后的内置搜索与抓取模块 → [`nb_search`](#nb-search) |
 | `permission` | `table` | — | 初始权限规则 → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`retry`、`background`、`agents`、`thread_communication`、`image`、`services`、`nb_search`、`permission`、`prompt` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`thinking`、`loop_control`、`retry`、`token_counting`、`background`、`subagent`、`agents`、`thread_communication`、`mcp`、`tools`、`image`、`session_title`、`experimental`、`nb_search`、`permission`、`prompt` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -162,13 +167,19 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `support_efforts` | `array<string>` | 否 | 模型接受的 Thinking 档位。对 `kimi` 而言，在运行时选择列表外的值会报错；模型解析时若配置值或之前的值不受目标模型支持，会回落到目标模型的 `default_effort`，并将该有效值同步给 UI。支持 Thinking 但没有此字段的 Kimi 模型使用布尔 `on` / `off`。其他 provider 在协议提供原生 effort 字段时会原样传递具体值；协议仅提供等级或 token budget 时，只做必要的格式转换。managed 和 open-platform 刷新可能会改写该字段；如需手动固定，请改用 `[models."<alias>".overrides] support_efforts` |
 | `default_effort` | `string` | 否 | 模型的默认 Thinking 档位。managed 和 open-platform 刷新可能会改写该字段；如需手动固定，请改用 `[models."<alias>".overrides] default_effort` |
 | `service_tier` | `string` | 否 | 使用此模型的每个请求采用的服务档位：`auto`、`default`、`flex` 或 `priority`。优先于 profile、route 和单次请求的档位，对主 Agent 和子 Agent 均生效。只有 `openai_responses` 会编码此字段，其他协议忽略它；省略时保留 profile 或单次请求的档位 |
+| `request_params` | `table` | 否 | 合并进该模型每次请求的额外请求参数（如 `temperature`、`top_p`）；取值可为字符串、数字或布尔值。跨层时按键合并 |
+| `context_budget` | `integer` | 否 | 该模型有效上下文窗口的 token 上限；不会超过模型真实容量。跨层取最小值 |
+| `max_completion_tokens` | `integer` | 否 | 单次请求补全 token 的上限。跨层取最小值，且受模型输出上限约束 |
 | `off_effort` | `string` | 否 | 关闭 Thinking 时在线上传输的 effort 编码（如 xai grok 的 `none`）。仅对声明了该编码的模型（catalog 会导入）有意义：设置后选择 Off 会发送这个值而不是省略 effort 字段——对默认就会推理的模型，这是真正关闭推理的唯一方式 |
+| `protocol` | `string` | 否 | 传输层覆盖；目前仅支持 `anthropic`，将此模型的请求路由到 Anthropic Messages 传输层。不接受写入 `overrides` |
+| `beta_api` | `boolean` | 否 | 仅 `anthropic` 传输层：让请求走 beta Messages API 端点而不是标准端点。不接受写入 `overrides` |
 | `base_url` | `string` | 否 | 模型级端点覆盖（catalog 导入网关模型时写入，这些模型与供应商默认端点不同）。解析时优先于供应商的 `base_url`；仅在与 `protocol` 配合时生效 |
 | `display_name` | `string` | 否 | UI 中显示的名称，未设时回退到 `model` |
 | `aliases` | `array<string>` | 否 | 该模型的额外路由键。任意一项精确匹配都会解析到这个表键，包含 `/` 的旧名称也可以。这是重命名表键后让旧名称继续可用的正规做法。两个模型声明同一段 alias 字符串会报错 |
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
 | `adaptive_thinking` | `boolean` | 否 | 仅 `anthropic` 供应商。强制开启或关闭 adaptive thinking，覆盖按模型名推断的逻辑。省略时自动推断（Claude ≥ 4.6 使用 adaptive） |
 | `prompt_overrides` | `table` | 否 | 该模型 alias 的提示词字段覆写，可含 `files` 与 `fields`；详见 [`prompt`](#prompt) |
+| `cognition` | `table` | 否 | 挂到该模型别名上的提示词文件 → [模型认知](#模型认知) |
 
 别名中含 `.` 时需要加引号：
 
@@ -176,7 +187,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 [models."gpt-4.1"]
 provider = "openai"
 model = "gpt-4.1"
-max_context_size = 1047576
+max_context_size = 1048576
 ```
 
 ### 模型别名解析
@@ -196,7 +207,7 @@ max_context_size = 1047576
 [models.fast-model]
 provider = "openai"
 model = "fast-model"
-max_context_size = 1047576
+max_context_size = 1048576
 aliases = ["openai/fast-model"]
 ```
 
@@ -510,21 +521,21 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 自动生成标题默认开启。可在 GUI 中关闭，也可设置 `[experimental]` 下的 `auto_session_title = false`，或使用 `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE=0`。
 
-<!--
 ## `experimental`
 
-`experimental` 存放实验功能 flag 的持久化覆盖。目前 `micro_compaction` 是唯一用户可见的字段，默认值为 `false`；如需自动清理较旧的大型工具结果，把它设为 `true`。
+`experimental` 以 flag id 为 key，存放实验功能 flag 的持久化覆盖。每个 flag 的优先级从高到低：对应的 `KIKI_EXPERIMENTAL_<NAME>` 环境变量、本节、`KIKI_EXPERIMENTAL_FLAG` 总开关，最后是 flag 的内置默认值。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `micro_compaction` | `boolean` | `false` | 清理较旧的大型工具结果内容，同时保留最近对话 |
--->
+| `auto_session_title` | `boolean` | `true` | 是否自动生成会话标题；见 [`session_title`](#session-title) |
+
+其他已注册的 flag 也可以按 id 在这里覆盖，但目前 `auto_session_title` 是唯一的用户可见条目。
 
 ## `nb_search`
 
 `nb_search` 配置 Kiki 内置的搜索与抓取模块，也就是 `WebSearch` 和 `FetchURL` 工具背后的能力。该模块是 Kiki 的一部分：随产品一起安装，不需要额外的安装步骤；其中的 provider 实例、凭证槽、lane 和默认 fetch chain 都已经内置。
 
-在这些内置默认值之上，你只需提供所选 provider 的凭证（通过其凭证槽中指定的环境变量），并配置一个默认搜索 lane，让 `WebSearch` 在没有显式 lane 参数时也能运行。字段名与合并行为遵循该模块的 canonical 配置 contract（`@nb-corp/nb-search`），与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
+在这些内置默认值之上，你只需提供所选 provider 的凭证（通过其凭证槽中指定的环境变量），并配置一个默认搜索 lane，让 `WebSearch` 在没有显式 lane 参数时也能运行。字段名与合并行为遵循该模块的 canonical 配置 contract，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -535,7 +546,7 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | `defaults.fetch_chain` | `array<table>` | 否 | 按输入类型和 representation 配置 fetch pipeline chain；URL 的内置默认值为 `direct.fetch`，随后尝试 `jina.reader` |
 | `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 
-凭据值不会写入 `config.toml`。请在凭据槽的 `env` 字段中填写环境变量名。Kiki 服务器进程中的环境变量优先，包括显式设置的空值。开启本机复用后，Kiki 可以从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的本机 nb-search `secrets.json` 补充缺少的变量，只导入匹配凭证槽的变量，并在使用前校验提供商、地址、凭证槽及文件保护。会重定向已导入凭证的配置变更将被拒绝，不会静默重新绑定。该模块不读取其他终端的变量，也不会自动加载独立的 `.env` 文件。密钥值与凭证文件均不会发送到 GUI。
+凭据值不会写入 `config.toml`。这是对[供应商凭证](#providers)设计的一次刻意例外——供应商的 `api_key` 写在配置文件里，而搜索模块的凭据放在服务器进程环境中：凭证槽的 `env` 字段只登记环境变量名，凭据值本身从不进入 `config.toml`。Kiki 服务器进程中的环境变量优先，包括显式设置的空值。开启本机复用后，Kiki 可以从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的本机 nb-search `secrets.json` 补充缺少的变量，只导入匹配凭证槽的变量，并在使用前校验提供商、地址、凭证槽及文件保护。会重定向已导入凭证的配置变更将被拒绝，不会静默重新绑定。该模块不读取其他终端的变量，也不会自动加载独立的 `.env` 文件。密钥值与凭证文件均不会发送到 GUI。
 
 默认按以下顺序合并设置：该模块的内置默认值、服务器本机的 nb-search 配置、服务器环境变量、Kiki 的 `[nb_search]` 覆盖项。本机文件由 `NB_SEARCH_CONFIG` 指定；未指定时，使用 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 `config.json`。默认文件不存在时仍可使用其他配置层；显式路径不存在或文件不可读时，该来源会显示不可用。
 
@@ -620,7 +631,7 @@ dangerous_bash = "default"
 ```
 
 ::: tip
-MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径只作为迁移来源；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。交互式配置入口是 `/kiki-ops 帮我配置 MCP`，详见 [Model Context Protocol](../server/mcp.md)。
+MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径只作为迁移来源；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。交互式配置入口是内置的 `kiki-ops` Skill（负责 Kiki 产品使用与配置的内置 Skill）：输入 `/kiki-ops 帮我配置 MCP`，详见 [Model Context Protocol](../server/mcp.md)。
 :::
 
 ## `prompt`

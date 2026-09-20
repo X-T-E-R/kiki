@@ -1,6 +1,6 @@
 # Kiki runtime boundary
 
-`kiki` is the product's CLI entry point (the terminal form of the three-form product: desktop app, CLI/TUI, and server). It starts the daemon-backed terminal interface, runs non-interactive `-p` requests, and exposes daemon, seat, and MCP integration commands. The package does not install a second `kimi` executable. See [the command reference](../reference/command.md) for startup and migration.
+`kiki` is the product's CLI entry point (the terminal form of the three-form product: desktop app, CLI/TUI, and server). It starts the daemon-backed terminal interface, runs non-interactive `-p` requests, and exposes daemon, seat, and MCP integration commands. The package does not install a second `kimi` executable. See [the command reference](../en/reference/command.md) for startup and migration.
 
 This guide distinguishes inherited implementation from Kiki-owned integration. A package name or a passing source check is not a claim that a corresponding npm package or desktop release has been published.
 
@@ -18,7 +18,7 @@ These labels describe origin and maintenance responsibility, not release readine
 | `kap-server`, `@kiki/protocol`, and engine session/configuration/authentication contracts | Inherited and adapted | Existing server contracts remain in use; Kiki adds unified client wiring without creating another engine. |
 | Model-binding areas in `agent-core-v2` | Adapted | Kiki owns the downstream model/effort binding and dispatch integration. |
 | Explicit model alias and thinking effort for subagents | Kiki-only | Tool parameters use `model_alias` and `effort`; agent files use `thinking_effort`. |
-| Per-model [prompt conditioning](../configuration/config-files.md#model-cognition) | Kiki-only | Overlay, steering, and anchor files attach to a model alias. No default file text is shipped or injected for undeclared fields. |
+| Per-model [prompt conditioning](../en/configuration/config-files.md#model-cognition) | Kiki-only | Overlay, steering, and anchor files attach to a model alias. No default file text is shipped or injected for undeclared fields. |
 | `AgentRun`, `AgentList`, and `AgentSend` | Kiki-only | Direct-child launch/resume, discovery, and mailbox operations. |
 | Local peer-thread communication | Kiki-only | Agents can coordinate local sessions; external REST/Klient callers send target-only messages without peer attribution. |
 | `@kiki/gui` and shared `@kiki/session-core` client integration | Kiki-only and adapted | GUI and terminal session views consume the shared client contracts. Donor-derived GUI material retains its specific attribution. |
@@ -38,17 +38,17 @@ All surfaces use `agent-core-v2`; the historical v1 engine is not an alternative
 | `kiki web` | Compatibility foreground REST/WebSocket/web-UI command; it does not attach to the shared daemon. |
 | `@kiki/gui` | Browser/desktop client of the shared engine and server. The GUI workspace package does not install another CLI. |
 
-`KIKI_EXPERIMENTAL_FLAG=1` enables registered experiments; it is not an engine or product selector. See [environment variables](../configuration/env-vars.md#runtime-switches).
+`KIKI_EXPERIMENTAL_FLAG=1` enables registered experiments; it is not an engine or product selector. See [environment variables](../en/configuration/env-vars.md#runtime-switches).
 
 ## Enable Kiki-only agent features
 
 Explicit model and effort binding and the direct-child tools are separate from experimental feature selection. Use the owning feature's switch when you need an experiment; the master switch enables all registered experiments and is broader than a single opt-in.
 
-[Agents and subagents](../customization/agents.md) documents binding precedence and lifecycle. [Configuration files](../configuration/config-files.md#subagent) documents subagent timeout and denylist settings.
+[Agents and subagents](../en/customization/agents.md) documents binding precedence and lifecycle. [Configuration files](../en/configuration/config-files.md#subagent) documents subagent timeout and denylist settings.
 
 ## Integrate peer-thread communication
 
-Peer-thread communication defaults off. Set [`[thread_communication] enabled = true`](../configuration/config-files.md#thread-communication) to opt in. References include host, workspace, and session identity; cross-host sends are rejected. Only main agents receive the four built-in thread tools. Sending to a cold session may resume it and consume model quota.
+Peer-thread communication defaults off. Set [`[thread_communication] enabled = true`](../en/configuration/config-files.md#thread-communication) to opt in. References include host, workspace, and session identity; cross-host sends are rejected. Only main agents receive the four built-in thread tools. Sending to a cold session may resume it and consume model quota.
 
 The server exposes these routes under `/api`:
 
@@ -80,7 +80,7 @@ Kiki maintainers own the downstream CLI identity, client integration, home resol
 
 Runtime configuration, sessions, and OAuth credentials use `KIKI_HOME`, defaulting to `~/.kiki`. Supported explicit `--home` options take precedence. The legacy `KIMI_CODE_HOME` setting is not a startup fallback. Real Kimi provider/OAuth identifiers and endpoints remain unchanged; product home naming does not rename the provider protocol.
 
-The desktop compatibility-home setting selects a migration source only. Login, logout, and token refresh no longer operate on a separately selected legacy home. Use [explicit configuration migration](../reference/command.md#migration-from-kimi) or sign in again before depending on legacy credentials.
+The desktop compatibility-home setting selects a migration source only. Login, logout, and token refresh no longer operate on a separately selected legacy home. Use [explicit configuration migration](../en/reference/command.md#kiki-migrate-config) or sign in again before depending on legacy credentials.
 
 `kiki migrate-config` copies supported configuration, credentials, device identity, and authored resources without overwriting existing Kiki files or removing the source. `--workspace <directory>` migrates project `local.toml`, `AGENTS.md`, `mcp.json`, and authored resource trees into `.kiki`. Root `AGENTS.md` and standard `.mcp.json` stay in place with their existing semantics. Project-local MCP remains relative to the selected working directory, not an implicit merge of every ancestor's product MCP file.
 
@@ -114,7 +114,7 @@ The upstream baseline is `MoonshotAI/kimi-code`; Kiki's own repository is `X-T-E
 
 ## Next steps
 
-- [Getting started](../getting-started/first-launch.md) — choose a release or local source build.
-- [Agents and subagents](../customization/agents.md) — configure bindings and child-agent tools.
-- [Environment variables](../configuration/env-vars.md#runtime-switches) — configure runtime settings and experiments.
-- [`kiki` command reference](../reference/command.md) — daemon, inbound integration, and explicit migration.
+- [Getting started](../en/getting-started/first-launch.md) — choose a release or local source build.
+- [Agents and subagents](../en/customization/agents.md) — configure bindings and child-agent tools.
+- [Environment variables](../en/configuration/env-vars.md#runtime-switches) — configure runtime settings and experiments.
+- [`kiki` command reference](../en/reference/command.md) — daemon, inbound integration, and explicit migration.

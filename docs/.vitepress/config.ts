@@ -29,7 +29,12 @@ const config = withMermaid(defineConfig({
     ['meta', { name: 'theme-color', content: '#e8590c' }],
   ],
 
-  srcExclude: ['AGENTS.md', 'superpowers/**', 'examples/**'],
+  srcExclude: ['AGENTS.md', 'superpowers/**', 'examples/**', 'maintainer/**'],
+
+  // Code blocks are always rendered on the dark "shell" surface (theme vars), so
+  // Shiki must always emit dark-theme token colors; a light/dark dual theme would
+  // put dark-on-dark tokens in light mode.
+  markdown: { theme: 'github-dark' },
 
   // Rewrites publish redirect pages at every old URL, without hiding the new pages.
   rewrites: Object.fromEntries(legacyRoutes.map(({ locale, from }) => [
@@ -56,7 +61,7 @@ const config = withMermaid(defineConfig({
         nav: [
           { text: '快速上手', link: '/zh/getting-started/installation', activeMatch: '/zh/getting-started/' },
           { text: '使用指南', link: '/zh/guides/interface', activeMatch: '/zh/guides/' },
-          { text: '定制', link: '/zh/customization/agents', activeMatch: '/zh/customization/' },
+          { text: '定制', link: '/zh/customization/agent-profiles', activeMatch: '/zh/customization/' },
           { text: '服务器与集成', link: '/zh/server/local-server', activeMatch: '/zh/server/' },
           { text: '配置', link: '/zh/configuration/config-files', activeMatch: '/zh/configuration/' },
           { text: '参考手册', link: '/zh/reference/command', activeMatch: '/zh/(reference|release-notes)/' },
@@ -76,7 +81,6 @@ const config = withMermaid(defineConfig({
               text: '迁移',
               items: [
                 { text: '从 kimi-cli 迁移', link: '/zh/getting-started/migration' },
-                { text: '模型词汇收敛路线', link: '/zh/getting-started/model-vocabulary' },
               ],
             },
           ],
@@ -114,24 +118,17 @@ const config = withMermaid(defineConfig({
                 { text: 'Node.js SDK', link: '/zh/server/sdk' },
               ],
             },
-            {
-              text: '内部机制（面向维护者）',
-              collapsed: true,
-              items: [
-                { text: 'Kiki 运行时边界', link: '/zh/server/architecture' },
-                { text: '跨 host 会话边界', link: '/zh/server/cross-host-session-boundaries' },
-              ],
-            },
           ],
           '/zh/customization/': [
             {
               text: '定制',
               items: [
+                { text: 'Agent profile 概念与设计', link: '/zh/customization/agent-profiles' },
                 { text: 'Agent 与 subagent', link: '/zh/customization/agents' },
-                { text: '提示词字段与覆写', link: '/zh/customization/prompt-fields' },
                 { text: 'Agent Skills', link: '/zh/customization/skills' },
                 { text: 'Plugins', link: '/zh/customization/plugins' },
                 { text: 'Hooks', link: '/zh/customization/hooks' },
+                { text: '提示词字段与覆写', link: '/zh/customization/prompt-fields' },
                 { text: '自定义主题', link: '/zh/customization/themes' },
               ],
             },
@@ -156,6 +153,7 @@ const config = withMermaid(defineConfig({
                 { text: '斜杠命令', link: '/zh/reference/slash-commands' },
                 { text: '键盘快捷键', link: '/zh/reference/keyboard' },
                 { text: '内置工具', link: '/zh/reference/tools' },
+                { text: '模型选择词汇', link: '/zh/reference/model-vocabulary' },
               ],
             },
             {
@@ -178,7 +176,7 @@ const config = withMermaid(defineConfig({
         nav: [
           { text: 'Getting started', link: '/en/getting-started/installation', activeMatch: '/en/getting-started/' },
           { text: 'Guides', link: '/en/guides/interface', activeMatch: '/en/guides/' },
-          { text: 'Customization', link: '/en/customization/agents', activeMatch: '/en/customization/' },
+          { text: 'Customization', link: '/en/customization/agent-profiles', activeMatch: '/en/customization/' },
           { text: 'Server & integration', link: '/en/server/local-server', activeMatch: '/en/server/' },
           { text: 'Configuration', link: '/en/configuration/config-files', activeMatch: '/en/configuration/' },
           { text: 'Reference', link: '/en/reference/command', activeMatch: '/en/(reference|release-notes)/' },
@@ -198,7 +196,6 @@ const config = withMermaid(defineConfig({
               text: 'Migration',
               items: [
                 { text: 'Migrating from kimi-cli', link: '/en/getting-started/migration' },
-                { text: 'Model vocabulary convergence', link: '/en/getting-started/model-vocabulary' },
               ],
             },
           ],
@@ -236,24 +233,17 @@ const config = withMermaid(defineConfig({
                 { text: 'Node.js SDK', link: '/en/server/sdk' },
               ],
             },
-            {
-              text: 'Internals (Maintainers)',
-              collapsed: true,
-              items: [
-                { text: 'Kiki runtime boundary', link: '/en/server/architecture' },
-                { text: 'Cross-host session boundaries', link: '/en/server/cross-host-session-boundaries' },
-              ],
-            },
           ],
           '/en/customization/': [
             {
               text: 'Customization',
               items: [
+                { text: 'Agent profiles: concepts', link: '/en/customization/agent-profiles' },
                 { text: 'Agents and Subagents', link: '/en/customization/agents' },
-                { text: 'Prompt field overrides', link: '/en/customization/prompt-fields' },
                 { text: 'Agent Skills', link: '/en/customization/skills' },
                 { text: 'Plugins', link: '/en/customization/plugins' },
                 { text: 'Hooks', link: '/en/customization/hooks' },
+                { text: 'Prompt field overrides', link: '/en/customization/prompt-fields' },
                 { text: 'Custom Themes', link: '/en/customization/themes' },
               ],
             },
@@ -278,6 +268,7 @@ const config = withMermaid(defineConfig({
                 { text: 'Slash commands', link: '/en/reference/slash-commands' },
                 { text: 'Keyboard Shortcuts', link: '/en/reference/keyboard' },
                 { text: 'Built-in Tools', link: '/en/reference/tools' },
+                { text: 'Model selection vocabulary', link: '/en/reference/model-vocabulary' },
               ],
             },
             {

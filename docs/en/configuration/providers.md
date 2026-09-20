@@ -45,8 +45,10 @@ The same operations are also available in non-interactive environments via the s
 For connecting to Moonshot AI's OpenAI-compatible interface, including the Kimi Code managed service and Kimi Platform API keys.
 
 - Default `base_url`: `https://api.moonshot.ai/v1`
-- Credential key names: `KIMI_API_KEY`, `KIMI_BASE_URL`
+- Credential key names: `KIMI_API_KEY`, `KIMI_BASE_URL` — these are entries of the `[providers.<name>.env]` sub-table in `config.toml`, not shell environment variables
 - Additional capability: supports video upload
+
+Kimi Code subscription keys pair with the managed base URL `https://api.kimi.com/coding/v1` (configured automatically by `/login`). Open-platform keys pair with the endpoint of the portal that issued the key: `https://api.moonshot.cn/v1` for keys from [platform.kimi.com](https://platform.kimi.com), or the default `https://api.moonshot.ai/v1` for keys from [platform.kimi.ai](https://platform.kimi.ai).
 
 ```toml
 [providers.kimi]
@@ -101,7 +103,7 @@ Corresponds to OpenAI's newer Responses API, always operating in streaming mode.
 - Credential key names: `OPENAI_API_KEY`, `OPENAI_BASE_URL`
 
 ```toml
-[providers.openai-responses]
+[providers.openai_responses]
 type = "openai_responses"
 base_url = "https://api.openai.com/v1"
 api_key = "sk-xxxxx"
@@ -133,6 +135,8 @@ base_url = "https://your-gateway.example"
 ## `vertexai`
 
 Shares the same implementation as `google-genai`; setting `type = "vertexai"` switches to the Vertex AI access path.
+
+- Credential key name: `VERTEXAI_API_KEY` — written in the `[providers.vertexai.env]` sub-table; the API-key alternative to the ADC flow below
 
 Authentication follows the standard Google Cloud ADC flow (`gcloud auth application-default login` or a `GOOGLE_APPLICATION_CREDENTIALS` service account JSON) — this part is unrelated to Kimi Code. **The project ID and region must be written in the `[providers.vertexai.env]` sub-table** — simply `export GOOGLE_CLOUD_PROJECT` in the shell will not be read by the CLI.
 

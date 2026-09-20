@@ -4,7 +4,7 @@ Kiki persists every conversation as a "session" — storing message history and 
 
 ## Session storage
 
-All sessions are saved under `$KIKI_HOME/sessions/` (default: `~/.kiki/sessions/`), grouped by working directory:
+All sessions are saved under `$KIKI_HOME/sessions/` (default: `~/.kiki/sessions/`), grouped by working directory. You do not need to touch these files in daily use — they matter when you need to debug, troubleshoot, or back up sessions:
 
 ```text
 ~/.kiki/
@@ -22,39 +22,41 @@ All sessions are saved under `$KIKI_HOME/sessions/` (default: `~/.kiki/sessions/
 ```
 
 - `state.json`: session metadata such as title and creation time.
-- `agents/*/wire.jsonl`: the agent event stream, used for session recovery and replay. It also carries a request trace — the tool schemas, request parameters, and MCP tool listings sent to the model — for debugging.
-
-The GUI's new-session choices are separate from this CLI directory. When draft persistence is enabled, the GUI remembers the selected model and effort, plus the workspace, working directory, and profile, across navigation and browser refresh. A session's inherited model and a local model override are distinct: changing the local effort does not silently replace the model inherited from the current session. The **Composer → Persist composer drafts** toggle in Settings controls whether these selections and the per-session draft text are written to this browser; turning it off clears the saved store. The currently open page's in-memory draft is unaffected by turning the toggle off; a refresh or restart starts with no restored selection.
+- `agents/*/wire.jsonl`: the agent event stream, used for session recovery and replay. It also carries a request trace — the tool definitions, request parameters, and MCP tool listings sent to the model — for debugging.
 
 ::: warning
-Do not manually edit files inside the CLI `sessions/` directory — doing so may prevent sessions from being restored correctly.
+Do not manually edit files inside the `sessions/` directory — doing so may prevent sessions from being restored correctly.
 :::
+
+The desktop and browser GUI store new-session choices separately from this CLI directory. When draft persistence is enabled, the GUI remembers the selected model and effort, plus the workspace, working directory, and profile (the agent's configuration file), across navigation and browser refresh. A session's inherited model and a local override are distinct: changing the local effort does not silently replace the model inherited from the current session. The **Composer → Persist composer drafts** toggle in Settings controls whether these selections and the per-session draft text are written to this browser; turning it off clears the saved store. Drafts in the currently open page are unaffected by turning the toggle off; a refresh or restart starts with no restored selection.
+
+> The two GUI paragraphs above do not apply to CLI users — feel free to skip them.
 
 ## Requirements board
 
-Open the requirements board from the fixed button at the bottom of the main agent's right panel. It uses the bundled Own Work library; no separate Own Work or Assay installation is needed. Cards organize requirements and session references, not running agents. Todo lists remain separate and local to each agent.
+Open the requirements board from the fixed button at the bottom of the main agent's right panel. The board is fully built into Kiki — no additional installation is needed. Cards organize requirements and their links to sessions, not running agents. Todo lists remain separate and local to each agent.
 
-Trust the workspace before creating or editing cards. Storage is controlled by `taskBoard.storage`: `auto` reuses a compatible workspace store or uses `sessions/<workspaceId>/.board`; `global` uses `<home>/boards`; `fixed` accepts an absolute path or a path relative to the workspace. Paths are not scripts. Previewing a location does not create it or grant write access; save the configuration before creating there. Nonempty incompatible directories are rejected.
+Trust the workspace before creating or editing cards. Storage is controlled by the `taskBoard.storage` setting: `auto` reuses a compatible workspace store first, or uses `sessions/<workspaceId>/.board`; `global` uses the `boards` directory under the Kiki home; `fixed` uses an absolute path or a path relative to the workspace that you provide. Paths are not executed as scripts. Previewing a location does not create it or grant write access; save the configuration before creating there. Nonempty incompatible directories are rejected.
 
-Changing the setting does not migrate cards. Existing card references keep their original store identity and revision. If another edit wins, reload the card before retrying; failed edits retain the draft. The main agent can use `BoardRead` and `BoardWrite` under normal tool policy and approval rules; subagents keep TodoList. Plan mode cannot use `BoardWrite`.
+Changing the storage setting does not migrate cards; existing cards keep referencing their original store. If another edit wins, reload the card before retrying; failed edits retain the draft. The main agent can read and write the board with the `BoardRead` and `BoardWrite` tools under normal tool policy and approval rules; subagents keep TodoList. Plan mode cannot use `BoardWrite`.
 
 ## Starting and resuming sessions
 
 Every time you run `kiki` directly it creates a new session. To resume a previous session, use one of the following:
 
-**Resume the most recent session in the current directory:**
+**Resume the most recent session in the current directory (`-c` is the short form of `--continue`, the same `kiki -c` shown in [First launch](../getting-started/first-launch.md)):**
 
 ```sh
 kiki --continue
 ```
 
-**Resume a specific session by ID:**
+**Resume a specific session by ID (`abc123` is just an example ID):**
 
 ```sh
 kiki --session abc123
 ```
 
-**Interactively browse session history and choose one:**
+**Interactively browse session history and choose one (what `--session` does without an ID):**
 
 ```sh
 kiki --session
@@ -64,7 +66,7 @@ kiki --session
 `--continue` and `--session` are mutually exclusive.
 :::
 
-In the GUI, a saved model, profile, or effort that is no longer available remains visible with a diagnostic. Select a valid value before sending; the GUI does not silently substitute another model or profile. A loading state or catalog error is not itself proof that a saved choice is invalid.
+In the GUI, a saved model, profile, or effort that is no longer available remains visible with a diagnostic. Select a valid value before sending; the GUI does not silently substitute another model or profile. An error shown while the list is still loading or when the catalog request fails does not mean your saved choice is invalid.
 
 ## Switching sessions inside the TUI
 
@@ -91,13 +93,13 @@ Token usage and estimated cost have separate completeness indicators. When a pro
 
 As a conversation grows, Kiki automatically compresses the message history when the context approaches the window limit, freeing up token space. You can also trigger compression manually at any time:
 
-```
+```sh
 /compact
 ```
 
 You can pass a hint to tell the model what to prioritize when compressing:
 
-```
+```sh
 /compact Keep the discussion about database migrations
 ```
 
@@ -105,7 +107,7 @@ You can pass a hint to tell the model what to prioritize when compressing:
 
 To explore a new direction without disrupting the current conversation, use `/fork`:
 
-```
+```sh
 /fork
 ```
 
@@ -127,7 +129,7 @@ Omitting `sessionId` exports the most recent session in the current directory (w
 kiki export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
-The export includes all files in the session directory, including diagnostic logs. The global diagnostic log (`~/.kiki/logs/kimi-code.log`) is also bundled by default; add `--no-include-global-log` to exclude it.
+The export includes all files in the session directory, including diagnostic logs. The global diagnostic log (`~/.kiki/logs/kimi-code.log` — the file name follows the project's early naming; it is Kiki's global log) is also bundled by default; add `--no-include-global-log` to exclude it.
 
 You can also export from inside the TUI without leaving the interactive session:
 

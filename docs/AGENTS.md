@@ -6,12 +6,13 @@ This repository uses VitePress for the documentation site. Most user-facing page
 
 - Locales live under `docs/en/` and `docs/zh/` with mirrored paths and filenames.
 - Main sections (nav + sidebar) are:
-  - Getting Started (`getting-started/`): installation, first-launch, desktop-app, use-cases, and Migration group (migration, model-vocabulary)
+  - Getting Started (`getting-started/`): installation, first-launch, desktop-app, use-cases, and Migration group (migration)
   - Guides (`guides/`): Desktop app group (interface, sessions, settings), CLI & TUI group (interaction, goals)
-  - Customization (`customization/`): agents, prompt-fields, skills, plugins, hooks, themes
-  - Server & Integration (`server/`): Usage group (local-server, ide, acp), Protocol & SDK group (rest-api, mcp, sdk), Internals group (architecture, cross-host-session-boundaries)
+  - Customization (`customization/`): agent-profiles (concepts), agents, skills, plugins, hooks, prompt-fields, themes
+  - Server & Integration (`server/`): Usage group (local-server, ide, acp), Protocol & SDK group (rest-api, mcp, sdk)
   - Configuration (`configuration/`): config-files, providers, overrides, env-vars, data-locations
-  - Reference (`reference/`): command (`kiki` command), slash-commands, keyboard, tools, and Release Notes group (changelog)
+  - Reference (`reference/`): command (`kiki` command), slash-commands, keyboard, tools, model-vocabulary, and Release Notes group (changelog)
+- Maintainer-only design records (runtime boundary, cross-host ADR) live in `docs/maintainer/`, which is excluded from the built site via `srcExclude`. User-relevant facts must be merged into public pages before a page moves there.
 - Navigation, sidebar, and URL rewrites are defined in `docs/.vitepress/config.ts`. Any new, moved, or renamed page must be wired there for both locales.
 - Canonical pages publish at their source paths. `.vitepress/legacy-routes.ts` lists old-to-new page moves for both locales; `redirects/[locale]/[page].md` generates localized redirect pages, and `config.ts` rewrites those pages to the old URLs. Do not rewrite canonical pages back to old URLs: VitePress rewrites replace output paths, not add aliases, and do not repair nav/sidebar or Markdown links automatically. Keep merged-page anchor mappings with the route list.
 - Release notes share the Reference sidebar and nav state. Home actions and document footers also link to the changelog.
@@ -133,12 +134,12 @@ Two distinct platforms exist and must never be mixed:
 | | Kimi Code platform | Kimi Open Platform |
 |---|---|---|
 | Audience | Individual developers, subscription-based | Enterprise / product integration, pay-per-token |
-| OpenAI-compatible base URL | `https://api.kimi.com/coding/v1` | `https://api.moonshot.cn/v1` |
+| OpenAI-compatible base URL | `https://api.kimi.com/coding/v1` | `https://api.moonshot.cn/v1`（platform.kimi.com 签发的密钥）/ `https://api.moonshot.ai/v1`（platform.kimi.ai 签发的密钥） |
 | Anthropic-compatible base URL | `https://api.kimi.com/coding/` | Not supported |
 | API key entry | [Kimi Code console](https://www.kimi.com/code/console) | [platform.kimi.com](https://platform.kimi.com) |
 
 Rules:
-- Kiki supports multiple providers. For Kimi Code subscription examples, use `api.kimi.com/coding/…`; for Kimi Open Platform examples, use `api.moonshot.cn/v1`.
+- Kiki supports multiple providers. For Kimi Code subscription examples, use `api.kimi.com/coding/…`; for Kimi Open Platform examples, use the endpoint that matches the key's issuing portal: `api.moonshot.cn/v1` for platform.kimi.com, `api.moonshot.ai/v1` for platform.kimi.ai.
 - Keep the provider platform explicit; Kiki's product name does not change provider endpoints, model IDs, or OAuth identities.
 - Product names are **Kiki CLI** and **Kiki for VS Code**. Use **Kimi Code** only for the upstream product or its provider platform.
 
@@ -339,7 +340,7 @@ Before shipping, verify these values match the rest of the docs:
   - `npm install`
   - `npm run dev`
   - `npm run build`
-  - `npm run test:ia` (after building, with the same `VITEPRESS_BASE`): checks mirrored navigation, old URL redirects, and rendered page links
+  - `npm run test:ia` (after building, with the same `VITEPRESS_BASE`): checks mirrored navigation, old URL redirects, and rendered page links including heading anchors
   - `npm run preview`
 - The build output is `docs/.vitepress/dist`.
 

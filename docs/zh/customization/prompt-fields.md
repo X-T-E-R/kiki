@@ -34,7 +34,7 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 
 `explain` 打印字段的 `effective`、`shadowed` 或 `inactive` 状态、当前生效值，以及所选上下文下的完整来源链。用 `--agent`、`--model`、`--executor` 和 `--delegation-position <main|sub|independent>` 选择上下文；`--config <path>` 检查其他配置文件，`--home <dir>` 选择用于 `SYSTEM.md`、agent 发现和相对覆写文件的 Kiki home。
 
-已移除的 `prompt.shared` 和 `prompt.tools` 键已迁入 `[prompt.overrides]` 下的字段；请迁移旧条目，不要恢复这些键——见[提示词字段优先级](../configuration/overrides.md#prompt-field-precedence)。
+已移除的 `prompt.shared` 和 `prompt.tools` 键已迁入 `[prompt.overrides]` 下的字段；请迁移旧条目，不要恢复这些键——见[提示词字段优先级](../configuration/overrides.md#提示词字段优先级)。
 
 ## 桌面版设置入口
 

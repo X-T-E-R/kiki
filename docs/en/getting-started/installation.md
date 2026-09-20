@@ -1,9 +1,11 @@
 # Installation
 
-Kiki ships in three forms that share one daemon and one session store: the **Kiki desktop app** for Windows, the **CLI/TUI** for the terminal, and a local **server** for browser and API clients. This page covers how to install and update each form; see [First launch](./first-launch.md) for what to do after installation.
+Kiki ships in three forms that share one daemon (the background process Kiki keeps running so all forms share session data) and one session store: the **Kiki desktop app** for Windows, the **CLI/TUI** (TUI — the text-based interface inside the terminal) for the terminal, and a local **server** for browser and API clients. This page covers how to install and update each form; see [First launch](./first-launch.md) for what to do after installation.
 
 ::: tip Before you install
-Kiki is a fully interactive TUI application. For the best visual experience, run it in a terminal with true-color and ligature support, such as [Kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/).
+Kiki's terminal form runs fine in any modern terminal — Windows Terminal and your system's built-in terminal need no adjustments.
+
+For the best visual experience (sharper font rendering and icon display), use a terminal with true-color and ligature support, such as [Kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/). This is optional; everything works without it.
 :::
 
 ## Install the desktop app
@@ -24,7 +26,7 @@ The release binaries are not code-signed, so Windows SmartScreen may flag the pu
 
 1. Open the [Kiki Releases page](https://github.com/X-T-E-R/kiki/releases) and pick a version.
 2. Download the CLI artifact for your platform from that release's assets.
-3. Place the `kiki` executable on your `PATH`, then verify it:
+3. Place the `kiki` executable on your `PATH` (the list of directories the system searches for executables, so you can run `kiki` from anywhere), then verify it:
 
 ```sh
 kiki --version
@@ -36,7 +38,7 @@ The CLI is not published to npm; use the release artifacts, or run from source w
 
 ### Development from source
 
-Source development requires Node.js `24.15.0` or later and pnpm `10.33.0`. From the repository root:
+Kiki's source repository is a pnpm (a Node.js package manager) workspace. Developing from source is for users who want to hack on or debug the CLI itself. It requires Node.js `24.15.0` or later and pnpm `10.33.0`. From the repository root:
 
 ```sh
 node --version
@@ -45,7 +47,7 @@ pnpm install
 pnpm dev:cli -- --help
 ```
 
-The root `dev:cli` script runs `apps/kimi-code`'s `dev` script. It starts the local development marketplace server and forwards `--help` to the CLI entry point; no published package or global install is required.
+The root `dev:cli` script starts the local development environment and forwards `--help` to the CLI entry point; no published package or global install is required.
 
 ## Update and uninstall
 

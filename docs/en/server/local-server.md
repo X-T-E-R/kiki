@@ -18,7 +18,7 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-With no mode, `serve` runs the daemon in the foreground. `--ensure` attaches to an existing healthy instance or starts one and returns its connection; `--stop` shuts down the reachable instance for the selected home. `--idle-exit` defaults to `30m`, while active client leases and running dispatches keep the daemon alive. The TUI performs the same attach-or-start behavior after workspace trust.
+With no mode, `serve` runs the daemon in the foreground. `--ensure` attaches to an existing healthy instance or starts one and returns its connection; `--stop` shuts down the reachable instance for the selected home. `--idle-exit` defaults to `30m`, while active client leases (a lease is a periodically renewed "online token" a client holds; while it stays valid, the daemon knows someone is still using it) and running dispatches keep the daemon alive. The TUI performs the same attach-or-start behavior after workspace trust.
 
 ## Run the compatible foreground server
 
@@ -48,41 +48,21 @@ Pick the carrying method that fits your client:
 
 - **REST**: the `Authorization: Bearer <token>` request header.
 - **Kiki GUI**: the URL in the startup banner carries a `#token=` fragment, so opening it in a browser completes sign-in automatically. The fragment is never sent to the server.
-- **WebSocket**: clients that can set headers use `Authorization: Bearer`; clients that cannot (such as browsers) pass the subprotocol (a protocol name declared during the WebSocket handshake) `kimi-code.bearer.<token>` instead.
+- **WebSocket**: clients that can set headers use `Authorization: Bearer`; clients that cannot (such as browsers) pass the subprotocol (a protocol name declared during the WebSocket handshake) `kimi-code.bearer.<token>` (a historical protocol name kept from the upstream Kimi Code era for compatibility).
 
 If the token leaks, run `kiki web rotate-token`: the new token is written to `server.token` immediately, the old one stops working at once, and running instances pick up the new token without a restart.
 
 The desktop GUI uses this same home token. On launch it looks for a running server in the instance registry and attaches to it when one is alive; only when none is found does it start its own sidecar. A server started by the GUI is therefore reachable by other local clients with the home token, and a server started elsewhere shows up in the GUI with all of its sessions.
+
+::: warning Note
+This warning targets independently provisioned, mutually untrusted runtimes (for example, two services with distinct host identities and separate authority domains): do not point such runtimes at the same writable home, do not copy session directories between their homes, and do not copy `device_id` to make two homes impersonate the same host — session indexes, thread attribution, and permission boundaries all rely on the uniqueness of a home identity. The shared daemon, TUI, desktop GUI, and coexisting server instances within one home are supported ways of collaborating and are unaffected.
+:::
 
 If you bind the server to a non-loopback address (`--host`), also set the `KIKI_PASSWORD` environment variable as a parallel credential; the server then rate-limits authentication failures automatically.
 
 ::: danger
 `--dangerous-bypass-auth` disables authentication entirely — anyone who can reach the port can control your sessions, file system, and shell. Only use it on trusted networks or behind your own authenticating proxy. See the [kiki command reference](../reference/command.md#kiki-web).
 :::
-
-## Change a Codex MCP binding model
-
-The Codex/Kiki external-delegation installer creates a signed runtime directory. If you change its model settings by hand, the HMAC (a tamper-detection signature) no longer matches. Use the installed `kiki-mcp.ps1` launcher to inspect and re-sign the runtime and workspace bindings instead of deleting the delegated session.
-
-```powershell
-$runtime = '<runtime-dir>'
-$launcher = Join-Path $runtime 'kiki-mcp.ps1'
-
-# Show the runtime defaults, each workspace key, model, effort, and signature state.
-& $launcher -RuntimeDir $runtime -ListBindings
-
-# Change one existing workspace binding and the defaults used by new workspaces.
-& $launcher -RuntimeDir $runtime -ResignBinding '<workspace-key>' `
-  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
-
-# Apply the new model parameters to every existing binding too.
-& $launcher -RuntimeDir $runtime -ResignAllBindings `
-  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
-```
-
-`-ListBindings` still works when `runtime.json` has a stale signature, so it can diagnose a manual model edit. Re-signing validates the fixed installation fields and artifact hashes, uses the current Windows user's DPAPI-protected signing keys, and stops any affected recorded workspace KAP before rewriting its binding. On the next MCP launch, KAP applies the newly signed model and thinking effort to the persisted delegated session. A targeted re-sign leaves other existing workspace bindings on their current signed models; `-ResignAllBindings` updates all of them.
-
-When a Codex MCP tool call supplies an MCP `progressToken`, delegation dispatch and continuation calls stay open and emit `notifications/progress` updates for turn start, completed tool-call count, and terminal status; clients without a token keep the existing `kiki_status` / `kiki_events` polling behavior.
 
 ## Drive a session over the API
 

@@ -28,11 +28,9 @@ kiki acp
 
 ## ACP 方法覆盖
 
-规范把方法分为**稳定**面和仍在演化的**不稳定**面（`@agentclientprotocol/sdk@0.23.0` 中以 `unstable_*` 前缀挂载的 handler）。两部分稳定性保证完全不同——稳定面是任何生产 ACP 客户端都会用到的方法，不稳定面覆盖实验性扩展（inline-edit 预测、document 缓冲区同步、provider 管理、elicitation 等），因此分开追踪。
+规范把方法分为**稳定**面和仍在演化的**不稳定**面。两部分稳定性保证完全不同——稳定面是任何生产 ACP 客户端都会用到的方法，不稳定面覆盖实验性扩展（inline-edit 预测、document 缓冲区同步、provider 管理、elicitation 等），因此分开列出。任何正常 agent 流程所需的方法（initialize → auth → new/load/resume → prompt → cancel + 文件 I/O + 工具审批）都已实现。
 
-**概览：稳定面 agent-side 实现 10/12（83%）+ client reverse-RPC 实现 4/9（44%）；不稳定面只接入了 `session/set_model`（1/19）。** 任何正常 agent 流程所需的方法（initialize → auth → new/load/resume → prompt → cancel + 文件 I/O + 工具审批）都已实现。
-
-### 稳定面 agent-side — IDE → agent（10 / 12）
+### 稳定面 agent-side — IDE → agent
 
 | 方法 | 状态 | 说明 |
 | --- | --- | --- |
@@ -49,22 +47,22 @@ kiki acp
 | `session/close` | 否 | |
 | `logout` | 否 | |
 
-### 稳定面 client-side reverse-RPC — agent → IDE（4 / 9）
+### 稳定面 client-side reverse-RPC — agent → IDE
 
 | 方法 | 状态 | 说明 |
 | --- | --- | --- |
 | `session/update` | 是 | 流式推送 `agent_message_chunk` / `tool_call*` / `plan` / `config_option_update` / `available_commands_update` |
 | `session/request_permission` | 是 | 工具审批和问题 elicitation 共用此通道 |
-| `fs/read_text_file` | 是 | kaos 层文件读取路由到客户端（通过 `fsCapabilities` 公告） |
-| `fs/write_text_file` | 是 | kaos 层文件写入路由到客户端 |
+| `fs/read_text_file` | 是 | 文件读取由客户端执行：Kiki 不直接读你机器上的文件，而是通过该方法向 IDE 请求文件内容（通过 `fsCapabilities` 公告） |
+| `fs/write_text_file` | 是 | 文件写入由客户端执行：Kiki 通过该方法把内容交给 IDE 写入 |
 | `terminal/create` · `output` · `release` · `kill` · `wait_for_exit` | 否 | 终端 reverse-RPC 未接，shell 命令走本地执行 |
 
-### 不稳定面（1 / 19）
+### 不稳定面
 
 | 方法 | 状态 | 说明 |
 | --- | --- | --- |
 | `session/set_model` | 是 | 兼容路径，等价于 `set_config_option({configId:'model'})` |
-| 其余 18 个方法 | 否 | 包括 session 生命周期扩展、缓冲区同步、inline-edit 预测、provider 管理等 |
+| 其余方法 | 否 | 包括 session 生命周期扩展、缓冲区同步、inline-edit 预测、provider 管理等 |
 
 上述未列出的方法一律返回 `methodNotFound`。
 

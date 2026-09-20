@@ -45,8 +45,10 @@ Kiki 支持同时接入多家 LLM 平台——用 Kimi Code 托管服务一键�
 用于对接 Moonshot AI 的 OpenAI 兼容接口，包括 Kimi Code 托管服务和 Kimi Platform API 密钥。
 
 - 默认 `base_url`：`https://api.moonshot.ai/v1`
-- 凭证键名：`KIMI_API_KEY`、`KIMI_BASE_URL`
+- 凭证键名：`KIMI_API_KEY`、`KIMI_BASE_URL` ——这些键名写在 `config.toml` 的 `[providers.<name>.env]` 子表里，不是 shell 环境变量
 - 额外能力：支持视频上传
+
+Kimi Code 订阅密钥配合托管 base URL `https://api.kimi.com/coding/v1` 使用（`/login` 登录后自动配置）。开放平台密钥按签发门户选择端点：[platform.kimi.com](https://platform.kimi.com) 签发的密钥配 `https://api.moonshot.cn/v1`，[platform.kimi.ai](https://platform.kimi.ai) 签发的密钥配默认的 `https://api.moonshot.ai/v1`。
 
 ```toml
 [providers.kimi]
@@ -101,7 +103,7 @@ api_key = "sk-xxxxx"
 - 凭证键名：`OPENAI_API_KEY`、`OPENAI_BASE_URL`
 
 ```toml
-[providers.openai-responses]
+[providers.openai_responses]
 type = "openai_responses"
 base_url = "https://api.openai.com/v1"
 api_key = "sk-xxxxx"
@@ -133,6 +135,8 @@ base_url = "https://your-gateway.example"
 ## `vertexai`
 
 与 `google-genai` 共用实现，`type = "vertexai"` 时切换到 Vertex AI 访问路径。
+
+- 凭证键名：`VERTEXAI_API_KEY` ——写在 `[providers.vertexai.env]` 子表里，是不走下文 ADC 流程时的 API 密钥来源
 
 认证走 Google Cloud 标准 ADC 流程（`gcloud auth application-default login` 或 `GOOGLE_APPLICATION_CREDENTIALS` 服务账号 JSON），这部分与 Kimi Code 无关。**项目 ID 和区域必须写在 `[providers.vertexai.env]` 子表里**——直接在 shell 里 `export GOOGLE_CLOUD_PROJECT` 不会被 CLI 读取。
 

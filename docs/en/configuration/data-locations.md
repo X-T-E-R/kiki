@@ -16,7 +16,7 @@ If you need to move the data directory elsewhere (for example, to isolate config
 export KIKI_HOME="$HOME/.config/kiki"
 ```
 
-Once set, **all** Kiki Code data — config, sessions, logs, OAuth credentials, Kiki-specific user Skills, global `AGENTS.md`, and more — lands under the new path. For the full reference on `KIKI_HOME`, see [Environment variables](./env-vars.md).
+Once set, **all** Kiki data — config, sessions, logs, OAuth credentials, Kiki-specific user Skills, global `AGENTS.md`, and more — lands under the new path. For the full reference on `KIKI_HOME`, see [Environment variables](./env-vars.md).
 
 ::: tip Note
 
@@ -28,10 +28,12 @@ Once set, **all** Kiki Code data — config, sessions, logs, OAuth credentials, 
 ```
 $KIKI_HOME  (default: ~/.kiki)
 ├── config.toml             # User configuration
-├── tui.toml                # Terminal UI preferences (including auto-update toggle)
+├── tui.toml                # Terminal UI preferences
 ├── AGENTS.md               # Global Kiki-specific agent instructions (optional)
 ├── mcp.json                # User-level MCP server declarations (optional)
 ├── skills/                 # Kiki-specific user-level Skills (optional)
+├── cognition/              # Prompt files referenced by [models."<alias>".cognition] (optional; see Configuration files)
+├── hooks/                  # Script files referenced by [[hooks]] command paths (optional; see Hooks)
 ├── plugins/
 │   ├── installed.json      # Installed plugin records and enabled state
 │   └── managed/            # Plugin copies installed from zip/local paths
@@ -60,6 +62,8 @@ Each top-level file under the data root serves a specific purpose; most are mana
 - **`AGENTS.md`**: global Kiki-specific agent instructions. This file moves with `KIKI_HOME`; generic cross-tool instructions can still live under `~/.agents/AGENTS.md`.
 - **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kiki/mcp.json` on startup. See [MCP](../server/mcp.md).
 - **`skills/`**: Kiki-specific user-level Skills. This directory moves with `KIKI_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
+- **`cognition/`**: prompt files referenced by `[models."<alias>".cognition]`; paths are relative to the data root. See [Model cognition](./config-files.md#model-cognition).
+- **`hooks/`**: script files referenced by `[[hooks]]` command paths (for example `node ~/.kiki/hooks/check-bash.mjs`). See [Hooks](../customization/hooks.md).
 - **`plugins/installed.json`**: records installed plugins, each plugin's enabled state, and MCP server capability state changes made via `/plugins` or `/plugins mcp disable|enable`. Files installed from local paths or zip URLs are copied to `plugins/managed/<id>/`. See [Plugins](../customization/plugins.md).
 - **`credentials/`**: OAuth credential directory, with permissions `0o700` (directory) / `0o600` (files), readable and writable only by the current user. Managed provider credentials are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. Credentials are written using an atomic flow (tmp → fsync → rename) to prevent corruption.
 
@@ -83,6 +87,8 @@ Inside each session directory:
 The first time the `Grep` tool needs ripgrep, the CLI can automatically download `rg` and cache it at `bin/rg` (`bin/rg.exe` on Windows). File-reference completion in the terminal UI uses `fd`; the CLI downloads and caches it at `bin/fd` (`bin/fd.exe` on Windows) in the background when needed. Subsequent runs reuse the cached binaries. `rg` prefers the system `PATH` before the cache, while `fd` checks the managed cache before falling back to system `fd` / `fdfind`. Deleting the `bin/` directory triggers a fresh download on the next use.
 
 ## Logs
+
+The log filename `kimi-code.log` is a historical name inherited from Kiki's upstream project and is kept as is.
 
 - **`logs/kimi-code.log`** (global): records startup, login, export, and other cross-session events.
 - **`<sessionDir>/logs/kimi-code.log`** (session-level): records diagnostic events within a single session.

@@ -2,6 +2,8 @@
 
 Kiki 通过环境变量控制少数运行时行为——迁移数据目录，以及不改配置文件临时切换模型。
 
+变量名有 `KIKI_*` 和 `KIMI_*`（含 `KIMI_CODE_*`）两套前缀，沿用自 Kiki 的上游项目。两套前缀之间没有统一的对应关系：部分历史变量启用了 `KIKI_*` 新名，另一些——如 `KIMI_CODE_BASE_URL`、`KIMI_CODE_OAUTH_HOST`——仍以旧名生效。以本页列出的确切变量名为准。
+
 ::: warning 重要：API 密钥不在这里配置
 `KIMI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不会**从 shell 环境变量自动读取。在终端里 `export KIMI_API_KEY=xxx` 不会让任何供应商获得密钥——必须写在 `config.toml` 的 `[providers.<name>]` 段或 `[providers.<name>.env]` 子表里。
 
@@ -51,6 +53,8 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `OPENAI_API_KEY` | OpenAI（`openai` 和 `openai_responses`） | 无 |
 | `OPENAI_BASE_URL` | OpenAI（`openai` 和 `openai_responses`） | `https://api.openai.com/v1` |
 | `GOOGLE_API_KEY` | Google GenAI、Vertex AI | 无 |
+| `GOOGLE_GEMINI_BASE_URL` | Google GenAI（`google-genai`） | `https://generativelanguage.googleapis.com` |
+| `GOOGLE_VERTEX_BASE_URL` | Vertex AI（`vertexai`） | SDK 默认的区域化 `*-aiplatform.googleapis.com` 地址 |
 | `VERTEXAI_API_KEY` | Vertex AI | 无 |
 | `GOOGLE_CLOUD_PROJECT` | Vertex AI | 无 |
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI | 无 |
@@ -101,10 +105,12 @@ kiki
 | `KIMI_MODEL_DISPLAY_NAME` | 否 | 在 `/model` 中显示的名称 | 回退到 `KIMI_MODEL_NAME` |
 | `KIMI_MODEL_MAX_OUTPUT_SIZE` | 否 | 单次输出上限（仅 `anthropic`）；设置后会覆盖内置的 Claude 上限 | 模型默认值 |
 | `KIMI_MODEL_REASONING_KEY` | 否 | 推理字段名覆盖（仅 `openai`） | 自动探测 |
-| `KIMI_MODEL_THINKING_EFFORT` | 否 | Thinking 强度：`low`/`medium`/`high`/`xhigh`/`max` | — |
+| `KIMI_MODEL_THINKING_EFFORT` | 否 | 临时模型的 Thinking 强度：`low`/`medium`/`high`/`xhigh`/`max`；仅在设置了 `KIMI_MODEL_NAME` 时读取（与下文同名运行时开关是两回事） | — |
 | `KIMI_MODEL_ADAPTIVE_THINKING` | 否 | 强制开启或关闭 adaptive thinking（仅 `anthropic`） | 按模型名推断 |
 
 设置了 `KIMI_MODEL_NAME` 但缺少必填变量时，启动会立即失败并给出明确提示。
+
+注意：`KIMI_MODEL_THINKING_EFFORT` 有两个独立的读取点——这里在设置了 `KIMI_MODEL_NAME` 时用来设定临时模型的 effort；下文的同名运行时开关则与 `KIMI_MODEL_NAME` 无关，为所有 `kimi` 供应商请求在线上强制指定 effort。
 
 ## 运行时开关
 
@@ -141,6 +147,7 @@ kiki
 | `NB_SEARCH_EXA_API_KEY` | 内置 `exa.default` provider 实例使用的凭据 | 非空字符串 |
 | `NB_SEARCH_TAVILY_API_KEY` | 内置 `tavily.default` provider 实例使用的凭据 | 非空字符串 |
 | `NB_SEARCH_JINA_API_KEY` | 内置 `jina-reader.default` fetch provider 实例使用的可选凭据 | 非空字符串 |
+| `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE` | 是否在首轮结束后自动生成会话标题；优先于 `[experimental]` 条目和 `KIKI_EXPERIMENTAL_FLAG`（默认开启）——见 [`session_title`](./config-files.md#session-title) | 开启：`1`/`true`/`yes`/`on`；关闭：`0`/`false`/`no`/`off` |
 | `KIKI_EXPERIMENTAL_FLAG` | 在当前进程启用所有已注册的实验功能；单个功能的 `KIKI_EXPERIMENTAL_<NAME>` 变量或 `config.toml` 的 `[experimental]` 节中的显式配置优先于它 | `1`、`true`、`yes`、`on` |
 | `KIMI_SHELL_PATH` | Windows 上覆盖 Git Bash 路径（自动探测失败时使用） | 绝对路径 |
 | `KIMI_MODEL_MAX_COMPLETION_TOKENS` | 单步 LLM 请求的 `max_completion_tokens` 硬上限，仅对 `kimi` 供应商生效 | 正整数；`0` 或负数禁用 clamp |
@@ -152,7 +159,7 @@ kiki
 
 subagent 并发没有环境变量覆盖。请在 [`[subagent]`](./config-files.md#subagent) 中配置 `max_direct_children` 和 `max_total_subagents`，默认值分别为 `16` 和 `0`（不限）。
 
-`[subagent] default_model` 与 `default_effort` 没有对应的环境变量。它们仍接受写在 `config.toml` 里，但 `AgentRun` 目前不会读。
+`[subagent]` 曾经接受 `default_model` 与 `default_effort`；这两个键已被移除，写了不会生效，只会在启动时产生警告——subagent 的模型只来自派发参数或 profile pin，没有可回退的配置默认值（见 [`subagent`](./config-files.md#subagent)）。
 
 ## 诊断日志
 

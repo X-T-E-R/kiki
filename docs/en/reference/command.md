@@ -186,7 +186,7 @@ The external MCP caller cannot change the bound workspace, permission mode, mode
 
 ### `kiki doctor`
 
-Diagnose the local Kiki connection without starting the TUI or modifying files. It checks daemon reachability, token file paths and permissions, server identity, the external-caller seat list, and each seat's permission mode. Defaults to `KIKI_HOME` or `~/.kiki`; pass `--home` to inspect a different home. Reports are output in JSON and never start a server; run `kiki serve` or `kiki serve --ensure` first if a daemon is needed.
+Diagnose the local Kiki connection without starting the TUI or modifying files. It checks daemon reachability, token file paths and permissions, server identity, the external-caller seat list, and each seat's permission mode. Defaults to `KIKI_HOME` or `~/.kiki`; pass `--home` to inspect a different home. The report is printed as JSON by default (`--json` is kept as an explicit form with identical output) and never starts a server; run `kiki serve` or `kiki serve --ensure` first if a daemon is needed. To validate `config.toml`, `tui.toml`, and agent profiles instead, use `kiki doctor --agents` (or the subcommand form `kiki doctor agents`), which reports in human-readable text.
 
 ```sh
 kiki doctor
@@ -232,8 +232,6 @@ Use `--agent <name>`, `--model <alias>`, `--executor <id>`, and `--delegation-po
 The removed `prompt.shared` and `prompt.tools` keys have moved into fields under `[prompt.overrides]`; migrate old entries instead of restoring those keys, following [prompt field precedence](../configuration/overrides.md#prompt-field-precedence).
 
 ### `kiki migrate-config`
-
-The installed entry point is now `kiki`: run it without a subcommand for the daemon-backed TUI, or use `kiki -p "prompt"` for the existing non-interactive memory path. Daemon, seat, and inbound integration commands are available from the same entry point. The `kimi` bin is no longer installed; update your command launchers.
 
 Copy legacy configuration and authored assets into `KIKI_HOME` (default `~/.kiki`) without overwriting existing Kiki files. This is the only command that reads the legacy `KIMI_CODE_HOME` environment variable; otherwise the default source is `--from <dir>`, legacy `KIMI_CODE_HOME`, then `~/.kimi-code`. Use `--home <dir>` to select the destination. Migration never runs as a side effect of resolving a home path.
 
@@ -351,7 +349,7 @@ Import all providers in bulk from a custom registry (`api.json`). The command fe
 | Parameter / Option | Description |
 | --- | --- |
 | `<url>` | Registry URL |
-| `--api-key <key>` | Bearer token for accessing the registry. Falls back to `KIKI_REGISTRY_API_KEY`, required |
+| `--api-key <key>` | Bearer token for accessing the registry. Required: falls back to `KIKI_REGISTRY_API_KEY` when omitted, and the command exits with an error when neither is provided |
 
 ```sh
 kiki provider add https://registry.example.com/v1/models/api.json --api-key YOUR_KEY
@@ -403,7 +401,7 @@ Import a known provider directly from the catalog by id; protocol type, base URL
 | Parameter / Option | Description |
 | --- | --- |
 | `<providerId>` | Provider id in the catalog, e.g. `anthropic`, `openai` |
-| `--api-key <key>` | Provider API key. Falls back to `KIKI_REGISTRY_API_KEY`, required |
+| `--api-key <key>` | Provider API key. Required: falls back to `KIKI_REGISTRY_API_KEY` when omitted, and the command exits with an error when neither is provided |
 | `--default-model <modelId>` | Optional; sets `default_model` to `<providerId>/<modelId>` after import |
 | `--base-url <url>` | Override the catalog endpoint; required when the catalog omits the endpoint or leaves env-var placeholders |
 | `--url <url>` | Override the catalog URL; defaults to `https://models.dev/api.json` |

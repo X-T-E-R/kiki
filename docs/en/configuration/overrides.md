@@ -91,7 +91,7 @@ A profile without `model_alias` skips only the top-level effort layer; it does n
 
 ## Prompt field precedence
 
-Prompt text fields use a separate five-surface chain rather than the ordinary CLI/config priority. From low to high, the order is global `[prompt.overrides]`, model `[models."<alias>".prompt_overrides]`, agent or `SYSTEM.md` frontmatter `prompt_overrides`, and the matching `model_profiles[].prompt_overrides`. `SYSTEM.md` uses the profile position in that chain, so there are four precedence levels and five supported configuration surfaces.
+Prompt text fields use a separate chain rather than the ordinary CLI/config priority. From low to high, the order is global `[prompt.overrides]`, model `[models."<alias>".prompt_overrides]`, agent or `SYSTEM.md` frontmatter `prompt_overrides`, and the matching `model_profiles[].prompt_overrides` — four precedence levels. Agent files and `SYSTEM.md` are two separate configuration surfaces sharing the same position in that chain, which brings the total to five supported surfaces.
 
 Every surface accepts `files` and `fields`. Files are loaded from the Kiki home directory in listed order, then inline fields win within that surface. A field missing at a higher level inherits the lower value; values are never concatenated. See [`prompt`](./config-files.md#prompt) for the external-file schema, available field examples, turn snapshots, and migration from the removed `prompt.shared` / `prompt.tools` keys.
 
@@ -110,11 +110,13 @@ KIKI_HOME="$PWD/.kiki-sandbox" kiki
 KIMI_API_KEY = "sk-test"
 ```
 
-**Skip approval for batch tasks**:
+**Auto-approve tool calls for one session**:
 
 ```sh
-kiki --yolo -p "Batch rename the following files..."
+kiki --yolo
 ```
+
+`--yolo` applies to the interactive session; it cannot be combined with `-p` — see the mutual exclusion rules above.
 
 **Enter Plan mode temporarily** (to make it permanent, set `default_plan_mode = true` in the config file):
 

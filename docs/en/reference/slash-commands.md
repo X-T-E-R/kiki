@@ -145,8 +145,6 @@ For example, a child Skill named `review` inside a parent Skill named `code-styl
 
 For convenience, external Skill commands also support a shorthand form that omits the `skill:` prefix — `/<name>` — as long as the name is not taken by a system slash command. That is, `/code-style` falls back to matching `/skill:code-style`.
 
-Built-in Skills shipped with Kiki appear directly as `/<name>` in the slash command panel. Use `/kiki-ops [request]` for Kiki product operations and `/kiki-profile [request]` only when authoring or modifying an agent profile.
-
 ::: info
 All Skill commands are only available in the idle state. `flow`-type Skills are also exposed via `/skill:<name>` — there is no separate `/flow:` namespace.
 :::

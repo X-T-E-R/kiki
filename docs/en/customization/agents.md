@@ -4,6 +4,8 @@ Every session in Kiki is driven by a **main Agent**. The main Agent understands 
 
 A sub-agent receives a task description from the main Agent, works in its own isolated context, and then returns its conclusions. It does not communicate with the user directly, and its intermediate reasoning and tool call records do not mix into the main Agent's history.
 
+New to Kiki's agent system? Start with [Agent profiles: concepts and design](./agent-profiles.md) — it explains what a profile is, where the files live, and when changes take effect. This page is the field and behavior reference.
+
 ## Built-in Sub-Agents
 
 Fresh installations include the main `agent` profile and two subagent profiles; older installations may also keep compatibility profiles:
@@ -25,7 +27,7 @@ Each dispatch is presented in the terminal as an approval request (unless it mat
 
 Sub-agents support running in the background: results are automatically returned to the main Agent upon completion, with no manual polling needed. You can also call back an existing sub-agent instance to continue the same task.
 
-## Named child agents {#codex-style-collaboration-adapter}
+## Named child agents
 
 The default v2 engine (Kiki desktop and `kiki` CLI/TUI) gives the main `agent` profile three child-agent tools with no experiment flag: `AgentRun`, `AgentList`, and `AgentSend`. Built-in `coder` and `explore` profiles do not receive them. Each caller can list and message only the children it created directly; a grandchild or another caller's child is not a valid target. The retired `AgentSwarm` callable tool is unavailable for new calls, but historical swarm child records remain readable.
 
@@ -37,8 +39,6 @@ The default v2 engine (Kiki desktop and `kiki` CLI/TUI) gives the main `agent` p
 
 `AgentNotify` runs in the opposite direction and is available only to subagents: it queues a fire-and-forget message in the parent agent's mailbox, injected into the parent's active turn at the next step boundary (or read when the parent next runs). The main agent has no parent and never receives this tool. The switch `[agents] notify_parent = false` in `config.toml` turns it off globally; it defaults to on.
 
-The removed v1 Codex-style collaboration adapter and its experimental flag do not apply to the v2 engine.
-
 ## Peer-thread communication
 
 Peer-thread communication lets the main Agent coordinate existing Kiki sessions on the same local host, including sessions in other workspaces. It is separate from the child-agent tools above and is disabled by default. After opting in, the four tools `ThreadList`, `ThreadRead`, `ThreadSend`, and `ThreadWait` appear only on a session's main Agent, not its sub-agents.
@@ -47,7 +47,7 @@ A thread reference identifies a host, workspace, and session. `ThreadList` retur
 
 True peer attribution requires the source thread's main Agent to call `ThreadSend`. REST and the `global.threads` Klient facade accept only target-addressed input and record it as user-origin, so an external client cannot claim a source thread.
 
-Set `[thread_communication] enabled = true` in `config.toml` to opt in globally. Sending a message can resume a cold target session and consume model quota. Integrators can also persist an enable or disable override for an individual workspace; a workspace override cannot turn the feature on while the global switch is off. See the [Kiki runtime boundary](../server/architecture.md#integrate-peer-thread-communication) for those interfaces.
+Set `[thread_communication] enabled = true` in `config.toml` to opt in globally. Sending a message can resume a cold target session and consume model quota. Integrators can also persist an enable or disable override for an individual workspace; a workspace override cannot turn the feature on while the global switch is off. See [Server API](../server/rest-api.md#session-leases-and-peer-threads) for those interfaces.
 
 ## Context Isolation and Resource Cost
 

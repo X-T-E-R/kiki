@@ -33,6 +33,8 @@
 | `/title [<text>]` | `/rename` | 不带参数时显示当前会话标题；带参数时设置为新标题（最长 200 字符） | 是 |
 | `/compact [<instruction>]` | — | 压缩当前对话上下文，释放 token 占用；可附带自定义指令，提示模型压缩时保留哪些信息 | 否 |
 | `/undo [<count>]` | — | 从当前上下文撤销最近的提示词。不带数量时打开选择器；带数量时撤销对应条数。最后一次上下文压缩之前的提示词不能撤销。撤销会一并回滚这些提示词产生的 todo 列表和计划模式状态（不回滚代码改动） | 否 |
+| `/reload` | — | 重新加载当前会话，应用最新的 `config.toml` 设置（供应商、模型等）和 `tui.toml` 界面偏好，无需重启 CLI | 否 |
+| `/reload-tui` | — | 只重新加载 `tui.toml` 界面偏好（主题、编辑器、通知等），不重建会话 | 是 |
 | `/init` | — | 分析当前代码库并生成 `AGENTS.md` | 否 |
 | `/export-md [<path>]` | `/export` | 将当前会话导出为 Markdown 文件 | 否 |
 | `/export-debug-zip` | — | 将当前会话导出为调试用 ZIP 压缩包（与 [`kiki export`](./command.md#kiki-export) 行为一致） | 否 |
@@ -142,8 +144,6 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 例如，父 Skill 名为 `code-style`，其中子 Skill 的本地名称为 `review`，面板中显示为 `/code-style.review`。点分命令名由层级自动生成，子 Skill 的 `SKILL.md` 可以保留本地 `name`。
 
 为方便输入，外部 Skill 命令同时支持省略 `skill:` 前缀的简写形式 `/<name>`，前提是该名称未被系统斜杠命令占用——即 `/code-style` 会回退匹配到 `/skill:code-style`。
-
-Kiki 随包内置的 Skill 会直接以 `/<name>` 形式出现在斜杠命令面板中。使用 `/kiki-ops [请求]` 处理 Kiki 产品操作；仅在创建或修改 agent profile 时使用 `/kiki-profile [请求]`。
 
 ::: info 说明
 所有 Skill 命令仅在空闲状态下可用。`flow` 类型的 Skill 同样通过 `/skill:<name>` 暴露，没有独立的 `/flow:` 命名空间。

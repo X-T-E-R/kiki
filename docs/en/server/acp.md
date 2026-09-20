@@ -28,11 +28,9 @@ The table below lists the capabilities declared by the current ACP adapter layer
 
 ## ACP Method Coverage
 
-The spec divides methods into a **stable** surface and an evolving **unstable** surface (handlers mounted with the `unstable_*` prefix in `@agentclientprotocol/sdk@0.23.0`). The two have entirely different stability guarantees — the stable surface covers methods every production ACP client uses, while the unstable surface covers experimental extensions (inline-edit prediction, document buffer sync, provider management, elicitation, etc.) — so they are tracked separately.
+The spec divides methods into a **stable** surface and an evolving **unstable** surface. The two have entirely different stability guarantees — the stable surface covers methods every production ACP client uses, while the unstable surface covers experimental extensions (inline-edit prediction, document buffer sync, provider management, elicitation, etc.) — so they are listed separately. All methods needed for a normal agent flow (initialize → auth → new/load/resume → prompt → cancel + file I/O + tool approval) are implemented.
 
-**Summary: stable agent-side 10/12 (83%) + client reverse-RPC 4/9 (44%); unstable surface has only `session/set_model` (1/19).** All methods needed for a normal agent flow (initialize → auth → new/load/resume → prompt → cancel + file I/O + tool approval) are implemented.
-
-### Stable agent-side — IDE → agent (10 / 12)
+### Stable agent-side — IDE → agent
 
 | Method | Implemented | Description |
 | --- | --- | --- |
@@ -49,22 +47,22 @@ The spec divides methods into a **stable** surface and an evolving **unstable** 
 | `session/close` | No | |
 | `logout` | No | |
 
-### Stable client-side reverse-RPC — agent → IDE (4 / 9)
+### Stable client-side reverse-RPC — agent → IDE
 
 | Method | Implemented | Description |
 | --- | --- | --- |
 | `session/update` | Yes | Streams `agent_message_chunk` / `tool_call*` / `plan` / `config_option_update` / `available_commands_update` |
 | `session/request_permission` | Yes | Shared channel for tool approval and question elicitation |
-| `fs/read_text_file` | Yes | File reads at the kaos layer are routed to the client (advertised via `fsCapabilities`) |
-| `fs/write_text_file` | Yes | File writes at the kaos layer are routed to the client |
+| `fs/read_text_file` | Yes | File reads are executed by the client: Kiki does not read files on your machine directly — it requests file contents from the IDE through this method (advertised via `fsCapabilities`) |
+| `fs/write_text_file` | Yes | File writes are executed by the client: Kiki hands the content to the IDE through this method |
 | `terminal/create` · `output` · `release` · `kill` · `wait_for_exit` | No | Terminal reverse-RPC not connected; shell commands use local execution |
 
-### Unstable surface (1 / 19)
+### Unstable surface
 
 | Method | Implemented | Description |
 | --- | --- | --- |
 | `session/set_model` | Yes | Compatibility path; equivalent to `set_config_option({configId:'model'})` |
-| Remaining 18 methods | No | Includes session lifecycle extensions, buffer sync, inline-edit prediction, provider management, etc. |
+| Other methods | No | Includes session lifecycle extensions, buffer sync, inline-edit prediction, provider management, etc. |
 
 All methods not listed above return `methodNotFound`.
 

@@ -46,7 +46,7 @@
 - `description`：后台任务描述，`run_in_background=true` 时必填
 - `disable_timeout`：后台任务是否取消超时限制
 
-前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。Windows 平台默认使用 Git Bash。
+前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。Windows 平台默认使用 Git Bash。
 
 ## 网络类
 
@@ -128,7 +128,7 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 | `EnterPlanMode` | 自动放行 | 进入 Plan 模式 |
 | `ExitPlanMode` | 自动放行（需用户确认计划） | 退出 Plan 模式并提交计划 |
 
-Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`、`CronCreate`、`CronDelete`、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截。
+Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite`、`TaskStop`、`CronCreate`、`CronDelete`、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截（`BoardWrite` 的细节见[状态管理](#状态管理)）。
 
 新的 `AgentRun` 调用可以使用原生执行器创建研究子 Agent。这些子 Agent 只能使用其 profile 和既有策略允许的内置 `Read`、`ReadMediaFile`、`Glob`、`Grep`、`WebSearch`、`FetchURL`，不能运行 `Bash`、调用 MCP 或用户自定义工具，也不能继续派遣任务。此类调用不支持外部执行器。退出 Plan 模式或恢复会话后，研究子 Agent 仍保留只读限制；需要写入权限来实施时，应在退出 Plan 模式后创建新的子 Agent。
 
@@ -150,9 +150,9 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`�
 
 任务看板是跨会话持久化的需求记录。`BoardRead` 支持 `preview` / `list` / `show` / `overview`，可查看当前工作区或其他已授权工作区中的卡。`BoardWrite` 的 `create` 始终以 `active` 开始，因此不要传 `status`；`update` 只有在改状态时才显式传 `status`。允许的状态值包括 `active`、`in_progress`、`paused`、`done`、`cancelled` 和 `superseded`；`done`、`cancelled`、`superseded` 是终态，将 `status` 改回 `active`、`in_progress` 或 `paused` 即可重开，重开会清空 `completedAt`。修改必须使用卡片当前的 `revision`；发生冲突后，重新读取卡片再重试。
 
-卡是持久化需求记录，不是 Agent 运行，也不是每个 Agent 自己的 `TodoList`。读卡不会改卡；各 Agent 的 `TodoList` 相互独立；Todo 全部 `done` 也不会自动改卡。两个工具默认只提供给主 Agent，并受 `task_board` 实验开关控制。Plan 模式下可以用 `BoardRead` 读取，但 `BoardWrite` 会在审批前拒绝。写卡遵循普通权限策略，不额外要求 workspace trust（工作区信任）。
+卡是持久化需求记录，不是 Agent 运行，也不是每个 Agent 自己的 `TodoList`。读卡不会改卡；各 Agent 的 `TodoList` 相互独立；Todo 全部 `done` 也不会自动改卡。两个工具默认只提供给主 Agent，并受 `task_board` 实验开关控制。Plan 模式下可以用 `BoardRead` 读取，但 `BoardWrite` 会在审批前直接拒绝（见[Plan 模式](#plan-模式)）。写卡遵循普通权限策略，不额外要求 workspace trust（工作区信任）。
 
-在「设置 → 计划与任务」中选择 `auto`、`global` 或 `fixed` 存储方式。固定位置可以是绝对路径，也可以是相对工作区的路径；不会执行脚本。Kiki 随包提供 OwnWork，无需单独安装。选择 `auto` 时，优先复用项目已有的兼容存储，否则使用会话数据区。
+在「设置 → 计划与任务」中选择 `auto`、`global` 或 `fixed` 存储方式。固定位置可以是绝对路径，也可以是相对工作区的路径；不会执行脚本。任务看板为内置功能，无需单独安装。选择 `auto` 时，优先复用项目已有的兼容存储，否则使用会话数据区。
 
 ## 协作类
 
@@ -167,7 +167,7 @@ Peer thread 通信只能在同一台主机内进行，可以跨工作区，并�
 
 只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的 user 来源输入。详见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
 
-Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 `coder` 与 `explore` profile 没有这组工具。已退役的 `AgentSwarm` 可调用工具不再支持新调用；历史 swarm 子 Agent 记录仍可读取。
+Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 [`coder` 与 `explore` profile](../customization/agents.md) 没有这组工具。已退役的 `AgentSwarm` 可调用工具不再支持新调用；历史 swarm 子 Agent 记录仍可读取。
 
 `AgentList` 返回这些直属子 Agent，包括保留的历史 swarm 条目，不会列出孙级。`AgentSend` 的投递语义是尽早送达：子 Agent 正在运行时，消息会在下一个 step 边界被 steer 进其活跃 turn；子 Agent 空闲（或竞态恰逢 turn 结束）时保持排队，到下一步开始时才读这条消息。
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。

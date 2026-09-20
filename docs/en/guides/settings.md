@@ -1,6 +1,18 @@
 # Settings pages
 
-The Kiki desktop app exposes settings in a **Settings** dialog. This page tours each category and links to the reference that owns the underlying configuration; it does not introduce new behavior.
+The Kiki desktop app exposes settings in a **Settings** dialog. This page helps you find where each setting lives and what it controls; the pages linked from each section hold the full underlying reference.
+
+**"I want to change X" quick lookup:**
+
+| I want to change… | Go to |
+| --- | --- |
+| Version and update channel (Stable / Beta) | **About** |
+| Agent profiles, prompt-field overrides | **Agents** |
+| Search and retrieval configuration source | **Search & retrieval** |
+| Whether input drafts are remembered | **Composer** |
+| Subagent dispatch configuration | **Dispatch capabilities** |
+| Token usage and cost | **Usage** |
+| TUI theme, editor, and other CLI-side preferences | The `/config` commands in the terminal, see [CLI counterpart](#cli-counterpart) |
 
 ## About
 
@@ -8,11 +20,11 @@ The Kiki desktop app exposes settings in a **Settings** dialog. This page tours 
 
 ## Agents
 
-**Settings → Agents** selects a workspace to inspect its default main profile, effective source, and subagent capabilities. File-backed profiles can be edited at their displayed source. **Settings → Agents → Prompt** edits the `[prompt]` prompt-field overrides section in `config.toml`; the card is collapsed by default — expand it before editing. See [Agents and subagents](../customization/agents.md#capability-visibility) and [Prompt field overrides](../customization/prompt-fields.md).
+**Settings → Agents** selects a workspace to inspect its default main profile (the agent's configuration file), effective source, and subagent capabilities. File-backed profiles can be edited at their displayed source. **Settings → Agents → Prompt** edits the `[prompt]` prompt-field overrides section in `config.toml`; the card is collapsed by default — expand it before editing. See [Agents and subagents](../customization/agents.md#capability-visibility) and [Prompt field overrides](../customization/prompt-fields.md).
 
 ## Search & retrieval
 
-**Settings → Search & retrieval → Overview & source** inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses its local nb-search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
+**Settings → Search & retrieval → Overview & source** inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses the local search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
 
 ## Composer
 
@@ -20,7 +32,7 @@ The **Composer → Persist composer drafts** toggle controls whether new-session
 
 ## Dispatch capabilities
 
-Open **Dispatch capabilities** — next to the new-session workspace selector, or in a session's right rail — to inspect subagent profiles, routes, executors, and default model and thinking-effort sources. Default configuration validity and permission to launch are shown separately. See [Agents and subagents](../customization/agents.md#rebuilding-a-session-context).
+Open **Dispatch capabilities** — next to the new-session workspace selector, or in a session's right rail — to inspect a subagent's profile (configuration file), route, and executor, plus where the default model and effort come from. Default configuration validity and permission to launch are shown separately. See [Agents and subagents](../customization/agents.md#rebuilding-a-session-context).
 
 ## Usage
 
@@ -28,4 +40,4 @@ The **Usage** page shows token usage and estimated cost for a date range. Openin
 
 ## CLI counterpart
 
-The TUI writes the same client preferences through `tui.toml` and the interactive commands `/config`, `/theme`, and `/editor`; see [`tui.toml`](../configuration/config-files.md#tui-toml). Agent and runtime settings live in `config.toml`.
+The TUI does not use the **Settings** dialog: client preferences in the terminal (theme, editor, and so on) are configured through `tui.toml` and the interactive commands `/config`, `/theme`, and `/editor`; see [`tui.toml`](../configuration/config-files.md#tui-toml). Agent and runtime settings live in `config.toml`.

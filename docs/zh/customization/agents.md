@@ -4,6 +4,8 @@ Kiki 中的每次会话都由一个**main agent** 驱动。main agent 理解用�
 
 subagent 接受 main agent 给出的任务描述，在自己的独立上下文里工作，最后把结论返回。它不会与用户直接对话，中间的思考和工具调用记录也不会混入 main agent 的历史。
 
+第一次接触 Kiki 的 agent 体系时，建议先读 [Agent profile 概念与设计](./agent-profiles.md)——它解释 profile 是什么、文件放在哪里、改动何时生效；本页是字段与行为参考。
+
 ## 内置 subagent
 
 全新安装包含主 `agent` profile 和两个 subagent profile；旧安装还可能保留兼容 profile：
@@ -25,7 +27,7 @@ subagent 由 main agent 自动调度——根据任务复杂度、上下文消�
 
 subagent 支持在后台运行：完成后结果自动回到 main agent，无需手动轮询。也可以唤回已有的 subagent 实例继续推进同一任务。
 
-## 具名子 Agent {#codex-风格协作适配器}
+## 具名子 Agent
 
 默认的 v2 引擎（Kiki 桌面端和 `kiki` CLI/TUI）会给主 `agent` profile 提供三个子 Agent 工具，不需要实验开关：`AgentRun`、`AgentList` 和 `AgentSend`。内置的 `coder` 与 `explore` profile 没有它们。每个调用方只能列出和发消息给自己直接创建的子 Agent；孙级或别人创建的子 Agent 都不是有效目标。已退役的 `AgentSwarm` 可调用工具不再支持新调用，但历史 swarm 子 Agent 记录仍可读取。
 
@@ -37,8 +39,6 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 `AgentNotify` 方向相反，且只有 subagent 可用：它把一条 fire-and-forget 消息排进父 Agent 的邮箱，父 Agent 正在运行时会在下一个 step 边界注入其活跃 turn，空闲时则在下一次运行时读取。Main agent 没有父 Agent，永远不会拿到这个工具。在 `config.toml` 中设置 `[agents] notify_parent = false` 可以全局关闭它，默认开启。
 
-已移除的 v1 Codex 风格协作适配器及其实验开关不适用于 v2 引擎。
-
 ## Peer thread 通信
 
 Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kiki 会话，也可以跨工作区通信。它与上面的子 Agent 工具相互独立，并且默认关闭。选择启用后，`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait` 这 4 个工具只提供给会话的主 Agent，不提供给子 Agent。
@@ -47,7 +47,7 @@ Thread 引用标识主机、工作区和会话。`ThreadList` 返回后续调用
 
 如需保留真实的 peer 归属，必须由来源 thread 的主 Agent 调用 `ThreadSend`。REST 或 Klient 的 `global.threads` facade 只接受目标 thread，提交的消息会记为 user 来源，外部客户端不能自行声明来源 thread。
 
-在 `config.toml` 中设置 `[thread_communication] enabled = true` 可全局启用。发送消息可能会恢复冷会话并消耗模型额度。集成方还可以为单个工作区持久设置启用或禁用覆盖值；全局开关关闭时，工作区覆盖值不能重新启用该功能。接口说明见 [Kiki 运行时边界](../server/architecture.md#集成-peer-thread-通信)。
+在 `config.toml` 中设置 `[thread_communication] enabled = true` 可全局启用。发送消息可能会恢复冷会话并消耗模型额度。集成方还可以为单个工作区持久设置启用或禁用覆盖值；全局开关关闭时，工作区覆盖值不能重新启用该功能。接口说明见 [服务 API](../server/rest-api.md#会话租约与-peer-thread)。
 
 ## 上下文隔离与资源开销
 
