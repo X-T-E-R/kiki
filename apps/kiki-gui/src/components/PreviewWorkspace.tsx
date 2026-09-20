@@ -774,7 +774,7 @@ function TabContextMenu({
               className={itemClass}
               onClick={() => { pick(() => { workspaceNavigation.openAgentRoute(tab.agentId); }); }}
             >
-              {t('subagent.openAgent', { name: tab.title ?? tab.agentId })}
+              {t('preview.openAgentFullscreen', { name: tab.title ?? tab.agentId })}
             </button>
           ) : null}
           <button

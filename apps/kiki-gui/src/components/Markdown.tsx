@@ -49,13 +49,13 @@ export function isInAppHref(href: string | undefined): href is string {
   return href !== undefined && !EXTERNAL_HREF.test(href);
 }
 
-function openExternalLink(url: string): void {
+function openExternalLink(url: string, popupBlockedMessage: string): void {
   if (isVscodeWebview()) {
     void vscodeHost.openExternal(url);
     return;
   }
   if (window.open(url, '_blank', 'noreferrer,noopener') === null) {
-    throw new Error('The browser blocked the new window.');
+    throw new Error(popupBlockedMessage);
   }
 }
 
@@ -174,7 +174,7 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
   }
   const url = href ?? '';
   const entries: MiniMenuEntry[] = [
-    { key: 'open-link', label: t('link.open'), run: () => { openExternalLink(url); } },
+    { key: 'open-link', label: t('link.open'), run: () => { openExternalLink(url, t('common.popupBlocked')); } },
     { key: 'copy-link', label: t('link.copyLink'), run: () => copyTextToClipboard(url) },
   ];
   return (
@@ -186,7 +186,7 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
         onClick={(event) => {
           if (!isVscodeWebview()) return;
           event.preventDefault();
-          openExternalLink(url);
+          openExternalLink(url, t('common.popupBlocked'));
         }}
         onContextMenu={openMenu}
       >

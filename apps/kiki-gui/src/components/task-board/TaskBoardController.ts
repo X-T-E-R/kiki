@@ -1,3 +1,4 @@
+import { LocalizedError, issueText, type I18nKey, type ValidationIssue } from '@kiki/session-core/i18n';
 import type { BoardCard, BoardClient, BoardCreateTarget, BoardOverviewClient, BoardPage, BoardPatch, BoardResult, BoardStorageRef, BoardSummary, BoardWriteInput } from '@kiki/klient/contract/board/types';
 
 export interface TaskBoardClient extends BoardClient {
@@ -10,13 +11,14 @@ export interface BoardWorkspaceIssue {
   readonly workspaceId?: string;
   readonly code: string;
   readonly message: string;
+  readonly issue: ValidationIssue;
 }
 export interface TaskBoardSnapshot {
   readonly cards: readonly (BoardSummary | BoardCard)[];
   readonly loading: boolean;
   readonly creating: boolean;
   readonly pendingKeys: readonly string[];
-  readonly error: string | null;
+  readonly error: ValidationIssue | null;
   /** Refresh-time degradation: per-workspace load failures. */
   readonly issues: readonly BoardWorkspaceIssue[];
   /** Card-level load issues reported by otherwise healthy workspaces. */
@@ -30,16 +32,38 @@ interface WorkspaceRefresh {
   readonly issue?: BoardWorkspaceIssue;
 }
 function unwrap<T>(result: BoardResult<T>): T {
-  if (!result.ok) throw Object.assign(new Error(`${result.error.code}: ${result.error.message}`), { code: result.error.code });
+  if (!result.ok) {
+    const issue: ValidationIssue = {
+      key: 'taskBoard.error.requestFailed',
+      params: { code: String(result.error.code), message: result.error.message },
+    };
+    throw Object.assign(new LocalizedError(issue), { code: result.error.code });
+  }
   return result.value;
 }
-function errorMessage(error: unknown): string { return error instanceof Error ? error.message : 'The board operation failed.'; }
+function issueFromError(error: unknown, fallbackKey: I18nKey = 'taskBoard.error.operationFailed'): ValidationIssue {
+  if (error instanceof LocalizedError) return error.issue;
+  return {
+    key: fallbackKey,
+    params: error instanceof Error ? { detail: error.message } : undefined,
+  };
+}
+function errorMessage(error: unknown): string {
+  if (error instanceof LocalizedError) return error.message;
+  return error instanceof Error ? error.message : issueText('en', issueFromError(error));
+}
 function errorCode(error: unknown): string {
-  if (error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string') return error.code;
+  if (error !== null && typeof error === 'object' && 'code' in error && (typeof error.code === 'string' || typeof error.code === 'number')) return String(error.code);
   return 'BOARD_REQUEST_FAILED';
 }
+function workspaceIssue(workspaceId: string | undefined, code: string, issue: ValidationIssue): BoardWorkspaceIssue {
+  const result = { workspaceId, code, message: issueText('en', issue) } as BoardWorkspaceIssue;
+  Object.defineProperty(result, 'issue', { value: issue, enumerable: false });
+  return result;
+}
 function workspaceFailure(workspaceId: string, error: unknown): WorkspaceRefresh {
-  return { cards: [], cardIssues: [], issue: { workspaceId, code: errorCode(error), message: errorMessage(error) } };
+  const issue = issueFromError(error);
+  return { cards: [], cardIssues: [], issue: workspaceIssue(workspaceId, errorCode(error), issue) };
 }
 function isOverviewMethodUnavailable(error: unknown): boolean {
   if (error === null || typeof error !== 'object' || !('code' in error) || error.code !== 40001) return false;
@@ -93,7 +117,7 @@ export class TaskBoardController {
     if (page.storage) this.sources.set(workspaceId, page.storage);
     return {
       cards: page.cards,
-      cardIssues: page.issues.map((issue) => ({ workspaceId, code: issue.code, message: issue.message })),
+      cardIssues: page.issues.map((issue) => workspaceIssue(workspaceId, issue.code, { key: 'taskBoard.error.cardIssue', params: { message: issue.message } })),
       issue: undefined,
     };
   }
@@ -105,13 +129,13 @@ export class TaskBoardController {
       const seen = new Set<string>();
       do {
         const value = unwrap(await this.client.read({ action: 'list', workspaceId, storage: this.sources.get(workspaceId), sessionId, cursor, limit: 100 }));
-        if (!('cards' in value)) throw new Error('Invalid board list response.');
+        if (!('cards' in value)) throw new LocalizedError({ key: 'taskBoard.error.invalidListResponse' });
         const page: BoardPage = value;
         if (page.storage) this.sources.set(workspaceId, page.storage);
         cards.push(...page.cards);
-        cardIssues.push(...page.issues.map((issue) => ({ workspaceId, code: issue.code, message: issue.message })));
+        cardIssues.push(...page.issues.map((issue) => workspaceIssue(workspaceId, issue.code, { key: 'taskBoard.error.cardIssue', params: { message: issue.message } })));
         cursor = page.nextCursor;
-        if (cursor && seen.has(cursor)) throw new Error('Board pagination did not advance.');
+        if (cursor && seen.has(cursor)) throw new LocalizedError({ key: 'taskBoard.error.paginationDidNotAdvance' });
         if (cursor) seen.add(cursor);
       } while (cursor);
       return { cards, cardIssues, issue: undefined };
@@ -125,12 +149,12 @@ export class TaskBoardController {
     return workspaceIds.map((workspaceId) => {
       const entry = byWorkspace.get(workspaceId);
       if (entry === undefined) {
-        return workspaceFailure(workspaceId, Object.assign(new Error('The board overview omitted this workspace.'), { code: 'BOARD_OVERVIEW_INCOMPLETE' }));
+        return workspaceFailure(workspaceId, Object.assign(new LocalizedError({ key: 'taskBoard.error.overviewIncomplete' }), { code: 'BOARD_OVERVIEW_INCOMPLETE' }));
       }
       try {
         const page = unwrap(entry.result);
         if (page.workspaceId !== workspaceId || page.nextCursor !== undefined) {
-          throw Object.assign(new Error('The board overview returned an incomplete workspace page.'), { code: 'BOARD_OVERVIEW_INCOMPLETE' });
+          throw Object.assign(new LocalizedError({ key: 'taskBoard.error.overviewPageIncomplete' }), { code: 'BOARD_OVERVIEW_INCOMPLETE' });
         }
         return this.pageRefresh(workspaceId, page);
       } catch (error) {
@@ -174,13 +198,13 @@ export class TaskBoardController {
 
   async open(key: string): Promise<void> {
     const card = this.state.cards.find((entry) => boardCardKey(entry) === key);
-    if (!card) throw new Error('The card is no longer in this view.');
+    if (!card) throw new LocalizedError({ key: 'taskBoard.error.cardGone' });
     try {
       const detail = unwrap(await this.client.read({ action: 'show', workspaceId: card.workspaceId, storage: card.storage, id: card.id }));
-      if (!('description' in detail)) throw new Error('Invalid board detail response.');
+      if (!('description' in detail)) throw new LocalizedError({ key: 'taskBoard.error.invalidDetailResponse' });
       this.accept(detail);
     } catch (error) {
-      this.publish({ error: errorMessage(error) });
+      this.publish({ error: issueFromError(error) });
       throw error;
     }
   }
@@ -192,16 +216,16 @@ export class TaskBoardController {
       try {
         if (!this.intent || this.intent.key !== input.requestKey) {
           const preview = unwrap(await this.client.read({ action: 'preview', workspaceId: input.workspaceId }));
-          if (!('selectionOnly' in preview)) throw new Error('Invalid board storage preview response.');
+          if (!('selectionOnly' in preview)) throw new LocalizedError({ key: 'taskBoard.error.invalidPreviewResponse' });
           this.intent = { key: input.requestKey, workspaceId: input.workspaceId, target: { root: preview.root, storageId: preview.storageId, kind: preview.kind } };
         }
-        if (this.intent.workspaceId !== input.workspaceId) throw new Error('The pending create belongs to another workspace. Resolve it before changing the workspace.');
+        if (this.intent.workspaceId !== input.workspaceId) throw new LocalizedError({ key: 'taskBoard.error.createWorkspaceMismatch' });
         const card = unwrap(await this.client.write({ action: 'create', ...input, target: this.intent.target }));
         this.sources.set(card.workspaceId, card.storage);
         this.accept(card);
         this.intent = undefined;
       } catch (error) {
-        this.publish({ error: errorMessage(error) });
+        this.publish({ error: issueFromError(error) });
         throw error;
       } finally {
         this.creating = undefined;
@@ -216,13 +240,13 @@ export class TaskBoardController {
     const pending = this.pending.get(key);
     if (pending) return pending;
     const card = this.state.cards.find((entry) => boardCardKey(entry) === key);
-    if (!card) return Promise.reject(new Error('The card is no longer in this view.'));
+    if (!card) return Promise.reject(new LocalizedError({ key: 'taskBoard.error.cardGone' }));
     this.publish({ pendingKeys: [...this.state.pendingKeys, key], error: null });
     const operation = Promise.resolve().then(async () => {
       try {
         this.accept(unwrap(await this.client.write({ action: 'update', workspaceId: card.workspaceId, storage: card.storage, id: card.id, expectedRevision, patch })));
       } catch (error) {
-        this.publish({ error: errorMessage(error) });
+        this.publish({ error: issueFromError(error) });
         throw error;
       } finally {
         this.pending.delete(key);

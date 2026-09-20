@@ -3,6 +3,8 @@
  * Strictly presentation types; decoupled from host ledger or runner.
  */
 
+import type { I18nKey } from '@kiki/session-core/i18n';
+
 export type BoardTaskStatus = 'active' | 'in_progress' | 'paused' | 'done' | 'cancelled' | 'superseded' | 'backlog' | 'todo' | 'running' | 'failed';
 
 export type TaskPriority = 'urgent' | 'high' | 'medium' | 'low';
@@ -57,25 +59,26 @@ export interface BoardSessionOption {
 
 export interface BoardColumnDef {
   readonly status: BoardTaskStatus;
-  readonly label: string;
+  readonly label?: string;
+  readonly labelKey?: I18nKey;
   readonly description?: string;
 }
 
 export const DEFAULT_BOARD_COLUMNS: readonly BoardColumnDef[] = [
-  { status: 'backlog', label: 'Backlog' },
-  { status: 'todo', label: 'Todo' },
-  { status: 'running', label: 'Running' },
-  { status: 'done', label: 'Done' },
-  { status: 'failed', label: 'Failed' },
+  { status: 'backlog', labelKey: 'taskBoard.column.backlog' },
+  { status: 'todo', labelKey: 'taskBoard.column.todo' },
+  { status: 'running', labelKey: 'taskBoard.column.running' },
+  { status: 'done', labelKey: 'taskBoard.column.done' },
+  { status: 'failed', labelKey: 'taskBoard.column.failed' },
 ];
 
 export const OWN_WORK_BOARD_COLUMNS = [
-  { status: 'active', label: 'Active' },
-  { status: 'in_progress', label: 'In progress' },
-  { status: 'paused', label: 'Paused' },
-  { status: 'done', label: 'Done' },
-  { status: 'cancelled', label: 'Cancelled' },
-  { status: 'superseded', label: 'Superseded' },
+  { status: 'active', labelKey: 'taskBoard.column.active' },
+  { status: 'in_progress', labelKey: 'taskBoard.column.in_progress' },
+  { status: 'paused', labelKey: 'taskBoard.column.paused' },
+  { status: 'done', labelKey: 'taskBoard.column.done' },
+  { status: 'cancelled', labelKey: 'taskBoard.column.cancelled' },
+  { status: 'superseded', labelKey: 'taskBoard.column.superseded' },
 ] as const satisfies readonly BoardColumnDef[];
 
 export interface NewTaskFormData {

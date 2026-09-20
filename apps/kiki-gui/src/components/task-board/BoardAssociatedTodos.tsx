@@ -1,5 +1,6 @@
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
+import { errorText, LocalizedError, type ValidationIssue } from '@kiki/session-core/i18n';
 import type { AgentForest, SessionViewState } from '@kiki/session-core/session';
 import { SessionController } from '@kiki/session-core/session';
 import type { SessionTransport } from '@kiki/session-core/transport';
@@ -21,7 +22,7 @@ export interface BoardAssociatedTodoSnapshot {
   readonly main: SessionViewState;
   readonly agents: Readonly<Record<string, SessionViewState>>;
   readonly forest: AgentForest | undefined;
-  readonly error?: string;
+  readonly error?: ValidationIssue;
 }
 
 export interface BoardAssociatedTodoLease {
@@ -57,8 +58,9 @@ interface SourceRecord {
   disposed: boolean;
 }
 
-function sourceError(state: SessionViewState): string | undefined {
-  return state.loadError ?? state.resyncError?.message;
+function sourceError(state: SessionViewState): ValidationIssue | undefined {
+  const detail = state.loadError ?? state.resyncError?.message;
+  return detail === undefined ? undefined : { key: 'taskBoard.error.associatedSession', params: { detail } };
 }
 
 function makeSnapshot(controller: BoardTodoController): BoardAssociatedTodoSnapshot {
@@ -87,7 +89,7 @@ class BoardAssociatedTodoManagerImpl implements BoardAssociatedTodoManager {
   }) {}
 
   acquire(sessionId: string): BoardAssociatedTodoLease {
-    if (this.disposed) throw new Error('The associated Todo manager is disposed.');
+    if (this.disposed) throw new LocalizedError({ key: 'taskBoard.error.associatedManagerDisposed' });
     let source = this.sources.get(sessionId);
     if (source === undefined) {
       const mounted = this.findMountedController(sessionId);
@@ -145,7 +147,7 @@ class BoardAssociatedTodoManagerImpl implements BoardAssociatedTodoManager {
         if (source.disposed) return;
         source.snapshot = {
           ...source.snapshot,
-          error: error instanceof Error ? error.message : 'Could not open the associated session.',
+          error: error instanceof LocalizedError ? error.issue : { key: 'taskBoard.error.openAssociatedSession' },
         };
         this.notify(source);
       });
@@ -200,7 +202,7 @@ class BoardAssociatedTodoManagerImpl implements BoardAssociatedTodoManager {
 export function createBoardAssociatedTodoManager(options: BoardAssociatedTodoManagerOptions): BoardAssociatedTodoManager {
   const createController = options.createController ?? ((sessionId: string) => {
     if (options.sessionClient === undefined || options.klient === undefined) {
-      throw new Error('A session client is required to create an associated Todo source.');
+      throw new LocalizedError({ key: 'taskBoard.error.createAssociatedTodo' });
     }
     return new SessionController(
       options.sessionClient,
@@ -311,7 +313,7 @@ export const BoardAssociatedTodos = memo(function BoardAssociatedTodos({
   sessionIds,
   sessionLabels = {},
 }: BoardAssociatedTodosProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const manager = useContext(BoardAssociatedTodoManagerContext);
   const ids = useMemo(() => uniqueSessionIds(sessionIds), [sessionIds]);
   const sessionKey = ids.join('\u0000');
@@ -386,7 +388,7 @@ export const BoardAssociatedTodos = memo(function BoardAssociatedTodos({
             return (
               <section key={snapshot.sessionId} data-board-associated-todos-session={snapshot.sessionId} className="space-y-2 border-t border-hairline/70 pt-2 first:border-t-0 first:pt-0">
                 <div className="font-mono text-[10.5px] font-semibold text-ink-soft">{sessionLabels[snapshot.sessionId] ?? snapshot.sessionId}</div>
-                {snapshot.error ? <p role="alert" className="text-[11.5px] text-danger">{t('diagnostics.error')} · {snapshot.error}</p> : null}
+                {snapshot.error ? <p role="alert" className="text-[11.5px] text-danger">{t('diagnostics.error')} · {errorText(locale, new LocalizedError(snapshot.error))}</p> : null}
                 {agentIds.map((agentId) => {
                   const state = agentId === 'main' ? snapshot.main : snapshot.agents[agentId];
                   if (state === undefined) return null;

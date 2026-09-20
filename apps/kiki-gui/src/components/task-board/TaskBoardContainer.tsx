@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { LocalizedError } from '@kiki/session-core/i18n';
 import type { BoardCard, BoardPatch, BoardStatus, BoardSummary } from '@kiki/klient/contract/board/types';
-import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection, useControllerRegistry } from '../../state/connection';
 import { TaskBoard } from './TaskBoard';
@@ -10,15 +10,6 @@ import {
 } from './BoardAssociatedTodos';
 import { boardCardKey, TaskBoardController, type TaskBoardClient } from './TaskBoardController';
 import { OWN_WORK_BOARD_COLUMNS, type BoardSessionOption, type BoardTask, type BoardWorkspaceOption, type TaskPriority } from './types';
-
-const OWN_WORK_COLUMN_LABEL_KEYS = {
-  active: 'taskBoard.column.active',
-  in_progress: 'taskBoard.column.in_progress',
-  paused: 'taskBoard.column.paused',
-  done: 'taskBoard.column.done',
-  cancelled: 'taskBoard.column.cancelled',
-  superseded: 'taskBoard.column.superseded',
-} as const satisfies Record<(typeof OWN_WORK_BOARD_COLUMNS)[number]['status'], I18nKey>;
 
 export interface TaskBoardContainerProps {
   readonly client: TaskBoardClient;
@@ -35,7 +26,7 @@ const toPriority: Record<string, TaskPriority> = { P0: 'urgent', P1: 'high', P2:
 const fromPriority = { urgent: 'P0', high: 'P1', medium: 'P2', low: 'P3' } as const;
 const statuses = new Set<string>(['active', 'in_progress', 'paused', 'done', 'cancelled', 'superseded']);
 function nativeStatus(value: string): BoardStatus {
-  if (!statuses.has(value)) throw new Error('This status belongs to the presentation prototype, not Own Work.');
+  if (!statuses.has(value)) throw new LocalizedError({ key: 'taskBoard.error.invalidPresentationStatus' });
   return value as BoardStatus;
 }
 function view(card: BoardSummary | BoardCard, workspaces: readonly BoardWorkspaceOption[]): BoardTask {
@@ -72,13 +63,7 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
   const scopeKey = JSON.stringify(scopedWorkspaceIds);
   useEffect(() => { void controller.refresh(JSON.parse(scopeKey) as string[]); }, [controller, scopeKey]);
   const tasks = useMemo(() => snapshot.cards.map((card) => view(card, workspaces)), [snapshot.cards, workspaces]);
-  const columns = useMemo(
-    () => OWN_WORK_BOARD_COLUMNS.map((column) => ({
-      ...column,
-      label: t(OWN_WORK_COLUMN_LABEL_KEYS[column.status]),
-    })),
-    [t],
-  );
+  const columns = OWN_WORK_BOARD_COLUMNS;
   const refresh = () => controller.refresh(scopedWorkspaceIds);
   return (
     <BoardAssociatedTodosProvider manager={associatedTodoManager}>
@@ -93,14 +78,14 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
         onOpenTask={(key) => controller.open(key)} onOpenSession={onOpenSession} onCloseBoard={onCloseBoard}
         onCreateTask={async (data) => {
           const workspaceId = data.workspaceId ?? currentWorkspaceId;
-          if (!workspaceId) throw new Error('Select a workspace for this requirement.');
-          if (!workspaceIds.includes(workspaceId)) throw new Error('The selected workspace is not authorized in this view.');
+          if (!workspaceId) throw new LocalizedError({ key: 'taskBoard.error.workspaceRequired' });
+          if (!workspaceIds.includes(workspaceId)) throw new LocalizedError({ key: 'taskBoard.error.workspaceUnauthorized' });
           await controller.create({ workspaceId, requestKey: data.requestKey ?? crypto.randomUUID(), title: data.title,
             description: data.description, category: data.category, priority: fromPriority[data.priority],
             sessionIds: data.associatedSessionId ? [data.associatedSessionId] : [] });
         }}
         onUpdateTask={async (key, updated) => {
-          if (updated.revision === undefined) throw new Error('Reload task details before editing.');
+          if (updated.revision === undefined) throw new LocalizedError({ key: 'taskBoard.error.reloadBeforeEdit' });
           const patch: BoardPatch = {
             title: updated.title, description: updated.description, category: updated.category,
             priority: updated.priority ? fromPriority[updated.priority] : undefined,
@@ -111,7 +96,7 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
         }}
         onMoveTaskStatus={async (key, status) => {
           const card = snapshot.cards.find((entry) => boardCardKey(entry) === key);
-          if (!card) throw new Error('Refresh the board before moving this card.');
+          if (!card) throw new LocalizedError({ key: 'taskBoard.error.refreshBeforeMove' });
           await controller.update(key, card.revision, { status: nativeStatus(status) });
         }}
         />

@@ -1,6 +1,7 @@
 import type { ListNamedAgentProfilesResponse } from '@kiki/protocol';
 import type { QueryClient } from '@tanstack/react-query';
 
+import { translate } from '@kiki/session-core/i18n';
 import type { KikiClient } from './client';
 
 export async function invalidateAgentProfileCatalogs(client: QueryClient): Promise<void> {
@@ -64,5 +65,5 @@ export async function loadAgentProfileCatalog(
   });
   const retried = await load();
   if (isComplete(retried)) return retried;
-  throw new Error('Agent profile catalog is still loading');
+  throw new Error(translate('en', 'agentProfileCatalog.loading'));
 }

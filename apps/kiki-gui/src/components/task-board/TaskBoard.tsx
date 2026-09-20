@@ -1,5 +1,5 @@
 import { memo, useState, useMemo } from 'react';
-import type { I18nKey } from '@kiki/session-core/i18n';
+import { errorText, LocalizedError, type I18nKey, type ValidationIssue } from '@kiki/session-core/i18n';
 import type {
   BoardTask,
   BoardColumnDef,
@@ -23,6 +23,10 @@ const ISSUE_REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   BOARD_REQUEST_FAILED: 'taskBoard.issueReason.BOARD_REQUEST_FAILED',
 };
 
+function renderIssue(locale: 'en' | 'zh', issue: ValidationIssue): string {
+  return errorText(locale, new LocalizedError(issue));
+}
+
 export interface TaskBoardProps {
   readonly tasks: readonly BoardTask[];
   readonly columns?: readonly BoardColumnDef[];
@@ -35,7 +39,7 @@ export interface TaskBoardProps {
   /** When set, the workspace selector drives the board's load scope instead of a local view filter. */
   readonly onScopeSelectionChange?: (selection: string) => void;
   readonly loading?: boolean;
-  readonly error?: string | null;
+  readonly error?: ValidationIssue | string | null;
   /** Refresh-time degradation: workspaces whose board data could not load. */
   readonly issues?: readonly BoardWorkspaceIssue[];
   /** Card-level load issues from healthy workspaces, counted apart from workspaces. */
@@ -76,7 +80,7 @@ export const TaskBoard = memo(function TaskBoard({
   pendingTaskIds = [],
   onRefresh,
   refreshDisabled = false,
-  refreshLabel = 'Refresh',
+  refreshLabel,
   onOpenSettings,
   onMoveTaskStatus,
   onCreateTask,
@@ -89,7 +93,17 @@ export const TaskBoard = memo(function TaskBoard({
   className = '',
   prototypeMode = true,
 }: TaskBoardProps) {
-  const { t, tp } = useI18n();
+  const { t, tp, locale } = useI18n();
+  const resolvedColumns = useMemo(
+    () => columns.map((column) => ({
+      ...column,
+      label: column.label ?? (column.labelKey === undefined ? column.status : t(column.labelKey)),
+    })),
+    [columns, t],
+  );
+  const renderedError = error === null || error === undefined
+    ? null
+    : typeof error === 'string' ? error : renderIssue(locale, error);
 
   // Local view filters (pure UI state)
   const [searchQuery, setSearchQuery] = useState('');
@@ -169,15 +183,15 @@ export const TaskBoard = memo(function TaskBoard({
           data-prototype-badge
           className="shrink-0 bg-amber-card/80 border-b border-amber-rule/30 px-5 py-1.5 text-[11px] font-mono text-amber-ink flex items-center justify-between"
         >
-          <span>PROTOTYPE DISPLAY SLICE · Workboard / 看板 (未接持久服务)</span>
-          <span>Runtime: Decoupled Mock Layer</span>
+          <span>{t('taskBoard.prototype.banner')}</span>
+          <span>{t('taskBoard.prototype.runtime')}</span>
         </div>
       ) : null}
 
       {/* Error alert banner */}
-      {error ? (
+      {renderedError ? (
         <div className="shrink-0 bg-danger/10 border-b border-danger/20 px-5 py-2 text-[12px] text-danger flex items-center justify-between">
-          <span>看板数据加载/同步异常: {error}</span>
+          <span>{renderedError}</span>
         </div>
       ) : null}
 
@@ -189,7 +203,7 @@ export const TaskBoard = memo(function TaskBoard({
         >
           <span
             className="min-w-0 truncate"
-            title={[...issues, ...cardIssues].map((issue) => issue.message).join('\n')}
+            title={[...issues, ...cardIssues].map((issue) => renderIssue(locale, issue.issue)).join('\n')}
           >
             {issues.length > 0 ? tp('taskBoard.issues.partial', issues.length) : ''}
             {issues.length > 0 && cardIssues.length > 0 ? ' · ' : ''}
@@ -206,7 +220,7 @@ export const TaskBoard = memo(function TaskBoard({
             <button
               type="button"
               onClick={onCloseBoard}
-              aria-label="Back to Session"
+              aria-label={t('taskBoard.backToSession')}
               className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink-soft hover:border-accent hover:text-accent transition-colors"
             >
               <span>‹</span>
@@ -284,7 +298,7 @@ export const TaskBoard = memo(function TaskBoard({
               onClick={() => { void onRefresh(); }}
               className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {refreshLabel}
+              {refreshLabel ?? t('taskBoard.refresh')}
             </button>
           ) : null}
 
@@ -317,7 +331,7 @@ export const TaskBoard = memo(function TaskBoard({
                 <li
                   key={`${issue.workspaceId ?? 'host'}:${index}`}
                   className="flex items-baseline gap-2 text-[12px]"
-                  title={issue.message}
+                  title={renderIssue(locale, issue.issue)}
                 >
                   <span className="min-w-0 flex-1 truncate font-medium text-ink-soft">
                     {workspaceTitle(issue.workspaceId)}
@@ -359,7 +373,7 @@ export const TaskBoard = memo(function TaskBoard({
       /* Kanban Columns Grid (Scrollable horizontally) */
       <div className="flex min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-contain p-5">
         <div className="grid h-full min-h-0 min-w-max grid-flow-col auto-cols-[minmax(330px,400px)] gap-4">
-          {columns.map((col) => {
+          {resolvedColumns.map((col) => {
             const colTasks = filteredTasks.filter((t) => t.status === col.status);
             const isManualTarget = !prototypeMode || col.status === 'backlog' || col.status === 'todo';
 
@@ -444,7 +458,7 @@ export const TaskBoard = memo(function TaskBoard({
           task={tasks.find((task) => task.id === selectedTask.id) ?? selectedTask}
           availableSessions={sessions}
           sessionLabels={sessionLabels}
-          statusOptions={columns}
+          statusOptions={resolvedColumns}
           showPrompt={prototypeMode}
           onClose={() => setSelectedTask(null)}
           onSave={onUpdateTask ? async (updated) => {
@@ -469,7 +483,7 @@ export const TaskBoard = memo(function TaskBoard({
           showPrompt={prototypeMode}
           onClose={() => setShowNewTaskModal(false)}
           onCreate={async (formData) => {
-            if (!onCreateTask) throw new Error('The board service is not connected.');
+            if (!onCreateTask) throw new LocalizedError({ key: 'taskBoard.error.serviceUnavailable' });
             await onCreateTask(formData);
             setShowNewTaskModal(false);
           }}

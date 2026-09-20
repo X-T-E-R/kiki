@@ -1,4 +1,6 @@
 import { memo, useRef, useState } from 'react';
+import { errorText, LocalizedError, type I18nKey } from '@kiki/session-core/i18n';
+import { useI18n } from '../../i18n';
 import { DIALOG_PANEL_SIZES } from '../Dialog';
 import type { NewTaskFormData, TaskPriority, BoardWorkspaceOption, BoardSessionOption } from './types';
 
@@ -20,9 +22,17 @@ const SELECT_INPUT =
 const AREA_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3.5 py-2.5 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
 
+const PRIORITY_LABEL_KEYS: Record<TaskPriority, I18nKey> = {
+  urgent: 'taskBoard.priority.urgent',
+  high: 'taskBoard.priority.high',
+  medium: 'taskBoard.priority.medium',
+  low: 'taskBoard.priority.low',
+};
+
 export const NewTaskModal = memo(function NewTaskModal({
   workspaces = [], sessions = [], defaultWorkspaceId, showPrompt = true, onClose, onCreate,
 }: NewTaskModalProps) {
+  const { t, locale } = useI18n();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -38,7 +48,7 @@ export const NewTaskModal = memo(function NewTaskModal({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting.current) return;
-    if (!title.trim()) { setError('Task title is required.'); return; }
+    if (!title.trim()) { setError(t('taskBoard.new.validation.titleRequired')); return; }
     submitting.current = true;
     setPending(true);
     setError(null);
@@ -47,7 +57,8 @@ export const NewTaskModal = memo(function NewTaskModal({
         prompt: showPrompt ? prompt.trim() : '', category: showPrompt ? undefined : prompt.trim(),
         priority, workspaceId: workspaceId || undefined, associatedSessionId: associatedSessionId || undefined });
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'The card was not saved. Your draft is retained.');
+      const fallback = new LocalizedError({ key: 'taskBoard.new.error.createFailed' });
+      setError(errorText(locale, failure instanceof Error ? failure : fallback));
     } finally {
       submitting.current = false;
       setPending(false);
@@ -69,13 +80,13 @@ export const NewTaskModal = memo(function NewTaskModal({
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-hairline bg-paper/50 px-6 py-4">
           <span className="font-mono text-[12px] font-semibold uppercase tracking-wider text-accent">
-            Create Board Task / 新建需求
+            {t('taskBoard.new.title')}
           </span>
           <button
             type="button"
             onClick={close}
             disabled={pending}
-            aria-label="Close modal"
+            aria-label={t('taskBoard.new.close')}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink"
           >
             ✕
@@ -92,12 +103,12 @@ export const NewTaskModal = memo(function NewTaskModal({
 
           <div>
             <label className={FIELD_LABEL}>
-              Task Title *
+              {t('taskBoard.new.titleLabel')}
             </label>
             <input
               type="text"
               autoFocus
-              placeholder="e.g. Implement user settings caching layer"
+              placeholder={t('taskBoard.new.titlePlaceholder')}
               value={title}
               onChange={(e) => {
                 setTitle(e.target.value);
@@ -110,30 +121,29 @@ export const NewTaskModal = memo(function NewTaskModal({
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className={FIELD_LABEL}>
-                Priority
+                {t('taskBoard.new.priority')}
               </label>
               <select
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as TaskPriority)}
                 className={SELECT_INPUT}
               >
-                <option value="urgent">P0 紧急</option>
-                <option value="high">P1 高</option>
-                <option value="medium">P2 中</option>
-                <option value="low">P3 低</option>
+                {(Object.keys(PRIORITY_LABEL_KEYS) as TaskPriority[]).map((value) => (
+                  <option key={value} value={value}>{t(PRIORITY_LABEL_KEYS[value])}</option>
+                ))}
               </select>
             </div>
 
             <div>
               <label className={FIELD_LABEL}>
-                Workspace Target
+                {t('taskBoard.new.workspaceTarget')}
               </label>
               <select
                 value={workspaceId}
                 onChange={(e) => setWorkspaceId(e.target.value)}
                 className={SELECT_INPUT}
               >
-                <option value="">Current Workspace / 当前工作区</option>
+                <option value="">{t('taskBoard.new.currentWorkspace')}</option>
                 {workspaces.map((ws) => (
                   <option key={ws.id} value={ws.id}>
                     {ws.title}
@@ -145,11 +155,11 @@ export const NewTaskModal = memo(function NewTaskModal({
 
           <div>
             <label className={FIELD_LABEL}>
-              Description / Requirements Context
+              {t('taskBoard.new.descriptionContext')}
             </label>
             <textarea
               rows={5}
-              placeholder="Background context, acceptance criteria or notes..."
+              placeholder={t('taskBoard.new.descriptionPlaceholder')}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               className={AREA_INPUT}
@@ -158,12 +168,12 @@ export const NewTaskModal = memo(function NewTaskModal({
 
           <div>
             <label className={FIELD_LABEL}>
-              {showPrompt ? 'Initial Agent Prompt (Optional)' : 'Category / 归类'}
+              {showPrompt ? t('taskBoard.new.initialPrompt') : t('taskBoard.new.category')}
             </label>
             <textarea
               rows={showPrompt ? 7 : 2}
               maxLength={showPrompt ? undefined : 256}
-              placeholder={showPrompt ? 'Prompt sent to agent when execution is triggered...' : 'Feature, idea, improvement...'}
+              placeholder={showPrompt ? t('taskBoard.new.initialPromptPlaceholder') : t('taskBoard.new.categoryPlaceholder')}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               className={`${AREA_INPUT} font-mono text-[12.5px]`}
@@ -172,14 +182,14 @@ export const NewTaskModal = memo(function NewTaskModal({
 
           <div>
             <label className={FIELD_LABEL}>
-              Associate Existing Session (Optional)
+              {t('taskBoard.new.associateSession')}
             </label>
             <select
               value={associatedSessionId}
               onChange={(e) => setAssociatedSessionId(e.target.value)}
               className={SELECT_INPUT}
             >
-              <option value="">-- No session linked (decoupled) --</option>
+              <option value="">{t('taskBoard.new.noSession')}</option>
               {sessions.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.title} ({s.id})
@@ -197,14 +207,14 @@ export const NewTaskModal = memo(function NewTaskModal({
             disabled={pending}
             className="rounded-lg border border-hairline px-3.5 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-paper"
           >
-            Cancel
+            {t('taskBoard.new.cancel')}
           </button>
           <button
             type="submit"
             disabled={pending}
             className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-panel shadow-xs transition-colors hover:bg-accent-deep"
           >
-            Create Task Card
+            {t('taskBoard.new.create')}
           </button>
         </div>
       </form>

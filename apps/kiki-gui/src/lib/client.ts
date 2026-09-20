@@ -7,6 +7,7 @@
 import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@kiki/protocol';
 import { createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
+import { translate } from '@kiki/session-core/i18n';
 import type {
   ActivateSkillRequest,
   ActivateSkillResult,
@@ -771,7 +772,7 @@ export class KikiClient {
         const timedOut = error.reason === HTTP_TRANSPORT_TIMEOUT_REASON;
         throw new ApiError({
           code: timedOut ? API_CODES.TIMEOUT : error.code,
-          msg: timedOut ? error.message.replace('call timed out', 'Request timed out') : error.message,
+          msg: timedOut ? error.message.replace('call timed out', translate('en', 'common.requestTimedOut')) : error.message,
           data: error.data ?? null,
           request_id: error.requestId,
         });

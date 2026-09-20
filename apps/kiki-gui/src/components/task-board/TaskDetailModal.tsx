@@ -1,7 +1,10 @@
 import { memo, useEffect, useRef, useState } from 'react';
+import { errorText, LocalizedError, type I18nKey } from '@kiki/session-core/i18n';
+import { useI18n } from '../../i18n';
+import { ConfirmDialog } from '../ConfirmDialog';
 import { DIALOG_PANEL_SIZES } from '../Dialog';
 import { BoardAssociatedTodos } from './BoardAssociatedTodos';
-import { DEFAULT_BOARD_COLUMNS, type BoardColumnDef, type BoardTask, type TaskPriority, type BoardSessionOption } from './types';
+import { DEFAULT_BOARD_COLUMNS, type BoardColumnDef, type BoardTask, type BoardTaskStatus, type TaskPriority, type BoardSessionOption } from './types';
 
 export interface TaskDetailModalProps {
   readonly task: BoardTask;
@@ -27,10 +30,38 @@ const AREA_INPUT =
 const SECTION_TITLE =
   'font-mono text-[11px] font-semibold text-ink-faint uppercase tracking-wider';
 
+const COLUMN_LABEL_KEYS: Partial<Record<BoardTaskStatus, I18nKey>> = {
+  backlog: 'taskBoard.column.backlog',
+  todo: 'taskBoard.column.todo',
+  running: 'taskBoard.column.running',
+  done: 'taskBoard.column.done',
+  failed: 'taskBoard.column.failed',
+  active: 'taskBoard.column.active',
+  in_progress: 'taskBoard.column.in_progress',
+  paused: 'taskBoard.column.paused',
+  cancelled: 'taskBoard.column.cancelled',
+  superseded: 'taskBoard.column.superseded',
+};
+
+const PRIORITY_LABEL_KEYS: Record<TaskPriority, I18nKey> = {
+  urgent: 'taskBoard.priority.urgent',
+  high: 'taskBoard.priority.high',
+  medium: 'taskBoard.priority.medium',
+  low: 'taskBoard.priority.low',
+};
+
+const RESULT_LABEL_KEYS: Record<NonNullable<BoardTask['executions'][number]['result']> | 'running', I18nKey> = {
+  succeeded: 'taskBoard.result.succeeded',
+  failed: 'taskBoard.result.failed',
+  cancelled: 'taskBoard.result.cancelled',
+  running: 'taskBoard.result.running',
+};
+
 export const TaskDetailModal = memo(function TaskDetailModal({
   task, availableSessions = [], sessionLabels = {}, statusOptions = DEFAULT_BOARD_COLUMNS, showPrompt = true,
   onClose, onSave, onRunInSession, onOpenSession, onDelete,
 }: TaskDetailModalProps) {
+  const { t, locale } = useI18n();
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
@@ -39,10 +70,12 @@ export const TaskDetailModal = memo(function TaskDetailModal({
   const [status, setStatus] = useState<BoardTask['status']>(task.status);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([...(task.associatedSessionIds ?? [])]);
   const [pending, setPending] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const submitting = useRef(false);
   const baseRevision = useRef(task.revision);
-  const close = () => { if (!submitting.current) onClose(); };
+  const close = () => { if (!submitting.current && !deleting) onClose(); };
   useEffect(() => {
     if (isEditing) return;
     setTitle(task.title); setDescription(task.description);
@@ -54,7 +87,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
 
   const handleSave = async () => {
     if (submitting.current || !onSave) return;
-    if (!title.trim()) { setError('Task title is required.'); return; }
+    if (!title.trim()) { setError(t('taskBoard.detail.validation.titleRequired')); return; }
     submitting.current = true; setPending(true); setError(null);
     try {
       await onSave({ title: title.trim(), description, prompt: showPrompt ? prompt : undefined,
@@ -62,9 +95,25 @@ export const TaskDetailModal = memo(function TaskDetailModal({
         revision: baseRevision.current, associatedSessionIds: selectedSessionIds });
       setIsEditing(false);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'The update failed. Your draft is retained.');
+      const fallback = new LocalizedError({ key: 'taskBoard.detail.error.updateFailed' });
+      setError(errorText(locale, failure instanceof Error ? failure : fallback));
     } finally {
       submitting.current = false; setPending(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (onDelete === undefined || deleting) return;
+    setDeleting(true);
+    try {
+      await onDelete(task.id);
+      setConfirmDelete(false);
+    } catch (failure) {
+      const fallback = new LocalizedError({ key: 'taskBoard.error.operationFailed' });
+      setError(errorText(locale, failure instanceof Error ? failure : fallback));
+      setConfirmDelete(false);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -81,7 +130,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
         <div className="flex shrink-0 items-center justify-between border-b border-hairline bg-paper/50 px-6 py-4">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="shrink-0 font-mono text-[12px] font-semibold uppercase tracking-wider text-accent">
-              Task Details
+              {t('taskBoard.detail.title')}
             </span>
             <span className="min-w-0 truncate rounded-full border border-hairline bg-paper px-2.5 py-0.5 font-mono text-[10.5px] text-ink-faint">
               {task.recordId ?? task.id}
@@ -90,8 +139,8 @@ export const TaskDetailModal = memo(function TaskDetailModal({
           <button
             type="button"
             onClick={close}
-            disabled={pending}
-            aria-label="Close detail modal"
+            disabled={pending || deleting}
+            aria-label={t('taskBoard.detail.close')}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink"
           >
             ✕
@@ -101,13 +150,13 @@ export const TaskDetailModal = memo(function TaskDetailModal({
         {/* Content Area */}
         <div inert={pending} className="min-h-0 flex-1 overflow-y-auto text-[13px]">
           {error ? <p role="alert" className="mx-6 mt-5 rounded-lg border border-danger/20 bg-danger/10 px-3.5 py-2.5 text-[12.5px] text-danger">{error}</p> : null}
-          {task.detailLoaded === false ? <p role="status" className="px-6 pt-5 text-ink-soft">Loading task details…</p> : null}
+          {task.detailLoaded === false ? <p role="status" className="px-6 pt-5 text-ink-soft">{t('taskBoard.detail.loading')}</p> : null}
           {isEditing ? (
             /* Editing Mode: single roomy column, large writing surfaces */
             <div className="space-y-5 p-6">
               <div>
                 <label className={FIELD_LABEL}>
-                  Title
+                  {t('taskBoard.detail.field.title')}
                 </label>
                 <input
                   type="text"
@@ -120,37 +169,36 @@ export const TaskDetailModal = memo(function TaskDetailModal({
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className={FIELD_LABEL}>
-                    Status
+                    {t('taskBoard.detail.field.status')}
                   </label>
                   <select
                     value={status}
                     onChange={(e) => setStatus(e.target.value as BoardTask['status'])}
                     className={SELECT_INPUT}
                   >
-                    {statusOptions.map((option) => <option key={option.status} value={option.status}>{option.label}</option>)}
+                    {statusOptions.map((option) => <option key={option.status} value={option.status}>{option.label ?? (option.labelKey === undefined ? option.status : t(option.labelKey))}</option>)}
                   </select>
                 </div>
 
                 <div>
                   <label className={FIELD_LABEL}>
-                    Priority
+                    {t('taskBoard.detail.field.priority')}
                   </label>
                   <select
                     value={priority}
                     onChange={(e) => setPriority(e.target.value as TaskPriority)}
                     className={SELECT_INPUT}
                   >
-                    <option value="urgent">P0 紧急</option>
-                    <option value="high">P1 高</option>
-                    <option value="medium">P2 中</option>
-                    <option value="low">P3 低</option>
+                    {(Object.keys(PRIORITY_LABEL_KEYS) as TaskPriority[]).map((value) => (
+                      <option key={value} value={value}>{t(PRIORITY_LABEL_KEYS[value])}</option>
+                    ))}
                   </select>
                 </div>
               </div>
 
               <div>
                 <label className={FIELD_LABEL}>
-                  Description / Context
+                  {t('taskBoard.detail.field.descriptionContext')}
                 </label>
                 <textarea
                   rows={6}
@@ -162,7 +210,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
 
               <div>
                 <label className={FIELD_LABEL}>
-                  {showPrompt ? 'Execution Prompt' : 'Category / 归类'}
+                  {showPrompt ? t('taskBoard.detail.field.executionPrompt') : t('taskBoard.detail.field.category')}
                 </label>
                 <textarea
                   rows={showPrompt ? 8 : 2}
@@ -175,7 +223,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
 
               <div>
                 <label className={FIELD_LABEL}>
-                  Associate Existing Session
+                  {t('taskBoard.detail.field.associateSession')}
                 </label>
                 <select
                   multiple
@@ -183,7 +231,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                   onChange={(e) => setSelectedSessionIds(Array.from(e.target.selectedOptions, (option) => option.value).filter(Boolean))}
                   className={`${SELECT_INPUT} min-h-28`}
                 >
-                  <option value="">-- No session linked --</option>
+                  <option value="">{t('taskBoard.detail.noSession')}</option>
                   {availableSessions.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.title} ({s.id})
@@ -200,10 +248,10 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-accent">
-                      {task.priority?.toUpperCase() ?? 'MEDIUM'}
+                      {t(PRIORITY_LABEL_KEYS[task.priority ?? 'medium'])}
                     </span>
                     <span className="rounded-md border border-hairline bg-paper px-2 py-0.5 font-mono text-[11px] text-ink-soft">
-                      状态: {task.status}
+                      {t('taskBoard.detail.field.status')}: {COLUMN_LABEL_KEYS[task.status] === undefined ? task.status : t(COLUMN_LABEL_KEYS[task.status]!)}
                     </span>
                     {task.workspaceTitle ? (
                       <span className="font-mono text-[11.5px] text-ink-faint">
@@ -219,7 +267,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                 {task.description ? (
                   <div>
                     <h4 className={SECTION_TITLE}>
-                      Description
+                      {t('taskBoard.detail.description')}
                     </h4>
                     <p className="mt-2 whitespace-pre-wrap leading-relaxed text-ink-soft">
                       {task.description}
@@ -230,7 +278,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                 {task.prompt || task.category ? (
                   <div>
                     <h4 className={SECTION_TITLE}>
-                      {showPrompt ? 'Assigned Execution Prompt' : 'Category / 归类'}
+                      {showPrompt ? t('taskBoard.detail.assignedPrompt') : t('taskBoard.detail.field.category')}
                     </h4>
                     <pre className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-hairline bg-paper p-3.5 font-mono text-[12px] leading-relaxed text-ink-soft">
                       {showPrompt ? task.prompt : task.category}
@@ -244,10 +292,10 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                 <div className="rounded-xl border border-hairline bg-panel p-3.5">
                   <div className="flex items-center justify-between">
                     <span className={SECTION_TITLE}>
-                      Linked Execution Sessions
+                      {t('taskBoard.detail.linkedSessions')}
                     </span>
                     <span className="font-mono text-[10.5px] text-ink-faint">
-                      {task.associatedSessionIds?.length ?? 0} linked
+                      {t('taskBoard.detail.linkedCount', { count: task.associatedSessionIds?.length ?? 0 })}
                     </span>
                   </div>
 
@@ -267,7 +315,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                     </div>
                   ) : (
                     <p className="mt-2 text-[11.5px] leading-relaxed text-ink-faint">
-                      This card is currently decoupled from any active execution session.
+                      {t('taskBoard.detail.decoupled')}
                     </p>
                   )}
                 </div>
@@ -281,10 +329,10 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                 <div className="rounded-xl border border-hairline bg-panel p-3.5">
                   <div className="flex items-center justify-between">
                     <span className={SECTION_TITLE}>
-                      Execution Attempts History
+                      {t('taskBoard.detail.attemptsHistory')}
                     </span>
                     <span className="font-mono text-[10.5px] text-ink-faint">
-                      {task.executions.length} attempts
+                      {t('taskBoard.detail.attemptCount', { count: task.executions.length })}
                     </span>
                   </div>
 
@@ -306,7 +354,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                                       : 'bg-accent-soft text-accent'
                                 }`}
                               >
-                                {exec.result ?? 'RUNNING'}
+                                {t(RESULT_LABEL_KEYS[exec.result ?? 'running'])}
                               </span>
                               <span className="truncate font-mono text-ink-soft">
                                 {sessionLabels[exec.sessionId ?? ''] ?? exec.sessionId ?? 'session-init'}
@@ -319,7 +367,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                                 onClick={() => onOpenSession(exec.sessionId!, task.workspaceId)}
                                 className="shrink-0 font-mono text-[10.5px] text-accent hover:underline"
                               >
-                                View Session →
+                                {t('taskBoard.detail.viewSession')}
                               </button>
                             ) : null}
                           </div>
@@ -332,7 +380,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                       ))}
                     </ul>
                   ) : (
-                    <p className="mt-2 break-all text-[11.5px] leading-relaxed text-ink-faint">{task.linkedExecutionIds?.length ? `Linked execution references (status not loaded): ${task.linkedExecutionIds.join(', ')}` : 'No execution references recorded.'}</p>
+                    <p className="mt-2 break-all text-[11.5px] leading-relaxed text-ink-faint">{task.linkedExecutionIds?.length ? t('taskBoard.detail.linkedExecutionRefs', { ids: task.linkedExecutionIds.join(', ') }) : t('taskBoard.detail.noExecutionRefs')}</p>
                   )}
                 </div>
               </aside>
@@ -346,12 +394,11 @@ export const TaskDetailModal = memo(function TaskDetailModal({
             {onDelete ? (
               <button
                 type="button"
-                onClick={() => {
-                  if (confirm('Delete this task card?')) onDelete(task.id);
-                }}
+                onClick={() => { setConfirmDelete(true); }}
+                disabled={deleting}
                 className="font-mono text-[12px] text-danger hover:underline"
               >
-                Delete Card
+                {t('taskBoard.detail.delete')}
               </button>
             ) : null}
           </div>
@@ -365,7 +412,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                   onClick={() => setIsEditing(false)}
                   className="rounded-lg border border-hairline px-3.5 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-paper"
                 >
-                  Cancel
+                  {t('taskBoard.detail.cancel')}
                 </button>
                 <button
                   type="button"
@@ -373,7 +420,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                   onClick={handleSave}
                   className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-panel shadow-xs transition-colors hover:bg-accent-deep"
                 >
-                  Save Changes
+                  {t('taskBoard.detail.save')}
                 </button>
               </>
             ) : (
@@ -384,7 +431,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                   onClick={() => { setError(null); setIsEditing(true); }}
                   className="rounded-lg border border-hairline px-3.5 py-2 text-[12.5px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
                 >
-                  Edit Task
+                  {t('taskBoard.detail.edit')}
                 </button>
                 {onRunInSession ? (
                   <button
@@ -392,7 +439,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                     onClick={() => onRunInSession(task.id, selectedSessionIds[0])}
                     className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-panel shadow-xs transition-colors hover:bg-accent-deep"
                   >
-                    Execute In Session ↗
+                    {t('taskBoard.detail.execute')}
                   </button>
                 ) : null}
               </>
@@ -400,6 +447,16 @@ export const TaskDetailModal = memo(function TaskDetailModal({
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        title={t('taskBoard.detail.deleteTitle')}
+        body={t('taskBoard.detail.deleteBody')}
+        confirmLabel={t('taskBoard.detail.deleteConfirm')}
+        busy={deleting}
+        overlayId="task-board-delete-card"
+        onConfirm={() => { void handleDelete(); }}
+        onCancel={() => { if (!deleting) setConfirmDelete(false); }}
+      />
     </div>
   );
 });

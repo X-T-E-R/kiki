@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   SETTINGS_NAV_TREE,
   buildSettingsSearchIndex,
@@ -133,12 +134,12 @@ export function SettingsNavTree({
     );
   };
 
-  const nbSearchSubtabs: readonly { tab: string; labelEn: string; labelZh: string }[] = [
-    { tab: 'overview', labelEn: 'Overview & source', labelZh: '概览与配置来源' },
-    { tab: 'search', labelEn: 'Search lanes', labelZh: '搜索 Lane' },
-    { tab: 'fetch', labelEn: 'Fetch chain', labelZh: '抓取链' },
-    { tab: 'providers', labelEn: 'Services & credentials', labelZh: '服务与凭证' },
-    { tab: 'advanced', labelEn: 'Advanced & diagnostics', labelZh: '高级与诊断' },
+  const nbSearchSubtabs: readonly { tab: string; labelKey: I18nKey }[] = [
+    { tab: 'overview', labelKey: 'st.nbSearch.tab.overview' },
+    { tab: 'search', labelKey: 'st.nbSearch.tab.search' },
+    { tab: 'fetch', labelKey: 'st.nbSearch.tab.fetch' },
+    { tab: 'providers', labelKey: 'st.nbSearch.tab.providers' },
+    { tab: 'advanced', labelKey: 'st.nbSearch.tab.advanced' },
   ];
 
   return (
@@ -170,7 +171,7 @@ export function SettingsNavTree({
                           }}
                           className="rounded px-2 py-1 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
                         >
-                          {document.documentElement.lang.startsWith('zh') ? sub.labelZh : sub.labelEn}
+                          {t(sub.labelKey)}
                         </button>
                       ))}
                     </div>
