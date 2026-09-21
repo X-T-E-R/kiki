@@ -63,8 +63,13 @@ export function projectRequestIdentity(input: {
     if (policy.lineage.subagentMarker === 'enabled' && input.subagentKind !== undefined) {
       headers['x-openai-subagent'] = 'collab_spawn';
     }
-    if (policy.responsesMetadata === 'codex' && policy.lineage.threadIdentity === 'agent') {
-      headers['x-codex-window-id'] = requiredSnapshot(input.snapshot.windowId, 'window identity');
+    if (policy.responsesMetadata === 'codex') {
+      if (policy.lineage.threadIdentity === 'agent') {
+        headers['x-codex-window-id'] = requiredSnapshot(
+          input.snapshot.windowId,
+          'window identity',
+        );
+      }
       if (input.snapshot.turnState !== undefined) {
         headers['x-codex-turn-state'] = input.snapshot.turnState;
       }

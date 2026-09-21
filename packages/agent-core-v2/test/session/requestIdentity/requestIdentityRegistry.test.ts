@@ -264,6 +264,41 @@ describe('request identity registry', () => {
     expect(child.rootTurnId).toBe(root.logicalId);
   });
 
+  it('keeps the first captured turn state for the turn and isolates it per agent and turn', async () => {
+    const registry = createRegistry();
+    const first = await registry.snapshot({
+      agentId: 'main',
+      turnKey: 'turn:0',
+      compactionWindow: 0,
+      logicalIdKind: 'uuidv7',
+    });
+    expect(first.turnState).toBeUndefined();
+    first.setTurnState('sticky-state');
+    first.setTurnState('rotated-state');
+    const continued = await registry.snapshot({
+      agentId: 'main',
+      turnKey: 'turn:0',
+      compactionWindow: 0,
+      logicalIdKind: 'uuidv7',
+    });
+    const next = await registry.snapshot({
+      agentId: 'main',
+      turnKey: 'turn:1',
+      compactionWindow: 0,
+      logicalIdKind: 'uuidv7',
+    });
+    const child = await registry.snapshot({
+      agentId: 'child',
+      turnKey: 'turn:0',
+      compactionWindow: 0,
+      logicalIdKind: 'uuidv7',
+    });
+
+    expect(continued.turnState).toBe('sticky-state');
+    expect(next.turnState).toBeUndefined();
+    expect(child.turnState).toBeUndefined();
+  });
+
   it('reconstructs stable session and accepted-turn IDs after resume', async () => {
     const store: RegistryStore = {};
     const first = await createRegistry(store).snapshot({

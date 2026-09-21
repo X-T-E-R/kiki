@@ -32,6 +32,7 @@ function project(
     isKimiProvider?: boolean;
     protocol?: 'openai_responses' | 'anthropic';
     hostRequestHeaders?: Readonly<Record<string, string>>;
+    snapshot?: typeof SNAPSHOT;
   } = {},
 ) {
   return projectRequestIdentity({
@@ -43,7 +44,7 @@ function project(
     parentAgentId: 'main',
     subagentKind: 'agent',
     isKimiProvider: options.isKimiProvider ?? false,
-    snapshot: SNAPSHOT,
+    snapshot: options.snapshot ?? SNAPSHOT,
     runtimeVersion: '1.0.0',
     platform: 'linux',
     arch: 'x64',
@@ -381,6 +382,29 @@ describe('request identity policy', () => {
     expect(projected.headers).not.toHaveProperty('x-codex-turn-metadata');
     expect(projected.headers).not.toHaveProperty('x-codex-window-id');
     expect(projected.headers).toHaveProperty('thread-id', SNAPSHOT.threadId);
+  });
+
+  it('emits a captured turn state for any Codex Responses metadata without a thread identity', () => {
+    const turnStateSnapshot = { ...SNAPSHOT, turnState: 'sticky-state' };
+
+    expect(
+      project({ preset: 'codex_compatible' }, { snapshot: turnStateSnapshot }).headers,
+    ).toHaveProperty('x-codex-turn-state', 'sticky-state');
+    expect(
+      project(
+        { preset: 'codex_compatible', overrides: { lineage: { threadIdentity: 'none' } } },
+        { snapshot: turnStateSnapshot },
+      ).headers,
+    ).toHaveProperty('x-codex-turn-state', 'sticky-state');
+    expect(
+      project(
+        { preset: 'codex_compatible', overrides: { responsesMetadata: 'none' } },
+        { snapshot: turnStateSnapshot },
+      ).headers,
+    ).not.toHaveProperty('x-codex-turn-state');
+    expect(
+      project({ preset: 'kimi_code' }, { snapshot: turnStateSnapshot, isKimiProvider: true }).headers,
+    ).not.toHaveProperty('x-codex-turn-state');
   });
 
   it('uses the selected session scope without changing the Codex wire format', () => {

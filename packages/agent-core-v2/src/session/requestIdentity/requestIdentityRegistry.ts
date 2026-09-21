@@ -257,7 +257,9 @@ export class RequestIdentityRegistry implements IRequestIdentityRegistry {
         threadId === undefined ? undefined : `${threadId}:${String(input.compactionWindow + 1)}`,
       turnState: turn?.turnState,
       setTurnState: (value) => {
-        if (turn !== undefined && dimensions.turnState) turn.turnState = value;
+        if (turn === undefined || !dimensions.turnState) return;
+        if (turn.turnState !== undefined) return;
+        turn.turnState = value;
       },
     };
   }

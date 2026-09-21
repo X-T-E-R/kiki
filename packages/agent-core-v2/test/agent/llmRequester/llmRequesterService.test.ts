@@ -83,8 +83,11 @@ import { Error2, ErrorCodes } from '#/errors';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { WireRecord } from '#/wire/record';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
+  IRequestIdentityInstallation,
   IRequestIdentityRegistry,
+  RequestIdentityRegistry,
   type RequestIdentityDimensions,
 } from '#/session/requestIdentity/requestIdentityRegistry';
 import {
@@ -215,6 +218,7 @@ function createService(
     readonly globalRequestIdentity?: { value: RequestIdentityPolicy | undefined };
     readonly identitySnapshotCalls?: { value: number };
     readonly identityDimensions?: RequestIdentityDimensions[];
+    readonly identityRegistry?: IRequestIdentityRegistry;
     readonly hostRequestHeaders?: Readonly<Record<string, string>>;
     readonly env?: Record<string, string>;
     readonly nativeWebSearch?: boolean;
@@ -388,22 +392,25 @@ function createService(
     getEnv: (name) => options.env?.[name],
     args: { requestHeaders: hostRequestHeaders },
   });
-  ix.stub(IRequestIdentityRegistry, {
-    snapshot: async (input) => {
-      if (options.identitySnapshotCalls !== undefined) options.identitySnapshotCalls.value += 1;
-      if (input.dimensions !== undefined) options.identityDimensions?.push(input.dimensions);
-      return {
-        installationId: '00000000-0000-4000-8000-000000000001',
-        sharedSessionId: '00000000-0000-4000-8000-000000000002',
-        threadId: '00000000-0000-4000-8000-000000000002',
-        agentSessionId: '00000000-0000-4000-8000-000000000003',
-        logicalId: '00000000-0000-7000-8000-000000000004',
-        turnIndex: 1,
-        windowId: '00000000-0000-4000-8000-000000000002:1',
-        setTurnState: () => undefined,
-      };
+  ix.stub(
+    IRequestIdentityRegistry,
+    options.identityRegistry ?? {
+      snapshot: async (input) => {
+        if (options.identitySnapshotCalls !== undefined) options.identitySnapshotCalls.value += 1;
+        if (input.dimensions !== undefined) options.identityDimensions?.push(input.dimensions);
+        return {
+          installationId: '00000000-0000-4000-8000-000000000001',
+          sharedSessionId: '00000000-0000-4000-8000-000000000002',
+          threadId: '00000000-0000-4000-8000-000000000002',
+          agentSessionId: '00000000-0000-4000-8000-000000000003',
+          logicalId: '00000000-0000-7000-8000-000000000004',
+          turnIndex: 1,
+          windowId: '00000000-0000-4000-8000-000000000002:1',
+          setTurnState: () => undefined,
+        };
+      },
     },
-  });
+  );
   ix.stub(ILogService, log);
   ix.stub(ITelemetryService, telemetry);
   ix.stub(IModelCatalog, {
@@ -445,6 +452,33 @@ function captureRequestParams(requester: ModelRequester): ModelRequestParams[] {
     yield* request(input, signal, params);
   };
   return captured;
+}
+
+function createRequestIdentityRegistry(): RequestIdentityRegistry {
+  const ix = new TestInstantiationService();
+  ix.stub(ISessionContext, {
+    sessionId: 'session-test',
+    scope: (key?: string) => `sessions/session-test/${key ?? ''}`,
+  });
+  ix.stub(ISessionMetadata, {
+    read: async () => ({
+      id: 'session-test',
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+      archived: false,
+    }),
+  });
+  ix.stub(IRequestIdentityInstallation, {
+    get: async () => '00000000-0000-4000-8000-000000000001',
+  });
+  let stored: unknown;
+  ix.stub(IAtomicDocumentStore, {
+    get: async <T>() => structuredClone(stored) as T | undefined,
+    set: async (_scope, _key, value) => {
+      stored = structuredClone(value);
+    },
+  });
+  return ix.createInstance(RequestIdentityRegistry);
 }
 
 describe('AgentLLMRequesterService prompt snapshot invalidation', () => {
@@ -570,6 +604,37 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       turnIndex: false,
       turnState: true,
     }]);
+  });
+
+  it('replays a captured Codex turn-state token inside the turn and drops it on the next turn', async () => {
+    const registry = createRequestIdentityRegistry();
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      protocol: 'openai_responses',
+      providerType: 'openai',
+    });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      providers: { p: { requestIdentity: { preset: 'codex_compatible' } } },
+      identityRegistry: registry,
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(captured[0]?.headers).not.toHaveProperty('x-codex-turn-state');
+    captured[0]?.requestIdentity?.onResponseHeaders?.(
+      new Headers({ 'x-codex-turn-state': 'ts-1' }),
+    );
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+    expect(captured[1]?.headers).toHaveProperty('x-codex-turn-state', 'ts-1');
+    captured[1]?.requestIdentity?.onResponseHeaders?.(
+      new Headers({ 'x-codex-turn-state': 'ts-rotated' }),
+    );
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 3 } });
+    expect(captured[2]?.headers).toHaveProperty('x-codex-turn-state', 'ts-1');
+
+    await service.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+    expect(captured[3]?.headers).not.toHaveProperty('x-codex-turn-state');
   });
 
   it('rejects Codex-compatible identity on Messages before the requester runs', async () => {

@@ -375,6 +375,63 @@ describe('request identity final fetch projection', () => {
     expect(state).toBe('sticky-state');
   });
 
+  it('replays the header-captured Codex turn state within the turn and drops it on the next turn', async () => {
+    const seen: (string | undefined)[] = [];
+    const server = createServer((request, response) => {
+      seen.push(request.headers['x-codex-turn-state'] as string | undefined);
+      response.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'x-codex-turn-state': 'sticky-state',
+      });
+      response.end(CODEX_SSE_RESPONSE);
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('server has no address');
+
+    try {
+      const provider = new OpenAIResponsesChatProvider({
+        model: 'gpt-5',
+        apiKey: 'sk-probe',
+        baseUrl: `http://127.0.0.1:${String(address.port)}/v1`,
+      });
+      const turn: { turnState?: string } = {};
+      const send = async (): Promise<void> => {
+        const projection = projectRequestIdentity({
+          policy: resolveAuthoredRequestIdentity({ preset: 'codex_compatible' }),
+          protocol: 'openai_responses',
+          model: 'gpt-5',
+          rawSessionId: 'session-example',
+          rawAgentId: 'main',
+          isKimiProvider: false,
+          snapshot: codexTurnSnapshot(turn),
+          runtimeVersion: '1.0.0',
+          platform: 'linux',
+          arch: 'x64',
+        });
+        await drain(await provider.generate('sys', [], PROBE_HISTORY, {
+          headers: projection.headers,
+          requestIdentity: projection.wire,
+        }));
+      };
+
+      await send();
+      await send();
+      turn.turnState = undefined;
+      await send();
+
+      expect(seen).toEqual([undefined, 'sticky-state', undefined]);
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
   it('sends Codex canonical metadata and donor-shaped headers on Responses', async () => {
     const provider = new OpenAIResponsesChatProvider({
       model: 'gpt-5',
@@ -903,6 +960,36 @@ const THINK_HISTORY: Message[] = [
 
 async function drain(stream: StreamedMessage): Promise<void> {
   for await (const part of stream) void part;
+}
+
+const CODEX_SSE_RESPONSE = [
+  'event: response.created',
+  'data: {"type":"response.created","response":{"id":"resp_probe","status":"in_progress"}}',
+  '',
+  'event: response.output_text.delta',
+  'data: {"type":"response.output_text.delta","item_id":"item_1","output_index":0,"content_index":0,"delta":"Hello"}',
+  '',
+  'event: response.completed',
+  'data: {"type":"response.completed","response":{"id":"resp_probe","status":"completed","usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4},"output":[]}}',
+  '',
+  '',
+].join('\n');
+
+function codexTurnSnapshot(turn: { turnState?: string }) {
+  const threadId = '00000000-0000-4000-8000-000000000003';
+  return {
+    installationId: '00000000-0000-4000-8000-000000000001',
+    sharedSessionId: threadId,
+    threadId,
+    agentSessionId: '00000000-0000-4000-8000-000000000004',
+    logicalId: '00000000-0000-7000-8000-000000000005',
+    turnIndex: 1,
+    windowId: `${threadId}:1`,
+    turnState: turn.turnState,
+    setTurnState: (value: string) => {
+      turn.turnState = value;
+    },
+  };
 }
 
 function sdkClient(provider: ChatProvider): unknown {
