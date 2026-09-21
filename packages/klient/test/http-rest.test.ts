@@ -51,6 +51,20 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('reads one encoded provider entry from the model directory', async () => {
+    const catalog = { id: 'edge/gateway', models: [] };
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      expect(new URL(String(input)).pathname).toBe('/api/catalog/providers/edge%2Fgateway');
+      return envelope(catalog);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.catalog.provider('edge/gateway')).resolves.toEqual(catalog);
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('routes cron list and task actions through /api/cron with the disambiguating session query', async () => {
     const seen: { pathname: string; method: string; sessionId: string | null }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

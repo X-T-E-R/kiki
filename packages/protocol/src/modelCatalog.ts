@@ -396,6 +396,7 @@ export const catalogModelItemSchema = z.object({
   name: z.string().optional(),
   max_context_size: z.number().int().min(1),
   capabilities: z.array(z.string()).optional(),
+  support_efforts: z.array(z.string()).optional(),
   reasoning: z.boolean(),
 });
 export type CatalogModelItem = z.infer<typeof catalogModelItemSchema>;

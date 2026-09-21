@@ -25,6 +25,7 @@ import { I18nProvider } from '../i18n';
 import { ProviderEditor } from './ProviderFields';
 
 const refreshProvider = vi.fn();
+const getCatalogProvider = vi.fn();
 const getProviderEntity = vi.fn();
 const getModel = vi.fn();
 const updateProvider = vi.fn();
@@ -37,6 +38,7 @@ vi.mock('../state/connection', () => ({
   useConnection: () => ({
     client: {
       refreshProvider,
+      getCatalogProvider,
       getProviderEntity,
       getModel,
       updateProvider,
@@ -95,13 +97,40 @@ const FAST_MODELS: ModelCatalogItem[] = [
 
 const containers: HTMLDivElement[] = [];
 const roots: Root[] = [];
+const reactActEnvironment = globalThis as typeof globalThis & {
+  IS_REACT_ACT_ENVIRONMENT: boolean;
+};
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
+  reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 beforeEach(() => {
   refreshProvider.mockReset();
+  getCatalogProvider.mockReset().mockImplementation(async (id: string) => {
+    if (id !== 'edge:gateway') throw new Error('catalog entry not found');
+    return {
+      id,
+      name: 'Edge Gateway',
+      wire_type: 'openai',
+      guessed: false,
+      needs_base_url: false,
+      rejected: false,
+      reject_reason: null,
+      env_key: null,
+      models: [
+        {
+          id: 'vendor/model:v2',
+          name: 'Vendor Model V2',
+          max_context_size: 1048576,
+          capabilities: ['tool_use', 'thinking'],
+          support_efforts: ['low', 'high'],
+          reasoning: true,
+        },
+      ],
+    };
+  });
   getProviderEntity.mockReset().mockImplementation(async (id: string) => ({
     ...(id === 'managed:kimi-code' ? MANAGED_PROVIDER : COLON_PROVIDER),
     revision: 'provider-rev-1',
@@ -126,12 +155,15 @@ beforeEach(() => {
   deleteProviderEntity.mockReset().mockResolvedValue(undefined);
 });
 
-afterEach(() => {
-  for (const root of roots.splice(0)) root.unmount();
+afterEach(async () => {
+  await act(async () => {
+    for (const root of roots.splice(0)) root.unmount();
+  });
   for (const container of containers.splice(0)) container.remove();
 });
 
 afterAll(() => {
+  reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
   vi.unstubAllGlobals();
 });
 
@@ -156,6 +188,7 @@ async function renderEditor(
       </QueryClientProvider>,
     );
   });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   return container;
 }
 
@@ -350,14 +383,19 @@ describe('ProviderEditor save channel', () => {
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, onSaved);
 
     await act(async () => { buttonByText(container, 'Add model').click(); });
-    const remoteInput = container.querySelector<HTMLInputElement>('input[aria-label="Model 2 ID"]')!;
+    const remoteSelect = container.querySelector<HTMLButtonElement>('#provider-model-1-id')!;
+    await act(async () => { remoteSelect.click(); });
+    const remoteInput = container.querySelector<HTMLInputElement>('input[role="combobox"]')!;
     const baseUrlInput = [...container.querySelectorAll('input')].find(
       (candidate) => candidate.value === 'https://edge.example.test/v1',
     )!;
-    await act(async () => {
-      setInputValue(remoteInput, 'new-model');
-      setInputValue(baseUrlInput, 'https://edge-2.example.test/v1');
-    });
+    await act(async () => { setInputValue(remoteInput, 'new-model'); });
+    const customRow = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
+      (option) => option.textContent?.includes('Use “new-model”'),
+    );
+    expect(customRow, 'custom model option').toBeDefined();
+    await act(async () => { customRow!.click(); });
+    await act(async () => { setInputValue(baseUrlInput, 'https://edge-2.example.test/v1'); });
 
     await act(async () => { buttonByText(container, 'Save provider').click(); });
     expect(createModel).toHaveBeenCalledTimes(1);
@@ -370,5 +408,78 @@ describe('ProviderEditor save channel', () => {
     expect(updateProvider).toHaveBeenCalledTimes(2);
     expect(onSaved).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('Server saved provider edge:gateway.');
+  });
+
+  it('fills known parameters when a directory model is selected', async () => {
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    await act(async () => { buttonByText(container, 'Add model').click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('#provider-model-1-id')!.click(); });
+
+    const directoryRow = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
+      (option) => option.textContent?.includes('vendor/model:v2'),
+    );
+    expect(directoryRow, 'directory model option').toBeDefined();
+    await act(async () => { directoryRow!.click(); });
+
+    expect(container.querySelector<HTMLButtonElement>('#provider-model-1-id')!.textContent)
+      .toContain('vendor/model:v2');
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Model 2 display name"]')!.value)
+      .toBe('Vendor Model V2');
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Model 2 context size"]')!.value)
+      .toBe('1048.576');
+    expect(container.textContent).toContain('tool_use');
+    expect(container.textContent).toContain('thinking');
+    expect(container.textContent).toContain('low');
+    expect(container.textContent).toContain('high');
+  });
+
+  it('keeps known parameters unchanged for a manually entered unknown model ID', async () => {
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    await act(async () => { buttonByText(container, 'Add model').click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('#provider-model-1-id')!.click(); });
+    const input = container.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+    await act(async () => { setInputValue(input, 'vendor/private-preview'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, cancelable: true,
+      }));
+    });
+
+    expect(container.querySelector<HTMLButtonElement>('#provider-model-1-id')!.textContent)
+      .toContain('vendor/private-preview');
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Model 2 display name"]')!.value)
+      .toBe('');
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Model 2 context size"]')!.value)
+      .toBe('128');
+  });
+
+  it('reports an empty refresh result as unsupported instead of unchanged success', async () => {
+    refreshProvider.mockResolvedValue({ changed: [], unchanged: [], failed: [] });
+    const onSaved = vi.fn(async () => {});
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, onSaved);
+    await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
+
+    expect(container.textContent).toContain('This provider has no refreshable catalog source.');
+    expect(container.textContent).not.toContain('Catalog unchanged.');
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('reports removals and additions from the scoped refresh result', async () => {
+    refreshProvider.mockResolvedValue({
+      changed: [{
+        provider_id: 'edge:gateway',
+        provider_name: 'Edge Gateway',
+        added: 2,
+        removed: 1,
+      }],
+      unchanged: [],
+      failed: [],
+    });
+    const onSaved = vi.fn(async () => {});
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, onSaved);
+    await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
+
+    expect(container.textContent).toContain('Refresh completed. 2 added, 1 removed.');
+    expect(onSaved).toHaveBeenCalledOnce();
   });
 });

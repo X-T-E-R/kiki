@@ -30,6 +30,7 @@ import type {
   GetTerminalResponse,
   GoalFollowUpTiming,
   GoalSnapshot,
+  GetCatalogProviderResponse,
   ListMcpServersResponse,
   ListModelsResponse,
   ListProvidersResponse,
@@ -1099,6 +1100,10 @@ export class KikiClient {
 
   listProviders(): Promise<ListProvidersResponse> {
     return this.run(this.klient.global.kosong.listProviders().then((items) => ({ items: [...items] })));
+  }
+
+  getCatalogProvider(providerId: string): Promise<GetCatalogProviderResponse> {
+    return this.run(this.rest.catalog.provider(providerId));
   }
 
   /** Server-side model probe using the configured provider credentials. */

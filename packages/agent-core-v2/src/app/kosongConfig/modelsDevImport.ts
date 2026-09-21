@@ -6,6 +6,7 @@ export interface ModelsDevModelItem {
   readonly name?: string;
   readonly max_context_size: number;
   readonly capabilities?: readonly string[];
+  readonly support_efforts?: readonly string[];
   readonly reasoning: boolean;
 }
 

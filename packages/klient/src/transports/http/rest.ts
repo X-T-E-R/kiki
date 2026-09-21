@@ -11,6 +11,7 @@ import type {
   AuthSummary,
   ConfigResponse,
   FsSearchResponse,
+  GetCatalogProviderResponse,
   ListMcpServersResponse,
   ListNamedAgentProfilesQuery,
   ListNamedAgentProfilesResponse,
@@ -202,6 +203,12 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         method: 'POST',
         body,
       }),
+    },
+
+    catalog: {
+      provider: (providerId: string) => transport.json<GetCatalogProviderResponse>(
+        `/catalog/providers/${encodeURIComponent(providerId)}`,
+      ),
     },
 
     nbSearch: {

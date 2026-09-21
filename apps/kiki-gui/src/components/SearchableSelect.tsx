@@ -58,6 +58,8 @@ export function SearchableSelect({
   panelHeader,
   panelFooter,
   hideFilter = false,
+  allowCustomValue = false,
+  customValueLabel,
 }: {
   id?: string;
   readonly options: readonly SearchableSelectOption[];
@@ -86,6 +88,9 @@ export function SearchableSelect({
    * with no options at all the list goes too, leaving a slot-only panel.
    */
   readonly hideFilter?: boolean;
+  /** Adds the trimmed search text as a final selectable row when no option has that exact value. */
+  readonly allowCustomValue?: boolean;
+  readonly customValueLabel?: (value: string) => string;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -97,6 +102,13 @@ export function SearchableSelect({
 
   const selected = options.find((option) => option.value === value);
   const visible = useMemo(() => filterSelectOptions(options, query), [options, query]);
+  const customValue = query.trim();
+  const customRow = allowCustomValue
+    && customValue !== ''
+    && !options.some((option) => option.value === customValue)
+    ? customValue
+    : undefined;
+  const rowCount = visible.length + (customRow === undefined ? 0 : 1);
   // Group headers earn their row only when the set actually spans groups.
   const showGroups = useMemo(
     () => new Set(options.map((option) => option.group)).size > 1,
@@ -134,18 +146,30 @@ export function SearchableSelect({
     close();
   };
 
+  const commitRow = (index: number) => {
+    const option = visible[index];
+    if (option !== undefined) {
+      commit(option);
+      return;
+    }
+    if (customRow !== undefined && index === visible.length) {
+      onChange(customRow);
+      close();
+    }
+  };
+
   const onSearchKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      setActiveIndex((index) => (visible.length === 0 ? 0 : (index + 1) % visible.length));
+      setActiveIndex((index) => (rowCount === 0 ? 0 : (index + 1) % rowCount));
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
       setActiveIndex((index) =>
-        visible.length === 0 ? 0 : (index - 1 + visible.length) % visible.length,
+        rowCount === 0 ? 0 : (index - 1 + rowCount) % rowCount,
       );
     } else if (event.key === 'Enter') {
       event.preventDefault();
-      commit(visible[activeIndex]);
+      commitRow(activeIndex);
     } else if (event.key === 'Escape') {
       event.preventDefault();
       close();
@@ -232,7 +256,7 @@ export function SearchableSelect({
               aria-expanded="true"
               aria-controls={listId}
               aria-activedescendant={
-                visible.length > 0 ? `${listId}-option-${activeIndex}` : undefined
+                rowCount > 0 ? `${listId}-option-${activeIndex}` : undefined
               }
               className="w-full bg-transparent text-[12px] text-ink outline-none placeholder:text-ink-faint"
             />
@@ -246,86 +270,107 @@ export function SearchableSelect({
             aria-label={ariaLabel}
             className="max-h-[min(340px,55vh)] overflow-y-auto p-1.5"
           >
-            {visible.length === 0 ? (
+            {rowCount === 0 ? (
               <p className="px-2 py-4 text-center text-[11.5px] text-ink-faint">
                 {options.length === 0
                   ? (emptyText ?? t('select.empty'))
                   : (noMatchText ?? ((q: string) => t('select.noMatches', { query: q })))(query.trim())}
               </p>
             ) : (
-              visible.map((option, index) => {
-                const active = index === activeIndex;
-                const isSelected = option.value === value;
-                const previousGroup = index > 0 ? visible[index - 1]?.group : undefined;
-                const groupHeader =
-                  showGroups && option.group !== undefined && option.group !== previousGroup
-                    ? option.group
-                    : undefined;
-                return (
-                  // presentation wrapper: the group header is not an option
-                  <div key={`${option.value}-${index}`} role="presentation">
-                    {groupHeader !== undefined ? (
-                      <p
-                        className={`px-2.5 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase ${index === 0 ? 'pt-1' : 'pt-2'}`}
-                      >
-                        {groupHeader}
-                      </p>
-                    ) : null}
-                  <button
-                    type="button"
-                    id={`${listId}-option-${index}`}
-                    data-index={index}
-                    role="option"
-                    aria-selected={isSelected}
-                    title={option.title ?? option.label}
-                    onClick={() => { commit(option); }}
-                    onMouseMove={() => { if (!active) setActiveIndex(index); }}
-                    className={`flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
-                      active ? 'bg-accent-soft' : 'hover:bg-paper'
-                    }`}
-                  >
-                    <span className="flex items-center gap-2">
-                      <span
-                        className={`min-w-0 truncate text-[12px] ${
-                          isSelected ? 'font-medium text-accent' : 'text-ink'
+              <>
+                {visible.map((option, index) => {
+                  const active = index === activeIndex;
+                  const isSelected = option.value === value;
+                  const previousGroup = index > 0 ? visible[index - 1]?.group : undefined;
+                  const groupHeader =
+                    showGroups && option.group !== undefined && option.group !== previousGroup
+                      ? option.group
+                      : undefined;
+                  return (
+                    <div key={`${option.value}-${index}`} role="presentation">
+                      {groupHeader !== undefined ? (
+                        <p
+                          className={`px-2.5 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase ${index === 0 ? 'pt-1' : 'pt-2'}`}
+                        >
+                          {groupHeader}
+                        </p>
+                      ) : null}
+                      <button
+                        type="button"
+                        id={`${listId}-option-${index}`}
+                        data-index={index}
+                        role="option"
+                        aria-selected={isSelected}
+                        title={option.title ?? option.label}
+                        onClick={() => { commit(option); }}
+                        onMouseMove={() => { if (!active) setActiveIndex(index); }}
+                        className={`flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
+                          active ? 'bg-accent-soft' : 'hover:bg-paper'
                         }`}
                       >
-                        {option.label}
-                      </span>
-                      {isSelected ? (
-                        <span aria-hidden className="ml-auto shrink-0 text-[11px] text-accent">✓</span>
-                      ) : null}
-                    </span>
-                    {option.description !== undefined ? (
-                      <span className="line-clamp-2 text-[11px] leading-snug text-ink-faint">
-                        {option.description}
-                      </span>
-                    ) : null}
-                    {option.hint !== undefined ? (
-                      <span className="truncate font-mono text-[10px] text-ink-faint">
-                        {option.hint}
-                      </span>
-                    ) : null}
-                    {option.badges !== undefined && option.badges.length > 0 ? (
-                      <span className="mt-0.5 flex flex-wrap items-center gap-1">
-                        {option.badges.map((badge) => (
+                        <span className="flex items-center gap-2">
                           <span
-                            key={badge.label}
-                            className={`rounded-full border px-1.5 py-px text-[9.5px] leading-3.5 ${
-                              badge.accent === true
-                                ? 'border-accent/50 bg-accent-soft/60 text-accent'
-                                : 'border-hairline text-ink-faint'
+                            className={`min-w-0 truncate text-[12px] ${
+                              isSelected ? 'font-medium text-accent' : 'text-ink'
                             }`}
                           >
-                            {badge.label}
+                            {option.label}
                           </span>
-                        ))}
-                      </span>
-                    ) : null}
+                          {isSelected ? (
+                            <span aria-hidden className="ml-auto shrink-0 text-[11px] text-accent">✓</span>
+                          ) : null}
+                        </span>
+                        {option.description !== undefined ? (
+                          <span className="line-clamp-2 text-[11px] leading-snug text-ink-faint">
+                            {option.description}
+                          </span>
+                        ) : null}
+                        {option.hint !== undefined ? (
+                          <span className="truncate font-mono text-[10px] text-ink-faint">
+                            {option.hint}
+                          </span>
+                        ) : null}
+                        {option.badges !== undefined && option.badges.length > 0 ? (
+                          <span className="mt-0.5 flex flex-wrap items-center gap-1">
+                            {option.badges.map((badge) => (
+                              <span
+                                key={badge.label}
+                                className={`rounded-full border px-1.5 py-px text-[9.5px] leading-3.5 ${
+                                  badge.accent === true
+                                    ? 'border-accent/50 bg-accent-soft/60 text-accent'
+                                    : 'border-hairline text-ink-faint'
+                                }`}
+                              >
+                                {badge.label}
+                              </span>
+                            ))}
+                          </span>
+                        ) : null}
+                      </button>
+                    </div>
+                  );
+                })}
+                {customRow !== undefined ? (
+                  <button
+                    type="button"
+                    id={`${listId}-option-${visible.length}`}
+                    data-index={visible.length}
+                    role="option"
+                    aria-selected={customRow === value}
+                    title={customRow}
+                    onClick={() => { onChange(customRow); close(); }}
+                    onMouseMove={() => { setActiveIndex(visible.length); }}
+                    className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left font-mono text-[11px] transition-colors ${
+                      activeIndex === visible.length ? 'bg-accent-soft text-accent' : 'text-ink hover:bg-paper'
+                    }`}
+                  >
+                    <span aria-hidden className="shrink-0 text-ink-faint">+</span>
+                    <span className="min-w-0 truncate">
+                      {(customValueLabel ?? ((custom) => custom))(customRow)}
+                    </span>
                   </button>
-                  </div>
-                );
-              })
+                ) : null}
+              </>
             )}
           </div>
           )}

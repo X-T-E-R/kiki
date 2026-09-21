@@ -127,6 +127,7 @@ function toModelItem(model: ModelsDevModel): ModelsDevModelItem {
   return {
     ...(model.name !== undefined ? { name: model.name } : {}),
     ...(caps !== undefined ? { capabilities: caps } : {}),
+    ...(model.supportEfforts !== undefined ? { support_efforts: model.supportEfforts } : {}),
     id: model.id,
     max_context_size: model.capability.max_context_tokens,
     reasoning: model.capability.thinking,

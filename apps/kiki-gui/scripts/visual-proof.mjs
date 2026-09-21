@@ -1474,8 +1474,20 @@ async function scenarioSettings() {
   await page.locator('input[type="password"]:visible').fill('fixture-key');
   await page.locator(`button:has-text("${S.fetchModelsButton}"):visible`).click();
   await page.waitForSelector('text=mock-pro', { timeout: 10_000 });
+  const modelPicker = page.locator('#provider-model-0-id:visible');
+  await modelPicker.click();
+  await page.locator('[role="listbox"]:visible').waitFor({ timeout: 5000 });
   await page.waitForTimeout(300);
   await shot('settings-providers-wizard');
+  await resizeViewport(390);
+  await modelPicker.scrollIntoViewIfNeeded();
+  const mobileModelList = await page.locator('[role="listbox"]:visible').boundingBox();
+  if (mobileModelList === null || mobileModelList.x < 0 || mobileModelList.x + mobileModelList.width > 390) {
+    throw new Error(`provider model picker overflows the 390px viewport: ${JSON.stringify(mobileModelList)}`);
+  }
+  await shot('settings-providers-wizard-mobile');
+  await page.keyboard.press('Escape');
+  await resizeViewport(1440);
 
   // Batch 3 split the capabilities leaf into skills / mcp / automation under
   // "Capabilities & extensions". Nav leaf ids are stable, so click them

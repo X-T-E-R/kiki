@@ -147,6 +147,38 @@ describe('refreshProviderModels modelSource short-circuit', () => {
     }
   });
 
+  it('reports a scoped provider that has no refresh source instead of returning an empty success', async () => {
+    const { host, discovery } = await createHost({
+      providers: {
+        plain: {
+          type: 'openai',
+          baseUrl: 'https://api.example.test/v1',
+          apiKey: 'sk-test',
+        },
+      },
+      models: {
+        'plain/model': {
+          provider: 'plain',
+          model: 'model',
+          maxContextSize: 128000,
+        },
+      },
+    });
+    try {
+      const result = await discovery.refreshProviderModels({ providerId: 'plain' });
+      expect(result).toEqual({
+        changed: [],
+        unchanged: [],
+        failed: [{
+          provider: 'plain',
+          reason: 'provider has no refreshable model source or required credentials',
+        }],
+      });
+    } finally {
+      host.dispose();
+    }
+  });
+
   it('hides static entries from the orchestrator and merges them back verbatim', async () => {
     const fetchMock = vi.fn(
       async () =>

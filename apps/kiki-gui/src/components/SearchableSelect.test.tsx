@@ -147,6 +147,31 @@ describe('SearchableSelect', () => {
     expect(onChange).toHaveBeenCalledWith('c');
   });
 
+  it('commits unmatched search text as a custom value', async () => {
+    const { container, onChange } = await renderSelect({
+      allowCustomValue: true,
+      customValueLabel: (value) => `Use ${value}`,
+    });
+    await act(async () => { trigger(container).click(); });
+    const input = searchInput(container);
+    await typeIn(input, 'vendor/model:v2');
+    expect(options(container)).toHaveLength(1);
+    expect(options(container)[0]?.textContent).toContain('Use vendor/model:v2');
+    await press(input, 'Enter');
+    expect(onChange).toHaveBeenCalledWith('vendor/model:v2');
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+  });
+
+  it('prefers a matching option over the custom row on Enter', async () => {
+    const { container, onChange } = await renderSelect({ allowCustomValue: true });
+    await act(async () => { trigger(container).click(); });
+    const input = searchInput(container);
+    await typeIn(input, 'alp');
+    expect(options(container)).toHaveLength(2);
+    await press(input, 'Enter');
+    expect(onChange).toHaveBeenCalledWith('a');
+  });
+
   it('closes on Escape without committing', async () => {
     const { container, onChange } = await renderSelect();
     await act(async () => { trigger(container).click(); });

@@ -10,6 +10,7 @@ import type {
   FsSearchResponse,
   GetTaskQuery,
   GoalSnapshot,
+  GetCatalogProviderResponse,
   ListMcpServersResponse,
   ListNamedAgentProfilesQuery,
   ListNamedAgentProfilesResponse,
@@ -205,6 +206,10 @@ export interface HttpRestFacade {
   readonly config: {
     get(): Promise<ConfigResponse>;
     patch(body: HttpRestConfigPatch): Promise<ConfigResponse>;
+  };
+
+  readonly catalog: {
+    provider(providerId: string): Promise<GetCatalogProviderResponse>;
   };
 
   readonly nbSearch: {

@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
+import type { CatalogModelItem, ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
@@ -50,7 +50,36 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from './controls';
 import { useDirtyReporter } from './dirtyGuard';
 import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
+import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
+
+interface ProviderModelCatalogChoice {
+  readonly id: string;
+  readonly name?: string;
+  readonly maxContextSize: number;
+  readonly capabilities: readonly string[];
+  readonly supportEfforts: readonly string[];
+}
+
+function configuredCatalogChoice(model: ModelCatalogItem): ProviderModelCatalogChoice {
+  return {
+    id: model.remote_id,
+    name: model.display_name,
+    maxContextSize: model.max_context_size,
+    capabilities: model.capabilities ?? [],
+    supportEfforts: model.support_efforts ?? [],
+  };
+}
+
+function directoryCatalogChoice(model: CatalogModelItem): ProviderModelCatalogChoice {
+  return {
+    id: model.id,
+    name: model.name,
+    maxContextSize: model.max_context_size,
+    capabilities: model.capabilities ?? [],
+    supportEfforts: model.support_efforts ?? [],
+  };
+}
 
 export function blankProviderDraft(): ProviderDraft {
   return {
@@ -316,6 +345,7 @@ function ModelDraftRow({
   index,
   isDefault,
   canRemove,
+  catalogModels,
   onChange,
   onRemove,
   onSetDefault,
@@ -324,6 +354,7 @@ function ModelDraftRow({
   index: number;
   isDefault: boolean;
   canRemove: boolean;
+  catalogModels: readonly ProviderModelCatalogChoice[];
   onChange: (patch: Partial<ProviderModelDraft>) => void;
   onRemove: () => void;
   onSetDefault: () => void;
@@ -335,6 +366,34 @@ function ModelDraftRow({
     ? 'inherit'
     : model.requestIdentityChoice;
   const rowLabel = model.id || model.remoteId;
+  const catalogOptions = useMemo<readonly SearchableSelectOption[]>(() =>
+    catalogModels.map((candidate) => ({
+      value: candidate.id,
+      label: candidate.id,
+      description: candidate.name,
+      keywords: candidate.name,
+      badges: [
+        { label: formatTokens(candidate.maxContextSize) },
+        ...candidate.capabilities.slice(0, 2).map((capability) => ({ label: capability })),
+        ...(candidate.supportEfforts.length > 0
+          ? [{ label: t('st.providers.catalogEfforts', { count: candidate.supportEfforts.length }) }]
+          : []),
+      ],
+    })), [catalogModels, t]);
+  const selectModelId = (remoteId: string) => {
+    const catalogModel = catalogModels.find((candidate) => candidate.id === remoteId);
+    if (catalogModel === undefined) {
+      onChange({ remoteId });
+      return;
+    }
+    onChange({
+      remoteId,
+      displayName: catalogModel.name ?? '',
+      maxContextSize: catalogModel.maxContextSize,
+      capabilities: [...catalogModel.capabilities],
+      supportEfforts: [...catalogModel.supportEfforts],
+    });
+  };
   return (
     <div className="rounded-lg border border-hairline bg-panel p-3">
       <div className="flex items-center gap-2">
@@ -390,14 +449,23 @@ function ModelDraftRow({
           {model.id !== '' ? (
             <p className="truncate font-mono text-[10px] text-ink-faint">{model.id}</p>
           ) : null}
-          <div className="grid gap-2 sm:grid-cols-2">
-            <input
-              className={INPUT}
-              aria-label={t('st.providers.modelIdAria', { n })}
-              value={model.remoteId}
-              onChange={(event) => { onChange({ remoteId: event.target.value }); }}
-              placeholder="model-id"
-            />
+          <div className="grid items-start gap-2 sm:grid-cols-2">
+            <div className="min-w-0 space-y-1">
+              <SearchableSelect
+                id={`provider-model-${index}-id`}
+                options={catalogOptions}
+                value={model.remoteId}
+                onChange={selectModelId}
+                ariaLabel={t('st.providers.modelIdAria', { n })}
+                allowCustomValue
+                customValueLabel={(id) => t('st.providers.useCustomModel', { id })}
+                searchPlaceholder={t('st.providers.modelSearchPlaceholder')}
+                emptyText={t('st.providers.catalogEmpty')}
+                buttonClassName={`${INPUT} flex items-center justify-between gap-2 text-left font-mono`}
+                panelClassName="anim-enter absolute left-0 top-full z-40 mt-1 w-[min(30rem,calc(100vw-48px))] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+              />
+              <Hint>{t('st.providers.catalogModelHint')}</Hint>
+            </div>
             <input
               className={INPUT}
               aria-label={t('st.providers.modelNameAria', { n })}
@@ -462,6 +530,7 @@ export function ProviderFields({
   managed = false,
   idLocked = false,
   refreshProviderId,
+  catalogModels = [],
   onRefreshed,
 }: {
   draft: ProviderDraft;
@@ -475,14 +544,27 @@ export function ProviderFields({
    * fields only (in-place renaming is not part of this slice).
    */
   idLocked?: boolean;
-  /** When set, Test connection uses `POST /providers/{id}:refresh` instead of a browser-direct probe. */
+  /** When set, Test connection uses the server-side provider discovery service. */
   refreshProviderId?: string;
+  catalogModels?: readonly ProviderModelCatalogChoice[];
   onRefreshed?: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const [probing, setProbing] = useState(false);
   const [probeFeedback, setProbeFeedback] = useState<Feedback>(null);
+  const availableCatalogModels = useMemo<readonly ProviderModelCatalogChoice[]>(() =>
+    catalogModels.length > 0
+      ? catalogModels
+      : draft.models
+          .filter((model) => model.remoteId !== '')
+          .map((model) => ({
+            id: model.remoteId,
+            name: model.displayName || undefined,
+            maxContextSize: model.maxContextSize,
+            capabilities: model.capabilities,
+            supportEfforts: model.supportEfforts,
+          })), [catalogModels, draft.models]);
 
   const updateModel = (index: number, patch: Partial<ProviderModelDraft>) => {
     onChange({
@@ -497,20 +579,25 @@ export function ProviderFields({
     try {
       if (refreshProviderId !== undefined) {
         const result = await client.refreshProvider(refreshProviderId);
-        const failure = result.failed.find((entry) => entry.provider === refreshProviderId) ?? result.failed[0];
-        if (failure !== undefined && result.changed.length === 0 && result.unchanged.length === 0) {
-          throw new Error(failure.reason);
-        }
-        if (failure !== undefined && failure.provider === refreshProviderId) {
-          throw new Error(failure.reason);
+        const failure = result.failed.find((entry) => entry.provider === refreshProviderId);
+        if (failure !== undefined) throw new Error(failure.reason);
+        const change = result.changed.find((entry) => entry.provider_id === refreshProviderId);
+        const unchanged = result.unchanged.includes(refreshProviderId);
+        if (change === undefined && !unchanged) {
+          setProbeFeedback({ tone: 'error', text: t('st.fetchModels.serverUnsupported') });
+          return;
         }
         await onRefreshed?.();
-        const added = result.changed.reduce((sum, change) => sum + change.added, 0);
         setProbeFeedback({
           tone: 'success',
-          text: added > 0
-            ? t('st.fetchModels.serverSuccess', { count: added })
-            : t('st.fetchModels.serverUnchanged'),
+          text: change === undefined
+            ? t('st.fetchModels.serverUnchanged')
+            : change.added === 0 && change.removed === 0
+              ? t('st.fetchModels.serverUpdated')
+              : t('st.fetchModels.serverChanged', {
+                  added: change.added,
+                  removed: change.removed,
+                }),
         });
         return;
       }
@@ -606,7 +693,7 @@ export function ProviderFields({
         </div>
         {draft.models.map((model, index) => (
           <ModelDraftRow
-            key={`${index}-${model.id}-${model.remoteId}`}
+            key={model.id || `new-${index}`}
             model={model}
             index={index}
             isDefault={
@@ -614,6 +701,7 @@ export function ProviderFields({
               && (model.id === draft.defaultModel || model.remoteId === draft.defaultModel)
             }
             canRemove={draft.models.length > 1}
+            catalogModels={availableCatalogModels}
             onChange={(patch) => { updateModel(index, patch); }}
             onRemove={() => {
               const models = draft.models.filter((_, modelIndex) => modelIndex !== index);
@@ -652,6 +740,7 @@ export function ProviderEditor({
   const { client } = useConnection();
   const initial = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
   const [draft, setDraft] = useState(initial);
+  const [directoryModels, setDirectoryModels] = useState<readonly CatalogModelItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirming, setConfirming] = useState<'remove' | 'clearKey' | null>(null);
@@ -659,8 +748,26 @@ export function ProviderEditor({
     provider: string;
     models: ReadonlyMap<string, string>;
   } | null>(null);
+  const catalogModels = useMemo(() => {
+    const choices = new Map<string, ProviderModelCatalogChoice>();
+    for (const model of models) {
+      if (model.provider_id === provider.id) choices.set(model.remote_id, configuredCatalogChoice(model));
+    }
+    for (const model of directoryModels) choices.set(model.id, directoryCatalogChoice(model));
+    return [...choices.values()];
+  }, [directoryModels, models, provider.id]);
 
   useEffect(() => { setDraft(initial); }, [initial]);
+  useEffect(() => {
+    let current = true;
+    setDirectoryModels([]);
+    void client.getCatalogProvider(provider.id).then((catalogProvider) => {
+      if (current) setDirectoryModels(catalogProvider.models);
+    }).catch(() => {
+      if (current) setDirectoryModels([]);
+    });
+    return () => { current = false; };
+  }, [provider.id]);
   useEffect(() => {
     let current = true;
     setRevisions(null);
@@ -815,6 +922,7 @@ export function ProviderEditor({
           managed={managed}
           idLocked
           refreshProviderId={provider.id}
+          catalogModels={catalogModels}
           onRefreshed={onSaved}
         />
         {/* OAuth-managed providers keep the save button for the editable

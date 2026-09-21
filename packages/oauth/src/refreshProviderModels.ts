@@ -762,5 +762,17 @@ export async function refreshProviderModels(
     }
   }
 
+  if (
+    targetId !== undefined
+    && !changed.some((entry) => entry.providerId === targetId)
+    && !unchanged.includes(targetId)
+    && !failed.some((entry) => entry.provider === targetId)
+  ) {
+    failed.push({
+      provider: targetId,
+      reason: 'provider has no refreshable model source or required credentials',
+    });
+  }
+
   return { changed, unchanged, failed };
 }

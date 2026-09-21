@@ -39,6 +39,7 @@ const CATALOG = {
         name: 'GPT-4.1',
         limit: { context: 1047576, output: 32768 },
         tool_call: true,
+        reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
         modalities: { input: ['text', 'image'], output: ['text'] },
       },
     },
@@ -181,7 +182,11 @@ describe('IModelsDevImportService', () => {
       env_key: 'OPENAI_API_KEY',
     });
     expect(openai?.models).toEqual([
-      expect.objectContaining({ id: 'gpt-4.1', max_context_size: 1047576 }),
+      expect.objectContaining({
+        id: 'gpt-4.1',
+        max_context_size: 1047576,
+        support_efforts: ['low', 'high'],
+      }),
     ]);
     expect(byId.get('gateway')).toMatchObject({ needs_base_url: true, wire_type: 'openai' });
     expect(byId.get('bedrock')).toMatchObject({
