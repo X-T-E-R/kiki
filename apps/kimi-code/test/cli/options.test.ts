@@ -580,7 +580,6 @@ describe('CLI options parsing', () => {
         'events',
         'transcript',
         'cancel',
-        'migrate-config',
       ]);
     });
 

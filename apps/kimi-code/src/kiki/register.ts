@@ -6,7 +6,6 @@ import { registerMcpCommand } from './mcp';
 import { registerPromptFieldsCommand } from './prompt-fields';
 import { registerSeatCommand } from './seat';
 import { registerServeCommand } from './serve';
-import { registerMigrationCommand } from './migrate';
 
 export function registerKikiCommands(program: Command): void {
   registerServeCommand(program);
@@ -15,5 +14,4 @@ export function registerKikiCommands(program: Command): void {
   registerMcpCommand(program);
   registerPromptFieldsCommand(program);
   registerDelegationCommands(program, delegationProcedureTable);
-  registerMigrationCommand(program);
 }
