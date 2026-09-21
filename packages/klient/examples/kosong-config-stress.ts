@@ -24,7 +24,7 @@
  *
  *   pnpm -C packages/klient stress:kosong-config
  *
- * Env: KIMI_MODEL_NAME is unset for the run (it would pin `defaultModel` and
+ * Env: KIKI_MODEL_NAME is unset for the run (it would pin `defaultModel` and
  * break the pointer assertions); restored on exit.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -257,13 +257,13 @@ async function main(): Promise<void> {
   console.log('kosong-config stress: OK');
 }
 
-const pinnedModelEnv = process.env['KIMI_MODEL_NAME'];
-delete process.env['KIMI_MODEL_NAME'];
+const pinnedModelEnv = process.env['KIKI_MODEL_NAME'];
+delete process.env['KIKI_MODEL_NAME'];
 try {
   await main();
 } catch (error) {
   console.error(error);
   process.exit(1);
 } finally {
-  if (pinnedModelEnv !== undefined) process.env['KIMI_MODEL_NAME'] = pinnedModelEnv;
+  if (pinnedModelEnv !== undefined) process.env['KIKI_MODEL_NAME'] = pinnedModelEnv;
 }

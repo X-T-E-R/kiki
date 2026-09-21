@@ -215,5 +215,5 @@ pnpm -C packages/klient smoke
 `examples/smoke.ts` boots an in-process engine (memory transport) and asserts
 the `global` facade end-to-end — no server needed. `examples/basic.ts` is a
 shorter narrated tour; `examples/context-usage.ts` traces context-size
-readings through a real prompt (requires `KIMI_EXAMPLE_MODEL` +
-`KIMI_EXAMPLE_API_KEY`).
+readings through a real prompt (requires `KIKI_EXAMPLE_MODEL` +
+`KIKI_EXAMPLE_API_KEY`).

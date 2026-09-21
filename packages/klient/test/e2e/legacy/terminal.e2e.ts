@@ -14,7 +14,7 @@ import { createCaseLogger } from './log.js';
 
 const BASE_URL = process.env['KIKI_SERVER_URL'] ?? 'http://127.0.0.1:58627';
 const API_PREFIX = '/api';
-const TERMINAL_SHELL = process.env['KIMI_SERVER_E2E_TERMINAL_SHELL'] ?? '/bin/sh';
+const TERMINAL_SHELL = process.env['KIKI_SERVER_E2E_TERMINAL_SHELL'] ?? '/bin/sh';
 const OUTPUT_TIMEOUT_MS = 20_000;
 const EXIT_TIMEOUT_MS = 5_000;
 const CANARY = `KIMI_KLIENT_E2E_TERMINAL_${process.pid}_${Date.now()}`;

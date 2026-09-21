@@ -19,15 +19,15 @@
  * A throwaway model is seeded into the engine's temp home (an in-process
  * engine has no default model), so both env vars are required. Run it (the
  * engine sources need the decorators tsconfig + raw-text loader):
- *   KIMI_EXAMPLE_MODEL=... KIMI_EXAMPLE_API_KEY=... \
+ *   KIKI_EXAMPLE_MODEL=... KIKI_EXAMPLE_API_KEY=... \
  *   pnpm -C packages/klient exec tsx --tsconfig ./tsconfig.examples.json \
  *     --import ../../build/register-raw-text-loader.mjs examples/context-usage.ts
  *
  * Env:
- *   KIMI_EXAMPLE_MODEL      — gateway model id to seed (required)
- *   KIMI_EXAMPLE_API_KEY    — API key for the seeded model (required)
- *   KIMI_EXAMPLE_BASE_URL   — optional gateway base URL for the seeded model
- *   KIMI_EXAMPLE_PROTOCOL   — optional wire protocol for the seeded model (default `openai`)
+ *   KIKI_EXAMPLE_MODEL      — gateway model id to seed (required)
+ *   KIKI_EXAMPLE_API_KEY    — API key for the seeded model (required)
+ *   KIKI_EXAMPLE_BASE_URL   — optional gateway base URL for the seeded model
+ *   KIKI_EXAMPLE_PROTOCOL   — optional wire protocol for the seeded model (default `openai`)
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -59,10 +59,10 @@ const tick = (ms: number): Promise<void> =>
   });
 
 async function main(): Promise<void> {
-  const seedModel = process.env['KIMI_EXAMPLE_MODEL'];
-  const seedKey = process.env['KIMI_EXAMPLE_API_KEY'];
+  const seedModel = process.env['KIKI_EXAMPLE_MODEL'];
+  const seedKey = process.env['KIKI_EXAMPLE_API_KEY'];
   if (seedModel === undefined || seedKey === undefined) {
-    throw new Error('KIMI_EXAMPLE_MODEL and KIMI_EXAMPLE_API_KEY are required (see header)');
+    throw new Error('KIKI_EXAMPLE_MODEL and KIKI_EXAMPLE_API_KEY are required (see header)');
   }
 
   const homeDir = await mkdtemp(join(tmpdir(), 'klient-context-usage-'));
@@ -79,8 +79,8 @@ async function main(): Promise<void> {
     await klient.global.kosong.addProvider({
       id: SEEDED_MODEL_ID,
       model: seedModel,
-      protocol: (process.env['KIMI_EXAMPLE_PROTOCOL'] ?? 'openai'),
-      baseUrl: process.env['KIMI_EXAMPLE_BASE_URL'] ?? 'http://127.0.0.1:1',
+      protocol: (process.env['KIKI_EXAMPLE_PROTOCOL'] ?? 'openai'),
+      baseUrl: process.env['KIKI_EXAMPLE_BASE_URL'] ?? 'http://127.0.0.1:1',
       auth: { method: 'api-key', apiKey: seedKey },
       maxContextSize: 262_144,
     });

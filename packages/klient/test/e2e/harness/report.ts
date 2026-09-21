@@ -196,7 +196,7 @@ export async function fetchWithReport(
 }
 
 export function defaultReportDir(): string {
-  return resolve(process.env['KIMI_SERVER_E2E_REPORT_DIR'] ?? join(process.cwd(), 'reports', 'latest'));
+  return resolve(process.env['KIKI_SERVER_E2E_REPORT_DIR'] ?? join(process.cwd(), 'reports', 'latest'));
 }
 
 function normalizeEvent(event: ReportEvent): StoredReportEvent {
@@ -204,7 +204,7 @@ function normalizeEvent(event: ReportEvent): StoredReportEvent {
   return {
     ...stored,
     at: event.at ?? new Date().toISOString(),
-    caseName: event.caseName ?? getActiveReportCase() ?? process.env['KIMI_SERVER_E2E_CASE_NAME'] ?? 'unassigned',
+    caseName: event.caseName ?? getActiveReportCase() ?? process.env['KIKI_SERVER_E2E_CASE_NAME'] ?? 'unassigned',
     pid: process.pid,
     ordinal: ordinal++,
   };

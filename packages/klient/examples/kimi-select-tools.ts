@@ -43,9 +43,9 @@
  *
  * Env:
  *   KIKI_HOME              — default `~/.kiki`
- *   KIMI_SELECT_TOOLS_MODELS    — comma-separated model ids for the live parts (default: all kimi-type)
- *   KIMI_SELECT_TOOLS_SKIP_LIVE — set to `1` to skip part B (no real API calls)
- *   KIMI_SELECT_TOOLS_TAP       — set to `1` to run part C instead of B: route
+ *   KIKI_SELECT_TOOLS_MODELS    — comma-separated model ids for the live parts (default: all kimi-type)
+ *   KIKI_SELECT_TOOLS_SKIP_LIVE — set to `1` to skip part B (no real API calls)
+ *   KIKI_SELECT_TOOLS_TAP       — set to `1` to run part C instead of B: route
  *                                 the flow through a logging proxy and dump
  *                                 the actual wire Context of each request.
  */
@@ -527,7 +527,7 @@ async function probeLiveKimiProviders(): Promise<void> {
     await app.accessor.get(IConfigService).ready;
     const catalog = app.accessor.get(IModelCatalog);
 
-    const filter = process.env['KIMI_SELECT_TOOLS_MODELS']?.split(',').map((s) => s.trim());
+    const filter = process.env['KIKI_SELECT_TOOLS_MODELS']?.split(',').map((s) => s.trim());
     const models = await catalog.listModels();
     const targets = models.filter((m) => {
       if (filter !== undefined && !filter.includes(m.id)) return false;
@@ -636,7 +636,7 @@ async function probeTappedContext(): Promise<void> {
     const catalog = app.accessor.get(IModelCatalog);
     const registry = app.accessor.get(IProtocolAdapterRegistry);
 
-    const filter = process.env['KIMI_SELECT_TOOLS_MODELS']?.split(',').map((s) => s.trim());
+    const filter = process.env['KIKI_SELECT_TOOLS_MODELS']?.split(',').map((s) => s.trim());
     const models = await catalog.listModels();
     const targets = models.filter((m) => {
       if (filter !== undefined && !filter.includes(m.id)) return false;
@@ -725,9 +725,9 @@ async function probeTappedContext(): Promise<void> {
 
 async function main(): Promise<void> {
   await probeWireEncoding();
-  if (process.env['KIMI_SELECT_TOOLS_TAP'] === '1') {
+  if (process.env['KIKI_SELECT_TOOLS_TAP'] === '1') {
     await probeTappedContext();
-  } else if (process.env['KIMI_SELECT_TOOLS_SKIP_LIVE'] !== '1') {
+  } else if (process.env['KIKI_SELECT_TOOLS_SKIP_LIVE'] !== '1') {
     await probeLiveKimiProviders();
   }
   console.log('\nselect-tools: OK');

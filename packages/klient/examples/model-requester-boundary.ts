@@ -34,8 +34,8 @@
  *
  * Env:
  *   KIKI_HOME        — default `~/.kiki`
- *   KIMI_BOUNDARY_MODELS  — comma-separated model ids to ping (default: all)
- *   KIMI_BOUNDARY_SKIP_LIVE — set to `1` to skip part 1 (no real API calls)
+ *   KIKI_BOUNDARY_MODELS  — comma-separated model ids to ping (default: all)
+ *   KIKI_BOUNDARY_SKIP_LIVE — set to `1` to skip part 1 (no real API calls)
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
@@ -100,7 +100,7 @@ async function probeRealConfig(): Promise<void> {
     }
 
     const models = await catalog.listModels();
-    const filter = process.env['KIMI_BOUNDARY_MODELS']?.split(',').map((s) => s.trim());
+    const filter = process.env['KIKI_BOUNDARY_MODELS']?.split(',').map((s) => s.trim());
     const targets = models.filter((m) => filter === undefined || filter.includes(m.id));
     assert(targets.length > 0, 'at least one configured model to ping');
 
@@ -755,7 +755,7 @@ async function probeBoundaries(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  if (process.env['KIMI_BOUNDARY_SKIP_LIVE'] !== '1') {
+  if (process.env['KIKI_BOUNDARY_SKIP_LIVE'] !== '1') {
     await probeRealConfig();
   }
   await probeBoundaries();
