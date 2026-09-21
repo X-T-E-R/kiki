@@ -225,4 +225,58 @@ describe('PlanSettings plan gate defaults', () => {
     );
     expect(buttons.length).toBe(1);
   });
+
+  it('SETTINGS-1: does not overwrite a new model selection made while a save is pending', async () => {
+    let resolvePatch!: (value: unknown) => void;
+    const pendingPatch = new Promise((resolve) => {
+      resolvePatch = resolve;
+    });
+
+    patchConfig.mockImplementationOnce(async () => {
+      const res = await pendingPatch;
+      return res;
+    });
+
+    const container = await renderSection('general');
+    const sessionCard = container.querySelector('#st-card-session-title')!;
+
+    // Initial edit: select 'custom-model'
+    const hiddenInput = sessionCard.querySelector<HTMLInputElement>('[data-session-title-model-input]')!;
+    await setInputValue(hiddenInput, 'custom-model');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const saveButton = [...sessionCard.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Save',
+    )!;
+    expect(saveButton.disabled).toBe(false);
+
+    // Trigger save - this enters saving=true
+    await act(async () => {
+      saveButton.click();
+    });
+
+    // While saving is pending, the SearchableSelect button is disabled
+    const selectTrigger = sessionCard.querySelector<HTMLButtonElement>('#session-title-model')!;
+    expect(selectTrigger.disabled).toBe(true);
+
+    // Concurrently, if a new value arrives (e.g. from input or fast reselection)
+    await setInputValue(hiddenInput, 'newer-concurrent-model');
+    expect(hiddenInput.value).toBe('newer-concurrent-model');
+
+    // Now let the first save resolve with the server echoing 'custom-model'
+    await act(async () => {
+      resolvePatch({
+        ...CONFIG,
+        session_title: { model: 'custom-model' },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The newer draft must NOT be overwritten by the echoed 'custom-model'
+    expect(hiddenInput.value).toBe('newer-concurrent-model');
+    // And dirty remains true so the user can save the newer choice
+    expect(saveButton.disabled).toBe(false);
+  });
 });

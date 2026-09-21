@@ -216,10 +216,13 @@ export function GeneralSection() {
         onSaveExtra={titleModelSaver?.getPatch}
         onSavedExtra={titleModelSaver?.onSaved}
       >
-        <SessionTitleModelFields
-          onDirtyChange={setTitleModelDirty}
-          registerExtraSaver={setTitleModelSaver}
-        />
+        {({ saving: sectionSaving }) => (
+          <SessionTitleModelFields
+            disabled={sectionSaving}
+            onDirtyChange={setTitleModelDirty}
+            registerExtraSaver={setTitleModelSaver}
+          />
+        )}
       </ExperimentalSection>
 
       <SectionCard id="st-card-desktop" title={t('st.desktop.title')} badge="desktop" aside={isDesktop ? undefined : t('st.desktop.browserHint')}>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { sessionTitleModelPatch } from '@kiki/session-core/settings';
@@ -10,6 +10,7 @@ import { SearchableSelect, type SearchableSelectOption } from '../SearchableSele
 import { Hint } from '../controls';
 
 export interface SessionTitleModelControlsProps {
+  disabled?: boolean;
   onDirtyChange?: (dirty: boolean) => void;
   registerExtraSaver?: (saver: {
     getPatch: () => KikiConfigPatch | null;
@@ -18,6 +19,7 @@ export interface SessionTitleModelControlsProps {
 }
 
 export function SessionTitleModelControls({
+  disabled = false,
   onDirtyChange,
   registerExtraSaver,
 }: SessionTitleModelControlsProps) {
@@ -25,6 +27,13 @@ export function SessionTitleModelControls({
   const { t } = useI18n();
   const [draft, setDraft] = useState<string | null>(null);
   const [baseline, setBaseline] = useState<string>('');
+
+  const revisionRef = useRef(0);
+  const savingRevisionRef = useRef<number | null>(null);
+  const draftRef = useRef<string | null>(draft);
+  draftRef.current = draft;
+  const baselineRef = useRef<string>(baseline);
+  baselineRef.current = baseline;
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
@@ -40,24 +49,47 @@ export function SessionTitleModelControls({
       const serverModel = configQuery.data.session_title?.model ?? '';
       setDraft(serverModel);
       setBaseline(serverModel);
+      draftRef.current = serverModel;
+      baselineRef.current = serverModel;
     }
   }, [configQuery.data, dirty]);
+
+  const updateDraft = useCallback((next: string) => {
+    if (next === draftRef.current) return;
+    revisionRef.current += 1;
+    draftRef.current = next;
+    setDraft(next);
+  }, []);
 
   useEffect(() => {
     if (registerExtraSaver) {
       registerExtraSaver({
         getPatch: () => {
-          if (draft === null || draft === baseline) return null;
-          return sessionTitleModelPatch(draft);
+          const currentDraft = draftRef.current;
+          const currentBaseline = baselineRef.current;
+          if (currentDraft === null || currentDraft === currentBaseline) {
+            savingRevisionRef.current = null;
+            return null;
+          }
+          savingRevisionRef.current = revisionRef.current;
+          return sessionTitleModelPatch(currentDraft);
         },
         onSaved: (echoed) => {
           const nextModel = echoed.session_title?.model ?? '';
-          setDraft(nextModel);
+          const savedRevision = savingRevisionRef.current;
+          savingRevisionRef.current = null;
+
           setBaseline(nextModel);
+          baselineRef.current = nextModel;
+
+          if (savedRevision !== null && revisionRef.current === savedRevision) {
+            setDraft(nextModel);
+            draftRef.current = nextModel;
+          }
         },
       });
     }
-  }, [draft, baseline, registerExtraSaver]);
+  }, [registerExtraSaver]);
 
   const models = modelsQuery.data?.items ?? [];
   const modelOptions = useMemo<readonly SearchableSelectOption[]>(() => {
@@ -82,14 +114,24 @@ export function SessionTitleModelControls({
         <div className="w-72 max-w-full">
           <SearchableSelect
             id="session-title-model"
+            disabled={disabled}
             value={selectedValue}
             options={modelOptions}
             allowCustomValue
             searchPlaceholder={t('st.sessionTitleModel.placeholder')}
             ariaLabel={t('st.sessionTitleModel.model')}
             emptyText={t('st.sessionTitleModel.managedDefault')}
-            onChange={(next) => {
-              setDraft(next);
+            onChange={updateDraft}
+          />
+          <input
+            type="text"
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+            data-session-title-model-input
+            value={selectedValue}
+            onChange={(event) => {
+              updateDraft(event.target.value);
             }}
           />
         </div>

@@ -48,7 +48,7 @@ export interface ExperimentalSectionProps {
   collapsible?: boolean;
   summaryKey?: I18nKey;
   /** Extra controls rendered inside the same card after the flag rows. */
-  children?: ReactNode;
+  children?: ReactNode | ((context: { saving: boolean }) => ReactNode);
   /** Whether extra child controls have unsaved changes. */
   extraDirty?: boolean;
   /** Called during save to contribute extra domain patches (e.g. session_title). */
@@ -222,7 +222,9 @@ export function ExperimentalSection({
         {rows.length === 0 && !metaQuery.isLoading && !configQuery.isLoading ? <Hint>{t('st.experimental.empty')}</Hint> : null}
       </fieldset>
 
-      {children}
+      <fieldset disabled={saving} className="min-w-0 border-0 p-0 m-0 disabled:opacity-60">
+        {typeof children === 'function' ? children({ saving }) : children}
+      </fieldset>
 
       <div className="flex flex-wrap items-center gap-3 pt-1">
         <button
