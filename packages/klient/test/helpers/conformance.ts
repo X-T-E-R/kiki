@@ -778,6 +778,55 @@ export function defineKlientConformance(
       }
     });
 
+    it('restores known cold agents before setModel and rejects missing agents', async () => {
+      const initialModel = '__klient_restore_initial__';
+      const targetModel = '__klient_restore_target__';
+      const kosong = target.klient.global.kosong;
+      await kosong.addProvider({
+        id: initialModel,
+        model: initialModel,
+        protocol: 'openai',
+        baseUrl: 'http://127.0.0.1:1',
+        maxContextSize: 1000,
+        auth: { method: 'api-key', apiKey: 'restore-key' },
+      });
+      await kosong.addProvider({
+        id: targetModel,
+        model: targetModel,
+        protocol: 'openai',
+        baseUrl: 'http://127.0.0.1:1',
+        maxContextSize: 1000,
+        auth: { method: 'api-key', apiKey: 'restore-key' },
+      });
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      const live = getLiveSessionById(target.app.accessor, created.id);
+      if (live === undefined) throw new Error('conformance session was not materialized');
+      const lifecycle = live.accessor.get(IAgentLifecycleService);
+      const child = await lifecycle.create({
+        agentId: 'cold-set-model',
+        binding: { profile: 'agent', model: initialModel, thinking: 'off' },
+      });
+      await lifecycle.remove(child.id);
+      try {
+        expect(lifecycle.get(child.id)).toBeUndefined();
+        expect((await session.agents())[child.id]).toBeDefined();
+        await expect(session.agent(child.id).setModel(targetModel)).resolves.toMatchObject({
+          model: targetModel,
+        });
+        expect(lifecycle.get(child.id)).toBeDefined();
+        await expect(session.agent(child.id).getModel()).resolves.toBe(targetModel);
+        await expect(session.agent('missing-set-model').setModel(targetModel)).rejects.toMatchObject({
+          name: 'RPCError',
+          code: 40404,
+        });
+      } finally {
+        await session.close();
+        await kosong.removeProvider(initialModel);
+        await kosong.removeProvider(targetModel);
+      }
+    });
+
     it('keeps todo state isolated per agent across the transport', async () => {
       const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
       const session = target.klient.session(created.id);

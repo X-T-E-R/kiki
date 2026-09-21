@@ -936,6 +936,57 @@ describe('AgentLifecycleService', () => {
     expect(resolveExecutable).toHaveBeenCalledWith('native', undefined);
   });
 
+  it('restores a route-only binding without requiring a profile name', async () => {
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+      {
+        type: 'profile.bind',
+        routeId: 'route-only',
+        modelAlias: 'provider/child-model',
+        thinkingEffort: 'high',
+        executorId: 'native',
+        executorProtocol: 'native',
+        systemPrompt: '',
+        disallowedTools: [],
+        time: 2,
+      },
+    ]).store);
+    ix.stub(ISessionMetadata, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeMetadata: Event.None,
+      read: async () => ({
+        id: 'sess_test',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        agents: { child: { type: 'sub', displayName: 'route-only' } },
+      }),
+      update: async () => {},
+      setTitle: async () => {},
+      setArchived: async () => {},
+      registerAgent,
+    } as unknown as ISessionMetadata);
+    const svc = ix.get(IAgentLifecycleService);
+
+    const restored = await svc.create({
+      agentId: 'child',
+      restoreBinding: {
+        routeId: 'route-only',
+        modelAlias: 'provider/child-model',
+        thinkingEffort: 'high',
+        executorId: 'native',
+        executorProtocol: 'native',
+      },
+    });
+
+    expect(restored.accessor.get(IAgentProfileService).data()).toMatchObject({
+      profileName: undefined,
+      routeId: 'route-only',
+      modelAlias: 'provider/child-model',
+    });
+  });
+
   it('rejects restore when persisted binding metadata is incomplete', async () => {
     ix.stub(ISessionMetadata, {
       _serviceBrand: undefined,

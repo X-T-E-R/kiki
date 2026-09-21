@@ -338,15 +338,20 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   private validateRestoreBindingInput(agentId: string, binding: AgentRestoreBinding): void {
     const required: readonly [keyof AgentRestoreBinding, string | undefined][] = [
-      ['profileName', binding.profileName],
       ['modelAlias', binding.modelAlias],
       ['thinkingEffort', binding.thinkingEffort],
       ['executorId', binding.executorId],
       ['executorProtocol', binding.executorProtocol],
     ];
-    const missingFields = required
+    const missingFields: string[] = required
       .filter(([, value]) => value === undefined || value.length === 0)
       .map(([field]) => field);
+    if (
+      (binding.profileName === undefined || binding.profileName.length === 0) &&
+      (binding.routeId === undefined || binding.routeId.length === 0)
+    ) {
+      missingFields.unshift('profileNameOrRouteId');
+    }
     if (missingFields.length === 0) return;
     throw new Error2(
       ErrorCodes.CONFIG_INVALID,

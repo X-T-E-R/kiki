@@ -20,6 +20,7 @@ import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionM
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
+import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { IEventBus } from '@kiki/agent-core-v2/app/event/eventBus';
 import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
@@ -121,6 +122,55 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
     return { kind: 'agent', like: agent };
   }
 
+  async function restoreKnownAgentForSetModel(
+    scope: ScopeRef,
+    options?: CallOptions,
+  ): Promise<void> {
+    if (
+      scope.workspaceId !== undefined ||
+      scope.sessionId === undefined ||
+      scope.agentId === undefined ||
+      scope.agentId === 'main'
+    ) return;
+    const session = (await resolveScope({ sessionId: scope.sessionId })).like;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    if (lifecycle.get(scope.agentId) !== undefined) return;
+    const metadata = await session.accessor.get(ISessionMetadata).read();
+    const agentMetadata = metadata.agents?.[scope.agentId];
+    if (agentMetadata === undefined) {
+      throw new RPCError(NOT_FOUND, `agent not found: ${scope.agentId}`);
+    }
+    options?.signal?.throwIfAborted();
+    const context = session.accessor.get(ISessionContext);
+    const snapshot = await readPersistedAgentProfileSnapshot(
+      root,
+      context.workspaceId,
+      context.sessionId,
+      scope.agentId,
+      agentMetadata,
+      options?.signal,
+    );
+    options?.signal?.throwIfAborted();
+    if (snapshot === undefined) {
+      throw new RPCError(
+        REQUEST_INVALID,
+        `Persisted binding metadata for agent "${scope.agentId}" is unavailable`,
+        { agentId: scope.agentId },
+      );
+    }
+    await lifecycle.create({
+      agentId: scope.agentId,
+      restoreBinding: {
+        profileName: snapshot.profileName,
+        routeId: snapshot.routeId,
+        modelAlias: snapshot.modelAlias,
+        thinkingEffort: snapshot.thinkingLevel,
+        executorId: snapshot.executorId,
+        executorProtocol: snapshot.executorProtocol,
+      },
+    });
+  }
+
   function resolveService(resolved: ResolvedScope, service: string): Record<string, unknown> {
     const token = serviceTokens[service];
     if (token === undefined) {
@@ -189,6 +239,13 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
   return {
     async call(scope, service, method, args, options) {
       options?.signal?.throwIfAborted();
+      if (service === 'agentProfileService' && method === 'setModel') {
+        try {
+          await restoreKnownAgentForSetModel(scope, options);
+        } catch (error) {
+          throw toRPCError(error);
+        }
+      }
       if (service === 'agentPlanService' && method === 'status' && scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
         const session = (await resolveScope({ sessionId: scope.sessionId })).like;
         if (session.accessor.get(IAgentLifecycleService).get(scope.agentId) === undefined && scope.agentId !== 'main') {

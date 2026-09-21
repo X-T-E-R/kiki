@@ -152,6 +152,7 @@ export * from '#/app/threadCommunication/threadCommunicationService';
 export * from '#/session/sessionMetadata/sessionMetadata';
 export * from '#/session/sessionMetadata/sessionMetadataService';
 export * from '#/session/sessionMetadata/promptMetadata';
+export * from '#/session/agentProfileSnapshot';
 export * from '#/session/sessionActivity/sessionActivity';
 export * from '#/session/sessionActivity/sessionActivityService';
 export * from '#/session/sessionActivity/sessionOutcomeMirror';
