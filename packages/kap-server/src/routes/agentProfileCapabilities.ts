@@ -14,6 +14,7 @@ import {
   ISessionContext,
   ISessionIndex,
   ISessionManager,
+  ISessionMetadata,
   ISubagentTool,
   IWorkspaceInstanceManager,
   IWorkspaceService,
@@ -26,8 +27,15 @@ import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
 import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse, AgentPanelMetrics } from '@kiki/protocol';
-import { livePanelCapabilities, panelSkills, READ_ONLY_DISPLAY_TOOL_NAMES } from './agentPanelCapabilities';
+import {
+  livePanelCapabilities,
+  panelSkills,
+  READ_ONLY_DISPLAY_TOOL_NAMES,
+  resolvePanelProfile,
+  snapshotPanelCapabilities,
+} from './agentPanelCapabilities';
 import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from './agentPanelMetrics';
+import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { IModelPricingService } from '../pricing/modelPricingService';
 import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistry/toolContribution';
 import { toolGroupForName } from '@kiki/agent-core-v2/agent/toolRegistry/toolGroups';
@@ -93,11 +101,76 @@ export async function agentCapabilities(
         mutableAgentIds,
       },
     );
-    if (agent === undefined) return {
-      context: 'live', owner: { agent_id: query.agent_id }, available: false,
-      unavailable_reason: 'Session or agent is not live; dispatch capabilities are unavailable', targets: [],
-      metrics: persisted,
-    };
+    if (agent === undefined) {
+      if (session === undefined || workspaceId === undefined) return {
+        context: 'live', live: false, owner: { agent_id: query.agent_id }, available: false,
+        unavailable_reason: 'Session or agent is not live; dispatch capabilities are unavailable', targets: [],
+        metrics: persisted,
+      };
+      const metadata = (await session.accessor.get(ISessionMetadata).read()).agents?.[query.agent_id];
+      const snapshot = await readPersistedAgentProfileSnapshot(
+        core,
+        workspaceId,
+        query.session_id,
+        query.agent_id,
+        metadata,
+        signal,
+      );
+      if (snapshot === undefined) return {
+        context: 'live', live: false, owner: { agent_id: query.agent_id }, available: false,
+        unavailable_reason: 'Persisted agent capability metadata is unavailable', targets: [],
+        metrics: persisted,
+      };
+      const catalog = session.accessor.get(ISessionAgentProfileCatalog);
+      await catalog.ready;
+      const resolution = resolvePanelProfile(catalog, snapshot.profileName, snapshot.profileDefinitionId);
+      if (resolution.profile === undefined) return {
+        context: 'live', live: false,
+        owner: { profile: snapshot.profileName, agent_id: query.agent_id },
+        available: false,
+        unavailable_reason: 'Persisted agent profile is unavailable in the live session catalog',
+        targets: [],
+        metrics: persisted,
+      };
+      const panel = await snapshotPanelCapabilities(session, snapshot, {
+        profile: resolution.profile,
+        sourceId: resolution.sourceId,
+      });
+      const persistedBinding = snapshot.source === 'wire';
+      const input: SubagentCapabilityCatalog = {
+        catalog,
+        caller: {
+          profileName: snapshot.profileName ?? resolution.profile.name,
+          profileDefinitionId: snapshot.profileDefinitionId ?? resolution.profile.definitionId,
+          subagentPolicy: persistedBinding ? snapshot.subagentPolicy
+            : snapshot.subagentPolicy ?? resolution.profile.subagentPolicy,
+          subagentDeclaration: persistedBinding ? snapshot.subagentDeclaration
+            : snapshot.subagentDeclaration ?? resolution.profile.subagentDeclaration,
+          subagents: persistedBinding ? snapshot.subagents
+            : snapshot.subagents ?? resolution.profile.subagents,
+          subagentLeases: persistedBinding ? snapshot.subagentLeases
+            : snapshot.subagentLeases ?? resolution.profile.subagentLeases,
+          spawnPolicy: persistedBinding ? snapshot.spawnPolicy
+            : snapshot.spawnPolicy ?? resolution.profile.spawnConstraints,
+        },
+        profiles: catalog.list().filter((candidate) => candidate.main !== true),
+        routes: catalog.listRoutes(),
+        snapshot: catalog.snapshot?.(),
+      };
+      return {
+        context: 'live',
+        live: false,
+        owner: { profile: snapshot.profileName ?? resolution.profile.name, agent_id: query.agent_id },
+        available: true,
+        targets: project(session, input).map((target) => ({
+          ...target,
+          launch_allowed: false,
+          launch_unavailable_reason: 'Agent is not live; snapshot capabilities cannot launch subagents',
+        })),
+        ...panel,
+        metrics: persisted,
+      };
+    }
     const owner = { profile: agent.accessor.get(IAgentProfileService).data().profileName, agent_id: agent.id };
     const panel = await livePanelCapabilities(agent);
     const available = agent.accessor.get(IAgentToolPolicyService).isToolActive('AgentRun');
@@ -121,7 +194,7 @@ export async function agentCapabilities(
     for (const [id, value] of Object.entries(liveMetrics)) {
       metrics[id] = mergeAgentPanelMetrics(persisted[id], value);
     }
-    return { context: 'live', owner, available, unavailable_reason, targets, ...panel, metrics };
+    return { context: 'live', live: true, owner, available, unavailable_reason, targets, ...panel, metrics };
   }
   const workspace = await acquireWorkspaceProfileCatalog(core, query);
   if (workspace === undefined) return 'workspace-not-found';
@@ -152,7 +225,9 @@ export async function agentCapabilities(
         name: profile.name, description: profile.description,
         source: workspace.catalog.inspect(profile.name)?.sourceId,
         source_file: profile.sourcePath, definition_id: profile.definitionId,
-        model: profile.modelAlias, thinking_effort: profile.thinkingEffort, executor: profile.executor,
+        model: profile.modelAlias, model_source: profile.modelAlias === undefined ? undefined : 'profile',
+        thinking_effort: profile.thinkingEffort,
+        effort_source: profile.thinkingEffort === undefined ? undefined : 'profile', executor: profile.executor,
         service_tier: profile.serviceTier,
         tools: profile.tools === undefined ? undefined : [...profile.tools],
         disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],

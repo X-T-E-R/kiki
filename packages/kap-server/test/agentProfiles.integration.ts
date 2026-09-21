@@ -4,12 +4,17 @@ import { join } from 'node:path';
 
 import {
   AgentProfileSourceDiagnosticCodes,
+  IAgentExecutorRegistry,
   IAgentLifecycleService,
   IAgentProfileRegistry,
+  IAgentProfileService,
+  IAgentUsageService,
   IConfigService,
   ISessionAgentProfileCatalog,
   ISessionContext,
+  ISessionInteractionService,
   ISessionManager,
+  ISessionMetadata,
   ISubagentTool,
   IWorkspaceInstanceManager,
   normalizeAgentProfile,
@@ -19,7 +24,6 @@ import {
 import { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
-import { IAgentProfileService, IAgentExecutorRegistry, IAgentUsageService, ISessionInteractionService } from '@kiki/agent-core-v2';
 import { SHIPPED_AGENT_PROFILE_TEMPLATES } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfiles';
 import { ErrorCode, listNamedAgentProfilesResponseSchema, agentCapabilitiesResponseSchema, listShippedAgentProfilesResponseSchema } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -121,9 +125,100 @@ describe('GET /api/agents', () => {
     const body = await response.json() as Envelope<unknown>;
     expect(body.code).toBe(0);
     const data = agentCapabilitiesResponseSchema.parse(body.data);
-    expect(data.available).toBe(false);
+    expect(data).toMatchObject({ live: false, available: false });
     expect(data.unavailable_reason).toContain('not live');
     expect(manager.get(created.data.id)).toBeUndefined();
+  });
+
+  it('keeps live capability projection on the real-time path', async () => {
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "stub"',
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
+      'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"',
+      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'agent', model: 'stub', thinking: 'low' } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const response = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
+    const body = await response.json() as Envelope<unknown>;
+    expect(body.code).toBe(0);
+    const data = agentCapabilitiesResponseSchema.parse(body.data);
+    expect(data).toMatchObject({
+      context: 'live', live: true,
+      owner: { agent_id: 'main', profile: 'agent' },
+      profile: {
+        name: 'agent', source: 'user', model: 'stub', model_source: 'profile',
+        thinking_effort: 'low', effort_source: 'model', subagent_policy: 'advisory',
+      },
+    });
+    expect(data.profile?.source_file?.replaceAll('\\', '/')).toMatch(/agents\/builtin\/agent\.md$/);
+    expect(data.tools?.length).toBeGreaterThan(0);
+  });
+
+  it('returns a durable capability snapshot after a child agent is disposed', async () => {
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "stub"',
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
+      'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"',
+      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+      '[models.stub-alt]', 'provider = "stub"', 'model = "stub-alt"', 'max_context_size = 1000',
+      'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'agent', model: 'stub' } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const manager = server.core.accessor.get(ISessionManager);
+    const session = manager.get(created.data.id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({
+      agentId: 'agent-snapshot',
+      delegator: { kind: 'agent', agentId: 'main' },
+      binding: { profile: 'explore', model: 'stub', thinking: 'low' },
+    });
+    const profile = child.accessor.get(IAgentProfileService);
+    await profile.setModel('stub-alt');
+    profile.setThinking('high');
+    expect((await session.accessor.get(ISessionMetadata).read()).agents?.['agent-snapshot']).toMatchObject({
+      model: 'stub', thinkingEffort: 'low',
+    });
+    const readCapabilities = async () => {
+      const response = await authedFetch(server!, base,
+        `/api/agents/capabilities?session_id=${created.data.id}&agent_id=agent-snapshot`);
+      const body = await response.json() as Envelope<unknown>;
+      expect(body.code).toBe(0);
+      return agentCapabilitiesResponseSchema.parse(body.data);
+    };
+    const live = await readCapabilities();
+    expect(live).toMatchObject({ context: 'live', live: true, profile: {
+      name: 'explore', source: 'user', model: 'stub-alt', thinking_effort: 'high', subagent_policy: 'advisory',
+    } });
+    await lifecycle.remove('agent-snapshot');
+    expect(lifecycle.get('agent-snapshot')).toBeUndefined();
+    expect(manager.get(created.data.id)).toBe(session);
+    const snapshot = await readCapabilities();
+    expect(snapshot).toMatchObject({
+      context: 'live', live: false, available: true,
+      owner: { agent_id: 'agent-snapshot', profile: 'explore' },
+      profile: {
+        name: 'explore', source: 'user', model: 'stub-alt', model_source: 'profile',
+        thinking_effort: 'high', effort_source: 'model', subagent_policy: 'advisory',
+      },
+    });
+    expect(snapshot.profile?.source_file).toBe(live.profile?.source_file);
+    expect(snapshot.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ launch_allowed: false, launch_unavailable_reason: expect.stringContaining('not live') }),
+    ]));
+    expect(snapshot.tools?.length).toBeGreaterThan(0);
+    expect(snapshot.tools?.every((tool) => tool.state === 'unknown' || tool.state === 'disabled')).toBe(true);
   });
 
   it('writes the winning SYSTEM source rather than a same-name user file and refreshes draft capabilities', async () => {

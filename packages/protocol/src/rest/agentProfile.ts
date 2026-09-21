@@ -139,15 +139,20 @@ export const agentCapabilitiesQuerySchema = z.union([
 ]);
 export type AgentCapabilitiesQuery = z.infer<typeof agentCapabilitiesQuerySchema>;
 
+export const agentCapabilityModelSourceSchema = z.enum(['caller-lease', 'route', 'profile']);
+export const agentCapabilityEffortSourceSchema = z.enum([
+  'caller-lease', 'route', 'profile', 'model-profile', 'model', 'config', 'executor',
+]);
+
 export const agentCapabilityTargetSchema = z.object({
   profile: z.string(),
   route: z.string().optional(),
   description: z.string().optional(),
   executor: z.string(),
   model_alias: z.string().optional(),
-  model_source: z.enum(['caller-lease', 'route', 'profile']).optional(),
+  model_source: agentCapabilityModelSourceSchema.optional(),
   thinking_effort: z.string().optional(),
-  effort_source: z.enum(['caller-lease', 'route', 'profile', 'model-profile', 'model', 'config', 'executor']).optional(),
+  effort_source: agentCapabilityEffortSourceSchema.optional(),
   dispatch_policy: z.enum(['advisory', 'strict']).optional(),
   recommendation_status: z.enum(['preferred', 'allowed_nonpreferred', 'blocked', 'unconfigured']).optional(),
   advisory_deviation: z.boolean().optional(),
@@ -197,7 +202,9 @@ export const agentPanelProfileSchema = z.object({
   definition_id: z.string().optional(),
   route: z.string().optional(),
   model: z.string().optional(),
+  model_source: agentCapabilityModelSourceSchema.optional(),
   thinking_effort: z.string().optional(),
+  effort_source: agentCapabilityEffortSourceSchema.optional(),
   thinking_effort_source: z.enum(['forced', 'adjusted']).optional(),
   route_detached: z.boolean().optional(),
   profile_source: z.enum(['registered', 'profile-file']).optional(),
@@ -233,6 +240,7 @@ export type AgentPanelMetrics = z.infer<typeof agentPanelMetricsSchema>;
 
 export const agentCapabilitiesResponseSchema = z.object({
   context: z.enum(['live', 'draft']),
+  live: z.boolean().optional(),
   owner: z.object({ profile: z.string().optional(), agent_id: z.string().optional() }),
   available: z.boolean(),
   unavailable_reason: z.string().optional(),
