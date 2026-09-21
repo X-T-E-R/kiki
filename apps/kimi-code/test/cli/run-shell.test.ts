@@ -152,8 +152,8 @@ describe('runShell', () => {
   beforeEach(() => {
     // Pin region to cn: the telemetry endpoint assertion below must not
     // follow the dev machine's own login/marker state.
-    vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://auth.kimi.com');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '0');
+    vi.stubEnv('KIKI_CODE_OAUTH_HOST', 'https://auth.kimi.com');
+    vi.stubEnv('KIKI_CODE_EXPERIMENTAL_TUI_DAEMON', '0');
     refreshKimiRegion();
   });
 

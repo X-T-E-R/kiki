@@ -650,7 +650,7 @@ request_params:
 
 describe('kimi doctor (default v2 config validation)', () => {
   afterEach(() => {
-    delete process.env['KIMI_LOOP_MAX_ATTEMPTS_PER_STEP'];
+    delete process.env['KIKI_LOOP_MAX_ATTEMPTS_PER_STEP'];
   });
 
   it('accepts a config valid for the v2 engine, including schema-less keys', async () => {

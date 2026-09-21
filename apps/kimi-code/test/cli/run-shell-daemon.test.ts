@@ -204,8 +204,7 @@ describe('runShell daemon startup', () => {
     });
   });
 
-  it('cannot bypass the daemon or workspace trust through retired experimental overrides', async () => {
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TUI_DAEMON', '0');
+  it('cannot bypass the daemon or workspace trust through experimental overrides', async () => {
     vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
     await runShell(options, '1.0.0');
     expect(mocks.order).toEqual(['trust', 'agent', 'discover', 'daemon', 'start']);

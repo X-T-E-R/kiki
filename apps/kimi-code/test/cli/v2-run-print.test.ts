@@ -173,7 +173,7 @@ function makeFakeHarness() {
 describe('runV2Print', () => {
   beforeEach(() => {
     vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '1');
-    vi.stubEnv('KIMI_MODEL_OUTPUT_FORMAT', '');
+    vi.stubEnv('KIKI_MODEL_OUTPUT_FORMAT', '');
   });
 
   afterEach(() => {
