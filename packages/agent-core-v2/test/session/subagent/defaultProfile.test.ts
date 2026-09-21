@@ -12,8 +12,10 @@ import {
   DEFAULT_SUBAGENT_PROFILE,
   SUBAGENT_SECTION,
   resolveDefaultSubagentProfileName,
+  resolveDefaultSubagentTarget,
   type SubagentConfig,
 } from '#/session/subagent/configSection';
+import { GENERIC_SUBAGENT_PROFILE } from '#/session/subagent/genericProfile';
 import { discoverAgentFiles } from '@kiki/agent-profiles/agentFileDiscovery';
 import { profilesFromDiscovery } from '@kiki/agent-profiles/agentProfileFromFile';
 import { projectAgentProfileCatalog } from '@kiki/agent-profiles/profileCatalog';
@@ -31,7 +33,7 @@ function configWithSubagent(section?: Partial<SubagentConfig>): IConfigService {
     onDidChangeConfiguration: () => ({ dispose: () => {} }),
     onDidSectionChange: () => ({ dispose: () => {} }),
     get: (domain: string) => (domain === SUBAGENT_SECTION ? section : undefined),
-    inspect: () => ({ value: undefined, defaultValue: undefined, userValue: undefined, memoryValue: undefined }),
+    inspect: () => ({ value: section, defaultValue: undefined, userValue: section, memoryValue: undefined }),
     getAll: () => ({}),
     set: async () => {},
     replace: async () => {},
@@ -82,19 +84,53 @@ describe('SubagentToolInputSchema', () => {
   });
 });
 
-describe('SubagentTool default-target resolution', () => {
-  it('resolves omitted-target dispatch to the configured default profile', () => {
-    const tool = toolWithConfig(configWithSubagent({ defaultProfile: DEFAULT_SUBAGENT_PROFILE }));
-    const resolve = (tool as unknown as { requireDefaultProfileName(): string }).requireDefaultProfileName.bind(tool);
-    expect(resolve()).toBe('general');
+describe('resolveDefaultSubagentTarget', () => {
+  it('distinguishes the implicit generic target from configured profile overrides', () => {
+    expect(resolveDefaultSubagentTarget(configWithSubagent(undefined))).toEqual({ kind: 'generic' });
+    expect(resolveDefaultSubagentTarget(configWithSubagent({ timeoutMs: 1000 }))).toEqual({ kind: 'generic' });
+    expect(resolveDefaultSubagentTarget(configWithSubagent({ defaultProfile: ' my-worker ' }))).toEqual({
+      kind: 'profile',
+      name: 'my-worker',
+    });
   });
 
-  it('rejects omitted-target dispatch with a recovery hint when no default is configured', () => {
+  it('preserves an explicitly blank default as strict mode', () => {
+    expect(resolveDefaultSubagentTarget(configWithSubagent({ defaultProfile: '' }))).toEqual({ kind: 'strict' });
+    expect(resolveDefaultSubagentTarget(configWithSubagent({ defaultProfile: '   ' }))).toEqual({ kind: 'strict' });
+  });
+});
+
+describe('SubagentTool default-target resolution', () => {
+  type Selection = {
+    readonly profileName: string;
+    readonly resolvedProfile?: typeof GENERIC_SUBAGENT_PROFILE;
+  };
+
+  function resolve(tool: SubagentTool): Selection {
+    return (tool as unknown as { defaultDispatchSelection(): Selection }).defaultDispatchSelection();
+  }
+
+  it('uses the internal generic prompt when default_profile is absent', () => {
+    const selection = resolve(toolWithConfig(configWithSubagent(undefined)));
+    expect(selection.profileName).toBe('general');
+    expect(selection.resolvedProfile).toBe(GENERIC_SUBAGENT_PROFILE);
+    expect(selection.resolvedProfile?.systemPrompt({ productName: 'Kiki' })).toContain(
+      'You are a general-purpose subagent.',
+    );
+    expect(selection.resolvedProfile?.tools).not.toContain('AgentRun');
+  });
+
+  it('resolves an explicitly configured default through the catalog path', () => {
+    const selection = resolve(toolWithConfig(configWithSubagent({ defaultProfile: 'custom' })));
+    expect(selection.profileName).toBe('custom');
+    expect(selection.resolvedProfile).toBeUndefined();
+  });
+
+  it('rejects omitted-target dispatch when strict mode is configured', () => {
     const tool = toolWithConfig(configWithSubagent({ defaultProfile: '' }));
-    const resolve = (tool as unknown as { requireDefaultProfileName(): string }).requireDefaultProfileName.bind(tool);
     try {
-      resolve();
-      expect.unreachable('requireDefaultProfileName should throw');
+      resolve(tool);
+      expect.unreachable('defaultDispatchSelection should throw');
     } catch (error) {
       expect(isError2(error)).toBe(true);
       const error2 = error as Error2;

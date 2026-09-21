@@ -39,6 +39,20 @@ export const DEFAULT_MAX_DIRECT_CHILDREN = 16;
 export const DEFAULT_MAX_TOTAL_SUBAGENTS = 0;
 export const DEFAULT_SUBAGENT_PROFILE = 'general';
 
+export type DefaultSubagentTarget =
+  | { readonly kind: 'generic' }
+  | { readonly kind: 'profile'; readonly name: string }
+  | { readonly kind: 'strict' };
+
+export function resolveDefaultSubagentTarget(config: IConfigService): DefaultSubagentTarget {
+  const inspected = config.inspect<SubagentConfig | undefined>(SUBAGENT_SECTION);
+  const section = inspected.memoryValue ?? inspected.userValue;
+  const value = section?.defaultProfile;
+  if (value === undefined) return { kind: 'generic' };
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? { kind: 'strict' } : { kind: 'profile', name: trimmed };
+}
+
 export function resolveDefaultSubagentProfileName(config: IConfigService): string | undefined {
   const value = config.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.defaultProfile;
   const trimmed = (value ?? DEFAULT_SUBAGENT_PROFILE).trim();

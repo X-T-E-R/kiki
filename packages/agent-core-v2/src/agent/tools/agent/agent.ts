@@ -27,7 +27,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'One of the available agent profiles (see "Available agent profiles" in this tool description). When omitted, the configured default subagent profile ([subagent].default_profile) is used; if no default is configured, the call is rejected — pass an explicit profile instead.',
+        'One of the available agent profiles (see "Available agent profiles" in this tool description). When omitted, an explicitly configured [subagent].default_profile is used; otherwise the built-in general-purpose subagent prompt is used. An explicitly blank default requires a target.',
       ),
     route: z
       .string()

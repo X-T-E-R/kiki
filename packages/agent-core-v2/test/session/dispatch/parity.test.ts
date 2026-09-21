@@ -459,6 +459,7 @@ interface TaskRecord {
 
 interface LaneOptions {
   readonly capacity?: { readonly maxDirectChildren: number; readonly maxTotalSubagents: number };
+  readonly defaultProfile?: string;
   readonly profile?: AgentProfile;
   readonly mainModel?: string;
   readonly resolveModelAlias?: (id: string) => string | undefined;
@@ -1027,14 +1028,21 @@ function createLane(
   ix.stub(IBootstrapService, {
     getEnv: () => options.externalPermissionCeiling ?? 'yolo',
   });
+  const subagentConfig = { ...options.capacity, defaultProfile: options.defaultProfile };
   ix.stub(IConfigService, {
     get: <T>(section: string) => (
       section === 'subagent'
-        ? options.capacity
+        ? subagentConfig
         : section === 'agents'
           ? { notify_parent: options.notifyParent ?? true }
           : undefined
     ) as T,
+    inspect: <T>(section: string) => ({
+      value: section === 'subagent' ? subagentConfig as T : undefined,
+      defaultValue: undefined,
+      userValue: section === 'subagent' ? subagentConfig as T : undefined,
+      memoryValue: undefined,
+    }),
   });
   ix.stub(IModelService, { resolveId: options.resolveModelAlias ?? ((id: string) => id) });
   ix.stub(IModelCatalog, {
@@ -1402,7 +1410,7 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('prefers a legal recommendation for omitted targets and reports fallback when it is unavailable', async () => {
+  it('uses the internal generic profile for omitted targets without an explicit default', async () => {
     const lane = createLane(disposables, 'internal');
     const caller = lane.handles.get('main')!.accessor.get(IAgentProfileService).data();
     Object.assign(caller, {
@@ -1410,24 +1418,27 @@ describe('AgentRun and dispatch parity golden', () => {
       subagentDeclaration: { kind: 'set', names: ['coder'] },
       subagents: ['coder'],
     });
-    const preferred = await lane.runInternal({
-      prompt: 'work', description: 'Preferred default', background: true,
+    const result = await lane.runInternal({
+      prompt: 'work', description: 'Generic default', background: true,
+      model_alias: 'parity-model', effort: 'high',
     });
-    expect(preferred.isError).not.toBe(true);
-    expect(preferred.output).toContain('actual_profile: coder');
-    expect(preferred.output).toContain('selection_origin: recommended-default');
-    expect(preferred.output).toContain('recommendation_status: preferred');
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain('actual_profile: general');
+    expect(result.output).toContain('selection_origin: configured-fallback');
+    expect(result.output).toContain('recommendation_status: allowed_nonpreferred');
+    const resolved = lane.lifecycleCreate.mock.calls[0]![0]!.binding!.resolvedProfile!;
+    expect(resolved).not.toBe(parityProfile);
+    expect(resolved.systemPrompt({ productName: 'Kiki' })).toContain('You are a general-purpose subagent.');
+  });
 
-    Object.assign(caller, {
-      subagentDeclaration: { kind: 'set', names: ['missing-profile'] },
-      subagents: ['missing-profile'],
+  it('uses an explicitly configured default profile for omitted targets', async () => {
+    const lane = createLane(disposables, 'internal', { defaultProfile: 'coder' });
+    const result = await lane.runInternal({
+      prompt: 'work', description: 'Configured default', background: true,
     });
-    const fallback = await lane.runInternal({
-      prompt: 'work', description: 'Fallback default', background: true,
-    });
-    expect(fallback.isError).not.toBe(true);
-    expect(fallback.output).toContain('selection_origin: configured-fallback');
-    expect(fallback.output).toContain('recommendation_fallback: recommended-unavailable');
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain('actual_profile: coder');
+    expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding!.resolvedProfile).toBe(parityProfile);
   });
 
   it('blocks concurrent creation before side effects, and releases only when execution settles', async () => {

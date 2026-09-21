@@ -57,6 +57,7 @@ export interface SubagentDispatchCatalog {
 }
 
 export interface ResolveSubagentDispatchInput {
+  readonly resolvedProfile?: AgentProfile;
   readonly profileName?: string;
   readonly routeId?: string;
   readonly snapshot?: AgentProfileCatalogSnapshot;
@@ -136,7 +137,9 @@ export function resolveSubagentDispatch(
   const snapshot = input.snapshot ?? catalog.snapshot?.();
   let selection: SubagentDispatchSelection;
   let scoped = false;
-  if (input.routeId === undefined) {
+  if (input.resolvedProfile !== undefined) {
+    selection = { profile: input.resolvedProfile, baseProfile: input.resolvedProfile };
+  } else if (input.routeId === undefined) {
     const profileName = input.profileName ?? '';
     const binding =
       snapshot === undefined

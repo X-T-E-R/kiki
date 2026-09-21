@@ -19,6 +19,7 @@ export interface DispatchLaunchInput {
   readonly delegator: DelegatorRef;
   readonly requesterAgentId: string;
   readonly requesterProfileData?: ProfileData;
+  readonly resolvedProfile?: AgentProfile;
   readonly profileName?: string;
   readonly routeId?: string;
   readonly selectionKind?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentSelectionKind;

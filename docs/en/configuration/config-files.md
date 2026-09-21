@@ -412,7 +412,7 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `default_profile` | `string` | `general` | Target profile when `AgentRun` omits `profile`, `route`, and `profile_file`. Missing fields inherit this default even in a partial `[subagent]` table. Set `""` to require an explicit target (strict mode) |
+| `default_profile` | `string` | built-in general-purpose prompt | Explicit profile override when `AgentRun` omits `profile`, `route`, and `profile_file`. If the key is absent, including from a partial `[subagent]` table, `AgentRun` uses the built-in general-purpose subagent prompt without loading a catalog profile. Set `""` to require an explicit target (strict mode) |
 | `deny_models` | `string[]` | — | Denylist applied to every subagent model binding after alias resolution, whether the alias came from the dispatch or from a profile pin |
 | `max_direct_children` | `integer` | `16` | Maximum simultaneous dispatched child runs per caller, including startup and cancellation; `0` disables this limit |
 | `max_total_subagents` | `integer` | `0` | Maximum simultaneous dispatched subagent runs throughout one session tree, including grandchildren and deeper descendants but not main; `0` disables this limit |

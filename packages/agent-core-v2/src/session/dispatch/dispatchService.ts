@@ -143,6 +143,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       this.profiles,
       requesterData,
       {
+        resolvedProfile: input.resolvedProfile,
         profileName: input.profileName,
         routeId: input.routeId,
         selectionKind: input.selectionKind,

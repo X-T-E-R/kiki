@@ -13,6 +13,7 @@ import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocument
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import {
   resolveDefaultSubagentProfileName,
+  resolveDefaultSubagentTarget,
   resolveDispatchCapacityLimits,
   resolveSubagentTimeoutMs,
   DEFAULT_SUBAGENT_TIMEOUT_MS,
@@ -46,6 +47,7 @@ describe('agent profile configuration through TOML', () => {
   it.each(['', '[subagent]', '[subagent]\ntimeout_ms = 1234', '[subagent]\ndeny_models = ["example"]'])('inherits general from partial config %s', async (toml) => {
     await withConfig(toml, (config) => {
       expect(resolveDefaultSubagentProfileName(config)).toBe('general');
+      expect(resolveDefaultSubagentTarget(config)).toEqual({ kind: 'generic' });
       expect(resolveDispatchCapacityLimits(config)).toEqual({ maxDirectChildren: 16, maxTotalSubagents: 0 });
       expect(resolveSubagentTimeoutMs(config)).toBe(toml.includes('1234') ? 1234 : DEFAULT_SUBAGENT_TIMEOUT_MS);
       expect(config.diagnostics()).toEqual([]);
@@ -55,10 +57,19 @@ describe('agent profile configuration through TOML', () => {
   it('enters strict mode only for an explicitly blank default_profile and restores defaults on removal', async () => {
     await withConfig('[subagent]\ntimeout_ms = 1234\ndefault_profile = ""', async (config) => {
       expect(resolveDefaultSubagentProfileName(config)).toBeUndefined();
+      expect(resolveDefaultSubagentTarget(config)).toEqual({ kind: 'strict' });
       await config.replace('subagent', { timeoutMs: 5678 });
       expect(resolveDefaultSubagentProfileName(config)).toBe('general');
+      expect(resolveDefaultSubagentTarget(config)).toEqual({ kind: 'generic' });
       await config.reload();
       expect(resolveDefaultSubagentProfileName(config)).toBe('general');
+      expect(resolveDefaultSubagentTarget(config)).toEqual({ kind: 'generic' });
+    });
+  });
+
+  it('uses an explicitly configured default profile instead of the generic fallback', async () => {
+    await withConfig('[subagent]\ndefault_profile = "explore"', (config) => {
+      expect(resolveDefaultSubagentTarget(config)).toEqual({ kind: 'profile', name: 'explore' });
     });
   });
 
