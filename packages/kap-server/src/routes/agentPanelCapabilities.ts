@@ -1,4 +1,4 @@
-import type { AgentCapabilitiesResponse, AgentPanelProfile } from '@kiki/protocol';
+import type { AgentCapabilitiesProducerResponse, AgentPanelProfile } from '@kiki/protocol';
 import {
   IAgentProfileService,
   IAgentToolRegistryService,
@@ -50,7 +50,7 @@ type PanelBindingData = Partial<Pick<ProfileData,
 export function panelSkills(
   skills: readonly SkillDefinition[],
   toolActive: boolean,
-): NonNullable<AgentCapabilitiesResponse['skills']> {
+): NonNullable<AgentCapabilitiesProducerResponse['skills']> {
   return skills.map((skill) => {
     const unavailableReason = !toolActive ? 'Skill tool is not active for this agent'
       : skill.metadata.disableModelInvocation === true ? 'Model invocation is disabled for this skill' : undefined;
@@ -96,7 +96,7 @@ export async function snapshotPanelCapabilities(
   snapshot: PersistedAgentProfileSnapshot,
   resolution: PanelProfileResolution & { readonly profile: PanelProfileDefinition },
   hasParent: boolean,
-): Promise<Pick<AgentCapabilitiesResponse, 'profile' | 'tools' | 'skills'>> {
+): Promise<Pick<AgentCapabilitiesProducerResponse, 'profile' | 'tools' | 'skills'>> {
   const definition = resolution.profile;
   const persisted = snapshot.source === 'wire';
   const activeToolNames = snapshot.activeToolsKnown ? snapshot.activeToolNames : definition.tools;
@@ -133,7 +133,7 @@ export async function snapshotPanelCapabilities(
   );
   const unavailableReason = 'Snapshot inventory only; agent runtime and invocation approval are unavailable';
   const unavailableReasonCode = 'snapshot_inventory_only';
-  const tools: NonNullable<AgentCapabilitiesResponse['tools']> = getAgentToolContributions().map(({ options }) => {
+  const tools: NonNullable<AgentCapabilitiesProducerResponse['tools']> = getAgentToolContributions().map(({ options }) => {
     const active = isToolActiveComposed(policy, options.name, options.source);
     const conditionAvailable = options.name !== 'AgentNotify' || isAgentNotifyAvailable({
       hasParent,
@@ -142,7 +142,7 @@ export async function snapshotPanelCapabilities(
       toolPolicyEnabled: active,
     });
     const available = active && conditionAvailable;
-    const state: NonNullable<AgentCapabilitiesResponse['tools']>[number]['state'] = available ? 'unknown' : 'disabled';
+    const state: NonNullable<AgentCapabilitiesProducerResponse['tools']>[number]['state'] = available ? 'unknown' : 'disabled';
     const toolUnavailableReason = !active ? 'Disabled by effective tool policy'
       : !conditionAvailable ? 'Tool activation condition is not satisfied' : unavailableReason;
     const toolUnavailableReasonCode = !active ? 'tool_policy_disabled'
@@ -171,7 +171,7 @@ export async function snapshotPanelCapabilities(
   };
 }
 
-export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<Pick<AgentCapabilitiesResponse, 'profile' | 'tools' | 'skills'>> {
+export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<Pick<AgentCapabilitiesProducerResponse, 'profile' | 'tools' | 'skills'>> {
   const data = agent.accessor.get(IAgentProfileService).data();
   const catalog = agent.accessor.get(ISessionAgentProfileCatalog);
   await catalog.ready;
@@ -183,7 +183,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   const registry = agent.accessor.get(IAgentToolRegistryService).list();
   const policy = agent.accessor.get(IAgentToolPolicyService);
   const contributions = agent.accessor.get(IAgentToolActivationService).capabilities();
-  const tools = new Map<string, NonNullable<AgentCapabilitiesResponse['tools']>[number]>();
+  const tools = new Map<string, NonNullable<AgentCapabilitiesProducerResponse['tools']>[number]>();
   for (const contribution of contributions) {
     const active = policy.isToolActive(contribution.name, contribution.source);
     const unavailableReason = !active ? 'Disabled by effective tool policy'

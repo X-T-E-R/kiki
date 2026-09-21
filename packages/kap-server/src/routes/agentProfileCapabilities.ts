@@ -27,7 +27,7 @@ import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
 import { subagentParentAgentId } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
-import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse, AgentPanelMetrics } from '@kiki/protocol';
+import type { AgentCapabilitiesQuery, AgentCapabilitiesProducerResponse, AgentPanelMetrics } from '@kiki/protocol';
 import {
   livePanelCapabilities,
   panelSkills,
@@ -75,7 +75,7 @@ export async function agentCapabilities(
   core: Scope,
   query: AgentCapabilitiesQuery,
   signal?: AbortSignal,
-): Promise<AgentCapabilitiesResponse | 'workspace-not-found' | 'profile-not-found'> {
+): Promise<AgentCapabilitiesProducerResponse | 'workspace-not-found' | 'profile-not-found'> {
   if ('session_id' in query) {
     const session = core.accessor.get(ISessionManager).get(query.session_id);
     const workspaceId = session?.accessor.get(ISessionContext).workspaceId
@@ -292,7 +292,7 @@ function mergeAgentPanelMetrics(
   };
 }
 
-function project(core: Pick<Scope, 'accessor'>, input: SubagentCapabilityCatalog): AgentCapabilitiesResponse['targets'] {
+function project(core: Pick<Scope, 'accessor'>, input: SubagentCapabilityCatalog): AgentCapabilitiesProducerResponse['targets'] {
   return projectSubagentCapabilities(input, {
     models: core.accessor.get(IModelService), modelCatalog: core.accessor.get(IModelCatalog),
     config: core.accessor.get(IConfigService), executors: core.accessor.get(IAgentExecutorRegistry),
