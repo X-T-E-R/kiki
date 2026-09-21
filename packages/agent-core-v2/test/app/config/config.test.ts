@@ -449,7 +449,7 @@ describe('Agent config', () => {
 
 describe('ConfigService env overlay (live)', () => {
   it('re-applies env bindings on every get()', async () => {
-    const env: Record<string, string> = { KIMI_DISABLE_CRON: '0' };
+    const env: Record<string, string> = { KIKI_DISABLE_CRON: '0' };
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
     ix.stub(ILogService, stubLog());
@@ -462,16 +462,16 @@ describe('ConfigService env overlay (live)', () => {
     await config.ready;
 
     expect(config.get<CronConfig>('cron').disabled).toBe(false);
-    env['KIMI_DISABLE_CRON'] = '1';
+    env['KIKI_DISABLE_CRON'] = '1';
     expect(config.get<CronConfig>('cron').disabled).toBe(true);
-    env['KIMI_DISABLE_CRON'] = '0';
+    env['KIKI_DISABLE_CRON'] = '0';
     expect(config.get<CronConfig>('cron').disabled).toBe(false);
 
     disposables.dispose();
   });
 
   it('reuses the effective config across get() calls until an observed env var changes', async () => {
-    const env: Record<string, string> = { KIMI_DISABLE_CRON: '0' };
+    const env: Record<string, string> = { KIKI_DISABLE_CRON: '0' };
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
     ix.stub(ILogService, stubLog());
@@ -487,14 +487,14 @@ describe('ConfigService env overlay (live)', () => {
     expect(config.get<CronConfig>('cron')).toBe(first);
     expect(config.get<CronConfig>('cron')).toBe(first);
 
-    env['KIMI_DISABLE_CRON'] = '1';
+    env['KIKI_DISABLE_CRON'] = '1';
     const changed = config.get<CronConfig>('cron');
     expect(changed).not.toBe(first);
     expect(changed.disabled).toBe(true);
     expect(config.get<CronConfig>('cron')).toBe(changed);
 
     await config.replace('cron', { disabled: false });
-    delete env['KIMI_DISABLE_CRON'];
+    delete env['KIKI_DISABLE_CRON'];
     expect(config.get<CronConfig>('cron').disabled).toBe(false);
 
     disposables.dispose();
@@ -551,7 +551,7 @@ describe('ConfigService env overlay (live)', () => {
   });
 
   it('keeps the Kimi effort force separate from the configured effort', async () => {
-    const env: Record<string, string> = { KIMI_MODEL_THINKING_EFFORT: 'max' };
+    const env: Record<string, string> = { KIKI_MODEL_THINKING_EFFORT: 'max' };
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
     ix.stub(ILogService, stubLog());
@@ -793,25 +793,25 @@ describe('image config section', () => {
 
     expect(config.get<ImageConfig>(IMAGE_SECTION)).toEqual({});
 
-    env['KIMI_IMAGE_MAX_EDGE_PX'] = 'abc';
-    env['KIMI_IMAGE_READ_BYTE_BUDGET'] = '-1';
+    env['KIKI_IMAGE_MAX_EDGE_PX'] = 'abc';
+    env['KIKI_IMAGE_READ_BYTE_BUDGET'] = '-1';
     expect(config.get<ImageConfig>(IMAGE_SECTION)).toEqual({});
 
-    env['KIMI_IMAGE_MAX_EDGE_PX'] = '1500';
-    env['KIMI_IMAGE_READ_BYTE_BUDGET'] = '131072';
+    env['KIKI_IMAGE_MAX_EDGE_PX'] = '1500';
+    env['KIKI_IMAGE_READ_BYTE_BUDGET'] = '131072';
     expect(config.get<ImageConfig>(IMAGE_SECTION)).toEqual({
       maxEdgePx: 1500,
       readByteBudget: 131072,
     });
 
-    env['KIMI_IMAGE_MAX_EDGE_PX'] = '2500';
+    env['KIKI_IMAGE_MAX_EDGE_PX'] = '2500';
     expect(config.get<ImageConfig>(IMAGE_SECTION).maxEdgePx).toBe(2500);
 
     disposables.dispose();
   });
 
   it('restores env-owned fields to the raw value on set() while the env var is set', async () => {
-    const env: Record<string, string> = { 'KIMI_IMAGE_MAX_EDGE_PX': '1500' };
+    const env: Record<string, string> = { 'KIKI_IMAGE_MAX_EDGE_PX': '1500' };
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
     const storage = new InMemoryStorageService();
@@ -2300,10 +2300,10 @@ describe('mcp config section', () => {
 
     expect(MCP_STARTUP_TIMEOUT_ENV).toBe('KIKI_MCP_STARTUP_TIMEOUT_MS');
     expect(MCP_TOOL_TIMEOUT_ENV).toBe('KIKI_MCP_TOOL_TIMEOUT_MS');
-    env['KIMI_MCP_STARTUP_TIMEOUT_MS'] = '12000';
-    env['KIMI_MCP_TOOL_TIMEOUT_MS'] = '12000';
-    expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBeUndefined();
-    expect(config.get<McpSection | undefined>(MCP_SECTION)?.toolTimeoutMs).toBeUndefined();
+    env[MCP_STARTUP_TIMEOUT_ENV] = '12000';
+    env[MCP_TOOL_TIMEOUT_ENV] = '12000';
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBe(12000);
+    expect(config.get<McpSection | undefined>(MCP_SECTION)?.toolTimeoutMs).toBe(12000);
     env[MCP_STARTUP_TIMEOUT_ENV] = 'abc';
     expect(config.get<McpSection | undefined>(MCP_SECTION)?.startupTimeoutMs).toBeUndefined();
 
@@ -3087,7 +3087,7 @@ describe('ConfigService persistence guards', () => {
   it('restores env-masked values from the freshly re-read file instead of the stale snapshot', async () => {
     const { config, disposables, storage } = await createGuardedConfig(
       'default_model = "acme/m1"\n\n[providers.acme]\ntype = "openai"\napi_key = "sk-acme"\n\n[models."acme/m1"]\nprovider = "acme"\nmodel = "m1"\n',
-      { KIMI_MODEL_NAME: 'env-model' },
+      { KIKI_MODEL_NAME: 'env-model' },
     );
     expect(config.get(DEFAULT_MODEL_SECTION)).toBe('__kimi_env_model__');
 

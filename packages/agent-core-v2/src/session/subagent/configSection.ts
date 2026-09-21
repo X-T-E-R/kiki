@@ -59,7 +59,7 @@ export function resolveDispatchCapacityLimits(config: IConfigService): {
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
 
 export const DEFAULT_SUBAGENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
-export const SUBAGENT_TIMEOUT_ENV = 'KIMI_SUBAGENT_TIMEOUT_MS';
+export const SUBAGENT_TIMEOUT_ENV = 'KIKI_SUBAGENT_TIMEOUT_MS';
 
 function parseTimeoutMsEnv(raw: string): number | undefined {
   const trimmed = raw.trim();

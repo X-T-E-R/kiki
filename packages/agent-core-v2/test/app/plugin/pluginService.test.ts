@@ -664,15 +664,15 @@ describe('PluginService (plugin boundary)', () => {
       expect(servers['plugin-demo:finance']).toEqual(
         expect.objectContaining({
           env: expect.objectContaining({
-            KIMI_CODE_BASE_URL: 'https://api.example.test/',
-            KIMI_CODE_OAUTH_HOST: 'https://auth.example.test',
+            KIKI_CODE_BASE_URL: 'https://api.example.test/',
+            KIKI_CODE_OAUTH_HOST: 'https://auth.example.test',
             CUSTOM: '1',
             KIKI_HOME: home,
-            KIMI_PLUGIN_ROOT: await realpath(managedRoot),
+            KIKI_PLUGIN_ROOT: await realpath(managedRoot),
           }),
         }),
       );
-      expect(JSON.stringify(servers['plugin-demo:docs'])).not.toContain('KIMI_CODE_BASE_URL');
+      expect(JSON.stringify(servers['plugin-demo:docs'])).not.toContain('KIKI_CODE_BASE_URL');
     } finally {
       host.dispose();
     }
@@ -711,18 +711,18 @@ describe('PluginService (plugin boundary)', () => {
         expect.objectContaining({
           enabled: false,
           env: expect.objectContaining({
-            KIMI_CODE_BASE_URL: 'https://api.example.test/',
-            KIMI_CODE_OAUTH_HOST: 'https://auth.example.test',
+            KIKI_CODE_BASE_URL: 'https://api.example.test/',
+            KIKI_CODE_OAUTH_HOST: 'https://auth.example.test',
             CUSTOM: '1',
             KIKI_HOME: home,
-            KIMI_PLUGIN_ROOT: managedRoot,
+            KIKI_PLUGIN_ROOT: managedRoot,
           }),
         }),
       );
       const docs = entries.find((entry) => entry.name === 'plugin-demo:docs');
       expect(docs).toEqual(expect.objectContaining({ pluginId: 'demo', serverName: 'docs' }));
       expect(docs?.config.enabled).toBe(true);
-      expect(JSON.stringify(docs?.config)).not.toContain('KIMI_CODE_BASE_URL');
+      expect(JSON.stringify(docs?.config)).not.toContain('KIKI_CODE_BASE_URL');
     } finally {
       host.dispose();
     }
@@ -762,8 +762,8 @@ describe('PluginService (plugin boundary)', () => {
       await expect(servers).resolves.toMatchObject({
         'plugin-ready-demo:finance': {
           env: {
-            KIMI_CODE_BASE_URL: 'https://ready.example.test/',
-            KIMI_CODE_OAUTH_HOST: 'https://auth.ready.example.test',
+            KIKI_CODE_BASE_URL: 'https://ready.example.test/',
+            KIKI_CODE_OAUTH_HOST: 'https://auth.ready.example.test',
           },
         },
       });
@@ -772,7 +772,7 @@ describe('PluginService (plugin boundary)', () => {
     }
   });
 
-  it('prefers explicit KIMI_CODE_BASE_URL / KIMI_OAUTH_HOST env over the persisted provider', async () => {
+  it('prefers explicit KIKI_CODE_BASE_URL / KIKI_OAUTH_HOST env over the persisted provider', async () => {
     const home = await makeHome();
     await writeValidInstalledFile(home);
     const host = makeHost(
@@ -784,8 +784,8 @@ describe('PluginService (plugin boundary)', () => {
         },
       }),
       {
-        KIMI_CODE_BASE_URL: 'https://env.example.test/',
-        KIMI_OAUTH_HOST: 'https://legacy.example.test',
+        KIKI_CODE_BASE_URL: 'https://env.example.test/',
+        KIKI_OAUTH_HOST: 'https://legacy.example.test',
       },
     );
     try {
@@ -801,8 +801,8 @@ describe('PluginService (plugin boundary)', () => {
       expect(servers['plugin-demo:finance']).toEqual(
         expect.objectContaining({
           env: expect.objectContaining({
-            KIMI_CODE_BASE_URL: 'https://env.example.test',
-            KIMI_CODE_OAUTH_HOST: 'https://legacy.example.test',
+            KIKI_CODE_BASE_URL: 'https://env.example.test',
+            KIKI_CODE_OAUTH_HOST: 'https://legacy.example.test',
           }),
         }),
       );
@@ -827,8 +827,8 @@ describe('PluginService (plugin boundary)', () => {
       const servers = await svc.enabledMcpServers();
       const env = (servers['plugin-demo:finance'] as { env?: Record<string, string> }).env ?? {};
       expect(env['CUSTOM']).toBe('1');
-      expect(env).not.toHaveProperty('KIMI_CODE_BASE_URL');
-      expect(env).not.toHaveProperty('KIMI_CODE_OAUTH_HOST');
+      expect(env).not.toHaveProperty('KIKI_CODE_BASE_URL');
+      expect(env).not.toHaveProperty('KIKI_CODE_OAUTH_HOST');
     } finally {
       host.dispose();
     }

@@ -317,8 +317,8 @@ describe('ensureRgPath download branch', () => {
   });
 
   it('downloads from the global CDN when the env pins the global region', async () => {
-    const savedHost = process.env['KIMI_CODE_OAUTH_HOST'];
-    process.env['KIMI_CODE_OAUTH_HOST'] = 'https://auth.kimi.ai';
+    const savedHost = process.env['KIKI_CODE_OAUTH_HOST'];
+    process.env['KIKI_CODE_OAUTH_HOST'] = 'https://auth.kimi.ai';
     try {
       const body = bodyFromBuffer(Buffer.from('not a real archive', 'utf8'));
       const fetchMock = vi.fn().mockResolvedValue({
@@ -336,17 +336,17 @@ describe('ensureRgPath download branch', () => {
       const [url] = fetchMock.mock.calls[0] as [string];
       expect(url).toMatch(/^https:\/\/code\.kimi\.ai\/kimi-code\/rg\/ripgrep-/);
     } finally {
-      if (savedHost === undefined) delete process.env['KIMI_CODE_OAUTH_HOST'];
-      else process.env['KIMI_CODE_OAUTH_HOST'] = savedHost;
+      if (savedHost === undefined) delete process.env['KIKI_CODE_OAUTH_HOST'];
+      else process.env['KIKI_CODE_OAUTH_HOST'] = savedHost;
     }
   });
 
   it('downloads from the cn CDN by default (no env override, no install marker)', async () => {
-    const savedHost = process.env['KIMI_CODE_OAUTH_HOST'];
-    const savedLegacyHost = process.env['KIMI_OAUTH_HOST'];
+    const savedHost = process.env['KIKI_CODE_OAUTH_HOST'];
+    const savedLegacyHost = process.env['KIKI_OAUTH_HOST'];
     const savedHome = process.env['KIKI_HOME'];
-    delete process.env['KIMI_CODE_OAUTH_HOST'];
-    delete process.env['KIMI_OAUTH_HOST'];
+    delete process.env['KIKI_CODE_OAUTH_HOST'];
+    delete process.env['KIKI_OAUTH_HOST'];
     process.env['KIKI_HOME'] = fakeShare;
     try {
       const body = bodyFromBuffer(Buffer.from('not a real archive', 'utf8'));
@@ -365,10 +365,10 @@ describe('ensureRgPath download branch', () => {
       const [url] = fetchMock.mock.calls[0] as [string];
       expect(url).toMatch(/^https:\/\/code\.kimi\.com\/kimi-code\/rg\/ripgrep-/);
     } finally {
-      if (savedHost === undefined) delete process.env['KIMI_CODE_OAUTH_HOST'];
-      else process.env['KIMI_CODE_OAUTH_HOST'] = savedHost;
-      if (savedLegacyHost === undefined) delete process.env['KIMI_OAUTH_HOST'];
-      else process.env['KIMI_OAUTH_HOST'] = savedLegacyHost;
+      if (savedHost === undefined) delete process.env['KIKI_CODE_OAUTH_HOST'];
+      else process.env['KIKI_CODE_OAUTH_HOST'] = savedHost;
+      if (savedLegacyHost === undefined) delete process.env['KIKI_OAUTH_HOST'];
+      else process.env['KIKI_OAUTH_HOST'] = savedLegacyHost;
       if (savedHome === undefined) delete process.env['KIKI_HOME'];
       else process.env['KIKI_HOME'] = savedHome;
     }

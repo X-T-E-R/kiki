@@ -118,9 +118,9 @@ type _AssertProvidersSection = AssertExact<
 
 export const providersEnvBindings = envBindings(ProvidersSectionSchema, {
   [ENV_MODEL_PROVIDER_KEY]: envBindings(ProviderConfigSchema, {
-    apiKey: 'KIMI_MODEL_API_KEY',
-    type: 'KIMI_MODEL_PROVIDER_TYPE',
-    baseUrl: 'KIMI_MODEL_BASE_URL',
+    apiKey: 'KIKI_MODEL_API_KEY',
+    type: 'KIKI_MODEL_PROVIDER_TYPE',
+    baseUrl: 'KIKI_MODEL_BASE_URL',
   }),
 });
 
@@ -470,7 +470,7 @@ type _AssertThinkingConfig = AssertExact<
 >;
 
 export const thinkingEnvBindings = envBindings(ThinkingConfigSchema, {
-  forcedEffort: 'KIMI_MODEL_THINKING_EFFORT',
+  forcedEffort: 'KIKI_MODEL_THINKING_EFFORT',
 });
 
 export const stripThinkingEnv: ConfigStripEnv<ThinkingConfig> = (value) => {

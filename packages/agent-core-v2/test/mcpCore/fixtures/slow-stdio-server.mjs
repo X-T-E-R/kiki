@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const delayMs = Number.parseInt(process.env['KIMI_TEST_MCP_START_DELAY_MS'] ?? '2000', 10);
+const delayMs = Number.parseInt(process.env['KIKI_TEST_MCP_START_DELAY_MS'] ?? '2000', 10);
 await sleep(delayMs);
 
 const server = new McpServer({ name: 'slow-stdio', version: '0.0.1' });

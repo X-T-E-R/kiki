@@ -17,8 +17,7 @@ afterEach(() => {
 describe("shared daemon ensure", () => {
   it("uses the existing home override", () => {
     expect(resolveDaemonHome({ KIKI_HOME: "C:/kiki-home" })).toBe("C:/kiki-home");
-    expect(resolveDaemonHome({ KIMI_CODE_HOME: "C:/legacy-only" })).toBe(resolveDaemonHome({}));
-    expect(resolveDaemonHome({ KIKI_HOME: "C:/new-home", KIMI_CODE_HOME: "C:/old-home" })).toBe("C:/new-home");
+    expect(resolveDaemonHome({ KIKI_HOME: "C:/new-home" })).toBe("C:/new-home");
     expect(resolveDaemonHome({})).toMatch(/[\\/]\.kiki$/);
   });
 

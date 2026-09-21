@@ -329,7 +329,7 @@ function expectConfigInvalid(fn: () => unknown): void {
 }
 
 describe('kimiModelEnvOverlay', () => {
-  it('does nothing when KIMI_MODEL_NAME is absent', () => {
+  it('does nothing when KIKI_MODEL_NAME is absent', () => {
     const effective = {
       models: {
         existing: { provider: 'p', model: 'm', maxContextSize: 1000 },
@@ -343,10 +343,10 @@ describe('kimiModelEnvOverlay', () => {
     expect(result.effective).toEqual(effective);
   });
 
-  it('applies request overrides when KIMI_MODEL_NAME is absent', () => {
+  it('applies request overrides when KIKI_MODEL_NAME is absent', () => {
     const { changed, effective } = applyKimiModelEnvOverlay({
-      KIMI_MODEL_TEMPERATURE: '0.3',
-      KIMI_MODEL_THINKING_KEEP: 'all',
+      KIKI_MODEL_TEMPERATURE: '0.3',
+      KIKI_MODEL_THINKING_KEEP: 'all',
     });
 
     expect(changed).toEqual(['modelOverrides']);
@@ -358,7 +358,7 @@ describe('kimiModelEnvOverlay', () => {
 
   it('synthesizes an env model alias and default model from the minimal env set', () => {
     const { changed, effective } = applyKimiModelEnvOverlay({
-      KIMI_MODEL_NAME: 'kimi-for-coding',
+      KIKI_MODEL_NAME: 'kimi-for-coding',
     });
 
     expect(changed).toEqual(['models', 'providers', 'defaultModel']);
@@ -378,7 +378,7 @@ describe('kimiModelEnvOverlay', () => {
 
   it('omits baseUrl for openai so the base SDK default applies at construction', () => {
     const { effective } = applyKimiModelEnvOverlay(
-      { KIMI_MODEL_NAME: 'env-model' },
+      { KIKI_MODEL_NAME: 'env-model' },
       { providers: { [ENV_MODEL_PROVIDER_KEY]: { type: 'openai' } } },
     );
 
@@ -389,7 +389,7 @@ describe('kimiModelEnvOverlay', () => {
 
   it('omits baseUrl for anthropic so the SDK picks its default', () => {
     const { effective } = applyKimiModelEnvOverlay(
-      { KIMI_MODEL_NAME: 'env-model' },
+      { KIKI_MODEL_NAME: 'env-model' },
       { providers: { [ENV_MODEL_PROVIDER_KEY]: { type: 'anthropic' } } },
     );
 
@@ -400,7 +400,7 @@ describe('kimiModelEnvOverlay', () => {
 
   it('honors an explicit baseUrl over the type default', () => {
     const { effective } = applyKimiModelEnvOverlay(
-      { KIMI_MODEL_NAME: 'env-model' },
+      { KIKI_MODEL_NAME: 'env-model' },
       {
         providers: {
           [ENV_MODEL_PROVIDER_KEY]: { type: 'openai', baseUrl: 'https://api.example.com/v1' },
@@ -415,7 +415,7 @@ describe('kimiModelEnvOverlay', () => {
 
   it('keeps an explicit env provider type instead of the kimi default', () => {
     const { changed, effective } = applyKimiModelEnvOverlay(
-      { KIMI_MODEL_NAME: 'env-model' },
+      { KIKI_MODEL_NAME: 'env-model' },
       { providers: { [ENV_MODEL_PROVIDER_KEY]: { type: 'openai', baseUrl: 'http://x' } } },
     );
 
@@ -428,7 +428,7 @@ describe('kimiModelEnvOverlay', () => {
   it('preserves configured aliases while adding the env alias', () => {
     const existing = { provider: 'p', model: 'm', maxContextSize: 1000 };
     const { effective } = applyKimiModelEnvOverlay(
-      { KIMI_MODEL_NAME: 'env-model' },
+      { KIKI_MODEL_NAME: 'env-model' },
       { models: { existing } },
     );
 
@@ -440,18 +440,18 @@ describe('kimiModelEnvOverlay', () => {
 
   it('maps extended model metadata and request overrides', () => {
     const { changed, effective } = applyKimiModelEnvOverlay({
-      KIMI_MODEL_NAME: 'env-model',
-      KIMI_MODEL_MAX_CONTEXT_SIZE: '1000000',
-      KIMI_MODEL_MAX_OUTPUT_SIZE: '8192',
-      KIMI_MODEL_CAPABILITIES: 'Image_In, thinking , tool_use',
-      KIMI_MODEL_DISPLAY_NAME: 'Custom Model',
-      KIMI_MODEL_REASONING_KEY: 'reasoning',
-      KIMI_MODEL_ADAPTIVE_THINKING: 'true',
-      KIMI_MODEL_TEMPERATURE: '0.3',
-      KIMI_MODEL_TOP_P: ' 0.95 ',
-      KIMI_MODEL_THINKING_KEEP: 'all',
-      KIMI_MODEL_MAX_COMPLETION_TOKENS: '4096',
-      KIMI_MODEL_MAX_TOKENS: '2048',
+      KIKI_MODEL_NAME: 'env-model',
+      KIKI_MODEL_MAX_CONTEXT_SIZE: '1000000',
+      KIKI_MODEL_MAX_OUTPUT_SIZE: '8192',
+      KIKI_MODEL_CAPABILITIES: 'Image_In, thinking , tool_use',
+      KIKI_MODEL_DISPLAY_NAME: 'Custom Model',
+      KIKI_MODEL_REASONING_KEY: 'reasoning',
+      KIKI_MODEL_ADAPTIVE_THINKING: 'true',
+      KIKI_MODEL_TEMPERATURE: '0.3',
+      KIKI_MODEL_TOP_P: ' 0.95 ',
+      KIKI_MODEL_THINKING_KEEP: 'all',
+      KIKI_MODEL_MAX_COMPLETION_TOKENS: '4096',
+      KIKI_MODEL_MAX_TOKENS: '2048',
     });
 
     expect(changed).toEqual(['models', 'providers', 'defaultModel', 'modelOverrides']);
@@ -475,26 +475,26 @@ describe('kimiModelEnvOverlay', () => {
     });
   });
 
-  it('falls back to legacy KIMI_MODEL_MAX_TOKENS for completion overrides', () => {
+  it('falls back to legacy KIKI_MODEL_MAX_TOKENS for completion overrides', () => {
     const { effective } = applyKimiModelEnvOverlay({
-      KIMI_MODEL_NAME: 'env-model',
-      KIMI_MODEL_MAX_TOKENS: '2048',
+      KIKI_MODEL_NAME: 'env-model',
+      KIKI_MODEL_MAX_TOKENS: '2048',
     });
 
     expect(effective['modelOverrides']).toEqual({ maxCompletionTokens: 2048 });
   });
 
   it.each([
-    ['KIMI_MODEL_MAX_CONTEXT_SIZE', '0'],
-    ['KIMI_MODEL_MAX_CONTEXT_SIZE', '1.5'],
-    ['KIMI_MODEL_MAX_OUTPUT_SIZE', 'nope'],
-    ['KIMI_MODEL_ADAPTIVE_THINKING', 'maybe'],
-    ['KIMI_MODEL_TEMPERATURE', 'abc'],
-    ['KIMI_MODEL_TEMPERATURE', '1.2.3'],
-    ['KIMI_MODEL_TOP_P', 'NaN'],
+    ['KIKI_MODEL_MAX_CONTEXT_SIZE', '0'],
+    ['KIKI_MODEL_MAX_CONTEXT_SIZE', '1.5'],
+    ['KIKI_MODEL_MAX_OUTPUT_SIZE', 'nope'],
+    ['KIKI_MODEL_ADAPTIVE_THINKING', 'maybe'],
+    ['KIKI_MODEL_TEMPERATURE', 'abc'],
+    ['KIKI_MODEL_TEMPERATURE', '1.2.3'],
+    ['KIKI_MODEL_TOP_P', 'NaN'],
   ])('throws config.invalid for invalid %s=%s', (key, value) => {
     expectConfigInvalid(() =>
-      applyKimiModelEnvOverlay({ KIMI_MODEL_NAME: 'env-model', [key]: value }),
+      applyKimiModelEnvOverlay({ KIKI_MODEL_NAME: 'env-model', [key]: value }),
     );
   });
 

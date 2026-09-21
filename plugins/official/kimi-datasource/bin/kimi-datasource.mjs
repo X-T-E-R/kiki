@@ -373,12 +373,12 @@ async function buildHeaders(kimiHome, token, toolCallId) {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
     'X-Msh-Tool-Call-Id': toolCallId,
-    'X-Msh-Platform': asciiHeader(process.env.KIMI_MSH_PLATFORM ?? 'kimi-code-cli'),
-    'X-Msh-Version': asciiHeader(process.env.KIMI_MSH_VERSION ?? VERSION),
-    'X-Msh-Device-Name': asciiHeader(process.env.KIMI_MSH_DEVICE_NAME ?? hostname()),
-    'X-Msh-Device-Model': asciiHeader(process.env.KIMI_MSH_DEVICE_MODEL ?? deviceModel()),
-    'X-Msh-Os-Version': asciiHeader(process.env.KIMI_MSH_OS_VERSION ?? release()),
-    'X-Msh-Device-Id': asciiHeader(process.env.KIMI_MSH_DEVICE_ID ?? (await createDeviceId(kimiHome))),
+    'X-Msh-Platform': asciiHeader(process.env.KIKI_MSH_PLATFORM ?? 'kimi-code-cli'),
+    'X-Msh-Version': asciiHeader(process.env.KIKI_MSH_VERSION ?? VERSION),
+    'X-Msh-Device-Name': asciiHeader(process.env.KIKI_MSH_DEVICE_NAME ?? hostname()),
+    'X-Msh-Device-Model': asciiHeader(process.env.KIKI_MSH_DEVICE_MODEL ?? deviceModel()),
+    'X-Msh-Os-Version': asciiHeader(process.env.KIKI_MSH_OS_VERSION ?? release()),
+    'X-Msh-Device-Id': asciiHeader(process.env.KIKI_MSH_DEVICE_ID ?? (await createDeviceId(kimiHome))),
     'User-Agent': `kimi-datasource/${VERSION}`,
   };
 }

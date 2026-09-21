@@ -36,9 +36,9 @@ import type {
   ReloadSummary,
 } from './types';
 
-const KIMI_CODE_BASE_URL_ENV = 'KIMI_CODE_BASE_URL';
-const KIMI_CODE_OAUTH_HOST_ENV = 'KIMI_CODE_OAUTH_HOST';
-const KIMI_OAUTH_HOST_ENV = 'KIMI_OAUTH_HOST';
+const KIKI_CODE_BASE_URL_ENV = 'KIKI_CODE_BASE_URL';
+const KIKI_CODE_OAUTH_HOST_ENV = 'KIKI_CODE_OAUTH_HOST';
+const KIKI_OAUTH_HOST_ENV = 'KIKI_OAUTH_HOST';
 const NO_ABORT = new AbortController().signal;
 
 interface PluginReloadNotification {
@@ -75,9 +75,9 @@ export class PluginService extends Service implements IPluginService {
   ) {
     super();
     this.homeDir = bootstrap.homeDir;
-    this.envBaseUrl = bootstrap.getEnv(KIMI_CODE_BASE_URL_ENV);
+    this.envBaseUrl = bootstrap.getEnv(KIKI_CODE_BASE_URL_ENV);
     this.envOAuthHost =
-      bootstrap.getEnv(KIMI_CODE_OAUTH_HOST_ENV) ?? bootstrap.getEnv(KIMI_OAUTH_HOST_ENV);
+      bootstrap.getEnv(KIKI_CODE_OAUTH_HOST_ENV) ?? bootstrap.getEnv(KIKI_OAUTH_HOST_ENV);
     this.manager = new PluginManager({
       kimiHomeDir: this.homeDir,
       discoverSkills: (roots) => discovery.discover(roots),
@@ -320,8 +320,8 @@ export class PluginService extends Service implements IPluginService {
     const baseUrl = envBaseUrl !== undefined ? envBaseUrl.replace(/\/+$/, '') : provider?.baseUrl;
     const oauthHost = hasEnvOverride ? envOAuthHost : provider?.oauth?.oauthHost;
     const env: Record<string, string> = {};
-    if (baseUrl !== undefined) env[KIMI_CODE_BASE_URL_ENV] = baseUrl;
-    if (oauthHost !== undefined) env[KIMI_CODE_OAUTH_HOST_ENV] = oauthHost;
+    if (baseUrl !== undefined) env[KIKI_CODE_BASE_URL_ENV] = baseUrl;
+    if (oauthHost !== undefined) env[KIKI_CODE_OAUTH_HOST_ENV] = oauthHost;
     return env;
   }
 }

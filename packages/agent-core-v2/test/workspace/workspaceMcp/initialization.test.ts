@@ -150,7 +150,7 @@ describe('Workspace MCP initialization', () => {
         command: process.execPath,
         args: [slowToolStdioFixture],
         runtime_id: 'local',
-        env: { KIMI_TEST_MCP_TOOL_DELAY_MS: '300' },
+        env: { KIKI_TEST_MCP_TOOL_DELAY_MS: '300' },
       },
     });
     const service = createWorkspaceMcpService(Promise.resolve(), { toolTimeoutMs: 1 });

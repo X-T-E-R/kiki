@@ -836,7 +836,7 @@ describe('McpConnectionManager', () => {
           transport: 'stdio',
           command: process.execPath,
           args: [crashAfterConnectFixture],
-          env: { KIMI_TEST_MCP_EXIT_AFTER_MS: '500', KIMI_TEST_MCP_STDERR: 'fatal: out of memory' },
+          env: { KIKI_TEST_MCP_EXIT_AFTER_MS: '500', KIKI_TEST_MCP_STDERR: 'fatal: out of memory' },
           startupTimeoutMs: 4_000,
         },
       });
@@ -869,7 +869,7 @@ describe('McpConnectionManager', () => {
           transport: 'stdio',
           command: process.execPath,
           args: [stderrThenExitFixture],
-          env: { KIMI_TEST_MCP_STDERR: 'fatal: missing API token KIMI_X' },
+          env: { KIKI_TEST_MCP_STDERR: 'fatal: missing API token KIMI_X' },
           startupTimeoutMs: 4_000,
         },
       });

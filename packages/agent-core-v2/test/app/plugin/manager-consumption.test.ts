@@ -499,7 +499,7 @@ describe('PluginManager consumption plane', () => {
         'plugin-demo:finance': expect.objectContaining({
           command: 'finance-mcp',
           cwd: managedRoot,
-          env: expect.objectContaining({ KIKI_HOME: home, KIMI_PLUGIN_ROOT: managedRoot }),
+          env: expect.objectContaining({ KIKI_HOME: home, KIKI_PLUGIN_ROOT: managedRoot }),
         }),
         'plugin-demo:docs': expect.objectContaining({ url: 'https://example.com/mcp' }),
         'plugin-demo:events': expect.objectContaining({
@@ -646,7 +646,7 @@ describe('PluginManager consumption plane', () => {
         env: expect.objectContaining({
           CUSTOM: '1',
           KIKI_HOME: home,
-          KIMI_PLUGIN_ROOT: managedRoot,
+          KIKI_PLUGIN_ROOT: managedRoot,
         }),
       }),
     );
@@ -658,7 +658,7 @@ describe('PluginManager consumption plane', () => {
         enabled: true,
       }),
     );
-    expect(JSON.stringify(docs?.config)).not.toContain('KIMI_PLUGIN_ROOT');
+    expect(JSON.stringify(docs?.config)).not.toContain('KIKI_PLUGIN_ROOT');
   });
 
   it('mcpServerEntries() skips plugins in error state', async () => {
@@ -734,7 +734,7 @@ describe('PluginManager consumption plane', () => {
         command: './hooks/guard.sh',
         timeout: 10,
         cwd: installedRoot,
-        env: { KIKI_HOME: home, KIMI_PLUGIN_ROOT: installedRoot },
+        env: { KIKI_HOME: home, KIKI_PLUGIN_ROOT: installedRoot },
       },
     ]);
   });
@@ -920,7 +920,7 @@ describe('PluginManager consumption plane', () => {
           cwd: managedRoot,
           env: expect.objectContaining({
             KIKI_HOME: home,
-            KIMI_PLUGIN_ROOT: managedRoot,
+            KIKI_PLUGIN_ROOT: managedRoot,
             ELECTRON_RUN_AS_NODE: '1',
           }),
         }),

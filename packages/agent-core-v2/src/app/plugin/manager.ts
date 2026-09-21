@@ -287,7 +287,7 @@ export class PluginManager {
           cwd: record.root,
           env: {
             KIKI_HOME: this.kimiHomeDir,
-            KIMI_PLUGIN_ROOT: record.root,
+            KIKI_PLUGIN_ROOT: record.root,
           },
         });
       }
@@ -714,7 +714,7 @@ function withPluginMcpRuntime(
   const env = {
     ...config.env,
     KIKI_HOME: kimiHomeDir,
-    KIMI_PLUGIN_ROOT: pluginRoot,
+    KIKI_PLUGIN_ROOT: pluginRoot,
   };
 
   if (config.command === 'node' && isElectron()) {

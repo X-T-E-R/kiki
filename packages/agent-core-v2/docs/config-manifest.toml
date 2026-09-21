@@ -235,8 +235,8 @@ advertise_as_kimi_code = false
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     max_edge_px <- KIMI_IMAGE_MAX_EDGE_PX (custom parse)
-#     read_byte_budget <- KIMI_IMAGE_READ_BYTE_BUDGET (custom parse)
+#     max_edge_px <- KIKI_IMAGE_MAX_EDGE_PX (custom parse)
+#     read_byte_budget <- KIKI_IMAGE_READ_BYTE_BUDGET (custom parse)
 # ##########################################################################
 
 [image]
@@ -249,9 +249,9 @@ advertise_as_kimi_code = false
 #   scope: core
 #   hooks: custom toToml · stripEnv
 #   env:
-#     max_steps_per_turn <- KIMI_LOOP_MAX_STEPS_PER_TURN (custom parse)
-#     max_attempts_per_step <- KIMI_LOOP_MAX_ATTEMPTS_PER_STEP (custom parse)
-#     compaction_soft_context_size <- KIMI_LOOP_COMPACTION_SOFT_CONTEXT_SIZE (custom parse)
+#     max_steps_per_turn <- KIKI_LOOP_MAX_STEPS_PER_TURN (custom parse)
+#     max_attempts_per_step <- KIKI_LOOP_MAX_ATTEMPTS_PER_STEP (custom parse)
+#     compaction_soft_context_size <- KIKI_LOOP_COMPACTION_SOFT_CONTEXT_SIZE (custom parse)
 # ##########################################################################
 
 [loop_control]
@@ -461,9 +461,9 @@ enter_approval_timeout_ms = 60000
 #   scope: core
 #   hooks: custom fromToml · custom toToml · stripEnv
 #   env:
-#     __kimi_env__.api_key <- KIMI_MODEL_API_KEY
-#     __kimi_env__.type <- KIMI_MODEL_PROVIDER_TYPE
-#     __kimi_env__.base_url <- KIMI_MODEL_BASE_URL
+#     __kimi_env__.api_key <- KIKI_MODEL_API_KEY
+#     __kimi_env__.type <- KIKI_MODEL_PROVIDER_TYPE
+#     __kimi_env__.base_url <- KIKI_MODEL_BASE_URL
 # ##########################################################################
 
 [providers]
@@ -591,7 +591,7 @@ max_queued_restores = 8
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     timeout_ms <- KIMI_SUBAGENT_TIMEOUT_MS (custom parse)
+#     timeout_ms <- KIKI_SUBAGENT_TIMEOUT_MS (custom parse)
 # ##########################################################################
 
 [subagent]
@@ -627,7 +627,7 @@ default_profile = "general"
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     forced_effort <- KIMI_MODEL_THINKING_EFFORT
+#     forced_effort <- KIKI_MODEL_THINKING_EFFORT
 # ##########################################################################
 
 [thinking]
@@ -651,7 +651,7 @@ enabled = false
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     strategy <- KIMI_TOKEN_COUNTING_STRATEGY (custom parse)
+#     strategy <- KIKI_TOKEN_COUNTING_STRATEGY (custom parse)
 # ##########################################################################
 
 [token_counting]

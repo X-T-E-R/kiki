@@ -86,16 +86,16 @@ function withoutKey(value: unknown, key: string): unknown {
 
 export const kimiModelEnvOverlay: ConfigEffectiveOverlay = {
   apply(effective, getEnv, validate) {
-    const model = trimmed(getEnv('KIMI_MODEL_NAME'));
+    const model = trimmed(getEnv('KIKI_MODEL_NAME'));
     const temperature = parseFloatEnv(
-      getEnv('KIMI_MODEL_TEMPERATURE'),
-      'KIMI_MODEL_TEMPERATURE',
+      getEnv('KIKI_MODEL_TEMPERATURE'),
+      'KIKI_MODEL_TEMPERATURE',
     );
-    const topP = parseFloatEnv(getEnv('KIMI_MODEL_TOP_P'), 'KIMI_MODEL_TOP_P');
-    const thinkingKeep = trimmed(getEnv('KIMI_MODEL_THINKING_KEEP'));
+    const topP = parseFloatEnv(getEnv('KIKI_MODEL_TOP_P'), 'KIKI_MODEL_TOP_P');
+    const thinkingKeep = trimmed(getEnv('KIKI_MODEL_THINKING_KEEP'));
     const maxCompletionTokens =
-      parseCompletionTokens(getEnv('KIMI_MODEL_MAX_COMPLETION_TOKENS')) ??
-      parseCompletionTokens(getEnv('KIMI_MODEL_MAX_TOKENS'));
+      parseCompletionTokens(getEnv('KIKI_MODEL_MAX_COMPLETION_TOKENS')) ??
+      parseCompletionTokens(getEnv('KIKI_MODEL_MAX_TOKENS'));
 
     const changed: string[] = [];
 
@@ -113,23 +113,23 @@ export const kimiModelEnvOverlay: ConfigEffectiveOverlay = {
       return changed;
     }
 
-    const maxContextRaw = trimmed(getEnv('KIMI_MODEL_MAX_CONTEXT_SIZE'));
+    const maxContextRaw = trimmed(getEnv('KIKI_MODEL_MAX_CONTEXT_SIZE'));
     const maxContextSize =
       maxContextRaw === undefined
         ? DEFAULT_MAX_CONTEXT_SIZE
-        : parsePositiveInt(maxContextRaw, 'KIMI_MODEL_MAX_CONTEXT_SIZE');
+        : parsePositiveInt(maxContextRaw, 'KIKI_MODEL_MAX_CONTEXT_SIZE');
 
-    const maxOutputRaw = trimmed(getEnv('KIMI_MODEL_MAX_OUTPUT_SIZE'));
+    const maxOutputRaw = trimmed(getEnv('KIKI_MODEL_MAX_OUTPUT_SIZE'));
     const maxOutputSize =
       maxOutputRaw === undefined
         ? undefined
-        : parsePositiveInt(maxOutputRaw, 'KIMI_MODEL_MAX_OUTPUT_SIZE');
-    const capabilities = parseCapabilities(getEnv('KIMI_MODEL_CAPABILITIES')) ?? DEFAULT_CAPABILITIES;
-    const displayName = trimmed(getEnv('KIMI_MODEL_DISPLAY_NAME'));
-    const reasoningKey = trimmed(getEnv('KIMI_MODEL_REASONING_KEY'));
+        : parsePositiveInt(maxOutputRaw, 'KIKI_MODEL_MAX_OUTPUT_SIZE');
+    const capabilities = parseCapabilities(getEnv('KIKI_MODEL_CAPABILITIES')) ?? DEFAULT_CAPABILITIES;
+    const displayName = trimmed(getEnv('KIKI_MODEL_DISPLAY_NAME'));
+    const reasoningKey = trimmed(getEnv('KIKI_MODEL_REASONING_KEY'));
     const adaptiveThinking = parseBooleanVar(
-      getEnv('KIMI_MODEL_ADAPTIVE_THINKING'),
-      'KIMI_MODEL_ADAPTIVE_THINKING',
+      getEnv('KIKI_MODEL_ADAPTIVE_THINKING'),
+      'KIKI_MODEL_ADAPTIVE_THINKING',
     );
 
     const alias: Record<string, unknown> = {

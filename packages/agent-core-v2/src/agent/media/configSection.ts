@@ -5,8 +5,8 @@ import { registerConfigSection } from '#/app/config/configSectionContributions';
 
 export const IMAGE_SECTION = 'image';
 
-export const IMAGE_MAX_EDGE_ENV = 'KIMI_IMAGE_MAX_EDGE_PX';
-export const IMAGE_READ_BYTE_BUDGET_ENV = 'KIMI_IMAGE_READ_BYTE_BUDGET';
+export const IMAGE_MAX_EDGE_ENV = 'KIKI_IMAGE_MAX_EDGE_PX';
+export const IMAGE_READ_BYTE_BUDGET_ENV = 'KIKI_IMAGE_READ_BYTE_BUDGET';
 
 export const ImageConfigSchema = z.object({
   maxEdgePx: z.number().int().min(1).optional(),

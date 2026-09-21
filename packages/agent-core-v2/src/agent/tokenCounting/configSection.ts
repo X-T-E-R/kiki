@@ -11,7 +11,7 @@ import type { TokenCountingStrategy } from './tokenCounting';
 
 export const TOKEN_COUNTING_SECTION = 'tokenCounting';
 
-export const TOKEN_COUNTING_STRATEGY_ENV = 'KIMI_TOKEN_COUNTING_STRATEGY';
+export const TOKEN_COUNTING_STRATEGY_ENV = 'KIKI_TOKEN_COUNTING_STRATEGY';
 
 export const TOKEN_COUNTING_STRATEGIES = ['measured+estimated', 'measured', 'estimated'] as const;
 
