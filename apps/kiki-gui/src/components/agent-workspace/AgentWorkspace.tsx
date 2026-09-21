@@ -142,6 +142,7 @@ export function resolveRunningSubagentTask(input: {
 }
 
 const emptyAgentView = createViewState('');
+const SUBAGENT_INTERACTIVE_STATUSES = new Set(['running', 'background', 'suspended']);
 
 function AgentWorkspaceHeader({
   target,
@@ -364,14 +365,13 @@ export function AgentWorkspace({
     parentTasks: parentAgentState.tasks,
   });
   const agentStatus = selectedNode?.status ?? selectedSubagent?.status ?? 'unknown';
-  const composerDisabled =
-    (selectedNode === undefined && selectedSubagent === undefined) ||
-    agentStatus === 'unknown' ||
-    agentStatus === 'failed';
+  const subagentInteractive = SUBAGENT_INTERACTIVE_STATUSES.has(agentStatus);
+  const composerDisabled = !subagentInteractive;
   const handleComposerSend = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
   ) => {
+    if (!subagentInteractive) return;
     const content = buildPromptContent(text, composerAttachments);
     if (content === null) return;
     await client.sendAgentMessage(sessionId, agentId, text, content);
@@ -379,11 +379,11 @@ export function AgentWorkspace({
     setAttachments([]);
   };
   const handleTerminateAgent = async () => {
-    if (runningAgentTask === undefined) return;
+    if (!subagentInteractive || runningAgentTask === undefined) return;
     await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
   };
   const handleChangeAgentModel = async (model: string | undefined) => {
-    if (model === undefined || model === displayModel) return;
+    if (!subagentInteractive || model === undefined || model === displayModel) return;
     await client.setAgentModel(sessionId, agentId, model);
   };
   const displayEffort =
@@ -474,7 +474,7 @@ export function AgentWorkspace({
                 onChangeSwarmMode={() => {}}
                 onChangeEffort={() => {}}
                 onSend={handleComposerSend}
-                onAbort={runningAgentTask === undefined ? undefined : handleTerminateAgent}
+                onAbort={subagentInteractive && runningAgentTask !== undefined ? handleTerminateAgent : undefined}
               />
               <ResyncStatusBanner
                 resyncing={sessionState.resyncing}

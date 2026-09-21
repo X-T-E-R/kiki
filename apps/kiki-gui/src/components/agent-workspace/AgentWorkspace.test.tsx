@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, createRef, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -23,7 +24,7 @@ const harness = vi.hoisted(() => ({
   stopAgentTask: vi.fn(),
   setAgentModel: vi.fn(),
   readCapabilities: vi.fn(),
-  composerProps: null as { onSend?: (text: string, attachments: readonly unknown[]) => Promise<void> } | null,
+  listSessionSkills: vi.fn(),
   mediaProviderProps: [] as Array<{ apiRef?: unknown }>,
 }));
 
@@ -31,6 +32,7 @@ vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
       listModels: harness.listModels,
+      listSessionSkills: harness.listSessionSkills,
       sendAgentMessage: harness.sendAgentMessage,
       stopAgentTask: harness.stopAgentTask,
       setAgentModel: harness.setAgentModel,
@@ -73,12 +75,8 @@ vi.mock('../mediaPreview', () => ({
   PreviewToggleButton: () => <div data-preview-toggle-probe />,
 }));
 vi.mock('../RightRail', () => ({ RightRail: () => null }));
-vi.mock('../Composer', () => ({
-  Composer: (props: { variant?: string; onSend?: (text: string, attachments: readonly unknown[]) => Promise<void> }) => {
-    harness.composerProps = props;
-    return <div data-composer-variant={props.variant} />;
-  },
-}));
+vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
+vi.mock('../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
 vi.mock('../Transcript', () => ({ Transcript: () => null }));
 vi.mock('./ResyncStatusBanner', () => ({ ResyncStatusBanner: () => null }));
 vi.mock('./SubagentDetailActions', () => ({ SubagentDetailActions: () => null }));
@@ -107,7 +105,11 @@ beforeEach(() => {
   });
   harness.shellEnabled = true;
   harness.mediaProviderProps.length = 0;
-  harness.composerProps = null;
+  harness.listSessionSkills.mockResolvedValue({ skills: [] });
+  harness.listModels.mockResolvedValue({ items: [
+    { id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro' },
+    { id: 'fixture/other', provider_id: 'fixture', remote_id: 'other' },
+  ] });
   container = document.createElement('div');
   header = document.createElement('div');
   dock = document.createElement('div');
@@ -132,6 +134,14 @@ async function settle() {
   for (let i = 0; i < 5; i += 1) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   }
+}
+
+async function typeText(textarea: HTMLTextAreaElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(textarea, value);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 it('keeps dispatch policy out of the workspace header and mounts the shared composer', async () => {
@@ -159,7 +169,8 @@ it('keeps dispatch policy out of the workspace header and mounts the shared comp
   await act(async () => root.render(
     <QueryClientProvider client={queries}>
       <I18nProvider>
-        <AgentWorkspace
+        <MemoryRouter>
+          <AgentWorkspace
           target={{ sessionId: 'session', agentId: 'child' }}
           controller={null}
           sessionState={sessionState}
@@ -173,6 +184,7 @@ it('keeps dispatch policy out of the workspace header and mounts the shared comp
           onStopAgentTask={vi.fn().mockResolvedValue(undefined)}
           previewApiRef={createRef<MediaPreviewApi>()}
         />
+        </MemoryRouter>
       </I18nProvider>
     </QueryClientProvider>,
   ));
@@ -184,26 +196,87 @@ it('keeps dispatch policy out of the workspace header and mounts the shared comp
   expect(dock.querySelector('[data-composer-variant="subagent"]')).not.toBeNull();
 });
 
-it('sends composer content through the existing user-to-agent channel', async () => {
+it('enables running fullscreen composer send, model switch, and stop', async () => {
   harness.sendAgentMessage.mockResolvedValue({});
-  await renderWorkspace();
-  await settle();
-  await act(async () => {
-    await harness.composerProps?.onSend?.('next step', []);
+  harness.setAgentModel.mockResolvedValue(undefined);
+  harness.stopAgentTask.mockResolvedValue(undefined);
+  await renderWorkspace({
+    forest: testForest('running', true),
+    sessionState: {
+      ...createViewState('session'),
+      loaded: true,
+      tasks: [{ id: 'task-1', kind: 'subagent', status: 'running', agent_id: 'child' }] as never,
+    },
   });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'next step');
+  await settle();
+  expect(textarea.value).toBe('next step');
+  const sendButton = dock.querySelector<HTMLButtonElement>('[aria-label="Send message"], [aria-label="Queue prompt"]');
+  expect(sendButton?.disabled).toBe(false);
+  await act(async () => { sendButton?.click(); });
   expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'next step', [
     { type: 'text', text: 'next step' },
   ]);
+  const modelSelect = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
+  expect(modelSelect.disabled).toBe(false);
+  await act(async () => { modelSelect.click(); });
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>('[role="option"][title="fixture/other"]')?.click();
+  });
+  expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Abort the running prompt"]')?.click(); });
+  expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
 });
 
-function testForest(): AgentForest {
+it.each(['completed', 'cancelled', 'failed'] as const)('disables terminal %s fullscreen composer send and model controls', async (status) => {
+  await renderWorkspace({ forest: testForest(status) });
+  await settle();
+  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
+  expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')?.disabled).toBe(true);
+  expect(dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.disabled).toBe(true);
+  expect(harness.sendAgentMessage).not.toHaveBeenCalled();
+  expect(harness.setAgentModel).not.toHaveBeenCalled();
+});
+
+it('keeps preview-tab composer disabled for a cancelled child', async () => {
+  const previewHeader = document.createElement('div');
+  const previewDock = document.createElement('div');
+  document.body.append(previewHeader, previewDock);
+  try {
+    await renderWorkspace({
+      forest: testForest('cancelled'),
+      slots: {
+        header: previewHeader,
+        dock: previewDock,
+        heroFooter: null,
+        footer: null,
+        rail: null,
+        preview: null,
+      },
+      inheritMediaPreview: true,
+      showPreviewToggle: false,
+      showBreadcrumb: false,
+    });
+    await settle();
+    expect(previewDock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
+    expect(previewDock.querySelector<HTMLButtonElement>('#composer-model-select')?.disabled).toBe(true);
+  } finally {
+    previewHeader.remove();
+    previewDock.remove();
+  }
+});
+
+function testForest(status: AgentTreeNode['status'] = 'completed', busy = false): AgentForest {
   const main: AgentTreeNode = {
     agentId: 'main', name: 'main', label: 'Main', status: 'completed', busy: false,
     toolCallCount: 0, childIds: ['child'],
   };
   const child: AgentTreeNode = {
     agentId: 'child', parentAgentId: 'main', name: 'general', label: 'General',
-    status: 'completed', busy: false, toolCallCount: 0, childIds: [],
+    model: 'fixture/kiki-pro',
+    status, busy, toolCallCount: 0, childIds: [],
   };
   return { roots: [main], byId: { main, child } };
 }
@@ -213,7 +286,8 @@ function renderWorkspace(overrides: Partial<ComponentProps<typeof AgentWorkspace
   return act(async () => root.render(
     <QueryClientProvider client={queries}>
       <I18nProvider>
-        <AgentWorkspace
+        <MemoryRouter>
+          <AgentWorkspace
           target={{ sessionId: 'session', agentId: 'child' }}
           controller={null}
           sessionState={{ ...createViewState('session'), loaded: true }}
@@ -228,6 +302,7 @@ function renderWorkspace(overrides: Partial<ComponentProps<typeof AgentWorkspace
           previewApiRef={previewRef}
           {...overrides}
         />
+        </MemoryRouter>
       </I18nProvider>
     </QueryClientProvider>,
   ));

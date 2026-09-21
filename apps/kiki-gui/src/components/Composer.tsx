@@ -1007,6 +1007,7 @@ export function Composer({
    */
   const fileInputRef = useRef<HTMLInputElement>(null);
   const openAttachPicker = () => {
+    if (disabled) return;
     if (host.pickFiles === undefined) {
       fileInputRef.current?.click();
       return;
@@ -1042,6 +1043,7 @@ export function Composer({
    * is always the landing spot.
    */
   const insertDroppedFilePaths = (paths: readonly string[]) => {
+    if (disabled) return;
     const node = textareaRef.current;
     const selection =
       node !== null
@@ -1779,6 +1781,7 @@ export function Composer({
                 type="button"
                 data-attach-button
                 onClick={openAttachPicker}
+                disabled={disabled}
                 aria-label={t('composer.attachAria')}
                 title={t('composer.attachTitle')}
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-hairline bg-panel text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
@@ -1871,6 +1874,7 @@ export function Composer({
                   resolvedModelKey={resolvedModelKey}
                   effectiveModel={effectiveModel}
                   modelSource={modelSource}
+                  disabled={variant === 'subagent' && disabled}
                   onChangeModel={onChangeModel}
                   efforts={efforts}
                   effort={effort}
@@ -2598,6 +2602,7 @@ function ModelChip({
   resolvedModelKey,
   effectiveModel,
   modelSource,
+  disabled = false,
   onChangeModel,
   efforts,
   effort,
@@ -2611,6 +2616,7 @@ function ModelChip({
   readonly resolvedModelKey: string | undefined;
   readonly effectiveModel: string | undefined;
   readonly modelSource: ComposerModelSource;
+  readonly disabled?: boolean;
   readonly onChangeModel: (model: string | undefined) => void;
   readonly efforts: readonly string[] | undefined;
   readonly effort: string | undefined;
@@ -2639,6 +2645,7 @@ function ModelChip({
       // With no catalog the raw value renders verbatim — the read-only label.
       value={hasCatalog ? (resolvedModelKey ?? model ?? '') : (effectiveModel ?? '')}
       onChange={(next) => { onChangeModel(next === '' ? undefined : next); }}
+      disabled={disabled}
       title={title}
       ariaLabel={t('composer.modelAria')}
       emptyText={t('composer.inheritDefault')}
@@ -2669,6 +2676,7 @@ function ModelChip({
                   role="radio"
                   aria-checked={level === effort}
                   data-effort={level}
+                  disabled={disabled}
                   onClick={() => { onChangeEffort(level); }}
                   className={`rounded-full px-2 py-0.5 font-mono text-[10.5px] transition-colors ${
                     level === effort
