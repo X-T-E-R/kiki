@@ -1869,7 +1869,7 @@ export const zh: Record<I18nKey, string> = {
   'st.experimental.saved': '实验特性覆盖已保存，实际状态已刷新。',
   'st.sessionTitleModel.title': '标题模型',
   'st.sessionTitleModel.hint':
-    '默认通过托管的 chat_title 工具生成标题（包含在订阅额度内）。在此固定一个模型别名，即改由该模型生成标题；提示词预算不变，清空该字段即恢复托管工具。',
+    '固定一个模型别名即可改由它生成标题；留空则使用托管的 chat_title 工具。',
   'st.sessionTitleModel.model': '模型别名',
   'st.sessionTitleModel.placeholder': '例如 kimi-for-coding',
   'st.sessionTitleModel.managedDefault': '托管 chat_title（默认）',
