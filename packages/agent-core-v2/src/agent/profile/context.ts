@@ -1,4 +1,4 @@
-import { basename, dirname, join, normalize } from 'pathe';
+import { basename, join, normalize } from 'pathe';
 
 import { findGitWorkTree } from '#/app/git/workTree';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -84,10 +84,6 @@ export function dotKikiAgentsMdPath(dir: string): string {
   return join(dir, '.kiki', 'AGENTS.md');
 }
 
-export function agentsMdCandidatePaths(dir: string): string[] {
-  return [dotKikiAgentsMdPath(dir), join(dir, 'AGENTS.md')];
-}
-
 export function extractAgentsMdPathsFromSystemPrompt(systemPrompt: string): string[] {
   const paths: string[] = [];
   const seen = new Set<string>();
@@ -102,18 +98,6 @@ export function extractAgentsMdPathsFromSystemPrompt(systemPrompt: string): stri
     paths.push(normalized);
   }
   return paths;
-}
-
-export async function findAgentsMdInDir(
-  deps: { readonly fs: IHostFileSystem },
-  dir: string,
-): Promise<string[]> {
-  const found: string[] = [];
-  const dotKiki = await findAgentsMdPath(deps, join(dir, '.kiki'));
-  if (dotKiki !== undefined && (await isNonEmptyFile(deps, dotKiki))) found.push(dotKiki);
-  const plain = await findAgentsMdPath(deps, dir);
-  if (plain !== undefined && (await isNonEmptyFile(deps, plain))) found.push(plain);
-  return found;
 }
 
 async function findAgentsMdPath(
@@ -138,17 +122,6 @@ function agentsMdNameRank(name: string): number {
   return 2;
 }
 
-async function isNonEmptyFile(
-  deps: { readonly fs: IHostFileSystem },
-  path: string,
-): Promise<boolean> {
-  try {
-    const content = await deps.fs.readText(path, { errors: 'ignore' });
-    return content.trim().length > 0;
-  } catch {
-    return false;
-  }
-}
 
 export async function loadAgentsMdForRoots(
   deps: ProfileContextDeps,
@@ -258,21 +231,6 @@ export async function findProjectRoot(
 ): Promise<string> {
   const rootWorkDir = normalize(workDir);
   return (await findGitWorkTree(deps.fs, rootWorkDir))?.root ?? rootWorkDir;
-}
-
-export function dirsRootToLeaf(workDir: string, projectRoot: string): string[] {
-  const dirs: string[] = [];
-  let current = normalize(workDir);
-
-  while (true) {
-    dirs.push(current);
-    if (current === projectRoot) break;
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-
-  return dirs.toReversed();
 }
 
 interface AgentFile {

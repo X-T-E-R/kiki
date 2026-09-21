@@ -290,10 +290,10 @@ export class AgentAgentsMdReminderService
     }
   }
 
-  private async probeDir(dir: string): Promise<string[]> {
+  private async probeDir(_dir: string): Promise<string[]> {
     const lease = this.runtime.acquire(['fs']);
     try {
-      return [...(await this.discovery.discover(lease, dir))];
+      return [...(await this.discovery.discover(lease, this.sessionContext.cwd))];
     } finally {
       lease.dispose();
     }

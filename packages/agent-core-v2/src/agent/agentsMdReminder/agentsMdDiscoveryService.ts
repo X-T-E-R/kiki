@@ -4,17 +4,11 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
-import {
-  AGENTS_MD_PLAIN_NAMES,
-  dirsRootToLeaf,
-  dotKikiAgentsMdPath,
-  findProjectRoot,
-} from '#/agent/profile/context';
+import { AGENTS_MD_PLAIN_NAMES, dotKikiAgentsMdPath, findProjectRoot } from '#/agent/profile/context';
 import type { HostDirEntry, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 
 const DISCOVERY_CACHE_TTL_MS = 5_000;
-const DIRECTORY_PROBE_CONCURRENCY = 4;
 const MAX_DIRECTORY_WATCHERS = 64;
 
 interface DirectoryEntry {
@@ -64,19 +58,18 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     private readonly maxWatchers = MAX_DIRECTORY_WATCHERS,
   ) {}
 
-  async discover(lease: RuntimeLease, targetDir: string): Promise<readonly string[]> {
+  async discover(lease: RuntimeLease, workspaceDir: string): Promise<readonly string[]> {
     const runtime = lease.runtime;
     const fs = runtime.fs;
     if (fs === undefined) return [];
     const cache = this.cacheFor(runtime);
-    const anchor = await this.nearestExistingDir(cache, fs, targetDir, runtime.environment.pathClass);
-    if (anchor === undefined) return [];
-    const projectRoot = await this.projectRoot(cache, fs, anchor, runtime.environment.pathClass);
-    const chain = dirsRootToLeaf(anchor, projectRoot);
-    const discovered = await mapBoundedOrdered(chain, DIRECTORY_PROBE_CONCURRENCY, (directory) =>
-      this.discoverDirectory(lease, cache, directory),
+    const projectRoot = await this.projectRoot(
+      cache,
+      fs,
+      normalize(workspaceDir),
+      runtime.environment.pathClass,
     );
-    return discovered.flat();
+    return this.discoverDirectory(lease, cache, projectRoot);
   }
 
   invalidate(runtime: Runtime, directory: string): void {
@@ -266,29 +259,6 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     return flight;
   }
 
-  private async nearestExistingDir(
-    cache: RuntimeCache,
-    fs: IHostFileSystem,
-    path: string,
-    pathClass: 'posix' | 'win32',
-  ): Promise<string | undefined> {
-    let current = normalize(path);
-    for (;;) {
-      const key = pathKey(current, pathClass);
-      const cachedUntil = cache.existingDirectories.get(key);
-      if (cachedUntil !== undefined && cachedUntil > this.now()) return current;
-      cache.existingDirectories.delete(key);
-      const stat = await fs.stat(current).catch(() => undefined);
-      if (stat?.isDirectory === true) {
-        cache.existingDirectories.set(key, this.now() + this.ttlMs);
-        return current;
-      }
-      const parent = dirname(current);
-      if (parent === current) return undefined;
-      current = parent;
-    }
-  }
-
   private invalidateKey(cache: RuntimeCache, key: string): void {
     cache.directories.delete(key);
     cache.revisions.set(key, (cache.revisions.get(key) ?? 0) + 1);
@@ -361,24 +331,6 @@ function affectsDirectory(
   ].some((candidate) => pathKey(candidate, pathClass) === changedKey);
 }
 
-async function mapBoundedOrdered<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const output: R[] = [];
-  let next = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    for (;;) {
-      const index = next;
-      next += 1;
-      if (index >= items.length) return;
-      output[index] = await fn(items[index]!);
-    }
-  });
-  await Promise.all(workers);
-  return output;
-}
 
 registerScopedService(
   LifecycleScope.App,
