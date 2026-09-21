@@ -23,6 +23,7 @@
     "allow-open-host-path",
     "allow-read-desktop-prefs",
     "allow-write-desktop-prefs",
+    "allow-supports-desktop-updates",
     "allow-check-desktop-update",
     "allow-install-desktop-update",
     "allow-prepare-for-update",

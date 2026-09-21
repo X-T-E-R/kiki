@@ -115,6 +115,7 @@ jobs:
           KIKI_VERSION: ${{ needs.validate.outputs.version }}
           KIKI_BUILD_SHA: ${{ github.sha }}
           KIKI_UPDATE_CHANNEL: ${{ needs.validate.outputs.channel }}
+          KIKI_DISTRIBUTION: github
           KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
           KIKI_TAURI_CONFIG_PATH: ${{ runner.temp }}/kiki-tauri-release-config.json
         shell: bash

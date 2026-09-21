@@ -72,6 +72,8 @@ jobs:
           "KIKI_UPDATER_PUBLIC_KEY=$publicKey" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build NSIS updater artifact
+        env:
+          KIKI_DISTRIBUTION: github
         shell: pwsh
         run: |
           $config = @{

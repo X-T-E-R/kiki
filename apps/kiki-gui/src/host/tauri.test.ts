@@ -4,6 +4,7 @@ import { tauriHost } from './tauri';
 
 const {
   checkDesktopUpdate: checkNativeDesktopUpdate,
+  supportsDesktopUpdates,
   onFileDrop,
   onTrayNewSession,
   pickDirectories: selectDirectoriesNative,
@@ -55,6 +56,12 @@ describe('native desktop bridge', () => {
     await tauriHost.openPath(input);
     expect(invoke).toHaveBeenNthCalledWith(1, 'reveal_host_path', { path });
     expect(invoke).toHaveBeenNthCalledWith(2, 'open_host_path', { path });
+  });
+
+  it('queries whether this distribution supports desktop updates', async () => {
+    invoke.mockResolvedValueOnce(true);
+    await expect(supportsDesktopUpdates()).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith('supports_desktop_updates');
   });
 
   it('checks and installs a desktop update through native commands', async () => {

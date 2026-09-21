@@ -60,6 +60,7 @@ const EXPECTED_SIDECAR_SERVER_VERSION: &str = env!("KIKI_SIDECAR_SERVER_VERSION"
 const EXPECTED_SIDECAR_BUILD_ID: &str = env!("KIKI_SIDECAR_BUILD_ID");
 const EXPECTED_SIDECAR_BUILD_CHANNEL: &str = env!("KIKI_SIDECAR_BUILD_CHANNEL");
 const UPDATER_PUBLIC_KEY: Option<&str> = option_env!("KIKI_UPDATER_PUBLIC_KEY");
+const DISTRIBUTION: &str = env!("KIKI_DISTRIBUTION");
 const STABLE_UPDATE_ENDPOINT: &str = "https://x-t-e-r.github.io/kiki/updater/stable/latest.json";
 const BETA_UPDATE_ENDPOINT: &str = "https://x-t-e-r.github.io/kiki/updater/beta/latest.json";
 const TRAY_ID: &str = "main-tray";
@@ -1019,6 +1020,14 @@ impl UpdateChannel {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum AutoUpdateMode {
+    Off,
+    Notify,
+    Install,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 struct DesktopPrefs {
@@ -1027,6 +1036,7 @@ struct DesktopPrefs {
     /// UI locale mirrored from the frontend ("en"/"zh"); drives tray labels.
     locale: Option<String>,
     update_channel: UpdateChannel,
+    auto_update: AutoUpdateMode,
     compatibility: CompatibilitySettings,
 }
 
@@ -1037,6 +1047,7 @@ impl Default for DesktopPrefs {
             close_to_tray: true,
             locale: None,
             update_channel: UpdateChannel::build_default(option_env!("KIKI_UPDATE_CHANNEL")),
+            auto_update: AutoUpdateMode::Notify,
             compatibility: CompatibilitySettings::default(),
         }
     }
@@ -1053,6 +1064,7 @@ struct DesktopPrefsPatch {
     close_to_tray: Option<bool>,
     locale: Option<String>,
     update_channel: Option<UpdateChannel>,
+    auto_update: Option<AutoUpdateMode>,
     compatibility: Option<CompatibilitySettings>,
 }
 
@@ -1563,6 +1575,7 @@ fn write_desktop_prefs(app: AppHandle, prefs: DesktopPrefsPatch) -> Result<(), S
         close_to_tray: prefs.close_to_tray.unwrap_or(current.close_to_tray),
         locale: prefs.locale.or(current.locale),
         update_channel: prefs.update_channel.unwrap_or(current.update_channel),
+        auto_update: prefs.auto_update.unwrap_or(current.auto_update),
         compatibility: prefs.compatibility.unwrap_or(current.compatibility),
     };
     validate_compatibility_settings(&next.compatibility)?;
@@ -1586,10 +1599,24 @@ struct DesktopUpdateInfo {
     notes: Option<String>,
 }
 
+fn desktop_updates_supported_for(distribution: &str, public_key: Option<&str>) -> bool {
+    distribution == "github" && public_key.is_some_and(|key| !key.is_empty())
+}
+
+fn desktop_updates_supported() -> bool {
+    desktop_updates_supported_for(DISTRIBUTION, UPDATER_PUBLIC_KEY)
+}
+
+#[tauri::command]
+fn supports_desktop_updates() -> bool {
+    desktop_updates_supported()
+}
+
 fn desktop_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    let public_key = UPDATER_PUBLIC_KEY
-        .filter(|key| !key.is_empty())
-        .ok_or_else(|| "Desktop updater is not configured in this build".to_string())?;
+    if !desktop_updates_supported() {
+        return Err("Desktop updater is not available for this distribution".to_string());
+    }
+    let public_key = UPDATER_PUBLIC_KEY.expect("supported updater has a public key");
     let endpoint = Url::parse(read_desktop_prefs_file().update_channel.endpoint())
         .map_err(|error| error.to_string())?;
     app.updater_builder()
@@ -2478,6 +2505,7 @@ mod tests {
         assert!(partial.close_to_tray);
         assert_eq!(partial.locale, None);
         assert_eq!(partial.update_channel, UpdateChannel::Stable);
+        assert_eq!(partial.auto_update, AutoUpdateMode::Notify);
         assert_eq!(
             UpdateChannel::build_default(Some("beta")),
             UpdateChannel::Beta
@@ -2489,9 +2517,19 @@ mod tests {
 
         let beta: DesktopPrefs = serde_json::from_str(r#"{"updateChannel":"beta"}"#).unwrap();
         assert_eq!(beta.update_channel, UpdateChannel::Beta);
+        let install: DesktopPrefs = serde_json::from_str(r#"{"autoUpdate":"install"}"#).unwrap();
+        assert_eq!(install.auto_update, AutoUpdateMode::Install);
 
         let corrupt = serde_json::from_str::<DesktopPrefs>("{not-json").unwrap_or_default();
         assert!(corrupt.close_to_tray);
+    }
+
+    #[test]
+    fn desktop_update_support_requires_github_distribution_and_public_key() {
+        assert!(desktop_updates_supported_for("github", Some("public-key")));
+        assert!(!desktop_updates_supported_for("github", None));
+        assert!(!desktop_updates_supported_for("github", Some("")));
+        assert!(!desktop_updates_supported_for("local", Some("public-key")));
     }
 
     #[test]

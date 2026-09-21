@@ -184,6 +184,11 @@ fn main() {
         "cargo:rustc-env=KIKI_UPDATE_CHANNEL={}",
         env::var("KIKI_UPDATE_CHANNEL").unwrap_or_else(|_| "stable".to_string())
     );
+    println!("cargo:rerun-if-env-changed=KIKI_DISTRIBUTION");
+    println!(
+        "cargo:rustc-env=KIKI_DISTRIBUTION={}",
+        env::var("KIKI_DISTRIBUTION").unwrap_or_else(|_| "local".to_string())
+    );
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS)),

@@ -189,6 +189,9 @@ export const tauriHost: TauriHostAdapter = {
   async restartServer() {
     await invoke('restart_server');
   },
+  async supportsDesktopUpdates() {
+    return invoke<boolean>('supports_desktop_updates');
+  },
   async checkDesktopUpdate(): Promise<DesktopUpdate | null> {
     const update = await invoke<Omit<DesktopUpdate, 'install'> | null>('check_desktop_update');
     if (update === null) return null;

@@ -56,6 +56,7 @@ export interface DesktopSettings {
 }
 
 export type UpdateChannel = 'stable' | 'beta';
+export type AutoUpdateMode = 'off' | 'notify' | 'install';
 
 export interface DesktopNativePrefs {
   notifications: boolean;
@@ -63,6 +64,7 @@ export interface DesktopNativePrefs {
   /** UI locale mirrored to the native side (tray menu labels); frontend-owned. */
   locale?: string;
   updateChannel: UpdateChannel;
+  autoUpdate: AutoUpdateMode;
   compatibility: CompatibilitySettings;
 }
 
@@ -288,6 +290,7 @@ const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
   notifications: true,
   closeToTray: true,
   updateChannel: import.meta.env['VITE_UPDATE_CHANNEL'] === 'beta' ? 'beta' : 'stable',
+  autoUpdate: 'notify',
   compatibility: {
     homeKind: 'kimi',
     customHome: undefined,
@@ -510,6 +513,10 @@ export function readDesktopPrefs(): DesktopNativePrefs {
       stored.updateChannel === 'stable' || stored.updateChannel === 'beta'
         ? stored.updateChannel
         : DESKTOP_PREFS_DEFAULTS.updateChannel,
+    autoUpdate:
+      stored.autoUpdate === 'off' || stored.autoUpdate === 'notify' || stored.autoUpdate === 'install'
+        ? stored.autoUpdate
+        : DESKTOP_PREFS_DEFAULTS.autoUpdate,
     compatibility: {
       homeKind: homeKind === 'kimi' || homeKind === 'custom'
         ? homeKind

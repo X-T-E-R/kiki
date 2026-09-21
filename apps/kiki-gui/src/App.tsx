@@ -52,7 +52,7 @@ import { Sidebar } from './components/Sidebar';
 import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
-import { useHost } from './host';
+import { useHost, type DesktopUpdate } from './host';
 import {
   arrangePinnedFirst,
   dedupeSessions,
@@ -66,9 +66,11 @@ import {
 } from '@kiki/session-core/sessions';
 import {
   isOnboardingCompleted,
+  readDesktopPrefs,
   readLastSessionId,
   writeDesktopPrefs,
   writeLayoutPreferences,
+  type AutoUpdateMode,
 } from '@kiki/session-core/settings';
 import { isSessionIndexBuildingError } from './lib/client';
 import { useLayoutPreferences } from './lib/layoutHooks';
@@ -81,6 +83,32 @@ import { useConnection } from './state/connection';
 
 export function retryRootReadModelQuery(_failureCount: number, error: Error): boolean {
   return isSessionIndexBuildingError(error);
+}
+
+interface StartupUpdateHost {
+  supportsDesktopUpdates(): Promise<boolean>;
+  checkDesktopUpdate(): Promise<DesktopUpdate | null>;
+}
+
+export type StartupUpdateResult = 'disabled' | 'unsupported' | 'up-to-date' | 'notified' | 'installed';
+
+export async function runStartupUpdateCheck(
+  host: StartupUpdateHost,
+  mode: AutoUpdateMode,
+  onUpdateAvailable: (update: DesktopUpdate) => void,
+  onUpdateInstalled: (update: DesktopUpdate) => void,
+): Promise<StartupUpdateResult> {
+  if (mode === 'off') return 'disabled';
+  if (!(await host.supportsDesktopUpdates())) return 'unsupported';
+  const update = await host.checkDesktopUpdate();
+  if (update === null) return 'up-to-date';
+  if (mode === 'notify') {
+    onUpdateAvailable(update);
+    return 'notified';
+  }
+  await update.install();
+  onUpdateInstalled(update);
+  return 'installed';
 }
 
 function RootRedirect() {
@@ -195,11 +223,20 @@ export function App() {
   useEffect(() => {
     if (host.kind !== 'tauri') return;
     const timer = window.setTimeout(() => {
-      void host.checkDesktopUpdate()
-        .then((update) => {
-          if (update !== null) {
-            pushToast({ tone: 'info', text: t('st.about.updateAvailable', { version: update.version }) });
-          }
+      void host.readDesktopPrefs()
+        .then((nativePrefs) => {
+          if (nativePrefs !== null) writeDesktopPrefs(nativePrefs);
+          const mode = (nativePrefs ?? readDesktopPrefs()).autoUpdate;
+          return runStartupUpdateCheck(
+            host,
+            mode,
+            (update) => {
+              pushToast({ tone: 'info', text: t('st.about.updateAvailable', { version: update.version }) });
+            },
+            () => {
+              pushToast({ tone: 'success', text: t('st.about.installedRestart') });
+            },
+          );
         })
         .catch(() => {});
     }, 1_500);

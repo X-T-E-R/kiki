@@ -9,6 +9,7 @@ macro_rules! app_commands {
             open_host_path,
             read_desktop_prefs,
             write_desktop_prefs,
+            supports_desktop_updates,
             check_desktop_update,
             install_desktop_update,
             prepare_for_update,

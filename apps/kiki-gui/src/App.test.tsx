@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { isEditableTarget, retryRootReadModelQuery } from './App';
+import { isEditableTarget, retryRootReadModelQuery, runStartupUpdateCheck } from './App';
 import { resolveFallbackPhase } from './components/ConversationShell';
 import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';
@@ -62,6 +62,69 @@ describe('isEditableTarget', () => {
     expect(isEditableTarget(new FakePlainDiv())).toBe(false);
     expect(isEditableTarget(null)).toBe(false);
     expect(isEditableTarget({ ...eventTargetStub })).toBe(false);
+  });
+});
+
+describe('startup desktop update check', () => {
+  const createUpdate = () => ({
+    currentVersion: '1.0.0',
+    version: '1.1.0',
+    install: vi.fn(async () => undefined),
+  });
+
+  it('does not query update support when automatic updates are off', async () => {
+    const host = {
+      supportsDesktopUpdates: vi.fn(async () => true),
+      checkDesktopUpdate: vi.fn(async () => createUpdate()),
+    };
+    await expect(runStartupUpdateCheck(host, 'off', vi.fn(), vi.fn())).resolves.toBe('disabled');
+    expect(host.supportsDesktopUpdates).not.toHaveBeenCalled();
+    expect(host.checkDesktopUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does not check when the distribution has no update channel', async () => {
+    const host = {
+      supportsDesktopUpdates: vi.fn(async () => false),
+      checkDesktopUpdate: vi.fn(async () => createUpdate()),
+    };
+    await expect(runStartupUpdateCheck(host, 'notify', vi.fn(), vi.fn())).resolves.toBe('unsupported');
+    expect(host.checkDesktopUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each(['notify', 'install'] as const)('does nothing when %s mode finds no update', async (mode) => {
+    const host = {
+      supportsDesktopUpdates: vi.fn(async () => true),
+      checkDesktopUpdate: vi.fn(async () => null),
+    };
+    const available = vi.fn();
+    const installed = vi.fn();
+    await expect(runStartupUpdateCheck(host, mode, available, installed)).resolves.toBe('up-to-date');
+    expect(available).not.toHaveBeenCalled();
+    expect(installed).not.toHaveBeenCalled();
+  });
+
+  it('notifies without installing when notify mode finds an update', async () => {
+    const update = createUpdate();
+    const available = vi.fn();
+    const host = {
+      supportsDesktopUpdates: vi.fn(async () => true),
+      checkDesktopUpdate: vi.fn(async () => update),
+    };
+    await expect(runStartupUpdateCheck(host, 'notify', available, vi.fn())).resolves.toBe('notified');
+    expect(available).toHaveBeenCalledWith(update);
+    expect(update.install).not.toHaveBeenCalled();
+  });
+
+  it('installs and requests a restart toast when install mode finds an update', async () => {
+    const update = createUpdate();
+    const installed = vi.fn();
+    const host = {
+      supportsDesktopUpdates: vi.fn(async () => true),
+      checkDesktopUpdate: vi.fn(async () => update),
+    };
+    await expect(runStartupUpdateCheck(host, 'install', vi.fn(), installed)).resolves.toBe('installed');
+    expect(update.install).toHaveBeenCalledOnce();
+    expect(installed).toHaveBeenCalledWith(update);
   });
 });
 

@@ -157,6 +157,7 @@ describe('settings persistence and validation', () => {
       notifications: false,
       closeToTray: true,
       updateChannel: 'stable',
+      autoUpdate: 'notify',
       compatibility: {
         homeKind: 'kimi',
         customHome: undefined,
@@ -194,6 +195,19 @@ describe('settings persistence and validation', () => {
   it('preserves an explicitly persisted quit choice', () => {
     writeDesktopPrefs({ closeToTray: false });
     expect(readDesktopPrefs().closeToTray).toBe(false);
+  });
+
+  it('persists valid automatic update modes and falls back from invalid values', () => {
+    expect(readDesktopPrefs().autoUpdate).toBe('notify');
+    writeDesktopPrefs({ autoUpdate: 'install' });
+    expect(readDesktopPrefs().autoUpdate).toBe('install');
+
+    localStorage.setItem('kiki.desktopPrefs', JSON.stringify({
+      notifications: false,
+      autoUpdate: 'silent',
+    }));
+    expect(readDesktopPrefs().notifications).toBe(false);
+    expect(readDesktopPrefs().autoUpdate).toBe('notify');
   });
 
   it('defaults and validates the persisted Kimi Home selection', () => {

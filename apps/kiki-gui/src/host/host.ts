@@ -68,6 +68,7 @@ interface HostCapabilities {
   readDesktopPrefs?: () => Promise<DesktopNativePrefs | null>;
   writeDesktopPrefs?: (prefs: Partial<DesktopNativePrefs>) => Promise<void>;
   restartServer?: () => Promise<void>;
+  supportsDesktopUpdates?: () => Promise<boolean>;
   checkDesktopUpdate?: () => Promise<DesktopUpdate | null>;
   onTrayNewSession?: (callback: () => void) => () => void;
   setTheme?: (resolved: ResolvedTheme) => Promise<void>;

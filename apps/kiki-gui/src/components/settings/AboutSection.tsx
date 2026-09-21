@@ -1,6 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import { readDesktopPrefs, writeDesktopPrefs } from '@kiki/session-core/settings';
+import {
+  readDesktopPrefs,
+  writeDesktopPrefs,
+  type AutoUpdateMode,
+} from '@kiki/session-core/settings';
 import { useHost, type DesktopUpdate } from '../../host';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -17,14 +21,27 @@ export function AboutSection() {
   const guiVersion = import.meta.env['VITE_APP_VERSION'] ?? '0.0.0-dev';
   const buildSha = import.meta.env['VITE_BUILD_SHA'] as string | undefined;
   const isDesktop = host.kind === 'tauri';
-  const [channel, setChannel] = useState<'stable' | 'beta'>(() => readDesktopPrefs().updateChannel);
+  const initialPrefs = readDesktopPrefs();
+  const [channel, setChannel] = useState<'stable' | 'beta'>(initialPrefs.updateChannel);
+  const [autoUpdate, setAutoUpdate] = useState<AutoUpdateMode>(initialPrefs.autoUpdate);
+  const [updatesSupported, setUpdatesSupported] = useState<boolean | null>(null);
   const [update, setUpdate] = useState<DesktopUpdate | null>(null);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'installing'>('idle');
   const [updateMessage, setUpdateMessage] = useState<Feedback>(null);
   const [confirmInstall, setConfirmInstall] = useState(false);
 
-  const checkForUpdate = () => {
+  useEffect(() => {
     if (host.kind !== 'tauri') return;
+    let active = true;
+    void host.supportsDesktopUpdates().then(
+      (supported) => { if (active) setUpdatesSupported(supported); },
+      () => { if (active) setUpdatesSupported(false); },
+    );
+    return () => { active = false; };
+  }, [host]);
+
+  const checkForUpdate = () => {
+    if (host.kind !== 'tauri' || updatesSupported !== true) return;
     setUpdateStatus('checking');
     setUpdateMessage(null);
     void host.checkDesktopUpdate()
@@ -44,10 +61,15 @@ export function AboutSection() {
     setConfirmInstall(false);
     setUpdateStatus('installing');
     setUpdateMessage(null);
-    void update.install().catch((error: unknown) => {
-      setUpdateStatus('idle');
-      setUpdateMessage({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
-    });
+    void update.install()
+      .then(() => {
+        setUpdate(null);
+        setUpdateMessage({ tone: 'success', text: t('st.about.installedRestart') });
+      })
+      .catch((error: unknown) => {
+        setUpdateMessage({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      })
+      .finally(() => { setUpdateStatus('idle'); });
   };
 
   const versionRows: { label: string; value: string }[] = [
@@ -73,36 +95,58 @@ export function AboutSection() {
 
       {isDesktop ? (
         <div className="mt-4 space-y-3 border-t border-hairline pt-4">
-          <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-            <div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1">
               <span className="text-[12.5px] font-medium text-ink">{t('st.about.channel')}</span>
+              <select
+                value={channel}
+                aria-label={t('st.about.channel')}
+                disabled={updatesSupported !== true}
+                onChange={(event) => {
+                  const next = event.target.value === 'beta' ? 'beta' : 'stable';
+                  setChannel(next);
+                  setUpdate(null);
+                  setUpdateMessage(null);
+                  writeDesktopPrefs({ updateChannel: next });
+                  void host.writeDesktopPrefs({ updateChannel: next });
+                }}
+                className={`${SMALL_INPUT} w-full`}
+              >
+                <option value="stable">{t('st.about.stable')}</option>
+                <option value="beta">{t('st.about.beta')}</option>
+              </select>
               {channel === 'beta' ? (
-                <p className="mt-0.5 text-[11px] leading-relaxed text-amber-ink">{t('st.about.betaHint')}</p>
+                <p className="text-[11px] leading-relaxed text-amber-ink">{t('st.about.betaHint')}</p>
               ) : null}
-            </div>
-            <select
-              value={channel}
-              aria-label={t('st.about.channel')}
-              onChange={(event) => {
-                const next = event.target.value === 'beta' ? 'beta' : 'stable';
-                setChannel(next);
-                setUpdate(null);
-                setUpdateMessage(null);
-                writeDesktopPrefs({ updateChannel: next });
-                void host.writeDesktopPrefs?.({ updateChannel: next });
-              }}
-              className={SMALL_INPUT}
-            >
-              <option value="stable">{t('st.about.stable')}</option>
-              <option value="beta">{t('st.about.beta')}</option>
-            </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-[12.5px] font-medium text-ink">{t('st.about.autoUpdate')}</span>
+              <select
+                value={autoUpdate}
+                aria-label={t('st.about.autoUpdate')}
+                disabled={updatesSupported !== true}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  const next: AutoUpdateMode = value === 'off' || value === 'install' ? value : 'notify';
+                  setAutoUpdate(next);
+                  writeDesktopPrefs({ autoUpdate: next });
+                  void host.writeDesktopPrefs({ autoUpdate: next });
+                }}
+                className={`${SMALL_INPUT} w-full`}
+              >
+                <option value="off">{t('st.about.autoUpdateOff')}</option>
+                <option value="notify">{t('st.about.autoUpdateNotify')}</option>
+                <option value="install">{t('st.about.autoUpdateInstall')}</option>
+              </select>
+            </label>
           </div>
+          {updatesSupported === false ? <Hint>{t('st.about.updatesUnavailable')}</Hint> : null}
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={checkForUpdate} disabled={updateStatus !== 'idle'} className={SECONDARY_BUTTON}>
+            <button type="button" onClick={checkForUpdate} disabled={updatesSupported !== true || updateStatus !== 'idle'} className={SECONDARY_BUTTON}>
               {updateStatus === 'checking' ? t('st.about.checking') : t('st.about.checkUpdate')}
             </button>
             {update !== null ? (
-              <button type="button" onClick={() => { setConfirmInstall(true); }} disabled={updateStatus !== 'idle'} className={PRIMARY_BUTTON}>
+              <button type="button" onClick={() => { setConfirmInstall(true); }} disabled={updatesSupported !== true || updateStatus !== 'idle'} className={PRIMARY_BUTTON}>
                 {updateStatus === 'installing' ? t('st.about.installing') : t('st.about.install', { version: update.version })}
               </button>
             ) : null}
