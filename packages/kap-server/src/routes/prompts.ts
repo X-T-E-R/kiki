@@ -69,6 +69,7 @@ import {
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent, MAIN_AGENT_ID } from '../transport/mainAgent';
+import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { parseActionSuffix } from './action-suffix';
 import { KLIENT_CALL_BODY_LIMIT_BYTES } from '../transport/klient/registerKlientHttp';
 
@@ -110,16 +111,53 @@ async function resolveSession(core: Scope, sessionId: string): Promise<ISessionS
 }
 
 async function resolvePrompt(core: Scope, sessionId: string, agentId?: string) {
-  return resolvePromptFromSession(await resolveSession(core, sessionId), agentId);
+  return resolvePromptFromSession(core, await resolveSession(core, sessionId), agentId);
 }
 
-async function resolvePromptFromSession(session: ISessionScopeHandle, agentId?: string) {
-  const agent =
-    agentId === undefined || agentId === MAIN_AGENT_ID
-      ? await ensureMainAgent(session)
-      : session.accessor.get(IAgentLifecycleService).get(agentId);
+async function resolvePromptFromSession(
+  core: Scope,
+  session: ISessionScopeHandle,
+  agentId?: string,
+) {
+  const lifecycle = session.accessor.get(IAgentLifecycleService);
+  let agent = agentId === undefined || agentId === MAIN_AGENT_ID
+    ? await ensureMainAgent(session)
+    : lifecycle.get(agentId);
+  if (agent === undefined && agentId !== undefined) {
+    const metadata = session.accessor.get(ISessionMetadata);
+    const meta = (await metadata.read()).agents?.[agentId];
+    if (meta === undefined) {
+      throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agentId} does not exist`);
+    }
+    const context = session.accessor.get(ISessionContext);
+    const snapshot = await readPersistedAgentProfileSnapshot(
+      core,
+      context.workspaceId,
+      context.sessionId,
+      agentId,
+      meta,
+    );
+    if (snapshot === undefined) {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        `Persisted binding metadata for agent "${agentId}" is unavailable`,
+        { details: { agentId } },
+      );
+    }
+    agent = await lifecycle.create({
+      agentId,
+      restoreBinding: {
+        profileName: snapshot.profileName,
+        routeId: snapshot.routeId,
+        modelAlias: snapshot.modelAlias,
+        thinkingEffort: snapshot.thinkingLevel,
+        executorId: snapshot.executorId,
+        executorProtocol: snapshot.executorProtocol,
+      },
+    });
+  }
   if (agent === undefined) {
-    throw new Error2('agent.not_found', `agent ${agentId} does not exist`);
+    throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agentId} does not exist`);
   }
   return {
     accessor: agent.accessor,
@@ -249,7 +287,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           req.body.content,
           session.accessor.get(ISessionMediaStore),
         );
-        const resolved = await resolvePromptFromSession(session, req.body.agent_id);
+        const resolved = await resolvePromptFromSession(core, session, req.body.agent_id);
         reservation = reservePrompt(resolved.prompt, req.body.prompt_id);
         await ensurePromptAuthReady(session, resolved.accessor, req.body);
 
@@ -476,7 +514,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             replacement.data.content,
             session.accessor.get(ISessionMediaStore),
           );
-          const resolved = await resolvePromptFromSession(session);
+          const resolved = await resolvePromptFromSession(core, session);
           preparedMedia = await resolvePromptMediaFiles(
             replacementContent,
             core.accessor.get(IFileService),
@@ -673,6 +711,7 @@ function sendMappedError(
         return;
       case 'request.invalid':
       case 'validation.failed':
+      case 'config.invalid':
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
         return;
       case 'skill.not_found':

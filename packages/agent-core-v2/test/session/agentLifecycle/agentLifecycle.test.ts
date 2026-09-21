@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'pathe';
-import { ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes } from '#/errors';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
@@ -424,6 +424,10 @@ describe('AgentLifecycleService', () => {
       _serviceBrand: undefined,
       get: () => ({ id: 'native', protocol: 'native', args: [], revision: 'native' }),
       resolve: () => ({
+        descriptor: { id: 'native', protocol: 'native', args: [], revision: 'native' },
+        options: {},
+      }),
+      resolveExecutable: async () => ({
         descriptor: { id: 'native', protocol: 'native', args: [], revision: 'native' },
         options: {},
       }),
@@ -868,6 +872,152 @@ describe('AgentLifecycleService', () => {
       'child',
       expect.objectContaining({ labels: { profileName: 'explore' } }),
     );
+  });
+
+  it('restores a known disposed agent from its persisted binding snapshot', async () => {
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+      {
+        type: 'profile.bind',
+        modelAlias: 'provider/child-model',
+        profileName: 'explore',
+        thinkingEffort: 'high',
+        executorId: 'native',
+        executorProtocol: 'native',
+        systemPrompt: '',
+        disallowedTools: [],
+        time: 2,
+      },
+    ]).store);
+    ix.stub(ISessionMetadata, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeMetadata: Event.None,
+      read: async () => ({
+        id: 'sess_test',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        agents: { child: { type: 'sub', labels: { profileName: 'explore' } } },
+      }),
+      update: async () => {},
+      setTitle: async () => {},
+      setArchived: async () => {},
+      registerAgent,
+    } as unknown as ISessionMetadata);
+    const resolveExecutable = vi.fn(async () => ({
+      descriptor: { id: 'native', protocol: 'native' as const, args: [], revision: 'native' },
+      options: {},
+    }));
+    ix.stub(IAgentExecutorRegistry, {
+      _serviceBrand: undefined,
+      resolveExecutable,
+    } as unknown as IAgentExecutorRegistry);
+    const svc = ix.get(IAgentLifecycleService);
+
+    const restored = await svc.create({
+      agentId: 'child',
+      restoreBinding: {
+        profileName: 'explore',
+        modelAlias: 'provider/child-model',
+        thinkingEffort: 'high',
+        executorId: 'native',
+        executorProtocol: 'native',
+      },
+    });
+
+    expect(restored.accessor.get(IAgentProfileService).data()).toMatchObject({
+      profileName: 'explore',
+      modelAlias: 'provider/child-model',
+      thinkingLevel: 'high',
+      executorId: 'native',
+      executorProtocol: 'native',
+    });
+    expect(resolveExecutable).toHaveBeenCalledWith('native', undefined);
+  });
+
+  it('rejects restore when persisted binding metadata is incomplete', async () => {
+    ix.stub(ISessionMetadata, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeMetadata: Event.None,
+      read: async () => ({
+        id: 'sess_test',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        agents: { child: { type: 'sub', labels: { profileName: 'explore' } } },
+      }),
+      update: async () => {},
+      setTitle: async () => {},
+      setArchived: async () => {},
+      registerAgent,
+    } as unknown as ISessionMetadata);
+    const svc = ix.get(IAgentLifecycleService);
+
+    await expect(svc.create({
+      agentId: 'child',
+      restoreBinding: {
+        profileName: 'explore',
+        modelAlias: 'provider/child-model',
+      },
+    })).rejects.toMatchObject({
+      code: ErrorCodes.CONFIG_INVALID,
+      details: { missingFields: ['thinkingEffort', 'executorId', 'executorProtocol'] },
+    });
+    expect(svc.get('child')).toBeUndefined();
+  });
+
+  it('rejects restore when the persisted executor is unavailable', async () => {
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+      {
+        type: 'profile.bind',
+        modelAlias: 'external-model',
+        profileName: 'explore',
+        thinkingEffort: 'high',
+        executorId: 'missing-executor',
+        executorProtocol: 'acp-v1',
+        systemPrompt: '',
+        disallowedTools: [],
+        time: 2,
+      },
+    ]).store);
+    ix.stub(ISessionMetadata, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeMetadata: Event.None,
+      read: async () => ({
+        id: 'sess_test',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        agents: { child: { type: 'sub', labels: { profileName: 'explore' } } },
+      }),
+      update: async () => {},
+      setTitle: async () => {},
+      setArchived: async () => {},
+      registerAgent,
+    } as unknown as ISessionMetadata);
+    ix.stub(IAgentExecutorRegistry, {
+      _serviceBrand: undefined,
+      resolveExecutable: async () => {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'No executable source is available');
+      },
+    } as unknown as IAgentExecutorRegistry);
+    const svc = ix.get(IAgentLifecycleService);
+
+    await expect(svc.create({
+      agentId: 'child',
+      restoreBinding: {
+        profileName: 'explore',
+        modelAlias: 'external-model',
+        thinkingEffort: 'high',
+        executorId: 'missing-executor',
+        executorProtocol: 'acp-v1',
+      },
+    })).rejects.toMatchObject({ code: ErrorCodes.CONFIG_INVALID });
+    expect(svc.get('child')).toBeUndefined();
   });
 
   it('keeps a persisted display name when restored profile metadata differs', async () => {

@@ -24,6 +24,7 @@ import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { abortError } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -41,11 +42,12 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import {
   type AgentListFilter,
+  type AgentRestoreBinding,
   type CreateAgentOptions,
   type ForkAgentOptions,
   IAgentLifecycleService,
 } from './agentLifecycle';
-import { withSubagentProfile } from './subagentMetadata';
+import { delegatorRef, labelsFromAgentMeta, withSubagentProfile } from './subagentMetadata';
 import { resolveDelegationPosition } from '#/agent/profile/delegationContext';
 
 export class AgentLifecycleService extends Disposable implements IAgentLifecycleService {
@@ -119,13 +121,40 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
 
   async create(opts: CreateAgentOptions = {}): Promise<IAgentScopeHandle> {
+    return this.createInternal(opts);
+  }
+
+  private async createInternal(input: CreateAgentOptions): Promise<IAgentScopeHandle> {
+    let opts = input;
+    if (opts.agentId !== undefined && opts.restoreBinding !== undefined) {
+      const meta = (await this.sessionMetadata.read()).agents?.[opts.agentId];
+      if (meta === undefined) {
+        throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Agent instance "${opts.agentId}" does not exist`, {
+          details: { agentId: opts.agentId },
+        });
+      }
+      this.validateRestoreBindingInput(opts.agentId, opts.restoreBinding);
+      opts = {
+        ...opts,
+        forkedFrom: opts.forkedFrom ?? meta.forkedFrom,
+        labels: opts.labels ?? labelsFromAgentMeta(meta),
+        delegator: opts.delegator ?? delegatorRef(meta),
+        userLabel: opts.userLabel ?? meta.userLabel,
+      };
+    }
     if (opts.agentId !== undefined) {
       const inflight = this.creating.get(opts.agentId);
-      if (inflight !== undefined) return inflight;
+      if (inflight !== undefined) {
+        const handle = await inflight;
+        if (opts.restoreBinding !== undefined) {
+          await this.validateRestoredBinding(handle, opts.restoreBinding);
+        }
+        return handle;
+      }
       const removal = this.removing.get(opts.agentId);
       if (removal !== undefined) {
         await removal.catch(() => undefined);
-        return this.create(opts);
+        return this.createInternal(opts);
       }
       const existing = this.handles.get(opts.agentId);
       if (existing !== undefined) {
@@ -147,6 +176,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
             `Agent "${opts.agentId}" is bound to route "${persisted.routeId ?? 'base'}" and cannot switch to "${opts.binding.route}"`,
           );
         }
+        if (opts.restoreBinding !== undefined) {
+          await this.validateRestoredBinding(existing, opts.restoreBinding);
+        }
         return existing;
       }
     }
@@ -159,7 +191,6 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       this.creating.delete(agentId);
     }
   }
-
 
   private async nextAvailableAgentId(): Promise<string> {
     let maxSuffix = -1;
@@ -217,6 +248,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       this.onWillCreateEmitter.fire(handle);
       await handle.accessor.get(IEventDispatcher).restore();
       await this.bindBootstrap(handle, opts);
+      if (opts.restoreBinding !== undefined) {
+        await this.validateRestoredBinding(handle, opts.restoreBinding);
+      }
       const profile = handle.accessor.get(IAgentProfileService).data();
       if ((profile.executorId ?? 'native') === 'native') {
         await handle.accessor.get(IAgentToolActivationService).activate();
@@ -274,9 +308,22 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     handle: IAgentScopeHandle,
     opts: CreateAgentOptions,
   ): Promise<void> {
+    const profile = handle.accessor.get(IAgentProfileService);
     if (opts.binding !== undefined) {
-      await handle.accessor.get(IAgentProfileService).bind({
+      await profile.bind({
         ...opts.binding,
+        delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
+      });
+    } else if (
+      opts.restoreBinding !== undefined &&
+      profile.data().profileName === undefined &&
+      profile.data().routeId === undefined
+    ) {
+      await profile.bind({
+        profile: opts.restoreBinding.profileName,
+        route: opts.restoreBinding.routeId,
+        model: opts.restoreBinding.modelAlias,
+        thinking: opts.restoreBinding.thinkingEffort,
         delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
       });
     }
@@ -286,6 +333,68 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       .get(permissionModeConfiguredKey);
     if (permissionMode !== undefined && !hasRestoredPermissionMode) {
       handle.accessor.get(IAgentPermissionModeService).setMode(permissionMode);
+    }
+  }
+
+  private validateRestoreBindingInput(agentId: string, binding: AgentRestoreBinding): void {
+    const required: readonly [keyof AgentRestoreBinding, string | undefined][] = [
+      ['profileName', binding.profileName],
+      ['modelAlias', binding.modelAlias],
+      ['thinkingEffort', binding.thinkingEffort],
+      ['executorId', binding.executorId],
+      ['executorProtocol', binding.executorProtocol],
+    ];
+    const missingFields = required
+      .filter(([, value]) => value === undefined || value.length === 0)
+      .map(([field]) => field);
+    if (missingFields.length === 0) return;
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      `Persisted binding metadata for agent "${agentId}" is incomplete: ${missingFields.join(', ')}`,
+      { details: { agentId, missingFields } },
+    );
+  }
+
+  private async validateRestoredBinding(
+    handle: IAgentScopeHandle,
+    binding: AgentRestoreBinding,
+  ): Promise<void> {
+    const profile = handle.accessor.get(IAgentProfileService);
+    const data = profile.data();
+    const actual: AgentRestoreBinding = {
+      profileName: data.profileName,
+      routeId: data.routeId,
+      modelAlias: data.modelAlias,
+      thinkingEffort: data.thinkingLevel,
+      executorId: data.executorId,
+      executorProtocol: data.executorProtocol,
+    };
+    const mismatches = (Object.keys(binding) as (keyof AgentRestoreBinding)[])
+      .filter((field) => binding[field] !== undefined && binding[field] !== actual[field])
+      .map((field) => ({ field, expected: binding[field], actual: actual[field] }));
+    if (mismatches.length > 0) {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        `Restored binding for agent "${handle.id}" does not match its persisted snapshot`,
+        { details: { agentId: handle.id, mismatches } },
+      );
+    }
+    const executor = await handle.accessor
+      .get(IAgentExecutorRegistry)
+      .resolveExecutable(data.executorId, data.executorOptions);
+    if (executor.descriptor.protocol !== data.executorProtocol) {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        `Restored executor protocol for agent "${handle.id}" is unavailable`,
+        {
+          details: {
+            agentId: handle.id,
+            executorId: data.executorId,
+            expectedProtocol: data.executorProtocol,
+            actualProtocol: executor.descriptor.protocol,
+          },
+        },
+      );
     }
   }
 

@@ -10,6 +10,7 @@ import {
   IAgentLoopService,
   IAgentSwarmService,
   IAgentContextMemoryService,
+  IAgentExecutionService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
   IAgentPlanService,
@@ -1833,7 +1834,7 @@ describe('server-v2 /api prompts', () => {
     expect(list.body.data.queued).toEqual([]);
   });
 
-  it('routes a submitted prompt to the agent named by agent_id (BTW side channel)', async () => {
+  it('accepts a prompt for a live agent after its previous turn settled', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
 
@@ -1842,30 +1843,88 @@ describe('server-v2 /api prompts', () => {
     const lifecycle = session.accessor.get(IAgentLifecycleService);
     const child = await lifecycle.fork('main');
 
-    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
-      content: [{ type: 'text', text: 'side question' }],
+    const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'first side question' }],
       agent_id: child.id,
     });
-    expect(submitted.body.code).toBe(0);
+    expect(first.body.code).toBe(0);
+    await child.accessor.get(IAgentExecutionService).settled();
+    expect(child.accessor.get(IAgentExecutionService).status().state).toBe('idle');
 
-    const contextHasUserText = (
-      handle: { accessor: { get: typeof child.accessor.get } },
-      text: string,
-    ): boolean =>
-      handle.accessor
-        .get(IAgentContextMemoryService)
-        .get()
-        .some(
-          (m) =>
-            m.role === 'user' &&
-            m.content.some((p) => p.type === 'text' && p.text === text),
-        );
+    const second = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'follow-up side question' }],
+      agent_id: child.id,
+    });
 
-    expect(contextHasUserText(child, 'side question')).toBe(true);
+    expect(second.body.code).toBe(0);
+    expect(lifecycle.get(child.id)).toBe(child);
+    expect(
+      child.accessor.get(IAgentContextMemoryService).get().some(
+        (message) => message.role === 'user' && message.content.some(
+          (part) => part.type === 'text' && part.text === 'follow-up side question',
+        ),
+      ),
+    ).toBe(true);
+  });
 
-    const main = lifecycle.get('main');
-    expect(main).toBeDefined();
-    expect(contextHasUserText(main!, 'side question')).toBe(false);
+  it('restores a disposed agent and starts the submitted prompt as a new turn', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+
+    const session = getLiveSessionById(server!.core.accessor, id);
+    if (session === undefined) throw new Error(`session ${id} not found`);
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.fork('main');
+    const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'before release' }],
+      agent_id: child.id,
+      profile: 'agent',
+      model: 'stub',
+      thinking: 'high',
+    });
+    expect(first.body.code).toBe(0);
+    await child.accessor.get(IAgentExecutionService).settled();
+    await lifecycle.remove(child.id);
+    expect(lifecycle.get(child.id)).toBeUndefined();
+
+    const resumed = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'after release' }],
+      agent_id: child.id,
+    });
+
+    expect(resumed.body.code, resumed.body.msg).toBe(0);
+    const restored = lifecycle.get(child.id);
+    expect(restored).toBeDefined();
+    expect(restored).not.toBe(child);
+    expect(
+      restored!.accessor.get(IAgentContextMemoryService).get().some(
+        (message) => message.role === 'user' && message.content.some(
+          (part) => part.type === 'text' && part.text === 'after release',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('reports incomplete persisted binding metadata for a known disposed agent', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id);
+    if (session === undefined) throw new Error(`session ${id} not found`);
+    await session.accessor.get(ISessionMetadata).registerAgent('agent-incomplete', {
+      type: 'sub',
+      parentAgentId: 'main',
+      labels: { profileName: 'explore' },
+      model: 'stub',
+    });
+
+    const { body } = await call<null>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'resume me' }],
+      agent_id: 'agent-incomplete',
+    });
+
+    expect(body.code).toBe(40001);
+    expect(body.msg).toContain('Persisted binding metadata');
+    expect(body.msg).toContain('thinkingEffort');
   });
 
   it('returns 40401 when agent_id names an unknown agent', async () => {

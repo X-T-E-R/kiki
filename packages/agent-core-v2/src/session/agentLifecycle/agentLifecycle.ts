@@ -15,6 +15,7 @@ export interface CreateAgentOptions {
   readonly labels?: Readonly<Record<string, string>>;
   readonly delegator?: DelegatorRef;
   readonly userLabel?: string;
+  readonly restoreBinding?: AgentRestoreBinding;
   /** Internal transaction hook: publish onDidCreate only after the caller commits. */
   readonly deferCreateEvent?: boolean;
 }
@@ -22,6 +23,15 @@ export interface CreateAgentOptions {
 export interface ForkAgentOptions {
   readonly agentId?: string;
   readonly binding?: Partial<BindAgentInput>;
+}
+
+export interface AgentRestoreBinding {
+  readonly profileName?: string;
+  readonly routeId?: string;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
 }
 
 export interface AgentListFilter {
