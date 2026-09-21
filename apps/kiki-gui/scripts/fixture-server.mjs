@@ -524,16 +524,17 @@ class FixtureServer {
   }
 
   // /agents helpers: disabled synthesis and effective winner selection mirror
-  // the server's config channels and profile source priorities.
+  // the server's config channels and profile source priorities. Every profile
+  // source disables by name through disabled_named_profiles (the separate
+  // builtin channel was removed with the legacy agent compatibility).
   agentProfilesWithDisabled(workspaceId) {
-    const disabledBuiltin = new Set(this.config.disabled_builtin_profiles ?? []);
     const disabledNamed = new Set(this.config.disabled_named_profiles ?? []);
     return this.agentProfiles
       .filter((profile) => workspaceId === undefined || profile.workspace_id === undefined || profile.workspace_id === workspaceId)
       .map((profile) => ({
         routes: [],
         ...profile,
-        disabled: profile.disabled === true || (profile.source === 'builtin' ? disabledBuiltin : disabledNamed).has(profile.name),
+        disabled: profile.disabled === true || disabledNamed.has(profile.name),
       }));
   }
 
@@ -1410,9 +1411,7 @@ class FixtureServer {
           else profile[key] = value;
         }
       }
-      const disabled = (target.source === 'builtin'
-        ? (this.config.disabled_builtin_profiles ?? [])
-        : (this.config.disabled_named_profiles ?? [])).includes(target.name);
+      const disabled = (this.config.disabled_named_profiles ?? []).includes(target.name);
       return this.envelope(res, { routes: [], ...target, disabled });
     }
     if (path === '/models') {

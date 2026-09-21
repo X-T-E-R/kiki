@@ -855,12 +855,12 @@ async function scenarioSubagents() {
   await ensureRailOpen();
   await page.locator('[data-subagent-id="agent-research"]').click();
   // Subagent panels open as preview-workspace tabs by default — no route change.
-  // The tab renders the agent detail panel; the transcript stays on the
-  // fullscreen /agent/ route (covered by subagents-burst).
+  // The tab renders the unified agent workspace (transcript + composer); the
+  // fullscreen /agent/ route is covered by subagents-burst.
   const agentTabPanel = page.locator('[data-preview-tabpanel="panel:agent-research"]');
   await agentTabPanel.waitFor({ timeout: 10_000 });
   await waitForText('Protocol map complete.');
-  await agentTabPanel.locator('[data-agent-panel-container]').waitFor({ timeout: 10_000 });
+  await agentTabPanel.locator('[data-composer-variant="subagent"]').waitFor({ timeout: 10_000 });
   await page.waitForTimeout(500);
   await shot('subagents-agent-page');
   await page.setViewportSize({ width: 700, height: 760 });
@@ -1847,9 +1847,9 @@ async function scenarioSettingsAgents() {
   // delegation governance and the subagent timeout moved to
   // /settings/subagents. Phase A covers the main card; phase B the sub card.
   // The merged view (the fixture workspaces share one `reviewer` profile)
-  // plus both disable channels — named profiles write
-  // disabled_named_profiles, built-ins write disabled_builtin_profiles, and
-  // both survive a reload through the fixture config echo. Same-name pairs
+  // plus the disable channel — every profile source now disables by name
+  // through disabled_named_profiles, surviving a reload through the fixture
+  // config echo. Same-name pairs
   // prove the override rules: user `explore.md` (override: true) shadows the
   // built-in explore, user `scout.md` (no flag) loses to the built-in scout.
   await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
@@ -1989,9 +1989,9 @@ async function scenarioSettingsAgents() {
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
   await scoutSwitch().click();
   await page.waitForSelector('[data-agent-profile="scout"][data-agent-source="builtin"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
-  // Disabling the built-in scout lifts the shadow: the same-named file
-  // profile takes effect without needing the override flag — the warning
-  // clears and the new-session button comes back.
+  // Disabling is name-global: the same-named file profile is disabled too, so
+  // its new-session button stays off. The shadow warning still clears — with
+  // no enabled built-in winner there is nothing left to shadow the file.
   await page.waitForFunction(
     (warning) => !document
       .querySelector('[data-agent-profile="scout"][data-agent-source="user"]')
@@ -1999,8 +1999,8 @@ async function scenarioSettingsAgents() {
     S.shadowedNote,
     { timeout: 5000 },
   );
-  if (await userScout.locator('[data-new-session-href]').isDisabled()) {
-    throw new Error('the file profile must regain its new-session button once the built-in is disabled');
+  if (!(await userScout.locator('[data-new-session-href]').isDisabled())) {
+    throw new Error('a name-global disable must keep the same-named file profile\'s new-session button off');
   }
   // A disabled SUBAGENT profile loses its new-session button (the mirror of
   // the main-profile rule proven on the agents leaf above).
