@@ -60,7 +60,7 @@ effort = "high"
 keep = "all"
 
 [loop_control]
-max_attempts_per_step = 10
+max_attempts_per_step = 5
 reserved_context_size = 50000
 
 [background]
@@ -331,17 +331,17 @@ thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析�
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `max_steps_per_turn` | `integer` | — | 单轮最大步数；不设或设为 `0` 则无上限 |
-| `max_attempts_per_step` | `integer` | `10` | 单步失败后的最大总尝试次数（含首次尝试） |
+| `max_attempts_per_step` | `integer` | `5` | 单步失败后的最大总尝试次数（含首次尝试） |
 | `reserved_context_size` | `integer` | — | 预留给模型输出的 token 数；上下文窗口剩余量低于此值时触发自动压缩 |
 | `compaction_max_attempts` | `integer` | `5` | 压缩失败后的最大总请求次数（含首次请求）；重试退避、上下文超限收缩、空响应或截断收缩等所有恢复路径共用同一份预算 |
 
 `max_steps_per_turn` 可被环境变量 `KIMI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。
 
-重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流和 5xx 服务端错误。账户额度耗尽或余额不足导致的 429 不会重试，会立即失败：在充值之前重试不可能成功。
+重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流，以及所有 HTTP 500–599 服务端错误。账户额度耗尽或余额不足导致的 429 不会重试，会立即失败：在充值之前重试不可能成功。
 
 ## `retry`
 
-`retry` 可为指定的单步错误定制总尝试次数与固定退避时间。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
+`retry` 可为指定的单步错误定制总尝试次数与固定退避时间。默认情况下，可重试的单步最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |

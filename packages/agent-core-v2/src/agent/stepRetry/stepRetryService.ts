@@ -29,6 +29,8 @@ import { RETRY_SECTION, type RetryConfig } from './configSection';
 import { resolveRetryPolicy } from './retryPolicy';
 import { IAgentStepRetryService } from './stepRetry';
 
+const DEFAULT_STEP_RETRY_BASE_DELAY_MS = 2_000;
+
 export interface TurnStepRetryingPayload {
   readonly turnId: number;
   readonly step: number;
@@ -159,7 +161,9 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     const delayMs =
       readRetryAfterMs(error) ??
       decision.backoffMs ??
-      retryBackoffDelays(maxAttempts)[this.failedAttempts - 1] ??
+      retryBackoffDelays(maxAttempts, DEFAULT_STEP_RETRY_BASE_DELAY_MS)[
+        this.failedAttempts - 1
+      ] ??
       0;
     void this.dispatcher.dispatch(
       new TurnStepRetrying({

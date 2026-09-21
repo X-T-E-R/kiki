@@ -99,6 +99,19 @@ describe('non-abort classification still works', () => {
     expect(isRetryableGenerateError(result)).toBe(false);
   });
 
+  it('classifies a body-less 520 as a retryable status error', () => {
+    const err = new OpenAIAPIError(520, undefined, undefined, new Headers());
+    const result = convertOpenAIError(err);
+    expect(result).toBeInstanceOf(APIStatusError);
+    expect(result).toMatchObject({
+      name: 'APIStatusError',
+      code: 'provider.api_error',
+      statusCode: 520,
+      message: '520 status code (no body)',
+    });
+    expect(isRetryableGenerateError(result)).toBe(true);
+  });
+
   it('bounds an 800-char body already inlined by the OpenAI SDK message', () => {
     const detail = `provider-rejected-${'x'.repeat(800)}`;
     const err = new OpenAIAPIError(

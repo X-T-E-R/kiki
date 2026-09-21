@@ -60,7 +60,7 @@ effort = "high"
 keep = "all"
 
 [loop_control]
-max_attempts_per_step = 10
+max_attempts_per_step = 5
 reserved_context_size = 50000
 
 [background]
@@ -335,17 +335,17 @@ the global [`[thinking]`](#thinking) config.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `max_steps_per_turn` | `integer` | — | Maximum steps per turn; unset or `0` means unlimited |
-| `max_attempts_per_step` | `integer` | `10` | Maximum total attempts for a failing step, including the initial attempt |
+| `max_attempts_per_step` | `integer` | `5` | Maximum total attempts for a failing step, including the initial attempt |
 | `reserved_context_size` | `integer` | — | Number of tokens reserved for model output; automatic compaction is triggered when the remaining context window falls below this value |
 | `compaction_max_attempts` | `integer` | `5` | Maximum total requests for a failing compaction, including the initial attempt; every recovery path (retry backoff, context-overflow shrink, empty or truncated shrink) draws on the same budget |
 
 `max_steps_per_turn` can be overridden by the `KIMI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file.
 
-Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and 5xx server errors. A 429 caused by an exhausted quota or insufficient account balance is not retried and fails immediately, since it cannot succeed until the account is recharged.
+Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and all HTTP 500–599 server errors. A 429 caused by an exhausted quota or insufficient account balance is not retried and fails immediately, since it cannot succeed until the account is recharged.
 
 ## `retry`
 
-`retry` customizes the total attempt budget and fixed backoff for selected step errors. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
+`retry` customizes the total attempt budget and fixed backoff for selected step errors. By default, a retryable step gets five total attempts, with waits of 2, 4, 8, and 16 seconds plus up to 25% jitter (30–37.5 seconds in total). A provider `Retry-After` value or a matching policy's fixed `backoff` replaces the corresponding default wait. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |

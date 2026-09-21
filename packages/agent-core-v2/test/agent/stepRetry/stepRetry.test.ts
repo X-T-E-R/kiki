@@ -70,13 +70,13 @@ describe('stepRetry plugin', () => {
     return resultPromise;
   }
 
-  it('retries a retryable provider error and resumes the same step number', async () => {
+  it('retries a body-less 520 and resumes the same step number', async () => {
     vi.useFakeTimers();
     let calls = 0;
     ctx = createTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
-        if (calls === 1) throw new APIConnectionError('terminated');
+        if (calls === 1) throw new APIStatusError(520, '520 status code (no body)');
         return {
           id: 'retry-response',
           message: {
@@ -102,13 +102,17 @@ describe('stepRetry plugin', () => {
           step: 1,
           failedAttempt: 1,
           nextAttempt: 2,
-          maxAttempts: 10,
+          maxAttempts: 5,
           delayMs: expect.any(Number),
-          errorName: 'APIConnectionError',
-          errorMessage: 'terminated',
+          errorName: 'APIStatusError',
+          errorMessage: '520 status code (no body)',
+          statusCode: 520,
         }),
       }),
     ]);
+    const retryArgs = rpcEvents('turn.step.retrying')[0]?.args as { delayMs: number };
+    expect(retryArgs.delayMs).toBeGreaterThanOrEqual(2_000);
+    expect(retryArgs.delayMs).toBeLessThanOrEqual(2_500);
     expect(
       rpcEvents('turn.step.started').map((event) => (event.args as { step: number }).step),
     ).toEqual([1, 2]);
@@ -152,24 +156,36 @@ describe('stepRetry plugin', () => {
     expect(ends.map((event) => event['uuid'])).toEqual(begins.map((event) => event['uuid']));
   });
 
-  it('fails the turn after maxAttempts and reports the interruption only then', async () => {
+  it('surfaces a classified 520 after the default attempt budget is exhausted', async () => {
     vi.useFakeTimers();
     let calls = 0;
     ctx = createTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
-        throw new APIStatusError(429, 'slow down');
+        throw new APIStatusError(520, '520 status code (no body)');
       }),
     );
 
     const result = await runTurn(1);
 
     expect(result.type).toBe('failed');
-    expect(calls).toBe(10);
-    expect(rpcEvents('turn.step.retrying')).toHaveLength(9);
+    if (result.type !== 'failed') throw new Error('Expected the turn to fail');
+    expect(result.error).toBeInstanceOf(APIStatusError);
+    expect(result.error).toMatchObject({
+      name: 'APIStatusError',
+      code: 'provider.api_error',
+      statusCode: 520,
+      message: '520 status code (no body)',
+    });
+    expect(calls).toBe(5);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(4);
     expect(rpcEvents('turn.step.interrupted')).toEqual([
       expect.objectContaining({
-        args: expect.objectContaining({ reason: 'error', step: 10 }),
+        args: expect.objectContaining({
+          reason: 'error',
+          step: 5,
+          message: '[provider.api_error] 520 status code (no body)',
+        }),
       }),
     ]);
   });
@@ -315,7 +331,7 @@ describe('stepRetry plugin', () => {
 
     const first = await runTurn(1);
     expect(first.type).toBe('failed');
-    expect(calls).toBe(10);
+    expect(calls).toBe(5);
 
     failing = false;
     const second = await runTurn(2);
@@ -416,11 +432,11 @@ describe('stepRetry plugin', () => {
     const result = await runTurn(1);
 
     expect(result.type).toBe('failed');
-    expect(calls).toBe(10);
-    expect(rpcEvents('turn.step.retrying')).toHaveLength(9);
+    expect(calls).toBe(5);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(4);
     expect(rpcEvents('turn.step.retrying')[0]).toEqual(
       expect.objectContaining({
-        args: expect.objectContaining({ failedAttempt: 1, maxAttempts: 10 }),
+        args: expect.objectContaining({ failedAttempt: 1, maxAttempts: 5 }),
       }),
     );
   });
