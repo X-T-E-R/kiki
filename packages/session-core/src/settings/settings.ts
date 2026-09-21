@@ -876,7 +876,7 @@ function normalizeStringList(values: readonly string[]): string[] {
  * The tasks leaf's background-task policy card (runtime split): only the
  * `task` domain, so a save can never roll back the resource-limit or
  * communication domains edited on other leaves from a stale draft. cron is
- * env-driven (KIMI_CRON_*) and intentionally never persisted — its card is
+ * env-driven (KIKI_CRON_*) and intentionally never persisted — its card is
  * read-only, so no patch emits it.
  */
 export function taskRuntimePatch(draft: RuntimeConfigDraft['task']): KikiConfigPatch {

@@ -1824,7 +1824,7 @@ export const en = {
   'st.taskPolicy.autoBackground': 'Auto-background Bash on timeout',
   'st.taskPolicy.saved': 'Task policy saved and echoed by the server.',
   'st.cron.title': 'Cron operations',
-  'st.cron.hint': 'cron is driven by KIMI_CRON_* environment variables and never persisted to the config file; shown read-only.',
+  'st.cron.hint': 'cron is driven by KIKI_CRON_* environment variables and never persisted to the config file; shown read-only.',
   'st.cron.debug': 'Debug logging',
   'st.cron.noJitter': 'Disable jitter',
   'st.cron.noStale': 'Reject stale jobs',
@@ -2232,7 +2232,7 @@ export const en = {
   'st.subagentTimeout.effective':
     'A server-wide setting: after saving, it applies to later subagent dispatches in every session on this server; a running subagent keeps the timeout it started with and is not retimed.',
   'st.subagentTimeout.envBound':
-    'When the server sets the KIMI_SUBAGENT_TIMEOUT_MS environment variable, it overrides the value saved here.',
+    'When the server sets the KIKI_SUBAGENT_TIMEOUT_MS environment variable, it overrides the value saved here.',
   'st.tools.title': 'Tools',
   'st.tools.loading': 'Loading tools…',
   'st.tools.source': 'source: {source}',

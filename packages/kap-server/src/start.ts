@@ -133,7 +133,7 @@ export interface ServerStartOptions {
   /**
    * Environment bag handed to the engine bootstrap (`IBootstrapService.getEnv`).
    * Defaults to `process.env`; hosts that need to override engine-level env
-   * reads (e.g. an embedded server pinning `KIMI_CODE_REGION_MARKER=off`)
+   * reads (e.g. an embedded server pinning `KIKI_CODE_REGION_MARKER=off`)
    * pass a merged bag here instead of mutating the host process's env, which
    * would leak the override into every child process the host spawns.
    */

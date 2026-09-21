@@ -16,7 +16,7 @@ description: |
 
 这两个工具由 Kimi Code 托管执行，参数直接按 tool schema 传 JSON。
 
-工具会读取当前 Kimi Code 环境对应的本地 OAuth 登录凭据；当设置了 `KIMI_CODE_OAUTH_HOST` / `KIMI_CODE_BASE_URL` 时，会使用对应环境的隔离凭据。如果没有登录凭据，让用户先在 Kiki 里执行 `/login`。
+工具会读取当前 Kimi Code 环境对应的本地 OAuth 登录凭据；当设置了 `KIKI_CODE_OAUTH_HOST` / `KIKI_CODE_BASE_URL` 时，会使用对应环境的隔离凭据。如果没有登录凭据，让用户先在 Kiki 里执行 `/login`。
 
 ## 1. 这个 skill 提供什么能力
 
@@ -132,7 +132,7 @@ A 股 `.SH/.SZ/.BJ`，港股 `.HK`，美股 `.US` 等。用户通常只说中文
 
 ## 5. `watchlist.json` — 用户自选股
 
-`${KIMI_SKILL_DIR}/watchlist.json` 是用户的自选股列表。用户问"看一下我的自选股"时，读这个文件，再走标准 `get_data_source_desc("stock_finance_data") → call_data_source_tool` 流程查实时行情；文档里的实时接口最多 3 个 ticker 一批，多了分批调。
+`${KIKI_SKILL_DIR}/watchlist.json` 是用户的自选股列表。用户问"看一下我的自选股"时，读这个文件，再走标准 `get_data_source_desc("stock_finance_data") → call_data_source_tool` 流程查实时行情；文档里的实时接口最多 3 个 ticker 一批，多了分批调。
 
 格式：
 

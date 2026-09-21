@@ -492,7 +492,7 @@ function attributeHeaders(
         detail: hostHeaderDetail(forwardsAll, key, identitySlug),
       });
     } else if (key in envLayer) {
-      sources.set(path, { kind: 'env', detail: 'KIMI_CODE_CUSTOM_HEADERS' });
+      sources.set(path, { kind: 'env', detail: 'KIKI_CODE_CUSTOM_HEADERS' });
     }
   }
 }

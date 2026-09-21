@@ -1800,7 +1800,7 @@ export const zh: Record<I18nKey, string> = {
   'st.taskPolicy.autoBackground': 'Bash 超时后自动转后台',
   'st.taskPolicy.saved': '服务器已保存并回显任务策略。',
   'st.cron.title': 'Cron 运行参数',
-  'st.cron.hint': 'cron 由 KIMI_CRON_* 环境变量驱动，不会持久化到配置文件；此处只读展示。',
+  'st.cron.hint': 'cron 由 KIKI_CRON_* 环境变量驱动，不会持久化到配置文件；此处只读展示。',
   'st.cron.debug': '调试日志',
   'st.cron.noJitter': '禁用抖动',
   'st.cron.noStale': '拒绝过期任务',
@@ -2196,7 +2196,7 @@ export const zh: Record<I18nKey, string> = {
   'st.subagentTimeout.effective':
     '服务器级设置：保存后对该服务器上所有会话的后续子 Agent 派发生效；已在运行的子 Agent 保持启动时的超时，不重新计时。',
   'st.subagentTimeout.envBound':
-    '若服务器设置了 KIMI_SUBAGENT_TIMEOUT_MS 环境变量，该变量优先于此处保存的值。',
+    '若服务器设置了 KIKI_SUBAGENT_TIMEOUT_MS 环境变量，该变量优先于此处保存的值。',
   'st.tools.title': '工具',
   'st.tools.loading': '正在加载工具…',
   'st.tools.source': '来源：{source}',
