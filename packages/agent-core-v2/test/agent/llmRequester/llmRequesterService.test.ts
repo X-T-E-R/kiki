@@ -637,6 +637,66 @@ describe('AgentLLMRequesterService request attribution headers', () => {
     expect(captured[3]?.headers).not.toHaveProperty('x-codex-turn-state');
   });
 
+  it('sends the Codex turn state without an agent thread identity', async () => {
+    const registry = createRequestIdentityRegistry();
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      protocol: 'openai_responses',
+      providerType: 'openai',
+    });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      providers: {
+        p: {
+          requestIdentity: {
+            preset: 'codex_compatible',
+            overrides: { lineage: { threadIdentity: 'none' } },
+          },
+        },
+      },
+      identityRegistry: registry,
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    captured[0]?.requestIdentity?.onResponseHeaders?.(
+      new Headers({ 'x-codex-turn-state': 'ts-1' }),
+    );
+    await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+
+    expect(captured[1]?.headers).toHaveProperty('x-codex-turn-state', 'ts-1');
+    expect(captured[1]?.headers).not.toHaveProperty('x-codex-window-id');
+    expect(captured[1]?.headers).toHaveProperty('session-id');
+  });
+
+  it('replays a turn state captured by a failed attempt on the retry request', async () => {
+    const registry = createRequestIdentityRegistry();
+    const attempts: ModelRequestParams[] = [];
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      protocol: 'openai_responses',
+      providerType: 'openai',
+    });
+    const succeed = requester.request.bind(requester);
+    requester.request = async function* (input, signal, params) {
+      attempts.push(params ?? {});
+      if (attempts.length === 1) {
+        params?.requestIdentity?.onResponseHeaders?.(
+          new Headers({ 'x-codex-turn-state': 'ts-1' }),
+        );
+        throw new APIRequestTooLargeError(413, 'Request Entity Too Large');
+      }
+      yield* succeed(input, signal, params);
+    };
+    const { service } = createService(requester, undefined, {
+      providers: { p: { requestIdentity: { preset: 'codex_compatible' } } },
+      identityRegistry: registry,
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]?.headers).not.toHaveProperty('x-codex-turn-state');
+    expect(attempts[1]?.headers).toHaveProperty('x-codex-turn-state', 'ts-1');
+  });
+
   it('rejects Codex-compatible identity on Messages before the requester runs', async () => {
     const calls = { value: 0 };
     const identitySnapshotCalls = { value: 0 };

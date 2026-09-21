@@ -76,6 +76,7 @@ import {
 import {
   preflightRequestIdentityProjection,
   projectRequestIdentity,
+  type RequestIdentityProjection,
 } from '#/kosong/requestIdentity/requestIdentityProjector';
 import type { ApiErrorEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -139,10 +140,22 @@ const noopOnPart: AgentLLMRequestPartHandler = () => {};
 
 export const KIKI_INFINITE_RETRY_ENV = 'KIKI_INFINITE_RETRY';
 
+interface RequestIdentityAttemptContext {
+  readonly policy: ResolvedRequestIdentityPolicy;
+  readonly parentAgentId?: string;
+  readonly subagentKind?: string;
+  readonly parentTurnKey?: string;
+  readonly rootAgentId?: string;
+  readonly rootTurnKey?: string;
+  readonly isKimiProvider: boolean;
+  readonly hostRequestHeaders: Readonly<Record<string, string>>;
+}
+
 interface ResolvedLLMRequest {
   readonly requester: ModelRequester;
   readonly model: Model;
   readonly params: ModelRequestParams;
+  readonly identity: RequestIdentityAttemptContext;
   readonly modelAlias: string;
   readonly thinkingEffort: ThinkingEffort;
   readonly systemPrompt: string;
@@ -398,6 +411,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     };
     const run = async (
       policy: ProjectionPolicy | undefined,
+      params: ModelRequestParams,
     ): Promise<AgentLLMRequestFinish> => {
       onRequestTrace(undefined);
       const projection = projectionNameOf(policy);
@@ -441,7 +455,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
 
       try {
         for await (const event of request.requester.request(input, signal, {
-          ...request.params,
+          ...params,
           onTraceId: setTraceId,
         })) {
           switch (event.type) {
@@ -511,9 +525,23 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     };
 
     let infiniteRetryAttempt = 0;
+    let params = request.params;
+    const refreshIdentityParams = async (): Promise<void> => {
+      const projection = await this.resolveIdentityProjection(
+        request.identity,
+        request.requester,
+        request.messages,
+        request.source,
+      );
+      params = {
+        ...params,
+        headers: projection.headers ?? params.headers,
+        requestIdentity: projection.wire ?? params.requestIdentity,
+      };
+    };
     for (;;) {
       try {
-        return await run(policy);
+        return await run(policy, params);
       } catch (error) {
         const nextPolicy = this.nextProjectionPolicyForError(
           error,
@@ -524,6 +552,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         );
         if (nextPolicy !== undefined) {
           onAttemptRetry?.();
+          await refreshIdentityParams();
           policy = nextPolicy;
           continue;
         }
@@ -548,6 +577,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           ...retryErrorFields(error),
         });
         onAttemptRetry?.();
+        await refreshIdentityParams();
         await sleepForRetry(delayMs, signal);
       }
     }
@@ -684,6 +714,52 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     set.add(source.turnId);
   }
 
+  private async resolveIdentityProjection(
+    identity: RequestIdentityAttemptContext,
+    requester: ModelRequester,
+    messages: readonly Message[],
+    source: AgentLLMRequestSource | undefined,
+  ): Promise<RequestIdentityProjection> {
+    const dimensions = resolveRequestIdentityDimensions(
+      identity.policy,
+      identity.isKimiProvider,
+      identity.hostRequestHeaders,
+    );
+    const snapshot = hasRequestIdentityDimensions(dimensions)
+      ? await this.requestIdentities.snapshot({
+          agentId: this.agentContext.agentId,
+          turnKey: requestIdentityTurnKey(source),
+          parentAgentId: identity.parentAgentId,
+          parentTurnKey: identity.parentTurnKey,
+          rootAgentId: identity.rootAgentId,
+          rootTurnKey: identity.rootTurnKey,
+          compactionWindow: messages.filter(
+            (message) =>
+              (message as Message & { readonly origin?: { readonly kind?: string } }).origin
+                ?.kind === 'compaction_summary',
+          ).length,
+          logicalIdKind:
+            identity.policy.lineage.format === 'codex' ? 'uuidv7' : 'uuidv4',
+          dimensions,
+        })
+      : emptyRequestIdentitySnapshot();
+    return projectRequestIdentity({
+      policy: identity.policy,
+      protocol: requester.model.protocol,
+      model: requester.model.name,
+      rawSessionId: this.sessionContext.sessionId,
+      rawAgentId: this.agentContext.agentId,
+      parentAgentId: identity.parentAgentId,
+      subagentKind: identity.subagentKind,
+      isKimiProvider: identity.isKimiProvider,
+      snapshot,
+      runtimeVersion: this.bootstrap.clientIdentity.version,
+      platform: this.bootstrap.platform,
+      arch: this.bootstrap.arch,
+      hostRequestHeaders: identity.hostRequestHeaders,
+    });
+  }
+
   private async resolveRequest(
     overrides: AgentLLMRequestOverrides,
   ): Promise<ResolvedLLMRequest> {
@@ -728,54 +804,28 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     preflightRequestIdentityProjection(requestIdentity, requester.model.protocol);
 
     const messages = overrides.messages ?? this.context.get();
-    const parentAgentId = subagentParentAgentId(agentMeta);
-    const spawnContext = requestIdentitySpawnContext(agentMeta);
     const isKimiProvider = isKimiProviderFamily(requester.model.providerType);
-    const identity = this.identity.current();
-    const hostRequestHeaders = isKimiProvider
-      ? identity.upstreamRequestHeaders
-      : identity.requestHeaders;
-    const dimensions = resolveRequestIdentityDimensions(
-      requestIdentity,
-      isKimiProvider,
-      hostRequestHeaders,
-    );
-    const snapshot = hasRequestIdentityDimensions(dimensions)
-      ? await this.requestIdentities.snapshot({
-          agentId: this.agentContext.agentId,
-          turnKey: requestIdentityTurnKey(overrides.source),
-          parentAgentId,
-          ...spawnContext,
-          compactionWindow: messages.filter(
-            (message) =>
-              (message as Message & { readonly origin?: { readonly kind?: string } }).origin
-                ?.kind === 'compaction_summary',
-          ).length,
-          logicalIdKind:
-            requestIdentity.lineage.format === 'codex' ? 'uuidv7' : 'uuidv4',
-          dimensions,
-        })
-      : emptyRequestIdentitySnapshot();
-    const identityProjection = projectRequestIdentity({
+    const hostIdentity = this.identity.current();
+    const identity: RequestIdentityAttemptContext = {
       policy: requestIdentity,
-      protocol: requester.model.protocol,
-      model: requester.model.name,
-      rawSessionId: this.sessionContext.sessionId,
-      rawAgentId: this.agentContext.agentId,
-      parentAgentId,
-      subagentKind:
-        isSubagentMeta(agentMeta)
-          ? subagentSwarmItem(agentMeta) === undefined
-            ? 'agent'
-            : 'swarm'
-          : undefined,
+      parentAgentId: subagentParentAgentId(agentMeta),
+      subagentKind: isSubagentMeta(agentMeta)
+        ? subagentSwarmItem(agentMeta) === undefined
+          ? 'agent'
+          : 'swarm'
+        : undefined,
+      ...requestIdentitySpawnContext(agentMeta),
       isKimiProvider,
-      snapshot,
-      runtimeVersion: this.bootstrap.clientIdentity.version,
-      platform: this.bootstrap.platform,
-      arch: this.bootstrap.arch,
-      hostRequestHeaders,
-    });
+      hostRequestHeaders: isKimiProvider
+        ? hostIdentity.upstreamRequestHeaders
+        : hostIdentity.requestHeaders,
+    };
+    const identityProjection = await this.resolveIdentityProjection(
+      identity,
+      requester,
+      messages,
+      overrides.source,
+    );
     const resolvedSystemPrompt =
       overrides.systemPrompt ?? turnConfig?.systemPrompt ?? this.profile.getSystemPrompt();
     const anchoredPrompt = await this.cognitionAnchor.project({
@@ -801,6 +851,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         headers: identityProjection.headers,
         requestIdentity: identityProjection.wire,
       },
+      identity,
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
       systemPrompt: anchoredPrompt ?? (overrides.systemPrompt !== undefined
