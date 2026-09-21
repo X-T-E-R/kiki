@@ -1,86 +1,102 @@
-import { useEffect, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
-import { errorText } from '@kiki/session-core/i18n';
-import { runtimeConfigDraftFromConfig, sessionTitleModelPatch } from '@kiki/session-core/settings';
+import { sessionTitleModelPatch } from '@kiki/session-core/settings';
+import type { KikiConfigPatch, KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { INPUT, PRIMARY_BUTTON } from '../ui';
+import { buildCatalogModelOptions } from '../modelSelectOptions';
+import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
+import { Hint } from '../controls';
 
-/**
- * The model that writes session titles. Empty (the default) keeps title
- * generation on the managed `chat_title` tool; a pinned alias runs the same
- * prompt budgets through that model instead.
- */
-export function SessionTitleModelFields() {
+export interface SessionTitleModelControlsProps {
+  onDirtyChange?: (dirty: boolean) => void;
+  registerExtraSaver?: (saver: {
+    getPatch: () => KikiConfigPatch | null;
+    onSaved: (echoed: KikiConfigResponse) => void;
+  }) => void;
+}
+
+export function SessionTitleModelControls({
+  onDirtyChange,
+  registerExtraSaver,
+}: SessionTitleModelControlsProps) {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
+  const { t } = useI18n();
   const [draft, setDraft] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [baseline, setBaseline] = useState<string>('');
+
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
+
+  const dirty = draft !== null && draft !== baseline;
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
   useEffect(() => {
     if (configQuery.data !== undefined && !dirty) {
-      setDraft(runtimeConfigDraftFromConfig(configQuery.data).sessionTitleModel);
+      const serverModel = configQuery.data.session_title?.model ?? '';
+      setDraft(serverModel);
+      setBaseline(serverModel);
     }
   }, [configQuery.data, dirty]);
 
-  if (draft === null) {
-    return configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>;
-  }
-
-  const save = async () => {
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await client.patchConfig(sessionTitleModelPatch(draft));
-      queryClient.setQueryData(['config'], echoed);
-      setDraft(runtimeConfigDraftFromConfig(echoed).sessionTitleModel);
-      setDirty(false);
-      setFeedback({ tone: 'success', text: t('st.sessionTitleModel.saved') });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
+  useEffect(() => {
+    if (registerExtraSaver) {
+      registerExtraSaver({
+        getPatch: () => {
+          if (draft === null || draft === baseline) return null;
+          return sessionTitleModelPatch(draft);
+        },
+        onSaved: (echoed) => {
+          const nextModel = echoed.session_title?.model ?? '';
+          setDraft(nextModel);
+          setBaseline(nextModel);
+        },
+      });
     }
-  };
+  }, [draft, baseline, registerExtraSaver]);
+
+  const models = modelsQuery.data?.items ?? [];
+  const modelOptions = useMemo<readonly SearchableSelectOption[]>(() => {
+    const defaultOption: SearchableSelectOption = {
+      value: '',
+      label: t('st.sessionTitleModel.managedDefault'),
+      description: t('st.sessionTitleModel.managedDesc'),
+    };
+    const catalogOptions = buildCatalogModelOptions(models, t);
+    return [defaultOption, ...catalogOptions];
+  }, [models, t]);
+
+  const selectedValue = draft ?? '';
 
   return (
-    <div className="space-y-3 border-t border-hairline pt-3">
+    <div className="space-y-2 border-t border-hairline pt-3">
       <Hint>{t('st.sessionTitleModel.hint')}</Hint>
-      <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
-        <label className="block text-[12px] font-medium text-ink" htmlFor="session-title-model">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <label htmlFor="session-title-model" className="text-[12px] font-medium text-ink">
           {t('st.sessionTitleModel.model')}
-          <input
+        </label>
+        <div className="w-72 max-w-full">
+          <SearchableSelect
             id="session-title-model"
-            className={`${INPUT} mt-1`}
-            value={draft}
-            placeholder={t('st.sessionTitleModel.placeholder')}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              setDirty(true);
+            value={selectedValue}
+            options={modelOptions}
+            allowCustomValue
+            searchPlaceholder={t('st.sessionTitleModel.placeholder')}
+            ariaLabel={t('st.sessionTitleModel.model')}
+            emptyText={t('st.sessionTitleModel.managedDefault')}
+            onChange={(next) => {
+              setDraft(next);
             }}
           />
-        </label>
-      </fieldset>
-      <div className="flex flex-wrap items-center gap-3">
-        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-          {saving ? t('common.saving') : t('common.save')}
-        </button>
-        {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
+        </div>
       </div>
-      {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-      <FeedbackLine feedback={feedback} />
     </div>
   );
 }
 
-/**
- * The model that writes session titles. Empty (the default) keeps title
- * generation on the managed `chat_title` tool; a pinned alias runs the same
- * prompt budgets through that model instead.
- */
+/** Legacy compat wrapper for backwards compatibility if referenced */
+export { SessionTitleModelControls as SessionTitleModelFields };

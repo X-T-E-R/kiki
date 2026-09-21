@@ -13,7 +13,7 @@ import {
   type SendShortcut,
   type ThemePreference,
 } from '@kiki/session-core/settings';
-import type { KikiConfigResponse } from '@kiki/session-core/transport';
+import type { KikiConfigPatch, KikiConfigResponse } from '@kiki/session-core/transport';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -37,6 +37,12 @@ export function GeneralSection() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
   const isDesktop = host.kind === 'tauri';
+
+  const [titleModelDirty, setTitleModelDirty] = useState(false);
+  const [titleModelSaver, setTitleModelSaver] = useState<{
+    getPatch: () => KikiConfigPatch | null;
+    onSaved: (echoed: KikiConfigResponse) => void;
+  } | null>(null);
 
   const configQuery = useQuery({
     queryKey: ['config'],
@@ -206,8 +212,14 @@ export function GeneralSection() {
         featureIds={['auto_session_title']}
         cardId="st-card-session-title"
         titleKey="st.experimental.sessionTitle"
+        extraDirty={titleModelDirty}
+        onSaveExtra={titleModelSaver?.getPatch}
+        onSavedExtra={titleModelSaver?.onSaved}
       >
-        <SessionTitleModelFields />
+        <SessionTitleModelFields
+          onDirtyChange={setTitleModelDirty}
+          registerExtraSaver={setTitleModelSaver}
+        />
       </ExperimentalSection>
 
       <SectionCard id="st-card-desktop" title={t('st.desktop.title')} badge="desktop" aside={isDesktop ? undefined : t('st.desktop.browserHint')}>

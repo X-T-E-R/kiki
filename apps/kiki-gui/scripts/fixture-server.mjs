@@ -1275,6 +1275,12 @@ class FixtureServer {
         open_in_apps: [],
         dangerous_bypass_auth: false,
         backend: 'v2',
+        experimental_flags: {
+          auto_session_title: true,
+          'tool-select': false,
+          task_wait: true,
+          search_worker: true,
+        },
       });
     }
     if (path === '/config' && method === 'POST') {

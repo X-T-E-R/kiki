@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { parseNamedAgentTools } from '@kiki/session-core/settings';
@@ -8,6 +9,8 @@ import { useConnection } from '../../state/connection';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { FeedbackLine, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
+import { buildCatalogModelOptions } from '../modelSelectOptions';
+import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 
 /**
@@ -161,6 +164,12 @@ export function AgentProfileEditorDialog({
   const [disallowedTools, setDisallowedTools] = useState(baseline.disallowedTools);
   const [routeAliases, setRouteAliases] = useState(baseline.routeAliases);
 
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: () => client.listModels(),
+    staleTime: 60_000,
+  });
+
   const changedRoutes = profile.routes.filter((route) =>
     (routeAliases[route.id] ?? '') !== (baseline.routeAliases[route.id] ?? ''));
   const dirty = description !== baseline.description
@@ -222,6 +231,16 @@ export function AgentProfileEditorDialog({
     }
   };
 
+  const modelOptions = useMemo<readonly SearchableSelectOption[]>(() => {
+    const defaultOption: SearchableSelectOption = {
+      value: '',
+      label: t('st.namedAgents.inherit'),
+      description: t('st.namedAgents.inherit'),
+    };
+    const catalogOptions = buildCatalogModelOptions(modelsQuery.data?.items ?? [], t);
+    return [defaultOption, ...catalogOptions];
+  }, [modelsQuery.data?.items, t]);
+
   return (
     <Dialog
       onClose={onClose}
@@ -241,14 +260,38 @@ export function AgentProfileEditorDialog({
           {t('st.namedAgents.whenToUse')}
           <textarea className={`${INPUT} mt-1 min-h-16`} value={whenToUse} onChange={(event) => { setWhenToUse(event.target.value); }} />
         </label>
-        <label className="block text-[11px] font-medium text-ink-soft">
-          {t('st.namedAgents.modelPin')}
-          <input data-agent-model-alias className={`${INPUT} mt-1 font-mono`} value={modelAlias} placeholder="provider/model" onChange={(event) => {
-            const next = event.target.value;
-            if (next.trim() !== modelAlias.trim()) setThinkingEffort('');
-            setModelAlias(next);
-          }} />
-        </label>
+        <div className="space-y-1">
+          <label htmlFor="agent-model-alias" className="block text-[11px] font-medium text-ink-soft">
+            {t('st.namedAgents.modelPin')}
+          </label>
+          <SearchableSelect
+            id="agent-model-alias"
+            value={modelAlias}
+            options={modelOptions}
+            allowCustomValue
+            searchPlaceholder="provider/model"
+            ariaLabel={t('st.namedAgents.modelPin')}
+            emptyText={t('st.namedAgents.inherit')}
+            buttonClassName="mt-1 flex w-full items-center justify-between gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 py-2 font-mono text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
+            onChange={(next) => {
+              if (next.trim() !== modelAlias.trim()) setThinkingEffort('');
+              setModelAlias(next);
+            }}
+          />
+          <input
+            type="text"
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+            data-agent-model-alias
+            value={modelAlias}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next.trim() !== modelAlias.trim()) setThinkingEffort('');
+              setModelAlias(next);
+            }}
+          />
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-[11px] font-medium text-ink-soft">
             {t('st.namedAgents.defaultModelThinkingEffort')}

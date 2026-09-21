@@ -18,9 +18,10 @@ import { PlanSettings } from './PlanSettings';
 const getConfig = vi.fn();
 const patchConfig = vi.fn();
 const meta = vi.fn();
+const listModels = vi.fn();
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { getConfig, patchConfig, meta } }),
+  useConnection: () => ({ client: { getConfig, patchConfig, meta, listModels } }),
 }));
 vi.mock('../../host', () => ({
   useHost: () => ({ kind: 'browser' }),
@@ -46,6 +47,12 @@ beforeAll(() => {
 beforeEach(() => {
   getConfig.mockReset().mockResolvedValue(CONFIG);
   meta.mockReset().mockResolvedValue({ experimental_flags: { auto_session_title: true } });
+  listModels.mockReset().mockResolvedValue({
+    items: [
+      { id: 'kimi-for-coding', provider: 'kimi', name: 'Kimi for Coding' },
+      { id: 'custom-model', provider: 'openai', name: 'Custom Model' },
+    ],
+  });
   patchConfig.mockReset().mockImplementation(async (patch: Record<string, unknown>) => ({
     ...CONFIG,
     ...(typeof patch['default_permission_mode'] === 'string'
@@ -56,6 +63,12 @@ beforeEach(() => {
       : {}),
     ...(typeof patch['plan'] === 'object' && patch['plan'] !== null
       ? { plan: { ...CONFIG.plan, ...(patch['plan'] as Record<string, unknown>) } }
+      : {}),
+    ...(typeof patch['session_title'] === 'object' && patch['session_title'] !== null
+      ? { session_title: patch['session_title'] }
+      : {}),
+    ...(typeof patch['experimental'] === 'object' && patch['experimental'] !== null
+      ? { experimental: patch['experimental'] }
       : {}),
   }));
 });
@@ -195,5 +208,21 @@ describe('PlanSettings plan gate defaults', () => {
     expect(container.querySelector('#st-card-permission-defaults')).not.toBeNull();
     expect(container.querySelector('#plan-gate-timeout')).toBeNull();
     expect(container.textContent).toContain('Default permission mode');
+  });
+
+  it('renders single flag card with unified save and model searchable select for auto_session_title', async () => {
+    const container = await renderSection('general');
+    const sessionCard = container.querySelector('#st-card-session-title')!;
+    expect(sessionCard).not.toBeNull();
+    // In single-flag card, the feature label is not duplicated
+    expect(sessionCard.querySelector('details[data-technical-details]')).not.toBeNull();
+    // It should have the searchable select for session title model
+    const modelSelect = sessionCard.querySelector('#session-title-model');
+    expect(modelSelect).not.toBeNull();
+    // There should only be one Save button in this card
+    const buttons = [...sessionCard.querySelectorAll('button')].filter(
+      (b) => b.textContent?.trim() === 'Save',
+    );
+    expect(buttons.length).toBe(1);
   });
 });
