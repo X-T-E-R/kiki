@@ -147,7 +147,7 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-Kiki resolves its home directory in this order: an explicit `--home` where supported, `KIKI_HOME`, then `~/.kiki`. Runtime startup does not read the legacy `KIMI_CODE_HOME` setting. The daemon uses one bearer token from `<home>/server.token`. `--idle-exit` defaults to `30m`; active client leases and running dispatches keep the daemon alive. Client leases are renewed through `POST /api/leases`. The interactive TUI performs the same attach-or-start behavior after workspace trust. Use [`kiki web`](#kiki-web) when a compatible foreground server and browser UI are required instead of shared-daemon control.
+Kiki resolves its home directory in this order: an explicit `--home` where supported, `KIKI_HOME`, then `~/.kiki`. Runtime startup uses only the Kiki home settings described here. The daemon uses one bearer token from `<home>/server.token`. `--idle-exit` defaults to `30m`; active client leases and running dispatches keep the daemon alive. Client leases are renewed through `POST /api/leases`. The interactive TUI performs the same attach-or-start behavior after workspace trust. Use [`kiki web`](#kiki-web) when a compatible foreground server and browser UI are required instead of shared-daemon control.
 
 ### `kiki seat`
 

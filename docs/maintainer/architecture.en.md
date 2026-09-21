@@ -78,7 +78,7 @@ Kiki maintainers own the downstream CLI identity, client integration, home resol
 
 ## Use one runtime home
 
-Runtime configuration, sessions, and OAuth credentials use `KIKI_HOME`, defaulting to `~/.kiki`. Supported explicit `--home` options take precedence. The legacy `KIMI_CODE_HOME` setting is not a startup fallback. Real Kimi provider/OAuth identifiers and endpoints remain unchanged; product home naming does not rename the provider protocol.
+Runtime configuration, sessions, and OAuth credentials use `KIKI_HOME`, defaulting to `~/.kiki`. Supported explicit `--home` options take precedence. Startup uses only the Kiki home settings. Real Kimi provider/OAuth identifiers and endpoints remain unchanged; product home naming does not rename the provider protocol.
 
 
 The command reports status, paths, and category names without copying OAuth, sessions, or skills. Desktop session moves and skill copies remain separate operations: a session move transfers `workspaces.json` and `sessions/` with compensation on partial failure; skill copying preserves the source and occupied targets. These operations stop/restart only Kiki's owned backend, not external Kimi Code processes. Close external processes before migrating their data.

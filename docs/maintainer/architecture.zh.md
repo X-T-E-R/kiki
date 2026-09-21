@@ -78,7 +78,7 @@ Kiki 维护者负责下游 CLI 身份、客户端集成、home 解析和迁移�
 
 ## 使用唯一运行时 home
 
-运行时配置、会话和 OAuth 凭据使用 `KIKI_HOME`，默认 `~/.kiki`。支持显式 `--home` 的命令优先使用该选项。旧 `KIMI_CODE_HOME` 设置不是启动回退项。真实 Kimi provider/OAuth 身份与端点保持不变；产品 home 改名不等于改供应商协议。
+运行时配置、会话和 OAuth 凭据使用 `KIKI_HOME`，默认 `~/.kiki`。支持显式 `--home` 的命令优先使用该选项。启动只使用 Kiki home 设置。真实 Kimi provider/OAuth 身份与端点保持不变；产品 home 改名不等于改供应商协议。
 
 
 ## 从上游同步

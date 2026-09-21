@@ -147,7 +147,7 @@ kiki serve --ensure --workspace . --json
 kiki serve --stop
 ```
 
-Kiki 按以下优先级解析 home 目录：支持该选项的命令中显式指定的 `--home`、`KIKI_HOME`、`~/.kiki`。运行时启动不读取旧 `KIMI_CODE_HOME` 设置。Daemon 共用 `<home>/server.token` 中的一份 bearer token。`--idle-exit` 默认是 `30m`；存在活跃客户端 lease 或运行中的派遣时，daemon 不会因空闲退出。客户端通过 `POST /api/leases` 续期 lease。交互式 TUI 在工作区信任后也会自动执行同样的连接或启动逻辑。需要兼容的前台服务和浏览器 UI，而不是共享 daemon 控制时，请用 [`kiki web`](#kiki-web)。
+Kiki 按以下优先级解析 home 目录：支持该选项的命令中显式指定的 `--home`、`KIKI_HOME`、`~/.kiki`。运行时启动只使用这里列出的 Kiki home 设置。Daemon 共用 `<home>/server.token` 中的一份 bearer token。`--idle-exit` 默认是 `30m`；存在活跃客户端 lease 或运行中的派遣时，daemon 不会因空闲退出。客户端通过 `POST /api/leases` 续期 lease。交互式 TUI 在工作区信任后也会自动执行同样的连接或启动逻辑。需要兼容的前台服务和浏览器 UI，而不是共享 daemon 控制时，请用 [`kiki web`](#kiki-web)。
 
 ### `kiki seat`
 
