@@ -329,6 +329,52 @@ describe('Composer send latch', () => {
   });
 });
 
+describe('Composer non-text sends', () => {
+  it('enables and sends an annotation-only draft', async () => {
+    const onSend = vi.fn();
+    const annotations = [{ id: 'annotation-1', quote: 'selected source', comment: 'check this' }];
+    const { container } = await renderComposer({ value: '', annotations, onSend });
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+
+    expect(sendButton.disabled).toBe(false);
+    await click(sendButton);
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('', []);
+  });
+
+  it.each([
+    {
+      label: 'image',
+      attachment: {
+        kind: 'image' as const,
+        name: 'shot.png',
+        mediaType: 'image/png',
+        data: 'AA==',
+        size: 1,
+        previewUrl: 'data:image/png;base64,AA==',
+      },
+    },
+    {
+      label: 'file',
+      attachment: {
+        kind: 'upload' as const,
+        name: 'notes.txt',
+        mediaType: 'text/plain',
+        size: 5,
+        fileId: 'file-ready',
+      },
+    },
+  ])('enables and sends a $label-only draft', async ({ attachment }) => {
+    const onSend = vi.fn();
+    const attachments = [attachment];
+    const { container } = await renderComposer({ value: '', attachments, onSend });
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+
+    expect(sendButton.disabled).toBe(false);
+    await click(sendButton);
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('', attachments);
+  });
+});
+
 describe('Composer agent profile picker', () => {
   it('renders the bound profile without a main suffix and lists only enabled main profiles', async () => {
     const { container } = await renderComposer({

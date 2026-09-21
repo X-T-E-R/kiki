@@ -11,13 +11,35 @@
  * while running).
  */
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+  type UIEvent as ReactUIEvent,
+} from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
+import {
+  applyAnnotationOverrides,
+  collectTimelineAnnotations,
+  getAnnotationOverridesSnapshot,
+  subscribeAnnotationOverrides,
+  writeAnnotationOverride,
+  type AnnotationOverride,
+  type TimelineAnnotation,
+} from '@kiki/session-core/composer';
 import {
   agentChildren,
   groupBlocks,
@@ -61,9 +83,11 @@ import {
   isTerminalPromptNotice,
   type GroupedDisplayNode,
 } from './ActivityHistory';
+import { AnnotationPopover, type AnnotationPopoverOpen } from './AnnotationPopover';
 import { FloorNavRail } from './FloorNavRail';
 import { ApprovalCard, QuestionCard } from './Interactions';
 import { Markdown } from './Markdown';
+import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
 import { RelativeTime, useNow } from './RelativeTime';
 import { MessageRowActions, UserMessageEditor } from './RowActions';
@@ -189,10 +213,13 @@ const UserMessage = memo(function UserMessage({
   block,
   onCancelQueued: _onCancelQueued,
   rowActions,
+  annotations,
 }: {
   block: UserBlock;
   onCancelQueued?: (promptId: string) => void;
   rowActions?: TranscriptRowActions;
+  /** Timeline annotations anchored to this message's text (identity-stable). */
+  annotations?: readonly TimelineAnnotation[];
 }) {
   const { t, time } = useI18n();
   const [editing, setEditing] = useState(false);
@@ -257,7 +284,9 @@ const UserMessage = memo(function UserMessage({
                 : undefined
             }
           >
-            {projectUserText(block.text)}
+            {annotations === undefined || annotations.length === 0
+              ? projectUserText(block.text)
+              : projectTextWithAnnotationMarks(block.text, annotations, projectUserText)}
           </div>
         </div>
       )}
@@ -287,11 +316,14 @@ const AssistantMessage = memo(function AssistantMessage({
   block,
   rowActions,
   isLatestFinal = false,
+  annotations,
 }: {
   block: AssistantBlock;
   rowActions?: TranscriptRowActions;
   /** Latest completed turn's final reply — the regenerate/fork anchor. */
   isLatestFinal?: boolean;
+  /** Timeline annotations anchored to this message's text (identity-stable). */
+  annotations?: readonly TimelineAnnotation[];
 }) {
   const { t, time } = useI18n();
   const streaming = block.streaming && block.text !== '';
@@ -326,7 +358,10 @@ const AssistantMessage = memo(function AssistantMessage({
           </>
         ) : (
           <>
-            {block.text !== '' ? <Markdown text={block.text} /> : null}
+            {/* Marks ride the settled render only: a streaming block's text
+                still moves under the quote, and a quote split across the
+                memoized prefix chunks would silently lose its mark anyway. */}
+            {block.text !== '' ? <Markdown text={block.text} annotationTargets={annotations} /> : null}
             {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
           </>
         )}
@@ -1180,6 +1215,7 @@ const BlockView = memo(function BlockView({
   onOpenAgent,
   rowActions,
   latestFinalAssistantId,
+  annotations,
 }: {
   block: Exclude<Block, ToolBlock>;
   readOnly: boolean;
@@ -1203,6 +1239,7 @@ const BlockView = memo(function BlockView({
   onOpenAgent?: (agentId: string) => void;
   rowActions?: TranscriptRowActions;
   latestFinalAssistantId?: string;
+  annotations?: readonly TimelineAnnotation[];
 }) {
   const { t } = useI18n();
   const originUnknown =
@@ -1224,6 +1261,7 @@ const BlockView = memo(function BlockView({
           block={block}
           onCancelQueued={readOnly ? undefined : onCancelQueued}
           rowActions={liveRowActions}
+          annotations={annotations}
         />
       );
     case 'system-reminder':
@@ -1238,6 +1276,7 @@ const BlockView = memo(function BlockView({
           block={block}
           rowActions={liveRowActions}
           isLatestFinal={block.id === latestFinalAssistantId}
+          annotations={annotations}
         />
       );
     case 'thinking':
@@ -1413,6 +1452,46 @@ function useStableMap<K, V>(build: () => Map<K, V>): ReadonlyMap<K, V> {
   return next;
 }
 
+function annotationListsEqual(
+  previous: readonly TimelineAnnotation[] | undefined,
+  next: readonly TimelineAnnotation[],
+): previous is readonly TimelineAnnotation[] {
+  return (
+    previous !== undefined &&
+    previous.length === next.length &&
+    previous.every((annotation, index) => {
+      const candidate = next[index];
+      return (
+        candidate !== undefined &&
+        annotation.id === candidate.id &&
+        annotation.quote === candidate.quote &&
+        annotation.comment === candidate.comment
+      );
+    })
+  );
+}
+
+function useStableAnnotationTargets(
+  next: ReadonlyMap<string, readonly TimelineAnnotation[]>,
+): ReadonlyMap<string, readonly TimelineAnnotation[]> {
+  const ref = useRef<ReadonlyMap<string, readonly TimelineAnnotation[]> | null>(null);
+  const previous = ref.current;
+  let allIdentical = previous !== null && previous.size === next.size;
+  const stable = new Map<string, readonly TimelineAnnotation[]>();
+  for (const [blockId, annotations] of next) {
+    const previousList = previous?.get(blockId);
+    if (annotationListsEqual(previousList, annotations)) {
+      stable.set(blockId, previousList);
+    } else {
+      stable.set(blockId, annotations);
+      allIdentical = false;
+    }
+  }
+  if (allIdentical && previous !== null) return previous;
+  ref.current = stable;
+  return stable;
+}
+
 /**
  * Content-level identity stabilization for the forest prop. SessionView
  * rebuilds the agent forest from the whole session state on every publish;
@@ -1492,6 +1571,7 @@ type TranscriptRowProps = {
   forest?: AgentForest;
   rowActions?: TranscriptRowActions;
   latestFinalAssistantId?: string;
+  annotations?: readonly TimelineAnnotation[];
   /** External-executor badge shown above the first row of the turn. */
   executionBadge?: TurnExecutionInfo;
   /** Manual subagent card form overrides, keyed by subagentId (empty = auto). */
@@ -1547,6 +1627,7 @@ const TranscriptRow = memo(
     forest,
     rowActions,
     latestFinalAssistantId,
+    annotations,
     executionBadge,
     subagentFormOverrides,
     onToggleSubagentForm,
@@ -1584,6 +1665,7 @@ const TranscriptRow = memo(
           onOpenAgent={onOpenAgent}
           rowActions={rowActions}
           latestFinalAssistantId={latestFinalAssistantId}
+          annotations={member.id === node.id ? annotations : undefined}
         />
       );
     if (node.kind === 'history-run') {
@@ -1610,6 +1692,7 @@ const TranscriptRow = memo(
     subagentBranchEqual(prev.node, prev.forest, next.forest) &&
     prev.rowActions === next.rowActions &&
     prev.latestFinalAssistantId === next.latestFinalAssistantId &&
+    prev.annotations === next.annotations &&
     prev.executionBadge === next.executionBadge &&
     prev.subagentFormOverrides === next.subagentFormOverrides &&
     prev.onToggleSubagentForm === next.onToggleSubagentForm &&
@@ -1938,6 +2021,81 @@ export function Transcript({
     () => blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
     [blocks],
   );
+  const annotationOverrides = useSyncExternalStore(
+    subscribeAnnotationOverrides,
+    getAnnotationOverridesSnapshot,
+    getAnnotationOverridesSnapshot,
+  );
+  const derivedAnnotationTargets = useMemo(
+    () => collectTimelineAnnotations(timelineBlocks),
+    [timelineBlocks],
+  );
+  const resolvedAnnotationTargets = useMemo(
+    () => applyAnnotationOverrides(derivedAnnotationTargets, annotationOverrides),
+    [annotationOverrides, derivedAnnotationTargets],
+  );
+  const annotationTargets = useStableAnnotationTargets(resolvedAnnotationTargets);
+  const annotationsById = useMemo(() => {
+    const map = new Map<string, TimelineAnnotation>();
+    for (const annotations of annotationTargets.values()) {
+      for (const annotation of annotations) map.set(annotation.id, annotation);
+    }
+    return map;
+  }, [annotationTargets]);
+  const [annotationPopover, setAnnotationPopover] = useState<AnnotationPopoverOpen | null>(null);
+  const openAnnotation =
+    annotationPopover === null ? undefined : annotationsById.get(annotationPopover.annotationId);
+  const closeAnnotationPopover = useCallback(() => { setAnnotationPopover(null); }, []);
+  const openAnnotationMark = useCallback((mark: HTMLElement) => {
+    const annotationId = mark.dataset['annotationRef'];
+    if (annotationId === undefined) return;
+    const rect = mark.getBoundingClientRect();
+    setAnnotationPopover({
+      annotationId,
+      anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+    });
+  }, []);
+  const handleAnnotationClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!(event.target instanceof Element)) return;
+    const mark = event.target.closest<HTMLElement>('[data-annotation-ref]');
+    if (mark === null || !event.currentTarget.contains(mark)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openAnnotationMark(mark);
+  }, [openAnnotationMark]);
+  const handleAnnotationKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (!(event.target instanceof HTMLElement) || !event.target.matches('[data-annotation-ref]')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openAnnotationMark(event.target);
+  }, [openAnnotationMark]);
+  const handleAnnotationScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+    if (annotationPopover === null) return;
+    const transcript = event.currentTarget;
+    setAnnotationPopover((current) => {
+      if (current === null) return null;
+      const mark = [...transcript.querySelectorAll<HTMLElement>('[data-annotation-ref]')].find(
+        (candidate) => candidate.dataset['annotationRef'] === current.annotationId,
+      );
+      if (mark === undefined) return null;
+      const rect = mark.getBoundingClientRect();
+      const anchor = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      return current.anchor.left === anchor.left &&
+        current.anchor.top === anchor.top &&
+        current.anchor.right === anchor.right &&
+        current.anchor.bottom === anchor.bottom
+        ? current
+        : { ...current, anchor };
+    });
+  }, [annotationPopover]);
+  const updateAnnotationOverride = useCallback((id: string, patch: AnnotationOverride) => {
+    const previous = getAnnotationOverridesSnapshot()[id] ?? {};
+    writeAnnotationOverride(id, { ...previous, ...patch });
+  }, []);
+  useEffect(() => {
+    if (annotationPopover !== null && openAnnotation === undefined) setAnnotationPopover(null);
+  }, [annotationPopover, openAnnotation]);
   const nodes = useMemo(() => groupBlocks(timelineBlocks), [timelineBlocks]);
   // The forest prop is rebuilt per publish upstream; stabilize it by content
   // so row memos survive unrelated deltas (Finding: forest identity).
@@ -2211,6 +2369,9 @@ export function Transcript({
         data-transcript-scroll
         role="log"
         className="absolute inset-0 overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+        onClick={handleAnnotationClick}
+        onKeyDown={handleAnnotationKeyDown}
+        onScroll={handleAnnotationScroll}
       >
         {/* Bottom clearance is 24px of breathing room + the 36px fade band the
             shell's active composer seat overlaps (see index.css). */}
@@ -2243,6 +2404,7 @@ export function Transcript({
                       forest={stableForest}
                       rowActions={rowActions}
                       latestFinalAssistantId={latestFinalAssistantId}
+                      annotations={annotationTargets.get(virtualNodeKey(node))}
                       executionBadge={executionBadges.get(virtualNodeKey(node))}
                       subagentFormOverrides={cardForms}
                       onToggleSubagentForm={handleToggleSubagentForm}
@@ -2265,6 +2427,18 @@ export function Transcript({
           })}
         </div>
       </div>
+      {annotationPopover !== null && openAnnotation !== undefined ? (
+        <AnnotationPopover
+          state={annotationPopover}
+          annotation={openAnnotation}
+          onSave={(id, comment) => { updateAnnotationOverride(id, { comment }); }}
+          onRemove={(id) => {
+            updateAnnotationOverride(id, { deleted: true });
+            closeAnnotationPopover();
+          }}
+          onClose={closeAnnotationPopover}
+        />
+      ) : null}
       <FloorNavRail
         blocks={timelineBlocks}
         nodeIndexes={nodeIndexes}

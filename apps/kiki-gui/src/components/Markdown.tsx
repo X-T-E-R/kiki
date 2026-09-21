@@ -6,20 +6,22 @@
  * collapse). Typography lives in `.kiki-md` (index.css).
  */
 
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { Streamdown, defaultRemarkPlugins, type Components } from 'streamdown';
+import { Streamdown, defaultRemarkPlugins, defaultRehypePlugins, type Components } from 'streamdown';
 
 import { useHost } from '../host';
 import { isVscodeWebview, vscodeHost } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
+import type { TimelineAnnotation } from '@kiki/session-core/composer';
 import {
   resolveFileReference,
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
 } from '@kiki/session-core/composer/media';
 import { KikiCodeBlock } from './markdown/KikiCodeBlock';
+import { projectTextWithAnnotationMarks, rehypeAnnotationMarks } from './markdown/annotationMarks';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { useMediaPreview } from './mediaPreviewContext';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -215,20 +217,41 @@ const components: Components = {
 export const Markdown = memo(function Markdown({
   text,
   preserveEdgeMargins = false,
+  annotationTargets,
 }: {
   text: string;
   /** Streaming-prefix chunks keep their natural first/last block margins so
    * adjacent chunks' margins collapse like a single parse; standalone usage
    * zeroes them (see `.kiki-md--edges` in index.css). */
   preserveEdgeMargins?: boolean;
+  /**
+   * Timeline annotations anchored to this block's text: the quoted passage is
+   * wrapped in a `<mark data-annotation-ref>` (identity-stable array from the
+   * transcript — a fresh one each render defeats this memo).
+   */
+  annotationTargets?: readonly TimelineAnnotation[];
 }) {
   const plain = isPlainProse(text);
   const plugins = useStreamdownPlugins(plain ? null : text);
   const className = preserveEdgeMargins ? 'kiki-md kiki-md--edges' : 'kiki-md';
+  // The mark plugin runs after the default sanitize/harden pair, so neither
+  // strips the injected `<mark data-annotation-ref>`; spreading the defaults
+  // back in is required because the prop REPLACES them (same rule as remark).
+  const rehypePlugins = useMemo(
+    () =>
+      annotationTargets === undefined || annotationTargets.length === 0
+        ? undefined
+        : [...Object.values(defaultRehypePlugins), rehypeAnnotationMarks(annotationTargets)],
+    [annotationTargets],
+  );
   if (plain) {
     return (
       <div className={className}>
-        <p>{text}</p>
+        <p>
+          {annotationTargets === undefined || annotationTargets.length === 0
+            ? text
+            : projectTextWithAnnotationMarks(text, annotationTargets)}
+        </p>
       </div>
     );
   }
@@ -241,6 +264,7 @@ export const Markdown = memo(function Markdown({
         // spread them back in — dropping remark-gfm kills GFM tables,
         // strikethrough, task-lists, and autolinks.
         remarkPlugins={[...Object.values(defaultRemarkPlugins), ...REMARK_PLUGINS]}
+        rehypePlugins={rehypePlugins}
         components={components}
         // kiki draws its own chrome; streamdown's built-in action rows stay off.
         controls={{ table: false, code: false, mermaid: false }}

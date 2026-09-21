@@ -31,6 +31,10 @@ import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
 import type { AgentTranscriptSnapshot } from '@kiki/transcript';
 
 import {
+  getAnnotationOverridesSnapshot,
+  resetAnnotationOverridesForTests,
+} from '@kiki/session-core/composer';
+import {
   SessionController,
   agentTranscriptToBlocks,
   assistantMessageIdFromBlockId,
@@ -670,6 +674,57 @@ describe('user message token projection', () => {
     expect(container.querySelector('[data-ref-chip="subagent"]')?.textContent).toBe('@reviewer');
     expect(container.querySelector('[data-ref-chip="skill"]')).toBeNull();
     expect(container.textContent).toContain('/plan');
+  });
+});
+
+describe('timeline annotations', () => {
+  it('marks the source passage and reopens it for local comment editing', async () => {
+    resetAnnotationOverridesForTests();
+    const quote = 'batches transcript blocks into floors';
+    const originalComment = 'Floor batching keeps long sessions cheap';
+    const editedComment = 'Keep the floor boundary explicit';
+    const container = await renderTranscript([
+      assistantBlock(
+        'assistant-annotation-source',
+        'The renderer **batches transcript blocks into floors** so long sessions stay cheap.',
+      ),
+      userBlock({
+        id: 'user-annotation-carrier',
+        text: `> ${quote}\n\nComment: ${originalComment}\n\nPlease factor this in.`,
+      }),
+    ]);
+
+    const mark = container.querySelector<HTMLElement>('[data-annotation-ref]')!;
+    expect(mark.textContent).toContain('batches transcript blocks into floors');
+    expect(mark.getAttribute('aria-haspopup')).toBe('dialog');
+
+    await act(async () => { click(mark); });
+    let panel = document.body.querySelector<HTMLElement>('[data-annotation-panel]')!;
+    let input = panel.querySelector<HTMLInputElement>('[data-annotation-panel-input]')!;
+    expect(panel.textContent).toContain(quote);
+    expect(input.value).toBe(originalComment);
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, editedComment);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { click(panel.querySelector('[data-annotation-panel-save]')!); });
+    const annotationId = mark.dataset['annotationRef']!;
+    expect(getAnnotationOverridesSnapshot()[annotationId]?.comment).toBe(editedComment);
+
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    });
+    expect(document.body.querySelector('[data-annotation-panel]')).toBeNull();
+
+    await act(async () => { click(mark); });
+    panel = document.body.querySelector<HTMLElement>('[data-annotation-panel]')!;
+    input = panel.querySelector<HTMLInputElement>('[data-annotation-panel-input]')!;
+    expect(input.value).toBe(editedComment);
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    });
+    resetAnnotationOverridesForTests();
   });
 });
 

@@ -702,9 +702,15 @@ export function Composer({
 
   // Queue-edit mode only gates on the text itself: the model catalog and
   // attachment reads belong to a real send, not to an in-place queue edit.
+  // Selection carry-overs (annotation chips, the quote chip) count as content
+  // exactly like attachments: an otherwise empty draft still sends, with the
+  // prefix-only text assembled by the parent.
   const canSend = queueEditing
     ? text.trim() !== '' && !disabled && !sendDisabled && !turnInFlight
-    : (text.trim() !== '' || attachments.length > 0) &&
+    : (text.trim() !== '' ||
+        attachments.length > 0 ||
+        (annotations !== undefined && annotations.length > 0) ||
+        (quote !== undefined && quote !== null)) &&
       !disabled &&
       !sendDisabled &&
       !selectionBlocked &&

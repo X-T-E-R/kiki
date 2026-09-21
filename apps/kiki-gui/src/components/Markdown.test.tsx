@@ -212,3 +212,37 @@ describe('Markdown link menus', () => {
     expect(document.body.querySelector('[data-link-menu]')).toBeNull();
   });
 });
+
+describe('Markdown annotation marks', () => {
+  const annotation = {
+    id: 'ta-marked',
+    quote: 'marked words',
+    comment: 'Keep this visible',
+  };
+
+  it('marks an annotation in the plain-prose fast path', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <Markdown text="Before marked words after" annotationTargets={[annotation]} />,
+    );
+
+    const mark = probe.container.querySelector<HTMLElement>('[data-annotation-ref="ta-marked"]');
+    expect(mark?.textContent).toBe('marked words');
+    expect(mark?.getAttribute('role')).toBe('button');
+    expect(mark?.tabIndex).toBe(0);
+  });
+
+  it('keeps one keyboard target when markdown formatting splits a marked passage', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <Markdown text="Before **marked** words after" annotationTargets={[annotation]} />,
+    );
+
+    const marks = [...probe.container.querySelectorAll<HTMLElement>('[data-annotation-ref="ta-marked"]')];
+    expect(marks.map((mark) => mark.textContent).join('')).toBe('marked words');
+    expect(marks.filter((mark) => mark.tabIndex === 0)).toHaveLength(1);
+    expect(probe.container.querySelector('[data-streamdown="strong"]')?.textContent).toBe('marked');
+  });
+});
