@@ -26,6 +26,7 @@ import { AgentPlanSection } from './agent-panel/AgentPlanSection';
 import { AgentCapabilitiesSection } from './agent-panel/AgentCapabilitiesSection';
 import { usageSessionDeepLink } from '../lib/usageV2';
 import { aggregateTreeCacheHitRate, aggregateTreeCacheReadTokens, aggregateTreeCacheWriteTokens } from './agent-panel/cacheRate';
+import { mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from './agent-panel/mapCapabilities';
 
 const noopSubscribe = (): (() => void) => () => {};
 
@@ -130,6 +131,15 @@ export function AgentPanelContainer({ state, forest, agentId }: {
   const loaded = agentState?.loaded === true;
   const planMode = agentState?.planMode;
   const profileName = profile?.name === 'unknown' ? t('diagnostics.unknown') : (profile?.name ?? agentState?.profile ?? t('diagnostics.unknown'));
+
+  const subagentTargets = useMemo(() => mapPanelSubagentTargets(data?.targets), [data?.targets]);
+  const mappedSkills = useMemo(() => mapPanelSkills(data?.skills), [data?.skills]);
+  const mappedTools = useMemo(() => mapPanelTools(data?.tools), [data?.tools]);
+  const draftScope = useMemo(() => ({
+    workspace_id: state.session?.workspace_id,
+    cwd: state.session?.metadata?.cwd,
+  }), [state.session?.workspace_id, state.session?.metadata?.cwd]);
+
   // Only this agent's own state feeds the checklist: no per-agent data at all
   // reads as not-reported, a known agent whose own state is still loading reads
   // as loading, and neither ever falls back to the routed agent's todos.
@@ -152,7 +162,12 @@ export function AgentPanelContainer({ state, forest, agentId }: {
       context: data?.context ?? 'live', isMain: agentId === MAIN_AGENT_ID,
       configContentPreview: profile === undefined ? undefined : JSON.stringify(profile, null, 2),
       rawProfile: profile,
-    }} profilePolicy={profile?.subagent_policy} dispatchTargets={data?.targets} usage={usage} treeMetrics={agentId === MAIN_AGENT_ID ? {
+    }} profilePolicy={profile?.subagent_policy} dispatchTargets={data?.targets}
+      subagentTargets={subagentTargets}
+      skills={mappedSkills}
+      toolCapabilities={mappedTools}
+      draftScope={draftScope}
+      usage={usage} treeMetrics={agentId === MAIN_AGENT_ID ? {
       ...tree,
       cacheHitRate: aggregateTreeCacheHitRate(ids, metrics),
       cacheReadTokens: aggregateTreeCacheReadTokens(ids, metrics),
@@ -177,28 +192,10 @@ export function AgentPanelContainer({ state, forest, agentId }: {
     {data !== undefined && (data.tools === undefined || data.skills === undefined) ?
       <p role="status" className="text-xs text-ink-soft">{data.unavailable_reason ?? t('diagnostics.unknown')}</p> : null}
     {data?.tools !== undefined && data.skills !== undefined ? <AgentCapabilitiesSection
-      tools={(data.tools ?? []).map((tool) => ({
-        ...tool,
-        unavailableReason: tool.unavailable_reason,
-        parametersSchema: tool.parameters ? JSON.stringify(tool.parameters, null, 2) : undefined,
-        readOnly: tool.read_only,
-      }))}
-      skills={(data.skills ?? []).map((skill) => ({
-        ...skill,
-        id: `${skill.source}:${skill.path}`,
-        unavailableReason: skill.unavailable_reason,
-        argumentHint: skill.argument_hint,
-        type: skill.type,
-        disableModelInvocation: skill.disable_model_invocation,
-        promptCommand: skill.prompt_command,
-      }))}
-      subagentTargets={data.targets.map((target) => ({
-        profile: target.profile, route: target.route, executor: target.executor,
-        modelAlias: target.model_alias, thinkingEffort: target.thinking_effort,
-        defaultsAvailable: target.defaults_available, launchAllowed: target.launch_allowed,
-        launchUnavailableReason: target.launch_unavailable_reason ?? target.unavailable_reason,
-        executionRestriction: target.execution_restriction,
-      }))}
+      tools={mappedTools}
+      skills={mappedSkills}
+      subagentTargets={subagentTargets}
+      draftScope={draftScope}
     /> : null}
   </div>;
 }

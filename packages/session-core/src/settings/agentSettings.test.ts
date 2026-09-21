@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  agentProfileSourceLabelKey,
+  agentProfileValueOrigin,
   DEFAULT_SUBAGENT_PROFILE_NAME,
   disabledProfilePatch,
   experimentalFlagRows,
@@ -542,5 +544,42 @@ describe('shippedEntryForProfile', () => {
     expect(shippedEntryForProfile({ source_file: 'C:/fixture/user/agents/builtin/general.md' }, [
       { ...entry, active_path: undefined },
     ])).toBeUndefined();
+  });
+});
+
+describe('agentProfileValueOrigin', () => {
+  it('treats a locked value as the profile binding regardless of reports', () => {
+    expect(agentProfileValueOrigin({ locked: true, reported: 'route', effective: 'a', declared: 'a' }))
+      .toEqual({ locked: true, labelKey: 'diagnostics.source.profile' });
+  });
+
+  it('prefers the server-reported source when it is a known provenance value', () => {
+    expect(agentProfileValueOrigin({ locked: false, reported: 'model-profile', effective: 'a' }))
+      .toEqual({ locked: false, labelKey: 'diagnostics.source.model-profile' });
+    expect(agentProfileValueOrigin({ locked: false, reported: 'caller-lease' }))
+      .toEqual({ locked: false, labelKey: 'diagnostics.source.caller-lease' });
+  });
+
+  it('ignores an unknown reported source and falls back to declaration proof', () => {
+    expect(agentProfileValueOrigin({ locked: false, reported: 'nonsense', effective: 'a', declared: 'a' }))
+      .toEqual({ locked: false, labelKey: 'diagnostics.source.profile' });
+  });
+
+  it('names the profile only when the declaration matches the effective value', () => {
+    expect(agentProfileValueOrigin({ locked: false, effective: 'a', declared: 'b' }))
+      .toEqual({ locked: false, labelKey: 'diagnostics.unknown' });
+    expect(agentProfileValueOrigin({ locked: false, effective: 'a' }))
+      .toEqual({ locked: false, labelKey: 'diagnostics.unknown' });
+  });
+});
+
+describe('agentProfileSourceLabelKey', () => {
+  it('maps the known source ids and leaves anything else raw', () => {
+    expect(agentProfileSourceLabelKey('builtin')).toBe('agentPanel.sourceId.builtin');
+    expect(agentProfileSourceLabelKey('user')).toBe('agentPanel.sourceId.user');
+    expect(agentProfileSourceLabelKey('workspace')).toBe('agentPanel.sourceId.workspace');
+    expect(agentProfileSourceLabelKey('custom')).toBe('agentPanel.sourceId.custom');
+    expect(agentProfileSourceLabelKey('C:/fixture/agent.md')).toBeUndefined();
+    expect(agentProfileSourceLabelKey(undefined)).toBeUndefined();
   });
 });

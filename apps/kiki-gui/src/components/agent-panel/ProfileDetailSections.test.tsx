@@ -174,6 +174,30 @@ describe('running profile definition lookup', () => {
     expect(container.querySelector('[data-disk-definition]')).not.toBeNull();
     expect(container.querySelector('[data-disk-definition]')!.textContent).toContain(OTHER_FILE);
   });
+
+  it('recovers source and derived leases from the bound definition and opens the full profile', async () => {
+    const onOpenTarget = vi.fn();
+    client.listNamedAgentProfiles.mockResolvedValue({
+      items: [{ ...boundDefinition, subagents: ['explore'] }],
+      complete: true,
+    });
+    await render({
+      profile: { ...runningProfile, source: undefined, description: undefined },
+      query: { workspace_id: 'ws-one', profile: 'agent' },
+      onOpenTarget,
+    });
+
+    expect(container.querySelector('[data-profile-source-badge="workspace"]')?.textContent).toBe('Workspace');
+    expect(section('intent').textContent).toContain('Bound definition when-to-use');
+    expect(section('intent').textContent).not.toContain('Unrestricted');
+    expect(section('subagents').textContent).toContain('explore');
+    expect(section('subagents').textContent).not.toContain('Unrestricted');
+
+    await act(async () => {
+      section('subagents').querySelector<HTMLButtonElement>('button')!.click();
+    });
+    expect(onOpenTarget).toHaveBeenCalledWith({ kind: 'profile-draft', profile: 'explore' });
+  });
 });
 
 describe('model and effort source labels', () => {
@@ -191,6 +215,22 @@ describe('model and effort source labels', () => {
 
     expect(container.querySelector('[data-value-origin="model"]')?.textContent).toBe('Profile');
     expect(container.querySelector('[data-value-origin="effort"]')?.textContent).toBe('Profile');
+  });
+
+  it('uses reported provenance and labels the effective-value column explicitly', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [], complete: true });
+    await render({
+      profile: {
+        ...runningProfile,
+        model_source: 'route',
+        effort_source: 'config',
+      } as AgentPanelProfile & { readonly model_source: 'route'; readonly effort_source: 'config' },
+      query: { workspace_id: 'ws-one', profile: 'agent' },
+    });
+
+    expect(container.querySelector('[data-value-origin="model"]')?.textContent).toBe('Route');
+    expect(container.querySelector('[data-value-origin="effort"]')?.textContent).toBe('Configuration');
+    expect(section('model').textContent).toContain('DeclaredEffectiveSource');
   });
 
   it('keeps the lock badge and drops the source label for a route-locked value', async () => {

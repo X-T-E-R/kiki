@@ -4,48 +4,24 @@ import type {
   AgentToolCapability,
   AgentSkillCapability,
   AgentSubagentTarget,
-  CapabilityState,
 } from './types';
 import { AgentDetailDrawer, type DetailDrawerTarget } from './AgentDetailDrawer';
+import { ToolChipList, toolCategoryLabel } from './ToolChipList';
 
 export interface AgentCapabilitiesSectionProps {
   readonly tools: readonly AgentToolCapability[];
   readonly skills: readonly AgentSkillCapability[];
   readonly subagentTargets: readonly AgentSubagentTarget[];
-}
-
-function stateBadge(
-  state: CapabilityState,
-  labels: Readonly<Record<CapabilityState, string>>,
-): { label: string; className: string } {
-  switch (state) {
-    case 'enabled':
-      return { label: labels.enabled, className: 'bg-success/15 text-success' };
-    case 'approval-required':
-      return { label: labels['approval-required'], className: 'bg-amber-card text-amber-ink border border-amber-rule/40' };
-    case 'disabled':
-      return { label: labels.disabled, className: 'bg-paper text-ink-faint border border-hairline' };
-    case 'disconnected':
-      return { label: labels.disconnected, className: 'bg-danger/10 text-danger border border-danger/30' };
-    case 'unknown':
-    default:
-      return { label: labels.unknown, className: 'bg-paper text-ink-faint' };
-  }
+  readonly draftScope?: { readonly workspace_id?: string; readonly cwd?: string };
 }
 
 export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   tools,
   skills,
   subagentTargets,
+  draftScope,
 }: AgentCapabilitiesSectionProps) {
   const { t } = useI18n();
-  const stateLabels: Readonly<Record<CapabilityState, string>> = {
-    enabled: t('agentPanel.capability.enabled'),
-    'approval-required': t('agentPanel.capability.approvalRequired'),
-    disabled: t('agentPanel.capability.disabled'),
-    disconnected: t('agentPanel.capability.disconnected'),
-    unknown: t('agentPanel.capability.unknown'),
-  };
 
   const [toolsOpen, setToolsOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
@@ -110,41 +86,19 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               Object.entries(toolsByCategory).map(([category, catTools]) => (
                 <div key={category} className="space-y-1">
                   <div className="font-mono text-[9.5px] font-semibold text-ink-faint uppercase tracking-wider">
-                    {category} ({catTools.length})
+                    {toolCategoryLabel(t, category)} ({catTools.length})
                   </div>
-                  <div className="divide-y divide-hairline/60 rounded-md border border-hairline bg-panel overflow-hidden">
-                    {catTools.map((tool) => {
-                      const badge = stateBadge(tool.state, stateLabels);
-                      return (
-                        <div
-                          key={tool.name}
-                          className="flex items-center justify-between gap-2 p-2 hover:bg-paper/70 transition-colors"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => setDrawerTarget({ kind: 'tool', tool })}
-                            className="font-mono text-[11.5px] font-medium text-ink hover:text-accent truncate text-left cursor-pointer flex-1 min-w-0"
-                            title={t('agentPanel.viewDetails')}
-                          >
-                            {tool.name}
-                          </button>
-                          <div className="flex items-center gap-1 shrink-0">
-                            {tool.readOnly ? (
-                              <span className="rounded-sm bg-accent-soft px-1 text-[9px] font-mono text-accent">
-                                {t('agentPanel.readOnly')}
-                              </span>
-                            ) : null}
-                            <span
-                              className={`rounded px-1.5 py-0.2 font-mono text-[9.5px] ${badge.className}`}
-                              title={tool.unavailableReason}
-                            >
-                              {badge.label}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <ToolChipList
+                    variant="rows"
+                    items={catTools.map((tool) => ({
+                      key: tool.name,
+                      name: tool.name,
+                      state: tool.state,
+                      readOnly: tool.readOnly,
+                      unavailableReason: tool.unavailableReason,
+                      onOpen: () => setDrawerTarget({ kind: 'tool', tool }),
+                    }))}
+                  />
                 </div>
               ))
             )}
@@ -176,22 +130,19 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
           </span>
         </button>
 
-        {/* Workspace Skill previews when collapsed */}
         {!skillsOpen && workspaceSkills.length > 0 ? (
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {workspaceSkills.slice(0, 3).map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => setDrawerTarget({ kind: 'skill', skill: s })}
-                className="rounded bg-paper border border-hairline px-1.5 py-0.2 font-mono text-[10px] text-ink-soft hover:text-ink hover:border-hairline-strong cursor-pointer transition-colors"
-                title={s.description ?? s.name}
-              >
-                ⚡ {s.name}
-              </button>
-            ))}
+          <div className="mt-1.5">
+            <ToolChipList
+              variant="chips"
+              items={workspaceSkills.slice(0, 3).map((skill) => ({
+                key: skill.id,
+                name: skill.name,
+                unavailableReason: skill.unavailableReason,
+                onOpen: () => setDrawerTarget({ kind: 'skill', skill }),
+              }))}
+            />
             {workspaceSkills.length > 3 ? (
-              <span className="text-[10px] text-ink-faint self-center">
+              <span className="mt-1 block text-[10px] text-ink-faint">
                 {t('agentPanel.moreSkills', { count: workspaceSkills.length - 3 })}
               </span>
             ) : null}
@@ -199,71 +150,47 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
         ) : null}
 
         {skillsOpen ? (
-          <div className="mt-2 space-y-2 pt-1.5 border-t border-hairline">
-            {/* Workspace-specific Skills */}
+          <div className="mt-2 space-y-2 border-t border-hairline pt-1.5">
             <div>
-              <div className="font-mono text-[9.5px] font-semibold text-accent uppercase">
+              <div className="font-mono text-[9.5px] font-semibold uppercase text-accent">
                 {t('agentPanel.workspaceSkills', { count: workspaceSkills.length })}
               </div>
               {workspaceSkills.length === 0 ? (
-                <p className="text-ink-faint text-[10.5px] mt-1">{t('agentPanel.noWorkspaceSkills')}</p>
+                <p className="mt-1 text-[10.5px] text-ink-faint">{t('agentPanel.noWorkspaceSkills')}</p>
               ) : (
-                <div className="mt-1 divide-y divide-hairline/60 rounded-md border border-hairline bg-panel overflow-hidden">
-                  {workspaceSkills.map((s) => {
-                    const badge = stateBadge(s.state, stateLabels);
-                    return (
-                      <div
-                        key={s.id}
-                        className="flex items-center justify-between gap-2 p-2 hover:bg-paper/70 transition-colors"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => setDrawerTarget({ kind: 'skill', skill: s })}
-                          className="font-mono text-[11.5px] font-medium text-ink hover:text-accent truncate text-left cursor-pointer flex-1 min-w-0"
-                          title={t('agentPanel.viewDetails')}
-                        >
-                          ⚡ {s.name}
-                        </button>
-                        <span className={`rounded px-1.5 py-0.2 font-mono text-[9.5px] shrink-0 ${badge.className}`}>
-                          {badge.label}
-                        </span>
-                      </div>
-                    );
-                  })}
+                <div className="mt-1">
+                  <ToolChipList
+                    variant="rows"
+                    items={workspaceSkills.map((skill) => ({
+                      key: skill.id,
+                      name: skill.name,
+                      state: skill.state,
+                      unavailableReason: skill.unavailableReason,
+                      onOpen: () => setDrawerTarget({ kind: 'skill', skill }),
+                    }))}
+                  />
                 </div>
               )}
             </div>
 
-            {/* Global Skills */}
-            <div className="pt-1.5 border-t border-hairline/60">
-              <div className="font-mono text-[9.5px] font-semibold text-ink-faint uppercase">
+            <div className="border-t border-hairline/60 pt-1.5">
+              <div className="font-mono text-[9.5px] font-semibold uppercase text-ink-faint">
                 {t('agentPanel.globalSkills', { count: globalSkills.length })}
               </div>
               {globalSkills.length === 0 ? (
-                <p className="text-ink-faint text-[10.5px] mt-1">{t('agentPanel.noGlobalSkills')}</p>
+                <p className="mt-1 text-[10.5px] text-ink-faint">{t('agentPanel.noGlobalSkills')}</p>
               ) : (
-                <div className="mt-1 divide-y divide-hairline/60 rounded-md border border-hairline bg-panel overflow-hidden">
-                  {globalSkills.map((s) => {
-                    const badge = stateBadge(s.state, stateLabels);
-                    return (
-                      <div
-                        key={s.id}
-                        className="flex items-center justify-between gap-2 p-2 hover:bg-paper/70 transition-colors"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => setDrawerTarget({ kind: 'skill', skill: s })}
-                          className="font-mono text-[11.5px] font-medium text-ink hover:text-accent truncate text-left cursor-pointer flex-1 min-w-0"
-                          title={t('agentPanel.viewDetails')}
-                        >
-                          🌐 {s.name}
-                        </button>
-                        <span className={`rounded px-1.5 py-0.2 font-mono text-[9.5px] shrink-0 ${badge.className}`}>
-                          {badge.label}
-                        </span>
-                      </div>
-                    );
-                  })}
+                <div className="mt-1">
+                  <ToolChipList
+                    variant="rows"
+                    items={globalSkills.map((skill) => ({
+                      key: skill.id,
+                      name: skill.name,
+                      state: skill.state,
+                      unavailableReason: skill.unavailableReason,
+                      onOpen: () => setDrawerTarget({ kind: 'skill', skill }),
+                    }))}
+                  />
                 </div>
               )}
             </div>
@@ -313,22 +240,25 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
                     >
                       <button
                         type="button"
-                        onClick={() => setDrawerTarget({ kind: 'subagent', target })}
-                        className="font-mono text-[11.5px] font-medium text-ink hover:text-accent truncate text-left cursor-pointer flex-1 min-w-0"
-                        title={t('agentPanel.viewDetails')}
+                        onClick={() => setDrawerTarget({ kind: 'profile-draft', profile: target.profile })}
+                        className="min-w-0 flex-1 cursor-pointer truncate text-left font-mono text-[11.5px] font-medium text-ink transition-colors hover:text-accent"
+                        title={t('agentPanel.profileDetail')}
                       >
                         {target.profile}
                         {target.route ? ` / ${target.route}` : ''}
                       </button>
-                      <span
-                        className={`font-mono text-[9.5px] uppercase px-1.5 py-0.2 rounded shrink-0 ${
+                      <button
+                        type="button"
+                        onClick={() => setDrawerTarget({ kind: 'subagent', target })}
+                        title={t('agentPanel.viewDetails')}
+                        className={`shrink-0 cursor-pointer rounded border px-1.5 py-0.2 font-mono text-[9.5px] uppercase ${
                           allowed
-                            ? 'bg-success/15 text-success border border-success/30'
-                            : 'bg-danger/10 text-danger border border-danger/30'
+                            ? 'border-success/30 bg-success/15 text-success'
+                            : 'border-danger/30 bg-danger/10 text-danger'
                         }`}
                       >
                         {allowed ? t('agentPanel.allowed') : t('agentPanel.blocked')}
-                      </span>
+                      </button>
                     </div>
                   );
                 })}
@@ -342,6 +272,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
       <AgentDetailDrawer
         target={drawerTarget}
         onClose={() => setDrawerTarget(null)}
+        draftScope={draftScope}
       />
     </div>
   );

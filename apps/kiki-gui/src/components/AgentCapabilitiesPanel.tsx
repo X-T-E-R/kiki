@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { AgentCapabilitiesQuery, AgentCapabilityTarget } from '@kiki/protocol';
+import type { AgentCapabilitiesQuery } from '@kiki/protocol';
+import { agentProfileValueOrigin } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
+import { mapPanelSkills, mapPanelTools } from './agent-panel/mapCapabilities';
 import { ProfileDetailSections } from './agent-panel/ProfileDetailSections';
+import { ToolChipList, toolCategoryLabel } from './agent-panel/ToolChipList';
 
 export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuery }) {
   const { klient } = useConnection();
@@ -21,8 +24,10 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
   const live = 'session_id' in query;
   const scope = live ? `${query.session_id} / ${query.agent_id}`
     : `${'cwd' in query ? query.cwd : query.workspace_id} / ${query.profile}`;
-  const source = (value: AgentCapabilityTarget['effort_source']) => value === undefined
-    ? t('diagnostics.unknown') : t(`diagnostics.source.${value}`);
+
+  const sourceLabel = (value: string | undefined) =>
+    t(agentProfileValueOrigin({ reported: value, locked: false }).labelKey);
+
   return (
     <section data-agent-capabilities className="min-w-0 text-left text-[11.5px]">
       <button type="button" aria-expanded={open} onClick={() => { setOpen(!open); }}
@@ -42,18 +47,45 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
           {data.profile !== undefined ? <details data-profile-details className="rounded border border-hairline bg-panel p-2">
             <summary className="cursor-pointer font-medium text-ink hover:text-accent">{t('agentPanel.profileDetail')} · {t('diagnostics.source')}</summary>
             <div className="mt-2">
-              <ProfileDetailSections profile={data.profile} query={query} />
+              <ProfileDetailSections
+                profile={data.profile}
+                query={query}
+                dispatchTargets={data.targets}
+                skills={mapPanelSkills(data.skills)}
+                toolCapabilities={mapPanelTools(data.tools)}
+              />
             </div>
           </details> : null}
-          {data.tools !== undefined ? [...new Set(data.tools.map((tool) => tool.category))].map((category) => <details key={category} data-tool-category={category}>
-            <summary>{category} · {data.tools!.filter((tool) => tool.category === category).length}</summary>
-            {data.tools!.filter((tool) => tool.category === category).map((tool) => <p key={tool.name} className="break-words">
-              {tool.name} · {tool.source} · {tool.state}{tool.unavailable_reason === undefined ? '' : ` · ${tool.unavailable_reason}`}
-            </p>)}
-          </details>) : null}
-          {data.skills !== undefined ? <details data-skill-sources><summary>{t('st.section.skills')} · {data.skills.length}</summary>
-            {data.skills.map((skill) => <p key={`${skill.source}:${skill.path}`} className="break-words">{skill.name} · {skill.source} · {skill.state}</p>)}
-          </details> : null}
+          {data.tools !== undefined ? [...new Set(data.tools.map((tool) => tool.category))].map((category) => (
+            <details key={category} data-tool-category={category}>
+              <summary>{toolCategoryLabel(t, category)} · {data.tools!.filter((tool) => tool.category === category).length}</summary>
+              <ToolChipList
+                variant="plain"
+                items={data.tools!.filter((tool) => tool.category === category).map((tool) => ({
+                  key: tool.name,
+                  name: tool.name,
+                  source: tool.source,
+                  state: tool.state,
+                  unavailableReason: tool.unavailable_reason,
+                }))}
+              />
+            </details>
+          )) : null}
+          {data.skills !== undefined ? (
+            <details data-skill-sources>
+              <summary>{t('st.section.skills')} · {data.skills.length}</summary>
+              <ToolChipList
+                variant="plain"
+                items={data.skills.map((skill) => ({
+                  key: `${skill.source}:${skill.path}`,
+                  name: skill.name,
+                  source: skill.source,
+                  state: skill.state,
+                  unavailableReason: skill.unavailable_reason,
+                }))}
+              />
+            </details>
+          ) : null}
           {!data.available ? <p role="status" className="break-words text-danger">{t('diagnostics.unavailable')} · {data.unavailable_reason ?? t('diagnostics.unknown')}</p> : null}
           {data.targets.length === 0 ? <p className="text-ink-faint">{t('diagnostics.empty')}</p> : null}
           {data.targets.map((target, index) => <article key={`${target.profile}:${target.route ?? ''}:${index}`} className="space-y-1 rounded-md border border-hairline bg-panel p-2" data-capability-target={target.profile}>
@@ -61,9 +93,9 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
             {target.description !== undefined ? <p className="break-words text-ink-soft">{target.description}</p> : null}
             <p className="break-all text-ink-soft">{t('diagnostics.executor')} · {target.executor}</p>
             <p className="break-all text-ink">{t('diagnostics.model')} · {target.model_alias ?? t('diagnostics.unknown')}</p>
-            <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {source(target.model_source)}</p>
+            <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.model_source)}</p>
             <p className="break-all text-ink">{t('diagnostics.effort')} · {target.thinking_effort ?? t('diagnostics.unknown')}</p>
-            <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {source(target.effort_source)}</p>
+            <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.effort_source)}</p>
             <p className={target.defaults_available ? 'text-success' : 'text-danger'}>{t(target.defaults_available ? 'diagnostics.defaultsReady' : 'diagnostics.defaultsMissing')}</p>
             {target.unavailable_reason !== undefined ? <p className="break-words text-danger">{target.unavailable_reason}</p> : null}
             {live && data.context === 'live' ? <>

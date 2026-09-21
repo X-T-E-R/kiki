@@ -14,7 +14,20 @@ const { client, dirtyReporter } = vi.hoisted(() => ({ dirtyReporter: vi.fn(), cl
   readHostFile: vi.fn(), meta: vi.fn(),
   listShippedAgentProfiles: vi.fn(), restoreShippedAgentProfile: vi.fn(),
 } }));
-vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, klient: { global: { agentPanel: { read: (query: unknown, options: { signal: AbortSignal }) => client.getAgentCapabilities(query, options.signal) } } } }) }));
+vi.mock('../../state/connection', () => ({
+  useConnection: () => ({
+    client,
+    klient: {
+      global: {
+        agentPanel: {
+          read: (query: unknown, options: { signal: AbortSignal }) =>
+            client.getAgentCapabilities(query, options.signal),
+        },
+      },
+    },
+  }),
+  useOptionalConnection: () => ({ client }),
+}));
 vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => vi.fn(), useDirtyReporter: dirtyReporter }));
 const profile: NamedAgentProfile = {
   name: 'agent', description: 'Custom default', main: true, override: true,
@@ -90,6 +103,13 @@ describe('default main profile settings', () => {
     await settle();
     expect(client.getAgentCapabilities).toHaveBeenCalledWith({ workspace_id: 'ws-one', profile: 'agent' }, expect.any(AbortSignal));
     expect(row?.textContent).toContain('directory-helper');
+  });
+
+  it('uses the shared source badge and raw-file collapse in profile rows', async () => {
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    expect(row.querySelector('[data-profile-source-badge="user"]')?.textContent).toBe('User');
+    expect(row.querySelector('[data-raw-file-collapse]')).not.toBeNull();
   });
 
   it('shows the projected advisory profile policy and repeats it in technical details', async () => {

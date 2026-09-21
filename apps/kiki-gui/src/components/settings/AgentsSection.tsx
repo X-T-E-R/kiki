@@ -12,18 +12,19 @@ import {
   shippedEntryForProfile,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
-  summarizeNamedAgentLease,
-  summarizeNamedAgentModelProfile,
   workspaceChipDisplay,
-  type NamedAgentLeaseDetailLabel,
   type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
 } from '@kiki/session-core/settings';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
-import type { NamedAgentSubagentLease } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import { AgentCapabilitiesPanel } from '../AgentCapabilitiesPanel';
+import { DiskDefinitionSummary } from '../agent-panel/DiskDefinitionSummary';
+import { SubagentLeaseList } from '../agent-panel/LeaseList';
+import { RawFileCollapse } from '../agent-panel/RawFileCollapse';
+import { SourceBadge } from '../agent-panel/SourceBadge';
+import { ToolChipList } from '../agent-panel/ToolChipList';
 import type {
   ListNamedAgentProfilesResponse,
   NamedAgentProfile,
@@ -40,26 +41,6 @@ import { ExperimentalSection } from './ExperimentalSection';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
-
-const LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
-  description: 'st.namedAgents.description',
-  whenToUse: 'st.namedAgents.whenToUse',
-  contextBudget: 'st.namedAgents.contextBudget',
-  maxCompletionTokens: 'st.namedAgents.maxCompletionTokens',
-  serviceTier: 'st.namedAgents.serviceTier',
-  delegationNotice: 'st.namedAgents.delegationNotice',
-  promptMode: 'st.namedAgents.promptMode',
-  allowedModels: 'st.namedAgents.allowedModels',
-  deniedModels: 'st.namedAgents.deniedModels',
-  allowedEfforts: 'st.namedAgents.allowedEfforts',
-  tools: 'st.namedAgents.tools',
-  disallowedTools: 'st.namedAgents.disallowedTools',
-  subagents: 'st.namedAgents.subagentLease',
-  prompt: 'st.namedAgents.prompt',
-  requestParams: 'st.namedAgents.requestParams',
-  modelProfile: 'st.namedAgents.modelProfile',
-  leaseSource: 'st.namedAgents.leaseSource',
-};
 
 const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
@@ -179,68 +160,26 @@ function NamedAgentProfileRow({
   // schema does not open them): surface them in the summary and point at the
   // raw file instead of silently hiding them.
   const constraints = profile.spawn_constraints;
-  const spawnSummary = constraints === undefined ? '' : [
-    constraints.allowed_models === undefined ? null : `${t('st.namedAgents.allowedModels')} ${constraints.allowed_models.join(', ')}`,
-    constraints.deny_models === undefined ? null : `${t('st.namedAgents.deniedModels')} ${constraints.deny_models.join(', ')}`,
-    constraints.allowed_efforts === undefined ? null : `${t('st.namedAgents.allowedEfforts')} ${constraints.allowed_efforts.join(', ')}`,
-    constraints.disallowed_tools === undefined ? null : `${t('st.namedAgents.disallowedTools')} ${constraints.disallowed_tools.join(', ')}`,
-  ].filter((segment) => segment !== null).join(' · ');
-  const contextBudget = profile.context_budget !== undefined && profile.context_budget > 0
-    ? profile.context_budget
-    : undefined;
-  const maxCompletionTokens = profile.max_completion_tokens !== undefined && profile.max_completion_tokens > 0
-    ? profile.max_completion_tokens
-    : undefined;
-  const hasProfileBudget = contextBudget !== undefined
-    || maxCompletionTokens !== undefined
-    || (profile.request_params !== undefined && Object.keys(profile.request_params).length > 0);
   const hasProjection =
-    hasProfileBudget
-    || (profile.model_profiles?.length ?? 0) > 0
-    || spawnSummary !== ''
-    || (profile.subagents?.length ?? 0) > 0;
+    profile.context_budget !== undefined ||
+    profile.max_completion_tokens !== undefined ||
+    (profile.request_params !== undefined && Object.keys(profile.request_params).length > 0) ||
+    (profile.model_profiles?.length ?? 0) > 0 ||
+    constraints !== undefined ||
+    (profile.subagents?.length ?? 0) > 0;
   const [editorOpen, setEditorOpen] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [rawOpen, setRawOpen] = useState(false);
-  const [rawLoading, setRawLoading] = useState(false);
-  const [rawSaving, setRawSaving] = useState(false);
-  const [rawText, setRawText] = useState('');
-  const toggleRaw = async () => {
-    if (rawOpen) {
-      setRawOpen(false);
-      return;
-    }
-    if (profile.source_file === undefined) return;
-    setRawOpen(true);
-    setRawLoading(true);
-    setFeedback(null);
-    try {
-      setRawText(await client.readHostFile(profile.source_file));
-    } catch (error) {
-      setRawOpen(false);
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setRawLoading(false);
-    }
-  };
-  const saveRaw = async () => {
+  const saveRaw = async (rawText: string) => {
     if (!writable || profile.workspace_id === undefined) return;
-    setRawSaving(true);
     setFeedback(null);
-    try {
-      const echoed = await client.updateNamedAgentProfile(profile.name, {
-        scope: profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra',
-        workspace_id: profile.workspace_id,
-        source_file: profile.source_file,
-        raw_text: rawText,
-      });
-      onUpdated(echoed);
-      setFeedback({ tone: 'success', text: t('st.namedAgents.rawSaved') });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setRawSaving(false);
-    }
+    const echoed = await client.updateNamedAgentProfile(profile.name, {
+      scope: profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra',
+      workspace_id: profile.workspace_id,
+      source_file: profile.source_file,
+      raw_text: rawText,
+    });
+    onUpdated(echoed);
+    setFeedback({ tone: 'success', text: t('st.namedAgents.rawSaved') });
   };
 
   const overriddenBy = overrideRelation?.kind === 'overridden' ? overrideRelation : undefined;
@@ -273,12 +212,9 @@ function NamedAgentProfileRow({
       summaryChips.push(`${t('st.namedAgents.disallowedTools')} ${constraints.disallowed_tools.join(', ')}`);
     }
   }
-  const stringSubagents = (profile.subagents ?? []).filter((lease): lease is string => typeof lease === 'string');
-  const leaseSubagents = (profile.subagents ?? []).filter((lease): lease is NamedAgentSubagentLease => typeof lease !== 'string');
   const subagentPolicyLabel = profile.subagent_policy === undefined
     ? t('diagnostics.unknown')
     : t(`agentPanel.subagentPolicy.${profile.subagent_policy}` as I18nKey);
-  const subagentChipClass = 'rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint';
 
   // A built-in shadowed by an overriding same-name file profile collapses to
   // a single muted line — rendering it as a normal enabled row would suggest
@@ -293,9 +229,7 @@ function NamedAgentProfileRow({
       >
         <div className="flex flex-wrap items-center gap-2">
           <p className="font-mono text-[12.5px] text-ink-faint">{profile.name}</p>
-          <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">
-            {profile.source}
-          </span>
+          <SourceBadge source={profile.source} variant="muted" />
           <span
             data-subagent-policy={profile.subagent_policy ?? 'unknown'}
             className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint"
@@ -366,9 +300,11 @@ function NamedAgentProfileRow({
               {t('st.namedAgents.namedToggleScope')}
             </span>
           </div>
-          <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">
-            {profile.source}{writable ? '' : ` · ${t('st.namedAgents.readOnly')}`}
-          </span>
+          <SourceBadge
+            source={profile.source}
+            variant="muted"
+            suffix={writable ? undefined : ` · ${t('st.namedAgents.readOnly')}`}
+          />
           <span
             data-subagent-policy={profile.subagent_policy ?? 'unknown'}
             className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint"
@@ -420,44 +356,15 @@ function NamedAgentProfileRow({
       ) : null}
       <>
           {summaryChips.length > 0 ? (
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {summaryChips.map((chip) => (
-                <span key={chip} className={subagentChipClass}>{chip}</span>
-              ))}
+            <div className="mt-1.5">
+              <ToolChipList
+                variant="chips"
+                items={summaryChips.map((chip) => ({ key: chip, name: chip }))}
+              />
             </div>
           ) : null}
-          {stringSubagents.length > 0 || leaseSubagents.length > 0 ? (
-            <div className="mt-1.5 space-y-1">
-              <p className="text-[10.5px] font-medium text-ink-soft">{t('st.namedAgents.availableSubagents')}</p>
-              {stringSubagents.length > 0 ? (
-                <p className="flex flex-wrap gap-1.5">
-                  {stringSubagents.map((name) => (
-                    <span key={name} className={subagentChipClass}>{name}</span>
-                  ))}
-                </p>
-              ) : null}
-              {leaseSubagents.map((lease, index) => {
-                const leaseSummary = summarizeNamedAgentLease(lease);
-                return (
-                  <p key={`${lease.name}:${index}`} className="flex flex-wrap items-center gap-1.5 break-all font-mono text-[10.5px] text-ink-soft">
-                    <span>{leaseSummary.headline}</span>
-                    {leaseSummary.scoped ? (
-                      <span className="rounded-full border border-accent/40 bg-accent-soft px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-accent">
-                        {t('st.namedAgents.scopedBadge')}
-                      </span>
-                    ) : null}
-                    {leaseSummary.status !== undefined ? (
-                      <span className={leaseSummary.status === 'unavailable' ? 'text-danger' : 'text-success'}>
-                        {t(leaseSummary.status === 'unavailable' ? 'st.namedAgents.leaseUnavailable' : 'st.namedAgents.leaseReady')}
-                      </span>
-                    ) : null}
-                    {leaseSummary.diagnostic !== undefined ? (
-                      <span className="text-danger">{leaseSummary.diagnostic}</span>
-                    ) : null}
-                  </p>
-                );
-              })}
-            </div>
+          {profile.subagents !== undefined && profile.subagents.length > 0 ? (
+            <SubagentLeaseList items={profile.subagents} variant="compact" />
           ) : null}
           <details className="mt-2 rounded-lg border border-hairline bg-panel px-2.5 py-1.5" data-technical-details>
             <summary className="cursor-pointer select-none text-[10.5px] font-medium text-ink-faint hover:text-ink-soft">
@@ -482,17 +389,15 @@ function NamedAgentProfileRow({
                 ) : null}
               </p>
             ) : null}
-            {profile.when_to_use !== undefined ? <p>{t('st.namedAgents.whenToUse')}: {profile.when_to_use}</p> : null}
-            {profile.pinned_model_alias !== undefined ? <p>{t('st.namedAgents.modelPin')}: {profile.pinned_model_alias}</p> : null}
-            {profile.thinking_effort !== undefined ? <p>{t('st.namedAgents.defaultModelThinkingEffort')}: {profile.thinking_effort}</p> : null}
-            {profile.service_tier !== undefined ? <p>{t('st.namedAgents.serviceTier')}: {profile.service_tier}</p> : null}
-            {hasProfileBudget ? (
-              <>
-                <p>{t('st.namedAgents.contextBudget')}: {contextBudget ?? t('st.namedAgents.unspecified')}</p>
-                <p>{t('st.namedAgents.maxCompletionTokens')}: {maxCompletionTokens ?? t('st.namedAgents.unspecified')}</p>
-                <p>{t('st.namedAgents.requestParams')}: {profile.request_params === undefined || Object.keys(profile.request_params).length === 0 ? t('st.namedAgents.unspecified') : JSON.stringify(profile.request_params)}</p>
-              </>
-            ) : null}
+            <DiskDefinitionSummary
+              definition={profile}
+              className="space-y-1 break-all font-mono text-[10px] text-ink-faint"
+              showDescription={false}
+              showTools
+              showModelProfiles
+              showSpawnConstraints
+              budgetFallbackLabel={t('st.namedAgents.unspecified')}
+            />
             {profile.routes.map((route) => (
               <p key={route.id}>
                 {t('st.namedAgents.route')}: {route.id}
@@ -500,83 +405,22 @@ function NamedAgentProfileRow({
                 {' · '}{route.source_file}
               </p>
             ))}
-            {profile.model_profiles?.map((entry) => {
-              const modelProfile = summarizeNamedAgentModelProfile(entry);
-              return (
-                <div key={entry.alias} className="space-y-1">
-                  <p>{t('st.namedAgents.modelProfile')}: {modelProfile.headline}</p>
-                  {modelProfile.details.map((detail, detailIndex) => (
-                    <p key={`${detail.label}:${detailIndex}`} className="pl-3">
-                      {t(LEASE_DETAIL_LABEL_KEYS[detail.label])}: {detail.value}
-                    </p>
-                  ))}
-                </div>
-              );
-            })}
-            {spawnSummary !== '' ? <p>{t('st.namedAgents.spawnConstraints')}: {spawnSummary}</p> : null}
             <p data-technical-subagent-policy>
               {t('agentPanel.subagentPolicy')}: {subagentPolicyLabel}
             </p>
-            {profile.subagents?.map((lease, index) => {
-              if (typeof lease === 'string') {
-                return <p key={lease}>{t('st.namedAgents.subagentLease')}: {lease}</p>;
-              }
-              const leaseSummary = summarizeNamedAgentLease(lease);
-              return (
-                <div key={`${lease.name}:${index}`} className="space-y-1">
-                  <p>
-                    {t('st.namedAgents.subagentLease')}:
-                    {leaseSummary.scoped ? (
-                      <span className="mx-1 rounded-full border border-accent/40 bg-accent-soft px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-accent">
-                        {t('st.namedAgents.scopedBadge')}
-                      </span>
-                    ) : null}
-                    {' '}{leaseSummary.headline}
-                  </p>
-                  {leaseSummary.status !== undefined ? (
-                    <p className={`pl-3${leaseSummary.status === 'unavailable' ? ' text-danger' : ''}`}>
-                      {t('st.namedAgents.leaseStatus')}: {t(leaseSummary.status === 'unavailable' ? 'st.namedAgents.leaseUnavailable' : 'st.namedAgents.leaseReady')}
-                    </p>
-                  ) : null}
-                  {leaseSummary.diagnostic !== undefined ? (
-                    <p className="pl-3 text-danger">{leaseSummary.diagnostic}</p>
-                  ) : null}
-                  {leaseSummary.details.map((detail, detailIndex) => (
-                    <p key={`${detail.label}:${detailIndex}`} className="pl-3">
-                      {t(LEASE_DETAIL_LABEL_KEYS[detail.label])}: {detail.value}
-                    </p>
-                  ))}
-                </div>
-              );
-            })}
+            {profile.subagents !== undefined && profile.subagents.length > 0 ? (
+              <SubagentLeaseList items={profile.subagents} variant="details" />
+            ) : null}
             </div>
             {hasProjection ? <Hint>{t('st.namedAgents.projectionHint')}</Hint> : null}
           </details>
         </>
-      {profile.source_file !== undefined ? (
-        <div className="mt-3 border-t border-hairline pt-3">
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => void toggleRaw()}>
-            {rawOpen ? t('st.namedAgents.hideRaw') : writable ? t('st.namedAgents.editRaw') : t('st.namedAgents.viewRaw')}
-          </button>
-          {rawOpen ? (
-            <div className="mt-2 space-y-2">
-              {rawLoading ? <Hint>{t('st.namedAgents.rawLoading')}</Hint> : (
-                <textarea
-                  className={`${INPUT} min-h-64 font-mono text-[11px]`}
-                  value={rawText}
-                  readOnly={!writable}
-                  onChange={(event) => { setRawText(event.target.value); }}
-                />
-              )}
-              {writable && !rawLoading ? (
-                <button type="button" className={PRIMARY_BUTTON} disabled={rawSaving} onClick={() => void saveRaw()}>
-                  {rawSaving ? t('common.saving') : t('st.namedAgents.saveRaw')}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+      <RawFileCollapse
+        sourceFile={profile.source_file}
+        editable
+        writable={writable}
+        onSave={saveRaw}
+      />
       {effective && profile.main === true && workspaceFallbackId !== undefined ? (
         <div className="mt-3 border-t border-hairline pt-2">
           <AgentCapabilitiesPanel query={{ workspace_id: workspaceFallbackId, profile: profile.name }} />

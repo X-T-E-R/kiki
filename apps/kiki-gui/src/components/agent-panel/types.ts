@@ -125,6 +125,25 @@ export interface AgentSubagentTarget {
 }
 
 /**
+ * Targets that can be inspected inside the unified AgentDetailDrawer.
+ */
+export type DetailDrawerTarget =
+  | { readonly kind: 'profile'; readonly identity: AgentIdentity }
+  | { readonly kind: 'tool'; readonly tool: AgentToolCapability }
+  | { readonly kind: 'skill'; readonly skill: AgentSkillCapability }
+  | { readonly kind: 'subagent'; readonly target: AgentSubagentTarget }
+  | { readonly kind: 'profile-draft'; readonly profile: string };
+
+/**
+ * Defensive extension of AgentPanelProfile supporting upcoming server contract
+ * fields (source_file, model_source, effort_source).
+ */
+export type AgentPanelProfileWithSources = import('@kiki/protocol').AgentPanelProfile & {
+  readonly model_source?: import('@kiki/protocol').AgentCapabilityTarget['model_source'];
+  readonly effort_source?: import('@kiki/protocol').AgentCapabilityTarget['effort_source'];
+};
+
+/**
  * Active work reference item (active task or running child).
  */
 export interface AgentActiveWorkItem {

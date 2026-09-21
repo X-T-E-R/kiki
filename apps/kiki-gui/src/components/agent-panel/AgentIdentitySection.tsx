@@ -1,7 +1,15 @@
 import { memo, useState } from 'react';
 import type { AgentCapabilityTarget } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
-import type { AgentIdentity, AgentTokenUsage, AgentTreeMetrics } from './types';
+import type {
+  AgentIdentity,
+  AgentSkillCapability,
+  AgentSubagentTarget,
+  AgentTokenUsage,
+  AgentToolCapability,
+  AgentTreeMetrics,
+  DetailDrawerTarget,
+} from './types';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
 import { agentUsageCacheHitRate } from './cacheRate';
 
@@ -111,6 +119,10 @@ export interface AgentIdentitySectionProps {
   readonly treeMetrics?: AgentTreeMetrics;
   readonly profilePolicy?: AgentCapabilityTarget['dispatch_policy'];
   readonly dispatchTargets?: readonly AgentCapabilityTarget[];
+  readonly subagentTargets?: readonly AgentSubagentTarget[];
+  readonly toolCapabilities?: readonly AgentToolCapability[];
+  readonly skills?: readonly AgentSkillCapability[];
+  readonly draftScope?: { readonly workspace_id?: string; readonly cwd?: string };
   readonly onOpenTreeSelect?: () => void;
   readonly onOpenUsageDetail?: () => void;
 }
@@ -121,6 +133,10 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
   treeMetrics,
   profilePolicy,
   dispatchTargets,
+  subagentTargets,
+  toolCapabilities,
+  skills,
+  draftScope,
   onOpenTreeSelect,
   onOpenUsageDetail,
 }: AgentIdentitySectionProps) {
@@ -137,7 +153,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
     return `$${val.toFixed(4)}`;
   };
 
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [drawerTarget, setDrawerTarget] = useState<DetailDrawerTarget | null>(null);
   const [metricsDetailExpanded, setMetricsDetailExpanded] = useState(false);
 
   const cacheRate = agentUsageCacheHitRate(usage);
@@ -193,7 +209,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
           <div className="flex items-center gap-1.5 flex-wrap">
             <button
               type="button"
-              onClick={() => setDetailOpen(true)}
+              onClick={() => setDrawerTarget({ kind: 'profile', identity })}
               className="font-display text-[15px] font-semibold text-ink tracking-tight hover:text-accent text-left cursor-pointer transition-colors"
               title={t('agentPanel.viewDetails')}
             >
@@ -206,7 +222,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
             ) : null}
             <button
               type="button"
-              onClick={() => setDetailOpen(true)}
+              onClick={() => setDrawerTarget({ kind: 'profile', identity })}
               className="rounded-md bg-paper border border-hairline px-1.5 py-0.2 font-mono text-[10px] text-ink-soft hover:border-hairline-strong hover:text-ink cursor-pointer transition-colors"
               title={t('agentPanel.viewDetails')}
             >
@@ -431,7 +447,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
         <button
           type="button"
           data-expand-profile-button
-          onClick={() => setDetailOpen(true)}
+          onClick={() => setDrawerTarget({ kind: 'profile', identity })}
           className="text-accent hover:text-accent-deep transition-colors font-mono hover:underline cursor-pointer flex items-center gap-1"
         >
           <span>{t('agentPanel.viewDetails')}</span>
@@ -441,8 +457,13 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
 
       {/* Detail Drawer */}
       <AgentDetailDrawer
-        target={detailOpen ? { kind: 'profile', identity } : null}
-        onClose={() => setDetailOpen(false)}
+        target={drawerTarget}
+        onClose={() => setDrawerTarget(null)}
+        subagentTargets={subagentTargets}
+        toolCapabilities={toolCapabilities}
+        skills={skills}
+        dispatchTargets={dispatchTargets}
+        draftScope={draftScope}
       />
     </div>
   );

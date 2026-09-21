@@ -314,6 +314,7 @@ export const zh: Record<I18nKey, string> = {
   'agentPanel.profileSection.raw': '原始文件',
   'agentPanel.unrestricted': '未限制',
   'agentPanel.noToolsAllowed': '未允许任何工具',
+  'agentPanel.value.field': '字段',
   'agentPanel.value.declared': '声明值',
   'agentPanel.value.effective': '生效值',
   'agentPanel.locked': '被 Profile 锁定，会话内不可更改',

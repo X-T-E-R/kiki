@@ -314,6 +314,7 @@ export const en = {
   'agentPanel.profileSection.raw': 'Raw File',
   'agentPanel.unrestricted': 'Unrestricted',
   'agentPanel.noToolsAllowed': 'No tools allowed',
+  'agentPanel.value.field': 'Field',
   'agentPanel.value.declared': 'Declared',
   'agentPanel.value.effective': 'Effective',
   'agentPanel.locked': 'Locked by profile, immutable in session',

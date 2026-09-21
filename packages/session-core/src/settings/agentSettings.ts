@@ -1,5 +1,6 @@
 import type { NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease, ShippedAgentProfile } from '@kiki/protocol';
 
+import type { I18nKey } from '../i18n';
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
 import { configObjectOrEmpty, normalizeConfigStringList } from './settings';
 
@@ -298,6 +299,88 @@ export type NamedAgentLeaseDetailLabel =
   | 'requestParams'
   | 'modelProfile'
   | 'leaseSource';
+
+/** i18n label key for each semantic lease detail label, shared by every
+ * surface that renders `summarizeNamedAgentLease` / model-profile details. */
+export const NAMED_AGENT_LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
+  description: 'st.namedAgents.description',
+  whenToUse: 'st.namedAgents.whenToUse',
+  contextBudget: 'st.namedAgents.contextBudget',
+  maxCompletionTokens: 'st.namedAgents.maxCompletionTokens',
+  serviceTier: 'st.namedAgents.serviceTier',
+  delegationNotice: 'st.namedAgents.delegationNotice',
+  promptMode: 'st.namedAgents.promptMode',
+  allowedModels: 'st.namedAgents.allowedModels',
+  deniedModels: 'st.namedAgents.deniedModels',
+  allowedEfforts: 'st.namedAgents.allowedEfforts',
+  tools: 'st.namedAgents.tools',
+  disallowedTools: 'st.namedAgents.disallowedTools',
+  subagents: 'st.namedAgents.subagentLease',
+  prompt: 'st.namedAgents.prompt',
+  requestParams: 'st.namedAgents.requestParams',
+  modelProfile: 'st.namedAgents.modelProfile',
+  leaseSource: 'st.namedAgents.leaseSource',
+};
+
+/** Provenance values the panel can label, mirroring the `model_source` /
+ * `effort_source` enums of the capabilities contract (`diagnostics.source.*`). */
+const AGENT_PROFILE_VALUE_SOURCE_KEYS: Readonly<Record<string, I18nKey>> = {
+  'caller-lease': 'diagnostics.source.caller-lease',
+  route: 'diagnostics.source.route',
+  profile: 'diagnostics.source.profile',
+  'model-profile': 'diagnostics.source.model-profile',
+  model: 'diagnostics.source.model',
+  config: 'diagnostics.source.config',
+  executor: 'diagnostics.source.executor',
+};
+
+export interface AgentProfileValueOrigin {
+  readonly locked: boolean;
+  readonly labelKey: I18nKey;
+}
+
+/**
+ * Where an effective model/effort value came from, as far as the panel can
+ * prove it. A locked value is the profile binding. Otherwise the server's own
+ * `model_source` / `effort_source` wins when reported; without one, a source
+ * is only attributed when the bound definition declares exactly the effective
+ * value — anything else stays "not reported" instead of claiming a source.
+ */
+export function agentProfileValueOrigin(args: {
+  readonly reported?: string;
+  readonly effective?: string;
+  readonly declared?: string;
+  readonly locked: boolean;
+}): AgentProfileValueOrigin {
+  if (args.locked) return { locked: true, labelKey: 'diagnostics.source.profile' };
+  const reportedKey = args.reported === undefined
+    ? undefined
+    : AGENT_PROFILE_VALUE_SOURCE_KEYS[args.reported];
+  if (reportedKey !== undefined) return { locked: false, labelKey: reportedKey };
+  return {
+    locked: false,
+    labelKey: args.declared !== undefined && args.declared === args.effective
+      ? 'diagnostics.source.profile'
+      : 'diagnostics.unknown',
+  };
+}
+
+/** Label keys for the known profile source ids; unknown ids stay raw. */
+const AGENT_PROFILE_SOURCE_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
+  builtin: 'agentPanel.sourceId.builtin',
+  user: 'agentPanel.sourceId.user',
+  workspace: 'agentPanel.sourceId.workspace',
+  custom: 'agentPanel.sourceId.custom',
+  extra: 'agentPanel.sourceId.extra',
+  plugin: 'agentPanel.sourceId.plugin',
+  explicit: 'agentPanel.sourceId.explicit',
+};
+
+/** i18n label key for a profile source id, or `undefined` when the id is not
+ * a known source — callers render the raw string then. */
+export function agentProfileSourceLabelKey(source: string | undefined): I18nKey | undefined {
+  return source === undefined ? undefined : AGENT_PROFILE_SOURCE_LABEL_KEYS[source];
+}
 
 export interface NamedAgentLeaseSummary {
   /** `name · model_alias · thinking_effort`, skipping empty parts. */
