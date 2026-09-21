@@ -66,7 +66,7 @@ function readFileWall(filePath: string): number {
 function debugInvalidSpec(spec: string, reason: string, debug: boolean): void {
   if (debug) {
     process.stderr.write(
-      `[cron/clock] invalid KIMI_CRON_CLOCK spec ${JSON.stringify(spec)}: ${reason} — falling back to system clock\n`,
+      `[cron/clock] invalid KIKI_CRON_CLOCK spec ${JSON.stringify(spec)}: ${reason} — falling back to system clock\n`,
     );
   }
 }

@@ -133,13 +133,13 @@ builtin_product_skills = true
 #   scope: core
 #   hooks: stripEnv
 #   env:
-#     debug <- KIMI_CRON_DEBUG (custom parse)
-#     no_jitter <- KIMI_CRON_NO_JITTER (custom parse)
-#     no_stale <- KIMI_CRON_NO_STALE (custom parse)
-#     disabled <- KIMI_DISABLE_CRON (custom parse)
-#     manual_tick <- KIMI_CRON_MANUAL_TICK (custom parse)
-#     clock <- KIMI_CRON_CLOCK
-#     poll_interval_ms <- KIMI_CRON_POLL_INTERVAL_MS (custom parse)
+#     debug <- KIKI_CRON_DEBUG (custom parse)
+#     no_jitter <- KIKI_CRON_NO_JITTER (custom parse)
+#     no_stale <- KIKI_CRON_NO_STALE (custom parse)
+#     disabled <- KIKI_DISABLE_CRON (custom parse)
+#     manual_tick <- KIKI_CRON_MANUAL_TICK (custom parse)
+#     clock <- KIKI_CRON_CLOCK
+#     poll_interval_ms <- KIKI_CRON_POLL_INTERVAL_MS (custom parse)
 # ##########################################################################
 
 [cron]

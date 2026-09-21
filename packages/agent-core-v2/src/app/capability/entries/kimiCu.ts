@@ -34,8 +34,8 @@ const WINDOWS_INSTALLER_PROBE_SCRIPT =
   "if ($issues.Count -gt 0) { [Console]::Error.Write(($issues -join '; ')); exit 2 }; " +
   "[Console]::Out.Write(('PowerShell ' + $PSVersionTable.PSVersion));";
 const WINDOWS_DOCTOR_SCRIPT =
-  '$candidates = @($env:KIMI_CU_WINDOWS_EXE); ' +
-  "if ($env:KIMI_CU_WINDOWS_HOME) { $candidates += (Join-Path $env:KIMI_CU_WINDOWS_HOME 'kimi-cu.exe') }; " +
+  '$candidates = @($env:KIKI_CU_WINDOWS_EXE); ' +
+  "if ($env:KIKI_CU_WINDOWS_HOME) { $candidates += (Join-Path $env:KIKI_CU_WINDOWS_HOME 'kimi-cu.exe') }; " +
   "if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA 'KimiCU\\kimi-cu.exe') }; " +
   "if ($env:ProgramFiles) { $candidates += (Join-Path $env:ProgramFiles 'KimiCU\\kimi-cu.exe') }; " +
   "$exe = $candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1; " +

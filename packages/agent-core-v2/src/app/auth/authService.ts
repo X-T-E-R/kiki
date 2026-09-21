@@ -402,8 +402,8 @@ export class OAuthService extends Disposable implements IOAuthService {
       configuredOAuthHost: oauth?.oauthHost,
       configuredOAuthKey: oauth?.key,
       readMarker:
-        (this.bootstrap.getEnv('KIMI_CODE_REGION_MARKER') ??
-          process.env['KIMI_CODE_REGION_MARKER']) !== 'off',
+        (this.bootstrap.getEnv('KIKI_CODE_REGION_MARKER') ??
+          process.env['KIKI_CODE_REGION_MARKER']) !== 'off',
       homeDir: this.bootstrap.homeDir,
     });
   }

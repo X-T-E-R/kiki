@@ -39,7 +39,7 @@ export class CronCreateTool implements ICronCreateTool {
     if (this.cron.isDisabled()) {
       return {
         isError: true,
-        output: 'Cron scheduling is disabled (KIMI_DISABLE_CRON=1).',
+        output: 'Cron scheduling is disabled (KIKI_DISABLE_CRON=1).',
       };
     }
 
