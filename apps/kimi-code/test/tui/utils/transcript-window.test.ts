@@ -80,7 +80,7 @@ describe('turnsToTrim', () => {
 });
 
 describe('readEnvInt', () => {
-  const KEY = 'KIMI_CODE_TUI_TEST_INT';
+  const KEY = 'KIKI_CODE_TUI_TEST_INT';
   afterEach(() => {
     delete process.env[KEY];
   });
