@@ -976,7 +976,11 @@ export class KikiClient {
     return this.run(this.klient.session(sessionId).agent(agentId).stopTask({ taskId }));
   }
 
-  /** User → subagent message; the prompt route's `agent_id` targets any live agent. */
+  /**
+   * User → subagent message; the prompt route's `agent_id` targets any agent
+   * the session still knows — a closed child is restored from its persisted
+   * binding and prompted again.
+   */
   sendAgentMessage(
     sessionId: string,
     agentId: string,

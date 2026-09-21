@@ -5,10 +5,12 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
+import { translate } from '@kiki/session-core/i18n';
 import {
   createViewState,
   type AgentForest,
   type AgentTreeNode,
+  type SessionController,
 } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
@@ -25,6 +27,7 @@ const harness = vi.hoisted(() => ({
   setAgentModel: vi.fn(),
   readCapabilities: vi.fn(),
   listSessionSkills: vi.fn(),
+  pushToast: vi.fn(),
   mediaProviderProps: [] as Array<{ apiRef?: unknown }>,
   host: { kind: 'browser' } as {
     kind: string;
@@ -83,8 +86,7 @@ vi.mock('../../host', () => ({ useHost: () => harness.host }));
 vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
 vi.mock('../Transcript', () => ({ Transcript: () => null }));
 vi.mock('./ResyncStatusBanner', () => ({ ResyncStatusBanner: () => null }));
-vi.mock('./SubagentDetailActions', () => ({ SubagentDetailActions: () => null }));
-vi.mock('../../lib/toasts', () => ({ pushToast: vi.fn() }));
+vi.mock('../../lib/toasts', () => ({ pushToast: harness.pushToast }));
 
 let root: Root;
 let container: HTMLDivElement;
@@ -235,17 +237,99 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
   expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
 });
 
-it.each(['completed', 'cancelled', 'failed'] as const)('disables terminal %s fullscreen composer send and model controls', async (status) => {
-  await renderWorkspace({ forest: testForest(status) });
+it.each(['completed', 'cancelled', 'failed'] as const)(
+  'keeps terminal %s composer sendable and model-switchable',
+  async (status) => {
+    harness.sendAgentMessage.mockResolvedValue({});
+    harness.setAgentModel.mockResolvedValue(undefined);
+    await renderWorkspace({ forest: testForest(status) });
+    await settle();
+    const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    expect(textarea.disabled).toBe(false);
+    expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')?.disabled).toBe(false);
+    expect(dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.disabled).toBe(false);
+    await typeText(textarea, 'wake up');
+    await settle();
+    const sendButton = dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]');
+    expect(sendButton?.disabled).toBe(false);
+    await act(async () => { sendButton?.click(); });
+    expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'wake up', [
+      { type: 'text', text: 'wake up' },
+    ]);
+    const modelSelect = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    await act(async () => { modelSelect.click(); });
+    await act(async () => {
+      dock.querySelector<HTMLButtonElement>('[role="option"][title="fixture/other"]')?.click();
+    });
+    expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
+    // A closed child owns no running task, so the stop control stays unmounted.
+    expect(dock.querySelector('[aria-label="Abort the running prompt"]')).toBeNull();
+  },
+);
+
+it('toasts a failed model change and leaves the live model selected', async () => {
+  harness.setAgentModel.mockRejectedValue(new Error('agent restore failed'));
+  await renderWorkspace({ forest: testForest('completed') });
   await settle();
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
+  const modelSelect = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
+  const before = modelSelect.textContent;
+  await act(async () => { modelSelect.click(); });
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>('[role="option"][title="fixture/other"]')?.click();
+  });
+  await settle();
+  expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'error',
+    text: translate('en', 'subagent.modelChangeFailed', { detail: 'agent restore failed' }),
+  });
+  // The trigger reads the live agent, so a rejected pick must not read as applied.
+  expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')!.textContent).toBe(before);
+});
+
+it('stops a nested subagent task through its parent agent scope', async () => {
+  const forest = nestedForest();
+  // The dispatch task for B lives on A's task service; the session snapshot
+  // carries none of it.
+  const parentState = {
+    ...createViewState('session'),
+    loaded: true,
+    tasks: [{ id: 'spawn-b', kind: 'subagent', status: 'running', agent_id: 'agent-b' }] as never,
+  };
+  harness.stopAgentTask.mockResolvedValue(undefined);
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'agent-b' },
+    forest,
+    controller: controllerStub({
+      forest,
+      agentStates: {
+        'agent-a': parentState,
+        'agent-b': { ...createViewState('session'), loaded: true },
+      },
+    }),
+    sessionState: { ...createViewState('session'), loaded: true },
+  });
+  await settle();
+  const abort = dock.querySelector<HTMLButtonElement>('[aria-label="Abort the running prompt"]');
+  expect(abort).not.toBeNull();
+  await act(async () => { abort?.click(); });
+  expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'agent-a', 'spawn-b');
+});
+
+it('disables composer, model, and attach when the forest does not know the agent', async () => {
+  await renderWorkspace({ forest: forestWithoutChild() });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]');
+  expect(textarea?.disabled).toBe(true);
+  expect(textarea?.placeholder).toBe(translate('en', 'subagent.composerUnavailable'));
   expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')?.disabled).toBe(true);
   expect(dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.disabled).toBe(true);
+  expect(dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled).toBe(true);
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   expect(harness.setAgentModel).not.toHaveBeenCalled();
 });
 
-it('drops picker results that resolve after the child turns terminal', async () => {
+it('drops picker results that resolve after the agent leaves the forest', async () => {
   let resolvePicker: (files: Array<{ name: string; size: number; type: string; read(): Promise<File> }>) => void = () => undefined;
   const pickFiles = vi.fn(() => new Promise<Array<{ name: string; size: number; type: string; read(): Promise<File> }>>((resolve) => {
     resolvePicker = resolve;
@@ -257,8 +341,8 @@ it('drops picker results that resolve after the child turns terminal', async () 
   expect(attachButton.disabled).toBe(false);
   await act(async () => { attachButton.click(); });
   expect(pickFiles).toHaveBeenCalledTimes(1);
-  // The child turns terminal while the picker is still open.
-  await renderWorkspace({ forest: testForest('completed') });
+  // The agent drops out of the forest while the picker is still open.
+  await renderWorkspace({ forest: forestWithoutChild() });
   await settle();
   expect(dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.disabled).toBe(true);
   const file = new File(['x'], 'shot.png', { type: 'image/png' });
@@ -267,13 +351,13 @@ it('drops picker results that resolve after the child turns terminal', async () 
   expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
 });
 
-it('keeps preview-tab composer disabled for a cancelled child', async () => {
+it('keeps the preview-tab composer disabled for an agent the forest does not know', async () => {
   const previewHeader = document.createElement('div');
   const previewDock = document.createElement('div');
   document.body.append(previewHeader, previewDock);
   try {
     await renderWorkspace({
-      forest: testForest('cancelled'),
+      forest: forestWithoutChild(),
       slots: {
         header: previewHeader,
         dock: previewDock,
@@ -294,6 +378,50 @@ it('keeps preview-tab composer disabled for a cancelled child', async () => {
     previewDock.remove();
   }
 });
+
+const EMPTY_AGENT_STATE = createViewState('');
+
+/**
+ * Minimal live-controller seat for the per-agent snapshots the workspace reads:
+ * the child's live view state, the session forest, and the PARENT's task list
+ * (a nested dispatch task is registered on its parent's task service, which is
+ * the same per-agent view state the rail renders).
+ */
+function controllerStub(input: {
+  forest: AgentForest;
+  agentStates: Record<string, ReturnType<typeof createViewState>>;
+}): SessionController {
+  return {
+    subscribeAgent: () => () => {},
+    getAgentState: (agentId: string) => input.agentStates[agentId] ?? EMPTY_AGENT_STATE,
+    getForest: () => input.forest,
+  } as unknown as SessionController;
+}
+
+/** main → A → B, all running: B's task is owned by A, not by the session. */
+function nestedForest(): AgentForest {
+  const main: AgentTreeNode = {
+    agentId: 'main', name: 'main', label: 'Main', status: 'running', busy: true,
+    toolCallCount: 0, childIds: ['agent-a'],
+  };
+  const a: AgentTreeNode = {
+    agentId: 'agent-a', parentAgentId: 'main', name: 'A', label: 'A', status: 'running', busy: true,
+    toolCallCount: 0, childIds: ['agent-b'],
+  };
+  const b: AgentTreeNode = {
+    agentId: 'agent-b', parentAgentId: 'agent-a', name: 'B', label: 'B', status: 'running', busy: true,
+    toolCallCount: 0, childIds: [],
+  };
+  return { roots: [main], byId: { main, 'agent-a': a, 'agent-b': b } };
+}
+
+function forestWithoutChild(): AgentForest {
+  const main: AgentTreeNode = {
+    agentId: 'main', name: 'main', label: 'Main', status: 'completed', busy: false,
+    toolCallCount: 0, childIds: [],
+  };
+  return { roots: [main], byId: { main } };
+}
 
 function testForest(status: AgentTreeNode['status'] = 'completed', busy = false): AgentForest {
   const main: AgentTreeNode = {

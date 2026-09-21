@@ -12,7 +12,6 @@ import { buildAgentForest, createViewState } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { RightRail } from './RightRail';
-import { SubagentDetailActions } from './agent-workspace';
 import { TasksPage } from './TasksPage';
 
 const listTasks = vi.fn();
@@ -451,72 +450,6 @@ describe('RightRail task detail modal', () => {
       agent_id: 'agent-a',
     });
     await closeDialog(dialog);
-  });
-});
-
-describe('nested subagent detail termination', () => {
-  it('renders B terminate action and stops its task through parent A', async () => {
-    const forest = buildAgentForest(
-      [],
-      [
-        { agentId: 'main', name: 'Main' },
-        { agentId: 'agent-a', parentAgentId: 'main', name: 'A', status: 'running' },
-        { agentId: 'agent-b', parentAgentId: 'agent-a', name: 'B', status: 'running' },
-      ],
-    );
-    const nestedTask = makeTask({
-      id: 'spawn-b',
-      kind: 'subagent',
-      status: 'running',
-      description: 'B',
-      agent_id: 'agent-b',
-    });
-    const parentState = railStateWith([nestedTask]);
-    const ownerAgentId = forest.byId['agent-b']?.parentAgentId ?? 'main';
-    const runningAgentTask = parentState.tasks.find(
-      (task) =>
-        task.kind === 'subagent' && task.status === 'running' && task.agent_id === 'agent-b',
-    );
-    expect(runningAgentTask).toBeDefined();
-    const stopAgentTask = vi.fn(
-      (_ownerAgentId: string, _taskId: string) => Promise.resolve(),
-    );
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(
-        <I18nProvider>
-          <SubagentDetailActions
-            agentId="agent-b"
-            name="B"
-            live
-            canTerminate={runningAgentTask !== undefined}
-            models={[]}
-            onSendMessage={() => Promise.resolve()}
-            onTerminate={() => stopAgentTask(ownerAgentId, runningAgentTask!.id)}
-            onChangeModel={() => Promise.resolve()}
-          />
-        </I18nProvider>,
-      );
-    });
-
-    const terminate = container.querySelector<HTMLButtonElement>('[data-subagent-terminate]');
-    expect(terminate).not.toBeNull();
-    await act(async () => {
-      terminate!.click();
-    });
-    const dialog = container.querySelector('[role="alertdialog"]')!;
-    const confirm = [...dialog.querySelectorAll('button')].find(
-      (button) => button.textContent === 'Terminate',
-    )!;
-    await act(async () => {
-      confirm.click();
-    });
-    await flushMicrotasks();
-
-    expect(stopAgentTask).toHaveBeenCalledWith('agent-a', 'spawn-b');
   });
 });
 

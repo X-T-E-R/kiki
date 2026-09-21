@@ -324,7 +324,9 @@ export function Composer({
   onSessionAction?: (action: 'fork' | 'undo' | 'compact') => void;
   /** The context meter's click target (asks the session to compact). */
   onCompactContext?: () => void;
-  onChangeModel: (model: string | undefined) => void;
+  /** Model picked in the panel; a bound agent rebinds on the server, so the
+   * callback may be async and may fail (the panel reports that failure). */
+  onChangeModel: (model: string | undefined) => void | Promise<void>;
   /** Profile picked in the select; the parent owns the confirm/pending flow. */
   onChangeAgentProfile?: (name: string) => void;
   onRebuildContext?: () => Promise<{ readonly changed: boolean }>;
@@ -1291,6 +1293,13 @@ export function Composer({
       return;
     }
     if (isComposerSendKey(event, sendShortcut)) {
+      event.preventDefault();
+      send();
+      return;
+    }
+    // Ctrl/Cmd+Enter always sends immediately, whatever the configured send
+    // shortcut is (an open menu still owns Enter above).
+    if (event.key === 'Enter' && !event.shiftKey && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       send();
     }
@@ -2624,7 +2633,7 @@ function ModelChip({
   readonly effectiveModel: string | undefined;
   readonly modelSource: ComposerModelSource;
   readonly disabled?: boolean;
-  readonly onChangeModel: (model: string | undefined) => void;
+  readonly onChangeModel: (model: string | undefined) => void | Promise<void>;
   readonly efforts: readonly string[] | undefined;
   readonly effort: string | undefined;
   readonly onChangeEffort: (effort: string) => void;
@@ -2651,7 +2660,22 @@ function ModelChip({
       hideFilter={!hasCatalog}
       // With no catalog the raw value renders verbatim — the read-only label.
       value={hasCatalog ? (resolvedModelKey ?? model ?? '') : (effectiveModel ?? '')}
-      onChange={(next) => { onChangeModel(next === '' ? undefined : next); }}
+      onChange={(next) => {
+        // The pick is a command the caller owns and may reject (a server-side
+        // rebind). Observe the returned promise so no rejection floats, and
+        // report the failure here: the trigger keeps rendering the live value,
+        // so a rejected pick must not read as applied.
+        void Promise.resolve(onChangeModel(next === '' ? undefined : next)).catch(
+          (error: unknown) => {
+            pushToast({
+              tone: 'error',
+              text: t('subagent.modelChangeFailed', {
+                detail: error instanceof Error ? error.message : String(error),
+              }),
+            });
+          },
+        );
+      }}
       disabled={disabled}
       title={title}
       ariaLabel={t('composer.modelAria')}

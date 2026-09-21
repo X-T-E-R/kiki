@@ -421,8 +421,13 @@ function AgentTabWorkspace({
 
   const closeRail = useCallback(() => { setRailOpen(false); }, []);
 
+  // An agent tab is the same conversation page the routed agent view renders,
+  // only docked inside a panel: it carries the page ground (paper) so the
+  // timeline keeps the main session's colour relationships. Without it the
+  // panel's own surface (panel) becomes the ground and every `bg-panel` tool
+  // card flattens into it while `bg-bubble-user` darkens.
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col" data-agent-tab-workspace={agentId}>
+    <div className="relative flex min-h-0 flex-1 flex-col bg-paper" data-agent-tab-workspace={agentId}>
       <div ref={setHeaderSlot} className="shrink-0" />
       <div className="relative flex min-h-0 flex-1 flex-col">
         <AgentWorkspace

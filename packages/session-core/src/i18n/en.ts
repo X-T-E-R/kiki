@@ -2395,6 +2395,11 @@ export const en = {
   'st.about.stable': 'Stable',
   'st.about.beta': 'Beta',
   'st.about.betaHint': 'Beta builds may change more often and can be less stable.',
+  'st.about.autoUpdate': 'Automatic updates',
+  'st.about.autoUpdateOff': 'Off',
+  'st.about.autoUpdateNotify': 'Notify me',
+  'st.about.autoUpdateInstall': 'Download and install',
+  'st.about.updatesUnavailable': 'This build does not include an update channel. Install a GitHub release build to enable updates.',
   'st.about.checkUpdate': 'Check for updates',
   'st.about.checking': 'Checking…',
   'st.about.upToDate': 'Kiki is up to date.',
@@ -2402,6 +2407,7 @@ export const en = {
   'st.about.installing': 'Installing…',
   'st.about.installConfirm': 'Install Kiki {version}? Kiki and its running tasks will exit.',
   'st.about.updateAvailable': 'Kiki {version} is available. Open Settings → About to install it.',
+  'st.about.installedRestart': 'The update is installed. Restart Kiki to finish updating.',
 
   // ---- connection provider ----
   'conn.desktopNoServer': 'The Kiki desktop backend did not register a local server.',
@@ -2596,7 +2602,7 @@ export const en = {
   'subagent.changeModel': 'Change model',
   'subagent.modelChanged': 'Model switched to {model}.',
   'subagent.modelChangeFailed': 'Could not change the model: {detail}',
-  'subagent.composerUnavailable': 'This subagent is unavailable for messages.',
+  'subagent.composerUnavailable': 'Subagent not found in this session.',
   'sv.agentActionsNote':
     'Message, model, and terminate act on this subagent directly; queue and skill actions stay on the session page.',
 

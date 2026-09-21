@@ -28,7 +28,7 @@ import { AgentTreeView } from './AgentTreeView';
 import { Transcript } from './Transcript';
 import { ContextMeter } from './ContextMeter';
 import { RightRail } from './RightRail';
-import { resolveRunningSubagentTask, SubagentDetailActions } from './agent-workspace';
+import { resolveRunningSubagentTask } from './agent-workspace';
 
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ state }: { state: { todos: readonly { title: string }[] } }) =>
@@ -1671,57 +1671,5 @@ describe('nested subagent task ownership', () => {
     });
 
     expect(resolved).toEqual({ ownerAgentId: 'agent-a', task: nestedTask });
-  });
-});
-
-describe('SubagentDetailActions', () => {
-  const MODELS = [
-    { id: 'provider/model-a', provider_id: 'provider', remote_id: 'model-a', max_context_size: 128000 },
-    { id: 'provider/model-b', provider_id: 'provider', remote_id: 'model-b', max_context_size: 64000 },
-  ];
-
-  it('renders message, model, and terminate controls for a live agent', () => {
-    const html = renderToStaticMarkup(
-      <I18nProvider>
-        <SubagentDetailActions
-          agentId="agent-1"
-          name="Researcher"
-          live
-          canTerminate
-          currentModel="provider/model-a"
-          models={MODELS}
-          onSendMessage={() => Promise.resolve()}
-          onTerminate={() => Promise.resolve()}
-          onChangeModel={() => Promise.resolve()}
-        />
-      </I18nProvider>,
-    );
-    expect(html).toContain('data-subagent-actions');
-    expect(html).toContain('data-subagent-message');
-    expect(html).toContain('data-subagent-model-select');
-    expect(html).toContain('data-subagent-terminate');
-    expect(html).toContain('provider/model-a');
-  });
-
-  it('degrades for a settled agent: disabled message, no model picker, no terminate', () => {
-    const html = renderToStaticMarkup(
-      <I18nProvider>
-        <SubagentDetailActions
-          agentId="agent-1"
-          name="Researcher"
-          live={false}
-          canTerminate={false}
-          currentModel="provider/model-a"
-          models={MODELS}
-          onSendMessage={() => Promise.resolve()}
-          onTerminate={() => Promise.resolve()}
-          onChangeModel={() => Promise.resolve()}
-        />
-      </I18nProvider>,
-    );
-    expect(html).toContain('data-subagent-message');
-    expect(html).toMatch(/data-subagent-message[^>]*disabled/);
-    expect(html).not.toContain('data-subagent-model-select');
-    expect(html).not.toContain('data-subagent-terminate');
   });
 });

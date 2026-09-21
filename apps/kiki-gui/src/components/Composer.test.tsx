@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '@kiki/session-core/composer';
+import { translate } from '@kiki/session-core/i18n';
 import type { HostFileDrop } from '../host';
 import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
@@ -233,6 +234,23 @@ describe('Composer host compatibility', () => {
     expect(preparePrompt).not.toHaveBeenCalled();
     // The send latch releases once the (void) submit settles a microtask later.
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
+  });
+
+  it('sends immediately on Ctrl+Enter even when the send shortcut is plain Enter', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'ctrl enter prompt', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    });
+    expect(onSend).toHaveBeenCalledWith('ctrl enter prompt', []);
+
+    // Shift still wins: Ctrl+Shift+Enter stays a newline, not a send.
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, shiftKey: true, bubbles: true }));
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 
   it('preserves a new-session key for creation and rotates between resident sessions', async () => {
@@ -957,6 +975,28 @@ describe('Composer model chip', () => {
     )!;
     await click(airRow);
     expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-air');
+  });
+
+  it('reports a rejected model pick and keeps the live model on the trigger', async () => {
+    listModels.mockResolvedValue(catalog);
+    // A bound agent rebinds on the server, so a pick can fail (e.g. a closed
+    // child whose persisted binding cannot be restored).
+    const onChangeModel = vi.fn(() => Promise.reject(new Error('restore failed')));
+    const { container } = await renderComposer({ model: 'fixture/kiki-pro', onChangeModel });
+    for (let index = 0; index < 5; index += 1) await settle();
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    expect(trigger.textContent).toContain('Kiki Pro');
+    await click(trigger);
+    const airRow = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
+      (row) => row.textContent?.includes('Kiki Air'),
+    )!;
+    await click(airRow);
+    await settle();
+    expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-air');
+    const failure = translate('en', 'subagent.modelChangeFailed', { detail: 'restore failed' });
+    expect(getToasts().some((toast) => toast.tone === 'error' && toast.text === failure)).toBe(true);
+    // The trigger renders the live value: a rejected pick cannot read as applied.
+    expect(container.querySelector('#composer-model-select')!.textContent).toContain('Kiki Pro');
   });
 
   it('keeps the effort row reachable when the catalog is empty', async () => {

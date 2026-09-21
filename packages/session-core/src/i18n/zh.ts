@@ -2356,6 +2356,11 @@ export const zh: Record<I18nKey, string> = {
   'st.about.stable': '稳定版',
   'st.about.beta': '测试版',
   'st.about.betaHint': 'Beta 更新更频繁，稳定性可能低于 Stable。',
+  'st.about.autoUpdate': '自动更新',
+  'st.about.autoUpdateOff': '关闭',
+  'st.about.autoUpdateNotify': '仅提醒',
+  'st.about.autoUpdateInstall': '下载并安装',
+  'st.about.updatesUnavailable': '当前构建不包含更新通道。请安装 GitHub 发布版本以启用更新。',
   'st.about.checkUpdate': '检查更新',
   'st.about.checking': '正在检查…',
   'st.about.upToDate': 'Kiki 已是最新版本。',
@@ -2363,6 +2368,7 @@ export const zh: Record<I18nKey, string> = {
   'st.about.installing': '正在安装…',
   'st.about.installConfirm': '安装 Kiki {version}？Kiki 和正在运行的任务将退出。',
   'st.about.updateAvailable': 'Kiki {version} 可用，请前往“设置 → 关于”安装。',
+  'st.about.installedRestart': '更新已安装。请重启 Kiki 以完成更新。',
 
   // ---- connection provider ----
   'conn.desktopNoServer': 'Kiki 桌面后端未注册本地服务器。',
@@ -2541,7 +2547,7 @@ export const zh: Record<I18nKey, string> = {
   'subagent.changeModel': '切换模型',
   'subagent.modelChanged': '模型已切换为 {model}。',
   'subagent.modelChangeFailed': '切换模型失败：{detail}',
-  'subagent.composerUnavailable': '该子代理当前不可接收消息。',
+  'subagent.composerUnavailable': '找不到该子代理。',
   'sv.agentActionsNote': '可直接给该子代理发消息、切换模型或终止；排队与技能操作仍在会话页进行。',
 
   // ---- 智能体通信设置 ----

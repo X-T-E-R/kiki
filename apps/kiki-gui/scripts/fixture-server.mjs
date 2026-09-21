@@ -1419,6 +1419,7 @@ class FixtureServer {
         items: this.models.length > 0 || this.modelsDeclared ? this.models : [
           { id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
           { id: 'fixture/kiki-lite', provider_id: 'fixture', remote_id: 'kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 },
+          { id: 'kimi-code/k3', provider_id: 'kimi-code', remote_id: 'k3', display_name: 'K3', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
         ],
       });
     }

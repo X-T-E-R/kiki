@@ -33,6 +33,7 @@ import {
 } from '@kiki/session-core/session';
 
 import { useI18n } from '../../i18n';
+import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { revealSubagentCard } from '../ActivityHistory';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
@@ -142,7 +143,6 @@ export function resolveRunningSubagentTask(input: {
 }
 
 const emptyAgentView = createViewState('');
-const SUBAGENT_INTERACTIVE_STATUSES = new Set(['running', 'background', 'suspended']);
 
 function AgentWorkspaceHeader({
   target,
@@ -364,14 +364,17 @@ export function AgentWorkspace({
     mainTasks: sessionState.tasks,
     parentTasks: parentAgentState.tasks,
   });
-  const agentStatus = selectedNode?.status ?? selectedSubagent?.status ?? 'unknown';
-  const subagentInteractive = SUBAGENT_INTERACTIVE_STATUSES.has(agentStatus);
-  const composerDisabled = !subagentInteractive;
+  // Sendable whenever the forest can still resolve this agent: a closed child
+  // (completed / cancelled / failed) is a wakeable target the engine resumes on
+  // a new prompt, so terminal status is not an input gate. Only a node the
+  // forest does not know at all is genuinely unreachable.
+  const agentKnown = selectedNode !== undefined;
+  const composerDisabled = !agentKnown;
   const handleComposerSend = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
   ) => {
-    if (!subagentInteractive) return;
+    if (!agentKnown) return;
     const content = buildPromptContent(text, composerAttachments);
     if (content === null) return;
     await client.sendAgentMessage(sessionId, agentId, text, content);
@@ -379,12 +382,26 @@ export function AgentWorkspace({
     setAttachments([]);
   };
   const handleTerminateAgent = async () => {
-    if (!subagentInteractive || runningAgentTask === undefined) return;
+    if (runningAgentTask === undefined) return;
     await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
   };
   const handleChangeAgentModel = async (model: string | undefined) => {
-    if (!subagentInteractive || model === undefined || model === displayModel) return;
-    await client.setAgentModel(sessionId, agentId, model);
+    if (!agentKnown || model === undefined || model === displayModel) return;
+    try {
+      await client.setAgentModel(sessionId, agentId, model);
+    } catch (error) {
+      // The pick is a server-side rebind that can fail (a closed child whose
+      // persisted binding cannot be restored). Swallow it here — the select is
+      // controlled by the live agent, so a failure leaves the old model on
+      // screen — but never silently: report it and keep the failing state out
+      // of the trigger.
+      pushToast({
+        tone: 'error',
+        text: t('subagent.modelChangeFailed', {
+          detail: error instanceof Error ? error.message : String(error),
+        }),
+      });
+    }
   };
   const displayEffort =
     agentLiveState.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
@@ -474,7 +491,7 @@ export function AgentWorkspace({
                 onChangeSwarmMode={() => {}}
                 onChangeEffort={() => {}}
                 onSend={handleComposerSend}
-                onAbort={subagentInteractive && runningAgentTask !== undefined ? handleTerminateAgent : undefined}
+                onAbort={runningAgentTask !== undefined ? handleTerminateAgent : undefined}
               />
               <ResyncStatusBanner
                 resyncing={sessionState.resyncing}
