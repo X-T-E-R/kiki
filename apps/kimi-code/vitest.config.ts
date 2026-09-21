@@ -13,7 +13,7 @@ export default defineConfig({
   test: {
     name: 'cli',
     env: {
-      KIMI_LOG_LEVEL: 'off',
+      KIKI_LOG_LEVEL: 'off',
     },
     include: ['test/**/*.{test,integration,e2e}.ts', 'test/**/*.{test,integration,e2e}.tsx'],
   },

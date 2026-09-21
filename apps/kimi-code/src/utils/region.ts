@@ -51,7 +51,7 @@ export function persistedKimiOAuthRef(): PersistedKimiOAuthRef | undefined {
 /** Region for a no-flag `kimi login` / `kimi acp --login`: a fresh install
     follows the resolved region (env/marker/default); the default slot (only
     ever a mainland-cn login) re-pins the profile explicitly; a scoped slot —
-    a global login, or a custom env persisted with only KIMI_CODE_BASE_URL and
+    a global login, or a custom env persisted with only KIKI_CODE_BASE_URL and
     no oauthHost — keeps its configured hosts (`undefined`). */
 export function regionForBareLogin(ref: PersistedKimiOAuthRef | undefined): KimiRegion | undefined {
   if (ref === undefined) return currentKimiRegion();
@@ -64,7 +64,7 @@ export function currentKimiRegion(): KimiRegion {
     cached = resolveKimiRegion({
       configuredOAuthHost: persisted?.oauthHost,
       configuredOAuthKey: persisted?.key,
-      readMarker: process.env['KIMI_CODE_REGION_MARKER'] !== 'off',
+      readMarker: process.env['KIKI_CODE_REGION_MARKER'] !== 'off',
     });
   }
   return cached;

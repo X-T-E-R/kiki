@@ -111,7 +111,7 @@ export function TaskPolicyCard() {
 
 /**
  * Cron operations (runtime split): the scheduler belongs with Plan & tasks.
- * cron is env-driven (KIMI_CRON_*) and never persisted — read-only display.
+ * cron is env-driven (KIKI_CRON_*) and never persisted — read-only display.
  */
 export function CronRuntimeCard() {
   const { client } = useConnection();

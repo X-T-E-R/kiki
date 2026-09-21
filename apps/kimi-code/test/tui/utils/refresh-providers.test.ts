@@ -88,8 +88,8 @@ describe('refreshAllProviderModels', () => {
       },
       defaultModel: 'kimi-code/kimi-for-coding',
     };
-    vi.stubEnv('KIMI_CODE_BASE_URL', envBaseUrl);
-    vi.stubEnv('KIMI_CODE_OAUTH_HOST', envOauthHost);
+    vi.stubEnv('KIKI_CODE_BASE_URL', envBaseUrl);
+    vi.stubEnv('KIKI_CODE_OAUTH_HOST', envOauthHost);
     const resolveOAuthToken = vi.fn(async (_providerName, oauthRef) => {
       expect(oauthRef).toEqual(envOauthRef);
       return 'env-access-token';
@@ -763,7 +763,7 @@ describe('refreshAllProviderModels', () => {
 
   it('refreshes a hand-configured API-key provider pointing at the managed endpoint', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIMI_CODE_BASE_URL', baseUrl);
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
     const userAliasModel = {
       provider: 'my-kimi',
       model: 'kimi-for-coding',
@@ -850,7 +850,7 @@ describe('refreshAllProviderModels', () => {
 
   it('resolves the API key from the provider env sub-table when api_key is empty', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIMI_CODE_BASE_URL', baseUrl);
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
     const host = makeRefreshHost({
       providers: {
         'my-kimi': {
@@ -895,7 +895,7 @@ describe('refreshAllProviderModels', () => {
   });
 
   it('matches the managed endpoint even with a trailing slash on the configured baseUrl', async () => {
-    vi.stubEnv('KIMI_CODE_BASE_URL', 'https://api.managed.example.test/coding/v1');
+    vi.stubEnv('KIKI_CODE_BASE_URL', 'https://api.managed.example.test/coding/v1');
     const host = makeRefreshHost({
       providers: {
         'my-kimi': {
@@ -931,7 +931,7 @@ describe('refreshAllProviderModels', () => {
   });
 
   it('does not refresh API-key providers pointing at non-managed endpoints', async () => {
-    vi.stubEnv('KIMI_CODE_BASE_URL', 'https://api.managed.example.test/coding/v1');
+    vi.stubEnv('KIKI_CODE_BASE_URL', 'https://api.managed.example.test/coding/v1');
     const host = makeRefreshHost({
       providers: {
         gateway: {
@@ -964,7 +964,7 @@ describe('refreshAllProviderModels', () => {
 
   it('refreshes a hand-written managed:kimi-code provider that uses an API key instead of OAuth', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIMI_CODE_BASE_URL', baseUrl);
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
     const host = makeRefreshHost({
       providers: {
         [KIMI_CODE_PROVIDER_NAME]: {
@@ -1035,7 +1035,7 @@ describe('refreshAllProviderModels', () => {
 
   it('reports a failed refresh and keeps config when the managed endpoint rejects the API key', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIMI_CODE_BASE_URL', baseUrl);
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
     const host = makeRefreshHost({
       providers: {
         'my-kimi': {
@@ -1080,7 +1080,7 @@ describe('refreshAllProviderModels', () => {
 
   it('skips the API-key refresh when the managed endpoint returns no models', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIMI_CODE_BASE_URL', baseUrl);
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
     const host = makeRefreshHost({
       providers: {
         'my-kimi': {
@@ -1122,7 +1122,7 @@ describe('refreshAllProviderModels', () => {
 
   it('writes defaultProvider back when refreshing the provider it points at', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIMI_CODE_BASE_URL', baseUrl);
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
     const host = makeRefreshHost({
       providers: {
         'my-kimi': {
@@ -1181,7 +1181,7 @@ describe('refreshAllProviderModels', () => {
 
   it('leaves registry-sourced providers at the managed base URL to the registry branch', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIMI_CODE_BASE_URL', baseUrl);
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
     const registryUrl = 'https://registry.example.test/v1/models/api.json';
     const host = makeRefreshHost({
       providers: {

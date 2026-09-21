@@ -14,7 +14,7 @@ Kiki began as a fork of Kimi Code (Moonshot AI) and is now developed independent
 
 Download the appropriate build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases).
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
 
 Then run it with a new terminal session:
 

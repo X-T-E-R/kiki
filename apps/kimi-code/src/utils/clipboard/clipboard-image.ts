@@ -323,14 +323,14 @@ function readClipboardImageViaPowerShell(): ClipboardImage | null {
     const psScript = [
       'Add-Type -AssemblyName System.Windows.Forms',
       'Add-Type -AssemblyName System.Drawing',
-      '$path = $env:KIMI_WSL_CLIPBOARD_IMAGE_PATH',
+      '$path = $env:KIKI_WSL_CLIPBOARD_IMAGE_PATH',
       '$img = [System.Windows.Forms.Clipboard]::GetImage()',
       "if ($img) { $img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' } else { Write-Output 'empty' }",
     ].join('; ');
 
     const result = runCommand('powershell.exe', ['-NoProfile', '-Command', psScript], {
       timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS,
-      env: { ...process.env, KIMI_WSL_CLIPBOARD_IMAGE_PATH: winPath },
+      env: { ...process.env, KIKI_WSL_CLIPBOARD_IMAGE_PATH: winPath },
     });
     if (!result.ok) return null;
     if (result.stdout.toString('utf-8').trim() !== 'ok') return null;

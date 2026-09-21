@@ -381,7 +381,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
     expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Concurrency, timeouts, and printing for background tasks.');
     expect(tasks.querySelector('#st-card-cron')).not.toBeNull();
-    expect(tasks.querySelector('#st-card-cron')!.textContent).toContain('KIMI_CRON_');
+    expect(tasks.querySelector('#st-card-cron')!.textContent).toContain('KIKI_CRON_');
     // The cron card is read-only: its toggles render disabled.
     expect(tasks.querySelector<HTMLFieldSetElement>('#st-card-cron fieldset')!.disabled).toBe(true);
 
@@ -523,7 +523,7 @@ describe('SettingsPage batch-3 leaves', () => {
 
     expect(mirror.textContent).toContain('this card only shows the effective value');
     expect(mirror.textContent).toContain('applies to later subagent dispatches in every session');
-    expect(mirror.textContent).toContain('KIMI_SUBAGENT_TIMEOUT_MS');
+    expect(mirror.textContent).toContain('KIKI_SUBAGENT_TIMEOUT_MS');
     expect(mirror.textContent).not.toContain('restart');
 
     // The link lands on the editor card, which the page flashes.

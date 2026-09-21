@@ -29,7 +29,7 @@ const FETCH_TIMEOUT_MS = 5000;
     envs); otherwise the active region profile, so a global login's token is
     not sent to the mainland-China deployment. */
 function clientConfigsBaseUrl(): string {
-  return (process.env['KIMI_CODE_BASE_URL'] ?? currentKimiProfile().baseUrl).replace(/\/+$/, '');
+  return (process.env['KIKI_CODE_BASE_URL'] ?? currentKimiProfile().baseUrl).replace(/\/+$/, '');
 }
 
 /** Cache entries are partitioned by region so a login switch never serves

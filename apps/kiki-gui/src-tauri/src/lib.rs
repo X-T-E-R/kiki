@@ -1646,7 +1646,7 @@ async fn restart_server(
 }
 
 fn kimi_home_dir() -> Result<PathBuf, String> {
-    if let Some(path) = env::var_os("KIMI_CODE_HOME").filter(|value| !value.is_empty()) {
+    if let Some(path) = env::var_os("KIKI_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));
     }
     dirs::home_dir()

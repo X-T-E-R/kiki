@@ -25,6 +25,6 @@ export async function runVerifyStep({ requireGatekeeper = false } = {}) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const requireGatekeeper = process.env.KIMI_VERIFY_GATEKEEPER === '1';
+  const requireGatekeeper = process.env.KIKI_VERIFY_GATEKEEPER === '1';
   await runVerifyStep({ requireGatekeeper });
 }

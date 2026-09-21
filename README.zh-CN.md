@@ -16,7 +16,7 @@ Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，�
 - **桌面应用（推荐）**：Windows 安装包 `Kiki_*_x64-setup.exe`。
 - **CLI**：在 `kiki-v<版本号>` 的 Release 资产中选择对应平台的 `kiki` 可执行文件。
 
-> 在 Windows 上，首次启动前请先安装 [Git for Windows](https://gitforwindows.org/)，因为 Kiki CLI 使用自带的 Git Bash 作为 shell 环境。如果 Git Bash 安装在自定义位置，请将 `KIMI_SHELL_PATH` 设置为 `bash.exe` 的绝对路径。
+> 在 Windows 上，首次启动前请先安装 [Git for Windows](https://gitforwindows.org/)，因为 Kiki CLI 使用自带的 Git Bash 作为 shell 环境。如果 Git Bash 安装在自定义位置，请将 `KIKI_SHELL_PATH` 设置为 `bash.exe` 的绝对路径。
 
 然后在一个新的终端会话中验证：
 

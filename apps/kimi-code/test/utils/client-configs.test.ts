@@ -358,7 +358,7 @@ describe('getClientConfig disk cache', () => {
 
 describe('region awareness', () => {
   beforeEach(() => {
-    vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://auth.kimi.ai');
+    vi.stubEnv('KIKI_CODE_OAUTH_HOST', 'https://auth.kimi.ai');
     refreshKimiRegion();
   });
 
@@ -383,13 +383,13 @@ describe('region awareness', () => {
     expect(peekClientConfig('estimated_cache_duration', configSchema)).toEqual(CONFIG);
 
     // A region switch must not serve the other deployment's cached entry.
-    vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://auth.kimi.com');
+    vi.stubEnv('KIKI_CODE_OAUTH_HOST', 'https://auth.kimi.com');
     refreshKimiRegion();
     expect(peekClientConfig('estimated_cache_duration', configSchema)).toBeUndefined();
   });
 
-  it('keeps honoring the KIMI_CODE_BASE_URL override ahead of the profile', async () => {
-    vi.stubEnv('KIMI_CODE_BASE_URL', 'https://env-api.example.com');
+  it('keeps honoring the KIKI_CODE_BASE_URL override ahead of the profile', async () => {
+    vi.stubEnv('KIKI_CODE_BASE_URL', 'https://env-api.example.com');
     const fetchImpl = vi.fn(async () => jsonResponse(ENVELOPE));
 
     await fetchClientConfig('estimated_cache_duration', configSchema, {

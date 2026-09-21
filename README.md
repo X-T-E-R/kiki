@@ -16,7 +16,7 @@ Download the appropriate build from [GitHub Releases](https://github.com/X-T-E-R
 - **Desktop app (recommended):** `Kiki_*_x64-setup.exe` for Windows.
 - **CLI:** the `kiki` executable for your platform, from the `kiki-v<version>` release assets.
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because the Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIMI_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because the Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
 
 Then verify it with a new shell session:
 

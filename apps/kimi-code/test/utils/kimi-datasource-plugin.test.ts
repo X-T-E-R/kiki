@@ -84,7 +84,7 @@ describe('kimi-datasource MCP server', () => {
         env: {
           ...process.env,
           KIKI_HOME: kimiHome,
-          KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
+          KIKI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -133,7 +133,7 @@ describe('kimi-datasource MCP server', () => {
     }
   });
 
-  it('uses env-scoped credentials and derives the datasource URL from KIMI_CODE_BASE_URL', async () => {
+  it('uses env-scoped credentials and derives the datasource URL from KIKI_CODE_BASE_URL', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'kimi-datasource-plugin-'));
     const kimiHome = join(tempDir, 'kimi-home');
     const requests: unknown[] = [];
@@ -176,9 +176,9 @@ describe('kimi-datasource MCP server', () => {
         env: {
           ...process.env,
           KIKI_HOME: kimiHome,
-          KIMI_CODE_BASE_URL: baseUrl,
-          KIMI_CODE_OAUTH_HOST: oauthHost,
-          KIMI_DATASOURCE_API_URL: undefined,
+          KIKI_CODE_BASE_URL: baseUrl,
+          KIKI_CODE_OAUTH_HOST: oauthHost,
+          KIKI_DATASOURCE_API_URL: undefined,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -250,7 +250,7 @@ describe('kimi-datasource MCP server', () => {
         env: {
           ...process.env,
           KIKI_HOME: kimiHome,
-          KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
+          KIKI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -382,7 +382,7 @@ describe('kimi-datasource MCP server', () => {
         env: {
           ...process.env,
           KIKI_HOME: kimiHome,
-          KIMI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
+          KIKI_DATASOURCE_API_URL: `http://127.0.0.1:${address.port}`,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });

@@ -1,12 +1,12 @@
 // src/tui/utils/input-latency.ts
 //
-// Debug-only input→render latency probe, enabled with KIMI_TUI_INPUT_LATENCY=1.
+// Debug-only input→render latency probe, enabled with KIKI_TUI_INPUT_LATENCY=1.
 // Registers a pi-tui input listener (event timestamps) and mounts a
 // non-capturing overlay in the top-right corner whose render() drains the
 // queue: each pending input event is stamped against the frame that first
 // renders after it, and the overlay shows the live stats (last / p50 / p95 /
 // p99 / max, plus >100ms / >300ms / >1s counters and the five worst samples).
-// Optional JSONL sink: KIMI_TUI_INPUT_LATENCY_LOG=<path> appends one record
+// Optional JSONL sink: KIKI_TUI_INPUT_LATENCY_LOG=<path> appends one record
 // per event for post-hoc analysis.
 //
 // The measured latency is "input event → start of the first frame rendered
@@ -78,7 +78,7 @@ export class LatencyStats {
 export function installInputLatencyProbe(tui: TUI): void {
   const stats = new LatencyStats();
   const pending: number[] = [];
-  const logPath = process.env['KIMI_TUI_INPUT_LATENCY_LOG'];
+  const logPath = process.env['KIKI_TUI_INPUT_LATENCY_LOG'];
   if (logPath) mkdirSync(path.dirname(logPath), { recursive: true });
 
   tui.addInputListener(() => {

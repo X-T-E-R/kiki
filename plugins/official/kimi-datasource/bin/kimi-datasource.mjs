@@ -19,8 +19,8 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 const VERSION = '3.3.0';
-const DEFAULT_KIMI_CODE_OAUTH_HOST = 'https://auth.kimi.com';
-const DEFAULT_KIMI_CODE_BASE_URL = 'https://api.kimi.com/coding/v1';
+const DEFAULT_KIKI_CODE_OAUTH_HOST = 'https://auth.kimi.com';
+const DEFAULT_KIKI_CODE_BASE_URL = 'https://api.kimi.com/coding/v1';
 const API_URL = datasourceApiUrl();
 const REQUEST_TIMEOUT_MS = 30_000;
 const PROTOCOL_VERSION = '2025-06-18';
@@ -247,20 +247,20 @@ function resolveKikiHome() {
 }
 
 function datasourceApiUrl() {
-  const explicit = process.env.KIMI_DATASOURCE_API_URL?.trim();
+  const explicit = process.env.KIKI_DATASOURCE_API_URL?.trim();
   if (explicit !== undefined && explicit.length > 0) return explicit;
   return `${kimiCodeBaseUrl()}/tools`;
 }
 
 function kimiCodeBaseUrl() {
-  return (process.env.KIMI_CODE_BASE_URL ?? DEFAULT_KIMI_CODE_BASE_URL).replace(/\/+$/, '');
+  return (process.env.KIKI_CODE_BASE_URL ?? DEFAULT_KIKI_CODE_BASE_URL).replace(/\/+$/, '');
 }
 
 function kimiCodeOAuthHost() {
   return normalizeEndpoint(
-    process.env.KIMI_CODE_OAUTH_HOST ??
-      process.env.KIMI_OAUTH_HOST ??
-      DEFAULT_KIMI_CODE_OAUTH_HOST,
+    process.env.KIKI_CODE_OAUTH_HOST ??
+      process.env.KIKI_OAUTH_HOST ??
+      DEFAULT_KIKI_CODE_OAUTH_HOST,
   );
 }
 
@@ -272,8 +272,8 @@ function resolveKimiCodeCredentialName() {
   const oauthHost = kimiCodeOAuthHost();
   const baseUrl = kimiCodeBaseUrl();
   if (
-    oauthHost === normalizeEndpoint(DEFAULT_KIMI_CODE_OAUTH_HOST) &&
-    baseUrl === DEFAULT_KIMI_CODE_BASE_URL
+    oauthHost === normalizeEndpoint(DEFAULT_KIKI_CODE_OAUTH_HOST) &&
+    baseUrl === DEFAULT_KIKI_CODE_BASE_URL
   ) {
     return 'kimi-code';
   }

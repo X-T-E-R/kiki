@@ -13,10 +13,10 @@ describe('getNativeCacheBase precedence', () => {
     expect(got).toBe('/custom/cache');
   });
 
-  it('ignores KIMI_CODE_HOME (no longer affects native cache)', () => {
+  it('ignores KIKI_HOME (no longer affects native cache)', () => {
     const got = getNativeCacheBase({
       ...baseOptions,
-      env: { KIMI_CODE_HOME: '/legacy' },
+      env: { KIKI_HOME: '/legacy' },
       platform: 'darwin',
     });
     expect(got).toBe('/home/u/Library/Caches/kimi-code');

@@ -28,9 +28,9 @@ beforeEach(async () => {
   homeDir = await mkdtemp(join(tmpdir(), 'kimi-cli-log-home-'));
   workDir = await mkdtemp(join(tmpdir(), 'kimi-cli-log-work-'));
   oldHome = process.env['KIKI_HOME'];
-  oldLogLevel = process.env['KIMI_LOG_LEVEL'];
+  oldLogLevel = process.env['KIKI_LOG_LEVEL'];
   process.env['KIKI_HOME'] = homeDir;
-  process.env['KIMI_LOG_LEVEL'] = 'info';
+  process.env['KIKI_LOG_LEVEL'] = 'info';
 });
 
 afterEach(async () => {
@@ -41,9 +41,9 @@ afterEach(async () => {
     process.env['KIKI_HOME'] = oldHome;
   }
   if (oldLogLevel === undefined) {
-    delete process.env['KIMI_LOG_LEVEL'];
+    delete process.env['KIKI_LOG_LEVEL'];
   } else {
-    process.env['KIMI_LOG_LEVEL'] = oldLogLevel;
+    process.env['KIKI_LOG_LEVEL'] = oldLogLevel;
   }
   await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
