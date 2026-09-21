@@ -117,7 +117,7 @@
 - Removed the `kimi.executablePath` and `kimi.environmentVariables` settings.
   The old `kimi.environmentVariables.KIMI_SHARE_DIR` value is consulted only to
   discover legacy data during migration; it is not applied to the new runtime.
-  The system-level `KIMI_CODE_HOME` environment variable remains supported.
+  The system-level `KIKI_HOME` environment variable remains supported.
 
 ### Changed
 
@@ -132,7 +132,7 @@
   skipped or needs to be retried, run **Kimi Code: Migrate Legacy Data** from the
   Command Palette.
 - When VS Code and the Kimi Code terminal app resolve to the same
-  `KIMI_CODE_HOME`, they use the same configuration and session storage. Running
+  `KIKI_HOME`, they use the same configuration and session storage. Running
   the same session concurrently from multiple processes is not supported or
   protected by cross-process locking.
 - The model picker groups models by provider when multiple providers are

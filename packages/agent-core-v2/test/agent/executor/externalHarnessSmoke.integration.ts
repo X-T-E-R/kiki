@@ -32,7 +32,7 @@ const cases = [
   },
   {
     id: 'kimi-acp',
-    model: process.env['KIKI_KIMI_ACP_SMOKE_MODEL'] ?? 'kimi-for-coding',
+    model: process.env['KIKI_ACP_SMOKE_MODEL'] ?? 'kimi-for-coding',
   },
   {
     id: 'codex-app-server',

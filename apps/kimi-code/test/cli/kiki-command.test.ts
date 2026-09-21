@@ -69,9 +69,7 @@ describe('kiki command helpers', () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-home-test-'));
     roots.push(root);
     const kikiHome = join(root, 'configured-kiki');
-    const legacyHome = join(root, 'legacy-kimi');
     vi.stubEnv('KIKI_HOME', kikiHome);
-    vi.stubEnv('KIMI_CODE_HOME', legacyHome);
     vi.stubEnv('USERPROFILE', join(root, 'profile'));
 
     expect(resolveKikiHome()).toBe(kikiHome);
