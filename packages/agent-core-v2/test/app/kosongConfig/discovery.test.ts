@@ -313,7 +313,7 @@ describe('refreshProviderModels write behavior', () => {
 
   it('refreshes a hand-configured API-key provider at the managed endpoint', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIMI_CODE_BASE_URL', baseUrl);
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
     const fetchMock = vi.fn(
       async () =>
         new Response(
@@ -379,7 +379,7 @@ describe('refreshProviderModels write behavior', () => {
 
   it('clears a stale defaultModel whose alias upstream dropped', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIMI_CODE_BASE_URL', baseUrl);
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
     const fetchMock = vi.fn(
       async () =>
         new Response(
