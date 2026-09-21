@@ -16,9 +16,14 @@ import { AgentWorkspace } from './AgentWorkspace';
 
 const harness = vi.hoisted(() => ({
   header: null as HTMLElement | null,
+  dock: null as HTMLElement | null,
   shellEnabled: true,
   listModels: vi.fn(),
+  sendAgentMessage: vi.fn(),
+  stopAgentTask: vi.fn(),
+  setAgentModel: vi.fn(),
   readCapabilities: vi.fn(),
+  composerProps: null as { onSend?: (text: string, attachments: readonly unknown[]) => Promise<void> } | null,
   mediaProviderProps: [] as Array<{ apiRef?: unknown }>,
 }));
 
@@ -26,9 +31,9 @@ vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
       listModels: harness.listModels,
-      sendAgentMessage: vi.fn(),
-      stopAgentTask: vi.fn(),
-      setAgentModel: vi.fn(),
+      sendAgentMessage: harness.sendAgentMessage,
+      stopAgentTask: harness.stopAgentTask,
+      setAgentModel: harness.setAgentModel,
     },
     klient: {
       global: {
@@ -48,7 +53,7 @@ vi.mock('../ConversationShell', () => ({
       ? {
           slots: {
             header: harness.header,
-            dock: null,
+            dock: harness.dock,
             heroFooter: null,
             rail: null,
             footer: null,
@@ -68,6 +73,12 @@ vi.mock('../mediaPreview', () => ({
   PreviewToggleButton: () => <div data-preview-toggle-probe />,
 }));
 vi.mock('../RightRail', () => ({ RightRail: () => null }));
+vi.mock('../Composer', () => ({
+  Composer: (props: { variant?: string; onSend?: (text: string, attachments: readonly unknown[]) => Promise<void> }) => {
+    harness.composerProps = props;
+    return <div data-composer-variant={props.variant} />;
+  },
+}));
 vi.mock('../Transcript', () => ({ Transcript: () => null }));
 vi.mock('./ResyncStatusBanner', () => ({ ResyncStatusBanner: () => null }));
 vi.mock('./SubagentDetailActions', () => ({ SubagentDetailActions: () => null }));
@@ -76,6 +87,7 @@ vi.mock('../../lib/toasts', () => ({ pushToast: vi.fn() }));
 let root: Root;
 let container: HTMLDivElement;
 let header: HTMLDivElement;
+let dock: HTMLDivElement;
 let queries: QueryClient;
 
 beforeEach(() => {
@@ -95,10 +107,13 @@ beforeEach(() => {
   });
   harness.shellEnabled = true;
   harness.mediaProviderProps.length = 0;
+  harness.composerProps = null;
   container = document.createElement('div');
   header = document.createElement('div');
-  document.body.append(container, header);
+  dock = document.createElement('div');
+  document.body.append(container, header, dock);
   harness.header = header;
+  harness.dock = dock;
   root = createRoot(container);
   queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
@@ -109,6 +124,8 @@ afterEach(async () => {
   harness.header = null;
   container.remove();
   header.remove();
+  dock.remove();
+  harness.dock = null;
 });
 
 async function settle() {
@@ -117,7 +134,7 @@ async function settle() {
   }
 }
 
-it('shows the profile dispatch policy when the workspace has no target rows', async () => {
+it('keeps dispatch policy out of the workspace header and mounts the shared composer', async () => {
   harness.readCapabilities.mockResolvedValue({
     context: 'live',
     owner: { profile: 'general', agent_id: 'child' },
@@ -161,13 +178,22 @@ it('shows the profile dispatch policy when the workspace has no target rows', as
   ));
   await settle();
 
-  expect(harness.readCapabilities).toHaveBeenCalledWith(
-    { session_id: 'session', agent_id: 'child' },
-    expect.any(AbortSignal),
-  );
-  expect(header.querySelector('[data-dispatch-policy="strict"]')?.textContent).toBe('Strict policy');
-  expect(header.querySelector('[data-dispatch-policy="unknown"]')).toBeNull();
-  expect(header.querySelector('[data-recommendation-status="unknown"]')?.textContent).toBe('Not reported');
+  expect(harness.readCapabilities).not.toHaveBeenCalled();
+  expect(header.querySelector('[data-dispatch-policy]')).toBeNull();
+  expect(header.querySelector('[data-recommendation-status]')).toBeNull();
+  expect(dock.querySelector('[data-composer-variant="subagent"]')).not.toBeNull();
+});
+
+it('sends composer content through the existing user-to-agent channel', async () => {
+  harness.sendAgentMessage.mockResolvedValue({});
+  await renderWorkspace();
+  await settle();
+  await act(async () => {
+    await harness.composerProps?.onSend?.('next step', []);
+  });
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'next step', [
+    { type: 'text', text: 'next step' },
+  ]);
 });
 
 function testForest(): AgentForest {

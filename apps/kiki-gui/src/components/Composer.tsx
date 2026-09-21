@@ -170,8 +170,10 @@ const UNDO_STACK_LIMIT = 100;
 export function Composer({
   busy,
   disabled,
+  variant = 'main',
   sendDisabled = false,
   sendDisabledTitle,
+  disabledPlaceholder,
   value,
   onChange,
   model,
@@ -229,6 +231,8 @@ export function Composer({
    * still loading, /new creation). Send-only gating belongs to sendDisabled.
    */
   disabled: boolean;
+  /** Main composer controls, or the subagent endpoint controls only. */
+  variant?: 'main' | 'subagent';
   /**
    * Blocks sending without locking the textarea (default false): the /new
    * page uses it while no workspace or absolute path is chosen yet, so the
@@ -237,6 +241,8 @@ export function Composer({
   sendDisabled?: boolean;
   /** Tooltip explaining why sending is blocked while `sendDisabled`. */
   sendDisabledTitle?: string;
+  /** Placeholder shown when the composer is disabled for a terminal endpoint. */
+  disabledPlaceholder?: string;
   /** Controlled text (App owns per-session drafts). */
   value: string;
   onChange: (text: string) => void;
@@ -1336,7 +1342,7 @@ export function Composer({
   };
 
   return (
-    <div className="px-6 pb-5">
+    <div className="px-6 pb-5" data-composer-variant={variant}>
       {composerContextMenu}
       <ConfirmDialog
         open={contextRebuildConfirm}
@@ -1738,9 +1744,11 @@ export function Composer({
                 addFiles(readyAttachmentFiles(files));
               }}
               placeholder={
-                busy
-                  ? (busyPlaceholder ?? t('composer.placeholderBusy'))
-                  : t('composer.placeholder')
+                disabled
+                  ? (disabledPlaceholder ?? t('composer.placeholder'))
+                  : busy
+                    ? (busyPlaceholder ?? t('composer.placeholderBusy'))
+                    : t('composer.placeholder')
               }
               className="max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14px] leading-relaxed text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
             />
@@ -1779,43 +1787,47 @@ export function Composer({
                   <path d="M6 2.5v7M2.5 6h7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                 </svg>
               </button>
-              <ModeSelect
-                open={modeOpen}
-                onOpenChange={setModeOpen}
-                value={permissionMode}
-                onChange={onChangePermissionMode}
-              />
-              <PlanSelect
-                open={planOpen}
-                onOpenChange={setPlanOpen}
-                planMode={planMode}
-                onChangePlanMode={onChangePlanMode}
-                planGate={planGate}
-                onChangePlanGate={onChangePlanGate}
-                swarmMode={swarmMode}
-                onChangeSwarmMode={onChangeSwarmMode}
-                goalObjective={goalObjective}
-                onChangeGoalObjective={onChangeGoalObjective}
-                goalOpen={goalOpen}
-                onGoalOpenChange={setGoalOpen}
-              />
-              {onChangeGoalMode !== undefined ? (
-                <button
-                  type="button"
-                  data-goal-mode-toggle
-                  aria-pressed={goalMode}
-                  aria-label={t('composer.goalArmedAria')}
-                  title={t('composer.goalModeTitle')}
-                  onClick={() => { onChangeGoalMode(!goalMode); }}
-                  className={`flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
-                    goalMode
-                      ? 'border-accent bg-accent-soft text-accent'
-                      : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
-                  }`}
-                >
-                  <span aria-hidden className="text-[10px]">◎</span>
-                  {t('composer.goal')}
-                </button>
+              {variant !== 'subagent' ? (
+                <>
+                  <ModeSelect
+                    open={modeOpen}
+                    onOpenChange={setModeOpen}
+                    value={permissionMode}
+                    onChange={onChangePermissionMode}
+                  />
+                  <PlanSelect
+                    open={planOpen}
+                    onOpenChange={setPlanOpen}
+                    planMode={planMode}
+                    onChangePlanMode={onChangePlanMode}
+                    planGate={planGate}
+                    onChangePlanGate={onChangePlanGate}
+                    swarmMode={swarmMode}
+                    onChangeSwarmMode={onChangeSwarmMode}
+                    goalObjective={goalObjective}
+                    onChangeGoalObjective={onChangeGoalObjective}
+                    goalOpen={goalOpen}
+                    onGoalOpenChange={setGoalOpen}
+                  />
+                  {onChangeGoalMode !== undefined ? (
+                    <button
+                      type="button"
+                      data-goal-mode-toggle
+                      aria-pressed={goalMode}
+                      aria-label={t('composer.goalArmedAria')}
+                      title={t('composer.goalModeTitle')}
+                      onClick={() => { onChangeGoalMode(!goalMode); }}
+                      className={`flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
+                        goalMode
+                          ? 'border-accent bg-accent-soft text-accent'
+                          : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
+                      }`}
+                    >
+                      <span aria-hidden className="text-[10px]">◎</span>
+                      {t('composer.goal')}
+                    </button>
+                  ) : null}
+                </>
               ) : null}
               {onChangeAgentProfile !== undefined && agentProfile !== undefined ? (
                 <div className="min-w-0">

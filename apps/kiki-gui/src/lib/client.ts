@@ -972,9 +972,10 @@ export class KikiClient {
     sessionId: string,
     agentId: string,
     text: string,
+    content?: readonly MessageContent[],
   ): Promise<PromptSubmitResult> {
     return this.submitPrompt(sessionId, {
-      content: [{ type: 'text', text }],
+      content: content === undefined ? [{ type: 'text', text }] : [...content],
       agent_id: agentId,
     });
   }

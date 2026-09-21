@@ -14,13 +14,11 @@
  * with the shell, expressed here through `navigation` and the rail props.
  */
 
-import { useCallback, useMemo, useSyncExternalStore, type RefObject } from 'react';
+import { useCallback, useMemo, useState, useSyncExternalStore, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery } from '@tanstack/react-query';
 
-import type { AgentCapabilityTarget, ModelCatalogItem } from '@kiki/protocol';
-
-import type { I18nKey } from '@kiki/session-core/i18n';
+import type { PermissionMode } from '@kiki/protocol';
+import { buildPromptContent, type ComposerAttachment } from '@kiki/session-core/composer';
 import {
   agentPath,
   createViewState,
@@ -35,23 +33,20 @@ import {
 } from '@kiki/session-core/session';
 
 import { useI18n } from '../../i18n';
-import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { revealSubagentCard } from '../ActivityHistory';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
-import { DispatchPolicyBadges } from '../agent-panel/AgentIdentitySection';
 import {
   EMPTY_SLOTS,
   useOptionalConversationShell,
   type ConversationShellSlots,
 } from '../ConversationShell';
-import { ContextMeter } from '../ContextMeter';
+import { Composer } from '../Composer';
 import { MediaPreviewProvider, PreviewToggleButton } from '../mediaPreview';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { RightRail } from '../RightRail';
 import { Transcript } from '../Transcript';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
-import { SubagentDetailActions } from './SubagentDetailActions';
 
 export function PanelIcon({ className = '' }: { className?: string }) {
   return (
@@ -151,56 +146,30 @@ const emptyAgentView = createViewState('');
 function AgentWorkspaceHeader({
   target,
   name,
-  statusLabel,
-  busy,
-  live,
-  canTerminate,
   model,
   effort,
-  contextTokens,
-  maxContextTokens,
-  cumulativeTokens,
-  profilePolicy,
-  dispatchTargets,
   crumbs,
   forest,
-  models,
   railOpen,
   onToggleRail,
   navigation,
-  onSendMessage,
-  onTerminate,
-  onChangeModel,
   showPreviewToggle,
   showBreadcrumb,
 }: {
   target: AgentWorkspaceTarget;
   name: string;
-  statusLabel: string;
-  busy: boolean;
-  live: boolean;
-  canTerminate: boolean;
   model: string | undefined;
   effort: string | undefined;
-  contextTokens: number | undefined;
-  maxContextTokens: number | undefined;
-  cumulativeTokens: number | undefined;
-  profilePolicy: AgentCapabilityTarget['dispatch_policy'];
-  dispatchTargets: readonly AgentCapabilityTarget[] | undefined;
   crumbs: readonly AgentTreeNode[];
   forest: AgentForest;
-  models: readonly ModelCatalogItem[];
   railOpen: boolean;
   onToggleRail: () => void;
   navigation: AgentWorkspaceNavigation;
-  onSendMessage: (text: string) => Promise<void>;
-  onTerminate: () => Promise<void>;
-  onChangeModel: (model: string) => Promise<void>;
   showPreviewToggle: boolean;
   /** Off in narrow containers (tabs): the relations row below keeps the navigation. */
   showBreadcrumb: boolean;
 }) {
-  const { t, time } = useI18n();
+  const { t } = useI18n();
   return (
     <>
       <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-hairline bg-panel px-4 py-2">
@@ -241,49 +210,7 @@ function AgentWorkspaceHeader({
             {t('subagent.effort', { effort })}
           </span>
         ) : null}
-        <DispatchPolicyBadges profilePolicy={profilePolicy} targets={dispatchTargets} />
-        {contextTokens !== undefined &&
-        maxContextTokens !== undefined &&
-        maxContextTokens > 0 ? (
-          <ContextMeter
-            used={contextTokens}
-            limit={maxContextTokens}
-            placement="below"
-          />
-        ) : contextTokens !== undefined ? (
-          <span
-            data-agent-context
-            className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[10.5px] text-ink-soft"
-          >
-            {t('sv.agentContext', { tokens: time.formatTokens(contextTokens) })}
-          </span>
-        ) : null}
-        {cumulativeTokens !== undefined ? (
-          <span
-            data-agent-tokens
-            className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[10.5px] text-ink-soft"
-          >
-            {t('sv.agentTokens', { tokens: time.formatTokens(cumulativeTokens) })}
-          </span>
-        ) : null}
-        <span
-          className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
-            busy ? 'border-accent/50 text-accent' : 'border-hairline text-ink-soft'
-          }`}
-        >
-          {busy ? t('sv.working') : statusLabel}
-        </span>
-        <SubagentDetailActions
-          agentId={target.agentId}
-          name={name}
-          live={live}
-          canTerminate={canTerminate}
-          currentModel={model}
-          models={models}
-          onSendMessage={onSendMessage}
-          onTerminate={onTerminate}
-          onChangeModel={onChangeModel}
-        />
+
         {showPreviewToggle ? <PreviewToggleButton /> : null}
         <button
           type="button"
@@ -332,7 +259,9 @@ export function AgentWorkspace({
   showBreadcrumb = true,
 }: AgentWorkspaceProps) {
   const { t } = useI18n();
-  const { client, klient } = useConnection();
+  const { client } = useConnection();
+  const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
   const contextSlots = useOptionalConversationShell()?.slots;
   const slots = slotsOverride ?? contextSlots ?? EMPTY_SLOTS;
   const { sessionId, agentId } = target;
@@ -364,18 +293,6 @@ export function AgentWorkspace({
   );
 
   // Same query key as the session view: one catalog fetch, shared cache.
-  const modelsQuery = useQuery({
-    queryKey: ['models'],
-    queryFn: () => client.listModels(),
-    staleTime: 60_000,
-  });
-  const capabilitiesQuery = useQuery({
-    queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
-    queryFn: ({ signal }) => klient.global.agentPanel.read({ session_id: sessionId, agent_id: agentId }, { signal }),
-    enabled: sessionState.loaded && !sessionState.resyncing,
-    retry: false,
-  });
-
   const handleLoadOlder = useCallback(async (): Promise<boolean> => {
     if (controller === null) return false;
     return controller.loadOlderMessages(agentId);
@@ -436,22 +353,8 @@ export function AgentWorkspace({
     window.setTimeout(() => { scrollToCard(12); }, 150);
   };
   const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
-  const statusLabel =
-    selectedNode !== undefined
-      ? t(`subagent.status.${selectedNode.status}` as I18nKey)
-      : selectedSubagent !== undefined
-        ? t(`subagent.status.${selectedSubagent.status}` as I18nKey)
-        : t('sv.historyUnavailable');
   const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
   const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
-  // Action affordances: the tree node can lag at 'unknown' on cold open, so
-  // a known timeline-card status wins (same rule as the rail's task section).
-  const actionStatus =
-    selectedSubagent !== undefined && selectedSubagent.status !== 'unknown'
-      ? selectedSubagent.status
-      : (selectedNode?.status ?? selectedSubagent?.status ?? 'unknown');
-  const agentLive =
-    actionStatus === 'running' || actionStatus === 'background' || actionStatus === 'suspended';
   // The child run is a task on the PARENT agent's task service; nested agents
   // therefore need the parent's per-agent snapshot rather than the main one.
   const { ownerAgentId, task: runningAgentTask } = resolveRunningSubagentTask({
@@ -460,17 +363,27 @@ export function AgentWorkspace({
     mainTasks: sessionState.tasks,
     parentTasks: parentAgentState.tasks,
   });
-  const handleMessageAgent = async (text: string) => {
-    await client.sendAgentMessage(sessionId, agentId, text);
+  const agentStatus = selectedNode?.status ?? selectedSubagent?.status ?? 'unknown';
+  const composerDisabled =
+    (selectedNode === undefined && selectedSubagent === undefined) ||
+    agentStatus === 'unknown' ||
+    agentStatus === 'failed';
+  const handleComposerSend = async (
+    text: string,
+    composerAttachments: readonly ComposerAttachment[],
+  ) => {
+    const content = buildPromptContent(text, composerAttachments);
+    if (content === null) return;
+    await client.sendAgentMessage(sessionId, agentId, text, content);
+    setDraft('');
+    setAttachments([]);
   };
   const handleTerminateAgent = async () => {
-    if (runningAgentTask === undefined) {
-      pushToast({ tone: 'info', text: t('subagent.terminateUnavailable') });
-      return;
-    }
+    if (runningAgentTask === undefined) return;
     await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
   };
-  const handleChangeAgentModel = async (model: string) => {
+  const handleChangeAgentModel = async (model: string | undefined) => {
+    if (model === undefined || model === displayModel) return;
     await client.setAgentModel(sessionId, agentId, model);
   };
   const displayEffort =
@@ -478,14 +391,6 @@ export function AgentWorkspace({
   const displayContextTokens = agentLiveState.contextTokens ?? selectedNode?.contextTokens;
   const displayMaxContextTokens = agentLiveState.maxContextTokens ?? selectedNode?.maxContextTokens;
   const displayUsage = agentLiveState.usage ?? selectedNode?.usage;
-  const totalUsage = displayUsage?.total;
-  const cumulativeTokens =
-    totalUsage === undefined
-      ? undefined
-      : totalUsage.inputOther +
-        totalUsage.inputCacheRead +
-        totalUsage.inputCacheCreation +
-        totalUsage.output;
   const agentState: SessionViewState = {
     ...agentLiveState,
     session: sessionState.session,
@@ -513,26 +418,13 @@ export function AgentWorkspace({
             <AgentWorkspaceHeader
               target={target}
               name={displayName}
-              statusLabel={statusLabel}
-              busy={headerBusy}
-              live={agentLive}
-              canTerminate={runningAgentTask !== undefined}
               model={displayModel}
               effort={displayEffort}
-              contextTokens={displayContextTokens}
-              maxContextTokens={displayMaxContextTokens}
-              cumulativeTokens={cumulativeTokens}
-              profilePolicy={capabilitiesQuery.data?.profile?.subagent_policy}
-              dispatchTargets={capabilitiesQuery.data?.targets}
               crumbs={crumbs}
               forest={forest}
-              models={modelsQuery.data?.items ?? []}
               railOpen={railOpen}
               onToggleRail={onToggleRail}
               navigation={navigation}
-              onSendMessage={handleMessageAgent}
-              onTerminate={handleTerminateAgent}
-              onChangeModel={handleChangeAgentModel}
               showPreviewToggle={showPreviewToggle}
               showBreadcrumb={showBreadcrumb}
             />,
@@ -550,12 +442,47 @@ export function AgentWorkspace({
       />
       {slots.dock !== null
         ? createPortal(
-            <ResyncStatusBanner
-              resyncing={sessionState.resyncing}
-              resyncFailed={sessionState.resyncFailed}
-              error={sessionState.resyncError}
-              onRetry={controller === null ? undefined : () => { void controller.resync(); }}
-            />,
+            <div className="space-y-2 pt-2">
+              <Composer
+                variant="subagent"
+                busy={headerBusy}
+                disabled={composerDisabled}
+                disabledPlaceholder={t('subagent.composerUnavailable')}
+                value={draft}
+                onChange={setDraft}
+                model={displayModel}
+                defaultModel={displayModel}
+                serverDefaultModel={displayModel}
+                modelSource="session"
+                permissionMode={agentLiveState.permissionMode ?? ('manual' as PermissionMode)}
+                planMode={false}
+                swarmMode={false}
+                efforts={undefined}
+                effort={displayEffort}
+                contextUsage={
+                  displayContextTokens !== undefined && displayMaxContextTokens !== undefined
+                    ? { used: displayContextTokens, limit: displayMaxContextTokens }
+                    : undefined
+                }
+                sessionId={sessionId}
+                agentProfileCatalogMode={{ mode: 'disabled' }}
+                attachments={attachments}
+                onChangeAttachments={setAttachments}
+                onChangeModel={handleChangeAgentModel}
+                onChangePermissionMode={() => {}}
+                onChangePlanMode={() => {}}
+                onChangeSwarmMode={() => {}}
+                onChangeEffort={() => {}}
+                onSend={handleComposerSend}
+                onAbort={runningAgentTask === undefined ? undefined : handleTerminateAgent}
+              />
+              <ResyncStatusBanner
+                resyncing={sessionState.resyncing}
+                resyncFailed={sessionState.resyncFailed}
+                error={sessionState.resyncError}
+                onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+              />
+            </div>,
             slots.dock,
           )
         : null}

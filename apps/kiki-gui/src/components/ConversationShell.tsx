@@ -47,8 +47,8 @@ export type ConversationPhase = 'hero' | 'settling' | 'active';
 
 /**
  * What a child route publishes into the shell. `composer` is a fully composed
- * <Composer/> element (or null where no composer belongs, e.g. the read-only
- * subagent page); `phase` drives the shell's geometry. Publish a MEMOIZED
+ * <Composer/> element (or null where no composer belongs); `phase` drives the
+ * shell's geometry. Publish a MEMOIZED
  * object — the registration effect keys on identity.
  */
 export interface ConversationSeat {
