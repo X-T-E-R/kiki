@@ -317,9 +317,9 @@ describe('OAuthService', () => {
     );
   });
 
-  it('startLogin honors KIMI_CODE_BASE_URL / KIMI_CODE_OAUTH_HOST for the login environment', async () => {
-    vi.stubEnv('KIMI_CODE_BASE_URL', 'https://env-api.example.com/coding/v1');
-    vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://env-auth.example.com');
+  it('startLogin honors KIKI_CODE_BASE_URL / KIKI_CODE_OAUTH_HOST for the login environment', async () => {
+    vi.stubEnv('KIKI_CODE_BASE_URL', 'https://env-api.example.com/coding/v1');
+    vi.stubEnv('KIKI_CODE_OAUTH_HOST', 'https://env-auth.example.com');
     stubManagedModelsFetch();
     toolkit.login.mockImplementation((_provider, options) => {
       options.onDeviceCode(deviceAuth);
@@ -376,7 +376,7 @@ describe('OAuthService', () => {
   });
 
   it('startLogin with a region still honors env endpoint overrides', async () => {
-    vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://env-auth.example.com');
+    vi.stubEnv('KIKI_CODE_OAUTH_HOST', 'https://env-auth.example.com');
     stubManagedModelsFetch();
     toolkit.login.mockImplementation((_provider, options) => {
       options.onDeviceCode(deviceAuth);
@@ -395,7 +395,7 @@ describe('OAuthService', () => {
   });
 
   it('getRegion resolves cn by default and global from the persisted login host', () => {
-    vi.stubEnv('KIMI_CODE_REGION_MARKER', 'off');
+    vi.stubEnv('KIKI_CODE_REGION_MARKER', 'off');
     const svc = createService();
     expect(svc.getRegion()).toBe('mainland-cn');
 
@@ -406,16 +406,16 @@ describe('OAuthService', () => {
     expect(svc.getRegion()).toBe('global');
   });
 
-  it('getRegion reads the install marker from the bootstrapped home unless KIMI_CODE_REGION_MARKER=off', async () => {
+  it('getRegion reads the install marker from the bootstrapped home unless KIKI_CODE_REGION_MARKER=off', async () => {
     const home = ix.get(IBootstrapService).homeDir;
     try {
       await mkdir(home, { recursive: true });
       await writeFile(join(home, 'region'), 'global\n', 'utf-8');
-      vi.stubEnv('KIMI_CODE_OAUTH_HOST', '');
+      vi.stubEnv('KIKI_CODE_OAUTH_HOST', '');
       providers[OAUTH_PROVIDER] = { type: 'kimi' };
       expect(createService().getRegion()).toBe('global');
 
-      vi.stubEnv('KIMI_CODE_REGION_MARKER', 'off');
+      vi.stubEnv('KIKI_CODE_REGION_MARKER', 'off');
       expect(createService().getRegion()).toBe('mainland-cn');
     } finally {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -429,7 +429,7 @@ describe('OAuthService', () => {
       await mkdir(bootstrapHome, { recursive: true });
       await writeFile(join(bootstrapHome, 'region'), 'global\n', 'utf-8');
       vi.stubEnv('KIKI_HOME', envHome);
-      vi.stubEnv('KIMI_CODE_OAUTH_HOST', '');
+      vi.stubEnv('KIKI_CODE_OAUTH_HOST', '');
       providers[OAUTH_PROVIDER] = { type: 'kimi' };
       expect(createService().getRegion()).toBe('global');
     } finally {
@@ -443,7 +443,7 @@ describe('OAuthService', () => {
     try {
       await mkdir(home, { recursive: true });
       await writeFile(join(home, 'region'), 'global\n', 'utf-8');
-      vi.stubEnv('KIMI_CODE_OAUTH_HOST', '');
+      vi.stubEnv('KIKI_CODE_OAUTH_HOST', '');
       providers[OAUTH_PROVIDER] = {
         type: 'kimi',
         oauth: { storage: 'file', key: 'oauth/kimi-code' },
@@ -455,8 +455,8 @@ describe('OAuthService', () => {
   });
 
   it('resolves the runtime credential slot to the env environment after an env-scoped login', async () => {
-    vi.stubEnv('KIMI_CODE_BASE_URL', 'https://env-api.example.com/coding/v1');
-    vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://env-auth.example.com');
+    vi.stubEnv('KIKI_CODE_BASE_URL', 'https://env-api.example.com/coding/v1');
+    vi.stubEnv('KIKI_CODE_OAUTH_HOST', 'https://env-auth.example.com');
     stubManagedModelsFetch();
     toolkit.login.mockImplementation((_provider, options) => {
       options.onDeviceCode(deviceAuth);
