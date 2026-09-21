@@ -395,10 +395,10 @@ describe('kimi provider add', () => {
     );
   });
 
-  it('ignores the retired generic registry environment variable', async () => {
+  it('rejects an unsupported generic registry environment variable', async () => {
     const fetchMock = mockRegistryFetch();
     const { harness } = makeHarness({ providers: {} } as KimiConfig);
-    const { deps, stderr, exitCodes } = makeDeps(harness, { env: { KIMI_REGISTRY_API_KEY: 'synthetic-legacy-key' } });
+    const { deps, stderr, exitCodes } = makeDeps(harness, { env: { UNSUPPORTED_REGISTRY_API_KEY: 'synthetic-unsupported-key' } });
     await tryRun(() => handleProviderAdd(deps, REGISTRY_URL, {}));
     expect(exitCodes).toEqual([1]);
     expect(stderr.join('')).toContain('KIKI_REGISTRY_API_KEY');
