@@ -26,7 +26,13 @@ import { AgentPlanSection } from './agent-panel/AgentPlanSection';
 import { AgentCapabilitiesSection } from './agent-panel/AgentCapabilitiesSection';
 import { usageSessionDeepLink } from '../lib/usageV2';
 import { aggregateTreeCacheHitRate, aggregateTreeCacheReadTokens, aggregateTreeCacheWriteTokens } from './agent-panel/cacheRate';
-import { mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from './agent-panel/mapCapabilities';
+import {
+  agentCapabilitiesErrorText,
+  capabilityReasonText,
+  mapPanelSkills,
+  mapPanelSubagentTargets,
+  mapPanelTools,
+} from './agent-panel/mapCapabilities';
 
 const noopSubscribe = (): (() => void) => () => {};
 
@@ -131,6 +137,9 @@ export function AgentPanelContainer({ state, forest, agentId }: {
   const loaded = agentState?.loaded === true;
   const planMode = agentState?.planMode;
   const profileName = profile?.name === 'unknown' ? t('diagnostics.unknown') : (profile?.name ?? agentState?.profile ?? t('diagnostics.unknown'));
+  const unavailableReason = data === undefined
+    ? undefined
+    : capabilityReasonText(t, data.unavailable_reason_code, data.unavailable_reason);
 
   const subagentTargets = useMemo(() => mapPanelSubagentTargets(data?.targets), [data?.targets]);
   const mappedSkills = useMemo(() => mapPanelSkills(data?.skills), [data?.skills]);
@@ -177,7 +186,7 @@ export function AgentPanelContainer({ state, forest, agentId }: {
     } : undefined} onOpenUsageDetail={() => { void navigate(usageSessionDeepLink(state.sessionId)); }} />
     {capabilities.isPending ? <p role="status">{t('diagnostics.loading')}</p> : null}
     {capabilities.isError ? <div role="alert" className="text-danger text-xs">
-      {t('diagnostics.error')} · {capabilities.error.message}
+      {t('diagnostics.error')} · {agentCapabilitiesErrorText(capabilities.error, t)}
       <button type="button" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
     </div> : null}
     {todoSection}
@@ -190,7 +199,7 @@ export function AgentPanelContainer({ state, forest, agentId }: {
       planMode={planMode}
     /> : null}
     {data !== undefined && (data.tools === undefined || data.skills === undefined) ?
-      <p role="status" className="text-xs text-ink-soft">{data.unavailable_reason ?? t('diagnostics.unknown')}</p> : null}
+      <p role="status" className="text-xs text-ink-soft">{unavailableReason ?? t('diagnostics.unknown')}</p> : null}
     {data?.tools !== undefined && data.skills !== undefined ? <AgentCapabilitiesSection
       tools={mappedTools}
       skills={mappedSkills}

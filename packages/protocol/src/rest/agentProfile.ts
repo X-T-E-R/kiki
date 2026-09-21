@@ -29,12 +29,25 @@ export const namedAgentSpawnConstraintsSchema = z.object({
 });
 export type NamedAgentSpawnConstraints = z.infer<typeof namedAgentSpawnConstraintsSchema>;
 
+export const agentProfileSourceDiagnosticCodeSchema = z.enum([
+  'agent_profile_source.invalid_path',
+  'agent_profile_source.path_escape',
+  'agent_profile_source.symlink_escape',
+  'agent_profile_source.not_private',
+  'agent_profile_source.unavailable',
+  'agent_profile_source.invalid_profile',
+  'agent_profile_source.cycle',
+  'agent_profile_source.depth_exceeded',
+]);
+export type AgentProfileSourceDiagnosticCode = z.infer<typeof agentProfileSourceDiagnosticCodeSchema>;
+
 export const namedAgentSubagentLeaseSchema = z.object({
   name: z.string(),
   source: z.string().optional(),
   scope: z.literal('private').optional(),
   status: z.enum(['ready', 'unavailable']).optional(),
   diagnostic: z.string().optional(),
+  diagnostic_code: agentProfileSourceDiagnosticCodeSchema.optional(),
   description: z.string().optional(),
   when_to_use: z.string().optional(),
   model_alias: z.string().optional(),
@@ -139,6 +152,35 @@ export const agentCapabilitiesQuerySchema = z.union([
 ]);
 export type AgentCapabilitiesQuery = z.infer<typeof agentCapabilitiesQuerySchema>;
 
+export const agentCapabilityReasonCodeSchema = z.enum([
+  'skill_tool_inactive',
+  'skill_model_invocation_disabled',
+  'snapshot_inventory_only',
+  'tool_policy_disabled',
+  'runtime_not_connected',
+  'activation_condition_unmet',
+  'approval_pending',
+  'session_or_agent_not_live',
+  'persisted_metadata_unavailable',
+  'persisted_profile_unavailable',
+  'snapshot_launch_unavailable',
+  'agent_run_inactive',
+  'agent_run_draft_disabled',
+  'draft_inventory_only',
+  'draft_policy_disabled',
+  'strict_subagent_policy_blocked',
+  'executor_binding_unavailable',
+  'executor_route_binding_unavailable',
+  'model_not_configured',
+  'scoped_profile_unavailable',
+  'binding_constraints_unsatisfied',
+  'default_binding_unavailable',
+  'research_readonly_dispatch_forbidden',
+  'plan_resume_forbidden',
+  'native_executor_required',
+]);
+export type AgentCapabilityReasonCode = z.infer<typeof agentCapabilityReasonCodeSchema>;
+
 export const agentCapabilityModelSourceSchema = z.enum(['caller-lease', 'route', 'profile']);
 export const agentCapabilityEffortSourceSchema = z.enum([
   'caller-lease', 'route', 'profile', 'model-profile', 'model', 'config', 'executor',
@@ -158,8 +200,10 @@ export const agentCapabilityTargetSchema = z.object({
   advisory_deviation: z.boolean().optional(),
   defaults_available: z.boolean(),
   unavailable_reason: z.string().optional(),
+  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
   launch_allowed: z.boolean().optional(),
   launch_unavailable_reason: z.string().optional(),
+  launch_unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
   execution_restriction: z.literal('research-readonly').optional(),
 });
 export type AgentCapabilityTarget = z.infer<typeof agentCapabilityTargetSchema>;
@@ -176,6 +220,7 @@ export const agentPanelToolSchema = z.object({
   group: z.string().optional(),
   state: agentPanelCapabilityStateSchema,
   unavailable_reason: z.string().optional(),
+  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
   parameters: z.record(z.string(), z.unknown()).optional(),
   read_only: z.boolean().optional(),
 });
@@ -188,6 +233,7 @@ export const agentPanelSkillSchema = z.object({
   path: z.string(),
   state: agentPanelCapabilityStateSchema,
   unavailable_reason: z.string().optional(),
+  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
   type: z.string().optional(),
   disable_model_invocation: z.boolean().optional(),
   prompt_command: z.boolean().optional(),
@@ -244,6 +290,7 @@ export const agentCapabilitiesResponseSchema = z.object({
   owner: z.object({ profile: z.string().optional(), agent_id: z.string().optional() }),
   available: z.boolean(),
   unavailable_reason: z.string().optional(),
+  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
   targets: z.array(agentCapabilityTargetSchema),
   profile: agentPanelProfileSchema.optional(),
   tools: z.array(agentPanelToolSchema).optional(),

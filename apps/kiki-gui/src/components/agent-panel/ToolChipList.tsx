@@ -2,6 +2,7 @@ import { memo } from 'react';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { CapabilityStateBadge, CAPABILITY_STATE_LABEL_KEYS } from './CapabilityStateBadge';
+import { capabilityReasonText } from './mapCapabilities';
 import type { CapabilityState } from './types';
 
 const TOOL_CATEGORY_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
@@ -39,6 +40,7 @@ export interface ToolChipItem {
   readonly state?: CapabilityState;
   readonly readOnly?: boolean;
   readonly unavailableReason?: string;
+  readonly unavailableReasonCode?: string;
   readonly source?: string;
   readonly onOpen?: () => void;
 }
@@ -57,14 +59,17 @@ export const ToolChipList = memo(function ToolChipList({
   if (variant === 'plain') {
     return (
       <>
-        {items.map((item) => (
-          <p key={item.key} className="break-words">
-            {item.name}
-            {item.source !== undefined ? ` · ${item.source}` : ''}
-            {item.state !== undefined ? ` · ${t(CAPABILITY_STATE_LABEL_KEYS[item.state])}` : ''}
-            {item.unavailableReason !== undefined ? ` · ${item.unavailableReason}` : ''}
-          </p>
-        ))}
+        {items.map((item) => {
+          const reason = capabilityReasonText(t, item.unavailableReasonCode, item.unavailableReason);
+          return (
+            <p key={item.key} className="break-words">
+              {item.name}
+              {item.source !== undefined ? ` · ${item.source}` : ''}
+              {item.state !== undefined ? ` · ${t(CAPABILITY_STATE_LABEL_KEYS[item.state])}` : ''}
+              {reason !== undefined ? ` · ${reason}` : ''}
+            </p>
+          );
+        })}
       </>
     );
   }
@@ -72,39 +77,42 @@ export const ToolChipList = memo(function ToolChipList({
   if (variant === 'rows') {
     return (
       <div className="divide-y divide-hairline/60 rounded-md border border-hairline bg-panel overflow-hidden">
-        {items.map((item) => (
-          <div
-            key={item.key}
-            className="flex items-center justify-between gap-2 p-2 hover:bg-paper/70 transition-colors"
-          >
-            {item.onOpen ? (
-              <button
-                type="button"
-                onClick={item.onOpen}
-                className="font-mono text-[11.5px] font-medium text-ink hover:text-accent truncate text-left cursor-pointer flex-1 min-w-0"
-                title={t('agentPanel.viewDetails')}
-              >
-                {item.icon ? <span className="mr-1">{item.icon}</span> : null}
-                {item.name}
-              </button>
-            ) : (
-              <span className="font-mono text-[11.5px] font-medium text-ink truncate flex-1 min-w-0">
-                {item.icon ? <span className="mr-1">{item.icon}</span> : null}
-                {item.name}
-              </span>
-            )}
-            <div className="flex items-center gap-1 shrink-0">
-              {item.readOnly ? (
-                <span className="rounded-sm bg-accent-soft px-1 text-[9px] font-mono text-accent">
-                  {t('agentPanel.readOnly')}
+        {items.map((item) => {
+          const reason = capabilityReasonText(t, item.unavailableReasonCode, item.unavailableReason);
+          return (
+            <div
+              key={item.key}
+              className="flex items-center justify-between gap-2 p-2 hover:bg-paper/70 transition-colors"
+            >
+              {item.onOpen ? (
+                <button
+                  type="button"
+                  onClick={item.onOpen}
+                  className="font-mono text-[11.5px] font-medium text-ink hover:text-accent truncate text-left cursor-pointer flex-1 min-w-0"
+                  title={t('agentPanel.viewDetails')}
+                >
+                  {item.icon ? <span className="mr-1">{item.icon}</span> : null}
+                  {item.name}
+                </button>
+              ) : (
+                <span className="font-mono text-[11.5px] font-medium text-ink truncate flex-1 min-w-0">
+                  {item.icon ? <span className="mr-1">{item.icon}</span> : null}
+                  {item.name}
                 </span>
-              ) : null}
-              {item.state !== undefined ? (
-                <CapabilityStateBadge state={item.state} title={item.unavailableReason} />
-              ) : null}
+              )}
+              <div className="flex items-center gap-1 shrink-0">
+                {item.readOnly ? (
+                  <span className="rounded-sm bg-accent-soft px-1 text-[9px] font-mono text-accent">
+                    {t('agentPanel.readOnly')}
+                  </span>
+                ) : null}
+                {item.state !== undefined ? (
+                  <CapabilityStateBadge state={item.state} title={reason} />
+                ) : null}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   }
@@ -113,12 +121,13 @@ export const ToolChipList = memo(function ToolChipList({
   return (
     <div className="flex flex-wrap gap-1">
       {items.map((item) => {
+        const reason = capabilityReasonText(t, item.unavailableReasonCode, item.unavailableReason);
         const content = (
           <>
             {item.icon ? <span className="mr-1" aria-hidden>{item.icon}</span> : null}
             <span>{item.name}</span>
             {item.state !== undefined ? (
-              <CapabilityStateBadge state={item.state} title={item.unavailableReason} className="ml-1" />
+              <CapabilityStateBadge state={item.state} title={reason} className="ml-1" />
             ) : null}
           </>
         );
@@ -130,13 +139,13 @@ export const ToolChipList = memo(function ToolChipList({
             key={item.key}
             type="button"
             onClick={item.onOpen}
-            title={item.unavailableReason ?? t('agentPanel.viewDetails')}
+            title={reason ?? t('agentPanel.viewDetails')}
             className={`${baseClass} hover:border-hairline-strong hover:text-accent cursor-pointer transition-colors`}
           >
             {content}
           </button>
         ) : (
-          <span key={item.key} title={item.unavailableReason} className={baseClass}>
+          <span key={item.key} title={reason} className={baseClass}>
             {content}
           </span>
         );

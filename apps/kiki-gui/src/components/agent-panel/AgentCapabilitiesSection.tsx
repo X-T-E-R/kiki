@@ -96,6 +96,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
                       state: tool.state,
                       readOnly: tool.readOnly,
                       unavailableReason: tool.unavailableReason,
+                      unavailableReasonCode: tool.unavailableReasonCode,
                       onOpen: () => setDrawerTarget({ kind: 'tool', tool }),
                     }))}
                   />
@@ -138,6 +139,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
                 key: skill.id,
                 name: skill.name,
                 unavailableReason: skill.unavailableReason,
+                unavailableReasonCode: skill.unavailableReasonCode,
                 onOpen: () => setDrawerTarget({ kind: 'skill', skill }),
               }))}
             />
@@ -166,6 +168,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
                       name: skill.name,
                       state: skill.state,
                       unavailableReason: skill.unavailableReason,
+                      unavailableReasonCode: skill.unavailableReasonCode,
                       onOpen: () => setDrawerTarget({ kind: 'skill', skill }),
                     }))}
                   />
@@ -188,6 +191,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
                       name: skill.name,
                       state: skill.state,
                       unavailableReason: skill.unavailableReason,
+                      unavailableReasonCode: skill.unavailableReasonCode,
                       onOpen: () => setDrawerTarget({ kind: 'skill', skill }),
                     }))}
                   />

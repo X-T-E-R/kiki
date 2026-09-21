@@ -198,6 +198,28 @@ describe('running profile definition lookup', () => {
     });
     expect(onOpenTarget).toHaveBeenCalledWith({ kind: 'profile-draft', profile: 'explore' });
   });
+
+  it('localizes stable scoped-profile diagnostic codes', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    client.listNamedAgentProfiles.mockResolvedValue({
+      items: [{
+        ...boundDefinition,
+        subagents: [{
+          name: 'missing-writer',
+          source: './_private/missing.md',
+          scope: 'private',
+          status: 'unavailable',
+          diagnostic: 'Source profile is unavailable',
+          diagnostic_code: 'agent_profile_source.unavailable',
+        }],
+      }],
+      complete: true,
+    });
+    await render({ profile: runningProfile, query: { workspace_id: 'ws-one', profile: 'agent' } });
+
+    expect(section('subagents').textContent).toContain('来源配置档不可用。');
+    expect(section('subagents').textContent).not.toContain('Source profile is unavailable');
+  });
 });
 
 describe('model and effort source labels', () => {

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  agentCapabilityReasonCodeSchema,
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
+  agentProfileSourceDiagnosticCodeSchema,
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
   namedAgentProfileSchema,
@@ -54,6 +56,8 @@ describe('named agent profile REST protocol', () => {
           name: 'reviewer',
           model_alias: 'fast',
           tools: null,
+          diagnostic: 'Source path is invalid',
+          diagnostic_code: 'agent_profile_source.invalid_path',
           model_profiles: [{ alias: 'fast', when: 'Use for reviews' }],
         },
       ],
@@ -68,6 +72,7 @@ describe('named agent profile REST protocol', () => {
       subagents: ['explore', { name: 'reviewer', model_alias: 'fast' }],
       disabled: true,
     });
+    expect(agentProfileSourceDiagnosticCodeSchema.options).toHaveLength(8);
     expect(namedAgentProfileSchema.safeParse({
       name: 'reviewer',
       source: 'user',
@@ -111,6 +116,31 @@ describe('named agent profile REST protocol', () => {
       targets: [{ profile: 'helper', executor: 'native', defaults_available: true }] }).targets[0])
       .not.toHaveProperty('launch_allowed');
     expect(agentCapabilitiesQuerySchema.safeParse({ session_id: 'session', agent_id: 'main', planActive: false }).success).toBe(false);
+  });
+
+  it('validates stable capability reason codes across capability projections', () => {
+    const parsed = agentCapabilitiesResponseSchema.parse({
+      context: 'live', owner: { agent_id: 'main' }, available: false,
+      unavailable_reason: 'Disabled by effective tool policy', unavailable_reason_code: 'tool_policy_disabled',
+      targets: [{
+        profile: 'helper', executor: 'native', defaults_available: false,
+        unavailable_reason: 'No default model is bound; pass model_alias explicitly',
+        unavailable_reason_code: 'model_not_configured', launch_allowed: false,
+        launch_unavailable_reason: 'Blocked by strict subagent policy',
+        launch_unavailable_reason_code: 'strict_subagent_policy_blocked',
+      }],
+      tools: [{ name: 'AgentRun', source: 'builtin', category: 'agent', state: 'disabled',
+        unavailable_reason: 'Disabled by effective tool policy', unavailable_reason_code: 'tool_policy_disabled' }],
+      skills: [{ name: 'workspace-skill', description: 'Example', source: 'project', scope: 'workspace',
+        path: 'skills/example', state: 'disabled', unavailable_reason: 'Skill tool is not active for this agent',
+        unavailable_reason_code: 'skill_tool_inactive' }],
+    });
+    expect(parsed.unavailable_reason_code).toBe('tool_policy_disabled');
+    expect(parsed.targets[0]?.unavailable_reason_code).toBe('model_not_configured');
+    expect(parsed.targets[0]?.launch_unavailable_reason_code).toBe('strict_subagent_policy_blocked');
+    expect(parsed.tools?.[0]?.unavailable_reason_code).toBe('tool_policy_disabled');
+    expect(parsed.skills?.[0]?.unavailable_reason_code).toBe('skill_tool_inactive');
+    expect(agentCapabilityReasonCodeSchema.options).toHaveLength(25);
   });
 
   it('accepts the named-profile disable config patch', () => {

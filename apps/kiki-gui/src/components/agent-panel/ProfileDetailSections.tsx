@@ -405,6 +405,7 @@ export function ProfileDetailSections({
                     state: cap?.state,
                     readOnly: cap?.readOnly,
                     unavailableReason: cap?.unavailableReason,
+                    unavailableReasonCode: cap?.unavailableReasonCode,
                     onOpen: onOpenTarget && cap ? () => onOpenTarget({ kind: 'tool', tool: cap }) : undefined,
                   };
                 })}
@@ -442,6 +443,7 @@ export function ProfileDetailSections({
                   name: skill.name,
                   state: skill.state,
                   unavailableReason: skill.unavailableReason,
+                  unavailableReasonCode: skill.unavailableReasonCode,
                   onOpen: onOpenTarget ? () => onOpenTarget({ kind: 'skill', skill }) : undefined,
                 }))}
               />

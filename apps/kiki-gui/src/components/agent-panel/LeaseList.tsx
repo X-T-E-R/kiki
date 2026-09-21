@@ -1,10 +1,22 @@
 import { memo } from 'react';
-import type { NamedAgentSubagentLease } from '@kiki/protocol';
+import type { AgentProfileSourceDiagnosticCode, NamedAgentSubagentLease } from '@kiki/protocol';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   NAMED_AGENT_LEASE_DETAIL_LABEL_KEYS,
   summarizeNamedAgentLease,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
+
+const AGENT_PROFILE_DIAGNOSTIC_KEYS: Readonly<Record<AgentProfileSourceDiagnosticCode, I18nKey>> = {
+  'agent_profile_source.invalid_path': 'agentProfileDiagnostic.agent_profile_source.invalid_path',
+  'agent_profile_source.path_escape': 'agentProfileDiagnostic.agent_profile_source.path_escape',
+  'agent_profile_source.symlink_escape': 'agentProfileDiagnostic.agent_profile_source.symlink_escape',
+  'agent_profile_source.not_private': 'agentProfileDiagnostic.agent_profile_source.not_private',
+  'agent_profile_source.unavailable': 'agentProfileDiagnostic.agent_profile_source.unavailable',
+  'agent_profile_source.invalid_profile': 'agentProfileDiagnostic.agent_profile_source.invalid_profile',
+  'agent_profile_source.cycle': 'agentProfileDiagnostic.agent_profile_source.cycle',
+  'agent_profile_source.depth_exceeded': 'agentProfileDiagnostic.agent_profile_source.depth_exceeded',
+};
 
 export interface SubagentLeaseListProps {
   readonly items: readonly (string | NamedAgentSubagentLease)[];
@@ -18,6 +30,12 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
   onOpen,
 }: SubagentLeaseListProps) {
   const { t } = useI18n();
+  const diagnosticText = (lease: NamedAgentSubagentLease, fallback: string | undefined) => {
+    const key = lease.diagnostic_code === undefined
+      ? undefined
+      : AGENT_PROFILE_DIAGNOSTIC_KEYS[lease.diagnostic_code];
+    return key === undefined ? fallback : t(key);
+  };
 
   if (items.length === 0) return null;
 
@@ -47,6 +65,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
           }
 
           const summary = summarizeNamedAgentLease(item);
+          const diagnostic = diagnosticText(item, summary.diagnostic);
           const cardContent = (
             <>
               <div className="font-medium text-ink flex items-center gap-1.5">
@@ -57,8 +76,8 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
                 ) : null}
                 <span>{summary.headline}</span>
               </div>
-              {summary.diagnostic ? (
-                <div className="text-danger text-[9px] mt-0.5">{summary.diagnostic}</div>
+              {diagnostic !== undefined ? (
+                <div className="text-danger text-[9px] mt-0.5">{diagnostic}</div>
               ) : null}
               {summary.details.map((d, i) => (
                 <div key={i} className="text-ink-soft pl-2">
@@ -113,6 +132,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
         ) : null}
         {leaseSubagents.map((lease, index) => {
           const leaseSummary = summarizeNamedAgentLease(lease);
+          const diagnostic = diagnosticText(lease, leaseSummary.diagnostic);
           return (
             <p
               key={`${lease.name}:${index}`}
@@ -133,8 +153,8 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
                   )}
                 </span>
               ) : null}
-              {leaseSummary.diagnostic !== undefined ? (
-                <span className="text-danger">{leaseSummary.diagnostic}</span>
+              {diagnostic !== undefined ? (
+                <span className="text-danger">{diagnostic}</span>
               ) : null}
             </p>
           );
@@ -155,6 +175,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
           );
         }
         const leaseSummary = summarizeNamedAgentLease(lease);
+        const diagnostic = diagnosticText(lease, leaseSummary.diagnostic);
         return (
           <div key={`${lease.name}:${index}`} className="space-y-1">
             <p>
@@ -176,8 +197,8 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
                 )}
               </p>
             ) : null}
-            {leaseSummary.diagnostic !== undefined ? (
-              <p className="pl-3 text-danger">{leaseSummary.diagnostic}</p>
+            {diagnostic !== undefined ? (
+              <p className="pl-3 text-danger">{diagnostic}</p>
             ) : null}
             {leaseSummary.details.map((detail, detailIndex) => (
               <p key={`${detail.label}:${detailIndex}`} className="pl-3">

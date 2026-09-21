@@ -1,4 +1,5 @@
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
+import type { AgentCapabilityReasonCode } from '@kiki/protocol';
 
 import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
@@ -38,6 +39,7 @@ export interface SubagentCapabilityTarget {
   readonly dispatchAllowed: boolean;
   readonly defaultsAvailable: boolean;
   readonly unavailableReason?: string;
+  readonly unavailableReasonCode?: AgentCapabilityReasonCode;
 }
 
 export interface SubagentCapabilityServices {
@@ -128,7 +130,12 @@ export function projectSubagentCapabilities(
           thinkingEffort: thinking ?? 'off',
         });
         if (!validated.ok || validated.binding.modelAlias === undefined) {
-          return { ...identity, defaultsAvailable: false, unavailableReason: 'Executor binding is unavailable' };
+          return {
+            ...identity,
+            defaultsAvailable: false,
+            unavailableReason: 'Executor binding is unavailable',
+            unavailableReasonCode: 'executor_binding_unavailable',
+          };
         }
         modelAlias = validated.binding.modelAlias;
         thinking = validated.binding.thinkingEffort;
@@ -137,7 +144,12 @@ export function projectSubagentCapabilities(
             modelAlias: route.lockedModelAlias ?? modelAlias,
             thinkingEffort: route.lockedThinkingEffort ?? thinking,
           });
-          if (!locked.ok) return { ...identity, defaultsAvailable: false, unavailableReason: 'Executor route binding is unavailable' };
+          if (!locked.ok) return {
+            ...identity,
+            defaultsAvailable: false,
+            unavailableReason: 'Executor route binding is unavailable',
+            unavailableReasonCode: 'executor_route_binding_unavailable',
+          };
           assertProfileRouteBinding({
             ...route,
             lockedModelAlias: route.lockedModelAlias === undefined ? undefined : locked.binding.modelAlias,
@@ -157,16 +169,37 @@ export function projectSubagentCapabilities(
         defaultsAvailable: true,
       };
     } catch (error) {
-      return { ...identity, defaultsAvailable: false, unavailableReason: capabilityFailureReason(error) };
+      const failure = capabilityFailure(error);
+      return {
+        ...identity,
+        defaultsAvailable: false,
+        unavailableReason: failure.reason,
+        unavailableReasonCode: failure.reasonCode,
+      };
     }
   }
 }
 
-function capabilityFailureReason(error: unknown): string {
+function capabilityFailure(error: unknown): {
+  readonly reason: string;
+  readonly reasonCode: AgentCapabilityReasonCode;
+} {
   if (isError2(error)) {
-    if (error.code === ErrorCodes.MODEL_NOT_CONFIGURED) return 'No default model is bound; pass model_alias explicitly';
-    if (error.code === ErrorCodes.SCOPED_PROFILE_UNAVAILABLE) return 'Scoped profile is unavailable';
-    if (error.code === ErrorCodes.CONFIG_INVALID) return 'Default binding does not satisfy model, effort, or executor constraints';
+    if (error.code === ErrorCodes.MODEL_NOT_CONFIGURED) return {
+      reason: 'No default model is bound; pass model_alias explicitly',
+      reasonCode: 'model_not_configured',
+    };
+    if (error.code === ErrorCodes.SCOPED_PROFILE_UNAVAILABLE) return {
+      reason: 'Scoped profile is unavailable',
+      reasonCode: 'scoped_profile_unavailable',
+    };
+    if (error.code === ErrorCodes.CONFIG_INVALID || error.code === ErrorCodes.ROUTE_BINDING_CONFLICT) return {
+      reason: 'Default binding does not satisfy model, effort, or executor constraints',
+      reasonCode: 'binding_constraints_unsatisfied',
+    };
   }
-  return 'Default model or executor binding is unavailable';
+  return {
+    reason: 'Default model or executor binding is unavailable',
+    reasonCode: 'default_binding_unavailable',
+  };
 }

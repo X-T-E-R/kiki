@@ -1561,9 +1561,18 @@ describe('AgentRun and dispatch parity golden', () => {
     disposables.add(dispatch.registerPlanStateReader('main', () => active));
     const captured = dispatch.readLaunchPolicy('main');
     expect(Object.isFrozen(captured)).toBe(true);
-    expect(evaluateDispatchAdmission(captured, 'spawn', 'native')).toEqual({ allowed: true, executionRestriction: 'research-readonly', reason: undefined });
-    expect(evaluateDispatchAdmission(captured, 'spawn', 'external').allowed).toBe(false);
-    expect(evaluateDispatchAdmission(captured, 'resume').allowed).toBe(false);
+    expect(evaluateDispatchAdmission(captured, 'spawn', 'native')).toEqual({
+      allowed: true, executionRestriction: 'research-readonly', reason: undefined, reasonCode: undefined,
+    });
+    expect(evaluateDispatchAdmission(captured, 'spawn', 'external')).toMatchObject({
+      allowed: false, reasonCode: 'native_executor_required',
+    });
+    expect(evaluateDispatchAdmission(captured, 'resume')).toMatchObject({
+      allowed: false, reasonCode: 'plan_resume_forbidden',
+    });
+    expect(evaluateDispatchAdmission({ planActive: false, callerRestriction: 'research-readonly' }, 'spawn')).toMatchObject({
+      allowed: false, reasonCode: 'research_readonly_dispatch_forbidden',
+    });
     expect(lane.lifecycleCreate).not.toHaveBeenCalled();
     expect(lane.subagentRun).not.toHaveBeenCalled();
     active = false;

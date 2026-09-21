@@ -9,7 +9,13 @@ import { SkillContentCollapse } from '../capabilities/SkillContentCollapse';
 import { CapabilityStateBadge } from './CapabilityStateBadge';
 import { ProfileDetailSections } from './ProfileDetailSections';
 import { toolCategoryLabel } from './ToolChipList';
-import { mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from './mapCapabilities';
+import {
+  agentCapabilitiesErrorText,
+  capabilityReasonText,
+  mapPanelSkills,
+  mapPanelSubagentTargets,
+  mapPanelTools,
+} from './mapCapabilities';
 import type {
   AgentIdentity,
   AgentSkillCapability,
@@ -80,7 +86,7 @@ function ProfileDraftDetail({
   if (capabilities.isError) {
     return (
       <div role="alert" className="rounded-lg border border-danger/30 bg-danger/5 p-3 text-danger text-[11px] space-y-2">
-        <p>{t('diagnostics.error')} · {capabilities.error.message}</p>
+        <p>{t('diagnostics.error')} · {agentCapabilitiesErrorText(capabilities.error, t)}</p>
         <button
           type="button"
           onClick={() => void capabilities.refetch()}
@@ -164,6 +170,16 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
     title = t('agentPanel.subagentDetail');
     categoryLabel = currentTarget.target.executor;
   }
+
+  const toolReason = currentTarget.kind === 'tool'
+    ? capabilityReasonText(t, currentTarget.tool.unavailableReasonCode, currentTarget.tool.unavailableReason)
+    : undefined;
+  const skillReason = currentTarget.kind === 'skill'
+    ? capabilityReasonText(t, currentTarget.skill.unavailableReasonCode, currentTarget.skill.unavailableReason)
+    : undefined;
+  const launchReason = currentTarget.kind === 'subagent'
+    ? capabilityReasonText(t, currentTarget.target.launchUnavailableReasonCode, currentTarget.target.launchUnavailableReason)
+    : undefined;
 
   return (
     <Dialog
@@ -255,9 +271,9 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
                 {t('agentPanel.approvalNotice')}
               </div>
             )}
-            {currentTarget.tool.unavailableReason && (
+            {toolReason !== undefined && (
               <div className="rounded-lg border border-danger/30 bg-danger/5 p-2.5 text-[11px] text-danger">
-                {t('agentPanel.unavailableReason', { reason: currentTarget.tool.unavailableReason })}
+                {t('agentPanel.unavailableReason', { reason: toolReason })}
               </div>
             )}
             {currentTarget.tool.readOnly && (
@@ -308,9 +324,9 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             </div>
 
             {/* Notices */}
-            {currentTarget.skill.unavailableReason && (
+            {skillReason !== undefined && (
               <div className="rounded-lg border border-danger/30 bg-danger/5 p-2.5 text-[11px] text-danger">
-                {currentTarget.skill.unavailableReason}
+                {skillReason}
               </div>
             )}
 
@@ -408,9 +424,9 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             ) : (
               <div className="rounded-lg border border-danger/30 bg-danger/5 p-2.5 text-[11px] text-danger space-y-1">
                 <p className="font-medium">{t('agentPanel.launchBlockedNotice')}</p>
-                {currentTarget.target.launchUnavailableReason && (
-                  <p className="text-[10.5px] opacity-90">{currentTarget.target.launchUnavailableReason}</p>
-                )}
+                {launchReason !== undefined ? (
+                  <p className="text-[10.5px] opacity-90">{launchReason}</p>
+                ) : null}
               </div>
             )}
 

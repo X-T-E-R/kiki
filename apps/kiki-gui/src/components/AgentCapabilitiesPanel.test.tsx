@@ -3,8 +3,9 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse } from '@kiki/protocol';
+import { ErrorCode, type AgentCapabilitiesQuery, type AgentCapabilitiesResponse } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
+import { ApiError } from '../lib/client';
 import { AgentCapabilitiesPanel } from './AgentCapabilitiesPanel';
 
 const { getAgentCapabilities } = vi.hoisted(() => ({ getAgentCapabilities: vi.fn() }));
@@ -16,10 +17,12 @@ const data = (context: 'live' | 'draft'): AgentCapabilitiesResponse => ({
   targets: [
     { profile: 'research', route: 'bounded', executor: 'native', model_alias: 'fixture/model-b', model_source: 'caller-lease', thinking_effort: 'high', effort_source: 'model-profile', defaults_available: true,
       launch_allowed: context === 'live' ? true : undefined, execution_restriction: context === 'live' ? 'research-readonly' : undefined },
-    { profile: 'worker', executor: 'external', defaults_available: false, unavailable_reason: 'missing model',
-      launch_allowed: context === 'live' ? false : undefined, launch_unavailable_reason: context === 'live' ? 'Plan blocks execution' : undefined },
+    { profile: 'worker', executor: 'external', defaults_available: false, unavailable_reason: 'missing model', unavailable_reason_code: 'model_not_configured',
+      launch_allowed: context === 'live' ? false : undefined, launch_unavailable_reason: context === 'live' ? 'Plan blocks execution' : undefined, launch_unavailable_reason_code: context === 'live' ? 'plan_resume_forbidden' : undefined },
     { profile: 'unknown-admission', executor: 'native', defaults_available: true },
   ],
+  tools: [{ name: 'Read', source: 'builtin', category: 'builtin', state: 'disabled', unavailable_reason: 'legacy tool reason', unavailable_reason_code: 'tool_policy_disabled' }],
+  skills: [{ name: 'fixture-skill', description: 'Fixture skill', source: 'workspace', scope: 'workspace', path: 'C:/fixture/SKILL.md', state: 'disabled', unavailable_reason: 'legacy skill reason', unavailable_reason_code: 'skill_tool_inactive' }],
 });
 beforeEach(() => {
   getAgentCapabilities.mockReset();
@@ -51,7 +54,10 @@ describe('AgentCapabilitiesPanel', () => {
     expect(container.textContent).toContain('调用方租约');
     expect(container.textContent).toContain('模型配置档');
     expect(container.textContent).toContain('仅限研究 · 只读执行');
-    expect(container.textContent).toContain('Plan blocks execution');
+    expect(container.textContent).toContain('计划模式下 AgentRun 不能恢复已有子 Agent；请先退出计划模式。');
+    expect(container.textContent).not.toContain('Plan blocks execution');
+    expect(container.textContent).toContain('已被生效的工具策略禁用。');
+    expect(container.textContent).toContain('此 Agent 未启用技能工具。');
     expect(container.querySelector('[data-capability-target="unknown-admission"]')?.textContent).not.toContain('当前允许启动');
     expect(container.querySelector('[data-capability-target="unknown-admission"]')?.textContent).toContain('未报告');
   });
@@ -77,5 +83,16 @@ describe('AgentCapabilitiesPanel', () => {
     await settle();
     expect(container.textContent).toContain('profile is disabled');
     expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+  it('localizes known capability-query API errors', async () => {
+    getAgentCapabilities.mockRejectedValue(new ApiError({
+      code: ErrorCode.WORKSPACE_NOT_FOUND,
+      msg: 'workspace missing from server',
+      data: null,
+    }));
+    await render({ workspace_id: 'wd_fixture', profile: 'agent' });
+    await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('无法加载 Agent 能力：找不到工作区。');
+    expect(container.querySelector('[role="alert"]')?.textContent).not.toContain('workspace missing from server');
   });
 });

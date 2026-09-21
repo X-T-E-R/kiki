@@ -521,6 +521,7 @@ function toNamedAgentSubagentLease(
     scope: lease.source === undefined ? undefined : 'private',
     status,
     diagnostic: scopedBindingDiagnostic(binding, status),
+    diagnostic_code: scopedBindingDiagnosticCode(binding, status),
     description: lease.description,
     when_to_use: lease.whenToUse,
     model_alias: lease.modelAlias,
@@ -572,6 +573,28 @@ function scopedBindingDiagnostic(
       return 'Source profile dependency depth exceeded';
     default:
       return 'Source profile is unavailable';
+  }
+}
+
+function scopedBindingDiagnosticCode(
+  binding: ScopedAgentProfileBinding | undefined,
+  status: ScopedAgentProfileBinding['status'] | undefined,
+): Exclude<NonNullable<NamedAgentProfile['subagents']>[number], string>['diagnostic_code'] {
+  if (binding?.diagnostic === undefined) {
+    return status === 'unavailable' ? AgentProfileSourceDiagnosticCodes.UNAVAILABLE : undefined;
+  }
+  switch (binding.diagnostic.code) {
+    case AgentProfileSourceDiagnosticCodes.INVALID_PATH:
+    case AgentProfileSourceDiagnosticCodes.PATH_ESCAPE:
+    case AgentProfileSourceDiagnosticCodes.SYMLINK_ESCAPE:
+    case AgentProfileSourceDiagnosticCodes.NOT_PRIVATE:
+    case AgentProfileSourceDiagnosticCodes.UNAVAILABLE:
+    case AgentProfileSourceDiagnosticCodes.INVALID_PROFILE:
+    case AgentProfileSourceDiagnosticCodes.CYCLE:
+    case AgentProfileSourceDiagnosticCodes.DEPTH_EXCEEDED:
+      return binding.diagnostic.code;
+    default:
+      return AgentProfileSourceDiagnosticCodes.UNAVAILABLE;
   }
 }
 

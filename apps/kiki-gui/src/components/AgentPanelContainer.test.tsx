@@ -4,6 +4,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { ErrorCode } from '@kiki/protocol';
+import { ApiError } from '@kiki/session-core/transport';
 import { createViewState, type AgentForest, type AgentTreeNode, type SessionViewState } from '@kiki/session-core/session';
 import { UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
 import { I18nProvider } from '../i18n';
@@ -337,6 +339,18 @@ it('shows a recoverable query error instead of silently presenting an empty capa
   await render('child');
   expect(element.querySelector('[role="alert"]')?.textContent).toContain('fixture unavailable');
   expect(element.textContent).toContain('kept local todo');
+});
+
+it('localizes known capability-query API errors', async () => {
+  getAgentCapabilities.mockRejectedValue(new ApiError({
+    code: ErrorCode.AGENT_PROFILE_NOT_FOUND,
+    msg: 'profile missing from server',
+    data: null,
+  }));
+  harness.agents['child'] = viewState();
+  await render('child');
+  expect(element.querySelector('[role="alert"]')?.textContent).toContain('无法加载 Agent 能力：找不到 Agent 配置档。');
+  expect(element.querySelector('[role="alert"]')?.textContent).not.toContain('profile missing from server');
 });
 
 it('renders cache hit rate percentage on single agent and aggregated on agent tree', async () => {

@@ -45,20 +45,26 @@ export function panelSkills(
   skills: readonly SkillDefinition[],
   toolActive: boolean,
 ): NonNullable<AgentCapabilitiesResponse['skills']> {
-  return skills.map((skill) => ({
-    name: skill.name,
-    description: skill.description,
-    source: skill.source,
-    scope: skill.source === 'project' || skill.source === 'extra' ? 'workspace' : 'global',
-    path: skill.path,
-    state: !toolActive || skill.metadata.disableModelInvocation === true ? 'disabled' : 'enabled',
-    unavailable_reason: !toolActive ? 'Skill tool is not active for this agent'
-      : skill.metadata.disableModelInvocation === true ? 'Model invocation is disabled for this skill' : undefined,
-    type: skill.metadata.type,
-    disable_model_invocation: skill.metadata.disableModelInvocation,
-    prompt_command: skill.metadata.promptCommand,
-    argument_hint: skill.metadata.argumentHint,
-  }));
+  return skills.map((skill) => {
+    const unavailableReason = !toolActive ? 'Skill tool is not active for this agent'
+      : skill.metadata.disableModelInvocation === true ? 'Model invocation is disabled for this skill' : undefined;
+    const unavailableReasonCode = !toolActive ? 'skill_tool_inactive'
+      : skill.metadata.disableModelInvocation === true ? 'skill_model_invocation_disabled' : undefined;
+    return {
+      name: skill.name,
+      description: skill.description,
+      source: skill.source,
+      scope: skill.source === 'project' || skill.source === 'extra' ? 'workspace' : 'global',
+      path: skill.path,
+      state: !toolActive || skill.metadata.disableModelInvocation === true ? 'disabled' : 'enabled',
+      unavailable_reason: unavailableReason,
+      unavailable_reason_code: unavailableReasonCode,
+      type: skill.metadata.type,
+      disable_model_invocation: skill.metadata.disableModelInvocation,
+      prompt_command: skill.metadata.promptCommand,
+      argument_hint: skill.metadata.argumentHint,
+    };
+  });
 }
 
 export const READ_ONLY_DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -114,16 +120,20 @@ export async function snapshotPanelCapabilities(
     sessionDisabledTools: sessionPolicy.disabledTools(),
   };
   const unavailableReason = 'Snapshot inventory only; agent runtime and invocation approval are unavailable';
+  const unavailableReasonCode = 'snapshot_inventory_only';
   const tools: NonNullable<AgentCapabilitiesResponse['tools']> = getAgentToolContributions().map(({ options }) => {
     const active = isToolActiveComposed(policy, options.name, options.source);
     const state: NonNullable<AgentCapabilitiesResponse['tools']>[number]['state'] = active ? 'unknown' : 'disabled';
+    const toolUnavailableReason = active ? unavailableReason : 'Disabled by effective tool policy';
+    const toolUnavailableReasonCode = active ? unavailableReasonCode : 'tool_policy_disabled';
     return {
       name: options.name,
       source: options.source ?? 'builtin',
       category: options.domain ?? 'other',
       group: toolGroupForName(options.name),
       state,
-      unavailable_reason: active ? unavailableReason : 'Disabled by effective tool policy',
+      unavailable_reason: toolUnavailableReason,
+      unavailable_reason_code: toolUnavailableReasonCode,
       read_only: binding.executionRestriction === 'research-readonly' || READ_ONLY_DISPLAY_TOOL_NAMES.has(options.name)
         ? true : undefined,
     };
@@ -135,6 +145,7 @@ export async function snapshotPanelCapabilities(
       ...skill,
       state: skill.state === 'enabled' ? 'unknown' : skill.state,
       unavailable_reason: skill.unavailable_reason ?? unavailableReason,
+      unavailable_reason_code: skill.unavailable_reason_code ?? unavailableReasonCode,
     })),
   };
 }
@@ -154,24 +165,31 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   const tools = new Map<string, NonNullable<AgentCapabilitiesResponse['tools']>[number]>();
   for (const contribution of contributions) {
     const active = policy.isToolActive(contribution.name, contribution.source);
+    const unavailableReason = !active ? 'Disabled by effective tool policy'
+      : !contribution.runtimeAvailable ? 'Required runtime capability is not connected'
+        : !contribution.conditionAvailable ? 'Tool activation condition is not satisfied' : undefined;
+    const unavailableReasonCode = !active ? 'tool_policy_disabled'
+      : !contribution.runtimeAvailable ? 'runtime_not_connected'
+        : !contribution.conditionAvailable ? 'activation_condition_unmet' : undefined;
     tools.set(contribution.name, {
       name: contribution.name, source: contribution.source, category: contribution.category,
       group: contribution.group,
       state: !active ? 'disabled' : !contribution.runtimeAvailable ? 'disconnected'
         : !contribution.conditionAvailable ? 'disabled' : 'enabled',
-      unavailable_reason: !active ? 'Disabled by effective tool policy'
-        : !contribution.runtimeAvailable ? 'Required runtime capability is not connected'
-          : !contribution.conditionAvailable ? 'Tool activation condition is not satisfied' : undefined,
+      unavailable_reason: unavailableReason,
+      unavailable_reason_code: unavailableReasonCode,
     });
   }
   for (const tool of registry) {
     const previous = tools.get(tool.name);
+    const active = policy.isToolActive(tool.name, tool.source);
     tools.set(tool.name, {
       name: tool.name, description: tool.description, source: tool.source,
       category: previous?.category ?? tool.source,
       group: previous?.group ?? toolGroupForName(tool.name),
-      state: policy.isToolActive(tool.name, tool.source) ? previous?.state ?? 'enabled' : 'disabled',
-      unavailable_reason: policy.isToolActive(tool.name, tool.source) ? previous?.unavailable_reason : 'Disabled by effective tool policy',
+      state: active ? previous?.state ?? 'enabled' : 'disabled',
+      unavailable_reason: active ? previous?.unavailable_reason : 'Disabled by effective tool policy',
+      unavailable_reason_code: active ? previous?.unavailable_reason_code : 'tool_policy_disabled',
       parameters: tool.parameters,
       read_only: (data.executionRestriction === 'research-readonly' || READ_ONLY_DISPLAY_TOOL_NAMES.has(tool.name)) ? true : undefined,
     });
@@ -181,7 +199,8 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
     if (typeof payload !== 'object' || payload === null || !('toolName' in payload) || typeof payload.toolName !== 'string') continue;
     const tool = tools.get(payload.toolName);
     if (tool?.state === 'enabled') tools.set(tool.name, { ...tool, state: 'approval-required',
-      unavailable_reason: 'An invocation of this tool is waiting for approval' });
+      unavailable_reason: 'An invocation of this tool is waiting for approval',
+      unavailable_reason_code: 'approval_pending' });
   }
   const skills = agent.accessor.get(ISessionSkillCatalog);
   await skills.ready;

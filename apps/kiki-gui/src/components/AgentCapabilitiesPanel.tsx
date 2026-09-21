@@ -4,7 +4,12 @@ import type { AgentCapabilitiesQuery } from '@kiki/protocol';
 import { agentProfileValueOrigin } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
-import { mapPanelSkills, mapPanelTools } from './agent-panel/mapCapabilities';
+import {
+  agentCapabilitiesErrorText,
+  capabilityReasonText,
+  mapPanelSkills,
+  mapPanelTools,
+} from './agent-panel/mapCapabilities';
 import { ProfileDetailSections } from './agent-panel/ProfileDetailSections';
 import { ToolChipList, toolCategoryLabel } from './agent-panel/ToolChipList';
 
@@ -27,6 +32,8 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
 
   const sourceLabel = (value: string | undefined) =>
     t(agentProfileValueOrigin({ reported: value, locked: false }).labelKey);
+  const reasonText = (code: string | undefined, rawReason: string | undefined) =>
+    capabilityReasonText(t, code, rawReason);
 
   return (
     <section data-agent-capabilities className="min-w-0 text-left text-[11.5px]">
@@ -39,7 +46,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
         <p className="break-all font-mono text-[10px] text-ink-faint">{scope}</p>
         {capabilities.isPending ? <p role="status" className="text-ink-soft">{t('diagnostics.loading')}</p> : null}
         {capabilities.isError ? <div role="alert" className="text-danger">
-          <p>{t('diagnostics.error')} · {capabilities.error.message}</p>
+          <p>{t('diagnostics.error')} · {agentCapabilitiesErrorText(capabilities.error, t)}</p>
           <button type="button" onClick={() => { void capabilities.refetch(); }} className="mt-1 underline">{t('common.retry')}</button>
         </div> : null}
         {!capabilities.isError && data !== undefined ? <>
@@ -67,6 +74,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
                   source: tool.source,
                   state: tool.state,
                   unavailableReason: tool.unavailable_reason,
+                  unavailableReasonCode: tool.unavailable_reason_code,
                 }))}
               />
             </details>
@@ -82,28 +90,38 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
                   source: skill.source,
                   state: skill.state,
                   unavailableReason: skill.unavailable_reason,
+                  unavailableReasonCode: skill.unavailable_reason_code,
                 }))}
               />
             </details>
           ) : null}
-          {!data.available ? <p role="status" className="break-words text-danger">{t('diagnostics.unavailable')} · {data.unavailable_reason ?? t('diagnostics.unknown')}</p> : null}
+          {(() => {
+            const reason = reasonText(data.unavailable_reason_code, data.unavailable_reason);
+            return !data.available && reason !== undefined
+              ? <p role="status" className="break-words text-danger">{t('diagnostics.unavailable')} · {reason}</p>
+              : !data.available ? <p role="status" className="break-words text-danger">{t('diagnostics.unavailable')} · {t('diagnostics.unknown')}</p> : null;
+          })()}
           {data.targets.length === 0 ? <p className="text-ink-faint">{t('diagnostics.empty')}</p> : null}
-          {data.targets.map((target, index) => <article key={`${target.profile}:${target.route ?? ''}:${index}`} className="space-y-1 rounded-md border border-hairline bg-panel p-2" data-capability-target={target.profile}>
-            <p className="break-all font-mono font-medium text-ink">{target.profile}{target.route === undefined ? '' : ` / ${target.route}`}</p>
-            {target.description !== undefined ? <p className="break-words text-ink-soft">{target.description}</p> : null}
-            <p className="break-all text-ink-soft">{t('diagnostics.executor')} · {target.executor}</p>
-            <p className="break-all text-ink">{t('diagnostics.model')} · {target.model_alias ?? t('diagnostics.unknown')}</p>
-            <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.model_source)}</p>
-            <p className="break-all text-ink">{t('diagnostics.effort')} · {target.thinking_effort ?? t('diagnostics.unknown')}</p>
-            <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.effort_source)}</p>
-            <p className={target.defaults_available ? 'text-success' : 'text-danger'}>{t(target.defaults_available ? 'diagnostics.defaultsReady' : 'diagnostics.defaultsMissing')}</p>
-            {target.unavailable_reason !== undefined ? <p className="break-words text-danger">{target.unavailable_reason}</p> : null}
-            {live && data.context === 'live' ? <>
-              <p className={target.launch_allowed === true ? 'text-success' : 'text-ink-soft'}>{target.launch_allowed === undefined ? t('diagnostics.unknown') : t(target.launch_allowed ? 'diagnostics.allowed' : 'diagnostics.blocked')}</p>
-              {target.launch_unavailable_reason !== undefined ? <p className="break-words text-danger">{target.launch_unavailable_reason}</p> : null}
-              {target.execution_restriction === 'research-readonly' ? <p className="text-accent">{t('diagnostics.readonly')}</p> : null}
-            </> : null}
-          </article>)}
+          {data.targets.map((target, index) => {
+            const unavailableReason = reasonText(target.unavailable_reason_code, target.unavailable_reason);
+            const launchUnavailableReason = reasonText(target.launch_unavailable_reason_code, target.launch_unavailable_reason);
+            return <article key={`${target.profile}:${target.route ?? ''}:${index}`} className="space-y-1 rounded-md border border-hairline bg-panel p-2" data-capability-target={target.profile}>
+              <p className="break-all font-mono font-medium text-ink">{target.profile}{target.route === undefined ? '' : ` / ${target.route}`}</p>
+              {target.description !== undefined ? <p className="break-words text-ink-soft">{target.description}</p> : null}
+              <p className="break-all text-ink-soft">{t('diagnostics.executor')} · {target.executor}</p>
+              <p className="break-all text-ink">{t('diagnostics.model')} · {target.model_alias ?? t('diagnostics.unknown')}</p>
+              <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.model_source)}</p>
+              <p className="break-all text-ink">{t('diagnostics.effort')} · {target.thinking_effort ?? t('diagnostics.unknown')}</p>
+              <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.effort_source)}</p>
+              <p className={target.defaults_available ? 'text-success' : 'text-danger'}>{t(target.defaults_available ? 'diagnostics.defaultsReady' : 'diagnostics.defaultsMissing')}</p>
+              {unavailableReason !== undefined ? <p className="break-words text-danger">{unavailableReason}</p> : null}
+              {live && data.context === 'live' ? <>
+                <p className={target.launch_allowed === true ? 'text-success' : 'text-ink-soft'}>{target.launch_allowed === undefined ? t('diagnostics.unknown') : t(target.launch_allowed ? 'diagnostics.allowed' : 'diagnostics.blocked')}</p>
+                {launchUnavailableReason !== undefined ? <p className="break-words text-danger">{launchUnavailableReason}</p> : null}
+                {target.execution_restriction === 'research-readonly' ? <p className="text-accent">{t('diagnostics.readonly')}</p> : null}
+              </> : null}
+            </article>;
+          })}
         </> : null}
       </div> : null}
     </section>

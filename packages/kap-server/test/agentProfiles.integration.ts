@@ -48,13 +48,15 @@ describe('GET /api/agents', () => {
       { ...shared, name: 'global-example', source: 'user', metadata: {} },
     ], true);
     expect(skills).toMatchObject([
-      { scope: 'workspace', source: 'project', state: 'disabled', disable_model_invocation: true },
+      { scope: 'workspace', source: 'project', state: 'disabled', disable_model_invocation: true,
+        unavailable_reason_code: 'skill_model_invocation_disabled' },
       { scope: 'global', source: 'user', state: 'enabled' },
     ]);
     expect(JSON.stringify(skills)).not.toContain('PRIVATE SKILL BODY');
     expect(panelSkills([{ ...shared, source: 'builtin', metadata: { argumentHint: 'arg1' } }], false)[0]).toMatchObject({
       state: 'disabled',
       argument_hint: 'arg1',
+      unavailable_reason_code: 'skill_tool_inactive',
     });
   });
 
@@ -125,7 +127,9 @@ describe('GET /api/agents', () => {
     const body = await response.json() as Envelope<unknown>;
     expect(body.code).toBe(0);
     const data = agentCapabilitiesResponseSchema.parse(body.data);
-    expect(data).toMatchObject({ live: false, available: false });
+    expect(data).toMatchObject({
+      live: false, available: false, unavailable_reason_code: 'session_or_agent_not_live',
+    });
     expect(data.unavailable_reason).toContain('not live');
     expect(manager.get(created.data.id)).toBeUndefined();
   });
@@ -215,7 +219,10 @@ describe('GET /api/agents', () => {
     });
     expect(snapshot.profile?.source_file).toBe(live.profile?.source_file);
     expect(snapshot.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ launch_allowed: false, launch_unavailable_reason: expect.stringContaining('not live') }),
+      expect.objectContaining({
+        launch_allowed: false, launch_unavailable_reason: expect.stringContaining('not live'),
+        launch_unavailable_reason_code: 'snapshot_launch_unavailable',
+      }),
     ]));
     expect(snapshot.tools?.length).toBeGreaterThan(0);
     expect(snapshot.tools?.every((tool) => tool.state === 'unknown' || tool.state === 'disabled')).toBe(true);
@@ -376,7 +383,10 @@ describe('GET /api/agents', () => {
       expect(body.data.targets.find((target) => target.route === 'leased-helper.stub')).toMatchObject({ defaults_available: true, model_alias: 'stub', model_source: 'route', thinking_effort: 'off' });
       expect(body.data.targets.find((target) => target.profile === 'leased-helper')).toMatchObject({ defaults_available: true, model_alias: 'stub', model_source: 'caller-lease', thinking_effort: 'off' });
       expect(body.data.targets.find((target) => target.profile === 'private-helper')).toMatchObject({ defaults_available: true, model_alias: 'stub' });
-      expect(body.data.targets.find((target) => target.profile === 'unbound-helper')).toMatchObject({ defaults_available: false, unavailable_reason: expect.stringContaining('No default model') });
+      expect(body.data.targets.find((target) => target.profile === 'unbound-helper')).toMatchObject({
+        defaults_available: false, unavailable_reason: expect.stringContaining('No default model'),
+        unavailable_reason_code: 'model_not_configured',
+      });
       for (const target of body.data.targets) expect(description).toContain(target.profile);
       expect(JSON.stringify(body.data)).not.toMatch(/PRIVATE_PROMPT|_private|sourceDefinitionId|YOUR_API_KEY/);
       expect(lifecycle.list()).toHaveLength(1);
@@ -426,7 +436,9 @@ describe('GET /api/agents', () => {
       expect(before.targets.every((target) => target.launch_allowed === true)).toBe(true);
       const interactions = session.accessor.get(ISessionInteractionService);
       const pending = interactions.enqueue({ kind: 'approval', origin: { agentId: 'main' }, payload: { toolName: 'AgentRun' } });
-      expect((await read()).tools?.find((tool) => tool.name === 'AgentRun')?.state).toBe('approval-required');
+      expect((await read()).tools?.find((tool) => tool.name === 'AgentRun')).toMatchObject({
+        state: 'approval-required', unavailable_reason_code: 'approval_pending',
+      });
       interactions.respond(pending.id, { decision: 'cancelled' });
       const usage = agent.accessor.get(IAgentUsageService);
       usage.record('unpriced-fixture-model', { inputOther: 10, inputCacheRead: 3, inputCacheCreation: 2, output: 5 }, undefined, { usageKnown: true });
@@ -444,6 +456,7 @@ describe('GET /api/agents', () => {
         const expected = evaluateDispatchAdmission(policy, 'spawn', target.executor);
         expect(target.launch_allowed).toBe(expected.allowed);
         expect(target.launch_unavailable_reason).toBe(expected.reason);
+        expect(target.launch_unavailable_reason_code).toBe(expected.reasonCode);
         expect(target.execution_restriction).toBe(expected.executionRestriction);
         expect(target.defaults_available).toBe(before.targets.find((item) => item.profile === target.profile)?.defaults_available);
       }
@@ -462,7 +475,8 @@ describe('GET /api/agents', () => {
       vi.spyOn(profile, 'data').mockReturnValue({ ...data, executionRestriction: 'research-readonly' });
       const readonly = await read();
       expect(readonly).toMatchObject({ available: false, targets: expect.arrayContaining([expect.objectContaining({ launch_allowed: false })]),
-        unavailable_reason: evaluateDispatchAdmission(dispatch.readLaunchPolicy(agent.id), 'spawn').reason });
+        unavailable_reason: evaluateDispatchAdmission(dispatch.readLaunchPolicy(agent.id), 'spawn').reason,
+        unavailable_reason_code: evaluateDispatchAdmission(dispatch.readLaunchPolicy(agent.id), 'spawn').reasonCode });
       expect(readonly.tools?.find((tool) => tool.name === 'AgentRun')).toMatchObject({ state: 'disabled' });
       expect(readonly.profile).toMatchObject({ name: 'lead', execution_restriction: 'research-readonly' });
       expect(readonly.metrics?.['main']).toMatchObject({
@@ -1044,6 +1058,7 @@ describe('GET /api/agents', () => {
         scope: 'private',
         status: 'unavailable',
         diagnostic: 'Source profile is unavailable',
+        diagnostic_code: AgentProfileSourceDiagnosticCodes.UNAVAILABLE,
       },
     ]);
     expect(data.items.some((profile) => profile.name === 'private-research-writer')).toBe(false);
@@ -1131,6 +1146,7 @@ describe('GET /api/agents', () => {
         scope: 'private',
         status: 'unavailable',
         diagnostic: 'Source profile is unavailable',
+        diagnostic_code: AgentProfileSourceDiagnosticCodes.UNAVAILABLE,
       },
     ]);
     const projectedLeases = JSON.stringify(parent?.subagents);
