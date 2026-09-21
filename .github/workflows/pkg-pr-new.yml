@@ -15,7 +15,7 @@ jobs:
   publish:
     name: Publish Kiki preview
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'MoonshotAI' && github.event.pull_request.draft == false
+    if: github.repository_owner == 'X-T-E-R' && github.event.pull_request.draft == false
 
     steps:
       - name: Checkout
