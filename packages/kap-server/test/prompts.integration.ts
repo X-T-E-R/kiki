@@ -13,10 +13,12 @@ import {
   IAgentExecutionService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
+  IAgentTaskService,
   IAgentPlanService,
   IAgentProfileService,
   IAgentPromptService,
   IAgentToolPolicyService,
+  IEventBus,
   IEventDispatcher,
   IBootstrapService,
   PromptEnqueued,
@@ -1171,7 +1173,9 @@ describe('server-v2 /api prompts', () => {
     const provider = createHttpServer(async (request, response) => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
-      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown);
+      const body = Buffer.concat(chunks).toString('utf8');
+      if (body.length === 0) return;
+      requests.push(JSON.parse(body) as unknown);
       if (requests.length === 1) await firstGate;
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end(
@@ -1886,6 +1890,31 @@ describe('server-v2 /api prompts', () => {
     await child.accessor.get(IAgentExecutionService).settled();
     await lifecycle.remove(child.id);
     expect(lifecycle.get(child.id)).toBeUndefined();
+    const parent = lifecycle.get('main')!;
+    const observed: string[] = [];
+    const eventSubscription = parent.accessor.get(IEventBus).subscribe((event) => {
+      if (
+        event.type === 'task.started' ||
+        event.type === 'task.terminated' ||
+        event.type === 'subagent.spawned' ||
+        event.type === 'subagent.started' ||
+        event.type === 'subagent.failed'
+      ) observed.push(event.type);
+    });
+    const createSubscription = lifecycle.onDidCreate((handle) => {
+      if (handle.id !== child.id) return;
+      handle.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register(
+        'hold-restored-child-turn',
+        async (context) => {
+          await new Promise<void>((resolve) => {
+            if (context.signal.aborted) resolve();
+            else context.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          context.signal.throwIfAborted();
+        },
+        { before: 'context-injector' },
+      );
+    });
 
     const resumed = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'after release' }],
@@ -1903,6 +1932,26 @@ describe('server-v2 /api prompts', () => {
         ),
       ),
     ).toBe(true);
+    const tasks = parent.accessor.get(IAgentTaskService);
+    const task = await vi.waitFor(() => {
+      const found = tasks.list(true).find((item) => item.kind === 'agent' && item.agentId === child.id);
+      expect(found).toBeDefined();
+      return found!;
+    });
+    await vi.waitFor(() => {
+      expect(observed).toEqual(expect.arrayContaining([
+        'task.started',
+        'subagent.spawned',
+        'subagent.started',
+      ]));
+    });
+    await tasks.stopByUser(task.taskId);
+    await vi.waitFor(() => {
+      expect(tasks.getTask(task.taskId)?.status).toBe('killed');
+      expect(observed).toEqual(expect.arrayContaining(['task.terminated', 'subagent.failed']));
+    });
+    createSubscription.dispose();
+    eventSubscription.dispose();
   });
 
   it('reports incomplete persisted binding metadata for a known disposed agent', async () => {

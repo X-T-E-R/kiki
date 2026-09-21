@@ -356,14 +356,68 @@ describe('SubagentRosterTracker', () => {
     expect(t.get(SID)[0]).toMatchObject({ status: 'running', subagent_phase: 'working' });
   });
 
-  it('hides a live row once its agent generation is disposed', () => {
+  it.each(['subagent.started', 'tool.call.started'] as const)(
+    'reopens a disposed terminal row on newer %s activity',
+    (type) => {
+      const t = new SubagentRosterTracker();
+      t.apply(SID, spawn('agent-1', { time: 100, taskId: 'task-old' }));
+      t.apply(
+        SID,
+        ev({
+          type: 'task.terminated',
+          time: 200,
+          info: {
+            taskId: 'task-old',
+            kind: 'agent',
+            agentId: 'agent-1',
+            detached: true,
+            description: 'old run',
+            status: 'completed',
+            startedAt: 100,
+            endedAt: 200,
+          },
+        }),
+      );
+      t.apply(SID, ev({ type: 'agent.disposed', agentId: 'agent-1', time: 250 }));
+      t.apply(
+        SID,
+        type === 'subagent.started'
+          ? ev({ type, subagentId: 'agent-1', time: 300 })
+          : ev({
+              type,
+              agentId: 'agent-1',
+              turnId: 2,
+              toolCallId: 'tool-new',
+              name: 'Bash',
+              args: {},
+              time: 300,
+            }),
+      );
+
+      expect(t.get(SID)[0]).toMatchObject({
+        status: 'running',
+        subagent_phase: 'working',
+        started_at: new Date(300).toISOString(),
+        tool_call_count: type === 'tool.call.started' ? 1 : 0,
+      });
+      expect(t.get(SID)[0]?.live).toBeUndefined();
+      expect(t.get(SID)[0]?.completed_at).toBeUndefined();
+    },
+  );
+
+  it('retains a known nonterminal row as not live after disposal', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawn('agent-1', { time: 100, taskId: 'task-old' }));
     t.apply(SID, ev({ type: 'subagent.started', subagentId: 'agent-1', time: 110 }));
 
     t.apply(SID, ev({ type: 'agent.disposed', agentId: 'agent-1', time: 200 }));
 
-    expect(t.get(SID)).toEqual([]);
+    expect(t.get(SID)[0]).toMatchObject({
+      id: 'agent-1',
+      live: false,
+      status: 'running',
+      subagent_phase: 'working',
+    });
   });
 
   it.each([
@@ -542,7 +596,11 @@ describe('SubagentRosterTracker', () => {
     t.apply(SID, spawn('agent-1', { time: 150, taskId: 'task-old' }));
     t.apply(SID, ev({ type: 'subagent.started', subagentId: 'agent-1', time: 175 }));
 
-    expect(t.get(SID)).toEqual([]);
+    expect(t.get(SID)[0]).toMatchObject({
+      live: false,
+      status: 'running',
+      subagent_phase: 'queued',
+    });
   });
 
   it('requires a distinct task or spawn to start strictly after disposal', () => {
@@ -566,7 +624,7 @@ describe('SubagentRosterTracker', () => {
         },
       }),
     );
-    expect(fromTask.get(SID)).toEqual([]);
+    expect(fromTask.get(SID)[0]).toMatchObject({ live: false, subagent_phase: 'queued' });
 
     fromTask.apply(
       SID,
@@ -596,7 +654,7 @@ describe('SubagentRosterTracker', () => {
     fromSpawn.apply(SID, spawn('agent-1', { time: 100, taskId: 'task-old' }));
     fromSpawn.apply(SID, ev({ type: 'agent.disposed', agentId: 'agent-1', time: 200 }));
     fromSpawn.apply(SID, spawn('agent-1', { time: 200, taskId: 'task-new' }));
-    expect(fromSpawn.get(SID)).toEqual([]);
+    expect(fromSpawn.get(SID)[0]).toMatchObject({ live: false, subagent_phase: 'queued' });
 
     fromSpawn.apply(SID, spawn('agent-1', { time: 201, taskId: 'task-newer' }));
     expect(fromSpawn.get(SID)[0]).toMatchObject({

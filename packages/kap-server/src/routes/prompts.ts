@@ -5,21 +5,31 @@ import {
   IBootstrapService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
+  IAgentTaskService,
   IAgentPlanService,
   IAgentProfileService,
   IAgentToolPolicyService,
   IAgentPromptService,
   IAgentSkillService,
   IEventBus,
+  IEventDispatcher,
   IEventService,
   IFileService,
   ISessionMediaStore,
   ISessionMetadata,
   ISessionAgentProfileCatalog,
+  ISessionDispatchService,
   ISessionSkillCatalog,
   isUserActivatableSkillType,
   promptMetadataTextFromContentParts,
   ProfileError,
+  SubagentCompleted,
+  SubagentFailed,
+  SubagentStarted,
+  SubagentTask,
+  emitAgentRunSpawned,
+  type AgentMeta,
+  type PromptCompletion,
   type PromptExecutionBinding,
   type PromptHandle,
   type PromptQueueSnapshot,
@@ -38,6 +48,7 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
+import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensurePromptAuthReady } from '../lib/promptAuth';
 import { projectPromptContentParts } from '../services/messages/messageProjection';
@@ -120,6 +131,7 @@ async function resolvePromptFromSession(
   agentId?: string,
 ) {
   const lifecycle = session.accessor.get(IAgentLifecycleService);
+  let restoredMeta: AgentMeta | undefined;
   let agent = agentId === undefined || agentId === MAIN_AGENT_ID
     ? await ensureMainAgent(session)
     : lifecycle.get(agentId);
@@ -155,11 +167,15 @@ async function resolvePromptFromSession(
         executorProtocol: snapshot.executorProtocol,
       },
     });
+    restoredMeta = meta;
   }
   if (agent === undefined) {
     throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agentId} does not exist`);
   }
   return {
+    agent,
+    agentId: agent.id,
+    restoredMeta,
     accessor: agent.accessor,
     prompt: agent.accessor.get(IAgentPromptService),
     skill: agent.accessor.get(IAgentSkillService),
@@ -169,6 +185,104 @@ async function resolvePromptFromSession(
     permissionMode: agent.accessor.get(IAgentPermissionModeService),
     plan: agent.accessor.get(IAgentPlanService),
   };
+}
+
+type ResolvedPromptAgent = Awaited<ReturnType<typeof resolvePromptFromSession>>;
+
+async function trackRestoredPromptRun(
+  core: Scope,
+  session: ISessionScopeHandle,
+  resolved: ResolvedPromptAgent,
+  promptId: string,
+  completion: Promise<PromptCompletion>,
+): Promise<void> {
+  const meta = resolved.restoredMeta;
+  const parentRef = delegatorRef(meta);
+  if (meta === undefined || parentRef?.kind !== 'agent' || parentRef.agentId === resolved.agentId) return;
+  const parent = await resolvePromptFromSession(core, session, parentRef.agentId);
+  const binding = resolved.profile.data();
+  const profileName = binding.profileName ?? binding.routeId ?? meta.displayName ?? resolved.agentId;
+  const controller = new AbortController();
+  controller.signal.addEventListener('abort', () => {
+    const reason = new Error('Subagent prompt stopped');
+    if (resolved.prompt.abort(promptId, reason)) return;
+    const active = resolved.prompt.list().active;
+    if (active !== undefined) resolved.prompt.abort(active.id, reason);
+  }, { once: true });
+  const taskCompletion = completion.then((settlement) => {
+    if (settlement.state === 'completed' || settlement.state === 'blocked') {
+      return { result: `Prompt ${settlement.state}` };
+    }
+    if (settlement.state === 'cancelled') {
+      throw controller.signal.reason ?? new Error('terminated');
+    }
+    const error = settlement.result?.type === 'failed' ? settlement.result.error : undefined;
+    throw error instanceof Error ? error : new Error(error === undefined ? 'Prompt failed' : String(error));
+  });
+  const tasks = parent.accessor.get(IAgentTaskService);
+  let taskId: string | undefined;
+  try {
+    taskId = tasks.registerTask(
+      new SubagentTask(
+        {
+          agentId: resolved.agentId,
+          profileName,
+          model: binding.modelAlias,
+          thinkingEffort: binding.effectiveThinkingLevel ?? binding.thinkingLevel,
+          completion: taskCompletion,
+        },
+        meta.userLabel ?? profileName,
+        controller,
+      ),
+      { detached: true },
+    );
+    await tasks.suppressTerminalNotification(taskId);
+    await session.accessor.get(ISessionDispatchService).recordRun(resolved.agentId, taskId);
+    emitAgentRunSpawned(parent.agent, resolved.agentId, {
+      profileName,
+      description: meta.userLabel,
+      runInBackground: true,
+      model: binding.modelAlias,
+      taskId,
+    });
+    await parent.accessor.get(IEventDispatcher).dispatch(
+      new SubagentStarted({ subagentId: resolved.agentId }),
+    );
+    void completion.then(
+      (settlement) => {
+        if (settlement.state === 'completed' || settlement.state === 'blocked') {
+          void parent.accessor.get(IEventDispatcher).dispatch(
+            new SubagentCompleted({
+              subagentId: resolved.agentId,
+              resultSummary: `Prompt ${settlement.state}`,
+            }),
+          );
+          return;
+        }
+        const error = settlement.state === 'cancelled'
+          ? 'terminated'
+          : settlement.result?.type === 'failed'
+            ? String(settlement.result.error)
+            : 'Prompt failed';
+        void parent.accessor.get(IEventDispatcher).dispatch(
+          new SubagentFailed({ subagentId: resolved.agentId, error }),
+        );
+      },
+      (error) => {
+        void parent.accessor.get(IEventDispatcher).dispatch(
+          new SubagentFailed({
+            subagentId: resolved.agentId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      },
+    );
+  } catch (error) {
+    if (taskId !== undefined) await tasks.stop(taskId, 'Prompt wake tracking failed');
+    else controller.abort(error);
+    resolved.prompt.abort(promptId, error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  }
 }
 
 async function assertActivatableSkills(
@@ -366,6 +480,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             }, promptMetadataTextFromContentParts(parts));
           }
           const settlement = watchPromptSettlements(resolved.events);
+          const wakeSettlement = resolved.restoredMeta === undefined
+            ? undefined
+            : watchPromptCompletion(resolved.events);
           let result: PromptWithSkillsResult;
           try {
             result = await resolved.skill.promptWithSkills({
@@ -377,7 +494,19 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             });
           } catch (error) {
             settlement.dispose();
+            wakeSettlement?.dispose();
             throw error;
+          }
+          if (wakeSettlement !== undefined) {
+            const completion = wakeSettlement.wait(result.prompt_id);
+            void completion.then(() => wakeSettlement.dispose());
+            await trackRestoredPromptRun(
+              core,
+              session,
+              resolved,
+              result.prompt_id,
+              completion,
+            );
           }
           enqueued = true;
           settlement.settle(result.prompt_id, () => preparedMedia?.discard());
@@ -408,6 +537,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           toolCalls: [],
           origin: { kind: 'user' },
         }, execution, deferredDisabledTools, req.body.append_timing);
+        await trackRestoredPromptRun(core, session, resolved, handle.id, handle.completion);
         enqueued = true;
         const staging = preparedMedia;
         void Promise.race([handle.launched, handle.completion]).then(
@@ -622,6 +752,74 @@ export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][num
     created_at: prompt.createdAt,
     append_timing: prompt.appendTiming ?? 'agent_idle',
     revision: prompt.revision ?? 0,
+  };
+}
+
+function watchPromptCompletion(events: IEventBus): {
+  wait(promptId: string): Promise<PromptCompletion>;
+  dispose(): void;
+} {
+  const completed = new Map<string, PromptCompletion>();
+  const waiters = new Map<string, (completion: PromptCompletion) => void>();
+  const parentOf = new Map<string, string>();
+  const settle = (promptId: string, completion: PromptCompletion): void => {
+    completed.set(promptId, completion);
+    const resolve = waiters.get(promptId);
+    if (resolve === undefined) return;
+    waiters.delete(promptId);
+    resolve(completion);
+  };
+  const subscription = events.subscribe((event) => {
+    if (event.type === 'prompt.steered') {
+      const steered = event as { readonly promptIds?: unknown; readonly activePromptId?: unknown };
+      if (!Array.isArray(steered.promptIds) || typeof steered.activePromptId !== 'string') return;
+      for (const childId of steered.promptIds) {
+        if (typeof childId !== 'string') continue;
+        parentOf.set(childId, steered.activePromptId);
+        const resolve = waiters.get(childId);
+        if (resolve === undefined) continue;
+        waiters.delete(childId);
+        waiters.set(steered.activePromptId, resolve);
+      }
+      return;
+    }
+    if (event.type === 'prompt.completed') {
+      const value = event as { readonly promptId?: unknown; readonly reason?: unknown };
+      if (typeof value.promptId !== 'string') return;
+      const state = value.reason === 'failed'
+        ? 'failed'
+        : value.reason === 'blocked'
+          ? 'blocked'
+          : 'completed';
+      settle(value.promptId, {
+        promptId: value.promptId,
+        result: state === 'failed'
+          ? { type: 'failed', steps: 0, error: new Error('Prompt failed') }
+          : undefined,
+        state,
+      });
+      return;
+    }
+    if (event.type !== 'prompt.aborted') return;
+    const value = event as { readonly promptId?: unknown };
+    if (typeof value.promptId !== 'string') return;
+    settle(value.promptId, { promptId: value.promptId, result: undefined, state: 'cancelled' });
+  });
+  return {
+    wait(promptId: string): Promise<PromptCompletion> {
+      const effectiveId = parentOf.get(promptId) ?? promptId;
+      const existing = completed.get(effectiveId);
+      if (existing !== undefined) return Promise.resolve(existing);
+      return new Promise((resolve) => {
+        waiters.set(effectiveId, resolve);
+      });
+    },
+    dispose(): void {
+      subscription.dispose();
+      waiters.clear();
+      completed.clear();
+      parentOf.clear();
+    },
   };
 }
 

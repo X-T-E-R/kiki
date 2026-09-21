@@ -1116,7 +1116,7 @@ describe('SessionEventBroadcaster', () => {
     expect((envelopes[0]!.payload as { agentId: string }).agentId).toBe('main');
   });
 
-  it('broadcasts agent.disposed only for attached agents and invalidates their live roster row', async () => {
+  it('broadcasts agent.disposed only for attached agents and retains their non-live roster row', async () => {
     const lc = new FakeLifecycle();
     const main = lc.addAgent('main');
     lc.addAgent('agent-0');
@@ -1144,7 +1144,9 @@ describe('SessionEventBroadcaster', () => {
     expect(payload.time).toEqual(expect.any(Number));
     expect(disposed[0]!.timestamp).toBe(new Date(payload.time!).toISOString());
     expect(disposed[0]!.volatile).toBeUndefined();
-    expect((await bc.getSnapshotState('s1')).subagents).toEqual([]);
+    expect((await bc.getSnapshotState('s1')).subagents).toEqual([
+      expect.objectContaining({ id: 'agent-0', live: false, status: 'running' }),
+    ]);
   });
 
   it('delivers lifecycle events past the agent allowlist (session-grained)', async () => {

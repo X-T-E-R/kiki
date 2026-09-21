@@ -100,12 +100,19 @@ export class SubagentRosterTracker {
           mayStartGeneration &&
           eventAt !== undefined &&
           afterDisposal;
-        const restarted = restartsTerminal || restartsActive || restartsUnknown;
+        const restartsDisposed =
+          existing?.live === false &&
+          mayStartGeneration &&
+          eventAt !== undefined &&
+          afterDisposal;
+        const restarted = restartsTerminal || restartsActive || restartsUnknown || restartsDisposed;
         const matchingGeneration =
           existingTaskId === undefined ||
           (event.taskId !== undefined && event.taskId === existingTaskId);
         const acceptedRun =
-          existing === undefined || restarted || (existing.status !== 'unknown' && matchingGeneration);
+          existing === undefined ||
+          restarted ||
+          (existing.status !== 'unknown' && existing.live !== false && matchingGeneration);
         const generationReset =
           restarted && eventAt !== undefined
             ? this.resetGeneration(sessionId, event.subagentId, eventAt)
@@ -122,6 +129,7 @@ export class SubagentRosterTracker {
             event.subagentName,
             event.subagentId,
           ),
+          live: acceptedRun ? undefined : existing?.live,
           status: acceptedRun
             ? restarted
               ? 'running'
@@ -194,16 +202,31 @@ export class SubagentRosterTracker {
       }
       case 'subagent.started': {
         const entry = this.bySession.get(sessionId)?.get(event.subagentId);
-        if (!entry || isTerminalStatus(entry.status)) return;
+        if (!entry) return;
         const eventAt = finiteTime(event.time);
         const existingStartedAt = parsedTime(entry.started_at);
-        if (entry.status === 'unknown') {
+        if (isTerminalStatus(entry.status)) {
+          const endedAt = parsedTime(entry.completed_at);
+          const disposedAt = this.disposals(sessionId).get(event.subagentId);
+          if (
+            eventAt === undefined ||
+            !crossesBoundary(eventAt, endedAt) ||
+            !crossesBoundary(eventAt, disposedAt)
+          ) return;
+          Object.assign(
+            entry,
+            this.resetGeneration(sessionId, event.subagentId, eventAt),
+            { live: undefined, status: 'running', subagent_phase: 'working' },
+          );
+          return;
+        }
+        if (entry.status === 'unknown' || entry.live === false) {
           const disposedAt = this.disposals(sessionId).get(event.subagentId);
           if (eventAt === undefined || !crossesBoundary(eventAt, disposedAt)) return;
           Object.assign(
             entry,
             this.resetGeneration(sessionId, event.subagentId, eventAt),
-            { status: 'running', subagent_phase: 'working' },
+            { live: undefined, status: 'running', subagent_phase: 'working' },
           );
           return;
         }
@@ -214,6 +237,7 @@ export class SubagentRosterTracker {
         ) {
           return;
         }
+        entry.live = undefined;
         entry.status = 'running';
         entry.subagent_phase = 'working';
         entry.suspended_reason = undefined;
@@ -226,13 +250,14 @@ export class SubagentRosterTracker {
         if (!entry || isTerminalStatus(entry.status)) return;
         const eventAt = finiteTime(event.time);
         const existingStartedAt = parsedTime(entry.started_at);
-        if (entry.status === 'unknown') {
+        if (entry.status === 'unknown' || entry.live === false) {
           const disposedAt = this.disposals(sessionId).get(event.subagentId);
           if (eventAt === undefined || !crossesBoundary(eventAt, disposedAt)) return;
           Object.assign(
             entry,
             this.resetGeneration(sessionId, event.subagentId, eventAt),
             {
+              live: undefined,
               status: 'running',
               subagent_phase: 'suspended',
               suspended_reason: event.reason,
@@ -247,6 +272,7 @@ export class SubagentRosterTracker {
         ) {
           return;
         }
+        entry.live = undefined;
         entry.status = 'running';
         entry.subagent_phase = 'suspended';
         entry.suspended_reason = event.reason;
@@ -281,22 +307,31 @@ export class SubagentRosterTracker {
         const disposedAt = Math.max(disposals.get(event.agentId) ?? Number.NEGATIVE_INFINITY, observedAt);
         disposals.set(event.agentId, disposedAt);
         const entry = this.bySession.get(sessionId)?.get(event.agentId);
-        if (!entry || isTerminalStatus(entry.status)) return;
+        if (!entry) return;
         const activeSince = parsedTime(entry.started_at) ?? parsedTime(entry.created_at);
         if (activeSince !== undefined && activeSince > disposedAt) return;
-        entry.status = 'unknown';
-        entry.subagent_phase = 'unknown';
-        entry.suspended_reason = undefined;
-        entry.completed_at = undefined;
-        entry.output_preview = undefined;
+        entry.live = false;
         return;
       }
       case 'tool.call.started': {
         const entry = this.bySession.get(sessionId)?.get(event.agentId);
-        if (!entry || entry.status === 'unknown' || isTerminalStatus(entry.status)) return;
+        if (!entry || entry.status === 'unknown') return;
         const eventAt = finiteTime(event.time);
         const existingStartedAt = parsedTime(entry.started_at);
-        if (
+        if (isTerminalStatus(entry.status) || entry.live === false) {
+          const endedAt = isTerminalStatus(entry.status) ? parsedTime(entry.completed_at) : undefined;
+          const disposedAt = this.disposals(sessionId).get(event.agentId);
+          if (
+            eventAt === undefined ||
+            !crossesBoundary(eventAt, endedAt) ||
+            !crossesBoundary(eventAt, disposedAt)
+          ) return;
+          Object.assign(
+            entry,
+            this.resetGeneration(sessionId, event.agentId, eventAt),
+            { live: undefined, status: 'running', subagent_phase: 'working' },
+          );
+        } else if (
           eventAt !== undefined &&
           existingStartedAt !== undefined &&
           eventAt < existingStartedAt
@@ -400,6 +435,7 @@ export class SubagentRosterTracker {
         session_id: sessionId,
         kind: 'subagent',
         description: existing?.description ?? info.description,
+        live: restarted ? undefined : existing?.live,
         status: projection.status,
         subagent_phase: projection.phase,
         profile: info.profile ?? existing?.profile,
@@ -467,6 +503,7 @@ export class SubagentRosterTracker {
       session_id: sessionId,
       kind: 'subagent',
       description: existing?.description ?? info.description,
+      live: undefined,
       status: 'running',
       subagent_phase: keepsSuspended ? 'suspended' : 'working',
       profile: info.profile ?? existing?.profile,

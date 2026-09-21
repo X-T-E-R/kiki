@@ -142,6 +142,7 @@ describe('rest/snapshot — session snapshot', () => {
           session_id: 'sess_1',
           kind: 'subagent',
           description: 'explore the auth flow',
+          live: false,
           status: 'running',
           created_at: TS,
           started_at: TS,
@@ -179,6 +180,7 @@ describe('rest/snapshot — session snapshot', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.subagents).toHaveLength(3);
+      expect(result.data.subagents?.[0]?.live).toBe(false);
       expect(result.data.subagents?.[0]?.parent_tool_call_id).toBe('call_1');
       expect(result.data.subagents?.[1]?.subagent_phase).toBe('completed');
       expect(result.data.subagents?.[2]?.status).toBe('cancelled');
