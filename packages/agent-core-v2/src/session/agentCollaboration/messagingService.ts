@@ -17,6 +17,7 @@ import {
 } from '#/session/dispatch/dispatch';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import type { AgentRunRequest } from '#/session/subagent/subagent';
 
 import {
   IAgentCollaborationMessageStore,
@@ -31,6 +32,11 @@ const MISSING_TARGET_REASON = 'target agent is not registered in the session';
 interface ClaimedAgentMessage {
   readonly queued: QueuedAgentMessage;
   flushed: boolean;
+}
+
+interface PreparedExternalDelivery {
+  readonly messageId: string;
+  readonly request: AgentRunRequest;
 }
 
 export class AgentCollaborationMessagingService extends Disposable implements IAgentCollaborationMessagingService {
@@ -122,7 +128,27 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     const execution = handle.accessor.get(IAgentExecutionService);
     subscriptions.add(execution.hooks.onWillRun.register(
       DELIVERY_HOOK_ID,
-      async (_context, next) => {
+      async (context, next) => {
+        if (this.isExternalExecutor(handle)) {
+          const request = context.request;
+          const replaceRequest = context.replaceRequest;
+          const afterStart = context.afterStart;
+          if (request !== undefined && replaceRequest !== undefined && afterStart !== undefined) {
+            const prepared = await this.serializeDelivery(
+              handle.id,
+              () => this.prepareExternalDelivery(handle, request),
+            );
+            if (prepared !== undefined) {
+              replaceRequest(prepared.request);
+              afterStart(() => this.serializeDelivery(
+                handle.id,
+                () => this.completeExternalDelivery(handle, prepared.messageId),
+              ));
+            }
+          }
+          await next();
+          return;
+        }
         await this.serializeDelivery(handle.id, () => this.deliverBeforeRun(handle));
         await next();
       },
@@ -131,7 +157,9 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     subscriptions.add(loop.hooks.onWillBeginStep.register(
       DELIVERY_HOOK_ID,
       async (_context, next) => {
-        await this.serializeDelivery(handle.id, () => this.deliverBeforeRun(handle));
+        if (!this.isExternalExecutor(handle) && !this.deliveryTails.has(handle.id)) {
+          await this.serializeDelivery(handle.id, () => this.deliverBeforeRun(handle));
+        }
         await next();
       },
     ));
@@ -256,10 +284,70 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     };
   }
 
+  private isExternalExecutor(handle: IAgentScopeHandle): boolean {
+    return (handle.accessor.get(IAgentProfileService).data().executorId ?? 'native') !== 'native';
+  }
+
   private hasMessage(handle: IAgentScopeHandle, messageId: string): boolean {
     return handle.accessor.get(IAgentContextMemoryService).get().some((entry) =>
       entry.origin?.kind === 'agent_message' && entry.origin.messageId === messageId,
     );
+  }
+
+  private async claimNext(handle: IAgentScopeHandle): Promise<ClaimedAgentMessage | undefined> {
+    const existing = this.claimed.get(handle.id);
+    if (existing !== undefined) return existing;
+    const queued = await this.store.nextQueued(this.session.sessionId, handle.id);
+    if (queued === undefined) return undefined;
+    const pending = { queued, flushed: false };
+    this.claimed.set(handle.id, pending);
+    return pending;
+  }
+
+  private async completeClaim(
+    handle: IAgentScopeHandle,
+    pending: ClaimedAgentMessage,
+  ): Promise<void> {
+    if (!pending.flushed) {
+      await handle.accessor.get(IWireService).flush();
+      pending.flushed = true;
+    }
+    await this.store.markDelivered(pending.queued.claim);
+    if (this.claimed.get(handle.id) === pending) this.claimed.delete(handle.id);
+  }
+
+  private async prepareExternalDelivery(
+    handle: IAgentScopeHandle,
+    request: AgentRunRequest,
+  ): Promise<PreparedExternalDelivery | undefined> {
+    for (;;) {
+      const pending = await this.claimNext(handle);
+      if (pending === undefined) return undefined;
+      const message = pending.queued.message;
+      if (this.hasMessage(handle, message.messageId)) {
+        await this.completeClaim(handle, pending);
+        continue;
+      }
+      const contextMessage = toContextMessage(message);
+      return {
+        messageId: message.messageId,
+        request: withExternalMailboxMessage(request, contextMessage),
+      };
+    }
+  }
+
+  private async completeExternalDelivery(
+    handle: IAgentScopeHandle,
+    messageId: string,
+  ): Promise<void> {
+    const pending = this.claimed.get(handle.id);
+    if (pending?.queued.message.messageId !== messageId) return;
+    if (!this.hasMessage(handle, messageId)) {
+      handle.accessor.get(IAgentContextMemoryService).appendObservable(
+        toContextMessage(pending.queued.message),
+      );
+    }
+    await this.completeClaim(handle, pending);
   }
 
   private deliverBeforeRun(handle: IAgentScopeHandle): Promise<void> {
@@ -274,27 +362,14 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     handle: IAgentScopeHandle,
     apply: (message: ContextMessage) => Promise<boolean>,
   ): Promise<void> {
-    const memory = handle.accessor.get(IAgentContextMemoryService);
-    const wire = handle.accessor.get(IWireService);
     for (;;) {
-      let pending = this.claimed.get(handle.id);
-      if (pending === undefined) {
-        const queued = await this.store.nextQueued(this.session.sessionId, handle.id);
-        if (queued === undefined) return;
-        pending = { queued, flushed: false };
-        this.claimed.set(handle.id, pending);
+      const pending = await this.claimNext(handle);
+      if (pending === undefined) return;
+      const message = pending.queued.message;
+      if (!this.hasMessage(handle, message.messageId) && !await apply(toContextMessage(message))) {
+        return;
       }
-      const { message, claim } = pending.queued;
-      const alreadyApplied = memory.get().some((entry) =>
-        entry.origin?.kind === 'agent_message' && entry.origin.messageId === message.messageId,
-      );
-      if (!alreadyApplied && !await apply(toContextMessage(message))) return;
-      if (!pending.flushed) {
-        await wire.flush();
-        pending.flushed = true;
-      }
-      await this.store.markDelivered(claim);
-      if (this.claimed.get(handle.id) === pending) this.claimed.delete(handle.id);
+      await this.completeClaim(handle, pending);
     }
   }
 
@@ -320,6 +395,29 @@ function serializeForAgent<T>(
     if (tails.get(agentId) === tail) tails.delete(agentId);
   });
   return current;
+}
+
+function withExternalMailboxMessage(
+  request: AgentRunRequest,
+  message: ContextMessage,
+): AgentRunRequest {
+  if (request.kind === 'retry') return request;
+  const prompt = message.content
+    .filter((part): part is Extract<ContextMessage['content'][number], { type: 'text' }> =>
+      part.type === 'text')
+    .map((part) => part.text)
+    .join('');
+  if (request.kind === 'mailbox') {
+    const requestOrigin = request.message.origin;
+    const messageOrigin = message.origin;
+    if (
+      requestOrigin?.kind === 'agent_message' &&
+      messageOrigin?.kind === 'agent_message' &&
+      requestOrigin.messageId === messageOrigin.messageId
+    ) return request;
+    return { kind: 'mailbox', prompt, message };
+  }
+  return { ...request, prompt: `${prompt}\n\n${request.prompt}` };
 }
 
 function toContextMessage(message: {

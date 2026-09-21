@@ -306,7 +306,7 @@ describe('AgentExecutionService', () => {
     ix.dispose();
   });
 
-  it('runs the safe-boundary hook before the provider and exposes provider context', async () => {
+  it('forwards a hook-replaced request and waits for post-start delivery after provider start', async () => {
     const ix = new TestInstantiationService();
     ix.set(IMarker, 'marker');
     let finish!: (value: { summary: string }) => void;
@@ -324,8 +324,8 @@ describe('AgentExecutionService', () => {
     const cancel = vi.fn(() => true);
     const shutdown = vi.fn(async () => {});
     const session: AgentExecutorSession = {
-      run: vi.fn(async () => {
-        order.push('provider');
+      run: vi.fn(async (request) => {
+        order.push(`provider:${request.kind === 'retry' ? 'retry' : request.prompt}`);
         return { agentId: 'agent-test', turn, completion };
       }),
       status: () => ({ state: 'idle' }),
@@ -370,8 +370,12 @@ describe('AgentExecutionService', () => {
       registry,
       states(),
     );
-    service.hooks.onWillRun.register('test', async (_context, next) => {
+    service.hooks.onWillRun.register('test', async (context, next) => {
       order.push('hook');
+      context.replaceRequest?.({ kind: 'prompt', prompt: 'prepared work' });
+      context.afterStart?.(async () => {
+        order.push('after-start');
+      });
       await next();
     });
 
@@ -380,7 +384,7 @@ describe('AgentExecutionService', () => {
       { signal: new AbortController().signal },
     );
 
-    expect(order).toEqual(['hook', 'provider']);
+    expect(order).toEqual(['hook', 'provider:prepared work', 'after-start']);
     expect(service.status()).toEqual({ state: 'running', turnId: 41 });
     await expect(service.steer({
       role: 'user',

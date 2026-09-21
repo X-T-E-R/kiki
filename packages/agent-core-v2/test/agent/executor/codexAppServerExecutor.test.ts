@@ -8,6 +8,7 @@ import {
 } from '@kiki/codex-client';
 import { describe, expect, it, vi } from 'vitest';
 import { coldPromptFixture } from './coldPromptFixture';
+import { attachExternalMailboxHarness } from './mailboxHarness';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -123,6 +124,7 @@ function createHarness(options: HarnessOptions = {}) {
     _serviceBrand: undefined,
     get: () => options.history ?? [],
     append: () => {},
+    appendObservable: () => {},
     appendLoopEvent: () => {},
   } as unknown as IAgentContextMemoryService;
   const pendingTurns = new Set<number>();
@@ -403,6 +405,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
     ix,
     execution,
     starts: harness.starts,
+    prompts: harness.prompts,
     pendingTurns: harness.pendingTurns,
     interaction: harness.interaction,
     client: harness.client,
@@ -447,6 +450,36 @@ describe('Codex app-server external executor', () => {
       },
     ]]);
     await harness.session.shutdown();
+  });
+
+  it('forwards queued collaboration mail through the next ordinary Codex resume before acknowledging it', async () => {
+    const harness = createExecutionHarness();
+    const mailbox = attachExternalMailboxHarness(harness.ix, 'codex-agent');
+    try {
+      await expect(mailbox.messaging.send({
+        sourceAgentId: 'main',
+        sourceTaskName: 'root',
+        targetAgentId: 'codex-agent',
+        targetTaskName: 'codex-agent',
+        content: 'queued Codex mail',
+        idempotencyKey: 'queued-codex-mail',
+        waitForRunningDelivery: true,
+      })).resolves.toMatchObject({ delivery: 'queued' });
+
+      await harness.execution.run(
+        { kind: 'prompt', prompt: 'ordinary Codex resume' },
+        { signal: new AbortController().signal },
+      );
+
+      const input = JSON.stringify(harness.prompts[0]?.['input']);
+      expect(input).toContain('Message from agent \\"root\\" (main):\\n\\nqueued Codex mail');
+      expect(input).toContain('ordinary Codex resume');
+      expect(mailbox.delivered()).toBe(true);
+    } finally {
+      mailbox.dispose();
+      await harness.execution.shutdown();
+      harness.ix.dispose();
+    }
   });
 
   it('runs an idle Codex executor from a mailbox message with its collaboration origin', async () => {

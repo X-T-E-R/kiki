@@ -29,7 +29,7 @@ import type {
   RunAgentOptions,
 } from '#/session/subagent/subagent';
 
-import { IAgentExecutionService } from './execution';
+import { IAgentExecutionService, type AgentExecutionRunContext } from './execution';
 import { externalExecutorKey } from './externalExecutorOps';
 import { NativeAgentExecutorSession } from './nativeAgentExecutorSession';
 
@@ -44,7 +44,7 @@ interface ActiveRun {
 export class AgentExecutionService extends Disposable implements IAgentExecutionService {
   declare readonly _serviceBrand: undefined;
 
-  readonly hooks = createHooks<{ onWillRun: { signal: AbortSignal } }, 'onWillRun'>([
+  readonly hooks = createHooks<{ onWillRun: AgentExecutionRunContext }, 'onWillRun'>([
     'onWillRun',
   ]);
 
@@ -98,12 +98,23 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     };
     this.runs.add(active);
     this.cancelling = false;
+    const afterStartCallbacks: Array<() => Promise<void>> = [];
+    const runContext: AgentExecutionRunContext = {
+      signal: controller.signal,
+      request,
+      replaceRequest: (replacement) => {
+        runContext.request = replacement;
+      },
+      afterStart: (callback) => {
+        afterStartCallbacks.push(callback);
+      },
+    };
     try {
-      await this.hooks.onWillRun.run({ signal: controller.signal });
+      await this.hooks.onWillRun.run(runContext);
       controller.signal.throwIfAborted();
       const session = await this.resolveSession();
       controller.signal.throwIfAborted();
-      const handle = await session.run(request, {
+      const handle = await session.run(runContext.request ?? request, {
         ...options,
         signal: controller.signal,
       });
@@ -111,6 +122,11 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
       void handle.completion.then(
         () => this.finishRun(active),
         () => this.finishRun(active),
+      );
+      await Promise.allSettled(
+        afterStartCallbacks.map(async (callback) => {
+          await callback();
+        }),
       );
       return handle;
     } catch (error) {

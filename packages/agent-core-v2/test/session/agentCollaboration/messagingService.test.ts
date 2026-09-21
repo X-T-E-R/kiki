@@ -30,6 +30,7 @@ import { IAgentContextMemoryService, type IAgentContextMemoryService as AgentCon
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import {
   IAgentExecutionService,
+  type AgentExecutionRunContext,
   type IAgentExecutionService as AgentExecution,
 } from '#/agent/execution/execution';
 import { IAgentLoopService, type IAgentLoopService as AgentLoop } from '#/agent/loop/loop';
@@ -55,6 +56,7 @@ import {
 } from '#/session/agentCollaboration/threadMailboxAdapter';
 import type { AgentMeta, ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import type { ISessionContext } from '#/session/sessionContext/sessionContext';
+import type { AgentRunRequest, RunAgentOptions } from '#/session/subagent/subagent';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
 import { agentService, createTestAgent } from '../../harness';
 
@@ -234,6 +236,81 @@ describe('agent collaboration safe-boundary delivery', () => {
       'flush',
     ]);
     expect(lifecycle.service.create).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it('forwards one queued external mailbox message into the next ordinary run before acknowledging it', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', { executorId: 'fake-external' });
+    const service = messagingService(
+      store,
+      lifecycleHarness([target.handle]).service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+    );
+
+    await expect(service.send(sendInput('external backlog', 'external-backlog')))
+      .resolves.toMatchObject({ delivery: 'queued' });
+    expect(target.remoteRequests).toEqual([]);
+
+    await target.execution.run(
+      { kind: 'prompt', prompt: 'ordinary resume' },
+      { signal },
+    );
+
+    expect(target.remoteRequests).toEqual([{
+      kind: 'prompt',
+      prompt: 'Message from agent "root" (main):\n\nexternal backlog\n\nordinary resume',
+    }]);
+    expect(target.messages).toContainEqual(expect.objectContaining({
+      origin: expect.objectContaining({
+        kind: 'agent_message',
+        senderAgentId: 'main',
+      }),
+    }));
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    service.dispose();
+  });
+
+  it('wakes an idle external child with the oldest backlog entry and leaves newer mail queued', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', { executorId: 'fake-external' });
+    const dispatch = dispatchHarness(async (child, request, options) => ({
+      child,
+      request: request as DispatchRun['request'],
+      started: target.execution.run(request as AgentRunRequest, { signal: options.signal }),
+    }));
+    const service = messagingService(
+      store,
+      lifecycleHarness([target.handle]).service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+      dispatch,
+    );
+
+    await expect(service.send(sendInput('older external mail', 'external-older')))
+      .resolves.toMatchObject({ delivery: 'queued' });
+    await expect(service.send({
+      ...sendInput('newer external mail', 'external-newer'),
+      idleWake: 'owned-child',
+    })).resolves.toMatchObject({ delivery: 'queued', resumed: true });
+
+    expect(target.remoteRequests[0]).toMatchObject({
+      kind: 'mailbox',
+      prompt: 'Message from agent "root" (main):\n\nolder external mail',
+      message: {
+        origin: expect.objectContaining({ kind: 'agent_message' }),
+      },
+    });
+    await target.execution.run(
+      { kind: 'prompt', prompt: 'manual continuation' },
+      { signal },
+    );
+    expect(target.remoteRequests[1]).toEqual({
+      kind: 'prompt',
+      prompt: 'Message from agent "root" (main):\n\nnewer external mail\n\nmanual continuation',
+    });
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
     service.dispose();
   });
 
@@ -589,7 +666,7 @@ describe('agent collaboration safe-boundary delivery', () => {
 
     expect(settled).toBe(false);
     expect(target.messages).toEqual([]);
-    target.beginNextStep();
+    await target.beginStepBoundary(1);
 
     await expect(delivery).resolves.toMatchObject({ delivery: 'delivered' });
     expect(target.messages.map((message) => message.content[0])).toEqual([
@@ -597,6 +674,47 @@ describe('agent collaboration safe-boundary delivery', () => {
     ]);
     expect(target.operations).toEqual(['appendObservable', 'flush']);
     expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    service.dispose();
+  });
+
+  it('does not wait behind a future steer when two messages precede one step boundary', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    target.setRunning(true);
+    const service = messagingService(
+      store,
+      lifecycleHarness([target.handle]).service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+    );
+
+    const first = service.send({
+      ...sendInput('first running message', 'running-first'),
+      idleWake: 'owned-child',
+    });
+    await waitUntil(() => target.pendingSteers() === 1);
+    const second = service.send({
+      ...sendInput('second running message', 'running-second'),
+      idleWake: 'owned-child',
+    });
+    await drain();
+
+    await target.beginStepBoundary(1);
+    await waitUntil(() => target.pendingSteers() === 1);
+    await target.beginStepBoundary(2);
+    await expect(first).resolves.toMatchObject({ delivery: 'delivered' });
+    await expect(second).resolves.toMatchObject({ delivery: 'delivered' });
+
+    expect(target.messages.map((message) => message.content[0])).toEqual([
+      { type: 'text', text: 'Message from agent "root" (main):\n\nfirst running message' },
+      { type: 'text', text: 'Message from agent "root" (main):\n\nsecond running message' },
+    ]);
+    expect(target.operations).toEqual([
+      'appendObservable',
+      'flush',
+      'appendObservable',
+      'flush',
+    ]);
     service.dispose();
   });
 
@@ -1375,13 +1493,21 @@ function lifecycleHarness(initial: readonly IAgentScopeHandle[]) {
   };
 }
 
-function agentHandle(agentId: string) {
+function agentHandle(
+  agentId: string,
+  options: { readonly executorId?: string } = {},
+) {
   const messages: ContextMessage[] = [];
   const operations: string[] = [];
   const pendingSteers: Array<{
     readonly message: ContextMessage;
     readonly resolve: (delivered: boolean) => void;
   }> = [];
+  const remoteRequests: AgentRunRequest[] = [];
+  const executionHooks = createHooks<
+    { onWillRun: AgentExecutionRunContext },
+    'onWillRun'
+  >(['onWillRun']);
   let state: 'idle' | 'starting' | 'running' | 'cancelling' | 'broken' = 'idle';
   const memory: AgentContextMemory = {
     _serviceBrand: undefined,
@@ -1396,7 +1522,32 @@ function agentHandle(agentId: string) {
   };
   const execution = {
     _serviceBrand: undefined,
-    run: async () => { throw new Error('unexpected run'); },
+    run: async (request: AgentRunRequest, runOptions: RunAgentOptions) => {
+      if (options.executorId === undefined) throw new Error('unexpected run');
+      const afterStartCallbacks: Array<() => Promise<void>> = [];
+      const context: AgentExecutionRunContext = {
+        signal: runOptions.signal,
+        request,
+        replaceRequest: (replacement) => {
+          context.request = replacement;
+        },
+        afterStart: (callback) => {
+          afterStartCallbacks.push(callback);
+        },
+      };
+      await executionHooks.onWillRun.run(context);
+      remoteRequests.push(context.request ?? request);
+      await Promise.allSettled(
+        afterStartCallbacks.map(async (callback) => {
+          await callback();
+        }),
+      );
+      return {
+        agentId,
+        turn: {} as never,
+        completion: Promise.resolve({ summary: 'done' }),
+      };
+    },
     status: () => state === 'running'
       ? { state: 'running' as const, turnId: 1 }
       : state === 'starting'
@@ -1413,7 +1564,7 @@ function agentHandle(agentId: string) {
     cancel: () => false,
     settled: () => Promise.resolve(),
     shutdown: () => Promise.resolve(),
-    hooks: createHooks(['onWillRun']),
+    hooks: executionHooks,
   } as AgentExecution;
   const loop = {
     _serviceBrand: undefined,
@@ -1439,7 +1590,11 @@ function agentHandle(agentId: string) {
   };
   const profile = {
     _serviceBrand: undefined,
-    data: () => ({ profileName: 'test', thinkingLevel: 'off' }),
+    data: () => ({
+      profileName: 'test',
+      thinkingLevel: 'off',
+      executorId: options.executorId,
+    }),
   };
   const wire = {
     _serviceBrand: undefined,
@@ -1467,6 +1622,7 @@ function agentHandle(agentId: string) {
     execution,
     messages,
     operations,
+    remoteRequests,
     setRunning(running: boolean) {
       state = running ? 'running' : 'idle';
       if (!running) {
@@ -1477,11 +1633,18 @@ function agentHandle(agentId: string) {
       state = next;
     },
     pendingSteers: () => pendingSteers.length,
-    beginNextStep() {
-      for (const pending of pendingSteers.splice(0)) {
+    async beginStepBoundary(step: number) {
+      const pending = pendingSteers.shift();
+      if (pending !== undefined) {
         memory.appendObservable(pending.message);
         pending.resolve(true);
       }
+      await loop.hooks.onWillBeginStep.run({
+        turnId: 1,
+        step,
+        firstStepOfTurn: step === 1,
+        signal,
+      });
     },
   };
 }

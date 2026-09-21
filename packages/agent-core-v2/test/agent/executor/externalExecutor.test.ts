@@ -11,6 +11,7 @@ import type {
 } from '@kiki/acp-client';
 import { describe, expect, it, vi } from 'vitest';
 import { coldPromptFixture } from './coldPromptFixture';
+import { attachExternalMailboxHarness } from './mailboxHarness';
 
 import { buildModeOption } from '../../../../acp-server/src/config-options';
 
@@ -193,6 +194,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     _serviceBrand: undefined,
     get: () => options.history ?? [],
     append: (...messages: readonly ContextMessage[]) => appendedMessages.push(...messages),
+    appendObservable: (message: ContextMessage) => appendedMessages.push(message),
     appendLoopEvent: (event: unknown) => loopEvents.push(event),
   } as unknown as IAgentContextMemoryService;
   const approval = {
@@ -654,6 +656,37 @@ describe('ACP external executor', () => {
     await run.completion;
 
     expect(harness.appendedMessages).toEqual([]);
+  });
+
+  it('forwards queued collaboration mail through the next ordinary ACP resume before acknowledging it', async () => {
+    const harness = createExecutionHarness();
+    const mailbox = attachExternalMailboxHarness(harness.ix, 'external-agent');
+    try {
+      await expect(mailbox.messaging.send({
+        sourceAgentId: 'main',
+        sourceTaskName: 'root',
+        targetAgentId: 'external-agent',
+        targetTaskName: 'external-agent',
+        content: 'queued ACP mail',
+        idempotencyKey: 'queued-acp-mail',
+        waitForRunningDelivery: true,
+      })).resolves.toMatchObject({ delivery: 'queued' });
+
+      await harness.execution.run(
+        { kind: 'prompt', prompt: 'ordinary ACP resume' },
+        { signal: new AbortController().signal },
+      );
+
+      expect(harness.starts[0]?.prompt).toContain(
+        'Message from agent "root" (main):\n\nqueued ACP mail',
+      );
+      expect(harness.starts[0]?.prompt).toContain('ordinary ACP resume');
+      expect(mailbox.delivered()).toBe(true);
+    } finally {
+      mailbox.dispose();
+      await harness.execution.shutdown();
+      harness.ix.dispose();
+    }
   });
 
   it('runs an idle external executor from a mailbox message with its collaboration origin', async () => {

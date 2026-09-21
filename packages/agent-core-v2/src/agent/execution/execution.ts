@@ -10,6 +10,9 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 
 export interface AgentExecutionRunContext {
   readonly signal: AbortSignal;
+  request?: AgentRunRequest;
+  readonly replaceRequest?: (request: AgentRunRequest) => void;
+  readonly afterStart?: (callback: () => Promise<void>) => void;
 }
 
 export interface IAgentExecutionService {
