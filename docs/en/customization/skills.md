@@ -81,7 +81,7 @@ Before the body is sent to the model, a small set of placeholders are expanded:
 - `$ARGUMENTS`: The full raw argument string passed at invocation
 - `$ARGUMENTS[0]`, `$ARGUMENTS[1]` and shorthand `$0`, `$1`: Positional arguments after whitespace tokenization (zero-indexed)
 - `$<name>`: Named parameters declared in `arguments`
-- `${KIMI_SKILL_DIR}`: The directory containing the current Skill file
+- `${KIKI_SKILL_DIR}`: The directory containing the current Skill file
 
 Positional arguments support single and double quoting, so in `/skill:commit "fix login" patch`, `$0` expands to `fix login`. If the body contains no argument placeholders, text passed at invocation is appended to the end of the body as `\n\nARGUMENTS: <text>`.
 

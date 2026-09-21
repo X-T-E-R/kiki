@@ -32,7 +32,7 @@ CLI 通过 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 以版本
 kiki --version
 ```
 
-> 在 Windows 上，首次启动前请先安装 [Git for Windows](https://gitforwindows.org/)。Kiki 使用其自带的 Git Bash 作为 Shell 环境；如果 Git Bash 安装在自定义位置，请将 `KIMI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
+> 在 Windows 上，首次启动前请先安装 [Git for Windows](https://gitforwindows.org/)。Kiki 使用其自带的 Git Bash 作为 Shell 环境；如果 Git Bash 安装在自定义位置，请将 `KIKI_SHELL_PATH` 设为 `bash.exe` 的绝对路径。
 
 CLI 未发布到 npm；请使用发行工件，或在开发时从源码运行。
 

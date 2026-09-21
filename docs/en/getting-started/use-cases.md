@@ -123,7 +123,7 @@ Come back in about 10 minutes and check whether the build has finished.
 
 Scheduled tasks are bound to their session — closing the terminal is fine, and they are reloaded and continue firing when you resume the same session with `kiki --session`. They are not carried into brand-new sessions. Recurring tasks expire after 7 days — on the final trigger the agent receives a "stale" signal and decides whether to stop or renew based on your original instructions.
 
-To see what tasks are currently pending, just ask the agent (it calls the read-only `CronList` tool). To cancel a task, tell the agent to remove it or reference its 8-character ID. For the full tool reference, see [Scheduled tasks](../reference/tools.md#scheduled-tasks). The global kill switch is `KIMI_DISABLE_CRON=1`.
+To see what tasks are currently pending, just ask the agent (it calls the read-only `CronList` tool). To cancel a task, tell the agent to remove it or reference its 8-character ID. For the full tool reference, see [Scheduled tasks](../reference/tools.md#scheduled-tasks). The global kill switch is `KIKI_DISABLE_CRON=1`.
 
 ## Generating and maintaining documentation
 

@@ -81,7 +81,7 @@ arguments:
 - `$ARGUMENTS`：调用时附带的完整原始参数字符串
 - `$ARGUMENTS[0]`、`$ARGUMENTS[1]` 及简写 `$0`、`$1`：按空白分词后的位置参数（从 0 开始）
 - `$<name>`：`arguments` 中声明的命名参数
-- `${KIMI_SKILL_DIR}`：当前 Skill 文件所在目录
+- `${KIKI_SKILL_DIR}`：当前 Skill 文件所在目录
 
 位置参数支持单双引号包裹，如 `/skill:commit "fix login" patch` 中 `$0` 展开为 `fix login`。若正文不含任何参数占位符，调用时附带的文本会以 `\n\nARGUMENTS: <文本>` 的形式追加到正文末尾。
 
