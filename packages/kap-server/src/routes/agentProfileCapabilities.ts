@@ -26,6 +26,7 @@ import { projectSubagentCapabilities, type SubagentCapabilityCatalog } from '@ki
 import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v2/agent/toolPolicy/evaluate';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
+import { subagentParentAgentId } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import type { AgentCapabilitiesQuery, AgentCapabilitiesResponse, AgentPanelMetrics } from '@kiki/protocol';
 import {
   livePanelCapabilities,
@@ -140,7 +141,7 @@ export async function agentCapabilities(
       const panel = await snapshotPanelCapabilities(session, snapshot, {
         profile: resolution.profile,
         sourceId: resolution.sourceId,
-      });
+      }, subagentParentAgentId(metadata) !== undefined);
       const persistedBinding = snapshot.source === 'wire';
       const input: SubagentCapabilityCatalog = {
         catalog,

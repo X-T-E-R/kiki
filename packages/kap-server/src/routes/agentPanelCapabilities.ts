@@ -17,9 +17,15 @@ import { spawnConstraintOrigin } from '@kiki/agent-core-v2/app/agentProfileCatal
 import type { SkillDefinition } from '@kiki/agent-core-v2/app/skillCatalog/types';
 import { IAgentToolActivationService } from '@kiki/agent-core-v2/agent/toolActivation/toolActivation';
 import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v2/agent/toolPolicy/evaluate';
+import { isAgentNotifyAvailable } from '@kiki/agent-core-v2/agent/tools/agent-notify/agent-notify';
 import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistry/toolContribution';
 import { toolGroupForName } from '@kiki/agent-core-v2/agent/toolRegistry/toolGroups';
 import type { ThinkingConfig } from '@kiki/agent-core-v2/kosong/model/thinking';
+import {
+  AGENTS_SECTION,
+  isParentNotifyEnabled,
+  type AgentsConfig,
+} from '@kiki/agent-core-v2/session/agentCollaboration/configSection';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionSkillCatalog } from '@kiki/agent-core-v2/session/sessionSkillCatalog/skillCatalog';
 import { ISessionToolPolicyGate } from '@kiki/agent-core-v2/session/sessionToolPolicyGate/sessionToolPolicyGate';
@@ -38,7 +44,7 @@ type PanelBindingData = Partial<Pick<ProfileData,
   'effectiveThinkingLevel' | 'thinkingEffortSource' | 'routeDetached' |
   'profileSource' | 'executorId' | 'serviceTier' | 'activeToolNames' |
   'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
-  'subagentPolicy' | 'executionRestriction' | 'spawnPolicy' | 'appliedLease' |
+  'subagentPolicy' | 'executionRestriction' | 'allowParentNotify' | 'spawnPolicy' | 'appliedLease' |
   'boundProfile'>> & { readonly thinkingEffortAdjusted?: boolean };
 
 export function panelSkills(
@@ -89,6 +95,7 @@ export async function snapshotPanelCapabilities(
   session: Pick<Scope, 'accessor'>,
   snapshot: PersistedAgentProfileSnapshot,
   resolution: PanelProfileResolution & { readonly profile: PanelProfileDefinition },
+  hasParent: boolean,
 ): Promise<Pick<AgentCapabilitiesResponse, 'profile' | 'tools' | 'skills'>> {
   const definition = resolution.profile;
   const persisted = snapshot.source === 'wire';
@@ -100,12 +107,14 @@ export async function snapshotPanelCapabilities(
     toolAllowPolicies: persisted ? snapshot.toolAllowPolicies : snapshot.toolAllowPolicies ?? definition.toolAllowPolicies,
     disallowedTools: persisted ? snapshot.disallowedTools : snapshot.disallowedTools ?? definition.disallowedTools,
     disabledToolGroups: persisted ? snapshot.disabledToolGroups : snapshot.disabledToolGroups ?? definition.disabledToolGroups,
+    allowParentNotify: persisted ? snapshot.allowParentNotify : snapshot.allowParentNotify ?? definition.allowParentNotify,
     subagentPolicy: snapshot.subagentPolicy ?? definition.subagentPolicy,
     serviceTier: snapshot.serviceTier ?? definition.serviceTier,
     profileSource: snapshot.boundProfile?.fileSources === undefined ? 'registered' : 'profile-file',
   };
   const sessionPolicy = session.accessor.get(ISessionToolPolicy);
   const skills = session.accessor.get(ISessionSkillCatalog);
+  const config = session.accessor.get(IConfigService);
   await Promise.all([sessionPolicy.ready, skills.ready]);
   const policy = {
     profile: {
@@ -115,17 +124,29 @@ export async function snapshotPanelCapabilities(
       disallowedTools: binding.disallowedTools,
       disabledToolGroups: binding.disabledToolGroups,
     },
-    global: session.accessor.get(IConfigService).get<GlobalToolsPolicy>('tools'),
+    global: config.get<GlobalToolsPolicy>('tools'),
     workspaceDisabledTools: session.accessor.get(ISessionToolPolicyGate).disabledTools,
     sessionDisabledTools: sessionPolicy.disabledTools(),
   };
+  const parentNotifyConfigEnabled = isParentNotifyEnabled(
+    config.get<AgentsConfig>(AGENTS_SECTION),
+  );
   const unavailableReason = 'Snapshot inventory only; agent runtime and invocation approval are unavailable';
   const unavailableReasonCode = 'snapshot_inventory_only';
   const tools: NonNullable<AgentCapabilitiesResponse['tools']> = getAgentToolContributions().map(({ options }) => {
     const active = isToolActiveComposed(policy, options.name, options.source);
-    const state: NonNullable<AgentCapabilitiesResponse['tools']>[number]['state'] = active ? 'unknown' : 'disabled';
-    const toolUnavailableReason = active ? unavailableReason : 'Disabled by effective tool policy';
-    const toolUnavailableReasonCode = active ? unavailableReasonCode : 'tool_policy_disabled';
+    const conditionAvailable = options.name !== 'AgentNotify' || isAgentNotifyAvailable({
+      hasParent,
+      allowParentNotify: binding.allowParentNotify,
+      configEnabled: parentNotifyConfigEnabled,
+      toolPolicyEnabled: active,
+    });
+    const available = active && conditionAvailable;
+    const state: NonNullable<AgentCapabilitiesResponse['tools']>[number]['state'] = available ? 'unknown' : 'disabled';
+    const toolUnavailableReason = !active ? 'Disabled by effective tool policy'
+      : !conditionAvailable ? 'Tool activation condition is not satisfied' : unavailableReason;
+    const toolUnavailableReasonCode = !active ? 'tool_policy_disabled'
+      : !conditionAvailable ? 'activation_condition_unmet' : unavailableReasonCode;
     return {
       name: options.name,
       source: options.source ?? 'builtin',

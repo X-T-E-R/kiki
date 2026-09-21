@@ -8,6 +8,7 @@ import {
   IAgentProfileRegistry,
   IAgentProfileService,
   IAppendLogStore,
+  IConfigService,
   ISessionAgentProfileCatalog,
   ISessionContext,
   ISessionManager,
@@ -93,12 +94,155 @@ describe('disposed agent capability snapshots', () => {
         .toBe('definition:historical-helper:replacement');
       const live = await readCapabilities(sessionId, 'agent-definition-history');
       expectBoundOriginal(live, true);
+      expect(agentNotifyCapability(live)).toMatchObject({
+        state: 'disabled',
+        unavailable_reason_code: 'tool_policy_disabled',
+      });
       await lifecycle.remove('agent-definition-history');
       const snapshot = await readCapabilities(sessionId, 'agent-definition-history');
       expectBoundOriginal(snapshot, false);
+      expect(agentNotifyCapability(snapshot)).toMatchObject({
+        state: 'disabled',
+        unavailable_reason_code: 'tool_policy_disabled',
+      });
     } finally {
       replacement?.dispose();
       original.dispose();
+    }
+  });
+
+  it('preserves AgentNotify binding decisions across disposal and defaults old records to enabled', async () => {
+    await writeStubConfig(home);
+    await start();
+    const registry = server!.core.accessor.get(IAgentProfileRegistry);
+    const registration = registry.register({
+      sourceId: 'notify-fixture',
+      priority: 40,
+      contribution: {
+        profiles: [
+          normalizeAgentProfile({
+            name: 'notify-default',
+            definitionId: 'definition:notify-default',
+            description: 'Default notification role',
+            modelAlias: 'stub',
+            systemPrompt: () => '',
+          }),
+          normalizeAgentProfile({
+            name: 'notify-disabled',
+            definitionId: 'definition:notify-disabled',
+            description: 'Disabled notification role',
+            modelAlias: 'stub',
+            allowParentNotify: false,
+            systemPrompt: () => '',
+          }),
+        ],
+      },
+    });
+    try {
+      const sessionId = await createSession();
+      const session = server!.core.accessor.get(ISessionManager).get(sessionId)!;
+      const lifecycle = session.accessor.get(IAgentLifecycleService);
+      const cases = [
+        {
+          agentId: 'agent-profile-notify-disabled',
+          profile: 'notify-disabled',
+          allowParentNotify: undefined,
+          liveState: 'disabled',
+          snapshotState: 'disabled',
+        },
+        {
+          agentId: 'agent-dispatch-notify-disabled',
+          profile: 'notify-default',
+          allowParentNotify: false,
+          liveState: 'disabled',
+          snapshotState: 'disabled',
+        },
+        {
+          agentId: 'agent-dispatch-notify-enabled',
+          profile: 'notify-disabled',
+          allowParentNotify: true,
+          liveState: 'enabled',
+          snapshotState: 'unknown',
+        },
+        {
+          agentId: 'agent-legacy-notify-default',
+          profile: 'notify-default',
+          allowParentNotify: undefined,
+          liveState: 'enabled',
+          snapshotState: 'unknown',
+        },
+      ] as const;
+      for (const item of cases) {
+        await lifecycle.create({
+          agentId: item.agentId,
+          delegator: { kind: 'agent', agentId: 'main' },
+          binding: {
+            profile: item.profile,
+            model: 'stub',
+            allowParentNotify: item.allowParentNotify,
+          },
+        });
+        const live = agentNotifyCapability(await readCapabilities(sessionId, item.agentId));
+        expect(live).toMatchObject({ state: item.liveState });
+        if (item.liveState === 'disabled') {
+          expect(live).toMatchObject({ unavailable_reason_code: 'activation_condition_unmet' });
+        }
+        await lifecycle.remove(item.agentId);
+        const snapshot = agentNotifyCapability(await readCapabilities(sessionId, item.agentId));
+        expect(snapshot).toMatchObject({ state: item.snapshotState });
+        expect(snapshot.unavailable_reason_code).toBe(
+          item.snapshotState === 'disabled'
+            ? 'activation_condition_unmet'
+            : 'snapshot_inventory_only',
+        );
+      }
+    } finally {
+      registration.dispose();
+    }
+  });
+
+  it('keeps the global parent-notify veto after disposal', async () => {
+    await writeStubConfig(home);
+    await start();
+    await server!.core.accessor.get(IConfigService).set('agents', { notify_parent: false });
+    const registration = server!.core.accessor.get(IAgentProfileRegistry).register({
+      sourceId: 'notify-global-fixture',
+      priority: 40,
+      contribution: {
+        profiles: [normalizeAgentProfile({
+          name: 'notify-global',
+          definitionId: 'definition:notify-global',
+          description: 'Global notification role',
+          modelAlias: 'stub',
+          systemPrompt: () => '',
+        })],
+      },
+    });
+    try {
+      const sessionId = await createSession();
+      const session = server!.core.accessor.get(ISessionManager).get(sessionId)!;
+      expect(session.accessor.get(IConfigService).get('agents')).toMatchObject({
+        notify_parent: false,
+      });
+      const lifecycle = session.accessor.get(IAgentLifecycleService);
+      const child = await lifecycle.create({
+        agentId: 'agent-global-notify-disabled',
+        delegator: { kind: 'agent', agentId: 'main' },
+        binding: { profile: 'notify-global', model: 'stub', allowParentNotify: true },
+      });
+      const live = agentNotifyCapability(await readCapabilities(sessionId, child.id));
+      expect(live).toMatchObject({
+        state: 'disabled',
+        unavailable_reason_code: 'activation_condition_unmet',
+      });
+      await lifecycle.remove(child.id);
+      const snapshot = agentNotifyCapability(await readCapabilities(sessionId, child.id));
+      expect(snapshot).toMatchObject({
+        state: 'disabled',
+        unavailable_reason_code: 'activation_condition_unmet',
+      });
+    } finally {
+      registration.dispose();
     }
   });
 
@@ -224,6 +368,14 @@ function expectBoundOriginal(data: AgentCapabilitiesResponse, live: boolean): vo
     tools: ['Read'],
     subagent_policy: 'advisory',
   });
+}
+
+function agentNotifyCapability(
+  data: AgentCapabilitiesResponse,
+): NonNullable<AgentCapabilitiesResponse['tools']>[number] {
+  const tool = data.tools?.find((candidate) => candidate.name === 'AgentNotify');
+  expect(tool).toBeDefined();
+  return tool!;
 }
 
 async function writeStubConfig(home: string): Promise<void> {

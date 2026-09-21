@@ -23,7 +23,7 @@ import { subagentProfileName } from '@kiki/agent-core-v2/session/agentLifecycle/
 type PersistedProfileFields = Pick<ProfileModelState,
   'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'executionRestriction' |
-  'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortAdjusted' |
+  'allowParentNotify' | 'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortAdjusted' |
   'serviceTier' | 'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
   'subagentPolicy' | 'subagentDeclaration' | 'subagents' | 'subagentLeases' |
   'spawnPolicy' | 'appliedLease' | 'boundProfile'>;
@@ -151,6 +151,7 @@ async function scanPersistedAgentProfileSnapshot(
     lockedModelAlias: state.lockedModelAlias,
     lockedThinkingEffort: state.lockedThinkingEffort,
     executionRestriction: state.executionRestriction,
+    allowParentNotify: state.allowParentNotify,
     executorId: state.executorId,
     executorProtocol: state.executorProtocol,
     thinkingLevel: state.thinkingLevel,
