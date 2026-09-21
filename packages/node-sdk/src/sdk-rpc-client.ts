@@ -675,7 +675,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * v1 returns the whole config.toml document as one `KimiConfig`; v2
    * resolves the same file per config domain. `getAll()` is the effective
    * view (file + env overlays + section defaults), which matches v1's
-   * runtime config (`loadRuntimeConfigSafe` + the KIMI_MODEL_* overlay);
+   * runtime config (`loadRuntimeConfigSafe` + the KIKI_MODEL_* overlay);
    * `reload` mirrors v1's re-read-from-disk option.
    */
   override async getConfig(options?: GetConfigOptions): Promise<KimiConfig> {

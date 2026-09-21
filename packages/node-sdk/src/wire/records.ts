@@ -196,7 +196,7 @@ export interface AgentRecordEvents {
     /**
      * Provider-effective thinking effort — for Kimi providers this is derived
      * from the request body's thinking payload, so env overrides
-     * (`KIMI_MODEL_THINKING_EFFORT`) are already reflected.
+     * (`KIKI_MODEL_THINKING_EFFORT`) are already reflected.
      */
     thinkingEffort?: ThinkingEffort;
     /**
