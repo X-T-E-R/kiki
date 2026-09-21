@@ -135,7 +135,7 @@ kiki -p "List changed files" --output-format stream-json
 
 ## 子命令
 
-`kiki` 提供以下子命令：`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`migrate-config`（显式迁移旧配置和自定义资源）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+`kiki` 提供以下子命令：`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
 
 ### `kiki serve`
 
@@ -230,23 +230,6 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 使用 `--agent <名称>`、`--model <alias>`、`--executor <id>` 和 `--delegation-position <main|sub|independent>` 选择解释上下文。使用 `--config <路径>` 检查另一份配置文件，使用 `--home <目录>` 选择读取 `SYSTEM.md`、发现 Agent 以及解析相对外部覆写文件时所用的 Kiki home。不带子命令的 `kiki prompt-fields` 等同于 `list`。
 
 已移除的 `prompt.shared` 与 `prompt.tools` 键已迁入 `[prompt.overrides]` 下的字段；请按 [提示词字段优先级](../configuration/overrides.md#提示词字段优先级) 迁移旧条目，不要恢复旧键。
-
-### `kiki migrate-config`
-
-将旧配置和自定义资源复制到 `KIKI_HOME`（默认 `~/.kiki`），不会覆盖已有的 Kiki 文件。只有这条显式迁移命令会读取旧的 `KIMI_CODE_HOME` 环境变量；未显式指定时，默认来源依次为 `--from <目录>`、旧 `KIMI_CODE_HOME` 设置、`~/.kimi-code`。使用 `--home <目录>` 可指定目标。解析 home 路径不会自动执行迁移。
-
-```sh
-kiki migrate-config --json
-kiki migrate-config --workspace <目录> --json
-```
-
-Home 迁移复制 `config.toml`、`mcp.json`、`tui.toml`、`SYSTEM.md`、`AGENTS.md`、`region`、稳定的 OAuth `device_id`、供应商凭据 JSON，以及 `agents`、`commands`、`skills`、`themes` 目录树和其中的相对引用资源，不输出文件正文。目标中已有文件始终整份优先，不进行字段级合并，源文件不变。会话、daemon token、注册表或锁文件、缓存和日志不复制。自定义文件中的绝对引用不改写；确认这些引用和仍需保留的会话历史前，请勿删除源目录。
-
-对每个项目执行 `kiki migrate-config --workspace <目录> --json`，将 `.kimi-code` 中的 `local.toml`、`AGENTS.md`、`mcp.json` 和上述自定义目录树复制到 `.kiki`。该选项不能与 `--from` 或 `--home` 合用。根 `AGENTS.md` 与标准 `.mcp.json` 保持不变，沿用既有语义和优先级。产品本地 MCP 仍属于选定的当前工作目录；嵌套目录有自己的旧 MCP 配置时，需单独迁移该目录。运行时只发现新的产品路径；存在未迁移的旧 local 配置时会提示迁移，不会静默读取。
-
-文件系统操作失败后，修复提示的问题并重试，已复制文件会保留。迁移拒绝符号链接，不会跟随链接复制。若源目录中有未识别且目标中不存在的条目，结果为 `incomplete`，列出条目名称并以状态码 `2` 退出，不写完成标记。请检查并显式迁移这些资源后重试。只有选定文件处理完成且没有剩余未知条目时，才写入 `.kiki-config-migration-v2.json`；较早的 `.kiki-home-migration.json` 标记不会阻挡这次资源补迁。
-
-桌面的兼容 home 只选择只读迁移来源，不再决定另一套运行时或 OAuth home。模型类别导入不复制凭据；依赖导入的认证引用前，请执行完整的 `migrate-config` 或重新登录。
 
 ### `kiki login`
 

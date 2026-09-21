@@ -43,7 +43,6 @@
     "desktop:shortcuts:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop-release.ps1 -Action InstallShortcuts",
     "desktop:shortcuts": "pnpm desktop:shortcuts:dev",
     "desktop:release:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop-release.test.ps1",
-    "desktop:import-kimi-config": "cargo run --manifest-path src-tauri/Cargo.toml --example import-kimi-config --",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",

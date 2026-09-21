@@ -327,7 +327,7 @@ ${plugin_sections}
 
 ## Instruction Files
 
-Global Kiki-specific instructions can live at `$KIKI_HOME/AGENTS.md` (default: `~/.kiki/AGENTS.md`). When you relocate the data root with `KIKI_HOME`, this global instruction file moves with it. Generic cross-tool instructions can still live under `~/.agents/AGENTS.md` in the real OS home, and project-level instructions remain under the project tree, for example `.kiki/AGENTS.md` or `AGENTS.md`. The legacy `.kimi-code/AGENTS.md` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`.
+Global Kiki-specific instructions can live at `$KIKI_HOME/AGENTS.md` (default: `~/.kiki/AGENTS.md`). When you relocate the data root with `KIKI_HOME`, this global instruction file moves with it. Generic cross-tool instructions can still live under `~/.agents/AGENTS.md` in the real OS home, and project-level instructions remain under the project tree, for example `.kiki/AGENTS.md` or `AGENTS.md`. The legacy `.kimi-code/AGENTS.md` path is not read.
 
 ## Storage Location in the Session Directory
 

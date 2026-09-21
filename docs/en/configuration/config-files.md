@@ -632,7 +632,7 @@ dangerous_bash = "default"
 ```
 
 ::: tip
-MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`. The interactive configuration entry point is the built-in `kiki-ops` skill (Kiki's product-usage and configuration Skill): type `/kiki-ops help me configure MCP`; see [Model Context Protocol](../server/mcp.md).
+MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is not read. The interactive configuration entry point is the built-in `kiki-ops` skill (Kiki's product-usage and configuration Skill): type `/kiki-ops help me configure MCP`; see [Model Context Protocol](../server/mcp.md).
 :::
 
 ## `prompt`
@@ -748,7 +748,7 @@ Changes apply on the next start, or immediately with `/reload-tui` (which reload
 
 ## Project-local configuration
 
-In addition to the user-level files under `~/.kiki`, Kiki reads a project-local configuration file at `<project-root>/.kiki/local.toml`. It holds settings that are specific to one project checkout and typically should not be shared with teammates. The legacy `.kimi-code/local.toml` path is not loaded automatically; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`.
+In addition to the user-level files under `~/.kiki`, Kiki reads a project-local configuration file at `<project-root>/.kiki/local.toml`. It holds settings that are specific to one project checkout and typically should not be shared with teammates. The legacy `.kimi-code/local.toml` path is not read.
 
 The file is created automatically when you add an extra workspace directory with [`/add-dir`](../reference/slash-commands.md) and choose to remember it for the project. You rarely need to edit it by hand.
 

@@ -19,7 +19,7 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 - **用户级**：`~/.kiki/mcp.json`（或 `$KIKI_HOME/mcp.json`），跨项目共享
 - **项目级**：工作目录下的 `.kiki/mcp.json`，只对当前仓库生效
 
-旧的 `.kimi-code/mcp.json` 路径只作为迁移来源；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。
+旧的 `.kimi-code/mcp.json` 路径不会读取。
 
 同名条目以项目级为准，覆盖用户级。
 

@@ -327,7 +327,7 @@ ${plugin_sections}
 
 ## 指令文件
 
-全局 Kiki 专属指令可放在 `$KIKI_HOME/AGENTS.md`（默认：`~/.kiki/AGENTS.md`）。当你用 `KIKI_HOME` 移动数据根时，这份全局指令文件也会一起移动。跨工具通用指令仍可放在真实 OS home 下的 `~/.agents/AGENTS.md`，项目级指令仍放在项目目录中，例如 `.kiki/AGENTS.md` 或 `AGENTS.md`。旧的 `.kimi-code/AGENTS.md` 路径只作为迁移来源；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。
+全局 Kiki 专属指令可放在 `$KIKI_HOME/AGENTS.md`（默认：`~/.kiki/AGENTS.md`）。当你用 `KIKI_HOME` 移动数据根时，这份全局指令文件也会一起移动。跨工具通用指令仍可放在真实 OS home 下的 `~/.agents/AGENTS.md`，项目级指令仍放在项目目录中，例如 `.kiki/AGENTS.md` 或 `AGENTS.md`。旧的 `.kimi-code/AGENTS.md` 路径不会读取。
 
 ## 会话目录中的存储位置
 

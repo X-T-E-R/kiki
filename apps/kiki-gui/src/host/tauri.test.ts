@@ -1,14 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { SessionsMigrationPlan } from './host';
 import { tauriHost } from './tauri';
 
 const {
   checkDesktopUpdate: checkNativeDesktopUpdate,
-  dryRunSessionsMigration: dryRunNativeSessionsMigration,
-  executeSessionsMigration: executeNativeSessionsMigration,
-  importKimiConfig: importNativeKimiConfig,
-  migrateCompatibilityCategory: migrateNativeCompatibilityCategory,
   onFileDrop,
   onTrayNewSession,
   pickDirectories: selectDirectoriesNative,
@@ -76,108 +71,6 @@ describe('native desktop bridge', () => {
     expect(invoke).toHaveBeenNthCalledWith(1, 'check_desktop_update');
     expect(invoke).toHaveBeenNthCalledWith(2, 'prepare_for_update');
     expect(invoke).toHaveBeenNthCalledWith(3, 'install_desktop_update');
-  });
-
-  it('keeps dry-run and execution as separate native actions with structured facts', async () => {
-    const plan: SessionsMigrationPlan = {
-      status: 'ready',
-      sourceRoot: 'C:/source-home',
-      targetRoot: 'C:/kiki-home',
-      sessionCount: 2,
-      totalBytes: 1234,
-      plannedMoves: [
-        {
-          entry: 'workspaces.json',
-          source: 'C:/source-home/workspaces.json',
-          target: 'C:/kiki-home/workspaces.json',
-        },
-        {
-          entry: 'sessions',
-          source: 'C:/source-home/sessions',
-          target: 'C:/kiki-home/sessions',
-        },
-      ],
-      targetConflict: false,
-      blocker: null,
-      execution: 'filesystemRename',
-    };
-    invoke.mockResolvedValueOnce(plan);
-
-    await expect(dryRunNativeSessionsMigration()).resolves.toEqual(plan);
-    expect(invoke).toHaveBeenCalledWith('dry_run_sessions_migration');
-    expect(invoke).toHaveBeenCalledTimes(1);
-
-    const moved = { ...plan, status: 'moved' as const };
-    const reload = vi.fn();
-    vi.stubGlobal('window', { location: { reload } });
-    invoke.mockResolvedValueOnce(moved);
-    await expect(executeNativeSessionsMigration()).resolves.toEqual(moved);
-    expect(invoke).toHaveBeenLastCalledWith('execute_sessions_migration');
-    expect(invoke).toHaveBeenCalledTimes(2);
-    expect(reload).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not reload while execution remains blocked', async () => {
-    const reload = vi.fn();
-    vi.stubGlobal('window', { location: { reload } });
-    invoke.mockResolvedValueOnce({ status: 'blocked' });
-
-    await expect(executeNativeSessionsMigration()).resolves.toMatchObject({ status: 'blocked' });
-    expect(reload).not.toHaveBeenCalled();
-  });
-
-  it('reloads only after an imported config restarts successfully', async () => {
-    const reload = vi.fn();
-    vi.stubGlobal('window', { location: { reload } });
-    invoke.mockResolvedValueOnce({
-      status: 'imported',
-      source: 'C:/source-home/config.toml',
-      target: 'C:/kiki-home/config.toml',
-      updatedCategories: ['providers', 'default_model'],
-      restartError: null,
-    });
-    await expect(importNativeKimiConfig()).resolves.toMatchObject({ status: 'imported' });
-    expect(invoke).toHaveBeenCalledWith('import_kimi_config');
-    expect(reload).toHaveBeenCalledTimes(1);
-
-    invoke.mockResolvedValueOnce({
-      status: 'noop',
-      source: 'C:/source-home/config.toml',
-      target: 'C:/kiki-home/config.toml',
-      updatedCategories: [],
-      restartError: null,
-    });
-    await expect(importNativeKimiConfig()).resolves.toMatchObject({ status: 'noop' });
-
-    invoke.mockResolvedValueOnce({
-      status: 'imported',
-      source: 'C:/source-home/config.toml',
-      target: 'C:/kiki-home/config.toml',
-      updatedCategories: ['models'],
-      restartError: 'restart failed',
-    });
-    await expect(importNativeKimiConfig()).resolves.toMatchObject({ restartError: 'restart failed' });
-    expect(reload).toHaveBeenCalledTimes(1);
-  });
-
-  it('surfaces a completed category copy whose activation setting is still pending', async () => {
-    invoke.mockResolvedValueOnce({
-      status: 'copiedActivationPending',
-      category: 'userSkills',
-      source: 'C:/source-home/skills',
-      target: 'C:/kiki-home/skills',
-      files: 3,
-      activationError: 'desktop prefs are read-only',
-    });
-
-    await expect(migrateNativeCompatibilityCategory('userSkills')).resolves.toMatchObject({
-      status: 'copiedActivationPending',
-      files: 3,
-      activationError: 'desktop prefs are read-only',
-    });
-    expect(invoke).toHaveBeenCalledWith('migrate_compatibility_category', {
-      category: 'userSkills',
-    });
   });
 
   it('routes directory picks through the native dialog with the directory flags', async () => {

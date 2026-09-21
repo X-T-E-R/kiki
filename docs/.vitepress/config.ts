@@ -77,12 +77,6 @@ const config = withMermaid(defineConfig({
                 { text: '常见使用案例', link: '/zh/getting-started/use-cases' },
               ],
             },
-            {
-              text: '迁移',
-              items: [
-                { text: '从 kimi-cli 迁移', link: '/zh/getting-started/migration' },
-              ],
-            },
           ],
           '/zh/guides/': [
             {
@@ -190,12 +184,6 @@ const config = withMermaid(defineConfig({
                 { text: 'First launch', link: '/en/getting-started/first-launch' },
                 { text: 'Kiki desktop', link: '/en/getting-started/desktop-app' },
                 { text: 'Common use cases', link: '/en/getting-started/use-cases' },
-              ],
-            },
-            {
-              text: 'Migration',
-              items: [
-                { text: 'Migrating from kimi-cli', link: '/en/getting-started/migration' },
               ],
             },
           ],

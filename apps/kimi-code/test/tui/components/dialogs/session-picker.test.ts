@@ -214,39 +214,6 @@ describe('SessionPickerComponent', () => {
     expect(headerLine).not.toMatch(/Short title\s{8,}/);
   });
 
-  it('prepends [imported] badge before the title for sessions migrated from kimi-cli', () => {
-    const now = new Date('2026-05-11T12:00:00.000Z').getTime();
-    vi.spyOn(Date, 'now').mockReturnValue(now);
-
-    const component = new SessionPickerComponent({
-      sessions: [
-        {
-          id: 'ses_imported',
-          title: 'Migrated session',
-          work_dir: '/tmp/project',
-          updated_at: now - 60 * 1000,
-          metadata: { imported_from_kimi_cli: true },
-        },
-        {
-          id: 'ses_native',
-          title: 'Fresh session',
-          work_dir: '/tmp/project',
-          updated_at: now - 60 * 1000,
-        },
-      ],
-      loading: false,
-      currentSessionId: 'ses_other',
-      onSelect: vi.fn(),
-      onCancel: vi.fn(),
-    });
-
-    const lines = component.render(120).map((line) => stripAnsi(line));
-    const importedLine = lines.find((line) => line.includes('Migrated session'));
-    const nativeLine = lines.find((line) => line.includes('Fresh session'));
-    expect(importedLine).toContain('[imported] Migrated session');
-    expect(nativeLine).not.toContain('[imported]');
-  });
-
   it('keeps every rendered line within the terminal width even for CJK content', () => {
     const now = new Date('2026-05-11T12:00:00.000Z').getTime();
     vi.spyOn(Date, 'now').mockReturnValue(now);
@@ -293,7 +260,6 @@ describe('SessionPickerComponent', () => {
           last_prompt: 'please redesign the picker UI to be much nicer than before',
           work_dir: '/Users/getlong/Development/cesiumdb',
           updated_at: now - 5 * 60 * 1000,
-          metadata: { imported_from_kimi_cli: true },
         },
       ],
       loading: false,

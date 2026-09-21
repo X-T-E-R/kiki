@@ -80,17 +80,6 @@ Kiki 维护者负责下游 CLI 身份、客户端集成、home 解析和迁移�
 
 运行时配置、会话和 OAuth 凭据使用 `KIKI_HOME`，默认 `~/.kiki`。支持显式 `--home` 的命令优先使用该选项。旧 `KIMI_CODE_HOME` 设置不是启动回退项。真实 Kimi provider/OAuth 身份与端点保持不变；产品 home 改名不等于改供应商协议。
 
-桌面的兼容 home 设置只选择迁移来源。登录、退出登录和 token 刷新不再作用于单独选择的旧 home。依赖旧凭据前，请执行[显式配置迁移](../zh/reference/command.md#kiki-migrate-config)或重新登录。
-
-`kiki migrate-config` 复制受支持的配置、凭据、设备身份和自定义资源，不覆盖已有 Kiki 文件，也不删除来源。`--workspace <目录>` 将项目 `local.toml`、`AGENTS.md`、`mcp.json` 和自定义资源树迁到 `.kiki`。根 `AGENTS.md` 与标准 `.mcp.json` 留在原处并保持既有语义。项目本地 MCP 仍针对选定的当前工作目录，不会隐式合并所有祖先目录中的产品 MCP 文件。
-
-桌面的独立模型类别导入只复制 `providers`、`models`、`services`、`default_model`、`default_provider` 和 `thinking`。Map 类别按 key 合并，同名别名由来源覆盖，未涉及的类别与注释不变。该操作不复制凭据；导入的认证引用可能需要完整迁移或重新登录。重复导入不变内容会返回无变更。无界面使用时，先停止自有后端，再从 `apps/kiki-gui` 运行：
-
-```sh
-pnpm desktop:import-kimi-config --source-home <绝对路径> --target-home <绝对路径>
-```
-
-该命令只报告状态、路径和类别名称，不复制 OAuth、会话或技能。桌面的会话移动与技能复制仍是独立操作：会话移动转移 `workspaces.json` 和 `sessions/`，部分失败时执行补偿；技能复制保留来源和已占用的目标。这些操作只停止/重启 Kiki 自有后端，不影响外部 Kimi Code 进程。迁移外部进程的数据前请先关闭它们。
 
 ## 从上游同步
 

@@ -11,7 +11,6 @@ const config = await resolveConfig(root)
 const { base, locales } = config.site
 const html = (route) => readFileSync(path.join(config.outDir, `${route}.html`), 'utf8')
 const moves = {
-  'configuration/migration': 'getting-started/migration',
   'configuration/model-vocabulary': 'reference/model-vocabulary',
   'getting-started/model-vocabulary': 'reference/model-vocabulary',
   'desktop/interface': 'guides/interface',
@@ -26,7 +25,7 @@ const moves = {
   'server/cross-host-session-boundaries': 'server/local-server',
 }
 const sections = {
-  'getting-started': [['installation', 'first-launch', 'desktop-app', 'use-cases'], ['migration']],
+  'getting-started': [['installation', 'first-launch', 'desktop-app', 'use-cases']],
   guides: [['interface', 'sessions', 'settings'], ['interaction', 'goals']],
   customization: [['agent-profiles', 'agents', 'skills', 'plugins', 'hooks', 'prompt-fields', 'themes']],
   server: [['local-server', 'ide', 'acp'], ['rest-api', 'mcp', 'sdk']],
@@ -69,8 +68,8 @@ test('both locales have the approved six-section nav and mirrored sidebars', () 
   assert.deepEqual(pages('en'), pages('zh'))
 })
 
-test('all 26 old URLs publish redirect pages and all canonical destinations publish content', () => {
-  assert.equal(Object.keys(config.rewrites.map).length, 26)
+test('all old URLs publish redirect pages and all canonical destinations publish content', () => {
+  assert.equal(Object.keys(config.rewrites.map).length, 24)
   for (const locale of ['en', 'zh']) {
     for (const [from, to] of Object.entries(moves)) {
       assert.equal(config.rewrites.map[`redirects/${locale}/${from}.md`], `${locale}/${from}.md`)

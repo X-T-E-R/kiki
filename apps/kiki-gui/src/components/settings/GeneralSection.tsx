@@ -6,31 +6,24 @@ import type { PermissionMode } from '@kiki/protocol';
 import { clearStoredDrafts } from '@kiki/session-core/composer';
 import { errorText, type Locale } from '@kiki/session-core/i18n';
 import {
-  markRestartRequired,
   readDesktopPrefs,
   readSettings,
   writeDesktopPrefs,
   writeSettings,
-  type CompatibilitySettings,
   type SendShortcut,
   type ThemePreference,
 } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
-import { useHost, type SessionsMigrationPlan } from '../../host';
+import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
+import { SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SessionTitleModelFields } from './SessionTitleModelSettings';
 import { mergeConfigEcho } from './configEcho';
 import { useSavedTick } from './useSavedTick';
-
-function isAbsoluteHomePath(path: string): boolean {
-  return /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+|\/)/.test(path);
-}
 
 export function GeneralSection() {
   const host = useHost();
@@ -40,28 +33,8 @@ export function GeneralSection() {
   const [settings, setSettings] = useState(readSettings);
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('manual');
-  const [compatOpen, setCompatOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [compatibilityFeedback, setCompatibilityFeedback] = useState<Feedback>(null);
-  const [compatibilityBusy, setCompatibilityBusy] = useState(false);
-  const [kimiHomePaths, setKimiHomePaths] = useState<{
-    home: string;
-    credentialPath: string;
-    sourceConfigPath: string;
-    configPath: string;
-  } | null>(null);
-  const [configImporting, setConfigImporting] = useState(false);
-  const [migrating, setMigrating] = useState<'userSkills' | null>(null);
-  const [sessionsBusy, setSessionsBusy] = useState<'dryRun' | 'move' | null>(null);
-  const [sessionsPlan, setSessionsPlan] = useState<SessionsMigrationPlan | null>(null);
-  const [confirmSessionsMove, setConfirmSessionsMove] = useState(false);
-  const [homeKindDraft, setHomeKindDraft] = useState(
-    desktopPrefs.compatibility.homeKind,
-  );
-  const [customHome, setCustomHome] = useState(
-    desktopPrefs.compatibility.customHome ?? '',
-  );
   const [tick, ping] = useSavedTick();
   const isDesktop = host.kind === 'tauri';
 
@@ -81,14 +54,11 @@ export function GeneralSection() {
 
   useEffect(() => {
     if (host.kind !== 'tauri') return;
-    void Promise.all([host.readDesktopPrefs(), host.readKimiHomePaths()]).then(([prefs, paths]) => {
+    void host.readDesktopPrefs().then((prefs) => {
       if (prefs !== null) {
         setDesktopPrefs(prefs);
-        setHomeKindDraft(prefs.compatibility.homeKind);
-        setCustomHome(prefs.compatibility.customHome ?? '');
         writeDesktopPrefs(prefs);
       }
-      setKimiHomePaths(paths);
     });
   }, [host]);
 
@@ -123,147 +93,6 @@ export function GeneralSection() {
     const next = { ...settings, ...patch };
     setSettings(next);
     writeSettings(patch);
-  };
-
-  const persistCompatibility = async (next: CompatibilitySettings) => {
-    if (next.homeKind === 'custom') {
-      const path = next.customHome?.trim() ?? '';
-      if (!isAbsoluteHomePath(path)) {
-        setCompatibilityFeedback({ tone: 'error', text: t('st.compat.customInvalid') });
-        return;
-      }
-      next = { ...next, customHome: path };
-    }
-    setCompatibilityBusy(true);
-    setCompatibilityFeedback(null);
-    try {
-      await host.writeCompatibilitySettings?.(next);
-      setKimiHomePaths((await host.readKimiHomePaths?.()) ?? null);
-      setSessionsPlan(null);
-      setConfirmSessionsMove(false);
-      const prefs = { ...desktopPrefs, compatibility: next };
-      setDesktopPrefs(prefs);
-      setHomeKindDraft(next.homeKind);
-      writeDesktopPrefs(prefs);
-      markRestartRequired(['Kimi Home']);
-      setCompatibilityFeedback({ tone: 'success', text: t('st.compat.savedRestart') });
-    } catch (error) {
-      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setCompatibilityBusy(false);
-    }
-  };
-
-  const importKimiConfig = async () => {
-    if (host.kind !== 'tauri') return;
-    setConfigImporting(true);
-    setCompatibilityFeedback(null);
-    try {
-      const result = await host.importKimiConfig();
-      if (result.status === 'noop') {
-        setCompatibilityFeedback({ tone: 'info', text: t('st.compat.configImportNoop') });
-      } else if (result.restartError !== null) {
-        setCompatibilityFeedback({
-          tone: 'info',
-          text: t('st.compat.configImportRestartFailed', {
-            categories: result.updatedCategories.join(', '),
-            error: result.restartError,
-          }),
-        });
-      } else {
-        setCompatibilityFeedback({
-          tone: 'success',
-          text: t('st.compat.configImported', {
-            categories: result.updatedCategories.join(', '),
-          }),
-        });
-      }
-    } catch (error) {
-      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setConfigImporting(false);
-    }
-  };
-
-  const migrateCategory = async () => {
-    if (host.kind !== 'tauri') return;
-    setMigrating('userSkills');
-    setCompatibilityFeedback(null);
-    try {
-      const result = await host.migrateCompatibilityCategory('userSkills');
-      if (result.status === 'copied') {
-        setCompatibilityFeedback({
-          tone: result.restartError === null ? 'success' : 'info',
-          text: result.restartError === null
-            ? t('st.compat.migrated', { count: result.files })
-            : t('st.compat.migratedRestartFailed', { count: result.files, error: result.restartError }),
-        });
-      } else if (result.status === 'copiedActivationPending') {
-        setCompatibilityFeedback({
-          tone: 'info',
-          text: result.restartError === null
-            ? t('st.compat.migrationActivationPending', {
-                count: result.files,
-                error: result.activationError ?? t('st.compat.migrationActivationUnknown'),
-              })
-            : t('st.compat.migrationActivationAndRestartPending', {
-                count: result.files,
-                error: result.activationError ?? t('st.compat.migrationActivationUnknown'),
-                restartError: result.restartError,
-              }),
-        });
-      } else {
-        setCompatibilityFeedback({ tone: 'info', text: t('st.compat.migrationNoop') });
-      }
-    } catch (error) {
-      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setMigrating(null);
-    }
-  };
-
-  const reviewSessionsMove = async () => {
-    if (host.kind !== 'tauri') return;
-    setSessionsBusy('dryRun');
-    setCompatibilityFeedback(null);
-    try {
-      const plan = await host.dryRunSessionsMigration();
-      setSessionsPlan(plan);
-      if (plan.status === 'blocked') {
-        setCompatibilityFeedback({ tone: 'error', text: t('st.compat.sessionsConflict') });
-      } else if (plan.status === 'noop') {
-        setCompatibilityFeedback({ tone: 'info', text: t('st.compat.sessionsNoop') });
-      }
-    } catch (error) {
-      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSessionsBusy(null);
-    }
-  };
-
-  const moveSessions = async () => {
-    if (host.kind !== 'tauri') return;
-    setConfirmSessionsMove(false);
-    setSessionsBusy('move');
-    setCompatibilityFeedback(null);
-    try {
-      const result = await host.executeSessionsMigration();
-      setSessionsPlan(result);
-      if (result.status === 'moved') {
-        setCompatibilityFeedback({
-          tone: 'success',
-          text: t('st.compat.sessionsMoved', { count: result.sessionCount }),
-        });
-      } else if (result.status === 'blocked') {
-        setCompatibilityFeedback({ tone: 'error', text: t('st.compat.sessionsConflict') });
-      } else {
-        setCompatibilityFeedback({ tone: 'info', text: t('st.compat.sessionsNoop') });
-      }
-    } catch (error) {
-      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSessionsBusy(null);
-    }
   };
 
   return (
@@ -431,180 +260,6 @@ export function GeneralSection() {
         ) : null}
       </SectionCard>
 
-      <SectionCard id="st-card-compatibility-home" title={t('st.compat.title')} badge="desktop" aside={isDesktop ? undefined : t('st.compat.browserHint')}>
-        {isDesktop ? (
-        <>
-        <button
-          type="button"
-          aria-expanded={compatOpen}
-          onClick={() => { setCompatOpen(!compatOpen); }}
-          className="mb-2 text-[11px] font-medium text-accent hover:underline"
-        >
-          {t(compatOpen ? 'st.compat.collapse' : 'st.compat.expand')}
-        </button>
-        {compatOpen ? (
-        <>
-        <fieldset disabled={compatibilityBusy || configImporting || migrating !== null || sessionsBusy !== null} className="space-y-4">
-          <div>
-            <label htmlFor="compatibility-home-kind" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
-              {t('st.compat.home')}
-            </label>
-            <select
-              id="compatibility-home-kind"
-              className={SMALL_INPUT}
-              value={homeKindDraft}
-              onChange={(event) => {
-                const homeKind = event.target.value as CompatibilitySettings['homeKind'];
-                setSessionsPlan(null);
-                setConfirmSessionsMove(false);
-                setHomeKindDraft(homeKind);
-                if (homeKind === 'custom') {
-                  return;
-                }
-                void persistCompatibility({
-                  ...desktopPrefs.compatibility,
-                  homeKind,
-                  customHome: undefined,
-                });
-              }}
-            >
-              <option value="kimi">{t('st.compat.homeKimi')}</option>
-              <option value="custom">{t('st.compat.homeCustom')}</option>
-            </select>
-          </div>
-          {homeKindDraft === 'custom' ? (
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                className={INPUT}
-                value={customHome}
-                placeholder={t('st.compat.customPlaceholder')}
-                onChange={(event) => {
-                  setCustomHome(event.target.value);
-                  setSessionsPlan(null);
-                  setConfirmSessionsMove(false);
-                }}
-              />
-              <button
-                type="button"
-                className={PRIMARY_BUTTON}
-                onClick={() => void persistCompatibility({
-                  ...desktopPrefs.compatibility,
-                  homeKind: 'custom',
-                  customHome,
-                })}
-              >
-                {t('st.compat.useHome')}
-              </button>
-            </div>
-          ) : null}
-          <div className="space-y-2">
-            <label className="block text-[11px] font-medium text-ink-soft">{t('st.compat.credentialPath')}</label>
-            <input className={`${INPUT} font-mono`} value={kimiHomePaths?.credentialPath ?? ''} readOnly />
-          </div>
-          <Hint>{t('st.compat.hint')}</Hint>
-          <div className="space-y-3 border-t border-hairline pt-4">
-            <div>
-              <p className="text-[12.5px] font-medium text-ink">{t('st.compat.configImportTitle')}</p>
-              <Hint>{t('st.compat.configImportHint')}</Hint>
-            </div>
-            <dl className="grid gap-1 text-[11px] text-ink-soft">
-              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportSource')}: </dt><dd className="inline break-all font-mono">{kimiHomePaths?.sourceConfigPath ?? ''}</dd></div>
-              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportTarget')}: </dt><dd className="inline break-all font-mono">{kimiHomePaths?.configPath ?? ''}</dd></div>
-              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportCategories')}: </dt><dd className="inline font-mono">providers, models, default_model, default_provider, thinking</dd></div>
-            </dl>
-            <button
-              type="button"
-              className={SECONDARY_BUTTON}
-              disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind}
-              onClick={() => void importKimiConfig()}
-            >
-              {configImporting ? t('st.compat.configImporting') : t('st.compat.configImport')}
-            </button>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className={SECONDARY_BUTTON}
-              disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind}
-              onClick={() => void migrateCategory()}
-            >
-              {migrating === 'userSkills' ? t('st.compat.migrating') : t('st.compat.migrateUserSkills')}
-            </button>
-          </div>
-          <Hint>{t('st.compat.migrationHint')}</Hint>
-          <div className="border-t border-hairline pt-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <p className="text-[12.5px] font-medium text-ink">{t('st.compat.sessionsTitle')}</p>
-                <Hint>{t('st.compat.sessionsHint')}</Hint>
-              </div>
-              <button
-                type="button"
-                className={SECONDARY_BUTTON}
-                disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind}
-                onClick={() => void reviewSessionsMove()}
-              >
-                {sessionsBusy === 'dryRun' ? t('st.compat.sessionsReviewing') : t('st.compat.sessionsReview')}
-              </button>
-            </div>
-            {sessionsPlan !== null ? (
-              <div className="mt-3 space-y-2 rounded-lg border border-hairline bg-paper p-3 text-[11.5px] text-ink-soft">
-                <p>{t('st.compat.sessionsSummary', {
-                  count: sessionsPlan.sessionCount,
-                  bytes: sessionsPlan.totalBytes.toLocaleString(),
-                })}</p>
-                <p>{t('st.compat.sessionsMethod')}</p>
-                <dl className="grid gap-1">
-                  <div><dt className="inline font-medium text-ink">{t('st.compat.sessionsSource')}: </dt><dd className="inline break-all font-mono">{sessionsPlan.sourceRoot}</dd></div>
-                  <div><dt className="inline font-medium text-ink">{t('st.compat.sessionsTarget')}: </dt><dd className="inline break-all font-mono">{sessionsPlan.targetRoot}</dd></div>
-                </dl>
-                <ul className="space-y-1">
-                  {sessionsPlan.plannedMoves.map((move) => (
-                    <li key={`${move.source}:${move.target}`} className="break-all font-mono">
-                      {move.entry}: {move.source} → {move.target}
-                    </li>
-                  ))}
-                </ul>
-                {sessionsPlan.status === 'ready' ? (
-                  <button
-                    type="button"
-                    className={PRIMARY_BUTTON}
-                    onClick={() => { setConfirmSessionsMove(true); }}
-                  >
-                    {sessionsBusy === 'move' ? t('st.compat.sessionsMoving') : t('st.compat.sessionsMove')}
-                  </button>
-                ) : null}
-                {sessionsPlan.status === 'blocked' ? <p className="text-danger">{t('st.compat.sessionsConflict')}</p> : null}
-                {sessionsPlan.status === 'noop' ? <p>{t('st.compat.sessionsNoop')}</p> : null}
-              </div>
-            ) : null}
-          </div>
-          <FeedbackLine feedback={compatibilityFeedback} />
-        </fieldset>
-        <ConfirmDialog
-          open={confirmSessionsMove && sessionsPlan?.status === 'ready'}
-          title={t('st.compat.sessionsConfirmTitle')}
-          body={t('st.compat.sessionsConfirmBody')}
-          consequences={sessionsPlan === null ? undefined : [
-            t('st.compat.sessionsSummary', {
-              count: sessionsPlan.sessionCount,
-              bytes: sessionsPlan.totalBytes.toLocaleString(),
-            }),
-            ...sessionsPlan.plannedMoves.map(
-              (move) => `${move.entry}: ${move.source} → ${move.target}`,
-            ),
-            t('st.compat.sessionsMethod'),
-          ]}
-          confirmLabel={t('st.compat.sessionsMove')}
-          busy={sessionsBusy === 'move'}
-          onConfirm={() => void moveSessions()}
-          onCancel={() => { setConfirmSessionsMove(false); }}
-        />
-        </>
-        ) : null}
-        </>
-        ) : null}
-      </SectionCard>
     </div>
   );
 }

@@ -48,9 +48,7 @@ export async function runWorkspaceTrustGate(options: {
 
 export async function isWorkspaceTrusted(homeDir: string, workDir: string): Promise<boolean> {
   const canonicalKey = workspaceTrustKey(canonicalWorkspaceRoot(workDir));
-  if (await hasTrustRecord(homeDir, canonicalKey)) return true;
-  const legacyKey = workspaceTrustKey(workDir);
-  return legacyKey !== canonicalKey && (await hasTrustRecord(homeDir, legacyKey));
+  return hasTrustRecord(homeDir, canonicalKey);
 }
 
 export async function trustWorkspace(homeDir: string, workDir: string): Promise<void> {

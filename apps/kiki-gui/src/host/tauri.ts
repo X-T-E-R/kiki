@@ -8,14 +8,10 @@ import {
 } from '@tauri-apps/plugin-notification';
 
 import type {
-  CompatibilityMigrationResult,
   DesktopUpdate,
   TauriHostAdapter,
   HostFileDrop,
   HostSelectedFile,
-  KimiConfigImportResult,
-  KimiHomePaths,
-  SessionsMigrationPlan,
 } from './host';
 import type { DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
@@ -203,34 +199,6 @@ export const tauriHost: TauriHostAdapter = {
         await invoke('install_desktop_update');
       },
     };
-  },
-  async writeCompatibilitySettings(compatibility) {
-    await invoke('write_desktop_prefs', { prefs: { compatibility } });
-  },
-  async readKimiHomePaths() {
-    try {
-      return await invoke<KimiHomePaths>('read_kimi_home_paths');
-    } catch {
-      return null;
-    }
-  },
-  async importKimiConfig() {
-    const result = await invoke<KimiConfigImportResult>('import_kimi_config');
-    if (result.status === 'imported' && result.restartError === null) window.location.reload();
-    return result;
-  },
-  async migrateCompatibilityCategory(category) {
-    const result = await invoke<CompatibilityMigrationResult>('migrate_compatibility_category', { category });
-    if (result.status === 'copied' && result.restartError === null) window.location.reload();
-    return result;
-  },
-  async dryRunSessionsMigration() {
-    return invoke<SessionsMigrationPlan>('dry_run_sessions_migration');
-  },
-  async executeSessionsMigration() {
-    const result = await invoke<SessionsMigrationPlan>('execute_sessions_migration');
-    if (result.status === 'moved') window.location.reload();
-    return result;
   },
   onTrayNewSession,
   onFileDrop,

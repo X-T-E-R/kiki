@@ -6,8 +6,8 @@
 
 import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@kiki/protocol';
 import { createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
-import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
 import { translate } from '@kiki/session-core/i18n';
+import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
 import type {
   ActivateSkillRequest,
   ActivateSkillResult,

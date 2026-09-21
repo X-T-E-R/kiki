@@ -628,7 +628,7 @@ dangerous_bash = "default"
 ```
 
 ::: tip
-MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径只作为迁移来源；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。交互式配置入口是内置的 `kiki-ops` Skill（负责 Kiki 产品使用与配置的内置 Skill）：输入 `/kiki-ops 帮我配置 MCP`，详见 [Model Context Protocol](../server/mcp.md)。
+MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径不会读取。交互式配置入口是内置的 `kiki-ops` Skill（负责 Kiki 产品使用与配置的内置 Skill）：输入 `/kiki-ops 帮我配置 MCP`，详见 [Model Context Protocol](../server/mcp.md)。
 :::
 
 ## `prompt`
@@ -744,7 +744,7 @@ notification_condition = "unfocused" # "unfocused" | "always"
 
 ## 项目级本地配置
 
-除了 `~/.kiki` 下的用户级文件，Kiki 还会读取位于 `<项目根目录>/.kiki/local.toml` 的项目级本地配置文件。它保存的是与某一个项目检出相关、通常不应与队友共享的设置。旧的 `.kimi-code/local.toml` 路径不会自动加载；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。
+除了 `~/.kiki` 下的用户级文件，Kiki 还会读取位于 `<项目根目录>/.kiki/local.toml` 的项目级本地配置文件。它保存的是与某一个项目检出相关、通常不应与队友共享的设置。旧的 `.kimi-code/local.toml` 路径不会读取。
 
 该文件会在你通过 [`/add-dir`](../reference/slash-commands.md) 添加额外工作目录并选择记入项目时自动创建，通常无需手动编辑。
 

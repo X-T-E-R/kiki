@@ -28,7 +28,7 @@ Kiki 有三个地方可以影响运行参数：配置文件、命令行选项、
 **普通运行参数不会从 shell 环境变量取后备值。** 供应商的 `api_key` / `base_url` 只从 `config.toml`（包括 `[providers.<name>.env]` 子表）读取，不会回退到 shell 里 `export` 的变量。唯一的例外是显式的 `KIMI_MODEL_*` 通道——详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kimi-model)。
 :::
 
-CLI 从 `KIKI_HOME`（默认 `~/.kiki`）读取用户级配置，并从 `<项目根目录>/.kiki/local.toml` 读取项目级设置。旧的 `.kimi-code/local.toml` 路径不会自动加载；运行 `kiki migrate-config --workspace <目录>` 将其复制到 `.kiki/`。需要在不同项目间隔离配置时，用 `KIKI_HOME` 指向不同的数据目录——见下文[典型场景](#典型场景)。
+CLI 从 `KIKI_HOME`（默认 `~/.kiki`）读取用户级配置，并从 `<项目根目录>/.kiki/local.toml` 读取项目级设置。旧的 `.kimi-code/local.toml` 路径不会读取。需要在不同项目间隔离配置时，用 `KIKI_HOME` 指向不同的数据目录——见下文[典型场景](#典型场景)。
 
 ## 供应商凭证
 

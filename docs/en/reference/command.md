@@ -135,7 +135,7 @@ In `stream-json` mode, regular replies produce an Assistant message; when the mo
 
 ## Subcommands
 
-`kiki` provides the following subcommands: `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `migrate-config` (explicitly migrate legacy configuration and authored assets), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
+`kiki` provides the following subcommands: `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
 
 ### `kiki serve`
 
@@ -230,23 +230,6 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 Use `--agent <name>`, `--model <alias>`, `--executor <id>`, and `--delegation-position <main|sub|independent>` to select the explanation context. Use `--config <path>` to inspect another config file and `--home <dir>` to select the Kiki home used for `SYSTEM.md`, agent discovery, and relative external override files. Without a subcommand, `kiki prompt-fields` is equivalent to `list`.
 
 The removed `prompt.shared` and `prompt.tools` keys have moved into fields under `[prompt.overrides]`; migrate old entries instead of restoring those keys, following [prompt field precedence](../configuration/overrides.md#prompt-field-precedence).
-
-### `kiki migrate-config`
-
-Copy legacy configuration and authored assets into `KIKI_HOME` (default `~/.kiki`) without overwriting existing Kiki files. This is the only command that reads the legacy `KIMI_CODE_HOME` environment variable; otherwise the default source is `--from <dir>`, legacy `KIMI_CODE_HOME`, then `~/.kimi-code`. Use `--home <dir>` to select the destination. Migration never runs as a side effect of resolving a home path.
-
-```sh
-kiki migrate-config --json
-kiki migrate-config --workspace <dir> --json
-```
-
-Home migration copies `config.toml`, `mcp.json`, `tui.toml`, `SYSTEM.md`, `AGENTS.md`, `region`, the stable OAuth `device_id`, provider credential JSON files, and the `agents`, `commands`, `skills`, and `themes` trees with their relative resource files. File contents are not printed. Existing destination files win as whole files; no field-level merging occurs. The source remains untouched. Sessions, daemon tokens, registries/locks, caches, and logs are excluded. Absolute references inside authored files are not rewritten: keep the source until you have checked those references and any session history you still need.
-
-For each project, run `kiki migrate-config --workspace <dir> --json` to copy `local.toml`, `AGENTS.md`, `mcp.json`, and those authored trees from `.kimi-code` into `.kiki`. This option cannot be combined with `--from` or `--home`. Root `AGENTS.md` and standard `.mcp.json` stay untouched with their existing semantics and precedence. Product-local MCP still belongs to the chosen working directory; migrate a nested directory separately if it has its own legacy MCP config. Runtime discovery uses only the new product paths; an unmigrated legacy local config produces a migration instruction instead of being loaded silently.
-
-After a filesystem failure, correct the reported issue and rerun the same command; previously copied files are preserved. Symbolic links are rejected rather than followed. Unknown source entries that have no destination counterpart produce `incomplete`, list their names, and return exit code `2` without a completion marker. Review and migrate those assets explicitly, then retry. Completion is recorded in `.kiki-config-migration-v2.json` only after the selected files are handled and no unknown entries remain; the earlier `.kiki-home-migration.json` marker does not prevent this asset-complete migration.
-
-The desktop's compatibility home selects a read-only migration source, not a second runtime or OAuth home. Its model-category import does not copy credentials: use the full `migrate-config` operation or sign in again before relying on imported authentication references.
 
 ### `kiki login`
 

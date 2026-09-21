@@ -1,6 +1,5 @@
 // Source pages use their canonical IA paths. Only redirect pages are rewritten.
 export const legacyMoves = {
-  'configuration/migration': 'getting-started/migration',
   'configuration/model-vocabulary': 'reference/model-vocabulary',
   'getting-started/model-vocabulary': 'reference/model-vocabulary',
   'desktop/interface': 'guides/interface',
@@ -22,7 +21,6 @@ const commandAnchors: Record<string, Record<string, string>> = {
     'run-the-stdio-mcp-edge': 'kiki-mcp',
     'diagnose-the-connection': 'kiki-doctor',
     'inspect-prompt-fields': 'kiki-prompt-fields',
-    'migration-from-kimi': 'kiki-migrate-config',
     'kiki-daemon-integration': 'kiki-serve',
   },
   zh: {
@@ -31,7 +29,6 @@ const commandAnchors: Record<string, Record<string, string>> = {
     '运行-stdio-mcp-边': 'kiki-mcp',
     '诊断连接': 'kiki-doctor',
     '检查提示词字段': 'kiki-prompt-fields',
-    '从-kimi-迁移': 'kiki-migrate-config',
     'kiki-daemon-集成': 'kiki-serve',
   },
 }

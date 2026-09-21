@@ -19,7 +19,7 @@ MCP server configuration is written in `mcp.json`, at two levels:
 - **User level**: `~/.kiki/mcp.json` (or `$KIKI_HOME/mcp.json`), shared across projects
 - **Project level**: `.kiki/mcp.json` in the working directory, effective only for the current repository
 
-The legacy `.kimi-code/mcp.json` path is a migration source only; run `kiki migrate-config --workspace <directory>` to copy it into `.kiki/`.
+The legacy `.kimi-code/mcp.json` path is not read.
 
 Entries with the same name: the project-level entry takes precedence and overrides the user-level entry.
 

@@ -80,15 +80,6 @@ Kiki maintainers own the downstream CLI identity, client integration, home resol
 
 Runtime configuration, sessions, and OAuth credentials use `KIKI_HOME`, defaulting to `~/.kiki`. Supported explicit `--home` options take precedence. The legacy `KIMI_CODE_HOME` setting is not a startup fallback. Real Kimi provider/OAuth identifiers and endpoints remain unchanged; product home naming does not rename the provider protocol.
 
-The desktop compatibility-home setting selects a migration source only. Login, logout, and token refresh no longer operate on a separately selected legacy home. Use [explicit configuration migration](../en/reference/command.md#kiki-migrate-config) or sign in again before depending on legacy credentials.
-
-`kiki migrate-config` copies supported configuration, credentials, device identity, and authored resources without overwriting existing Kiki files or removing the source. `--workspace <directory>` migrates project `local.toml`, `AGENTS.md`, `mcp.json`, and authored resource trees into `.kiki`. Root `AGENTS.md` and standard `.mcp.json` stay in place with their existing semantics. Project-local MCP remains relative to the selected working directory, not an implicit merge of every ancestor's product MCP file.
-
-The desktop's separate model-category import copies only `providers`, `models`, `services`, `default_model`, `default_provider`, and `thinking`. Map categories merge by key, source entries win on matching aliases, and untouched categories/comments remain. This operation does not copy credentials: imported authentication references may require full migration or a new login. Repeating unchanged input is a no-op. For headless use, stop the owned backend first and run from `apps/kiki-gui`:
-
-```sh
-pnpm desktop:import-kimi-config --source-home <absolute-path> --target-home <absolute-path>
-```
 
 The command reports status, paths, and category names without copying OAuth, sessions, or skills. Desktop session moves and skill copies remain separate operations: a session move transfers `workspaces.json` and `sessions/` with compensation on partial failure; skill copying preserves the source and occupied targets. These operations stop/restart only Kiki's owned backend, not external Kimi Code processes. Close external processes before migrating their data.
 

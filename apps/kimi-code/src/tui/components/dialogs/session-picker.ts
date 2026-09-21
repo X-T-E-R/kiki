@@ -10,7 +10,6 @@ import {
   visibleWidth,
   type Focusable,
 } from '@kiki/pi-tui';
-import { formatSessionLabel } from '#/migration/index';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
 import { printableChar } from '#/tui/utils/printable-key';
@@ -299,10 +298,7 @@ export class SessionPickerComponent extends Container implements Focusable {
   private renderDeleteStateLine(width: number): string {
     const state = this.deleteState;
     if (state === undefined) return '';
-    const rawTitle = (state.session.title ?? state.session.id).trim() || state.session.id;
-    const label = singleLine(
-      formatSessionLabel({ title: rawTitle, metadata: state.session.metadata }),
-    );
+    const label = singleLine((state.session.title ?? state.session.id).trim() || state.session.id);
     const prefix = state.phase === 'confirm' ? 'Delete session "' : 'Deleting session "';
     const suffix = state.phase === 'confirm' ? '"? [y/N]' : '"...';
     const labelBudget = Math.max(0, width - visibleWidth(prefix) - visibleWidth(suffix));
@@ -465,8 +461,7 @@ export class SessionPickerComponent extends Container implements Focusable {
 
     const time = formatRelativeTime(session.updated_at);
     const badge = isCurrent ? CURRENT_MARK : '';
-    const rawTitle = (session.title ?? session.id).trim() || session.id;
-    const titleSource = formatSessionLabel({ title: rawTitle, metadata: session.metadata });
+    const titleSource = (session.title ?? session.id).trim() || session.id;
 
     // Inline trailing parts after the title: "<title>  <time>  ← current".
     const trailingParts = [time, badge].filter((p) => p.length > 0);
