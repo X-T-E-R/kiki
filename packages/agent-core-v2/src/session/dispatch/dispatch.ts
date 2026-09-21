@@ -31,6 +31,7 @@ export interface DispatchLaunchInput {
   readonly thinkingEffort?: string;
   readonly permissionMode?: PermissionMode;
   readonly permissionModeCeiling?: PermissionMode;
+  readonly allowParentNotify?: boolean;
   readonly resolvedBinding?: DispatchResolvedBinding;
   readonly strictThinking?: boolean;
   readonly strictThinkingFromProfile?: boolean;
@@ -61,6 +62,7 @@ export interface DispatchRunOptions {
   readonly onReady?: () => void;
   readonly lineage?: string;
   readonly idlePolicy?: DispatchIdlePolicy;
+  readonly allowParentNotify?: boolean;
   readonly bindingOverride?: {
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;

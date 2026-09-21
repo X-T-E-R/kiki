@@ -35,7 +35,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     super();
     this._register(
       eventBus.subscribe(AgentStatusUpdated, () => {
-        void this.activate();
+        this.refreshConditionalRecords();
       }),
     );
     this._register(this.runtime.onDidChange(() => {

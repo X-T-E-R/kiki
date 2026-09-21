@@ -125,6 +125,18 @@ body
     expect(parse('---\nname: agent\ndescription: d\nmain: false\n---\nbody').main).toBe(false);
   });
 
+  it('preserves allow_parent_notify values and omission', () => {
+    expect(parse('---\nname: solo\ndescription: d\n---\nbody').allowParentNotify).toBeUndefined();
+    expect(parse('---\nname: solo\ndescription: d\nallow_parent_notify: false\n---\nbody').allowParentNotify).toBe(false);
+    expect(parse('---\nname: solo\ndescription: d\nallow_parent_notify: true\n---\nbody').allowParentNotify).toBe(true);
+  });
+
+  it('rejects a non-boolean allow_parent_notify field', () => {
+    expect(() => parse('---\nname: solo\ndescription: d\nallow_parent_notify: 1\n---\nbody')).toThrow(
+      /"allow_parent_notify".*boolean/,
+    );
+  });
+
   it('parses main: true as a curation flag', () => {
     const def = parse('---\nname: solo\ndescription: d\nmain: true\n---\n\nbody\n');
     expect(def.main).toBe(true);
@@ -1147,6 +1159,12 @@ describe('agentProfileFromFile', () => {
     const profile = agentProfileFromFile({ ...base, main: true }, basePrompt);
 
     expect(profile.main).toBe(true);
+  });
+
+  it('passes allow_parent_notify through', () => {
+    const profile = agentProfileFromFile({ ...base, allowParentNotify: false }, basePrompt);
+
+    expect(profile.allowParentNotify).toBe(false);
   });
 
   it('passes delegation_notice through', () => {

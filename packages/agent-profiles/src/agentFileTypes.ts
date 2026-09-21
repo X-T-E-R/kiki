@@ -30,6 +30,7 @@ export interface AgentFileDefinition {
   readonly definitionId: string;
   readonly contributionRoot: string;
   readonly private: boolean;
+  readonly allowParentNotify?: boolean;
   readonly description: string;
   readonly whenToUse?: string;
   readonly override: boolean;

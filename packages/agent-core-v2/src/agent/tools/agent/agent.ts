@@ -47,6 +47,7 @@ export const SubagentToolInputSchema = z.preprocess(
       ),
     profile_file: z.string().trim().min(1).optional().describe('Explicit profile Markdown file, absolute or workspace-relative. Only for new agents; mutually exclusive with profile and route. This is a role definition, not a shared prompt template.'),
     allow_model_change: z.boolean().optional().describe('Required true when resume explicitly changes model_alias to a different canonical model. Does not bypass role, caller, route or executor restrictions.'),
+    allow_parent_notify: z.boolean().optional().describe('Override AgentNotify availability for this child. On a new agent, omission uses the selected profile setting, which defaults to enabled. On resume, omission preserves the saved setting. This cannot override the global [agents].notify_parent switch or tool policy.'),
     resume: z
       .string()
       .optional()

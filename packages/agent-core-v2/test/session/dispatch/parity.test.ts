@@ -465,6 +465,7 @@ interface LaneOptions {
   readonly modelCatalogGet?: (id: string) => Model;
   readonly validateBinding?: (binding: ExecutorBinding) => ExecutorValidationResult;
   readonly externalPermissionCeiling?: PermissionMode;
+  readonly notifyParent?: boolean;
 }
 
 interface ParityLane {
@@ -572,7 +573,23 @@ function createLane(
                 },
               };
             },
+            prepareResumeBinding: async (input: Parameters<IAgentProfileService['prepareResumeBinding']>[0]) => () => {
+              if (input.allowParentNotify !== undefined) {
+                (data as { allowParentNotify?: boolean }).allowParentNotify = input.allowParentNotify;
+              }
+            },
             republishStatus: () => {},
+          };
+        }
+        if (serviceId === IAgentToolPolicyService) {
+          const data = profileByAgent.get(agentId)!;
+          return {
+            _serviceBrand: undefined,
+            isToolActive: (name: string) =>
+              name !== 'AgentNotify' ||
+              data.executionRestriction !== 'research-readonly' &&
+              data.allowParentNotify !== false &&
+              !(data.disallowedTools ?? []).includes('AgentNotify'),
           };
         }
         if (serviceId === IAgentPermissionModeService) {
@@ -743,6 +760,7 @@ function createLane(
       profileSource: 'fileSources' in resolved ? 'profile-file' : 'registered',
       systemPrompt: '',
       executionRestriction: binding?.executionRestriction ?? prior?.executionRestriction,
+      allowParentNotify: binding?.allowParentNotify ?? prior?.allowParentNotify ?? resolved.allowParentNotify,
       activeToolNames: resolved.tools,
       disallowedTools: resolved.disallowedTools,
       executorId: resolved.executor,
@@ -1009,7 +1027,15 @@ function createLane(
   ix.stub(IBootstrapService, {
     getEnv: () => options.externalPermissionCeiling ?? 'yolo',
   });
-  ix.stub(IConfigService, { get: <T>(section: string) => (section === 'subagent' ? options.capacity : undefined) as T });
+  ix.stub(IConfigService, {
+    get: <T>(section: string) => (
+      section === 'subagent'
+        ? options.capacity
+        : section === 'agents'
+          ? { notify_parent: options.notifyParent ?? true }
+          : undefined
+    ) as T,
+  });
   ix.stub(IModelService, { resolveId: options.resolveModelAlias ?? ((id: string) => id) });
   ix.stub(IModelCatalog, {
     get: options.modelCatalogGet ?? ((id: string) => ({ id }) as Model),
@@ -1208,6 +1234,81 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(detached.output).toContain('route_status: detached');
     expect(lane.lifecycleCreate.mock.calls[1]?.[0]?.binding?.thinking).toBe('low');
     expect(lane.lifecycleCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves parent notification from the default, profile setting, and dispatch override', async () => {
+    const defaultLane = createLane(disposables, 'internal');
+    const defaultResult = await defaultLane.runInternal({
+      profile: 'coder', prompt: 'work', description: 'Default notify', background: true,
+    });
+    expect(defaultLane.lifecycleCreate.mock.calls[0]?.[0]?.binding?.allowParentNotify).toBeUndefined();
+    expect(outputText(defaultResult.output)).toContain('parent_notify: enabled');
+    await complete(defaultLane, 0);
+
+    const disabledLane = createLane(disposables, 'internal');
+    const disabledResult = await disabledLane.runInternal({
+      profile: 'coder', prompt: 'work', description: 'Disable notify', background: true,
+      allow_parent_notify: false,
+    });
+    expect(disabledLane.lifecycleCreate.mock.calls[0]?.[0]?.binding?.allowParentNotify).toBe(false);
+    expect(outputText(disabledResult.output)).toContain('parent_notify: disabled');
+    await complete(disabledLane, 0);
+
+    const quietProfile = normalizeAgentProfile({ ...parityProfile, allowParentNotify: false });
+    const quietLane = createLane(disposables, 'internal', { profile: quietProfile });
+    const quietResult = await quietLane.runInternal({
+      profile: 'coder', prompt: 'work', description: 'Quiet notify', background: true,
+    });
+    expect(quietLane.lifecycleCreate.mock.calls[0]?.[0]?.binding?.allowParentNotify).toBe(false);
+    expect(outputText(quietResult.output)).toContain('parent_notify: disabled');
+    await complete(quietLane, 0);
+
+    const overrideLane = createLane(disposables, 'internal', { profile: quietProfile });
+    const overrideResult = await overrideLane.runInternal({
+      profile: 'coder', prompt: 'work', description: 'Override notify', background: true,
+      allow_parent_notify: true,
+    });
+    expect(overrideLane.lifecycleCreate.mock.calls[0]?.[0]?.binding?.allowParentNotify).toBe(true);
+    expect(outputText(overrideResult.output)).toContain('parent_notify: enabled');
+    await complete(overrideLane, 0);
+
+    const globallyDisabledLane = createLane(disposables, 'internal', { notifyParent: false });
+    const globallyDisabledResult = await globallyDisabledLane.runInternal({
+      profile: 'coder', prompt: 'work', description: 'Global notify veto', background: true,
+      allow_parent_notify: true,
+    });
+    expect(outputText(globallyDisabledResult.output)).toContain('parent_notify: disabled');
+    await complete(globallyDisabledLane, 0);
+  });
+
+  it('persists parent notification across resume omission and applies explicit resume overrides', async () => {
+    const lane = createLane(disposables, 'internal');
+    const spawned = await lane.runInternal({
+      profile: 'coder', name: 'notify_child', prompt: 'work', description: 'Spawn notify', background: true,
+    });
+    expect(outputText(spawned.output)).toContain('parent_notify: enabled');
+    await complete(lane, 0);
+
+    const disabled = await lane.runInternal({
+      resume: 'notify_child', prompt: 'continue', description: 'Disable notify', background: true,
+      allow_parent_notify: false,
+    });
+    expect(outputText(disabled.output)).toContain('parent_notify: disabled');
+    await complete(lane, 1);
+
+    const preserved = await lane.runInternal({
+      resume: 'notify_child', prompt: 'continue', description: 'Preserve notify', background: true,
+    });
+    expect(outputText(preserved.output)).toContain('parent_notify: disabled');
+    await complete(lane, 2);
+
+    const enabled = await lane.runInternal({
+      resume: 'notify_child', prompt: 'continue', description: 'Enable notify', background: true,
+      allow_parent_notify: true,
+    });
+    expect(outputText(enabled.output)).toContain('parent_notify: enabled');
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    await complete(lane, 3);
   });
 
   it('shares the tree limit across main, child and grandchild dispatch and retains cancelled descendants until settlement', async () => {
@@ -1457,8 +1558,10 @@ describe('AgentRun and dispatch parity golden', () => {
     disposables.add(dispatch.registerPlanStateReader('main', () => true));
     const result = await lane.runInternal({
       profile: 'coder', prompt: 'research only', description: 'Research code', background: true,
+      allow_parent_notify: true,
     });
     expect(result.isError).not.toBe(true);
+    expect(outputText(result.output)).toContain('parent_notify: disabled');
     expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
     const birth = lane.lifecycleCreate.mock.calls[0]![0]!;
     expect(birth.binding?.executionRestriction).toBe('research-readonly');
@@ -2030,6 +2133,7 @@ describe('AgentRun and dispatch parity golden', () => {
       'selection_kind: profile',
       'selection_origin: explicit',
       'recommendation_status: preferred',
+      'parent_notify: enabled',
       'status: completed',
       '',
       '[summary]',

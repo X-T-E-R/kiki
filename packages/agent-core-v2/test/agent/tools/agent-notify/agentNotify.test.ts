@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { IAgentProfileService } from '#/agent/profile/profile';
 import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IConfigService } from '#/app/config/config';
 import type { AgentMeta, ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import {
@@ -116,6 +118,30 @@ describe('AgentNotify', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it('fails when the saved child binding disables parent notification', async () => {
+    const { tool, send } = createTool({ allowParentNotify: false });
+
+    const result = await executeTool(tool, context({ message: 'hello' }));
+
+    expect(result).toEqual({
+      isError: true,
+      output: 'AgentNotify is disabled for this agent binding.',
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('fails when the active tool policy denies AgentNotify', async () => {
+    const { tool, send } = createTool({ allowParentNotify: true, toolPolicyEnabled: false });
+
+    const result = await executeTool(tool, context({ message: 'hello' }));
+
+    expect(result).toEqual({
+      isError: true,
+      output: 'AgentNotify is disabled by the active tool policy.',
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('returns a tool error for a blank message', async () => {
     const { tool, send } = createTool();
 
@@ -164,6 +190,8 @@ function child(
 function createTool(options: {
   readonly parentAgentId?: string;
   readonly notifyParent?: boolean;
+  readonly allowParentNotify?: boolean;
+  readonly toolPolicyEnabled?: boolean;
   readonly agents?: Record<string, AgentMeta>;
   readonly send?: IAgentCollaborationMessagingService['send'];
 } = {}): {
@@ -188,6 +216,12 @@ function createTool(options: {
     {
       get: () => ({ notify_parent: options.notifyParent ?? true }),
     } as unknown as IConfigService,
+    {
+      data: () => ({ allowParentNotify: options.allowParentNotify }),
+    } as unknown as IAgentProfileService,
+    {
+      isToolActive: () => options.toolPolicyEnabled ?? true,
+    } as unknown as IAgentToolPolicyService,
   );
   return { tool, send };
 }

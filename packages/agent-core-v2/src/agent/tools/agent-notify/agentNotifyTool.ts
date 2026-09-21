@@ -7,7 +7,9 @@ import {
 } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import type { ServicesAccessor } from '#/_base/di/instantiation';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IConfigService } from '#/app/config/config';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
@@ -25,6 +27,7 @@ import {
 import {
   IAgentNotifyTool,
   AgentNotifyInputSchema,
+  isAgentNotifyAvailable,
   type AgentNotifyInput,
   type AgentNotifyResult,
 } from './agent-notify';
@@ -44,6 +47,8 @@ export class AgentNotifyTool implements IAgentNotifyTool {
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @IAgentCollaborationMessagingService private readonly messaging: IAgentCollaborationMessagingService,
     @IConfigService private readonly config: IConfigService,
+    @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
   ) {}
 
   resolveExecution(args: AgentNotifyInput): ToolExecution {
@@ -59,12 +64,24 @@ export class AgentNotifyTool implements IAgentNotifyTool {
     args: AgentNotifyInput,
     context: ExecutableToolContext,
   ): Promise<ExecutableToolResult> {
-    if (!isParentNotifyEnabled(this.config.get<AgentsConfig>(AGENTS_SECTION))) {
-      return failure(PARENT_NOTIFY_DISABLED_MESSAGE);
-    }
+    const configEnabled = isParentNotifyEnabled(this.config.get<AgentsConfig>(AGENTS_SECTION));
     const parentAgentId = this.scope.parentAgentId;
+    const allowParentNotify = this.profile.data().allowParentNotify;
+    const toolPolicyEnabled = this.toolPolicy.isToolActive(this.name);
     if (parentAgentId === undefined) {
       return failure('AgentNotify is only available to subagents; the main agent has no parent.');
+    }
+    if (!isAgentNotifyAvailable({
+      hasParent: true,
+      allowParentNotify,
+      configEnabled,
+      toolPolicyEnabled,
+    })) {
+      if (!configEnabled) return failure(PARENT_NOTIFY_DISABLED_MESSAGE);
+      if (allowParentNotify === false) {
+        return failure('AgentNotify is disabled for this agent binding.');
+      }
+      return failure('AgentNotify is disabled by the active tool policy.');
     }
     if (args.message.trim().length === 0) return failure('message must be nonblank.');
 
@@ -103,8 +120,20 @@ export class AgentNotifyTool implements IAgentNotifyTool {
 }
 
 function subagentWithNotifyEnabled(accessor: ServicesAccessor): boolean {
-  if (accessor.get(IAgentScopeContext).parentAgentId === undefined) return false;
-  return isParentNotifyEnabled(accessor.get(IConfigService).get<AgentsConfig>(AGENTS_SECTION));
+  const hasParent = accessor.get(IAgentScopeContext).parentAgentId !== undefined;
+  if (!hasParent) return false;
+  const allowParentNotify = accessor.get(IAgentProfileService).data().allowParentNotify;
+  if (allowParentNotify === false) return false;
+  const configEnabled = isParentNotifyEnabled(
+    accessor.get(IConfigService).get<AgentsConfig>(AGENTS_SECTION),
+  );
+  if (!configEnabled) return false;
+  return isAgentNotifyAvailable({
+    hasParent,
+    allowParentNotify,
+    configEnabled,
+    toolPolicyEnabled: accessor.get(IAgentToolPolicyService).isToolActive('AgentNotify'),
+  });
 }
 
 registerAgentToolService(IAgentNotifyTool, AgentNotifyTool, {

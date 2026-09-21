@@ -20,6 +20,7 @@ import { Emitter, Event } from '#/_base/event';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import { AgentToolActivationService } from '#/agent/toolActivation/toolActivationService';
 import {
@@ -73,6 +74,7 @@ const IAlphaTool = createDecorator<AgentTool>('activationTestAlphaTool');
 const IBetaTool = createDecorator<AgentTool>('activationTestBetaTool');
 const IGammaTool = createDecorator<AgentTool>('activationTestGammaTool');
 const IAgentStubTool = createDecorator<AgentTool>('activationTestAgentTool');
+const INotifyStubTool = createDecorator<AgentTool>('activationTestNotifyTool');
 
 let alphaConstructions = 0;
 let betaConstructions = 0;
@@ -102,6 +104,12 @@ class GammaTool extends StubTool {
 class AgentStubTool extends StubTool {
   constructor() {
     super('AgentRun');
+  }
+}
+
+class NotifyStubTool extends StubTool {
+  constructor() {
+    super('AgentNotify');
   }
 }
 
@@ -146,6 +154,7 @@ describe('AgentToolActivationService', () => {
     activeToolNames?: readonly string[];
     disallowedTools?: readonly string[];
     disabledToolGroups?: readonly string[];
+    allowParentNotify?: boolean;
   } = {};
   const gateData: { disabledTools: readonly string[] } = { disabledTools: [] };
   const runtimeChangeEmitter = new Emitter<void>();
@@ -162,6 +171,7 @@ describe('AgentToolActivationService', () => {
   };
   let scopeContext = mainScopeContext;
   let notifyParent = true;
+  let publishStatusUpdated = (): void => {};
 
   function createActivationHost() {
     disposables = new DisposableStore();
@@ -172,9 +182,16 @@ describe('AgentToolActivationService', () => {
           data: () => profileData as ProfileData,
         });
         reg.definePartialInstance(IEventBus, {
-          subscribe: () => toDisposable(() => {}),
+          subscribe: ((...args: unknown[]) => {
+            const listener = args.at(-1);
+            if (typeof listener === 'function') publishStatusUpdated = listener as () => void;
+            return toDisposable(() => {});
+          }) as IEventBus['subscribe'],
         });
         reg.defineInstance(IAgentScopeContext, scopeContext);
+        reg.definePartialInstance(IAgentToolPolicyService, {
+          isToolActive: () => true,
+        });
         reg.definePartialInstance(IConfigService, {
           get: (() => ({ notify_parent: notifyParent })) as IConfigService['get'],
           onDidSectionChange: configChangeEmitter.event,
@@ -197,6 +214,7 @@ describe('AgentToolActivationService', () => {
         reg.define(IBetaTool, BetaTool);
         reg.define(IGammaTool, GammaTool);
         reg.define(IAgentStubTool, AgentStubTool);
+        reg.define(INotifyStubTool, NotifyStubTool);
       },
     });
     disposables.add(ix.createInstance(TestContributionAssembly));
@@ -218,9 +236,11 @@ describe('AgentToolActivationService', () => {
     delete profileData.activeToolNames;
     delete profileData.disallowedTools;
     delete profileData.disabledToolGroups;
+    delete profileData.allowParentNotify;
     gateData.disabledTools = [];
     scopeContext = mainScopeContext;
     notifyParent = true;
+    publishStatusUpdated = () => {};
   });
 
   afterEach(() => {
@@ -438,13 +458,18 @@ describe('AgentToolActivationService', () => {
     expect(when(accessorFor('main'))).toBe(false);
   });
 
-  it('only offers AgentNotify to subagents while the parent-notify switch stays on', () => {
+  it('offers AgentNotify only when parent, binding, global config, and tool policy allow it', () => {
     const record = savedContributions.find(
       (contribution) => contribution.options.name === 'AgentNotify',
     );
     expect(record).toBeDefined();
     const when = record!.options.when!;
-    const accessorFor = (parentAgentId: string | undefined, notifyParent: boolean) =>
+    const accessorFor = (
+      parentAgentId: string | undefined,
+      notifyParent: boolean,
+      allowParentNotify: boolean | undefined = undefined,
+      toolPolicyEnabled = true,
+    ) =>
       ({
         get: (id: unknown) => {
           if (id === IAgentScopeContext) {
@@ -458,13 +483,21 @@ describe('AgentToolActivationService', () => {
           if (id === IConfigService) {
             return { get: () => ({ notify_parent: notifyParent }) };
           }
+          if (id === IAgentProfileService) {
+            return { data: () => ({ allowParentNotify }) };
+          }
+          if (id === IAgentToolPolicyService) {
+            return { isToolActive: () => toolPolicyEnabled };
+          }
           return undefined;
         },
       }) as never;
 
     expect(when(accessorFor(undefined, true))).toBe(false);
     expect(when(accessorFor('main', true))).toBe(true);
-    expect(when(accessorFor('main', false))).toBe(false);
+    expect(when(accessorFor('main', true, false))).toBe(false);
+    expect(when(accessorFor('main', true, true, false))).toBe(false);
+    expect(when(accessorFor('main', false, true))).toBe(false);
   });
 
   it('withholds the AgentNotify contribution from main-agent scopes', async () => {
@@ -477,6 +510,33 @@ describe('AgentToolActivationService', () => {
     await ix.get(IAgentToolActivationService).activate();
 
     expect(ix.get(IAgentToolRegistryService).resolve('AgentNotify')).toBeUndefined();
+  });
+
+  it('reconciles AgentNotify registration when a resume changes the saved binding', async () => {
+    const record = savedContributions.find(
+      (contribution) => contribution.options.name === 'AgentNotify',
+    )!;
+    scopeContext = {
+      _serviceBrand: undefined,
+      agentId: 'agent-1',
+      parentAgentId: 'main',
+      scope: () => 'agents/agent-1',
+    };
+    registerAgentToolService(INotifyStubTool, NotifyStubTool, record.options);
+    const ix = createActivationHost();
+    const activation = ix.get(IAgentToolActivationService);
+    const registry = ix.get(IAgentToolRegistryService);
+
+    await activation.activate();
+    expect(registry.resolve('AgentNotify')).toBeDefined();
+
+    profileData.allowParentNotify = false;
+    publishStatusUpdated();
+    expect(registry.resolve('AgentNotify')).toBeUndefined();
+
+    profileData.allowParentNotify = true;
+    publishStatusUpdated();
+    expect(registry.resolve('AgentNotify')).toBeDefined();
   });
 
   it('reconciles conditional tool exposure when configuration changes', async () => {

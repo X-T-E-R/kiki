@@ -24,6 +24,7 @@ export type SubagentHandle = {
   readonly routeDetached?: boolean;
   readonly profileSource?: import('#/agent/profile/profile').ProfileBindingSource;
   readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
+  readonly parentNotify?: 'enabled' | 'disabled';
   readonly completion: Promise<SubagentCompletion>;
 };
 

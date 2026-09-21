@@ -67,6 +67,7 @@ export interface ProfileData extends AgentConfigData {
   readonly routeDetached?: boolean;
   readonly profileSource?: ProfileBindingSource;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
+  readonly allowParentNotify?: boolean;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -96,6 +97,7 @@ export type ProfileUpdateData = Partial<{
   profileName: string;
   thinkingLevel: string;
   thinkingEffortAdjusted: boolean;
+  allowParentNotify: boolean;
   systemPrompt: string;
   environmentDisclosure: EnvironmentDisclosureSnapshot;
   agentsMdPaths: readonly string[];
@@ -112,6 +114,7 @@ export interface ProfileBindingSnapshot {
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
+  readonly allowParentNotify?: boolean;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -165,6 +168,7 @@ export interface ProfileSetModelResult {
 
 export interface BindAgentInput {
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
+  readonly allowParentNotify?: boolean;
   readonly profile?: string;
   readonly route?: string;
   readonly resolvedProfile?: AgentProfile;
@@ -193,6 +197,7 @@ export interface IAgentProfileService {
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;
     readonly allowModelChange?: boolean;
+    readonly allowParentNotify?: boolean;
     readonly callerConstraints?: readonly SpawnConstraints[];
   }): Promise<() => void>;
   republishStatus(): void;

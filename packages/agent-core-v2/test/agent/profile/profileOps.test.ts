@@ -385,6 +385,35 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     replay.ix.dispose();
   });
 
+  it('persists parent-notify binding changes through snapshot replacement and cold replay', async () => {
+    svc.applyBindingSnapshot({
+      allowParentNotify: false,
+      profileName: 'quiet',
+      thinkingLevel: 'off',
+      systemPrompt: 'quiet',
+    });
+    svc.applyBindingSnapshot({
+      profileName: 'quiet-restored',
+      thinkingLevel: 'off',
+      systemPrompt: 'quiet restored',
+    });
+    expect(svc.data().allowParentNotify).toBe(false);
+
+    svc.update({ allowParentNotify: true });
+    expect(svc.data().allowParentNotify).toBe(true);
+    svc.update({ allowParentNotify: false });
+
+    const replay = buildHost('notify-replay');
+    await restoreTestEventDispatcher(
+      replay.dispatcher,
+      replay.log,
+      testWireScope(SCOPE, 'notify-replay'),
+      await readRecords(),
+    );
+    expect(replay.svc.data().allowParentNotify).toBe(false);
+    replay.ix.dispose();
+  });
+
   it('persists and replays an allowlist reset to unrestricted', async () => {
     svc.applyBindingSnapshot({
       profileName: 'restricted',

@@ -192,6 +192,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         deferCreateEvent: true,
         binding: {
           executionRestriction: researchReadonly ? 'research-readonly' : undefined,
+          allowParentNotify: input.allowParentNotify ?? profile.allowParentNotify,
           profile: selection.baseProfile.name,
           route: selection.route?.id,
           resolvedProfile: selection.baseProfile,
@@ -397,9 +398,13 @@ export class SessionDispatchService implements ISessionDispatchService {
     this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
     const callerConstraints = readCallerConstraints();
     const callerConstraintKey = JSON.stringify(callerConstraints);
-    const applyBinding = options.bindingOverride === undefined ? undefined : await childProfile.prepareResumeBinding({
-      ...options.bindingOverride, callerConstraints,
-    });
+    const applyBinding = options.bindingOverride === undefined && options.allowParentNotify === undefined
+      ? undefined
+      : await childProfile.prepareResumeBinding({
+          ...options.bindingOverride,
+          allowParentNotify: options.allowParentNotify,
+          callerConstraints,
+        });
     checkResume();
     this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
     options.signal.throwIfAborted();

@@ -29,6 +29,7 @@ export interface ProfileModelState {
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
+  readonly allowParentNotify?: boolean;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -62,6 +63,7 @@ const profileBindSchema = z.object({
   lockedModelAlias: z.string().optional(),
   lockedThinkingEffort: z.string().optional(),
   executionRestriction: z.literal('research-readonly').optional(),
+  allowParentNotify: z.boolean().optional(),
   executorId: z.string().optional(),
   executorProtocol: z.string().optional(),
   executorOptions: ExecutorOptionsSchema.readonly().optional(),
@@ -102,6 +104,7 @@ const configUpdateSchema = z.object({
   thinkingEffort: z.custom<ThinkingEffort>().optional(),
   thinkingLevel: z.custom<ThinkingEffort>().optional(),
   thinkingEffortAdjusted: z.boolean().optional(),
+  allowParentNotify: z.boolean().optional(),
   systemPrompt: z.string().optional(),
   environmentDisclosure: z.custom<EnvironmentDisclosureSnapshot>().optional(),
   renderGeneration: z.number().optional(),
@@ -165,6 +168,7 @@ export const profileKey = defineState(
     lockedModelAlias: e.lockedModelAlias,
     lockedThinkingEffort: e.lockedThinkingEffort,
     executionRestriction: s.executionRestriction ?? e.executionRestriction,
+    allowParentNotify: e.allowParentNotify ?? s.allowParentNotify,
     executorId: e.executorId,
     executorProtocol: e.executorProtocol,
     executorOptions: e.executorOptions,
@@ -203,6 +207,9 @@ export const profileKey = defineState(
     }
     if (e.thinkingEffortAdjusted !== undefined) {
       s.thinkingEffortAdjusted = e.thinkingEffortAdjusted;
+    }
+    if (e.allowParentNotify !== undefined) {
+      s.allowParentNotify = e.allowParentNotify;
     }
     if (
       e.systemPrompt !== undefined &&

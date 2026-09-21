@@ -17,6 +17,7 @@ import {
   type RegisterAgentTaskOptions,
 } from '#/agent/task/task';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { isAgentNotifyAvailable } from '#/agent/tools/agent-notify/agent-notify';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import {
@@ -98,7 +99,7 @@ const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (sch
   addSubagentBindingSchemaConstraints(schema);
 });
 const PARENT_NOTIFY_DESCRIPTION =
-  'Subagents can use `AgentNotify` to send messages to their parent during a run.';
+  'Subagents can use `AgentNotify` when their saved binding permits it, but only if the parent must change its actions before the final result arrives; do not send startup confirmations, routine progress, completion notices, or final-result copies.';
 export { buildProfileDescriptions } from './subagentDescription';
 
 export class SubagentTool implements ISubagentTool {
@@ -428,6 +429,7 @@ export class SubagentTool implements ISubagentTool {
             args.prompt,
             {
               signal: controller.signal, requesterAgentId: this.callerAgentId, capturedLaunchPolicy: policy,
+              allowParentNotify: args.allow_parent_notify,
               bindingOverride: args.model_alias === undefined && args.effort === undefined ? undefined : {
                 modelAlias: args.model_alias, thinkingEffort: args.effort, allowModelChange: args.allow_model_change,
               },
@@ -448,6 +450,7 @@ export class SubagentTool implements ISubagentTool {
             name: args.name?.trim(),
             modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
             thinkingEffort: normalizeSubagentBindingValue(args.effort, 'effort'),
+            allowParentNotify: args.allow_parent_notify,
             runtime,
             workDir: this.workspace.workDir,
             signal: controller.signal,
@@ -465,6 +468,17 @@ export class SubagentTool implements ISubagentTool {
         controller.abort(reason);
       },
     });
+    const childProfile = run.child.agent.accessor.get(IAgentProfileService).data();
+    const parentNotify = isAgentNotifyAvailable({
+      hasParent: true,
+      allowParentNotify: childProfile.allowParentNotify,
+      configEnabled: isParentNotifyEnabled(this.config.get<AgentsConfig>(AGENTS_SECTION)),
+      toolPolicyEnabled: run.child.agent.accessor
+        .get(IAgentToolPolicyService)
+        .isToolActive('AgentNotify'),
+    })
+      ? 'enabled'
+      : 'disabled';
     return {
       agentId: run.child.agentId,
       profileName: run.child.profileName,
@@ -476,6 +490,7 @@ export class SubagentTool implements ISubagentTool {
       routeDetached: run.child.routeDetached,
       profileSource: run.child.profileSource,
       dispatchDecision: run.child.dispatchDecision,
+      parentNotify,
       completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
     };
   }
@@ -663,6 +678,7 @@ function bindingResultLines(handle: SubagentHandle): string[] {
           `thinking_effort_source: ${handle.thinkingEffortSource}`,
         ]),
     ...(handle.routeDetached === true ? ['route_status: detached'] : []),
+    `parent_notify: ${handle.parentNotify ?? 'enabled'}`,
   ];
 }
 

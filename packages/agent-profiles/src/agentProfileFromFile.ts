@@ -26,6 +26,7 @@ export function agentProfileFromFile(
     whenToUse: definition.whenToUse,
     override: definition.override || definition.source === 'explicit',
     private: definition.private,
+    allowParentNotify: definition.allowParentNotify,
     main: definition.main,
     tools: definition.tools,
     disallowedTools: definition.disallowedTools,

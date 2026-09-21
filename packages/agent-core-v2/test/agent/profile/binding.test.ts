@@ -919,10 +919,10 @@ describe('AgentProfileService.bind', () => {
       'send_message',
     ];
 
-    for (const profileName of ['agent', 'coder', 'explore']) {
-      const profile = catalog.get(profileName);
-      expect(profile).toBeDefined();
-      expect(collaborationTools.filter((name) => isToolActive(profile!, name))).toEqual([]);
+    const profiles = catalog.list();
+    expect(profiles.length).toBeGreaterThan(0);
+    for (const profile of profiles) {
+      expect(collaborationTools.filter((name) => isToolActive(profile, name))).toEqual([]);
     }
 
     catalog.dispose();
@@ -1501,6 +1501,20 @@ describe('AgentProfileService.bind', () => {
     expect(svc.data().thinkingLevel).toBe('off');
     await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
     expect(svc.data().thinkingLevel).toBe('on');
+  });
+
+  it('applies an explicit parent-notify resume override and preserves it when omitted', async () => {
+    const svc = await bindNativeResumeProfile(resumeProfile({ allowParentNotify: true }));
+    expect(svc.data().allowParentNotify).toBe(true);
+
+    const disable = await prepareResumeBinding(svc, { allowParentNotify: false });
+    expect(svc.data().allowParentNotify).toBe(true);
+    disable();
+    expect(svc.data().allowParentNotify).toBe(false);
+
+    const preserve = await prepareResumeBinding(svc, {});
+    preserve();
+    expect(svc.data().allowParentNotify).toBe(false);
   });
 
   it('validates a native resume change without mutation and applies both values in one update', async () => {

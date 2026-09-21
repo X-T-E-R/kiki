@@ -112,6 +112,7 @@ interface ConfigUpdatePayload {
   /** ThinkingEffort */
   thinkingLevel?: 'off' | 'on' | (string & {});
   thinkingEffortAdjusted?: boolean;
+  allowParentNotify?: boolean;
   systemPrompt?: string;
   environmentDisclosure?: EnvironmentDisclosureSnapshot;
   renderGeneration?: number;
@@ -526,6 +527,7 @@ interface ProfileBindPayload {
   lockedModelAlias?: string;
   lockedThinkingEffort?: string;
   executionRestriction?: 'research-readonly';
+  allowParentNotify?: boolean;
   executorId?: string;
   executorProtocol?: string;
   executorOptions?: Record<string, string | number | boolean>;

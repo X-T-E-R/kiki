@@ -375,6 +375,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   applyBindingSnapshot(snapshot: ProfileBindingSnapshot): void {
     const executionRestriction = this.profileState.executionRestriction ?? snapshot.executionRestriction;
+    const allowParentNotify = snapshot.allowParentNotify ?? this.profileState.allowParentNotify;
     assertResearchExecutor(executionRestriction, snapshot.executorId);
     this.activeProfile = undefined;
     this.promptConfigurationSignature = undefined;
@@ -384,6 +385,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     void this.dispatcher.dispatch(
       new ProfileBind({
         executionRestriction,
+        allowParentNotify,
         modelAlias: snapshot.modelAlias,
         profileName: snapshot.profileName,
         profileDefinitionId: snapshot.profileDefinitionId,
@@ -466,6 +468,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
             })()
           : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
     const executionRestriction = this.profileState.executionRestriction ?? input.executionRestriction;
+    const allowParentNotify = input.allowParentNotify ?? this.profileState.allowParentNotify ??
+      (this.profileState.profileName === undefined ? selection.profile.allowParentNotify : undefined);
     assertResearchExecutor(executionRestriction, selection.profile.executor);
     const executor = await this.executors.resolveExecutable(
       selection.profile.executor,
@@ -499,6 +503,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         input,
         selection,
         profile,
+        allowParentNotify,
         spawnPolicy,
         subagentLeases,
         executor,
@@ -610,6 +615,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       lockedModelAlias: canonicalRouteModelAlias,
       lockedThinkingEffort: selection.route?.lockedThinkingEffort,
       executionRestriction,
+      allowParentNotify,
       executorId: 'native',
       executorProtocol: 'native',
       executorOptions: undefined,
@@ -655,6 +661,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       readonly route?: ResolvedAgentProfileRoute;
     },
     profile: ResolvedAgentProfile,
+    allowParentNotify: boolean | undefined,
     spawnPolicy: SpawnConstraints | undefined,
     subagentLeases: Readonly<Record<string, SubagentLease>> | undefined,
     executor: ResolvedAgentExecutor,
@@ -742,6 +749,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       lockedThinkingEffort: selection.route?.lockedThinkingEffort === undefined
         ? undefined
         : normalizedRouteBinding?.thinkingEffort ?? selection.route.lockedThinkingEffort,
+      allowParentNotify,
       executorId: executor.descriptor.id,
       executorProtocol: executor.descriptor.protocol,
       executorOptions: { ...executor.options },
@@ -813,6 +821,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       (normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking) !== thinking;
     const identity = (alias: string | undefined): string | undefined => alias === undefined || this.isExternalExecutor ? alias : this.models.resolveId(alias) ?? alias;
     const changedModel = model !== identity(previous.modelAlias);
+    const allowParentNotify = input.allowParentNotify ?? previous.allowParentNotify;
+    const changedParentNotify = input.allowParentNotify !== undefined && allowParentNotify !== previous.allowParentNotify;
     if (changedModel && (input.allowModelChange !== true || input.modelAlias === undefined)) {
       throw new Error2(ErrorCodes.REQUEST_INVALID,
         `Changing the resumed agent model from "${previous.modelAlias ?? '(unbound)'}" to "${model}" requires model_alias plus allow_model_change: true.`,
@@ -853,15 +863,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return () => {
       const current = this.data();
       if (current.modelAlias !== previous.modelAlias || current.thinkingLevel !== previous.thinkingLevel
-        || current.profileDefinitionId !== previous.profileDefinitionId || current.routeId !== previous.routeId) {
+        || current.profileDefinitionId !== previous.profileDefinitionId || current.routeId !== previous.routeId
+        || current.allowParentNotify !== previous.allowParentNotify) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'The agent binding changed during resume admission. Retry against its current binding.');
       }
       assertBoundModelAllowed(this.config, model, constraints, resolver, thinking);
-      if (changedModel || thinking !== previous.thinkingLevel) {
+      if (changedModel || thinking !== previous.thinkingLevel || changedParentNotify) {
         this.update({
           modelAlias: model,
           thinkingLevel: thinking,
           thinkingEffortAdjusted,
+          allowParentNotify: changedParentNotify ? allowParentNotify : undefined,
           systemPrompt,
           environmentDisclosure,
         });
@@ -1334,6 +1346,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       agentsMdPaths: this.profileState.agentsMdPaths,
       activeToolNames: this.activeToolNames === undefined ? undefined : [...this.activeToolNames],
       executionRestriction: this.profileState.executionRestriction,
+      allowParentNotify: this.profileState.allowParentNotify,
       toolAllowPolicies: this.profileState.executionRestriction === 'research-readonly'
         ? [...(this.profileState.toolAllowPolicies ?? []), RESEARCH_READONLY_TOOLS]
         : this.profileState.toolAllowPolicies?.map((policy) => [...policy]),
@@ -1548,6 +1561,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (changed.promptBase !== undefined) payload.promptBase = changed.promptBase;
     if (changed.modelAlias !== undefined) payload.modelAlias = changed.modelAlias;
     if (changed.profileName !== undefined) payload.profileName = changed.profileName;
+    if (changed.allowParentNotify !== undefined) payload.allowParentNotify = changed.allowParentNotify;
     if (
       changed.thinkingEffortAdjusted !== undefined &&
       (changed.thinkingEffortAdjusted || this.profileState.thinkingEffortAdjusted === true)

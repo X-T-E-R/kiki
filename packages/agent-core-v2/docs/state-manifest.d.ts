@@ -1638,6 +1638,7 @@ export interface AgentStateSnapshot {
     readonly lockedModelAlias?: string;
     readonly lockedThinkingEffort?: string;
     readonly executionRestriction?: 'research-readonly';
+    readonly allowParentNotify?: boolean;
     readonly executorId?: string;
     readonly executorProtocol?: string;
     readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
@@ -1879,6 +1880,7 @@ export interface AgentStateSnapshot {
         readonly definitionId: string;
         readonly contributionRoot: string;
         readonly private: boolean;
+        readonly allowParentNotify?: boolean;
         readonly description: string;
         readonly whenToUse?: string;
         readonly override: boolean;
@@ -2031,6 +2033,7 @@ export interface AgentStateSnapshot {
       readonly whenToUse?: string;
       readonly override?: boolean;
       readonly private?: boolean;
+      readonly allowParentNotify?: boolean;
       readonly main?: boolean;
       readonly tools?: readonly string[];
       readonly toolAllowPolicies?: readonly readonly string[][];
@@ -2224,6 +2227,7 @@ export interface AgentStateSnapshot {
           readonly definitionId: string;
           readonly contributionRoot: string;
           readonly private: boolean;
+          readonly allowParentNotify?: boolean;
           readonly description: string;
           readonly whenToUse?: string;
           readonly override: boolean;
@@ -2357,6 +2361,7 @@ export interface AgentStateSnapshot {
           readonly routeDetached?: boolean;
           readonly profileSource?: 'registered' | 'profile-file';
           readonly executionRestriction?: 'research-readonly';
+          readonly allowParentNotify?: boolean;
           readonly executorId?: string;
           readonly executorProtocol?: string;
           readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
@@ -2623,6 +2628,7 @@ export interface AgentStateSnapshot {
             readonly definitionId: string;
             readonly contributionRoot: string;
             readonly private: boolean;
+            readonly allowParentNotify?: boolean;
             readonly description: string;
             readonly whenToUse?: string;
             readonly override: boolean;
@@ -2767,6 +2773,7 @@ export interface AgentStateSnapshot {
           readonly definitionId: string;
           readonly contributionRoot: string;
           readonly private: boolean;
+          readonly allowParentNotify?: boolean;
           readonly description: string;
           readonly whenToUse?: string;
           readonly override: boolean;

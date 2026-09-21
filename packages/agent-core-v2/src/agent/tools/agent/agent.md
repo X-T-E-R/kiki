@@ -19,4 +19,4 @@ When NOT to use AgentRun: skip delegation for trivial work you can do directly â
 
 Once a subagent is running, leave that scope to it: do not redo its searches or reads in parallel, and do not abandon it midway and finish the job manually. Both undo the context savings the delegation was meant to buy.
 
-Subagents can use `AgentNotify` to send messages to their parent during a run.
+Subagents can use `AgentNotify` when their saved binding permits it, but only if the parent must change its actions before the final result arrives; do not send startup confirmations, routine progress, completion notices, or final-result copies.

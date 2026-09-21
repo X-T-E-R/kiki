@@ -39,6 +39,7 @@ const AGENT_FILE_KEYS = new Set([
   'override',
   'main',
   'private',
+  'allow_parent_notify',
   'delegation_notice',
   'tools',
   'disallowedTools',
@@ -143,6 +144,11 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
       : parseBoolean(frontmatter['override'], 'override', options.path);
   const main = parseBoolean(frontmatter['main'], 'main', options.path);
   const privateProfile = parseBoolean(frontmatter['private'], 'private', options.path);
+  const allowParentNotify = parseOptionalBoolean(
+    frontmatter['allow_parent_notify'],
+    'allow_parent_notify',
+    options.path,
+  );
   const delegationNotice = parseDelegationNotice(
     frontmatter['delegation_notice'],
     options.path,
@@ -276,6 +282,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     definitionId: options.definitionId ?? options.path,
     contributionRoot: options.contributionRoot ?? dirname(options.path),
     private: privateProfile,
+    allowParentNotify,
     description,
     whenToUse: nonEmptyString(frontmatter['whenToUse']),
     override,
@@ -569,6 +576,18 @@ function warnIncoherentModelConstraints(
 
 function parseBoolean(value: unknown, field: string, filePath: string): boolean {
   if (value === undefined || value === null) return false;
+  if (typeof value === 'boolean') return value;
+  throw new AgentFileParseError(
+    `Frontmatter field "${field}" in ${filePath} must be a boolean`,
+  );
+}
+
+function parseOptionalBoolean(
+  value: unknown,
+  field: string,
+  filePath: string,
+): boolean | undefined {
+  if (value === undefined) return undefined;
   if (typeof value === 'boolean') return value;
   throw new AgentFileParseError(
     `Frontmatter field "${field}" in ${filePath} must be a boolean`,
