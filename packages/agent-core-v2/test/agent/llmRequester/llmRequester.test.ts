@@ -185,7 +185,7 @@ describe('LLMRequester service migration coverage', () => {
 
     it('records the env-forced Kimi effort used by the provider', async () => {
       await ctx.dispose();
-      vi.stubEnv('KIMI_MODEL_THINKING_EFFORT', 'max');
+      vi.stubEnv('KIKI_MODEL_THINKING_EFFORT', 'max');
       ctx = createTestAgent();
       llmRequester = ctx.get(IAgentLLMRequesterService);
       ctx.configure({

@@ -159,14 +159,14 @@ function expandSkillParameters(
   const named = new Map((context.argumentNames ?? []).map((name, index) => [name, tokens[index] ?? '']));
   const names = [...named.keys()].map(escapeRegExp).join('|');
   const pattern = new RegExp(
-    '\\$\\{KIMI_SKILL_DIR\\}|\\$\\{KIMI_SESSION_ID\\}|\\$ARGUMENTS\\[(\\d+)\\]|\\$ARGUMENTS(?![\\w\\[])|\\$(\\d+)(?!\\w)'
+    '\\$\\{KIKI_SKILL_DIR\\}|\\$\\{KIKI_SESSION_ID\\}|\\$ARGUMENTS\\[(\\d+)\\]|\\$ARGUMENTS(?![\\w\\[])|\\$(\\d+)(?!\\w)'
       + (names === '' ? '' : `|\\$(${names})(?![\\[\\w])`),
     'g',
   );
   let hasArgumentPlaceholder = false;
   const content = body.replaceAll(pattern, (match: string, indexed: string | undefined, positional: string | undefined, name: string | undefined) => {
-    if (match === '${KIMI_SKILL_DIR}') return context.skillDir;
-    if (match === '${KIMI_SESSION_ID}') return context.sessionId ?? '';
+    if (match === '${KIKI_SKILL_DIR}') return context.skillDir;
+    if (match === '${KIKI_SESSION_ID}') return context.sessionId ?? '';
     hasArgumentPlaceholder = true;
     if (match === '$ARGUMENTS') return escapeXmlTags(rawArgs);
     const index = indexed ?? positional;

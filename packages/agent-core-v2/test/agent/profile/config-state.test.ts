@@ -478,7 +478,7 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
   });
 });
 
-describe('ConfigState.provider applies global KIMI_MODEL_* request config', () => {
+describe('ConfigState.provider applies global KIKI_MODEL_* request config', () => {
   let ctx: TestAgentContext | undefined;
   let profile: IAgentProfileService;
   let requester: IAgentLLMRequesterService;
@@ -538,8 +538,8 @@ describe('ConfigState.provider applies global KIMI_MODEL_* request config', () =
     requester = ctx.get(IAgentLLMRequesterService);
   }
 
-  it('injects KIMI_MODEL_TEMPERATURE into the per-turn sampling intent (the compaction request also uses)', async () => {
-    vi.stubEnv('KIMI_MODEL_TEMPERATURE', '0.3');
+  it('injects KIKI_MODEL_TEMPERATURE into the per-turn sampling intent (the compaction request also uses)', async () => {
+    vi.stubEnv('KIKI_MODEL_TEMPERATURE', '0.3');
     createAgentWithEnv();
 
     profile.update({ modelAlias: 'kimi-code' });
@@ -550,8 +550,8 @@ describe('ConfigState.provider applies global KIMI_MODEL_* request config', () =
     });
   });
 
-  it('injects KIMI_MODEL_THINKING_KEEP into the per-turn thinking intent when thinking is on (so compaction keeps it)', async () => {
-    vi.stubEnv('KIMI_MODEL_THINKING_KEEP', 'all');
+  it('injects KIKI_MODEL_THINKING_KEEP into the per-turn thinking intent when thinking is on (so compaction keeps it)', async () => {
+    vi.stubEnv('KIKI_MODEL_THINKING_KEEP', 'all');
     createAgentWithEnv();
 
     profile.update({ modelAlias: 'kimi-code', thinkingLevel: 'high' });
@@ -561,7 +561,7 @@ describe('ConfigState.provider applies global KIMI_MODEL_* request config', () =
   });
 
   it('does NOT inject thinking.keep into the per-turn intent when thinking is off', async () => {
-    vi.stubEnv('KIMI_MODEL_THINKING_KEEP', 'all');
+    vi.stubEnv('KIKI_MODEL_THINKING_KEEP', 'all');
     createAgentWithEnv();
 
     profile.update({ modelAlias: 'kimi-code', thinkingLevel: 'off' });
@@ -572,7 +572,7 @@ describe('ConfigState.provider applies global KIMI_MODEL_* request config', () =
   });
 
   it('injects forced effort through the Anthropic protocol for a Kimi provider', async () => {
-    vi.stubEnv('KIMI_MODEL_THINKING_EFFORT', 'max');
+    vi.stubEnv('KIKI_MODEL_THINKING_EFFORT', 'max');
     createAgentWithEnv();
 
     profile.update({ modelAlias: 'kimi-code-anthropic', thinkingLevel: 'high' });

@@ -196,7 +196,7 @@ describe('InMemorySkillCatalog prompt rendering', () => {
       stubSkill('commit', {
         dir: '/tmp/skills/commit',
         content:
-          'raw=$ARGUMENTS zero=$0 one=$1 second=$ARGUMENTS[1] flag=$flag message=$message dir=${KIMI_SKILL_DIR} session=${KIMI_SESSION_ID}',
+          'raw=$ARGUMENTS zero=$0 one=$1 second=$ARGUMENTS[1] flag=$flag message=$message dir=${KIKI_SKILL_DIR} session=${KIKI_SESSION_ID}',
         metadata: { arguments: ['flag', 'message'] },
       }),
       '-m "fix login"',
@@ -241,8 +241,8 @@ describe('InMemorySkillCatalog prompt rendering', () => {
     expect(registry.renderSkillPrompt(stubSkill('review', {
       content: '$target | $ARGUMENTS[0] | $0 | $ARGUMENTS', metadata: { arguments: ['target'] },
     }), '$ARGUMENTS')).toBe('$ARGUMENTS | $ARGUMENTS | $ARGUMENTS | $ARGUMENTS');
-    expect(registry.renderSkillPrompt(stubSkill('review', { content: '$ARGUMENTS' }), '$& $$ ${KIMI_SKILL_DIR}'))
-      .toBe('$& $$ ${KIMI_SKILL_DIR}');
+    expect(registry.renderSkillPrompt(stubSkill('review', { content: '$ARGUMENTS' }), '$& $$ ${KIKI_SKILL_DIR}'))
+      .toBe('$& $$ ${KIKI_SKILL_DIR}');
   });
 
   it('appends ARGUMENTS when the body has no argument placeholders', () => {
@@ -258,7 +258,7 @@ describe('InMemorySkillCatalog prompt rendering', () => {
     const rendered = new InMemorySkillCatalog().renderSkillPrompt(
       stubSkill('review', {
         dir: '/skills/review',
-        content: 'Use ${KIMI_SKILL_DIR}/references/checklist.md.',
+        content: 'Use ${KIKI_SKILL_DIR}/references/checklist.md.',
       }),
       'src/app.ts',
       { sessionId: 'ses_1' },

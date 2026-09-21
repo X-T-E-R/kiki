@@ -22,12 +22,12 @@ describe('providers config section', () => {
 });
 
 describe('provider config section helpers', () => {
-  it('declares KIMI_MODEL_* bindings for the env provider', () => {
+  it('declares KIKI_MODEL_* bindings for the env provider', () => {
     expect(providersEnvBindings).toEqual({
       [ENV_MODEL_PROVIDER_KEY]: {
-        apiKey: 'KIMI_MODEL_API_KEY',
-        type: 'KIMI_MODEL_PROVIDER_TYPE',
-        baseUrl: 'KIMI_MODEL_BASE_URL',
+        apiKey: 'KIKI_MODEL_API_KEY',
+        type: 'KIKI_MODEL_PROVIDER_TYPE',
+        baseUrl: 'KIKI_MODEL_BASE_URL',
       },
     });
   });
