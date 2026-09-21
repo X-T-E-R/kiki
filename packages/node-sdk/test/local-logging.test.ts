@@ -16,15 +16,15 @@ const tempDirs: string[] = [];
 const harnesses: KimiHarness[] = [];
 
 const LOG_ENV_KEYS = [
-  'KIMI_LOG_LEVEL',
-  'KIMI_LOG_GLOBAL_MAX_BYTES',
-  'KIMI_LOG_GLOBAL_FILES',
-  'KIMI_LOG_SESSION_MAX_BYTES',
-  'KIMI_LOG_SESSION_FILES',
+  'KIKI_LOG_LEVEL',
+  'KIKI_LOG_GLOBAL_MAX_BYTES',
+  'KIKI_LOG_GLOBAL_FILES',
+  'KIKI_LOG_SESSION_MAX_BYTES',
+  'KIKI_LOG_SESSION_FILES',
 ] as const;
 
 beforeEach(async () => {
-  process.env['KIMI_LOG_LEVEL'] = 'info';
+  process.env['KIKI_LOG_LEVEL'] = 'info';
   await __resetRootLoggerForTest();
 });
 
@@ -37,7 +37,7 @@ afterEach(async () => {
     await harness.close().catch(() => undefined);
   }
   await __resetRootLoggerForTest();
-  process.env['KIMI_LOG_LEVEL'] = 'off';
+  process.env['KIKI_LOG_LEVEL'] = 'off';
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
@@ -209,9 +209,9 @@ describe('Local logging — harness integration', () => {
 
   it('default export includes rotated session log files without requiring active kimi-code.log', async () => {
     const env = snapshotLogEnv();
-    process.env['KIMI_LOG_LEVEL'] = 'warn';
-    process.env['KIMI_LOG_SESSION_MAX_BYTES'] = '1024';
-    process.env['KIMI_LOG_SESSION_FILES'] = '2';
+    process.env['KIKI_LOG_LEVEL'] = 'warn';
+    process.env['KIKI_LOG_SESSION_MAX_BYTES'] = '1024';
+    process.env['KIKI_LOG_SESSION_FILES'] = '2';
     try {
       const homeDir = await makeTempDir('kimi-log-home-');
       const workDir = await makeTempDir('kimi-log-work-');
@@ -398,7 +398,7 @@ describe('Local logging — harness integration', () => {
   it('checks that an empty session log directory does not get a log file', async () => {
     // Sanity: if level is off, no log files should be created
     const env = snapshotLogEnv();
-    process.env['KIMI_LOG_LEVEL'] = 'off';
+    process.env['KIKI_LOG_LEVEL'] = 'off';
     try {
       const homeDir = await makeTempDir('kimi-log-home-');
       const workDir = await makeTempDir('kimi-log-work-');

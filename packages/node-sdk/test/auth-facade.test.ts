@@ -549,8 +549,8 @@ api_key = ""
 oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https://auth.kimi.com" }
 `,
     );
-    vi.stubEnv('KIMI_CODE_BASE_URL', envBaseUrl);
-    vi.stubEnv('KIMI_CODE_OAUTH_HOST', envOauthHost);
+    vi.stubEnv('KIKI_CODE_BASE_URL', envBaseUrl);
+    vi.stubEnv('KIKI_CODE_OAUTH_HOST', envOauthHost);
     const fetchMock = vi.fn<FetchMock>(async (input, init) => {
       expect(fetchInputUrl(input)).toBe(`${envBaseUrl}/models`);
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer env-access-token');
@@ -875,8 +875,8 @@ api_key = ""
 oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https://auth.kimi.com" }
 `,
     );
-    vi.stubEnv('KIMI_CODE_BASE_URL', envBaseUrl);
-    vi.stubEnv('KIMI_CODE_OAUTH_HOST', envOauthHost);
+    vi.stubEnv('KIKI_CODE_BASE_URL', envBaseUrl);
+    vi.stubEnv('KIKI_CODE_OAUTH_HOST', envOauthHost);
     const fetchMock = vi.fn<FetchMock>(async () =>
       new Response(
         JSON.stringify({ usage: { used: 3, limit: 10, name: 'Env limit' } }),

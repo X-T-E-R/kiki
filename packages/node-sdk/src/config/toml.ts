@@ -95,7 +95,7 @@ export function readConfigFileForUpdate(filePath: string): KimiConfig {
 
 /**
  * Load the config for runtime consumption: the on-disk config plus any model
- * synthesized from `KIMI_MODEL_*` environment variables. Use this everywhere a
+ * synthesized from `KIKI_MODEL_*` environment variables. Use this everywhere a
  * value is assigned to the live runtime config; use the raw `readConfigFile`
  * for write-back paths so the synthesized model is never persisted.
  */
@@ -110,7 +110,7 @@ export interface RuntimeConfigLoadResult {
   readonly config: KimiConfig;
   /** Problems in config.toml itself; non-empty means parts (or all) of the file were ignored. */
   readonly fileWarnings: readonly string[];
-  /** Problems applying KIMI_MODEL_* env overrides; the overlay was skipped. */
+  /** Problems applying KIKI_MODEL_* env overrides; the overlay was skipped. */
   readonly envWarnings: readonly string[];
   /**
    * Set when the file is entirely unusable (unreadable, TOML syntax error, or
@@ -125,7 +125,7 @@ export interface RuntimeConfigLoadResult {
 /**
  * Lenient variant of `loadRuntimeConfig` that never throws: schema errors
  * drop only the offending sections (whole entry for `providers`/`models`,
- * whole top-level section otherwise) and a bad KIMI_MODEL_* env overlay is
+ * whole top-level section otherwise) and a bad KIKI_MODEL_* env overlay is
  * skipped, each reported as a warning. A file that cannot be used at all
  * additionally sets `fileError` so startup can fail fast while mid-run
  * reloads degrade. Runtime read paths use this; write paths must keep using
@@ -195,7 +195,7 @@ export function loadRuntimeConfigSafe(
     config = applyEnvModelConfig(config, env);
   } catch (error) {
     envWarnings.push(
-      `Ignoring KIMI_MODEL_* environment overrides: ${describeUnknownError(error)}`,
+      `Ignoring KIKI_MODEL_* environment overrides: ${describeUnknownError(error)}`,
     );
   }
 

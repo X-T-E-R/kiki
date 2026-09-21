@@ -28,9 +28,9 @@ export function parseBooleanEnv(value: string | undefined): boolean | undefined 
 }
 
 /**
- * Parse a floating-point environment value (e.g. `KIMI_MODEL_TEMPERATURE`).
+ * Parse a floating-point environment value (e.g. `KIKI_MODEL_TEMPERATURE`).
  * Returns `undefined` when unset/blank; throws `KimiError(CONFIG_INVALID)` on a
- * non-numeric value so a typo fails fast like the other `KIMI_MODEL_*` vars.
+ * non-numeric value so a typo fails fast like the other `KIKI_MODEL_*` vars.
  * No range validation — callers pass values the upstream API accepts.
  */
 export function parseFloatEnv(value: string | undefined, varName: string): number | undefined {

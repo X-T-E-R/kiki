@@ -68,7 +68,7 @@ const { Session } = await import('#/index');
 const tempDirs: string[] = [];
 
 const CONFIG_ENV_PATTERN =
-  /^(KIMI_MODEL_|KIMI_LOOP_|KIMI_MCP_|KIMI_IMAGE_|KIKI_BACKGROUND_|KIKI_MODEL_CATALOG_|NB_SEARCH_)/;
+  /^(KIKI_MODEL_|KIKI_LOOP_|KIKI_MCP_|KIKI_IMAGE_|KIKI_BACKGROUND_|KIKI_MODEL_CATALOG_|NB_SEARCH_)/;
 
 /** Keep ambient env from injecting providers/models into the v2 engine. */
 function scrubConfigEnv(): () => void {

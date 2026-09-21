@@ -230,14 +230,14 @@ export type McpConfig = z.infer<typeof McpConfigSchema>;
 export const ImageConfigSchema = z.object({
   /**
    * Longest-edge ceiling (px) applied when compressing images for the model.
-   * Overrides the built-in default; the KIMI_IMAGE_MAX_EDGE_PX env var wins
+   * Overrides the built-in default; the KIKI_IMAGE_MAX_EDGE_PX env var wins
    * over this value.
    */
   maxEdgePx: z.number().int().min(1).optional(),
   /**
    * Raw-byte budget for images the model reads for itself (ReadMediaFile's
    * default path). Overrides the built-in default; the
-   * KIMI_IMAGE_READ_BYTE_BUDGET env var wins over this value. Explicit
+   * KIKI_IMAGE_READ_BYTE_BUDGET env var wins over this value. Explicit
    * region / full_resolution reads use the provider-scale per-image limit
    * instead.
    */

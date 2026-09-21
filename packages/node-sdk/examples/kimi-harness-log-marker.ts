@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     process.stderr.write(
       [
         'error: marker was not found in the session log.',
-        'Check that KIMI_LOG_LEVEL is not "off" and that the session id exists in this KIKI_HOME.',
+        'Check that KIKI_LOG_LEVEL is not "off" and that the session id exists in this KIKI_HOME.',
         '',
       ].join('\n'),
     );

@@ -13,7 +13,7 @@ export default defineConfig({
   test: {
     name: 'kimi-sdk',
     env: {
-      KIMI_LOG_LEVEL: 'off',
+      KIKI_LOG_LEVEL: 'off',
     },
     include: ['test/**/*.{test,integration,e2e}.ts'],
     // Every harness in this suite boots the v2 engine in-process against a

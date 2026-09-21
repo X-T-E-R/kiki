@@ -9,14 +9,14 @@ import { smokeIdentityFromEnv, runPromptToEnd } from './runtime-smoke-helpers';
 const MANAGED_KIMI_CODE_PROVIDER = 'managed:kimi-code';
 
 async function main(): Promise<void> {
-  const explicitHomeDir = process.env['KIMI_SDK_AUTH_SMOKE_HOME'];
-  const explicitWorkDir = process.env['KIMI_SDK_AUTH_SMOKE_WORK_DIR'];
+  const explicitHomeDir = process.env['KIKI_SDK_AUTH_SMOKE_HOME'];
+  const explicitWorkDir = process.env['KIKI_SDK_AUTH_SMOKE_WORK_DIR'];
   const homeDir = explicitHomeDir ?? (await mkdtemp(join(tmpdir(), 'kimi-sdk-auth-smoke-home-')));
   const workDir = explicitWorkDir ?? (await mkdtemp(join(tmpdir(), 'kimi-sdk-auth-smoke-work-')));
   const keepToken = shouldKeepToken(explicitHomeDir !== undefined);
-  const forceLogin = process.env['KIMI_SDK_AUTH_SMOKE_FORCE_LOGIN'] === '1';
+  const forceLogin = process.env['KIKI_SDK_AUTH_SMOKE_FORCE_LOGIN'] === '1';
   const prompt =
-    process.env['KIMI_SDK_AUTH_SMOKE_PROMPT'] ?? 'Reply with exactly: Kimi SDK auth smoke ok';
+    process.env['KIKI_SDK_AUTH_SMOKE_PROMPT'] ?? 'Reply with exactly: Kimi SDK auth smoke ok';
   const harness = createKimiHarness({ homeDir, identity: smokeIdentityFromEnv() });
 
   process.stdout.write(`home: ${homeDir}\n`);
@@ -106,7 +106,7 @@ function printUsage(usage: Awaited<ReturnType<KimiHarness['auth']['getManagedUsa
 }
 
 function shouldKeepToken(hasExplicitHomeDir: boolean): boolean {
-  const value = process.env['KIMI_SDK_AUTH_SMOKE_KEEP_TOKEN'];
+  const value = process.env['KIKI_SDK_AUTH_SMOKE_KEEP_TOKEN'];
   if (value !== undefined) return value === '1' || value === 'true';
   return hasExplicitHomeDir;
 }

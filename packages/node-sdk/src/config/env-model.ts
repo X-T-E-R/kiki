@@ -21,10 +21,10 @@ const DEFAULT_BASE_URL: Partial<Record<ProviderType, string>> = {
   // anthropic: omitted -> let the Anthropic SDK pick its default
 };
 
-/** Default context window (256K) used when KIMI_MODEL_MAX_CONTEXT_SIZE is unset. */
+/** Default context window (256K) used when KIKI_MODEL_MAX_CONTEXT_SIZE is unset. */
 const DEFAULT_MAX_CONTEXT_SIZE = 262144;
 
-/** Default capabilities when KIMI_MODEL_CAPABILITIES is unset (kimi models support both). */
+/** Default capabilities when KIKI_MODEL_CAPABILITIES is unset (kimi models support both). */
 const DEFAULT_CAPABILITIES = ['image_in', 'thinking'];
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -50,7 +50,7 @@ function parseProviderType(raw: string | undefined): ProviderType {
   const normalized = raw.toLowerCase() as ProviderType;
   if (!ALLOWED_TYPES.includes(normalized)) {
     fail(
-      `KIMI_MODEL_PROVIDER_TYPE must be one of ${ALLOWED_TYPES.join(', ')}, got "${raw}".`,
+      `KIKI_MODEL_PROVIDER_TYPE must be one of ${ALLOWED_TYPES.join(', ')}, got "${raw}".`,
     );
   }
   return normalized;
@@ -67,7 +67,7 @@ function parseCapabilities(raw: string | undefined): string[] | undefined {
 
 // `parseBooleanEnv` returns undefined for unrecognized input. Treat a non-empty
 // but unparseable value (e.g. a typo like `flase`) as a config error so it
-// fails fast like the other KIMI_MODEL_* values, instead of silently keeping
+// fails fast like the other KIKI_MODEL_* values, instead of silently keeping
 // config.toml's existing value.
 function parseBooleanVar(raw: string | undefined, varName: string): boolean | undefined {
   const value = trimmed(raw);
@@ -80,8 +80,8 @@ function parseBooleanVar(raw: string | undefined, varName: string): boolean | un
 }
 
 /**
- * When `KIMI_MODEL_NAME` is set, synthesize one provider + one model alias from
- * the `KIMI_MODEL_*` environment variables and make it the default model.
+ * When `KIKI_MODEL_NAME` is set, synthesize one provider + one model alias from
+ * the `KIKI_MODEL_*` environment variables and make it the default model.
  * Returns the config unchanged when the trigger variable is absent.
  *
  * IMPORTANT: the synthesized provider/model/default_model exist ONLY in the
@@ -91,22 +91,22 @@ function parseBooleanVar(raw: string | undefined, varName: string): boolean | un
  * a final guard against patch round-trips (getConfig -> setConfig).
  */
 export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env): KimiConfig {
-  const model = trimmed(env['KIMI_MODEL_NAME']);
+  const model = trimmed(env['KIKI_MODEL_NAME']);
   if (model === undefined) return config;
 
-  const apiKey = trimmed(env['KIMI_MODEL_API_KEY']);
+  const apiKey = trimmed(env['KIKI_MODEL_API_KEY']);
   if (apiKey === undefined) {
-    fail('KIMI_MODEL_NAME is set but KIMI_MODEL_API_KEY is missing.');
+    fail('KIKI_MODEL_NAME is set but KIKI_MODEL_API_KEY is missing.');
   }
 
-  const maxContextRaw = trimmed(env['KIMI_MODEL_MAX_CONTEXT_SIZE']);
+  const maxContextRaw = trimmed(env['KIKI_MODEL_MAX_CONTEXT_SIZE']);
   const maxContextSize =
     maxContextRaw === undefined
       ? DEFAULT_MAX_CONTEXT_SIZE
-      : parsePositiveInt(maxContextRaw, 'KIMI_MODEL_MAX_CONTEXT_SIZE');
+      : parsePositiveInt(maxContextRaw, 'KIKI_MODEL_MAX_CONTEXT_SIZE');
 
-  const type = parseProviderType(trimmed(env['KIMI_MODEL_PROVIDER_TYPE']));
-  const baseUrl = trimmed(env['KIMI_MODEL_BASE_URL']) ?? DEFAULT_BASE_URL[type];
+  const type = parseProviderType(trimmed(env['KIKI_MODEL_PROVIDER_TYPE']));
+  const baseUrl = trimmed(env['KIKI_MODEL_BASE_URL']) ?? DEFAULT_BASE_URL[type];
 
   const provider: ProviderConfig = {
     type,
@@ -114,17 +114,17 @@ export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env):
     ...(baseUrl !== undefined ? { baseUrl } : {}),
   };
 
-  const maxOutputRaw = trimmed(env['KIMI_MODEL_MAX_OUTPUT_SIZE']);
+  const maxOutputRaw = trimmed(env['KIKI_MODEL_MAX_OUTPUT_SIZE']);
   const maxOutputSize =
     maxOutputRaw !== undefined
-      ? parsePositiveInt(maxOutputRaw, 'KIMI_MODEL_MAX_OUTPUT_SIZE')
+      ? parsePositiveInt(maxOutputRaw, 'KIKI_MODEL_MAX_OUTPUT_SIZE')
       : undefined;
-  const capabilities = parseCapabilities(env['KIMI_MODEL_CAPABILITIES']) ?? DEFAULT_CAPABILITIES;
-  const displayName = trimmed(env['KIMI_MODEL_DISPLAY_NAME']);
-  const reasoningKey = trimmed(env['KIMI_MODEL_REASONING_KEY']);
+  const capabilities = parseCapabilities(env['KIKI_MODEL_CAPABILITIES']) ?? DEFAULT_CAPABILITIES;
+  const displayName = trimmed(env['KIKI_MODEL_DISPLAY_NAME']);
+  const reasoningKey = trimmed(env['KIKI_MODEL_REASONING_KEY']);
   const adaptiveThinking = parseBooleanVar(
-    env['KIMI_MODEL_ADAPTIVE_THINKING'],
-    'KIMI_MODEL_ADAPTIVE_THINKING',
+    env['KIKI_MODEL_ADAPTIVE_THINKING'],
+    'KIKI_MODEL_ADAPTIVE_THINKING',
   );
 
   const alias: ModelAlias = {
@@ -138,7 +138,7 @@ export function applyEnvModelConfig(config: KimiConfig, env: Env = process.env):
     ...(adaptiveThinking !== undefined ? { adaptiveThinking } : {}),
   };
 
-  const thinkingEffort = trimmed(env['KIMI_MODEL_THINKING_EFFORT']);
+  const thinkingEffort = trimmed(env['KIKI_MODEL_THINKING_EFFORT']);
   const thinking: ThinkingConfig | undefined =
     thinkingEffort !== undefined ? { ...config.thinking, effort: thinkingEffort } : config.thinking;
 

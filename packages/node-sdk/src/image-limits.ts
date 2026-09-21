@@ -17,8 +17,8 @@ import { MAX_IMAGE_EDGE_PX, READ_IMAGE_BYTE_BUDGET } from '@kiki/agent-core-v2';
 
 import type { ImageConfig } from '#/config';
 
-export const MAX_IMAGE_EDGE_ENV = 'KIMI_IMAGE_MAX_EDGE_PX';
-export const READ_IMAGE_BYTE_BUDGET_ENV = 'KIMI_IMAGE_READ_BYTE_BUDGET';
+export const MAX_IMAGE_EDGE_ENV = 'KIKI_IMAGE_MAX_EDGE_PX';
+export const READ_IMAGE_BYTE_BUDGET_ENV = 'KIKI_IMAGE_READ_BYTE_BUDGET';
 
 function positiveIntFromEnv(
   env: Readonly<Record<string, string | undefined>>,

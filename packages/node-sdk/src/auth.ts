@@ -31,7 +31,7 @@ export type KimiAuthLoginOptions = Omit<KimiOAuthLoginOptions, 'provisionConfig'
    * Explicit region choice from the login UI ('mainland-cn' / 'global'). Maps
    * to the region profile's OAuth/API hosts — including for 'mainland-cn', so
    * switching back overrides a persisted global login. Yields to
-   * `KIMI_CODE_OAUTH_HOST` / `KIMI_CODE_BASE_URL` env overrides and to
+   * `KIKI_CODE_OAUTH_HOST` / `KIKI_CODE_BASE_URL` env overrides and to
    * explicit `oauthHost` / `baseUrl` options.
    */
   readonly region?: KimiRegion;
