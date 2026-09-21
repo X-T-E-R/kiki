@@ -20,6 +20,7 @@ export function renderSessionInspection(inspection: SessionInspection): string {
     `Updated: ${session.updatedAt ?? 'unknown'}`,
     `Archived: ${session.archived ? 'yes' : 'no'}`,
     `Agents: ${session.agentCount}`,
+    `Selected agent: ${inspection.selectedAgent.status} · last activity ${inspection.selectedAgent.lastActivityAt ?? 'unknown'}`,
     '',
     'Agent tree:',
     ...renderAgentTree(inspection.agents, inspection.selectedAgent.id),
@@ -34,6 +35,30 @@ export function renderSessionInspection(inspection: SessionInspection): string {
   if (inspection.warnings.length > 0) {
     lines.push('', 'Warnings:');
     for (const warning of inspection.warnings) lines.push(`- ${sanitizeTerminalText(warning)}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export function renderSessionFollowUpdate(
+  previous: SessionInspection,
+  current: SessionInspection,
+): string {
+  const previousTimeline = new Map(
+    previous.timeline.map((entry) => [timelineEntryKey(entry), JSON.stringify(entry)]),
+  );
+  const changedEntries = current.timeline.filter((entry) =>
+    previousTimeline.get(timelineEntryKey(entry)) !== JSON.stringify(entry),
+  );
+  const lines = [
+    '',
+    `Update — ${sanitizeInline(current.selectedAgent.name)} (${sanitizeInline(current.selectedAgent.id)})`,
+    `Status: ${current.session.status} (${current.session.statusBasis})`,
+    `Agent: ${current.selectedAgent.status} · last activity ${current.selectedAgent.lastActivityAt ?? 'unknown'}`,
+  ];
+  for (const entry of changedEntries) lines.push(...renderTimelineEntry(entry));
+  const priorWarnings = new Set(previous.warnings);
+  for (const warning of current.warnings) {
+    if (!priorWarnings.has(warning)) lines.push(`Warning: ${sanitizeTerminalText(warning)}`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -110,8 +135,13 @@ function agentLine(agent: SessionInspectionAgent, selected: boolean): string {
     ? sanitizeInline(agent.id)
     : `${sanitizeInline(agent.name)} (${sanitizeInline(agent.id)})`;
   const model = agent.model === null ? '' : ` · ${sanitizeInline(agent.model)}`;
+  const lastActivity = agent.lastActivityAt === null ? '' : ` · last ${agent.lastActivityAt}`;
   const marker = selected ? ' *' : '';
-  return `${name} [${agent.type}] · ${agent.status}${model}${marker}`;
+  return `${name} [${agent.type}] · ${agent.status}${model}${lastActivity}${marker}`;
+}
+
+function timelineEntryKey(entry: SessionTimelineEntry): string {
+  return `${entry.type}\u0000${entry.id}`;
 }
 
 function renderTimelineEntry(entry: SessionTimelineEntry): string[] {

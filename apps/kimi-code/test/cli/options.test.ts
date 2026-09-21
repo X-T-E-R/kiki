@@ -583,6 +583,21 @@ describe('CLI options parsing', () => {
       ]);
     });
 
+    it('registers session inspection flags on the intended subcommands', () => {
+      const program = createProgram('0.0.0', () => {}, () => {});
+      const session = program.commands.find((command) => command.name() === 'session');
+      const show = session?.commands.find((command) => command.name() === 'show');
+      const list = session?.commands.find((command) => command.name() === 'list');
+
+      expect(show?.options.map((option) => option.long)).toEqual([
+        '--json',
+        '--agent',
+        '--follow',
+        '--workspace',
+      ]);
+      expect(list?.options.map((option) => option.long)).toEqual(['--json']);
+    });
+
   });
 
   describe('rejected flags', () => {

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -12,6 +12,7 @@ import {
   type SessionCommandDeps,
 } from '#/cli/sub/session';
 import {
+  followOfflineSession,
   inspectOfflineSession,
   normalizeSessionReference,
   SessionInspectionError,
@@ -56,7 +57,7 @@ describe('session reference parsing', () => {
 });
 
 describe('offline session inspection', () => {
-  it('reads metadata, the agent tree, and projected timelines across agents', async () => {
+  it('scopes metadata, status, and timeline projection to one selected agent', async () => {
     await createSessionFixture(homeDir, 'wd_alpha', SESSION_ID, {
       title: 'Investigate build',
       cwd: '/repo/alpha',
@@ -72,7 +73,8 @@ describe('offline session inspection', () => {
         },
       },
     });
-    await writeWire(homeDir, 'wd_alpha', SESSION_ID, 'main', standardWire('hello', 'done'));
+    const mainWire = await writeWire(homeDir, 'wd_alpha', SESSION_ID, 'main', standardWire('hello', 'done'));
+    await writeFile(mainWire, '{broken main wire\n', 'utf8');
     await writeWire(homeDir, 'wd_alpha', SESSION_ID, 'agent-child', standardWire('child prompt', 'child answer'));
 
     const result = await inspectOfflineSession({
@@ -96,13 +98,13 @@ describe('offline session inspection', () => {
       selectedAgent: { id: 'agent-child', name: 'Map tests' },
     });
     expect(result.agents).toEqual([
-      expect.objectContaining({ id: 'main', type: 'main', status: 'completed' }),
       expect.objectContaining({
         id: 'agent-child',
         name: 'Map tests',
         label: 'Map tests',
         parentId: 'main',
         status: 'completed',
+        lastActivityAt: new Date(5_000).toISOString(),
       }),
     ]);
     expect(result.timeline).toEqual([
@@ -257,6 +259,44 @@ describe('offline session inspection', () => {
     expect(result.session).toMatchObject({ status: 'completed', statusBasis: 'metadata' });
     expect(result.agents.find((agent) => agent.id === 'child')?.status).toBe('running');
   });
+
+  it('follows the initial snapshot and appended wire events until aborted', async () => {
+    await createSessionFixture(homeDir, 'wd_alpha', SESSION_ID);
+    const wirePath = await writeWire(
+      homeDir,
+      'wd_alpha',
+      SESSION_ID,
+      'main',
+      standardWire('first prompt', 'first answer'),
+    );
+    const controller = new AbortController();
+    const followed = followOfflineSession({
+      homeDir,
+      reference: SESSION_ID,
+      signal: controller.signal,
+      pollIntervalMs: 10,
+    });
+
+    const first = await followed.next();
+    expect(first.done).toBe(false);
+    expect(first.value?.timeline).toContainEqual(
+      expect.objectContaining({ type: 'message', text: 'first answer' }),
+    );
+
+    const appended = standardWire('second prompt', 'second answer').map((record) =>
+      remapWireTurn(record, 1, '-2'),
+    );
+    await appendFile(wirePath, `${appended.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+    const second = await followed.next();
+    expect(second.done).toBe(false);
+    expect(second.value?.timeline).toContainEqual(
+      expect.objectContaining({ type: 'message', text: 'second answer' }),
+    );
+
+    controller.abort();
+    await expect(followed.next()).resolves.toMatchObject({ done: true });
+  });
 });
 
 describe('kiki session command', () => {
@@ -308,6 +348,64 @@ describe('kiki session command', () => {
     expect(JSON.parse(stdout.join(''))).toEqual(fixture);
   });
 
+  it('prints a full observational first render before follow updates', async () => {
+    const fixture = makeInspection();
+    const updated = {
+      ...fixture,
+      timeline: [{
+        type: 'message' as const,
+        id: 'm1',
+        turnId: 't0',
+        timestamp: null,
+        role: 'assistant' as const,
+        origin: 'other' as const,
+        text: 'new follow event',
+      }],
+    };
+    const { deps, stdout, stderr, exitCodes } = makeDeps({
+      followSession: async function* () {
+        yield fixture;
+        yield updated;
+      },
+    });
+
+    await handleSessionShow(deps, SESSION_ID, { json: false, follow: true });
+
+    expect(stderr).toEqual([]);
+    expect(exitCodes).toEqual([]);
+    expect(stdout.join('')).toMatch(/persisted session files only/i);
+    expect(stdout.join('')).toContain(`ID: ${SESSION_ID}`);
+    expect(stdout.join('')).toContain('Timeline — main (main):');
+    expect(stdout.join('')).toContain('new follow event');
+  });
+
+  it('emits complete snapshots as NDJSON while following with --json', async () => {
+    const first = makeInspection();
+    const second = {
+      ...first,
+      timeline: [{
+        type: 'message' as const,
+        id: 'm1',
+        turnId: 't0',
+        timestamp: null,
+        role: 'assistant' as const,
+        origin: 'other' as const,
+        text: 'new event',
+      }],
+    };
+    const { deps, stdout } = makeDeps({
+      followSession: async function* () {
+        yield first;
+        yield second;
+      },
+    });
+
+    await handleSessionShow(deps, SESSION_ID, { json: true, follow: true });
+
+    const snapshots = stdout.join('').trim().split('\n').map((line) => JSON.parse(line));
+    expect(snapshots).toEqual([first, second]);
+  });
+
   it('parses the subcommand --agent instead of the root new-session option', async () => {
     await createSessionFixture(homeDir, 'wd_alpha', SESSION_ID, {
       agents: {
@@ -338,7 +436,7 @@ describe('kiki session command', () => {
       '--json',
     ]);
 
-    expect(JSON.parse(stdout.join('')).selectedAgent).toEqual({ id: 'child', name: 'worker' });
+    expect(JSON.parse(stdout.join('')).selectedAgent).toMatchObject({ id: 'child', name: 'worker' });
   });
 
   it('rejects the root new-session --agent before session show', async () => {
@@ -508,6 +606,24 @@ function standardWire(prompt: string, answer: string): Record<string, unknown>[]
   ];
 }
 
+function remapWireTurn(
+  record: Record<string, unknown>,
+  turnId: number,
+  idSuffix: string,
+): Record<string, unknown> {
+  const next = structuredClone(record);
+  if (typeof next['turnId'] === 'number') next['turnId'] = turnId;
+  if (typeof next['promptId'] === 'string') next['promptId'] += idSuffix;
+  const event = next['event'];
+  if (typeof event === 'object' && event !== null && !Array.isArray(event)) {
+    const mutable = event as Record<string, unknown>;
+    if (typeof mutable['turnId'] === 'number') mutable['turnId'] = turnId;
+    if (typeof mutable['uuid'] === 'string') mutable['uuid'] += idSuffix;
+    if (typeof mutable['stepUuid'] === 'string') mutable['stepUuid'] += idSuffix;
+  }
+  return next;
+}
+
 async function snapshotTree(root: string): Promise<Record<string, { size: number; mtimeMs: number; data: string }>> {
   const result: Record<string, { size: number; mtimeMs: number; data: string }> = {};
   const visit = async (dir: string, prefix = ''): Promise<void> => {
@@ -542,6 +658,9 @@ function makeDeps(overrides: Partial<SessionCommandDeps> = {}): {
   const deps: SessionCommandDeps = {
     homeDir: () => homeDir,
     inspectSession: async () => makeInspection(),
+    followSession: async function* () {
+      yield makeInspection();
+    },
     listSessions: async () => [],
     stdout: { write: (chunk) => (stdout.push(chunk), true) },
     stderr: { write: (chunk) => (stderr.push(chunk), true) },
@@ -590,7 +709,13 @@ function makeInspection() {
       lastTurnReason: 'completed' as const,
       agentCount: 1,
     },
-    selectedAgent: { id: 'main', name: 'main' },
+    selectedAgent: {
+      id: 'main',
+      name: 'main',
+      status: 'completed' as const,
+      lastActivityAt: '2023-11-14T22:15:00.000Z',
+      wireComplete: true,
+    },
     agents: [{
       id: 'main',
       name: 'main',
@@ -599,6 +724,7 @@ function makeInspection() {
       parentId: null,
       model: 'test-model',
       status: 'completed' as const,
+      lastActivityAt: '2023-11-14T22:15:00.000Z',
       wireComplete: true,
     }],
     timeline: [],

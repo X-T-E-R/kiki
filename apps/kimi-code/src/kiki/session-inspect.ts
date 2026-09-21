@@ -1,6 +1,7 @@
 import { constants, type Dirent } from 'node:fs';
 import { lstat, open, readdir, realpath, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   AgentTranscript,
@@ -24,6 +25,7 @@ const MAX_STATE_BYTES = 16 << 20;
 const MAX_WIRE_BYTES = 1 << 30;
 const MAX_WIRE_RECORDS = 2_000_000;
 const MAX_WIRE_LINE_BYTES = 64 << 20;
+export const DEFAULT_SESSION_FOLLOW_INTERVAL_MS = 750;
 
 export type InspectionStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'idle' | 'unknown';
 
@@ -67,6 +69,7 @@ export interface SessionInspectionAgent {
   readonly parentId: string | null;
   readonly model: string | null;
   readonly status: InspectionStatus;
+  readonly lastActivityAt: string | null;
   readonly wireComplete: boolean;
 }
 
@@ -169,6 +172,9 @@ export interface SessionInspection {
   readonly selectedAgent: {
     readonly id: string;
     readonly name: string;
+    readonly status: InspectionStatus;
+    readonly lastActivityAt: string | null;
+    readonly wireComplete: boolean;
   };
   readonly agents: readonly SessionInspectionAgent[];
   readonly timeline: readonly SessionTimelineEntry[];
@@ -180,6 +186,11 @@ export interface InspectSessionOptions {
   readonly reference: string;
   readonly agent?: string;
   readonly workspace?: string;
+}
+
+export interface FollowSessionOptions extends InspectSessionOptions {
+  readonly signal?: AbortSignal;
+  readonly pollIntervalMs?: number;
 }
 
 export interface ListOfflineSessionsOptions {
@@ -295,10 +306,13 @@ export async function inspectOfflineSession(options: InspectSessionOptions): Pro
   const warnings: string[] = [];
   const definitions = await discoverAgents(location, metadata, warnings);
   const selected = selectAgent(options.agent, definitions, sessionId);
+  const requestedAgent = options.agent?.trim();
+  const scopedToAgent = requestedAgent !== undefined && requestedAgent !== '';
+  const projectedDefinitions = scopedToAgent ? [selected] : definitions;
   const agentResults = new Map<string, ProjectedAgent>();
   const summaries: SessionInspectionAgent[] = [];
 
-  for (const definition of definitions) {
+  for (const definition of projectedDefinitions) {
     let projected: ProjectedAgent | undefined;
     try {
       projected = await projectAgentWire(definition);
@@ -334,8 +348,13 @@ export async function inspectOfflineSession(options: InspectSessionOptions): Pro
     );
   }
 
-  const main = summaries.find((agent) => agent.id === 'main') ?? summaries.find((agent) => agent.type === 'main');
-  const sessionStatus = metadata.lastTurnReason ?? main?.status ?? 'unknown';
+  const mainDefinition = definitions.find((agent) => agent.id === 'main')
+    ?? definitions.find((agent) => agent.type === 'main');
+  const statusAgent = scopedToAgent
+    ? summaries.find((agent) => agent.id === selected.id)
+    : summaries.find((agent) => agent.id === 'main') ?? summaries.find((agent) => agent.type === 'main');
+  const selectedSummary = summaries.find((agent) => agent.id === selected.id)!;
+  const sessionStatus = metadata.lastTurnReason ?? statusAgent?.status ?? 'unknown';
   const statusBasis = metadata.lastTurnReason === null ? 'wire' : 'metadata';
   if (statusBasis === 'wire' && sessionStatus === 'running') {
     warnings.push('Running status comes from the persisted wire snapshot; process liveness was not checked.');
@@ -352,17 +371,43 @@ export async function inspectOfflineSession(options: InspectSessionOptions): Pro
       createdAt: metadata.createdAt,
       updatedAt: metadata.updatedAt,
       archived: metadata.archived,
-      model: main?.model ?? null,
+      model: mainDefinition?.model ?? null,
       status: sessionStatus,
       statusBasis,
       lastTurnReason: metadata.lastTurnReason,
-      agentCount: summaries.length,
+      agentCount: definitions.length,
     },
-    selectedAgent: { id: selected.id, name: selected.name },
+    selectedAgent: {
+      id: selected.id,
+      name: selected.name,
+      status: selectedSummary.status,
+      lastActivityAt: selectedSummary.lastActivityAt,
+      wireComplete: selectedSummary.wireComplete,
+    },
     agents: summaries,
     timeline: timelineFromSnapshot(selectedProjection.snapshot),
     warnings,
   };
+}
+
+export async function* followOfflineSession(
+  options: FollowSessionOptions,
+): AsyncGenerator<SessionInspection> {
+  const pollIntervalMs = Math.max(100, Math.floor(
+    options.pollIntervalMs ?? DEFAULT_SESSION_FOLLOW_INTERVAL_MS,
+  ));
+  let previous: string | undefined;
+  for (;;) {
+    if (signalAborted(options.signal)) return;
+    const inspection = await inspectOfflineSession(options);
+    if (signalAborted(options.signal)) return;
+    const serialized = JSON.stringify(inspection);
+    if (serialized !== previous) {
+      previous = serialized;
+      yield inspection;
+    }
+    await waitForPoll(pollIntervalMs, options.signal);
+  }
 }
 
 export async function listOfflineSessions(
@@ -736,6 +781,7 @@ function toAgentSummary(
     parentId: definition.parentId,
     model: definition.model,
     status: snapshot === undefined ? 'unknown' : statusFromSnapshot(snapshot),
+    lastActivityAt: snapshot === undefined ? null : lastActivityFromSnapshot(snapshot),
     wireComplete: complete,
   };
 }
@@ -751,6 +797,38 @@ function statusFromSnapshot(snapshot: AgentTranscriptSnapshot): InspectionStatus
   const last = turns.at(-1);
   if (last === undefined) return 'idle';
   return last.state === 'queued' ? 'running' : last.state;
+}
+
+function lastActivityFromSnapshot(snapshot: AgentTranscriptSnapshot): string | null {
+  let latest: { timestamp: string; time: number } | undefined;
+  const consider = (timestamp: string | undefined): void => {
+    if (timestamp === undefined) return;
+    const time = Date.parse(timestamp);
+    if (Number.isNaN(time) || (latest !== undefined && latest.time >= time)) return;
+    latest = { timestamp, time };
+  };
+  for (const item of snapshot.items) {
+    if (item.kind === 'marker' || item.kind === 'taskref') {
+      consider(item.at);
+      continue;
+    }
+    consider(item.startedAt);
+    consider(item.endedAt);
+    for (const step of item.steps) {
+      consider(step.startedAt);
+      consider(step.endedAt);
+      for (const frame of step.frames) {
+        if (frame.kind !== 'tool') continue;
+        consider(frame.startedAt);
+        consider(frame.endedAt);
+      }
+    }
+  }
+  for (const task of snapshot.tasks) {
+    consider(task.startedAt);
+    consider(task.endedAt);
+  }
+  return latest?.timestamp ?? null;
 }
 
 function timelineFromSnapshot(snapshot: AgentTranscriptSnapshot): SessionTimelineEntry[] {
@@ -1118,6 +1196,20 @@ function pathIsWithin(root: string, path: string): boolean {
 async function openReadOnlyNoFollow(path: string): Promise<FileHandle> {
   const noFollow = process.platform === 'win32' ? 0 : (constants.O_NOFOLLOW ?? 0);
   return open(path, constants.O_RDONLY | noFollow);
+}
+
+function signalAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+async function waitForPoll(milliseconds: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signalAborted(signal)) return;
+  try {
+    await delay(milliseconds, undefined, { signal });
+  } catch (error) {
+    if (signalAborted(signal)) return;
+    throw error;
+  }
 }
 
 async function mapBounded<T, R>(
