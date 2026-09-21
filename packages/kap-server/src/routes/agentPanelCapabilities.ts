@@ -9,8 +9,6 @@ import {
   ISubagentTool,
   ISessionAgentProfileCatalog,
   ISessionToolPolicy,
-  type AgentProfile,
-  type AgentProfileCatalogSnapshot,
   type IAgentScopeHandle,
   type ProfileData,
   type Scope,
@@ -26,12 +24,13 @@ import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interact
 import { ISessionSkillCatalog } from '@kiki/agent-core-v2/session/sessionSkillCatalog/skillCatalog';
 import { ISessionToolPolicyGate } from '@kiki/agent-core-v2/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '@kiki/agent-core-v2/session/subagent/modelConstraints';
+import {
+  resolveBoundPanelProfile,
+  type PanelProfileDefinition,
+  type PanelProfileResolution,
+} from './agentPanelProfileResolution';
 import type { PersistedAgentProfileSnapshot } from './agentProfileSnapshot';
-
-interface PanelProfileResolution {
-  readonly profile?: AgentProfile;
-  readonly sourceId?: string;
-}
+import { projectPersistedAgentThinking } from './agentProfileThinking';
 
 type PanelBindingData = Partial<Pick<ProfileData,
   'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
@@ -75,37 +74,22 @@ export function resolvePanelProfile(
   catalog: ISessionAgentProfileCatalog,
   profileName: string | undefined,
   definitionId: string | undefined,
-  fallback?: AgentProfileCatalogSnapshot,
+  options: Parameters<typeof resolveBoundPanelProfile>[3] = {},
 ): PanelProfileResolution {
-  const inspection = profileName === undefined ? undefined : catalog.inspect(profileName);
-  if (inspection !== undefined) return {
-    profile: inspection.profile,
-    sourceId: panelProfileSourceId(inspection.sourceId),
-  };
-  const current = findSnapshotProfile(catalog.snapshot?.(), profileName, definitionId)
-    ?? (profileName === undefined ? undefined : catalog.get(profileName));
-  if (current !== undefined) {
-    const currentInspection = catalog.inspect(current.name);
-    return {
-      profile: current,
-      sourceId: currentInspection !== undefined && currentInspection.profile.definitionId === current.definitionId
-        ? panelProfileSourceId(currentInspection.sourceId) : 'custom',
-    };
-  }
-  const frozen = findSnapshotProfile(fallback, profileName, definitionId);
-  return { profile: frozen, sourceId: frozen === undefined ? undefined : 'custom' };
+  return resolveBoundPanelProfile(catalog, profileName, definitionId, options);
 }
 
 export async function snapshotPanelCapabilities(
   session: Pick<Scope, 'accessor'>,
   snapshot: PersistedAgentProfileSnapshot,
-  resolution: PanelProfileResolution & { readonly profile: AgentProfile },
+  resolution: PanelProfileResolution & { readonly profile: PanelProfileDefinition },
 ): Promise<Pick<AgentCapabilitiesResponse, 'profile' | 'tools' | 'skills'>> {
   const definition = resolution.profile;
   const persisted = snapshot.source === 'wire';
   const activeToolNames = snapshot.activeToolsKnown ? snapshot.activeToolNames : definition.tools;
   const binding: PanelBindingData = {
     ...snapshot,
+    ...projectPersistedAgentThinking(session, snapshot, definition),
     activeToolNames,
     toolAllowPolicies: persisted ? snapshot.toolAllowPolicies : snapshot.toolAllowPolicies ?? definition.toolAllowPolicies,
     disallowedTools: persisted ? snapshot.disallowedTools : snapshot.disallowedTools ?? definition.disallowedTools,
@@ -113,7 +97,6 @@ export async function snapshotPanelCapabilities(
     subagentPolicy: snapshot.subagentPolicy ?? definition.subagentPolicy,
     serviceTier: snapshot.serviceTier ?? definition.serviceTier,
     profileSource: snapshot.boundProfile?.fileSources === undefined ? 'registered' : 'profile-file',
-    thinkingEffortSource: snapshot.thinkingEffortAdjusted === true ? 'adjusted' : undefined,
   };
   const sessionPolicy = session.accessor.get(ISessionToolPolicy);
   const skills = session.accessor.get(ISessionSkillCatalog);
@@ -161,7 +144,10 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   const catalog = agent.accessor.get(ISessionAgentProfileCatalog);
   await catalog.ready;
   const frozen = agent.accessor.get(ISubagentTool).dispatchCatalog().snapshot;
-  const resolution = resolvePanelProfile(catalog, data.profileName, data.profileDefinitionId, frozen);
+  const resolution = resolvePanelProfile(catalog, data.profileName, data.profileDefinitionId, {
+    frozen,
+    bound: data.boundProfile,
+  });
   const registry = agent.accessor.get(IAgentToolRegistryService).list();
   const policy = agent.accessor.get(IAgentToolPolicyService);
   const contributions = agent.accessor.get(IAgentToolActivationService).capabilities();
@@ -252,7 +238,7 @@ function panelProfile(
 function panelEffortSource(
   scope: Pick<Scope, 'accessor'>,
   data: PanelBindingData,
-  definition: PanelBindingData['boundProfile'] | AgentProfile | undefined,
+  definition: PanelProfileDefinition | undefined,
   effort: string | undefined,
   routeDetached: boolean | undefined,
 ): AgentPanelProfile['effort_source'] {
@@ -285,8 +271,9 @@ function inferRouteDetached(scope: Pick<Scope, 'accessor'>, data: PanelBindingDa
   if (data.routeId === undefined) return false;
   const modelDetached = data.lockedModelAlias !== undefined && data.modelAlias !== undefined
     && modelIdentity(scope, data.lockedModelAlias) !== modelIdentity(scope, data.modelAlias);
-  const effortDetached = data.lockedThinkingEffort !== undefined && data.thinkingLevel !== undefined
-    && normalizedEffort(data.lockedThinkingEffort) !== normalizedEffort(data.thinkingLevel);
+  const effectiveThinking = data.effectiveThinkingLevel ?? data.thinkingLevel;
+  const effortDetached = data.lockedThinkingEffort !== undefined && effectiveThinking !== undefined
+    && normalizedEffort(data.lockedThinkingEffort) !== normalizedEffort(effectiveThinking);
   return modelDetached || effortDetached;
 }
 
@@ -300,28 +287,4 @@ function modelIdentity(scope: Pick<Scope, 'accessor'>, alias: string): string {
 
 function normalizedEffort(effort: string): string {
   return effort.trim().toLowerCase();
-}
-
-function panelProfileSourceId(sourceId: string): 'builtin' | 'user' | 'workspace' | 'custom' {
-  return sourceId === 'builtin' || sourceId === 'user' || sourceId === 'workspace'
-    ? sourceId : 'custom';
-}
-
-function findSnapshotProfile(
-  snapshot: AgentProfileCatalogSnapshot | undefined,
-  profileName: string | undefined,
-  definitionId: string | undefined,
-): AgentProfile | undefined {
-  if (snapshot === undefined) return undefined;
-  if (definitionId !== undefined) {
-    const byId = snapshot.sourceDefinitions.get(definitionId)
-      ?? [...snapshot.publicProfiles.values()].find((candidate) => candidate.definitionId === definitionId)
-      ?? [...(snapshot.resolvableProfiles?.values() ?? [])].find((candidate) => candidate.definitionId === definitionId);
-    if (byId !== undefined) return byId;
-    if (snapshot.defaultProfile?.definitionId === definitionId) return snapshot.defaultProfile;
-  }
-  if (profileName === undefined) return undefined;
-  return snapshot.publicProfiles.get(profileName)
-    ?? snapshot.resolvableProfiles?.get(profileName)
-    ?? (snapshot.defaultProfile?.name === profileName ? snapshot.defaultProfile : undefined);
 }

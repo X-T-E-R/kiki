@@ -123,7 +123,9 @@ export async function agentCapabilities(
       };
       const catalog = session.accessor.get(ISessionAgentProfileCatalog);
       await catalog.ready;
-      const resolution = resolvePanelProfile(catalog, snapshot.profileName, snapshot.profileDefinitionId);
+      const resolution = resolvePanelProfile(catalog, snapshot.profileName, snapshot.profileDefinitionId, {
+        bound: snapshot.boundProfile,
+      });
       if (resolution.profile === undefined) return {
         context: 'live', live: false,
         owner: { profile: snapshot.profileName, agent_id: query.agent_id },
