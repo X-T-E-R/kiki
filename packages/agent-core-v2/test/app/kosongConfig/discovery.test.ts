@@ -152,7 +152,6 @@ describe('refreshProviderModels modelSource short-circuit', () => {
       providers: {
         plain: {
           type: 'openai',
-          baseUrl: 'https://api.example.test/v1',
           apiKey: 'sk-test',
         },
       },
@@ -171,7 +170,7 @@ describe('refreshProviderModels modelSource short-circuit', () => {
         unchanged: [],
         failed: [{
           provider: 'plain',
-          reason: 'provider has no refreshable model source or required credentials',
+          reason: 'provider has no refreshable model source',
         }],
       });
     } finally {

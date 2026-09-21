@@ -1,3 +1,4 @@
+import { readApiErrorMessage } from './api-error';
 import {
   applyCustomRegistryProvider,
   fetchCustomRegistry,
@@ -81,20 +82,29 @@ interface ProviderView {
   readonly env?: unknown;
 }
 
+const PROVIDER_API_KEY_ENV_NAMES: Readonly<Record<string, string>> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  kimi: 'KIMI_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  openai_responses: 'OPENAI_API_KEY',
+};
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 /**
- * Mirrors the runtime credential resolution for `type: 'kimi'` providers
- * (`providerApiKey` in agent-core's provider-manager): the inline `apiKey`
- * wins, with `env.KIMI_API_KEY` as the documented config-file fallback.
+ * Mirrors agent-core's provider credential resolution: the inline `apiKey`
+ * wins, followed by the provider type's declared key in its config `env` bag.
  */
 function resolveProviderApiKey(provider: ProviderView): string | undefined {
-  if (typeof provider.apiKey === 'string' && provider.apiKey.length > 0) {
-    return provider.apiKey;
-  }
-  if (isRecord(provider.env)) {
-    const fromEnv = provider.env['KIMI_API_KEY'];
-    if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
-  }
-  return undefined;
+  const inline = nonEmptyString(provider.apiKey);
+  if (inline !== undefined) return inline;
+  if (!isRecord(provider.env) || provider.type === undefined) return undefined;
+  const envName = PROVIDER_API_KEY_ENV_NAMES[provider.type];
+  return envName === undefined ? undefined : nonEmptyString(provider.env[envName]);
 }
 
 function readProvider(
@@ -125,6 +135,120 @@ function readCustomRegistrySource(provider: ProviderView): CustomRegistrySource 
   if (typeof url !== 'string' || url.length === 0) return undefined;
   if (typeof apiKey !== 'string') return undefined;
   return { kind: 'apiJson', url, apiKey };
+}
+
+interface GenericProviderModel {
+  readonly id: string;
+}
+
+function parseGenericProviderModels(payload: unknown, baseUrl: string): GenericProviderModel[] {
+  if (!isRecord(payload) || !Array.isArray(payload['data'])) {
+    throw new Error(`Unexpected models response for ${baseUrl}.`);
+  }
+  const ids = new Set<string>();
+  for (const item of payload['data']) {
+    if (!isRecord(item)) continue;
+    const id = nonEmptyString(item['id']);
+    if (id !== undefined) ids.add(id);
+  }
+  return [...ids].map((id) => ({ id }));
+}
+
+async function fetchGenericProviderModels(
+  providerId: string,
+  provider: ProviderView,
+  apiKey: string,
+): Promise<GenericProviderModel[]> {
+  const baseUrl = nonEmptyString(provider.baseUrl);
+  if (baseUrl === undefined) return [];
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (provider.type === 'anthropic') {
+    headers['x-api-key'] = apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+  } else {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+  const response = await fetch(`${normalizedBaseUrl}/models`, {
+    headers,
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw new Error(
+      await readApiErrorMessage(
+        response,
+        `Failed to list models for provider "${providerId}" (HTTP ${response.status}).`,
+      ),
+    );
+  }
+  return parseGenericProviderModels(await response.json(), normalizedBaseUrl);
+}
+
+function isGenericProviderSource(provider: ProviderView): boolean {
+  return (
+    provider.oauth === undefined
+    && provider.source === undefined
+    && nonEmptyString(provider.baseUrl) !== undefined
+    && !isManagedKimiCodeBaseUrl(provider.baseUrl)
+  );
+}
+
+type ProviderSourceStatus = 'missing' | 'missing-credentials' | 'ready';
+
+function providerSourceStatus(providerId: string, provider: ProviderView): ProviderSourceStatus {
+  if (isOpenPlatformId(providerId)) {
+    return nonEmptyString(provider.apiKey) === undefined ? 'missing-credentials' : 'ready';
+  }
+  if (
+    providerId === KIMI_CODE_PROVIDER_NAME
+    && provider.type === 'kimi'
+    && provider.oauth !== undefined
+  ) {
+    return 'ready';
+  }
+  if (
+    provider.type === 'kimi'
+    && provider.oauth === undefined
+    && readCustomRegistrySource(provider) === undefined
+    && isManagedKimiCodeBaseUrl(provider.baseUrl)
+  ) {
+    return resolveProviderApiKey(provider) === undefined ? 'missing-credentials' : 'ready';
+  }
+  if (
+    providerId !== KIMI_CODE_PROVIDER_NAME
+    && readCustomRegistrySource(provider) !== undefined
+  ) {
+    return 'ready';
+  }
+  if (isGenericProviderSource(provider)) {
+    return resolveProviderApiKey(provider) === undefined ? 'missing-credentials' : 'ready';
+  }
+  return 'missing';
+}
+
+function applyGenericProviderModels(
+  config: ManagedKimiConfigShape,
+  providerId: string,
+  models: readonly GenericProviderModel[],
+): void {
+  const aliasPrefix = `${providerId}/`;
+  const existingModels = config.models ?? {};
+  const upstreamKeys = new Set(models.map((model) => `${aliasPrefix}${model.id}`));
+  for (const [alias, model] of Object.entries(existingModels)) {
+    if (isRecord(model) && model['provider'] === providerId && !upstreamKeys.has(alias)) {
+      delete existingModels[alias];
+    }
+  }
+  for (const model of models) {
+    const alias = `${aliasPrefix}${model.id}`;
+    const existing = isRecord(existingModels[alias]) ? existingModels[alias] : {};
+    existingModels[alias] = {
+      ...existing,
+      provider: providerId,
+      model: model.id,
+    };
+  }
+  config.models = existingModels;
 }
 
 function customRegistrySourceKey(source: CustomRegistrySource): string {
@@ -357,7 +481,7 @@ function pickDefaultModel(
 
 /**
  * Refresh remote model metadata for the configured providers and persist any
- * changes through the host. Handles four provider kinds, in order:
+ * changes through the host. Handles five provider kinds, in order:
  *
  *  1. Managed Kimi Code (OAuth) — `GET /models` against the runtime endpoint.
  *  2. Open platforms (moonshot-cn, moonshot-ai, …) — platform catalog fetch.
@@ -367,6 +491,8 @@ function pickDefaultModel(
  *     via `GET /models` with the configured API key as Bearer. Only model
  *     aliases are merged; the provider record is user-owned and never
  *     rewritten.
+ *  2.75. Generic API-key providers — `GET {baseUrl}/models` with Anthropic or
+ *     Bearer authentication and an OpenAI-shaped response.
  *  3. Custom registries (models.dev-style, keyed by `provider.source`).
  *
  * Each branch diffs old vs new and only writes when something actually changed
@@ -616,6 +742,66 @@ export async function refreshProviderModels(
   }
 
   // ---------------------------------------------------------------------------
+  // 2.75. Generic API-key providers with an OpenAI-shaped /models endpoint
+  // ---------------------------------------------------------------------------
+  for (const providerId of Object.keys(config.providers)) {
+    if (isOpenPlatformId(providerId)) continue;
+    if (targetId !== undefined && targetId !== providerId) continue;
+    const provider = readProvider(config, providerId);
+    if (provider === undefined || !isGenericProviderSource(provider)) continue;
+    const apiKey = resolveProviderApiKey(provider);
+    if (apiKey === undefined) continue;
+
+    try {
+      const models = await fetchGenericProviderModels(providerId, provider, apiKey);
+      if (models.length === 0) {
+        failed.push({ provider: providerId, reason: 'provider models endpoint returned no models' });
+        continue;
+      }
+
+      const aliasPrefix = `${providerId}/`;
+      const next = structuredClone(config);
+      applyGenericProviderModels(next, providerId, models);
+      const refreshedAliasKeys = providerRefreshAliasKeys(config, next, providerId, aliasPrefix);
+      restoreProviderAliases(
+        next,
+        preserveUserProviderAliases(config, providerId, refreshedAliasKeys),
+      );
+      restoreDefaultSelection(next, config.defaultModel, config.thinking?.enabled);
+      clampDanglingDefault(next);
+      clearDefaultThinkingWhenDefaultRemoved(next, config.defaultModel);
+
+      if (providerModelsEqual(config, next, providerId, refreshedAliasKeys)) {
+        unchanged.push(providerId);
+      } else {
+        const { added, removed } = computeChanges(
+          collectModelIdsForAliases(config, refreshedAliasKeys),
+          collectModelIdsForAliases(next, refreshedAliasKeys),
+        );
+        await host.removeProvider(providerId);
+        config = await host.setConfig({
+          providers: next.providers,
+          models: next.models,
+          defaultModel: next.defaultModel,
+          thinking: next.thinking,
+          defaultProvider: next['defaultProvider'],
+        });
+        changed.push({
+          providerId,
+          providerName: providerId,
+          added,
+          removed,
+        });
+      }
+    } catch (error) {
+      failed.push({
+        provider: providerId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // 3. Custom Registry providers (grouped by URL, with API-key candidates)
   // ---------------------------------------------------------------------------
   const customSources = new Map<
@@ -768,9 +954,17 @@ export async function refreshProviderModels(
     && !unchanged.includes(targetId)
     && !failed.some((entry) => entry.provider === targetId)
   ) {
+    const targetProvider = readProvider(config, targetId);
+    const sourceStatus =
+      targetProvider === undefined ? 'missing' : providerSourceStatus(targetId, targetProvider);
     failed.push({
       provider: targetId,
-      reason: 'provider has no refreshable model source or required credentials',
+      reason:
+        sourceStatus === 'missing-credentials'
+          ? 'provider model source requires an API key'
+          : sourceStatus === 'ready'
+            ? 'provider model source was unavailable or returned no models'
+            : 'provider has no refreshable model source',
     });
   }
 
