@@ -56,26 +56,32 @@ async function render() {
   ));
   await settle();
 }
-async function setSelect(select: HTMLSelectElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
-  await act(async () => {
-    setter.call(select, value);
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+async function choose(value: string) {
+  const trigger = container.querySelector<HTMLButtonElement>('#subagent-default-profile-select')!;
+  await act(async () => { trigger.click(); });
+  const label = value === '__strict__' ? 'Require an explicit profile' : value;
+  const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    .find((candidate) => candidate.querySelector('span span')?.textContent === label);
+  expect(option).not.toBeUndefined();
+  await act(async () => { option!.click(); });
   await settle();
 }
-const select = () => container.querySelector<HTMLSelectElement>('[data-subagent-default-target]')!;
+const target = () => container.querySelector<HTMLElement>('[data-subagent-default-target]')!;
+const trigger = () => container.querySelector<HTMLButtonElement>('#subagent-default-profile-select')!;
 
 describe('default subagent target card', () => {
   it('defaults to the engine fallback profile and lists only enabled subagent profiles', async () => {
     await render();
     expect(container.querySelector('#st-card-subagent-default-target')).not.toBeNull();
-    expect(select().value).toBe('general');
-    expect([...select().options].map((option) => option.textContent)).toEqual([
-      'Require an explicit profile',
-      'explore',
-      'general',
+    expect(target().dataset['value']).toBe('general');
+    expect(trigger().textContent).toContain('general');
+    await act(async () => { trigger().click(); });
+    expect([...container.querySelectorAll('[role="option"]')].map((option) => option.textContent)).toEqual([
+      expect.stringContaining('Require an explicit profile'),
+      expect.stringContaining('explore'),
+      expect.stringContaining('general'),
     ]);
+    expect(container.textContent).toContain('General subagent');
     // Resolved state: source chip, and the pinned model surfaces for explore only.
     expect(container.querySelector('[data-subagent-default-status="resolved"]')).not.toBeNull();
     expect(container.textContent).toContain('Advisory');
@@ -85,10 +91,10 @@ describe('default subagent target card', () => {
   it('saves a named profile immediately on selection and echoes the saved state', async () => {
     client.patchConfig.mockResolvedValue({ subagent: { defaultProfile: 'explore' } });
     await render();
-    await setSelect(select(), 'explore');
+    await choose('explore');
     expect(client.patchConfig).toHaveBeenCalledWith({ subagent: { default_profile: 'explore' } });
-    expect(select().value).toBe('explore');
-    expect(container.textContent).toContain('Default subagent target saved.');
+    expect(target().dataset['value']).toBe('explore');
+    expect(container.textContent).toContain('Default subagent profile saved.');
     expect(container.textContent).toContain('Strict');
     expect(container.textContent).toContain('fixture/model-a');
     expect(container.textContent).not.toContain('pins no model');
@@ -96,16 +102,17 @@ describe('default subagent target card', () => {
 
   it('saves the strict empty string and explains the consequence', async () => {
     await render();
-    await setSelect(select(), '__strict__');
+    await choose('__strict__');
     expect(client.patchConfig).toHaveBeenCalledWith({ subagent: { default_profile: '' } });
-    expect(select().value).toBe('__strict__');
+    expect(target().dataset['value']).toBe('__strict__');
     expect(container.textContent).toContain('fail with an error instead of falling back');
   });
 
   it('keeps an unresolvable configured default visible and warns about it', async () => {
     client.getConfig.mockResolvedValue({ subagent: { defaultProfile: 'ghost' } });
     await render();
-    expect(select().value).toBe('ghost');
+    expect(target().dataset['value']).toBe('ghost');
+    expect(trigger().textContent).toContain('ghost');
     expect(container.querySelector('[data-subagent-default-status="unresolvable"]')?.textContent).toContain('"ghost"');
   });
 
@@ -113,15 +120,16 @@ describe('default subagent target card', () => {
     client.getConfig.mockResolvedValue({ subagent: { defaultProfile: 'paused' } });
     client.listNamedAgentProfiles.mockResolvedValue({ items: [general, explore, mainAgent, disabledSub] });
     await render();
-    expect(select().value).toBe('paused');
+    expect(target().dataset['value']).toBe('paused');
+    expect(trigger().textContent).toContain('paused');
     expect(container.querySelector('[data-subagent-default-status="disabled"]')?.textContent).toContain('"paused"');
   });
 
   it('reports a save failure without changing the selected value', async () => {
     client.patchConfig.mockRejectedValue(new Error('fixture save failure'));
     await render();
-    await setSelect(select(), 'explore');
+    await choose('explore');
     expect(container.textContent).toContain('fixture save failure');
-    expect(select().value).toBe('general');
+    expect(target().dataset['value']).toBe('general');
   });
 });

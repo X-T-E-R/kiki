@@ -117,7 +117,7 @@ const STRINGS = {
     shippedRestore: 'Restore original',
     shippedRestoreTitle: 'Restore the original of built-in profile',
     shippedRestored: 'Original restored and agent profiles reloaded.',
-    subagentDefaultLabel: 'When no subagent profile is specified',
+    subagentDefaultLabel: 'Default profile for AgentRun',
     subagentDefaultStrict: 'Require an explicit profile',
     subagentDefaultStrictHint: 'fail with an error instead of falling back',
     planGateTimeoutInvalid: 'Timeout must be at least 5 seconds.',
@@ -299,7 +299,7 @@ const STRINGS = {
     shippedRestore: '恢复原版',
     shippedRestoreTitle: '恢复内置 profile',
     shippedRestored: '已恢复原版并重新加载 agent profile。',
-    subagentDefaultLabel: '未指定子代理 profile 时',
+    subagentDefaultLabel: 'AgentRun 的默认 profile',
     subagentDefaultStrict: '要求显式指定',
     subagentDefaultStrictHint: '未指定 profile 的派发将报错',
     planGateTimeoutInvalid: '超时时间最短为 5 秒。',
@@ -2034,12 +2034,23 @@ async function scenarioSettingsShipped() {
   // (general); strict mode and any loaded subagent profile are the options.
   await page.waitForSelector('#st-card-subagent-default-target', { timeout: 10_000 });
   const targetSelect = page.locator('[data-subagent-default-target]');
+  const targetTrigger = page.locator('#subagent-default-profile-select');
   await targetSelect.waitFor({ timeout: 5000 });
   await page.waitForFunction(
-    () => document.querySelector('[data-subagent-default-target]')?.value === 'general',
+    () => document.querySelector('[data-subagent-default-target]')?.getAttribute('data-value') === 'general',
     undefined,
     { timeout: 5000 },
   );
+  await targetTrigger.click();
+  await page.locator('[role="option"]', { hasText: 'general' }).waitFor({ timeout: 5000 });
+  await page.waitForTimeout(200);
+  await shot('settings-subagents-default-profile');
+  await page.keyboard.press('Escape');
+  await resizeViewport(390);
+  const mobileOverflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  if (mobileOverflows) throw new Error('subagent default profile setting overflows the mobile viewport');
+  await shot('settings-subagents-default-profile-mobile');
+  await resizeViewport(1440);
   // Managed-copy status: `general` was edited on disk (custom → restore
   // offered), `plan` was removed (tombstone row).
   const generalRow = page.locator('#st-card-subagent-profiles [data-agent-profile="general"]');
@@ -2071,14 +2082,23 @@ async function scenarioSettingsShipped() {
 
   // The default target saves on selection: strict mode stores the empty
   // string and explains itself inline.
-  await page.locator('#st-card-subagent-default-target').scrollIntoViewIfNeeded();
-  await targetSelect.selectOption('__strict__');
+  await page.locator('#st-card-subagent-default-target').evaluate((element) => {
+    element.scrollIntoView({ block: 'start' });
+  });
+  await targetTrigger.click();
+  await page.getByRole('option', { name: S.subagentDefaultStrict }).click();
   await page.getByText(S.subagentDefaultStrictHint, { exact: false }).waitFor({ timeout: 5000 });
   await page.waitForFunction(
-    () => document.querySelector('[data-subagent-default-target]')?.value === '__strict__',
+    () => document.querySelector('[data-subagent-default-target]')?.getAttribute('data-value') === '__strict__',
     undefined,
     { timeout: 5000 },
   );
+  await page.evaluate(() => {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    const pane = document.querySelector('[data-settings-scroll]');
+    if (pane instanceof HTMLElement) pane.scrollTop = 0;
+  });
   await page.waitForTimeout(200);
   await shot('settings-subagents-default-strict');
 }

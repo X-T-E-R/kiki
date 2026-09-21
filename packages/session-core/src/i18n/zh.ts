@@ -2166,17 +2166,17 @@ export const zh: Record<I18nKey, string> = {
   'st.shipped.restoreModelPin':
     '当前副本固定了模型 {model}；原版没有固定模型，恢复后，未显式指定 model_alias 的派发将改用默认模型。',
   'st.shipped.restored': '已恢复原版并重新加载 agent profile。',
-  'st.subagentDefault.title': '默认子代理目标',
+  'st.subagentDefault.title': '默认子代理 profile',
   'st.subagentDefault.hint':
-    '子代理派发未指定 profile 时使用的服务器级默认值。选择后立即保存，对该服务器上的所有会话生效。',
-  'st.subagentDefault.label': '未指定子代理 profile 时',
+    'AgentRun 未显式指定 profile 时会使用这个服务器级默认值。选择后立即保存，对该服务器上的所有会话生效。',
+  'st.subagentDefault.label': 'AgentRun 的默认 profile',
   'st.subagentDefault.strict': '要求显式指定',
   'st.subagentDefault.strictHint': '未指定 profile 的派发将报错，不再回退到默认值。',
   'st.subagentDefault.unresolvable':
     '默认值「{name}」不在已加载的 profile 中；未显式指定 profile 的派发无法解析它。',
   'st.subagentDefault.disabledTarget': '「{name}」已停用；停用期间不会作为子智能体被调用。',
   'st.subagentDefault.noModelPin': '该 profile 未固定模型；未显式指定 model_alias 的派发将使用默认模型。',
-  'st.subagentDefault.saved': '默认子代理目标已保存。',
+  'st.subagentDefault.saved': '默认子代理 profile 已保存。',
   'st.sidecar.subagentTimeout': '子代理超时',
   'st.sidecar.catalogInterval': '目录刷新间隔',
   'st.sidecar.builtinSkills': '包含内置产品技能',

@@ -19,7 +19,8 @@ import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { MsUnitInput } from '../ProviderFields';
-import { SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
+import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
+import { SECONDARY_BUTTON } from '../ui';
 import { NamedAgentProfilesCard, SubagentGovernanceCard } from './AgentsSection';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
@@ -58,10 +59,9 @@ export function SubagentDefaultTargetCard() {
     [profilesQuery.data],
   );
   // Selectable targets: loaded, enabled subagent profiles. A configured value
-  // that is missing or disabled stays visible as an option so the select
-  // never lies about what is saved. Names dedupe: the config value is a bare
-  // profile name, and same-named rows (a built-in plus its overriding file)
-  // are one dispatch target.
+  // that is missing or disabled stays visible so the combobox never lies about
+  // what is saved. Names dedupe: the config value is a bare profile name, and
+  // same-named rows (a built-in plus its overriding file) are one dispatch target.
   const candidates = useMemo(() => {
     const seen = new Set<string>();
     return profiles
@@ -81,7 +81,41 @@ export function SubagentDefaultTargetCard() {
     : current.mode === 'strict'
       ? STRICT_TARGET_VALUE
       : current.name;
-  const optionNames = new Set(candidates.map((profile) => profile.name));
+  const options = useMemo<readonly SearchableSelectOption[]>(() => {
+    const profileOptions: SearchableSelectOption[] = candidates.map((profile) => ({
+      value: profile.name,
+      label: profile.name,
+      description: profile.description ?? profile.when_to_use,
+      hint: profile.pinned_model_alias,
+      badges: [
+        { label: profile.source },
+        ...(profile.subagent_policy === undefined
+          ? []
+          : [{ label: t(`agentPanel.subagentPolicy.${profile.subagent_policy}`) }]),
+      ],
+    }));
+    const values = new Set(profileOptions.map((option) => option.value));
+    if (current?.mode === 'profile' && !values.has(current.name)) {
+      profileOptions.push({
+        value: current.name,
+        label: current.name,
+        description: selectedProfile?.disabled
+          ? t('st.subagentDefault.disabledTarget', { name: current.name })
+          : profilesQuery.data === undefined
+            ? undefined
+            : t('st.subagentDefault.unresolvable', { name: current.name }),
+        badges: selectedProfile === undefined ? undefined : [{ label: selectedProfile.source }],
+      });
+    }
+    return [
+      {
+        value: STRICT_TARGET_VALUE,
+        label: t('st.subagentDefault.strict'),
+        description: t('st.subagentDefault.strictHint'),
+      },
+      ...profileOptions,
+    ];
+  }, [candidates, current, profilesQuery.data, selectedProfile, t]);
 
   const applyTarget = async (value: string) => {
     const target: SubagentDefaultTarget = value === STRICT_TARGET_VALUE
@@ -116,23 +150,18 @@ export function SubagentDefaultTargetCard() {
       <div className="space-y-3">
         <Hint>{t('st.subagentDefault.hint')}</Hint>
         <fieldset disabled={saving || configQuery.isPending} className="space-y-3 disabled:opacity-60">
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.subagentDefault.label')}
-            <select
-              data-subagent-default-target
-              className={`${SMALL_INPUT} mt-1 block`}
+          <div data-subagent-default-target data-value={selectValue}>
+            <p className="text-[11px] font-medium text-ink-soft">{t('st.subagentDefault.label')}</p>
+            <SearchableSelect
+              id="subagent-default-profile-select"
+              options={options}
               value={selectValue}
-              onChange={(event) => { void applyTarget(event.target.value); }}
-            >
-              {current === undefined ? <option value="">{t('st.namedAgents.loading')}</option> : null}
-              <option value={STRICT_TARGET_VALUE}>{t('st.subagentDefault.strict')}</option>
-              {candidates.map((profile) => (
-                <option key={profile.name} value={profile.name}>{profile.name}</option>
-              ))}
-              {current?.mode === 'profile' && !optionNames.has(current.name) ? (
-                <option value={current.name}>{current.name}</option>
-              ) : null}
-            </select>
-          </label>
+              onChange={(value) => { void applyTarget(value); }}
+              ariaLabel={t('st.subagentDefault.label')}
+              emptyText={t('st.namedAgents.loading')}
+              buttonClassName="mt-1 flex w-full max-w-sm items-center justify-between gap-2 rounded-md border border-hairline bg-paper px-2.5 py-1.5 text-left text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
+            />
+          </div>
         </fieldset>
         {current?.mode === 'strict' ? (
           <Hint>{t('st.subagentDefault.strictHint')}</Hint>

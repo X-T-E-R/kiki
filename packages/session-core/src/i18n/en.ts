@@ -2199,10 +2199,10 @@ export const en = {
   'st.shipped.restoreModelPin':
     'The current copy pins model {model}; the original has no pin, so after the restore dispatches without an explicit model_alias use the default model instead.',
   'st.shipped.restored': 'Original restored and agent profiles reloaded.',
-  'st.subagentDefault.title': 'Default subagent target',
+  'st.subagentDefault.title': 'Default subagent profile',
   'st.subagentDefault.hint':
-    'Server-wide default applied when a subagent dispatch does not name a profile. Saved on selection; affects every session on this server.',
-  'st.subagentDefault.label': 'When no subagent profile is specified',
+    'AgentRun uses this server-wide default when it does not explicitly specify a profile. Saved on selection; affects every session on this server.',
+  'st.subagentDefault.label': 'Default profile for AgentRun',
   'st.subagentDefault.strict': 'Require an explicit profile',
   'st.subagentDefault.strictHint':
     'Dispatches that omit the profile fail with an error instead of falling back to a default.',
@@ -2212,7 +2212,7 @@ export const en = {
     '"{name}" is disabled; while disabled it is not invoked as a subagent.',
   'st.subagentDefault.noModelPin':
     'This profile pins no model; dispatches without an explicit model_alias use the default model.',
-  'st.subagentDefault.saved': 'Default subagent target saved.',
+  'st.subagentDefault.saved': 'Default subagent profile saved.',
   'st.sidecar.subagentTimeout': 'Subagent timeout',
   'st.sidecar.catalogInterval': 'Catalog refresh interval',
   'st.sidecar.builtinSkills': 'Include built-in product skills',
