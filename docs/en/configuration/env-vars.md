@@ -2,12 +2,12 @@
 
 Kiki uses environment variables to control a small number of runtime behaviors — relocating the data directory and temporarily switching models without touching the config file.
 
-Variable names come with two prefixes, `KIKI_*` and `KIMI_*` (including `KIMI_CODE_*`), inherited from Kiki's upstream project. There is no blanket mapping between the prefixes: some historical variables gained `KIKI_*` names, while others — such as `KIMI_CODE_BASE_URL` and `KIMI_CODE_OAUTH_HOST` — remain effective under their original names. Treat the exact names listed on this page as authoritative.
+Kiki-owned runtime controls use the `KIKI_*` prefix. Provider credential key names such as `KIMI_API_KEY` and `KIMI_BASE_URL` remain upstream-facing and are documented separately. Treat the exact names listed on this page as authoritative.
 
 ::: warning Important: API keys are not configured here
 Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in `config.toml` under `[providers.<name>]` or the `[providers.<name>.env]` sub-table.
 
-The only exception is the `KIMI_MODEL_*` family, which is an explicit channel that *does* read credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-kimi-model).
+The only exception is the `KIKI_MODEL_*` family, which is an explicit channel that *does* read credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-kiki-model).
 
 For background, see [Config overrides: provider credentials](./overrides.md#provider-credentials).
 :::
@@ -26,9 +26,9 @@ export KIKI_HOME="/path/to/custom/kiki"
 
 For the complete data directory structure, see [Data locations](./data-locations.md).
 
-### `KIMI_MODEL_*` family
+### `KIKI_MODEL_*` family
 
-Switch models temporarily without modifying `config.toml` — when `KIMI_MODEL_NAME` is set, the CLI synthesizes a temporary provider in memory; the change does not persist after restart. See [Define a model from environment variables](#define-a-model-from-environment-variables-kimi-model).
+Switch models temporarily without modifying `config.toml` — when `KIKI_MODEL_NAME` is set, the CLI synthesizes a temporary provider in memory; the change does not persist after restart. See [Define a model from environment variables](#define-a-model-from-environment-variables-kiki-model).
 
 ## Provider credential key names (written in config.toml)
 
@@ -71,24 +71,24 @@ This group of variables redirects OAuth authentication and managed service endpo
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `KIMI_CODE_OAUTH_HOST` | OAuth auth host; highest priority | Falls back to `KIMI_OAUTH_HOST` when unset |
-| `KIMI_OAUTH_HOST` | OAuth auth host; fallback for `KIMI_CODE_OAUTH_HOST` | Falls back to `https://auth.kimi.com` when unset |
-| `KIMI_CODE_BASE_URL` | Managed API base URL used after OAuth login | `https://api.kimi.com/coding/v1` |
+| `KIKI_CODE_OAUTH_HOST` | OAuth auth host; highest priority | Falls back to `KIKI_OAUTH_HOST` when unset |
+| `KIKI_OAUTH_HOST` | OAuth auth host; fallback for `KIKI_CODE_OAUTH_HOST` | Falls back to `https://auth.kimi.com` when unset |
+| `KIKI_CODE_BASE_URL` | Managed API base URL used after OAuth login | `https://api.kimi.com/coding/v1` |
 
 ::: warning
-`KIMI_CODE_BASE_URL` (OAuth-managed service, targeting `kimi.com`) and `KIMI_BASE_URL` (direct API key connection, targeting `moonshot.ai`) are two distinct variables. Use each one in its appropriate context.
+`KIKI_CODE_BASE_URL` (OAuth-managed service, targeting `kimi.com`) and `KIMI_BASE_URL` (direct API key connection, targeting `moonshot.ai`) are two distinct variables. Use each one in its appropriate context.
 :::
 
-## Define a model from environment variables (`KIMI_MODEL_*`)
+## Define a model from environment variables (`KIKI_MODEL_*`)
 
-Want to switch models for testing without touching `config.toml`? When `KIMI_MODEL_NAME` is set, the CLI synthesizes a temporary provider and model alias from the `KIMI_MODEL_*` variables in memory — nothing is written back to the config file. These variables take priority over `default_model` in `config.toml`, but the `-m <alias>` option at startup still has the highest priority.
+Want to switch models for testing without touching `config.toml`? When `KIKI_MODEL_NAME` is set, the CLI synthesizes a temporary provider and model alias from the `KIKI_MODEL_*` variables in memory — nothing is written back to the config file. These variables take priority over `default_model` in `config.toml`, but the `-m <alias>` option at startup still has the highest priority.
 
 ```sh
-export KIMI_MODEL_NAME="kimi-for-coding"
-export KIMI_MODEL_API_KEY="YOUR_API_KEY"
-export KIMI_MODEL_BASE_URL="https://api.example.com/v1"
-export KIMI_MODEL_MAX_CONTEXT_SIZE="262144"
-export KIMI_MODEL_CAPABILITIES="image_in,thinking"
+export KIKI_MODEL_NAME="kimi-for-coding"
+export KIKI_MODEL_API_KEY="YOUR_API_KEY"
+export KIKI_MODEL_BASE_URL="https://api.example.com/v1"
+export KIKI_MODEL_MAX_CONTEXT_SIZE="262144"
+export KIKI_MODEL_CAPABILITIES="image_in,thinking"
 kiki
 ```
 
@@ -96,21 +96,21 @@ Complete variable list:
 
 | Variable | Required | Purpose | Default |
 | --- | --- | --- | --- |
-| `KIMI_MODEL_NAME` | Yes (also the enable switch) | Model id sent to the API | — |
-| `KIMI_MODEL_API_KEY` | Yes | API key | — |
-| `KIMI_MODEL_PROVIDER_TYPE` | No | Provider type: `kimi`, `anthropic`, `openai` | `kimi` |
-| `KIMI_MODEL_BASE_URL` | No | API base URL | Each type has its own default |
-| `KIMI_MODEL_MAX_CONTEXT_SIZE` | No | Maximum context length (tokens) | `262144` (256 K) |
-| `KIMI_MODEL_CAPABILITIES` | No | Comma-separated capability tags, unioned with auto-detected capabilities | `image_in,thinking` |
-| `KIMI_MODEL_DISPLAY_NAME` | No | Name shown in `/model` | Falls back to `KIMI_MODEL_NAME` |
-| `KIMI_MODEL_MAX_OUTPUT_SIZE` | No | Per-request output cap (`anthropic` only); when set, overrides the built-in Claude ceiling | Model default |
-| `KIMI_MODEL_REASONING_KEY` | No | Reasoning field name override (`openai` only) | Auto-detected |
-| `KIMI_MODEL_THINKING_EFFORT` | No | Thinking effort for the synthesized temporary model: `low`/`medium`/`high`/`xhigh`/`max`; only read when `KIMI_MODEL_NAME` is set (distinct from the same-named runtime switch below) | — |
-| `KIMI_MODEL_ADAPTIVE_THINKING` | No | Force adaptive thinking on or off (`anthropic` only) | Inferred from model name |
+| `KIKI_MODEL_NAME` | Yes (also the enable switch) | Model id sent to the API | — |
+| `KIKI_MODEL_API_KEY` | Yes | API key | — |
+| `KIKI_MODEL_PROVIDER_TYPE` | No | Provider type: `kimi`, `anthropic`, `openai` | `kimi` |
+| `KIKI_MODEL_BASE_URL` | No | API base URL | Each type has its own default |
+| `KIKI_MODEL_MAX_CONTEXT_SIZE` | No | Maximum context length (tokens) | `262144` (256 K) |
+| `KIKI_MODEL_CAPABILITIES` | No | Comma-separated capability tags, unioned with auto-detected capabilities | `image_in,thinking` |
+| `KIKI_MODEL_DISPLAY_NAME` | No | Name shown in `/model` | Falls back to `KIKI_MODEL_NAME` |
+| `KIKI_MODEL_MAX_OUTPUT_SIZE` | No | Per-request output cap (`anthropic` only); when set, overrides the built-in Claude ceiling | Model default |
+| `KIKI_MODEL_REASONING_KEY` | No | Reasoning field name override (`openai` only) | Auto-detected |
+| `KIKI_MODEL_THINKING_EFFORT` | No | Thinking effort for the synthesized temporary model: `low`/`medium`/`high`/`xhigh`/`max`; only read when `KIKI_MODEL_NAME` is set (distinct from the same-named runtime switch below) | — |
+| `KIKI_MODEL_ADAPTIVE_THINKING` | No | Force adaptive thinking on or off (`anthropic` only) | Inferred from model name |
 
-If `KIMI_MODEL_NAME` is set but a required variable is missing, startup fails immediately with a clear error message.
+If `KIKI_MODEL_NAME` is set but a required variable is missing, startup fails immediately with a clear error message.
 
-Note that `KIMI_MODEL_THINKING_EFFORT` is read in two independent places: here, to set the temporary model's effort when `KIMI_MODEL_NAME` is set; and as a global runtime switch (below) that forces the effort on the wire for every `kimi`-provider request, regardless of `KIMI_MODEL_NAME`.
+Note that `KIKI_MODEL_THINKING_EFFORT` is read in two independent places: here, to set the temporary model's effort when `KIKI_MODEL_NAME` is set; and as a global runtime switch (below) that forces the effort on the wire for every `kimi`-provider request, regardless of `KIKI_MODEL_NAME`.
 
 ## Runtime switches
 
@@ -121,10 +121,10 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `KIKI_PASSWORD` | Set a parallel auth credential for the `kiki web` local server, valid alongside the bearer token; recommended when binding the server beyond loopback — see [Local server and API](../server/local-server.md#authentication) | Any non-empty string; when unset, only the token is valid |
 | `KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT` | Whether to keep background tasks when the session closes; takes higher priority than `config.toml`. The default is to stop them on exit | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIKI_BACKGROUND_MAX_RUNNING_TASKS` | Cap on concurrently running background tasks; takes higher priority than `[background] max_running_tasks` in `config.toml` (unset means no cap) | Positive integer; invalid values are ignored |
-| `KIMI_IMAGE_MAX_EDGE_PX` | Longest-edge ceiling (px) for image compression; takes higher priority than `[image] max_edge_px` in `config.toml` (default `2000`) | Positive integer; invalid values are ignored |
-| `KIMI_IMAGE_READ_BYTE_BUDGET` | Per-image byte budget for model-initiated image reads (`ReadMediaFile` default reads); takes higher priority than `[image] read_byte_budget` in `config.toml` (default `262144`, i.e. 256 KB) | Positive integer; invalid values are ignored |
+| `KIKI_IMAGE_MAX_EDGE_PX` | Longest-edge ceiling (px) for image compression; takes higher priority than `[image] max_edge_px` in `config.toml` (default `2000`) | Positive integer; invalid values are ignored |
+| `KIKI_IMAGE_READ_BYTE_BUDGET` | Per-image byte budget for model-initiated image reads (`ReadMediaFile` default reads); takes higher priority than `[image] read_byte_budget` in `config.toml` (default `262144`, i.e. 256 KB) | Positive integer; invalid values are ignored |
 | `KIKI_PLUGIN_MARKETPLACE_URL` | Set the plugin marketplace JSON loaded by `/plugins`; takes priority over `[plugins] marketplace_url` | `http://` or `https://` URL, `file://` URL, or local path; unset or blank does not load a remote catalog |
-| `KIMI_SUBAGENT_TIMEOUT_MS` | Maximum wall-clock time (ms) a single subagent (`AgentRun`) may run; takes higher priority than `[subagent] timeout_ms` in `config.toml` (default `7200000`, i.e. 2 hours) | Positive integer; invalid values fall back to the config or default |
+| `KIKI_SUBAGENT_TIMEOUT_MS` | Maximum wall-clock time (ms) a single subagent (`AgentRun`) may run; takes higher priority than `[subagent] timeout_ms` in `config.toml` (default `7200000`, i.e. 2 hours) | Positive integer; invalid values fall back to the config or default |
 | `KIKI_IDENTITY_NAME` | Display name the agent calls itself in the system prompt; takes higher priority than `[identity] name` in `config.toml` and is never written back to it | Any non-empty string; blank values read as unset |
 | `KIKI_IDENTITY_SLUG` | Protocol identifier for the `User-Agent` product token sent to third-party providers and the MCP client name; takes higher priority than `[identity] slug`. Derived from the name when unset | Any non-empty string; normalized to lowercase with non-alphanumeric runs folded to `-` |
 | `KIKI_BUILTIN_PRODUCT_SKILLS` | Whether the built-in skills documenting Kiki itself are offered to the model; takes higher priority than `builtin_product_skills` in `config.toml` (default enabled) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
@@ -135,10 +135,10 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `KIKI_MCP_CONFIG_READ_ONLY` | Read-only marker for the injected catalog; must be `1` — the server never writes back to the injected config or profiles | `1` |
 | `KIKI_MCP_STARTUP_TIMEOUT_MS` | Global default connection timeout (ms) for all MCP servers; takes higher priority than `[mcp] startup_timeout_ms` in `config.toml`, but a per-server `startupTimeoutMs` in `mcp.json` still wins (default `30000`) | Integer from `1` to `2147483647`; invalid values are ignored |
 | `KIKI_MCP_TOOL_TIMEOUT_MS` | Global default single tool-call timeout (ms) for all MCP servers; takes higher priority than `[mcp] tool_timeout_ms` in `config.toml`, but a per-server `toolTimeoutMs` in `mcp.json` still wins (default `60000`) | Integer from `1` to `2147483647`; invalid values are ignored |
-| `KIMI_LOOP_MAX_STEPS_PER_TURN` | Maximum Agent steps per turn; takes higher priority than `[loop_control] max_steps_per_turn` in `config.toml` (unset or `0` means unlimited) | Non-negative integer; invalid values are ignored |
-| `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` | Maximum total attempts for a failing step (including the initial attempt); takes higher priority than `[loop_control] max_attempts_per_step` in `config.toml` (default `5`) | Non-negative integer; invalid values are ignored |
+| `KIKI_LOOP_MAX_STEPS_PER_TURN` | Maximum Agent steps per turn; takes higher priority than `[loop_control] max_steps_per_turn` in `config.toml` (unset or `0` means unlimited) | Non-negative integer; invalid values are ignored |
+| `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` | Maximum total attempts for a failing step (including the initial attempt); takes higher priority than `[loop_control] max_attempts_per_step` in `config.toml` (default `5`) | Non-negative integer; invalid values are ignored |
 | `KIKI_INFINITE_RETRY` | Retry every failed LLM request indefinitely — turn steps and background operations such as compaction alike — instead of failing the task; waits use exponential backoff (capped at 32 s) and honor the server's `Retry-After` header, and aborting still cancels immediately. Intended for long-running unattended evaluations against endpoints that may fail temporarily | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
-| `KIMI_TOKEN_COUNTING_STRATEGY` | Which context token count is reported externally (the context-size display); takes higher priority than `[token_counting] strategy` in `config.toml` (default `measured+estimated`) | `measured+estimated`, `measured`, `estimated` (case-insensitive); invalid values are ignored |
+| `KIKI_TOKEN_COUNTING_STRATEGY` | Which context token count is reported externally (the context-size display); takes higher priority than `[token_counting] strategy` in `config.toml` (default `measured+estimated`) | `measured+estimated`, `measured`, `estimated` (case-insensitive); invalid values are ignored |
 | `NB_SEARCH_CONFIG` | Path to a canonical JSON configuration for the built-in search and retrieval module, loaded before Kiki's `[nb_search]` patch | File path |
 | `NB_SEARCH_HOME` | Data directory for the built-in search and retrieval module | Directory path |
 | `NB_SEARCH_JOBS_ROOT` | Durable job directory for the built-in search and retrieval module | Directory path |
@@ -149,13 +149,13 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `NB_SEARCH_JINA_API_KEY` | Optional credential used by the built-in `jina-reader.default` fetch provider instance | Non-blank string |
 | `KIKI_EXPERIMENTAL_AUTO_SESSION_TITLE` | Whether an AI session title is generated automatically once the first turn completes; takes precedence over the `[experimental]` entry and `KIKI_EXPERIMENTAL_FLAG` (default on) — see [`session_title`](./config-files.md#session-title) | Enable: `1`/`true`/`yes`/`on`; disable: `0`/`false`/`no`/`off` |
 | `KIKI_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process; a per-feature `KIKI_EXPERIMENTAL_<NAME>` variable or an explicit entry in the `[experimental]` section of `config.toml` takes precedence over it | `1`, `true`, `yes`, `on` |
-| `KIMI_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
-| `KIMI_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `kimi` provider only | Positive integer; `0` or negative disables clamping |
-| `KIMI_MODEL_TEMPERATURE` | Sampling temperature for every request; applies to the `kimi` provider only (global — independent of `KIMI_MODEL_NAME`) | Number, e.g. `0.3` |
-| `KIMI_MODEL_TOP_P` | Nucleus-sampling `top_p` for every request; applies to the `kimi` provider only (global) | Number, e.g. `0.95` |
-| `KIMI_MODEL_THINKING_EFFORT` | Force a specific thinking effort on the wire (`thinking.effort`), bypassing the model's declared `support_efforts`; applies to the `kimi` provider only, and only while Thinking is on | An effort value, e.g. `max` |
-| `KIMI_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Kimi's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
-| `KIMI_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
+| `KIKI_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
+| `KIKI_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `kimi` provider only | Positive integer; `0` or negative disables clamping |
+| `KIKI_MODEL_TEMPERATURE` | Sampling temperature for every request; applies to the `kimi` provider only (global — independent of `KIKI_MODEL_NAME`) | Number, e.g. `0.3` |
+| `KIKI_MODEL_TOP_P` | Nucleus-sampling `top_p` for every request; applies to the `kimi` provider only (global) | Number, e.g. `0.95` |
+| `KIKI_MODEL_THINKING_EFFORT` | Force a specific thinking effort on the wire (`thinking.effort`), bypassing the model's declared `support_efforts`; applies to the `kimi` provider only, and only while Thinking is on | An effort value, e.g. `max` |
+| `KIKI_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Kimi's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
+| `KIKI_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
 
 Subagent concurrency has no environment-variable override. Configure [`[subagent]`](./config-files.md#subagent) with `max_direct_children` and `max_total_subagents`; their defaults are `16` and `0` (unlimited), respectively.
 
@@ -167,11 +167,11 @@ These variables control log level and file rotation, read once at process startu
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `KIMI_LOG_LEVEL` | Log level: `off`, `error`, `warn`, `info`, `debug` | `info` |
-| `KIMI_LOG_GLOBAL_MAX_BYTES` | Maximum bytes per global log file | `6291456` (6 MB) |
-| `KIMI_LOG_GLOBAL_FILES` | Number of global log files to retain | `5` |
-| `KIMI_LOG_SESSION_MAX_BYTES` | Maximum bytes per session log file | `5242880` (5 MB) |
-| `KIMI_LOG_SESSION_FILES` | Number of session log files to retain | `3` |
+| `KIKI_LOG_LEVEL` | Log level: `off`, `error`, `warn`, `info`, `debug` | `info` |
+| `KIKI_LOG_GLOBAL_MAX_BYTES` | Maximum bytes per global log file | `6291456` (6 MB) |
+| `KIKI_LOG_GLOBAL_FILES` | Number of global log files to retain | `5` |
+| `KIKI_LOG_SESSION_MAX_BYTES` | Maximum bytes per session log file | `5242880` (5 MB) |
+| `KIKI_LOG_SESSION_FILES` | Number of session log files to retain | `3` |
 
 ## System environment variables
 

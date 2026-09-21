@@ -237,7 +237,7 @@ display_name = "Kimi for Coding (custom)"
 
 `[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_input_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, `default_effort`, `off_effort`, `service_tier`, `request_params`, `context_budget`, and `max_completion_tokens`. It does not accept identity / routing fields: `provider`, `model`, `protocol`, `beta_api`, and `base_url`. For these added fields, resolve the model alias configuration, including its `overrides`, first; then apply model alias → top-level profile → matching `model_profiles` entry. Merge `request_params` by key and use the last explicit `service_tier`; `context_budget` and `max_completion_tokens` are limits, so take the smallest declared value across layers within the model's capacity and output cap. Omitting a limit adds no restriction.
 
-You can also switch models temporarily without touching the config file — by setting `KIMI_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi-model).
+You can also switch models temporarily without touching the config file — by setting `KIKI_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi-model).
 
 ### Model cognition
 
@@ -319,7 +319,7 @@ the global [`[thinking]`](#thinking) config.
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | Whether Thinking is enabled by default for new sessions; set to `false` to force Thinking off |
 | `effort` | `string` | — | Thinking effort level (for example `low`, `medium`, `high`, `xhigh`, `max`). Non-Kimi providers do not remap concrete effort values when the upstream protocol accepts them; if the provider rejects the value, choose one that the model supports. Protocols that expose only levels or token budgets still require format conversion. Kimi models with `support_efforts` fall back to their model default when this configured value is not listed; Kimi models without that list treat every enabled value as boolean `on` |
-| `keep` | `string` | `"all"` | Preserved Thinking passthrough. On `kimi` it is sent as `thinking.keep`; on `anthropic` (Claude and Kimi's Anthropic-compatible mode) it is sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API; an off-value disables keep and returns to the standard endpoint). `"all"` preserves prior turns' reasoning (`reasoning_content` / Anthropic thinking blocks); set to an off-value (`false`/`0`/`no`/`off`/`none`/`null`) to disable. Overridden by `KIMI_MODEL_THINKING_KEEP`; only injected while Thinking is on |
+| `keep` | `string` | `"all"` | Preserved Thinking passthrough. On `kimi` it is sent as `thinking.keep`; on `anthropic` (Claude and Kimi's Anthropic-compatible mode) it is sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API; an off-value disables keep and returns to the standard endpoint). `"all"` preserves prior turns' reasoning (`reasoning_content` / Anthropic thinking blocks); set to an off-value (`false`/`0`/`no`/`off`/`none`/`null`) to disable. Overridden by `KIKI_MODEL_THINKING_KEEP`; only injected while Thinking is on |
 
 ### Deprecated fields
 
@@ -339,7 +339,7 @@ the global [`[thinking]`](#thinking) config.
 | `reserved_context_size` | `integer` | — | Number of tokens reserved for model output; automatic compaction is triggered when the remaining context window falls below this value |
 | `compaction_max_attempts` | `integer` | `5` | Maximum total requests for a failing compaction, including the initial attempt; every recovery path (retry backoff, context-overflow shrink, empty or truncated shrink) draws on the same budget |
 
-`max_steps_per_turn` can be overridden by the `KIMI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file.
+`max_steps_per_turn` can be overridden by the `KIKI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file.
 
 Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and all HTTP 500–599 server errors. A 429 caused by an exhausted quota or insufficient account balance is not retried and fails immediately, since it cannot succeed until the account is recharged.
 
@@ -385,7 +385,7 @@ retry = false
 | --- | --- | --- | --- |
 | `strategy` | `"measured+estimated" \| "measured" \| "estimated"` | `"measured+estimated"` | `measured+estimated` reports the live size — the provider-reported usage of each exchange plus an estimate of the not-yet-measured tail — floored by the last measured total; `measured` reports provider usage alone, so the display only moves when an exchange completes; `estimated` reports a pure estimate with provider usage ignored — the fallback for providers that do not report usage or report it unreliably |
 
-`strategy` can be overridden by the `KIMI_TOKEN_COUNTING_STRATEGY` environment variable, which takes higher priority than `config.toml`.
+`strategy` can be overridden by the `KIKI_TOKEN_COUNTING_STRATEGY` environment variable, which takes higher priority than `config.toml`.
 
 ## `background`
 
@@ -418,7 +418,7 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 | `max_total_subagents` | `integer` | `0` | Maximum simultaneous dispatched subagent runs throughout one session tree, including grandchildren and deeper descendants but not main; `0` disables this limit |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`AgentRun`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kiki -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
-`timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `deny_models` or the two concurrency limits.
+`timeout_ms` can be overridden by the `KIKI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `deny_models` or the two concurrency limits.
 
 The limits are global configuration defaults, but counts are isolated to each session. Idle and historical children do not count. A running descendant still counts after its parent finishes; resuming a child takes an execution slot without creating another agent. Admission reserves capacity before asynchronous startup and releases it after startup failure or execution completion. Exceeding either limit immediately returns `dispatch.limit_exceeded` with `layer`, `current`, `limit`, and `owner` (REST business code `42904`); it does not queue work or stop another agent. Wait for an active run to finish or explicitly raise the relevant configuration limit. Automatic task-completion wakeups obey the same limits. If a wakeup is rejected, the finished task and its output remain available through `TaskOutput`; the notification is not marked delivered.
 
@@ -510,7 +510,7 @@ Like the `tools` / `disallowedTools` fields of an agent file, this section shape
 | `max_edge_px` | `integer` | `2000` | Longest-edge ceiling in pixels. Larger images are scaled down proportionally to fit; raising it preserves more detail at the cost of larger request bodies |
 | `read_byte_budget` | `integer` | `262144` (256 KB) | Per-image byte budget for images the model reads for itself (`ReadMediaFile` default reads). It bounds the accumulated request-body size when the model keeps screenshotting and reading images; fine detail stays reachable through the `region` parameter, which reads a crop back at full fidelity (`region` and `full_resolution` are not subject to this budget) |
 
-`max_edge_px` can be overridden by the `KIMI_IMAGE_MAX_EDGE_PX` environment variable and `read_byte_budget` by `KIMI_IMAGE_READ_BYTE_BUDGET`; both take higher priority than `config.toml`.
+`max_edge_px` can be overridden by the `KIKI_IMAGE_MAX_EDGE_PX` environment variable and `read_byte_budget` by `KIKI_IMAGE_READ_BYTE_BUDGET`; both take higher priority than `config.toml`.
 
 Which image formats reach the model depends on the provider the request resolves to. Every provider accepts PNG, JPEG, GIF, and WebP; the Kimi provider additionally accepts BMP, HEIC, and HEIF, so an iPhone photo needs no conversion first. Any other image is replaced by a text notice that names the formats the current provider accepts.
 
