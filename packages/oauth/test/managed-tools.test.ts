@@ -20,8 +20,8 @@ describe('kimiCodeToolsUrl', () => {
     expect(kimiCodeToolsUrl()).toBe('https://api.kimi.com/coding/v1/tools');
   });
 
-  it('honours KIMI_CODE_BASE_URL and trims trailing slashes', () => {
-    vi.stubEnv('KIMI_CODE_BASE_URL', 'https://example.test/v9///');
+  it('honours KIKI_CODE_BASE_URL and trims trailing slashes', () => {
+    vi.stubEnv('KIKI_CODE_BASE_URL', 'https://example.test/v9///');
     expect(kimiCodeToolsUrl()).toBe('https://example.test/v9/tools');
   });
 });

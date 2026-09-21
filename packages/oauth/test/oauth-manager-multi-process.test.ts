@@ -20,7 +20,7 @@
  * `1` (when the lock is in place); `N` (when it is not).
  *
  * **Platform**: runs on macOS, Linux, and Windows. The
- * `KIMI_DISABLE_OAUTH_LOCK=1` env-var remains an explicit escape hatch.
+ * `KIKI_DISABLE_OAUTH_LOCK=1` env-var remains an explicit escape hatch.
  */
 
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
@@ -49,7 +49,7 @@ const OAUTH_ENTRY_URL = new URL('../src/index.ts', import.meta.url).href;
 const WORKER_SCRIPT = `
   import { readFile, writeFile, appendFile, mkdir, stat } from 'node:fs/promises';
   import { join } from 'node:path';
-  const { OAuthManager } = await import(process.env.KIMI_OAUTH_ENTRY);
+  const { OAuthManager } = await import(process.env.KIKI_OAUTH_ENTRY);
 
   const shareDir = process.env.KIKI_HOME;
   const tokenPath = join(shareDir, 'token.json');
@@ -74,9 +74,9 @@ const WORKER_SCRIPT = `
   }
 
   async function coordinateFirstLoad() {
-    if (process.env.KIMI_SYNC_FIRST_LOAD === '1') {
+    if (process.env.KIKI_SYNC_FIRST_LOAD === '1') {
       await appendFile(readyPath, '.');
-      const expected = Number(process.env.KIMI_WORKER_COUNT || '1');
+      const expected = Number(process.env.KIKI_WORKER_COUNT || '1');
       const deadline = Date.now() + 10_000;
       while (true) {
         let ready = 0;
@@ -88,7 +88,7 @@ const WORKER_SCRIPT = `
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     }
-    if (process.env.KIMI_PAUSE_AFTER_FIRST_LOAD === '1') {
+    if (process.env.KIKI_PAUSE_AFTER_FIRST_LOAD === '1') {
       await writeFile(readyPath, 'ready', 'utf8');
       await waitForPath(firstLoadReleasePath, 'first-load release');
     }
@@ -140,7 +140,7 @@ const WORKER_SCRIPT = `
 
   const refreshImpl = async () => {
     await appendFile(counterPath, '.');
-    if (process.env.KIMI_HOLD_REFRESH === '1') {
+    if (process.env.KIKI_HOLD_REFRESH === '1') {
       await writeFile(refreshStartedPath, 'started', 'utf8');
       await waitForPath(refreshReleasePath, 'refresh release');
     }
@@ -172,7 +172,7 @@ const WORKER_SCRIPT = `
     process.stdout.write('err:' + (err && err.message ? err.message : String(err)) + '\\n');
   }
   if (process.env.DEBUG_OAUTH_WORKER === '1') {
-    process.stderr.write('[worker ' + process.env.KIMI_WORKER_ID + '] done\\n');
+    process.stderr.write('[worker ' + process.env.KIKI_WORKER_ID + '] done\\n');
   }
 `;
 
@@ -271,9 +271,9 @@ describe('OAuthManager cross-process refresh lock', () => {
       shareDir: dir.path,
       timeoutMs: 30_000,
       env: {
-        KIMI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
-        KIMI_SYNC_FIRST_LOAD: '1',
-        KIMI_WORKER_COUNT: '2',
+        KIKI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
+        KIKI_SYNC_FIRST_LOAD: '1',
+        KIKI_WORKER_COUNT: '2',
       },
     });
 
@@ -301,8 +301,8 @@ describe('OAuthManager cross-process refresh lock', () => {
       shareDir: dir.path,
       timeoutMs: 30_000,
       env: {
-        KIMI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
-        KIMI_PAUSE_AFTER_FIRST_LOAD: '1',
+        KIKI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
+        KIKI_PAUSE_AFTER_FIRST_LOAD: '1',
       },
     });
 
@@ -335,8 +335,8 @@ describe('OAuthManager cross-process refresh lock', () => {
       shareDir: dir.path,
       timeoutMs: 30_000,
       env: {
-        KIMI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
-        KIMI_HOLD_REFRESH: '1',
+        KIKI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
+        KIKI_HOLD_REFRESH: '1',
       },
     });
 
@@ -400,7 +400,7 @@ describe('OAuthManager cross-process refresh lock', () => {
       shareDir: dir.path,
       timeoutMs: 20_000,
       env: {
-        KIMI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
+        KIKI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
       },
     });
 

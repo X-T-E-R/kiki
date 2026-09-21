@@ -8,7 +8,7 @@
  * in `./constants`.
  *
  * Resolution order (first match wins):
- *   1. env override (`KIMI_CODE_OAUTH_HOST` / `KIMI_OAUTH_HOST`)
+ *   1. env override (`KIKI_CODE_OAUTH_HOST` / `KIKI_OAUTH_HOST`)
  *   2. persisted login (the `oauthHost` stored in config.toml's oauth ref)
  *   3. persisted default-slot login (the oauth ref's key equals
  *      `KIMI_CODE_OAUTH_KEY` — a mainland-China login persists no
@@ -76,7 +76,7 @@ export function kimiCdnContentUrl(path: string): string {
 
 /**
  * Login hosts for an explicit region choice, or `undefined` when an env
- * override (`KIMI_CODE_OAUTH_HOST` / `KIMI_OAUTH_HOST` / `KIMI_CODE_BASE_URL`)
+ * override (`KIKI_CODE_OAUTH_HOST` / `KIKI_OAUTH_HOST` / `KIKI_CODE_BASE_URL`)
  * is in play — env keeps full control of endpoints, so a region pick must not
  * smuggle profile hosts past it (requested hosts outrank env in
  * `resolveKimiCodeLoginAuth`).
@@ -163,7 +163,7 @@ export function resolveKimiRegion(options: ResolveKimiRegionOptions = {}): KimiR
   // means a custom/internal environment: the per-endpoint env overrides keep
   // doing their job regardless of region, so skip straight to the default
   // instead of letting a stale config/marker point CDN links somewhere odd.
-  const envHost = env['KIMI_CODE_OAUTH_HOST'] ?? env['KIMI_OAUTH_HOST'];
+  const envHost = env['KIKI_CODE_OAUTH_HOST'] ?? env['KIKI_OAUTH_HOST'];
   if (envHost !== undefined && envHost.length > 0) {
     return regionForOAuthHost(envHost) ?? 'mainland-cn';
   }

@@ -102,9 +102,9 @@ export interface ManagedKimiLoginAuth {
 }
 
 export interface ManagedKimiEnv {
-  readonly KIMI_CODE_BASE_URL?: string | undefined;
-  readonly KIMI_CODE_OAUTH_HOST?: string | undefined;
-  readonly KIMI_OAUTH_HOST?: string | undefined;
+  readonly KIKI_CODE_BASE_URL?: string | undefined;
+  readonly KIKI_CODE_OAUTH_HOST?: string | undefined;
+  readonly KIKI_OAUTH_HOST?: string | undefined;
 }
 
 export class ManagedKimiCodeModelsAuthError extends OAuthUnauthorizedError {
@@ -292,11 +292,11 @@ function configuredOAuthRef(
 }
 
 export function kimiCodeEnvBaseUrl(env: ManagedKimiEnv = process.env): string | undefined {
-  return env.KIMI_CODE_BASE_URL;
+  return env.KIKI_CODE_BASE_URL;
 }
 
 export function kimiCodeEnvOAuthHost(env: ManagedKimiEnv = process.env): string | undefined {
-  return env.KIMI_CODE_OAUTH_HOST ?? env.KIMI_OAUTH_HOST;
+  return env.KIKI_CODE_OAUTH_HOST ?? env.KIKI_OAUTH_HOST;
 }
 
 // Base URLs that share the default `oauth/kimi-code` credential slot.

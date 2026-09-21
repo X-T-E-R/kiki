@@ -65,7 +65,7 @@ function now(): number {
 
 beforeEach(() => {
   currentNow = 1_000_000_000;
-  vi.stubEnv('KIMI_DISABLE_OAUTH_LOCK', '');
+  vi.stubEnv('KIKI_DISABLE_OAUTH_LOCK', '');
   vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
 });
 
@@ -92,7 +92,7 @@ describe('OAuthManager lock configuration', () => {
   });
 
   it('allows the lockless environment opt-out and records a security warning', () => {
-    vi.stubEnv('KIMI_DISABLE_OAUTH_LOCK', '1');
+    vi.stubEnv('KIKI_DISABLE_OAUTH_LOCK', '1');
     const storage = new InMemoryStorage();
 
     expect(() => new OAuthManager({ config, storage, now })).not.toThrow();

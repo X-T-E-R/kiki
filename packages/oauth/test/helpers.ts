@@ -67,7 +67,7 @@ export async function spawnInlineWorkers(
       env: {
         ...process.env,
         KIKI_HOME: opts.shareDir,
-        KIMI_WORKER_ID: String(id),
+        KIKI_WORKER_ID: String(id),
         ...opts.env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],

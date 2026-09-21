@@ -16,12 +16,12 @@ afterEach(() => {
 });
 
 describe('kimiCodeBaseUrl', () => {
-  it('strips trailing slashes from the KIMI_CODE_BASE_URL override', () => {
+  it('strips trailing slashes from the KIKI_CODE_BASE_URL override', () => {
     // The env value must be normalized at the source: provision persists it
     // verbatim while the model refresh rewrites it normalized, and the
     // deep-equal diff between the two shapes would fire a spurious
     // providers-changed event mid-login.
-    vi.stubEnv('KIMI_CODE_BASE_URL', 'https://gw.example.com/');
+    vi.stubEnv('KIKI_CODE_BASE_URL', 'https://gw.example.com/');
     expect(kimiCodeBaseUrl()).toBe('https://gw.example.com');
     expect(kimiCodeUsageUrl()).toBe('https://gw.example.com/usages');
   });
@@ -33,8 +33,8 @@ describe('isManagedKimiCodeBaseUrl', () => {
     expect(isManagedKimiCodeBaseUrl('https://api.kimi.com/coding/v1/')).toBe(true);
   });
 
-  it('matches against the KIMI_CODE_BASE_URL override', () => {
-    vi.stubEnv('KIMI_CODE_BASE_URL', 'https://gw.example.com/coding/v1/');
+  it('matches against the KIKI_CODE_BASE_URL override', () => {
+    vi.stubEnv('KIKI_CODE_BASE_URL', 'https://gw.example.com/coding/v1/');
     expect(isManagedKimiCodeBaseUrl('https://gw.example.com/coding/v1')).toBe(true);
     expect(isManagedKimiCodeBaseUrl('https://api.kimi.com/coding/v1')).toBe(false);
   });

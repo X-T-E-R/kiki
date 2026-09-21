@@ -150,7 +150,7 @@ export function createKimiDefaultHeaders(options: KimiIdentityOptions): Record<s
  * environment-derived and stateless (re-read on every call) so callers can
  * apply it uniformly without plumbing the value through every host layer.
  */
-export const KIMI_CODE_CUSTOM_HEADERS_ENV = 'KIMI_CODE_CUSTOM_HEADERS';
+export const KIMI_CODE_CUSTOM_HEADERS_ENV = 'KIKI_CODE_CUSTOM_HEADERS';
 
 export function parseKimiCodeCustomHeaders(
   env: NodeJS.ProcessEnv = process.env,

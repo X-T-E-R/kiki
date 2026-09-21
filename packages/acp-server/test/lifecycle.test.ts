@@ -301,7 +301,7 @@ describe('acp-server session lifecycle', () => {
             name: 'mock',
             command: process.execPath,
             args: [STDIO_MCP_FIXTURE],
-            env: [{ name: 'KIMI_TEST_MCP_START_DELAY_MS', value: '0' }],
+            env: [{ name: 'KIKI_TEST_MCP_START_DELAY_MS', value: '0' }],
           },
         ],
       })) as { sessionId: string };

@@ -49,18 +49,18 @@ describe('resolveKimiRegion', () => {
     expect(resolveKimiRegion({ env: {}, homeDir: await markerDir() })).toBe('mainland-cn');
   });
 
-  it('resolves a known env oauth host, KIMI_CODE_OAUTH_HOST first', () => {
-    expect(resolveKimiRegion({ env: { KIMI_CODE_OAUTH_HOST: 'https://auth.kimi.ai' } })).toBe(
+  it('resolves a known env oauth host, KIKI_CODE_OAUTH_HOST first', () => {
+    expect(resolveKimiRegion({ env: { KIKI_CODE_OAUTH_HOST: 'https://auth.kimi.ai' } })).toBe(
       'global',
     );
-    expect(resolveKimiRegion({ env: { KIMI_OAUTH_HOST: 'https://auth.kimi.ai' } })).toBe(
+    expect(resolveKimiRegion({ env: { KIKI_OAUTH_HOST: 'https://auth.kimi.ai' } })).toBe(
       'global',
     );
     expect(
       resolveKimiRegion({
         env: {
-          KIMI_CODE_OAUTH_HOST: 'https://auth.kimi.com',
-          KIMI_OAUTH_HOST: 'https://auth.kimi.ai',
+          KIKI_CODE_OAUTH_HOST: 'https://auth.kimi.com',
+          KIKI_OAUTH_HOST: 'https://auth.kimi.ai',
         },
       }),
     ).toBe('mainland-cn');
@@ -71,7 +71,7 @@ describe('resolveKimiRegion', () => {
     // env overrides every endpoint anyway.
     expect(
       resolveKimiRegion({
-        env: { KIMI_CODE_OAUTH_HOST: 'https://auth.internal.example.com' },
+        env: { KIKI_CODE_OAUTH_HOST: 'https://auth.internal.example.com' },
         configuredOAuthHost: 'https://auth.kimi.ai',
         homeDir: await markerDir('global\n'),
       }),
@@ -120,7 +120,7 @@ describe('resolveKimiRegion', () => {
     const dir = await markerDir('global');
     expect(
       resolveKimiRegion({
-        env: { KIMI_CODE_OAUTH_HOST: 'https://auth.kimi.com' },
+        env: { KIKI_CODE_OAUTH_HOST: 'https://auth.kimi.com' },
         configuredOAuthHost: 'https://auth.kimi.ai',
         homeDir: dir,
       }),
@@ -180,14 +180,14 @@ describe('kimiRegionLoginHosts', () => {
   });
 
   it('yields to env overrides', () => {
-    expect(kimiRegionLoginHosts('global', { KIMI_CODE_OAUTH_HOST: 'https://auth.x.com' })).toBe(
+    expect(kimiRegionLoginHosts('global', { KIKI_CODE_OAUTH_HOST: 'https://auth.x.com' })).toBe(
       undefined,
     );
-    expect(kimiRegionLoginHosts('global', { KIMI_OAUTH_HOST: 'https://auth.x.com' })).toBe(
+    expect(kimiRegionLoginHosts('global', { KIKI_OAUTH_HOST: 'https://auth.x.com' })).toBe(
       undefined,
     );
     expect(
-      kimiRegionLoginHosts('global', { KIMI_CODE_BASE_URL: 'https://api.x.com/coding/v1' }),
+      kimiRegionLoginHosts('global', { KIKI_CODE_BASE_URL: 'https://api.x.com/coding/v1' }),
     ).toBe(undefined);
   });
 });

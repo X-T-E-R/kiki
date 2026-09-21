@@ -12,10 +12,10 @@ import {
 } from '@kiki/oauth';
 
 async function main(): Promise<void> {
-  const explicitHomeDir = process.env['KIMI_OAUTH_SMOKE_HOME'];
+  const explicitHomeDir = process.env['KIKI_OAUTH_SMOKE_HOME'];
   const homeDir = explicitHomeDir ?? (await mkdtemp(join(tmpdir(), 'kimi-oauth-smoke-')));
   const keepToken = shouldKeepToken(explicitHomeDir !== undefined);
-  const forceLogin = process.env['KIMI_OAUTH_SMOKE_FORCE_LOGIN'] === '1';
+  const forceLogin = process.env['KIKI_OAUTH_SMOKE_FORCE_LOGIN'] === '1';
   const config: ManagedKimiConfigShape = { providers: {} };
 
   const toolkit = new KimiOAuthToolkit<ManagedKimiConfigShape>({
@@ -73,9 +73,9 @@ async function main(): Promise<void> {
 }
 
 function smokeIdentityFromEnv(): KimiHostIdentity {
-  const version = process.env['KIMI_CODE_SMOKE_VERSION'];
+  const version = process.env['KIKI_CODE_SMOKE_VERSION'];
   if (version === undefined || version.trim().length === 0) {
-    throw new Error('KIMI_CODE_SMOKE_VERSION is required for Kimi OAuth smoke.');
+    throw new Error('KIKI_CODE_SMOKE_VERSION is required for Kimi OAuth smoke.');
   }
   return {
     productName: "kimi-code-cli",
@@ -118,7 +118,7 @@ function printUsage(
 }
 
 function shouldKeepToken(hasExplicitHomeDir: boolean): boolean {
-  const value = process.env['KIMI_OAUTH_SMOKE_KEEP_TOKEN'];
+  const value = process.env['KIKI_OAUTH_SMOKE_KEEP_TOKEN'];
   if (value !== undefined) return value === '1' || value === 'true';
   return hasExplicitHomeDir;
 }

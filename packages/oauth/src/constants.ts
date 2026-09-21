@@ -14,8 +14,8 @@ function envOverride(key: string): string | undefined {
 export const KIMI_CODE_FLOW_CONFIG: OAuthFlowConfig = {
   name: 'kimi-code',
   oauthHost:
-    envOverride('KIMI_CODE_OAUTH_HOST') ??
-    envOverride('KIMI_OAUTH_HOST') ??
+    envOverride('KIKI_CODE_OAUTH_HOST') ??
+    envOverride('KIKI_OAUTH_HOST') ??
     DEFAULT_KIMI_CODE_OAUTH_HOST,
   clientId: '17e5f671-d194-4dfb-9706-5516cb48c098',
 };

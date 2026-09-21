@@ -121,8 +121,8 @@ describe('provisionManagedKimiCodeConfig', () => {
       configuredBaseUrl,
       configuredOAuthRef,
       env: {
-        KIMI_CODE_BASE_URL: envBaseUrl,
-        KIMI_CODE_OAUTH_HOST: envOauthHost,
+        KIKI_CODE_BASE_URL: envBaseUrl,
+        KIKI_CODE_OAUTH_HOST: envOauthHost,
       },
     });
 

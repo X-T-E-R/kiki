@@ -9,7 +9,7 @@
  * On Windows the probe expects bash from Git for Windows or MSYS2. If it
  * cannot be located the function throws `KaosShellNotFoundError`; the SDK
  * layer can wrap that into a user-facing install hint. Set
- * `KIMI_SHELL_PATH` to override.
+ * `KIKI_SHELL_PATH` to override.
  */
 
 import { execFile as nodeExecFile } from 'node:child_process';
@@ -99,7 +99,7 @@ export async function detectEnvironment(deps: EnvironmentDeps): Promise<Environm
 async function locateWindowsGitBash(deps: EnvironmentDeps): Promise<string> {
   const checked: string[] = [];
 
-  const override = deps.env['KIMI_SHELL_PATH']?.trim();
+  const override = deps.env['KIKI_SHELL_PATH']?.trim();
   if (override !== undefined && override.length > 0) {
     checked.push(override);
     if (await deps.isFile(override)) {
@@ -156,7 +156,7 @@ async function locateWindowsGitBash(deps: EnvironmentDeps): Promise<string> {
   }
 
   throw new KaosShellNotFoundError(
-    `Git Bash was not found on this Windows host. Install Git for Windows from https://gitforwindows.org/ or set KIMI_SHELL_PATH to a bash.exe. Checked: ${checked.join(', ')}.`,
+    `Git Bash was not found on this Windows host. Install Git for Windows from https://gitforwindows.org/ or set KIKI_SHELL_PATH to a bash.exe. Checked: ${checked.join(', ')}.`,
   );
 }
 

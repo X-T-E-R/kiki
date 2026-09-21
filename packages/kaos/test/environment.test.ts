@@ -6,7 +6,7 @@
  *   - macOS / Linux / Windows / unknown → `osKind`
  *   - POSIX path probing prefers /bin/bash, falls back to /usr/bin/bash,
  *     /usr/local/bin/bash, then /bin/sh (with shellName 'sh').
- *   - Windows resolves Git Bash via `KIMI_SHELL_PATH`, `git.exe` on PATH
+ *   - Windows resolves Git Bash via `KIKI_SHELL_PATH`, `git.exe` on PATH
  *     (including `git --exec-path` for shims), or well-known install
  *     locations; throws `KaosShellNotFoundError`
  *     if none are present.
@@ -140,11 +140,11 @@ describe('detectEnvironment', () => {
 
   // ── Windows Git Bash probing ───────────────────────────────────────
 
-  it('uses KIMI_SHELL_PATH override when set and the file exists', async () => {
+  it('uses KIKI_SHELL_PATH override when set and the file exists', async () => {
     const env = await detectEnvironment(
       stubDeps({
         platform: 'win32',
-        env: { KIMI_SHELL_PATH: 'D:\\custom\\bash.exe' },
+        env: { KIKI_SHELL_PATH: 'D:\\custom\\bash.exe' },
         existingPaths: ['D:\\custom\\bash.exe', 'C:\\Program Files\\Git\\bin\\bash.exe'],
       }),
     );
@@ -415,7 +415,7 @@ describe('detectEnvironment', () => {
     const error = await detectEnvironment(
       stubDeps({
         platform: 'win32',
-        env: { KIMI_SHELL_PATH: 'D:\\custom\\bash.exe' },
+        env: { KIKI_SHELL_PATH: 'D:\\custom\\bash.exe' },
         existingPaths: [],
       }),
     ).then(

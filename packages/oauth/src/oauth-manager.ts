@@ -135,7 +135,7 @@ export class OAuthManager {
 
     const lockDisabled =
       options.disableCrossProcessLock === true ||
-      process.env['KIMI_DISABLE_OAUTH_LOCK'] === '1';
+      process.env['KIKI_DISABLE_OAUTH_LOCK'] === '1';
     if (lockDisabled) {
       this.lockTarget = undefined;
       process.emitWarning(

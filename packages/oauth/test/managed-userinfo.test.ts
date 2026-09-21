@@ -14,8 +14,8 @@ afterEach(() => {
 });
 
 describe('kimiCodeUserInfoUrl', () => {
-  it('follows the KIMI_CODE_BASE_URL override', () => {
-    vi.stubEnv('KIMI_CODE_BASE_URL', 'https://gw.example.com/');
+  it('follows the KIKI_CODE_BASE_URL override', () => {
+    vi.stubEnv('KIKI_CODE_BASE_URL', 'https://gw.example.com/');
     expect(kimiCodeUserInfoUrl()).toBe('https://gw.example.com/me');
   });
 });
