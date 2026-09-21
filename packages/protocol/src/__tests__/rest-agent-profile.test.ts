@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   agentCapabilityReasonCodeSchema,
+  agentCapabilitiesProducerResponseSchema,
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
   agentProfileSourceDiagnosticCodeSchema,
@@ -141,6 +142,32 @@ describe('named agent profile REST protocol', () => {
     expect(parsed.tools?.[0]?.unavailable_reason_code).toBe('tool_policy_disabled');
     expect(parsed.skills?.[0]?.unavailable_reason_code).toBe('skill_tool_inactive');
     expect(agentCapabilityReasonCodeSchema.options).toHaveLength(25);
+
+    const futurePayload = {
+      context: 'live' as const,
+      owner: { agent_id: 'main' },
+      available: false,
+      unavailable_reason: 'Future top-level reason',
+      unavailable_reason_code: 'future_top_level_reason',
+      targets: [{
+        profile: 'helper', executor: 'native', defaults_available: false,
+        unavailable_reason: 'Future binding reason', unavailable_reason_code: 'future_binding_reason',
+        launch_allowed: false, launch_unavailable_reason: 'Future launch reason',
+        launch_unavailable_reason_code: 'future_launch_reason',
+      }],
+      tools: [{ name: 'AgentRun', source: 'builtin', category: 'agent', state: 'disabled' as const,
+        unavailable_reason: 'Future tool reason', unavailable_reason_code: 'future_tool_reason' }],
+      skills: [{ name: 'workspace-skill', description: 'Example', source: 'project', scope: 'workspace' as const,
+        path: 'skills/example', state: 'disabled' as const,
+        unavailable_reason: 'Future skill reason', unavailable_reason_code: 'future_skill_reason' }],
+    };
+    const futureParsed = agentCapabilitiesResponseSchema.parse(futurePayload);
+    expect(futureParsed.unavailable_reason_code).toBe('future_top_level_reason');
+    expect(futureParsed.targets[0]?.launch_unavailable_reason_code).toBe('future_launch_reason');
+    expect(futureParsed.tools?.[0]?.unavailable_reason_code).toBe('future_tool_reason');
+    expect(futureParsed.skills?.[0]?.unavailable_reason_code).toBe('future_skill_reason');
+    expect(agentCapabilitiesProducerResponseSchema.safeParse(futurePayload).success).toBe(false);
+    expect(agentCapabilityReasonCodeSchema.safeParse('future_tool_reason').success).toBe(false);
   });
 
   it('accepts the named-profile disable config patch', () => {

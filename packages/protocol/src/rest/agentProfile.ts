@@ -180,6 +180,7 @@ export const agentCapabilityReasonCodeSchema = z.enum([
   'native_executor_required',
 ]);
 export type AgentCapabilityReasonCode = z.infer<typeof agentCapabilityReasonCodeSchema>;
+export const agentCapabilityReasonCodeWireSchema = z.string().min(1);
 
 export const agentCapabilityModelSourceSchema = z.enum(['caller-lease', 'route', 'profile']);
 export const agentCapabilityEffortSourceSchema = z.enum([
@@ -200,10 +201,10 @@ export const agentCapabilityTargetSchema = z.object({
   advisory_deviation: z.boolean().optional(),
   defaults_available: z.boolean(),
   unavailable_reason: z.string().optional(),
-  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+  unavailable_reason_code: agentCapabilityReasonCodeWireSchema.optional(),
   launch_allowed: z.boolean().optional(),
   launch_unavailable_reason: z.string().optional(),
-  launch_unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+  launch_unavailable_reason_code: agentCapabilityReasonCodeWireSchema.optional(),
   execution_restriction: z.literal('research-readonly').optional(),
 });
 export type AgentCapabilityTarget = z.infer<typeof agentCapabilityTargetSchema>;
@@ -220,7 +221,7 @@ export const agentPanelToolSchema = z.object({
   group: z.string().optional(),
   state: agentPanelCapabilityStateSchema,
   unavailable_reason: z.string().optional(),
-  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+  unavailable_reason_code: agentCapabilityReasonCodeWireSchema.optional(),
   parameters: z.record(z.string(), z.unknown()).optional(),
   read_only: z.boolean().optional(),
 });
@@ -233,7 +234,7 @@ export const agentPanelSkillSchema = z.object({
   path: z.string(),
   state: agentPanelCapabilityStateSchema,
   unavailable_reason: z.string().optional(),
-  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+  unavailable_reason_code: agentCapabilityReasonCodeWireSchema.optional(),
   type: z.string().optional(),
   disable_model_invocation: z.boolean().optional(),
   prompt_command: z.boolean().optional(),
@@ -290,7 +291,7 @@ export const agentCapabilitiesResponseSchema = z.object({
   owner: z.object({ profile: z.string().optional(), agent_id: z.string().optional() }),
   available: z.boolean(),
   unavailable_reason: z.string().optional(),
-  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+  unavailable_reason_code: agentCapabilityReasonCodeWireSchema.optional(),
   targets: z.array(agentCapabilityTargetSchema),
   profile: agentPanelProfileSchema.optional(),
   tools: z.array(agentPanelToolSchema).optional(),
@@ -298,6 +299,25 @@ export const agentCapabilitiesResponseSchema = z.object({
   metrics: z.record(z.string(), agentPanelMetricsSchema).optional(),
 });
 export type AgentCapabilitiesResponse = z.infer<typeof agentCapabilitiesResponseSchema>;
+
+export const agentCapabilityTargetProducerSchema = agentCapabilityTargetSchema.extend({
+  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+  launch_unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+});
+export const agentPanelToolProducerSchema = agentPanelToolSchema.extend({
+  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+});
+export const agentPanelSkillProducerSchema = agentPanelSkillSchema.extend({
+  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+});
+export const agentCapabilitiesProducerResponseSchema = agentCapabilitiesResponseSchema.extend({
+  unavailable_reason_code: agentCapabilityReasonCodeSchema.optional(),
+  targets: z.array(agentCapabilityTargetProducerSchema),
+  tools: z.array(agentPanelToolProducerSchema).optional(),
+  skills: z.array(agentPanelSkillProducerSchema).optional(),
+});
+export type AgentCapabilitiesProducerResponse = z.infer<typeof agentCapabilitiesProducerResponseSchema>;
+
 export type ListNamedAgentProfilesQuery = z.infer<
   typeof listNamedAgentProfilesQuerySchema
 >;

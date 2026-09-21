@@ -1,4 +1,3 @@
-import type { AgentCapabilityReasonCode } from '@kiki/protocol';
 import type { AgentStatus } from '@kiki/session-core/session';
 
 /**
@@ -86,7 +85,7 @@ export interface AgentToolCapability {
   readonly description?: string;
   readonly state: CapabilityState;
   readonly unavailableReason?: string;
-  readonly unavailableReasonCode?: AgentCapabilityReasonCode;
+  readonly unavailableReasonCode?: string;
   readonly source?: string;
   readonly parametersSummary?: string;
   readonly parametersSchema?: string;
@@ -103,7 +102,7 @@ export interface AgentSkillCapability {
   readonly scope: 'workspace' | 'global';
   readonly state: CapabilityState;
   readonly unavailableReason?: string;
-  readonly unavailableReasonCode?: AgentCapabilityReasonCode;
+  readonly unavailableReasonCode?: string;
   readonly source?: string;
   readonly path?: string;
   readonly argumentHint?: string;
@@ -123,10 +122,10 @@ export interface AgentSubagentTarget {
   readonly thinkingEffort?: string;
   readonly defaultsAvailable: boolean;
   readonly unavailableReason?: string;
-  readonly unavailableReasonCode?: AgentCapabilityReasonCode;
+  readonly unavailableReasonCode?: string;
   readonly launchAllowed?: boolean;
   readonly launchUnavailableReason?: string;
-  readonly launchUnavailableReasonCode?: AgentCapabilityReasonCode;
+  readonly launchUnavailableReasonCode?: string;
   readonly executionRestriction?: 'research-readonly' | 'none';
 }
 

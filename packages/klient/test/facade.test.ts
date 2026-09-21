@@ -329,6 +329,40 @@ describe('agent profile routing', () => {
   });
 });
 
+describe('agent panel routing', () => {
+  it('preserves unknown capability reason codes after output validation', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.result = {
+      context: 'live',
+      owner: { agent_id: 'main' },
+      available: true,
+      targets: [],
+      tools: [{
+        name: 'FutureTool',
+        source: 'builtin',
+        category: 'other',
+        state: 'disabled',
+        unavailable_reason: 'A future server disabled this tool',
+        unavailable_reason_code: 'future_tool_policy',
+      }],
+    };
+
+    const result = await klient.global.agentPanel.read({ session_id: 's1', agent_id: 'main' });
+
+    expect(result.tools?.[0]).toMatchObject({
+      unavailable_reason: 'A future server disabled this tool',
+      unavailable_reason_code: 'future_tool_policy',
+    });
+    expect(channel.calls).toEqual([{
+      scope: {},
+      service: 'agentPanelService',
+      method: 'read',
+      args: [{ session_id: 's1', agent_id: 'main' }],
+    }]);
+  });
+});
+
 describe('agent skill routing', () => {
   it('promptWithSkills routes to agentSkillService.promptWithSkills with the agent scope', async () => {
     const channel = new FakeChannel();

@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createKlientFromChannel, type KlientChannel } from '@kiki/klient';
 import { ErrorCode, type AgentCapabilitiesQuery, type AgentCapabilitiesResponse } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import { ApiError } from '../lib/client';
@@ -83,6 +84,35 @@ describe('AgentCapabilitiesPanel', () => {
     await settle();
     expect(container.textContent).toContain('profile is disabled');
     expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+  it('renders the raw reason for an unknown code accepted by klient output validation', async () => {
+    const channel = {
+      call: vi.fn().mockResolvedValue({
+        context: 'live',
+        owner: { agent_id: 'main' },
+        available: true,
+        targets: [],
+        tools: [{
+          name: 'FutureTool',
+          source: 'builtin',
+          category: 'other',
+          state: 'disabled',
+          unavailable_reason: 'Future server policy disabled this tool',
+          unavailable_reason_code: 'future_tool_policy',
+        }],
+        skills: [],
+      }),
+    } as unknown as KlientChannel;
+    const klient = createKlientFromChannel(channel);
+    getAgentCapabilities.mockImplementation((query: AgentCapabilitiesQuery) =>
+      klient.global.agentPanel.read(query));
+
+    await render({ session_id: 'session-1', agent_id: 'main' });
+    await settle();
+
+    expect(channel.call).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain('Future server policy disabled this tool');
   });
   it('localizes known capability-query API errors', async () => {
     getAgentCapabilities.mockRejectedValue(new ApiError({
