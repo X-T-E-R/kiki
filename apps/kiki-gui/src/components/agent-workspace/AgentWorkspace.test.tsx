@@ -26,6 +26,10 @@ const harness = vi.hoisted(() => ({
   readCapabilities: vi.fn(),
   listSessionSkills: vi.fn(),
   mediaProviderProps: [] as Array<{ apiRef?: unknown }>,
+  host: { kind: 'browser' } as {
+    kind: string;
+    pickFiles?: () => Promise<Array<{ name: string; size: number; type: string; read(): Promise<File> }> | null>;
+  },
 }));
 
 vi.mock('../../state/connection', () => ({
@@ -75,8 +79,8 @@ vi.mock('../mediaPreview', () => ({
   PreviewToggleButton: () => <div data-preview-toggle-probe />,
 }));
 vi.mock('../RightRail', () => ({ RightRail: () => null }));
-vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
-vi.mock('../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
+vi.mock('../../host', () => ({ useHost: () => harness.host }));
+vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
 vi.mock('../Transcript', () => ({ Transcript: () => null }));
 vi.mock('./ResyncStatusBanner', () => ({ ResyncStatusBanner: () => null }));
 vi.mock('./SubagentDetailActions', () => ({ SubagentDetailActions: () => null }));
@@ -104,6 +108,7 @@ beforeEach(() => {
     metrics: {},
   });
   harness.shellEnabled = true;
+  harness.host = { kind: 'browser' };
   harness.mediaProviderProps.length = 0;
   harness.listSessionSkills.mockResolvedValue({ skills: [] });
   harness.listModels.mockResolvedValue({ items: [
@@ -238,6 +243,28 @@ it.each(['completed', 'cancelled', 'failed'] as const)('disables terminal %s ful
   expect(dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.disabled).toBe(true);
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   expect(harness.setAgentModel).not.toHaveBeenCalled();
+});
+
+it('drops picker results that resolve after the child turns terminal', async () => {
+  let resolvePicker: (files: Array<{ name: string; size: number; type: string; read(): Promise<File> }>) => void = () => undefined;
+  const pickFiles = vi.fn(() => new Promise<Array<{ name: string; size: number; type: string; read(): Promise<File> }>>((resolve) => {
+    resolvePicker = resolve;
+  }));
+  harness.host = { kind: 'browser', pickFiles };
+  await renderWorkspace({ forest: testForest('running', true) });
+  await settle();
+  const attachButton = dock.querySelector<HTMLButtonElement>('[data-attach-button]')!;
+  expect(attachButton.disabled).toBe(false);
+  await act(async () => { attachButton.click(); });
+  expect(pickFiles).toHaveBeenCalledTimes(1);
+  // The child turns terminal while the picker is still open.
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  expect(dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.disabled).toBe(true);
+  const file = new File(['x'], 'shot.png', { type: 'image/png' });
+  resolvePicker([{ name: 'shot.png', size: 1, type: 'image/png', read: async () => file }]);
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
 });
 
 it('keeps preview-tab composer disabled for a cancelled child', async () => {

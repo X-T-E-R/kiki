@@ -986,8 +986,14 @@ export function Composer({
     }
   };
 
+  // Late async arrivals (native picker resolving after the composer turned
+  // disabled, a queued file-input change) must not add attachments.
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
+
   /** Paste/attach-picker entry point: whitelisted images stay image parts; everything else uploads. */
   const addFiles = (files: readonly SelectedAttachmentFile[]) => {
+    if (disabledRef.current) return;
     const images: SelectedAttachmentFile[] = [];
     const uploads: SelectedAttachmentFile[] = [];
     for (const file of files) {
@@ -1770,6 +1776,7 @@ export function Composer({
                 type="file"
                 multiple
                 className="hidden"
+                disabled={disabled}
                 onChange={(event) => {
                   const files = [...(event.target.files ?? [])];
                   // Reset so re-picking the same file fires change again.
