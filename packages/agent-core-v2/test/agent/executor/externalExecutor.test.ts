@@ -656,6 +656,34 @@ describe('ACP external executor', () => {
     expect(harness.appendedMessages).toEqual([]);
   });
 
+  it('runs an idle external executor from a mailbox message with its collaboration origin', async () => {
+    const harness = createHarness({ mode: 'live' });
+    const prompt = 'Message from agent "root" (main):\n\ncontinue';
+    const message: ContextMessage = {
+      id: 'mailbox-message',
+      role: 'user',
+      content: [{ type: 'text', text: prompt }],
+      toolCalls: [],
+      origin: {
+        kind: 'agent_message',
+        messageId: 'mailbox-message',
+        senderAgentId: 'main',
+        senderTaskName: 'root',
+      },
+    };
+
+    const run = await harness.session.run(
+      { kind: 'mailbox', prompt, message },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.starts[0]?.prompt).toContain('Message from agent "root" (main)');
+    expect(harness.events.find((event) => event instanceof TurnPrompt)).toMatchObject({
+      origin: message.origin,
+    });
+  });
+
   it('persists non-echo external user frames as canonical external-origin messages', async () => {
     const harness = createHarness({
       mode: 'live',

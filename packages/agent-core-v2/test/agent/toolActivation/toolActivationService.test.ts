@@ -15,7 +15,7 @@ import {
 } from '#/_base/di/scope';
 import { createServices } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
-import { IConfigService } from '#/app/config/config';
+import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
 import { Emitter, Event } from '#/_base/event';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -149,6 +149,7 @@ describe('AgentToolActivationService', () => {
   } = {};
   const gateData: { disabledTools: readonly string[] } = { disabledTools: [] };
   const runtimeChangeEmitter = new Emitter<void>();
+  const configChangeEmitter = new Emitter<ConfigSectionChangedEvent>();
   const runtimeData = {
     available: true,
     capabilities: new Set<RuntimeCapability>(['fs', 'process']),
@@ -159,6 +160,8 @@ describe('AgentToolActivationService', () => {
     parentAgentId: undefined,
     scope: (subKey?: string) => (subKey === undefined ? 'agents/main' : `agents/main/${subKey}`),
   };
+  let scopeContext = mainScopeContext;
+  let notifyParent = true;
 
   function createActivationHost() {
     disposables = new DisposableStore();
@@ -171,9 +174,10 @@ describe('AgentToolActivationService', () => {
         reg.definePartialInstance(IEventBus, {
           subscribe: () => toDisposable(() => {}),
         });
-        reg.defineInstance(IAgentScopeContext, mainScopeContext);
+        reg.defineInstance(IAgentScopeContext, scopeContext);
         reg.definePartialInstance(IConfigService, {
-          get: (() => ({ notify_parent: true })) as IConfigService['get'],
+          get: (() => ({ notify_parent: notifyParent })) as IConfigService['get'],
+          onDidSectionChange: configChangeEmitter.event,
         });
         reg.definePartialInstance(IAgentRuntimeService, {
           onDidChange: runtimeChangeEmitter.event,
@@ -215,6 +219,8 @@ describe('AgentToolActivationService', () => {
     delete profileData.disallowedTools;
     delete profileData.disabledToolGroups;
     gateData.disabledTools = [];
+    scopeContext = mainScopeContext;
+    notifyParent = true;
   });
 
   afterEach(() => {
@@ -473,6 +479,37 @@ describe('AgentToolActivationService', () => {
     expect(ix.get(IAgentToolRegistryService).resolve('AgentNotify')).toBeUndefined();
   });
 
+  it('reconciles conditional tool exposure when configuration changes', async () => {
+    registerAgentToolService(IAlphaTool, AlphaTool, {
+      name: 'Alpha',
+      when: () => notifyParent,
+    });
+    const ix = createActivationHost();
+    const activation = ix.get(IAgentToolActivationService);
+    const registry = ix.get(IAgentToolRegistryService);
+
+    await activation.activate();
+    expect(registry.resolve('Alpha')).toBeDefined();
+
+    notifyParent = false;
+    configChangeEmitter.fire({
+      domain: 'agents',
+      source: 'set',
+      value: { notify_parent: false },
+      previousValue: { notify_parent: true },
+    });
+    expect(registry.resolve('Alpha')).toBeUndefined();
+
+    notifyParent = true;
+    configChangeEmitter.fire({
+      domain: 'agents',
+      source: 'set',
+      value: { notify_parent: true },
+      previousValue: { notify_parent: false },
+    });
+    expect(registry.resolve('Alpha')).toBeDefined();
+  });
+
   it('skips contributions whose when predicate fails', async () => {
     registerAgentToolService(IGammaTool, GammaTool, { name: 'Gamma', when: () => false });
     const ix = createActivationHost();
@@ -591,7 +628,16 @@ describe('AgentToolActivationService', () => {
     }
 
     function createScopeTree(agentExtra: ScopeSeed = []) {
-      const app = createAppScope();
+      const app = createAppScope({
+        seeds: [[
+          IConfigService,
+          {
+            _serviceBrand: undefined,
+            get: (() => ({ notify_parent: notifyParent })) as IConfigService['get'],
+            onDidSectionChange: configChangeEmitter.event,
+          },
+        ]],
+      });
       const session = app.createChild(LifecycleScope.Session, 'session', {
         seeds: [
           [

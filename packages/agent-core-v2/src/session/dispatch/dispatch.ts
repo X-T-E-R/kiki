@@ -122,7 +122,7 @@ export interface ISessionDispatchService {
   resolveOwnedChild(delegator: DelegatorRef, ref: string): Promise<DispatchChild>;
   runOnExisting(
     child: DispatchChild,
-    request: string | Extract<AgentRunRequest, { kind: 'retry' }>,
+    request: string | AgentRunRequest,
     options: DispatchRunOptions,
   ): Promise<DispatchRun>;
   recordRun(agentId: string, runId: string): Promise<void>;

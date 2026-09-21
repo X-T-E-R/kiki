@@ -83,6 +83,7 @@ export class AgentNotifyTool implements IAgentNotifyTool {
         targetTaskName,
         content: args.message,
         idempotencyKey: context.toolCallId,
+        idleWake: 'parent',
       });
       if (acceptance.payloadConflict) {
         return failure(

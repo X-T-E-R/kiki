@@ -34,14 +34,18 @@ export async function runAgentTurn(
 ): Promise<AgentRunHandle> {
   options.signal.throwIfAborted();
   const promptService = target.accessor.get(IAgentPromptService);
-  const turn =
-    request.kind === 'prompt'
-      ? await (await promptService.enqueue({ message: {
-          role: 'user',
-          content: [{ type: 'text', text: request.prompt }],
-          toolCalls: [],
-          origin: request.origin ?? AGENT_RUN_PROMPT_ORIGIN,
-        } })).launched
+  const turn = request.kind === 'prompt'
+    ? await (await promptService.enqueue({ message: {
+        role: 'user',
+        content: [{ type: 'text', text: request.prompt }],
+        toolCalls: [],
+        origin: request.origin ?? AGENT_RUN_PROMPT_ORIGIN,
+      } })).launched
+    : request.kind === 'mailbox'
+      ? await (await promptService.enqueue({
+          message: request.message,
+          alreadyMaterialized: true,
+        })).launched
       : await promptService.retry();
   if (turn === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Agent turn could not be started');
 

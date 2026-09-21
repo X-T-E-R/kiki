@@ -166,7 +166,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (this.#active !== undefined) {
       throw new Error2(ErrorCodes.AGENT_ALREADY_RUNNING, 'ACP executor already has an active turn');
     }
-    if (request.kind !== 'prompt') {
+    if (request.kind === 'retry') {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Retry is unsupported for external ACP executors');
     }
     options.signal.throwIfAborted();
@@ -174,10 +174,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     options.signal.throwIfAborted();
 
     const turnId = this.#reserveTurnId();
-    const origin: PromptOrigin = request.origin ?? {
-      kind: 'system_trigger',
-      name: 'subagent',
-    };
+    const prompt = request.prompt;
+    const origin: PromptOrigin = request.kind === 'mailbox'
+      ? request.message.origin ?? { kind: 'system_trigger', name: 'subagent' }
+      : request.origin ?? { kind: 'system_trigger', name: 'subagent' };
     const sessionOptions = this.#sessionOptions(options.signal);
     const opened = await this.#client.openSession(sessionOptions);
     const losses = new Set<ExecutorLossCode>(['acp_no_step_boundaries']);
@@ -200,7 +200,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       !reusablePrior || prior.profileDeliveredSessionId !== configured.sessionId;
     if (deliverProfile) losses.add('profile_as_user_preamble');
     const remotePrompt = buildRemotePrompt({
-      prompt: request.prompt,
+      prompt,
       systemPrompt: deliverProfile ? this.context.binding.systemPrompt : undefined,
       handoff: handoff?.text,
     });
@@ -226,7 +226,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         initialLosses: [...losses],
       },
     );
-    await recorder.begin(request.prompt, origin);
+    await recorder.begin(prompt, origin);
 
     const controller = new AbortController();
     const relayAbort = (): void => controller.abort(options.signal.reason);

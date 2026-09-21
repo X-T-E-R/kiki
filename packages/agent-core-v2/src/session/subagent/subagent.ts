@@ -3,11 +3,12 @@ import type { Event } from '#/_base/event';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { Turn } from '#/agent/loop/loop';
-import type { PromptOrigin } from '#/agent/contextMemory/types';
+import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import type { Hooks } from '#/hooks';
 
 export type AgentRunRequest =
   | { readonly kind: 'prompt'; readonly prompt: string; readonly origin?: PromptOrigin }
+  | { readonly kind: 'mailbox'; readonly prompt: string; readonly message: ContextMessage }
   | { readonly kind: 'retry'; readonly trigger?: string };
 
 export interface RunAgentOptions {

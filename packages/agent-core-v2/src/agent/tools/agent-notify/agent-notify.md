@@ -1,6 +1,6 @@
 Notify your parent agent with a short message. Fire-and-forget: the message is queued in the parent agent's mailbox and this tool returns immediately without waiting for the parent to read it.
 
-If the parent is running on the native executor, the message is steered into its active turn and delivered at the next step boundary. A parent running on an external executor cannot accept messages mid-turn, so the message waits until the parent's next run. If the parent is idle, the message also waits in the mailbox until the parent runs again — an idle parent is not woken by this tool.
+If the parent is running on the native executor, the message is delivered at the next safe step boundary. If the parent is idle, the mailbox message starts a new run. A parent running on an external executor cannot accept mailbox messages mid-turn, so the message waits until its next run.
 
 Guidelines:
 

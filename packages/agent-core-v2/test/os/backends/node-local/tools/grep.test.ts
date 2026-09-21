@@ -23,6 +23,7 @@ import {
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IEventBus } from '#/app/event/eventBus';
+import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import type { PathClass } from '#/_base/execEnv/environmentProbe';
 import {
@@ -370,6 +371,9 @@ describe('GrepTool', () => {
           });
           reg.definePartialInstance(IEventBus, {
             subscribe: () => toDisposable(() => {}),
+          });
+          reg.definePartialInstance(IConfigService, {
+            onDidSectionChange: Event.None as Event<ConfigSectionChangedEvent>,
           });
         },
       });

@@ -53,6 +53,33 @@ describe('AgentSend', () => {
       content: 'continue with the open files',
       idempotencyKey: TOOL_CALL_ID,
       waitForRunningDelivery: true,
+      idleWake: 'owned-child',
+    });
+  });
+
+  it('reports when an idle child was resumed for delivery', async () => {
+    const { tool } = createTool({
+      agents: {
+        [ANON_ID]: child(CALLER_ID),
+      },
+      send: vi.fn(async (input) => ({
+        ...queued(input),
+        delivery: 'delivered' as const,
+        resumed: true,
+      })),
+    });
+
+    const result = await executeTool(
+      tool,
+      context({ target: ANON_ID, message: 'wake and continue' }),
+    );
+
+    expect(JSON.parse(outputString(result))).toEqual({
+      message_id: 'msg-1',
+      status: 'delivered',
+      deduplicated: false,
+      resumed: true,
+      target: { task_name: ANON_ID, agent_id: ANON_ID },
     });
   });
 
@@ -256,7 +283,7 @@ function createTool(options: {
   const send =
     options.send === undefined
       ? vi.fn<IAgentCollaborationMessagingService['send']>(async (input) => queued(input))
-      : vi.fn<IAgentCollaborationMessagingService['send']>(options.send);
+      : vi.fn(options.send);
   const tool = new AgentSendTool(
     { agentId: options.callerAgentId ?? CALLER_ID } as IAgentScopeContext,
     { read: async () => ({ agents: options.agents ?? {} }) } as ISessionMetadata,

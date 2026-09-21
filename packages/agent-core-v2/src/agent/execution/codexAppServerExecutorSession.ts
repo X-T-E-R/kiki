@@ -165,7 +165,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     if (this.#active !== undefined) {
       throw new Error2(ErrorCodes.AGENT_ALREADY_RUNNING, 'Codex app-server executor already has an active turn');
     }
-    if (request.kind !== 'prompt') {
+    if (request.kind === 'retry') {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Retry is unsupported for Codex app-server executors');
     }
     options.signal.throwIfAborted();
@@ -173,7 +173,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     options.signal.throwIfAborted();
 
     const turnId = this.#reserveTurnId();
-    const origin: PromptOrigin = request.origin ?? { kind: 'system_trigger', name: 'subagent' };
+    const prompt = request.prompt;
+    const origin: PromptOrigin = request.kind === 'mailbox'
+      ? request.message.origin ?? { kind: 'system_trigger', name: 'subagent' }
+      : request.origin ?? { kind: 'system_trigger', name: 'subagent' };
     const controller = new AbortController();
     const relayAbort = (): void => controller.abort(options.signal.reason);
     options.signal.addEventListener('abort', relayAbort, { once: true });
@@ -194,8 +197,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       if (opened.handoff.truncated) losses.add('handoff_truncated');
     }
     const remotePrompt = opened.handoff === undefined
-      ? request.prompt
-      : `${HANDOFF_BEGIN}\n${opened.handoff.text}\n${HANDOFF_END}\n\n${request.prompt}`;
+      ? prompt
+      : `${HANDOFF_BEGIN}\n${opened.handoff.text}\n${HANDOFF_END}\n\n${prompt}`;
     const recorder = new ExternalTurnRecorder(
       this.context.agent,
       turnId,
@@ -215,7 +218,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         initialLosses: [...losses],
       },
     );
-    await recorder.begin(request.prompt, origin);
+    await recorder.begin(prompt, origin);
 
     const ready = createControlledPromise<void>();
     const result = createControlledPromise<TurnResult>();

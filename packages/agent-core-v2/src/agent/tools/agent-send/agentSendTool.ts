@@ -74,6 +74,7 @@ export class AgentSendTool implements IAgentSendTool {
         content: args.message,
         idempotencyKey: context.toolCallId,
         waitForRunningDelivery: true,
+        idleWake: 'owned-child',
       });
       if (acceptance.payloadConflict) {
         return failure(
@@ -84,6 +85,7 @@ export class AgentSendTool implements IAgentSendTool {
         message_id: acceptance.message.messageId,
         status: acceptance.delivery,
         deduplicated: acceptance.deduplicated,
+        resumed: acceptance.resumed,
         target: { task_name: targetTaskName, agent_id: child.agentId },
       });
     } catch (error) {

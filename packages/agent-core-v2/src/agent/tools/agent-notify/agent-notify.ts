@@ -8,7 +8,7 @@ export const AgentNotifyInputSchema = z
     message: z
       .string()
       .describe(
-        'Non-empty text message to queue in the parent agent mailbox. The parent receives it as a user-role message; write it as a self-contained note it can act on without seeing this conversation.',
+        'Non-empty text message to queue in the parent agent mailbox. The parent receives it as a user-role message and an idle parent starts a new run; write it as a self-contained note it can act on without seeing this conversation.',
       ),
   })
   .strict();

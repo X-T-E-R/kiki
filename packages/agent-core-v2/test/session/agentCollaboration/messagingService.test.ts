@@ -6,6 +6,7 @@ import { ClusterDb } from '@kiki/minidb/cluster';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Event, Emitter } from '#/_base/event';
+import type { ServiceIdentifier } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -31,7 +32,19 @@ import {
   IAgentExecutionService,
   type IAgentExecutionService as AgentExecution,
 } from '#/agent/execution/execution';
+import { IAgentLoopService, type IAgentLoopService as AgentLoop } from '#/agent/loop/loop';
+import {
+  IAgentLLMRequesterService,
+  type AgentLLMRequestFinish,
+} from '#/agent/llmRequester/llmRequester';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
+import type {
+  DispatchChild,
+  DispatchRun,
+  ISessionDispatchService,
+} from '#/session/dispatch/dispatch';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
 import { AgentMessageMailboxFullError } from '#/session/agentCollaboration/messageMailbox';
 import type { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
@@ -43,6 +56,7 @@ import {
 import type { AgentMeta, ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
+import { agentService, createTestAgent } from '../../harness';
 
 const signal = new AbortController().signal;
 const tempDirs: string[] = [];
@@ -111,9 +125,9 @@ describe('thread mailbox agent collaboration adapter', () => {
       acceptMessage,
     } as unknown as IThreadMailboxStore);
 
-    const error = await store.accept(messageInput('overflow', 'overflow')).catch((reason: unknown) => reason);
-    expect(error).toBeInstanceOf(AgentMessageMailboxFullError);
-    expect(error).toMatchObject({ limit: 100_000 });
+    const caught = await store.accept(messageInput('overflow', 'overflow')).catch((error: unknown) => error);
+    expect(caught).toBeInstanceOf(AgentMessageMailboxFullError);
+    expect(caught).toMatchObject({ limit: 100_000 });
     expect(acceptMessage).toHaveBeenCalledWith(expect.not.objectContaining({
       pendingLimit: expect.anything(),
     }));
@@ -190,10 +204,10 @@ describe('thread mailbox agent collaboration adapter', () => {
 });
 
 describe('agent collaboration safe-boundary delivery', () => {
-  it('does not wake an idle target and delivers FIFO before its next run', async () => {
+  it('keeps idle delivery queued when the sender does not request a wakeup', async () => {
     const store = mailboxStore(tempDir());
     const lifecycle = lifecycleHarness([]);
-    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
     const target = agentHandle('agent-target');
 
     await service.send(sendInput('first', 'call-1'));
@@ -223,14 +237,351 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
+  it('delivers a queued child notification to main through a real interactive prompt turn', async () => {
+    const ctx = createTestAgent();
+    const main: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: {
+        get: <T>(id: ServiceIdentifier<T>): T => ctx.get(id),
+      },
+      dispose: () => {},
+    };
+    const service = messagingService(
+      mailboxStore(tempDir()),
+      lifecycleHarness([main]).service,
+      sessionContext(),
+      metadataHarness({ main: {} }),
+    );
+    try {
+      await service.send({
+        sourceAgentId: 'agent-child',
+        sourceTaskName: 'worker',
+        targetAgentId: 'main',
+        targetTaskName: 'root',
+        content: 'parent update',
+        idempotencyKey: 'notify-main',
+      });
+      ctx.mockNextResponse({ type: 'text', text: 'acknowledged' });
+
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue' }] });
+      await ctx.get(IAgentLoopService).settled();
+
+      expect(ctx.context.get()).toContainEqual(expect.objectContaining({
+        origin: expect.objectContaining({
+          kind: 'agent_message',
+          senderAgentId: 'agent-child',
+          senderTaskName: 'worker',
+        }),
+      }));
+      expect(ctx.llmCalls.at(-1)?.history.some((message) =>
+        message.role === 'user' && message.content.some((part) =>
+          part.type === 'text' && part.text.includes('Message from agent "worker" (agent-child)'),
+        ),
+      )).toBe(true);
+    } finally {
+      service.dispose();
+      await ctx.dispose();
+    }
+  });
+
+  it('starts a follow-up main turn when a running turn ends before another safe boundary', async () => {
+    let resolveEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      resolveEntered = resolve;
+    });
+    let resolveFirst!: (value: AgentLLMRequestFinish) => void;
+    const first = new Promise<AgentLLMRequestFinish>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let calls = 0;
+    const response = (text: string): AgentLLMRequestFinish => ({
+      message: { role: 'assistant', content: [{ type: 'text', text }], toolCalls: [] },
+      usage: { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 },
+    });
+    const requester: IAgentLLMRequesterService = {
+      _serviceBrand: undefined,
+      prepareTurnConfig: () => ({ thinkingEffort: 'off' }),
+      invalidatePromptSnapshots: () => 0,
+      request: async () => {
+        calls += 1;
+        if (calls === 1) {
+          resolveEntered();
+          return first;
+        }
+        return response('follow-up handled');
+      },
+      start(overrides, onPart, requestSignal) {
+        return {
+          trace: { traceId: undefined },
+          result: this.request(overrides, onPart, requestSignal),
+        };
+      },
+    };
+    const ctx = createTestAgent(agentService(IAgentLLMRequesterService, requester));
+    const main: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: {
+        get: <T>(id: ServiceIdentifier<T>): T => ctx.get(id),
+      },
+      dispose: () => {},
+    };
+    const dispatch = dispatchHarness(async (child, request, options) => ({
+      child,
+      request: request as DispatchRun['request'],
+      started: child.agent.accessor.get(IAgentExecutionService).run(
+        request as DispatchRun['request'],
+        { signal: options.signal },
+      ),
+    }));
+    const service = messagingService(
+      mailboxStore(tempDir()),
+      lifecycleHarness([main]).service,
+      sessionContext(),
+      metadataHarness({ main: {} }),
+      dispatch,
+    );
+    try {
+      const initial = ctx.rpc.prompt({ input: [{ type: 'text', text: 'finish without another step' }] });
+      await entered;
+      await service.send({
+        sourceAgentId: 'agent-child',
+        sourceTaskName: 'worker',
+        targetAgentId: 'main',
+        targetTaskName: 'root',
+        content: 'follow up after this turn',
+        idempotencyKey: 'notify-running-main',
+        idleWake: 'parent',
+      });
+
+      resolveFirst(response('initial done'));
+      await initial;
+      await vi.waitFor(() => {
+        expect(calls).toBe(2);
+      });
+      await ctx.get(IAgentLoopService).settled();
+      expect(ctx.context.get()).toContainEqual(expect.objectContaining({
+        origin: expect.objectContaining({
+          kind: 'agent_message',
+          senderAgentId: 'agent-child',
+        }),
+      }));
+    } finally {
+      resolveFirst(response('cleanup'));
+      service.dispose();
+      await ctx.dispose();
+    }
+  });
+
+  it('wakes an idle main agent and starts a real mailbox-triggered run', async () => {
+    const ctx = createTestAgent();
+    const main: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: {
+        get: <T>(id: ServiceIdentifier<T>): T => ctx.get(id),
+      },
+      dispose: () => {},
+    };
+    const dispatch = dispatchHarness(async (child, request, options) => ({
+      child,
+      request: request as DispatchRun['request'],
+      started: child.agent.accessor.get(IAgentExecutionService).run(
+        request as DispatchRun['request'],
+        { signal: options.signal },
+      ),
+    }));
+    const service = messagingService(
+      mailboxStore(tempDir()),
+      lifecycleHarness([main]).service,
+      sessionContext(),
+      metadataHarness({ main: {} }),
+      dispatch,
+    );
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'parent handled update' });
+      const accepted = await service.send({
+        sourceAgentId: 'agent-child',
+        sourceTaskName: 'worker',
+        targetAgentId: 'main',
+        targetTaskName: 'root',
+        content: 'wake parent',
+        idempotencyKey: 'wake-main',
+        idleWake: 'parent',
+      });
+
+      expect(accepted.delivery).toBe('queued');
+      await vi.waitFor(() => {
+        expect(ctx.llmCalls).toHaveLength(1);
+      });
+      await ctx.get(IAgentLoopService).settled();
+      expect(dispatch.runOnExisting).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: 'main' }),
+        expect.objectContaining({ kind: 'mailbox' }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+      expect(dispatch.recordDelegatedRun).not.toHaveBeenCalled();
+      expect(ctx.context.get()).toContainEqual(expect.objectContaining({
+        origin: expect.objectContaining({ kind: 'agent_message', messageId: expect.any(String) }),
+      }));
+    } finally {
+      service.dispose();
+      await ctx.dispose();
+    }
+  });
+
+  it('resumes an idle live child through dispatch and delivers the mailbox message before the run', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    const lifecycle = lifecycleHarness([target.handle]);
+    const runOnExisting: ISessionDispatchService['runOnExisting'] = async (child, request, options) => {
+      expect(options.requesterAgentId).toBeUndefined();
+      expect(request).toMatchObject({
+        kind: 'mailbox',
+        prompt: 'Message from agent "root" (main):\n\nwake now',
+      });
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started: Promise.resolve({
+          agentId: child.agentId,
+          turn: {} as never,
+          completion: Promise.resolve({ summary: 'done' }),
+        }),
+      };
+    };
+    const dispatch = dispatchHarness(runOnExisting);
+    const service = messagingService(
+      store,
+      lifecycle.service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+      dispatch,
+    );
+
+    const result = await service.send({
+      ...sendInput('wake now', 'wake-idle'),
+      idleWake: 'owned-child',
+    });
+
+    expect(result).toMatchObject({ delivery: 'delivered', resumed: true });
+    expect(target.messages.map((message) => message.content[0])).toEqual([
+      { type: 'text', text: 'Message from agent "root" (main):\n\nwake now' },
+    ]);
+    expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
+    expect(dispatch.recordDelegatedRun).toHaveBeenCalledWith('main', 'agent-target');
+    service.dispose();
+  });
+
+  it('recreates and resumes a cold idle child through the normal dispatch path', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    const lifecycle = lifecycleHarness([]);
+    const child: DispatchChild = {
+      agent: target.handle,
+      agentId: 'agent-target',
+      profileName: 'test',
+      thinkingEffort: 'off',
+      meta: { type: 'sub', delegator: { kind: 'agent', agentId: 'main' } },
+    };
+    const dispatch = dispatchHarness(
+      async (_child, request, options) => {
+        await target.execution.hooks.onWillRun.run({ signal: options.signal });
+        return {
+          child,
+          request: request as DispatchRun['request'],
+          started: Promise.resolve({
+            agentId: child.agentId,
+            turn: {} as never,
+            completion: Promise.resolve({ summary: 'done' }),
+          }),
+        };
+      },
+      async (delegator, ref) => {
+        expect(delegator).toEqual({ kind: 'agent', agentId: 'main' });
+        expect(ref).toBe('agent-target');
+        lifecycle.add(target.handle);
+        return child;
+      },
+    );
+    const service = messagingService(
+      store,
+      lifecycle.service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': child.meta! }),
+      dispatch,
+    );
+
+    const result = await service.send({
+      ...sendInput('cold wake', 'cold-wake'),
+      idleWake: 'owned-child',
+    });
+
+    expect(result).toMatchObject({ delivery: 'delivered', resumed: true });
+    expect(dispatch.resolveOwnedChild).toHaveBeenCalledTimes(1);
+    expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
+    expect(dispatch.recordDelegatedRun).toHaveBeenCalledWith('main', 'agent-target');
+    service.dispose();
+  });
+
+  it('fails meaningfully when an idle child executor is permanently broken', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    target.setExecutionState('broken');
+    const service = messagingService(
+      store,
+      lifecycleHarness([target.handle]).service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+    );
+
+    await expect(service.send({
+      ...sendInput('cannot wake', 'broken-wake'),
+      idleWake: 'owned-child',
+    })).rejects.toMatchObject({
+      code: 'internal',
+      message: 'Agent instance "agent-target" cannot be resumed because its executor is broken',
+    });
+    service.dispose();
+  });
+
+  it.each(['starting', 'cancelling'] as const)(
+    'keeps delivery queued without restarting a %s child',
+    async (state) => {
+      const store = mailboxStore(tempDir());
+      const target = agentHandle('agent-target');
+      target.setExecutionState(state);
+      const dispatch = dispatchHarness();
+      const service = messagingService(
+        store,
+        lifecycleHarness([target.handle]).service,
+        sessionContext(),
+        metadataHarness({ 'agent-target': {} }),
+        dispatch,
+      );
+
+      await expect(service.send({
+        ...sendInput(`during ${state}`, `wake-${state}`),
+        idleWake: 'owned-child',
+      })).resolves.toMatchObject({ delivery: 'queued' });
+      expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+      service.dispose();
+    },
+  );
+
   it('injects AgentSend into a running target at its next step boundary before acknowledging delivery', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     target.setRunning(true);
     const lifecycle = lifecycleHarness([target.handle]);
-    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
 
-    const delivery = service.send(sendInput('running steer', 'running-steer'));
+    const delivery = service.send({
+      ...sendInput('running steer', 'running-steer'),
+      idleWake: 'owned-child',
+    });
     await waitUntil(() => target.pendingSteers() === 1);
     let settled = false;
     void delivery.then(() => { settled = true; });
@@ -254,15 +605,26 @@ describe('agent collaboration safe-boundary delivery', () => {
     const target = agentHandle('agent-target');
     target.setRunning(true);
     const lifecycle = lifecycleHarness([target.handle]);
-    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+    const dispatch = dispatchHarness();
+    const service = messagingService(
+      store,
+      lifecycle.service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+      dispatch,
+    );
 
-    const delivery = service.send(sendInput('after race', 'running-race'));
+    const delivery = service.send({
+      ...sendInput('after race', 'running-race'),
+      idleWake: 'owned-child',
+    });
     await waitUntil(() => target.pendingSteers() === 1);
     target.setRunning(false);
 
     await expect(delivery).resolves.toMatchObject({ delivery: 'queued' });
     expect(target.messages).toEqual([]);
     expect(lifecycle.service.create).not.toHaveBeenCalled();
+    expect(dispatch.runOnExisting).not.toHaveBeenCalled();
 
     await target.execution.hooks.onWillRun.run({ signal });
 
@@ -307,7 +669,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     };
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
     try {
       const interruptedRun = target.execution.hooks.onWillRun.run({ signal });
       await gate.entered;
@@ -332,7 +694,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
 
     await service.send({
       sourceAgentId: 'external:delegation_test',
@@ -409,7 +771,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     const adapter = new AgentCollaborationMessageStoreAdapter(threadStore);
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    const service = new AgentCollaborationMessagingService(adapter, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+    const service = messagingService(adapter, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
 
     await expect(target.execution.hooks.onWillRun.run({ signal })).rejects.toMatchObject({
       code: 'runtime.connection_failed',
@@ -431,7 +793,7 @@ describe('agent collaboration mailbox restart durability', () => {
   it('delivers queued messages FIFO after the service and store are rebuilt on the same home', async () => {
     const homeDir = tempDir();
     const firstStore = mailboxStore(homeDir);
-    const firstService = new AgentCollaborationMessagingService(
+    const firstService = messagingService(
       firstStore,
       lifecycleHarness([]).service,
       sessionContext(),
@@ -444,7 +806,7 @@ describe('agent collaboration mailbox restart durability', () => {
     const reopened = mailboxStore(homeDir);
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    const service = new AgentCollaborationMessagingService(
+    const service = messagingService(
       reopened,
       lifecycle.service,
       sessionContext(),
@@ -472,7 +834,7 @@ describe('agent collaboration mailbox restart durability', () => {
     const orphan = await adapter.accept(messageInput('orphan', 'orphan-1'));
     const kept = await adapter.accept({ ...messageInput('kept', 'kept-1'), targetAgentId: 'main' });
     const lifecycle = lifecycleHarness([]);
-    const service = new AgentCollaborationMessagingService(
+    const service = messagingService(
       adapter,
       lifecycle.service,
       sessionContext(),
@@ -512,7 +874,7 @@ describe('agent collaboration mailbox restart durability', () => {
       ...messageInput('for main', 'main-1'),
       targetAgentId: 'main',
     });
-    const service = new AgentCollaborationMessagingService(
+    const service = messagingService(
       adapter,
       lifecycleHarness([]).service,
       sessionContext(),
@@ -541,7 +903,7 @@ describe('agent collaboration mailbox restart durability', () => {
     const sweepChecked = new Promise<void>((resolve) => {
       swept = resolve;
     });
-    const fresh = new AgentCollaborationMessagingService(
+    const fresh = messagingService(
       adapter,
       lifecycleHarness([]).service,
       sessionContext(),
@@ -553,13 +915,16 @@ describe('agent collaboration mailbox restart durability', () => {
 
     expect(await pendingAgentIds(thread)).toEqual(['agent-target']);
 
-    const existing = new AgentCollaborationMessagingService(
+    const existing = messagingService(
       adapter,
       lifecycleHarness([]).service,
       sessionContext(),
       metadataHarness({}),
     );
-    await waitFor(async () => !(await pendingAgentIds(thread)).includes('agent-target'));
+    await waitFor(async () => {
+      const page = await thread.readActivity(target, 0, 10);
+      return page.activities.some((activity) => activity.messageId === orphan.message.messageId);
+    });
     const page = await thread.readActivity(target, 0, 10);
     expect(page.activities).toEqual([
       expect.objectContaining({
@@ -578,7 +943,7 @@ describe('agent collaboration mailbox restart durability', () => {
     await adapter.accept(messageInput('late', 'late-1'));
     await adapter.accept({ ...messageInput('gone', 'gone-1'), targetAgentId: 'agent-ghost' });
     let registry: Readonly<Record<string, AgentMeta>> = {};
-    const service = new AgentCollaborationMessagingService(
+    const service = messagingService(
       wrapStore(adapter, {
         listPendingAgents: async (sessionId) => {
           registry = { 'agent-target': {} };
@@ -619,7 +984,7 @@ describe('agent collaboration mailbox lifecycle cleanup', () => {
 
     expect(discardPending).not.toHaveBeenCalled();
     const target = agentHandle('agent-target');
-    const service = new AgentCollaborationMessagingService(
+    const service = messagingService(
       adapter,
       lifecycleHarness([target.handle]).service,
       sessionContext(),
@@ -933,6 +1298,32 @@ function metadataHarness(
   } as unknown as ISessionMetadata;
 }
 
+function messagingService(
+  store: IAgentCollaborationMessageStore,
+  lifecycle: AgentLifecycle,
+  session: ISessionContext,
+  metadata: ISessionMetadata,
+  dispatch: ISessionDispatchService = dispatchHarness(),
+): AgentCollaborationMessagingService {
+  return new AgentCollaborationMessagingService(store, lifecycle, session, metadata, dispatch);
+}
+
+function dispatchHarness(
+  runOnExisting: ISessionDispatchService['runOnExisting'] = async () => {
+    throw new Error('unexpected wake');
+  },
+  resolveOwnedChild: ISessionDispatchService['resolveOwnedChild'] = async () => {
+    throw new Error('unexpected child resolution');
+  },
+): ISessionDispatchService {
+  return {
+    _serviceBrand: undefined,
+    resolveOwnedChild: vi.fn(resolveOwnedChild),
+    runOnExisting: vi.fn(runOnExisting),
+    recordDelegatedRun: vi.fn(),
+  } as unknown as ISessionDispatchService;
+}
+
 function wrapStore(
   adapter: AgentCollaborationMessageStoreAdapter,
   overrides: Partial<IAgentCollaborationMessageStore> = {},
@@ -991,7 +1382,7 @@ function agentHandle(agentId: string) {
     readonly message: ContextMessage;
     readonly resolve: (delivered: boolean) => void;
   }> = [];
-  let state: 'idle' | 'running' = 'idle';
+  let state: 'idle' | 'starting' | 'running' | 'cancelling' | 'broken' = 'idle';
   const memory: AgentContextMemory = {
     _serviceBrand: undefined,
     get: () => messages,
@@ -1008,7 +1399,13 @@ function agentHandle(agentId: string) {
     run: async () => { throw new Error('unexpected run'); },
     status: () => state === 'running'
       ? { state: 'running' as const, turnId: 1 }
-      : { state: 'idle' as const },
+      : state === 'starting'
+        ? { state: 'starting' as const }
+        : state === 'cancelling'
+          ? { state: 'cancelling' as const, turnId: 1 }
+          : state === 'broken'
+            ? { state: 'broken' as const }
+            : { state: 'idle' as const },
     steer: (message: ContextMessage) => {
       if (state !== 'running') return Promise.resolve(false);
       return new Promise<boolean>((resolve) => pendingSteers.push({ message, resolve }));
@@ -1018,6 +1415,32 @@ function agentHandle(agentId: string) {
     shutdown: () => Promise.resolve(),
     hooks: createHooks(['onWillRun']),
   } as AgentExecution;
+  const loop = {
+    _serviceBrand: undefined,
+    enqueue: () => { throw new Error('unexpected enqueue'); },
+    run: async () => ({ type: 'completed', steps: 0, truncated: false } as const),
+    status: () => ({
+      state: state === 'running' ? 'running' as const : 'idle' as const,
+      activeTurnId: state === 'running' ? 1 : undefined,
+      pendingTurnIds: [],
+      hasPendingRequests: false,
+    }),
+    cancel: () => false,
+    cancelFromUser: () => {},
+    tryAcquireQuiescence: () => undefined,
+    settled: () => Promise.resolve(),
+    hasPendingRequests: () => false,
+    registerLoopErrorHandler: () => ({ dispose: () => {} }),
+    hooks: createHooks(['onWillBeginStep', 'onDidFinishStep']),
+  } as AgentLoop;
+  const prompt = {
+    _serviceBrand: undefined,
+    list: () => ({ active: undefined, pending: [] }),
+  };
+  const profile = {
+    _serviceBrand: undefined,
+    data: () => ({ profileName: 'test', thinkingLevel: 'off' }),
+  };
   const wire = {
     _serviceBrand: undefined,
     flush: async () => { operations.push('flush'); },
@@ -1029,6 +1452,9 @@ function agentHandle(agentId: string) {
       get<T>(id: unknown): T {
         if (id === IAgentContextMemoryService) return memory as T;
         if (id === IAgentExecutionService) return execution as T;
+        if (id === IAgentLoopService) return loop as T;
+        if (id === IAgentPromptService) return prompt as T;
+        if (id === IAgentProfileService) return profile as T;
         if (id === IWireService) return wire as T;
         if (id === IAgentLifecycleService) return undefined as T;
         throw new Error('unexpected agent service');
@@ -1046,6 +1472,9 @@ function agentHandle(agentId: string) {
       if (!running) {
         for (const pending of pendingSteers.splice(0)) pending.resolve(false);
       }
+    },
+    setExecutionState(next: 'starting' | 'cancelling' | 'broken') {
+      state = next;
     },
     pendingSteers: () => pendingSteers.length,
     beginNextStep() {

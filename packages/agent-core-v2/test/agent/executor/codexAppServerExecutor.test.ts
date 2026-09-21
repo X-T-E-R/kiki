@@ -449,6 +449,35 @@ describe('Codex app-server external executor', () => {
     await harness.session.shutdown();
   });
 
+  it('runs an idle Codex executor from a mailbox message with its collaboration origin', async () => {
+    const harness = createHarness();
+    const prompt = 'Message from agent "root" (main):\n\ncontinue';
+    const message: ContextMessage = {
+      id: 'mailbox-message',
+      role: 'user',
+      content: [{ type: 'text', text: prompt }],
+      toolCalls: [],
+      origin: {
+        kind: 'agent_message',
+        messageId: 'mailbox-message',
+        senderAgentId: 'main',
+        senderTaskName: 'root',
+      },
+    };
+
+    const handle = await harness.session.run(
+      { kind: 'mailbox', prompt, message },
+      { signal: new AbortController().signal },
+    );
+    await handle.completion;
+
+    expect(harness.prompts[0]?.['input']).toEqual([{ type: 'text', text: prompt }]);
+    expect(harness.events.find((event) => event instanceof TurnPrompt)).toMatchObject({
+      origin: message.origin,
+    });
+    await harness.session.shutdown();
+  });
+
   it('passes the original model through model/list, thread creation, and xhigh turn start', async () => {
     const harness = createHarness({
       modelAlias: 'vendor-short',

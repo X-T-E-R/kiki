@@ -44,6 +44,7 @@ describe('AgentNotify', () => {
       targetTaskName: 'root',
       content: 'indexing done',
       idempotencyKey: TOOL_CALL_ID,
+      idleWake: 'parent',
     });
   });
 
@@ -172,7 +173,7 @@ function createTool(options: {
   const send =
     options.send === undefined
       ? vi.fn<IAgentCollaborationMessagingService['send']>(async (input) => queued(input))
-      : vi.fn<IAgentCollaborationMessagingService['send']>(options.send);
+      : vi.fn(options.send);
   const parentAgentId = 'parentAgentId' in options ? options.parentAgentId : MAIN_ID;
   const scope: IAgentScopeContext = {
     _serviceBrand: undefined,

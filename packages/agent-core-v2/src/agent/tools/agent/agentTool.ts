@@ -52,6 +52,11 @@ import {
   subagentProfileName,
 } from '#/session/agentLifecycle/subagentMetadata';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import {
+  AGENTS_SECTION,
+  isParentNotifyEnabled,
+  type AgentsConfig,
+} from '#/session/agentCollaboration/configSection';
 import { COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -92,6 +97,8 @@ import AGENT_DESCRIPTION_BASE from './agent.md?raw';
 const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (schema) => {
   addSubagentBindingSchemaConstraints(schema);
 });
+const PARENT_NOTIFY_DESCRIPTION =
+  'Subagents can use `AgentNotify` to send messages to their parent during a run.';
 export { buildProfileDescriptions } from './subagentDescription';
 
 export class SubagentTool implements ISubagentTool {
@@ -141,7 +148,12 @@ export class SubagentTool implements ISubagentTool {
     const timeoutDescription = formatSubagentTimeoutDescription(
       resolveSubagentTimeoutMs(this.config),
     );
-    let description = `${AGENT_DESCRIPTION_BASE}\n\nSubagent timeout: ${timeoutDescription}.\n\n${backgroundDescription}`;
+    const agentDescription = isParentNotifyEnabled(
+      this.config.get<AgentsConfig>(AGENTS_SECTION),
+    )
+      ? AGENT_DESCRIPTION_BASE
+      : AGENT_DESCRIPTION_BASE.replace(`\n\n${PARENT_NOTIFY_DESCRIPTION}`, '');
+    let description = `${agentDescription}\n\nSubagent timeout: ${timeoutDescription}.\n\n${backgroundDescription}`;
     const own = this.profile.data();
     const snapshot =
       own.profileDefinitionId === undefined ? undefined : this.catalogSnapshot();

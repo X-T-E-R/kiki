@@ -350,7 +350,7 @@ export class SessionDispatchService implements ISessionDispatchService {
 
   async runOnExisting(
     child: DispatchChild,
-    requestInput: string | Extract<AgentRunRequest, { kind: 'retry' }>,
+    requestInput: string | AgentRunRequest,
     options: DispatchRunOptions,
   ): Promise<DispatchRun> {
     options.signal.throwIfAborted();
@@ -372,7 +372,7 @@ export class SessionDispatchService implements ISessionDispatchService {
 
   private async runExistingReserved(
     child: DispatchChild,
-    requestInput: string | Extract<AgentRunRequest, { kind: 'retry' }>,
+    requestInput: string | AgentRunRequest,
     options: DispatchRunOptions,
     reservation?: import('./capacity').DispatchReservation,
   ): Promise<DispatchRun> {

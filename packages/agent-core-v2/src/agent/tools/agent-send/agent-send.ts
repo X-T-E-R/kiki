@@ -15,7 +15,7 @@ export const AgentSendInputSchema = z
     message: z
       .string()
       .describe(
-        'Non-empty message to queue in the child mailbox. A running native child receives it at the next step boundary; an idle child or a child using an external executor receives it on its next run.',
+        'Non-empty message to queue in the child mailbox. A running native child receives it at the next step boundary; an idle resumable child starts a new run; a running external child receives it on its next run.',
       ),
   })
   .strict();
@@ -26,6 +26,7 @@ export interface AgentSendResult {
   readonly message_id: string;
   readonly status: 'queued' | 'delivered';
   readonly deduplicated: boolean;
+  readonly resumed?: boolean;
   readonly target: {
     readonly task_name: string;
     readonly agent_id: string;

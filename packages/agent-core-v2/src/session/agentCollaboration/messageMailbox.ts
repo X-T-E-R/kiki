@@ -20,6 +20,7 @@ export interface AgentMessageAcceptance {
   readonly deduplicated: boolean;
   readonly delivery: 'queued' | 'delivered';
   readonly payloadConflict: boolean;
+  readonly resumed?: boolean;
 }
 
 export interface QueuedAgentMessage {
@@ -72,6 +73,7 @@ export interface IAgentCollaborationMessagingService {
     readonly content: string;
     readonly idempotencyKey: string;
     readonly waitForRunningDelivery?: boolean;
+    readonly idleWake?: 'owned-child' | 'parent';
   }): Promise<AgentMessageAcceptance>;
 }
 
