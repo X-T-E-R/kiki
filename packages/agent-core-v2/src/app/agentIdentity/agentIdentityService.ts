@@ -25,12 +25,16 @@ export class AgentIdentityService implements IAgentIdentity {
     this.frozen = config.ready
       .catch(() => undefined)
       .then(() => {
-        const section = config.get<IdentityConfig | undefined>(IDENTITY_SECTION) ?? {};
+        const section = config.get<IdentityConfig | undefined>(IDENTITY_SECTION) ?? {
+          advertiseAsKimiCode: false,
+        };
         this.snapshot = buildAgentIdentitySnapshot({
           name: section.name,
           slug: section.slug,
+          advertiseAsKimiCode: section.advertiseAsKimiCode,
           hostDisplayName: bootstrap.args.displayName,
           hostRequestHeaders: bootstrap.args.requestHeaders,
+          hostVersion: bootstrap.clientIdentity.version,
         });
         return this.snapshot;
       });

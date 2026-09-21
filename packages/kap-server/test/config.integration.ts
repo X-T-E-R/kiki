@@ -345,6 +345,17 @@ describe('server-v2 /api/config', () => {
     expect(persisted).toContain('default_profile = ""');
   });
 
+  it('preserves the Kimi Code compatibility flag across partial identity patches', async () => {
+    await boot('[identity]\nadvertise_as_kimi_code = true\n');
+
+    const after = await patchConfig({ identity: { name: 'Example Agent' } });
+
+    expect(after.identity).toEqual({
+      name: 'Example Agent',
+      advertiseAsKimiCode: true,
+    });
+  });
+
   it('round-trips every persistable GUI runtime domain through config.toml', async () => {
     await boot();
 
@@ -363,7 +374,11 @@ describe('server-v2 /api/config', () => {
         print_background_mode: 'drain',
         print_max_turns: 12,
       },
-      identity: { name: 'Example Agent', slug: 'example-agent' },
+      identity: {
+        name: 'Example Agent',
+        slug: 'example-agent',
+        advertise_as_kimi_code: true,
+      },
       extra_agent_dirs: ['/tmp/example-agents', '/tmp/team-agents'],
       skip_builtin_profile_installation: ['researcher', 'reviewer'],
       disabled_named_profiles: ['reviewer'],
@@ -403,7 +418,11 @@ describe('server-v2 /api/config', () => {
       printBackgroundMode: 'drain',
       printMaxTurns: 12,
     });
-    expect(after.identity).toEqual({ name: 'Example Agent', slug: 'example-agent' });
+    expect(after.identity).toEqual({
+      name: 'Example Agent',
+      slug: 'example-agent',
+      advertiseAsKimiCode: true,
+    });
     expect(after.extra_agent_dirs).toEqual(['/tmp/example-agents', '/tmp/team-agents']);
     expect(after.skip_builtin_profile_installation).toEqual(['researcher', 'reviewer']);
     expect(after.disabled_named_profiles).toEqual(['reviewer']);
@@ -489,7 +508,7 @@ describe('server-v2 /api/config', () => {
     expect(after.workspace_instance).toEqual({ idleTtlMs: 300_000 });
     expect(after.image).toEqual({ maxEdgePx: 2_048 });
     expect(after.task).toEqual({ keepAliveOnExit: false, printBackgroundMode: 'exit' });
-    expect(after.identity).toEqual({ name: 'Example Agent' });
+    expect(after.identity).toEqual({ name: 'Example Agent', advertiseAsKimiCode: false });
     expect(after.extra_agent_dirs).toEqual(['/tmp/example-agents']);
     expect(after.skip_builtin_profile_installation).toEqual([]);
     expect(after.disabled_named_profiles).toEqual([]);

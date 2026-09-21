@@ -101,7 +101,7 @@ export function projectRequestIdentity(input: {
   } else if (policy.client.userAgent === 'grok_build') {
     headers['User-Agent'] = `grok-shell/${input.runtimeVersion} (${input.platform}; ${input.arch})`;
   } else if (policy.client.userAgent === 'kimi_code') {
-    headers['User-Agent'] = `kimi-code-cli/${asciiHeader(input.runtimeVersion)}`;
+    headers['User-Agent'] = hostUserAgent(input.hostRequestHeaders) ?? `kiki-cli/${asciiHeader(input.runtimeVersion)}`;
   } else if (policy.client.userAgent === 'none') {
     headers[trueNone ? SUPPRESS_REQUEST_IDENTITY_HEADER : SUPPRESS_USER_AGENT_HEADER] = '1';
   }
@@ -262,6 +262,15 @@ function donorHeader(
 ): string | undefined {
   for (const [name, value] of Object.entries(input.hostRequestHeaders ?? {})) {
     if (name.toLowerCase() !== expectedName) continue;
+    const cleaned = asciiHeader(value);
+    return cleaned === 'unknown' ? undefined : cleaned;
+  }
+  return undefined;
+}
+
+function hostUserAgent(headers: Readonly<Record<string, string>> | undefined): string | undefined {
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (name.toLowerCase() !== 'user-agent') continue;
     const cleaned = asciiHeader(value);
     return cleaned === 'unknown' ? undefined : cleaned;
   }

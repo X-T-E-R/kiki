@@ -457,20 +457,22 @@ retry = false
 
 ## `identity`
 
-自定义 Agent 的身份标识。不设置时行为完全不变。
+自定义 Agent 的身份标识。默认情况下，上游请求使用 `kiki-cli` 产品名，且不会声明自定义名称或 slug。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `name` | `string` | — | Agent 在系统提示词中的自称（填充 `${product_name}` 变量，你自己的 `SYSTEM.md` 和 agent 文件同样适用） |
 | `slug` | `string` | 由 `name` 派生 | 协议字段中使用的机器标识：发给第三方 provider 的 `User-Agent` 产品名，以及连接 MCP 服务器时声明的客户端名。省略时由 `name` 派生：转小写，连续的非字母数字字符折叠为 `-` |
+| `advertise_as_kimi_code` | `boolean` | `false` | 为兼容 Kimi Code，将发往上游的 `User-Agent` 产品名设为 `kimi-code-cli`，并在上游 HTTP 请求中覆盖 `slug`。默认情况下，Kiki 使用 `kiki-cli` 标识自己 |
 
 ```toml
 [identity]
 name = "Acme Dev Agent"
-slug = "acme-dev"        # 可选
+slug = "acme-dev"              # 可选
+advertise_as_kimi_code = false
 ```
 
-两个字段都可以通过 `KIKI_IDENTITY_NAME` 和 `KIKI_IDENTITY_SLUG` 环境变量设置，优先级高于 `config.toml`，且不会被写回配置文件——适合不便写配置文件的容器和 CI 场景。
+`name` 和 `slug` 可以通过 `KIKI_IDENTITY_NAME` 和 `KIKI_IDENTITY_SLUG` 环境变量设置，优先级高于 `config.toml`，且不会被写回配置文件——适合不便写配置文件的容器和 CI 场景。
 
 如果名称中不含任何 ASCII 字母或数字（例如纯中文名称），就无法派生出 slug，此时回退为 `agent`；需要特定协议标识请显式填写 `slug`。
 

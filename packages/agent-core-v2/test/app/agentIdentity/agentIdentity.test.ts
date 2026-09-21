@@ -9,7 +9,10 @@ import {
   type AgentIdentitySnapshot,
 } from '#/app/agentIdentity/agentIdentity';
 import { AgentIdentityService } from '#/app/agentIdentity/agentIdentityService';
-import { IDENTITY_SECTION } from '#/app/agentIdentity/configSection';
+import {
+  IDENTITY_SECTION,
+  IdentityConfigSchema,
+} from '#/app/agentIdentity/configSection';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { LifecycleScope } from '#/app/scopes';
@@ -90,11 +93,19 @@ describe('normalizeIdentitySlug', () => {
   });
 });
 
+describe('IdentityConfigSchema', () => {
+  it('defaults Kimi Code advertising off and rejects non-boolean values', () => {
+    expect(IdentityConfigSchema.parse({}).advertiseAsKimiCode).toBe(false);
+    expect(IdentityConfigSchema.safeParse({ advertiseAsKimiCode: 'true' }).success).toBe(false);
+  });
+});
+
 describe('AgentIdentityService', () => {
   it('claims nothing when the section is unset', async () => {
     const identity = await resolve(undefined);
     expect(identity.slug).toBeUndefined();
     expect(identity.displayName).toBeUndefined();
+    expect(identity.upstreamRequestHeaders['User-Agent']).toBe('kiki-cli/0.0.0-test');
   });
 
   it('falls back to the host-declared display name and claims no slug', async () => {
@@ -158,13 +169,21 @@ describe('AgentIdentityService', () => {
     expect(identity.displayName).toBe('开发助手');
     expect(identity.slug).toBe(DEFAULT_IDENTITY_SLUG);
   });
+
+  it('applies Kimi Code compatibility to the frozen request headers', async () => {
+    const { identity } = createIdentity(
+      { advertiseAsKimiCode: true },
+      { hostRequestHeaders: { 'User-Agent': 'kiki-cli/1.2.3' } },
+    );
+    expect((await identity.resolved()).requestHeaders['User-Agent']).toBe('kimi-code-cli/1.2.3');
+  });
 });
 
 describe('AgentIdentityService freeze', () => {
   it('ignores a config edit made after the freeze', async () => {
     const { identity, config } = createIdentity(
       { name: 'Acme' },
-      { hostRequestHeaders: { 'User-Agent': 'kimi-code-cli/1.0' } },
+      { hostRequestHeaders: { 'User-Agent': 'kiki-cli/1.0' } },
     );
     const before = await identity.resolved();
     expect(before.displayName).toBe('Acme');
@@ -191,7 +210,7 @@ describe('AgentIdentityService freeze', () => {
 });
 
 describe('buildAgentIdentitySnapshot products', () => {
-  const HOST = { 'User-Agent': 'kimi-code-cli/1.2.3 (darwin)', 'X-Msh-Device-Id': 'device-1' };
+  const HOST = { 'User-Agent': 'kiki-cli/1.2.3 (darwin)', 'X-Msh-Device-Id': 'device-1' };
 
   it('rewrites only the product token across every product when a slug is claimed', () => {
     const snapshot = buildAgentIdentitySnapshot({ slug: 'acme', hostRequestHeaders: HOST });
@@ -201,6 +220,7 @@ describe('buildAgentIdentitySnapshot products', () => {
       'User-Agent': 'acme/1.2.3 (darwin)',
       'X-Msh-Device-Id': 'device-1',
     });
+    expect(snapshot.upstreamRequestHeaders).toEqual(HOST);
   });
 
   it('passes the host products through untouched when no identity is claimed', () => {
@@ -208,6 +228,28 @@ describe('buildAgentIdentitySnapshot products', () => {
     expect(snapshot.thirdPartyUserAgent).toBe(HOST['User-Agent']);
     expect(snapshot.outboundUserAgent).toBe(HOST['User-Agent']);
     expect(snapshot.requestHeaders).toEqual(HOST);
+  });
+
+  it('forces the Kimi Code product when compatibility is enabled', () => {
+    const snapshot = buildAgentIdentitySnapshot({
+      slug: 'acme',
+      advertiseAsKimiCode: true,
+      hostRequestHeaders: HOST,
+      hostVersion: '1.2.3',
+    });
+    expect(snapshot.thirdPartyUserAgent).toBe('kimi-code-cli/1.2.3 (darwin)');
+    expect(snapshot.requestHeaders['User-Agent']).toBe('kimi-code-cli/1.2.3 (darwin)');
+    expect(snapshot.upstreamRequestHeaders['User-Agent']).toBe('kimi-code-cli/1.2.3 (darwin)');
+  });
+
+  it('creates a Kimi Code User-Agent for hosts that did not provide one', () => {
+    const snapshot = buildAgentIdentitySnapshot({
+      advertiseAsKimiCode: true,
+      hostRequestHeaders: {},
+      hostVersion: '1.2.3',
+    });
+    expect(snapshot.thirdPartyUserAgent).toBe('kimi-code-cli/1.2.3');
+    expect(snapshot.requestHeaders).toEqual({ 'User-Agent': 'kimi-code-cli/1.2.3' });
   });
 
   it.each([
@@ -232,7 +274,7 @@ describe('buildAgentIdentitySnapshot products', () => {
     (key) => {
       const snapshot = buildAgentIdentitySnapshot({
         slug: 'acme',
-        hostRequestHeaders: { [key]: 'kimi-code-cli/1.2.3', 'X-Msh-Device-Id': 'device-1' },
+        hostRequestHeaders: { [key]: 'kiki-cli/1.2.3', 'X-Msh-Device-Id': 'device-1' },
       });
       expect(snapshot.thirdPartyUserAgent).toBe('acme/1.2.3');
       expect(snapshot.outboundUserAgent).toBe('acme/1.2.3');
@@ -245,9 +287,9 @@ describe('buildAgentIdentitySnapshot products', () => {
 
   it('passes a lowercase spelling through untouched when no identity is claimed', () => {
     const snapshot = buildAgentIdentitySnapshot({
-      hostRequestHeaders: { 'user-agent': 'kimi-code-cli/1.2.3' },
+      hostRequestHeaders: { 'user-agent': 'kiki-cli/1.2.3' },
     });
-    expect(snapshot.thirdPartyUserAgent).toBe('kimi-code-cli/1.2.3');
-    expect(snapshot.requestHeaders).toEqual({ 'user-agent': 'kimi-code-cli/1.2.3' });
+    expect(snapshot.thirdPartyUserAgent).toBe('kiki-cli/1.2.3');
+    expect(snapshot.requestHeaders).toEqual({ 'user-agent': 'kiki-cli/1.2.3' });
   });
 });

@@ -3,6 +3,8 @@ import { replaceUserAgentProduct } from '@kiki/oauth';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
 export const DEFAULT_IDENTITY_SLUG = 'agent';
+export const KIKI_USER_AGENT_PRODUCT = 'kiki-cli';
+export const KIMI_CODE_USER_AGENT_PRODUCT = 'kimi-code-cli';
 
 export interface AgentIdentitySnapshot {
   readonly displayName: string | undefined;
@@ -10,6 +12,7 @@ export interface AgentIdentitySnapshot {
   readonly outboundUserAgent: string;
   readonly thirdPartyUserAgent: string | undefined;
   readonly requestHeaders: Readonly<Record<string, string>>;
+  readonly upstreamRequestHeaders: Readonly<Record<string, string>>;
 }
 
 export interface IAgentIdentity {
@@ -33,37 +36,61 @@ export function normalizeIdentitySlug(raw: string): string {
 export interface AgentIdentityInput {
   readonly name?: string;
   readonly slug?: string;
+  readonly advertiseAsKimiCode?: boolean;
   readonly hostDisplayName?: string;
   readonly hostRequestHeaders: Readonly<Record<string, string>>;
+  readonly hostVersion?: string;
 }
 
 export function buildAgentIdentitySnapshot(input: AgentIdentityInput): AgentIdentitySnapshot {
   const name = declared(input.name);
   const rawSlug = declared(input.slug) ?? name;
   const slug = rawSlug === undefined ? undefined : normalizeIdentitySlug(rawSlug);
-  const userAgentKeys = Object.keys(input.hostRequestHeaders).filter(
-    (key) => key.toLowerCase() === 'user-agent',
-  );
-  const hostUserAgent =
-    userAgentKeys[0] === undefined ? undefined : input.hostRequestHeaders[userAgentKeys[0]];
-  const thirdPartyUserAgent =
-    hostUserAgent === undefined || slug === undefined
-      ? hostUserAgent
-      : replaceUserAgentProduct(hostUserAgent, slug);
-  const requestHeaders: Record<string, string> = { ...input.hostRequestHeaders };
-  if (slug !== undefined) {
-    for (const key of userAgentKeys) {
-      const value = requestHeaders[key];
-      if (value !== undefined) requestHeaders[key] = replaceUserAgentProduct(value, slug);
-    }
+  const upstreamRequestHeaders: Record<string, string> = { ...input.hostRequestHeaders };
+  const upstreamUserAgentKeys = userAgentKeys(upstreamRequestHeaders);
+  if (upstreamUserAgentKeys.length === 0 && input.hostVersion !== undefined) {
+    const product = input.advertiseAsKimiCode === true
+      ? KIMI_CODE_USER_AGENT_PRODUCT
+      : KIKI_USER_AGENT_PRODUCT;
+    upstreamRequestHeaders['User-Agent'] = `${product}/${input.hostVersion}`;
+    upstreamUserAgentKeys.push('User-Agent');
+  } else if (input.advertiseAsKimiCode === true) {
+    replaceUserAgentProducts(
+      upstreamRequestHeaders,
+      upstreamUserAgentKeys,
+      KIMI_CODE_USER_AGENT_PRODUCT,
+    );
   }
+  const requestHeaders: Record<string, string> = { ...upstreamRequestHeaders };
+  const requestUserAgentKeys = userAgentKeys(requestHeaders);
+  if (slug !== undefined && input.advertiseAsKimiCode !== true) {
+    replaceUserAgentProducts(requestHeaders, requestUserAgentKeys, slug);
+  }
+  const thirdPartyUserAgent =
+    requestUserAgentKeys[0] === undefined ? undefined : requestHeaders[requestUserAgentKeys[0]];
   return {
     displayName: name ?? declared(input.hostDisplayName),
     slug,
     outboundUserAgent: thirdPartyUserAgent ?? slug ?? DEFAULT_IDENTITY_SLUG,
     thirdPartyUserAgent,
     requestHeaders,
+    upstreamRequestHeaders,
   };
+}
+
+function userAgentKeys(headers: Readonly<Record<string, string>>): string[] {
+  return Object.keys(headers).filter((key) => key.toLowerCase() === 'user-agent');
+}
+
+function replaceUserAgentProducts(
+  headers: Record<string, string>,
+  keys: readonly string[],
+  product: string,
+): void {
+  for (const key of keys) {
+    const value = headers[key];
+    if (value !== undefined) headers[key] = replaceUserAgentProduct(value, product);
+  }
 }
 
 function declared(raw: string | undefined): string | undefined {

@@ -795,6 +795,7 @@ export interface RuntimeConfigDraft {
   };
   identityName: string;
   identitySlug: string;
+  advertiseAsKimiCode: boolean;
   extraAgentDirs: string[];
   disabledNamedProfiles: string[];
   sessionTitleModel: string;
@@ -842,6 +843,7 @@ export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft
     },
     identityName: config.identity?.name ?? '',
     identitySlug: config.identity?.slug ?? '',
+    advertiseAsKimiCode: config.identity?.advertiseAsKimiCode ?? false,
     extraAgentDirs: normalizeConfigStringList(config.extra_agent_dirs),
     disabledNamedProfiles: normalizeConfigStringList(config.disabled_named_profiles),
     sessionTitleModel: config.session_title?.model ?? '',
@@ -941,12 +943,16 @@ export function agentNotifyParentPatch(notifyParent: boolean): KikiConfigPatch {
  * back values edited on another leaf from a stale draft.
  */
 export function agentIdentityPatch(
-  draft: Pick<RuntimeConfigDraft, 'identityName' | 'identitySlug' | 'extraAgentDirs' | 'disabledNamedProfiles'>,
+  draft: Pick<
+    RuntimeConfigDraft,
+    'identityName' | 'identitySlug' | 'advertiseAsKimiCode' | 'extraAgentDirs' | 'disabledNamedProfiles'
+  >,
 ): KikiConfigPatch {
   return {
     identity: {
       name: draft.identityName.trim() || undefined,
       slug: draft.identitySlug.trim() || undefined,
+      advertise_as_kimi_code: draft.advertiseAsKimiCode,
     },
     extra_agent_dirs: normalizeStringList(draft.extraAgentDirs),
     disabled_named_profiles: normalizeStringList(draft.disabledNamedProfiles),

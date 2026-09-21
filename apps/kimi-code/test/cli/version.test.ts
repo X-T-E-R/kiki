@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -20,7 +21,18 @@ describe('cli version helpers', () => {
     expect(getVersion()).toBe(pkg.version);
   });
 
-  it('builds the product user-agent for ad-hoc fetches', () => {
-    expect(createKimiCodeUserAgent('1.2.3')).toBe('kimi-code-cli/1.2.3');
+  it('uses the Kiki product by default and opts into the Kimi Code product from config', () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'kiki-user-agent-'));
+    const configPath = join(homeDir, 'config.toml');
+    try {
+      const defaultUserAgent = createKimiCodeUserAgent('1.2.3', { configPath });
+      expect(defaultUserAgent).toBe('kiki-cli/1.2.3');
+      expect(defaultUserAgent).not.toContain('kimi-code');
+
+      writeFileSync(configPath, '[identity]\nadvertise_as_kimi_code = true\n');
+      expect(createKimiCodeUserAgent('1.2.3', { configPath })).toBe('kimi-code-cli/1.2.3');
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
   });
 });

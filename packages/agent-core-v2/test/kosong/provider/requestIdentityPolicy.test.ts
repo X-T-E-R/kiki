@@ -28,7 +28,11 @@ const SNAPSHOT = {
 
 function project(
   policy: RequestIdentityPolicy,
-  options: { isKimiProvider?: boolean; protocol?: 'openai_responses' | 'anthropic' } = {},
+  options: {
+    isKimiProvider?: boolean;
+    protocol?: 'openai_responses' | 'anthropic';
+    hostRequestHeaders?: Readonly<Record<string, string>>;
+  } = {},
 ) {
   return projectRequestIdentity({
     policy: resolveAuthoredRequestIdentity(policy),
@@ -43,6 +47,7 @@ function project(
     runtimeVersion: '1.0.0',
     platform: 'linux',
     arch: 'x64',
+    hostRequestHeaders: options.hostRequestHeaders,
   });
 }
 
@@ -237,23 +242,27 @@ describe('request identity policy', () => {
     ).toThrow(/control characters/u);
   });
 
-  it('projects Kimi Code product identity without donor-absent lineage', () => {
+  it('projects Kimi protocol identity while preserving the configured host product', () => {
     const kimi = project({ preset: 'kimi_code' }, { isKimiProvider: true });
     expect(kimi.headers).toMatchObject({
-      'User-Agent': 'kimi-code-cli/1.0.0',
+      'User-Agent': 'kiki-cli/1.0.0',
       'X-Msh-Platform': 'kimi_code_cli',
       'X-Msh-Version': '1.0.0',
       'X-Msh-Device-Id': SNAPSHOT.installationId,
     });
+    expect(kimi.headers?.['User-Agent']).not.toContain('kimi-code');
     expect(kimi.headers?.['X-Msh-Device-Name']).toBeTruthy();
     expect(kimi.headers?.['X-Msh-Device-Model']).toBeTruthy();
     expect(kimi.headers?.['X-Msh-Os-Version']).toBeTruthy();
     expect(Object.keys(kimi.headers ?? {}).some((key) => key.startsWith('x-kiki-'))).toBe(false);
     expect(kimi.cacheKey).toBe('raw-session');
 
-    const thirdParty = project({ preset: 'kimi_code' });
-    expect(thirdParty.headers).toEqual({ 'User-Agent': 'kimi-code-cli/1.0.0' });
-    expect(thirdParty.cacheKey).toBe('raw-session');
+    const compatible = project(
+      { preset: 'kimi_code' },
+      { hostRequestHeaders: { 'User-Agent': 'kimi-code-cli/1.0.0' } },
+    );
+    expect(compatible.headers).toEqual({ 'User-Agent': 'kimi-code-cli/1.0.0' });
+    expect(compatible.cacheKey).toBe('raw-session');
   });
 
   it('round-trips snake-case public policy fields', () => {

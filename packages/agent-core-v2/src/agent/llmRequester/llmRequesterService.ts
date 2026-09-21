@@ -19,6 +19,7 @@ import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
+import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { INbSearchService } from '#/app/nbSearch/nbSearch';
 import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
 import {
@@ -214,6 +215,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @ISessionContext private readonly sessionContext: ISessionContext,
     @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @IConfigService private readonly config: IConfigService,
+    @IAgentIdentity private readonly identity: IAgentIdentity,
     @INbSearchService private readonly nbSearch: INbSearchService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IModelService private readonly modelService: IModelService,
@@ -729,10 +731,14 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const parentAgentId = subagentParentAgentId(agentMeta);
     const spawnContext = requestIdentitySpawnContext(agentMeta);
     const isKimiProvider = isKimiProviderFamily(requester.model.providerType);
+    const identity = this.identity.current();
+    const hostRequestHeaders = isKimiProvider
+      ? identity.upstreamRequestHeaders
+      : identity.requestHeaders;
     const dimensions = resolveRequestIdentityDimensions(
       requestIdentity,
       isKimiProvider,
-      this.bootstrap.args.requestHeaders,
+      hostRequestHeaders,
     );
     const snapshot = hasRequestIdentityDimensions(dimensions)
       ? await this.requestIdentities.snapshot({
@@ -768,7 +774,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       runtimeVersion: this.bootstrap.clientIdentity.version,
       platform: this.bootstrap.platform,
       arch: this.bootstrap.arch,
-      hostRequestHeaders: this.bootstrap.args.requestHeaders,
+      hostRequestHeaders,
     });
     const resolvedSystemPrompt =
       overrides.systemPrompt ?? turnConfig?.systemPrompt ?? this.profile.getSystemPrompt();

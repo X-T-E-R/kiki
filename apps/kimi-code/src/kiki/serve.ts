@@ -163,7 +163,7 @@ export function startServeServer(
     homeDir: options.homeDir,
     idleExitMs: options.idleExitMs,
     serverVersion: version,
-    hostIdentity: createKimiCodeHostIdentity(version),
+    hostIdentity: createKimiCodeHostIdentity(version, { homeDir: options.homeDir }),
     webAssetsDir,
   });
 }

@@ -72,6 +72,12 @@ const pluginsConfigRequestSchema = z.object({
   marketplace_url: PluginsSectionSchema.shape.marketplaceUrl,
 });
 
+const identityConfigRequestSchema = z.object({
+  name: IdentityConfigSchema.shape.name,
+  slug: IdentityConfigSchema.shape.slug,
+  advertise_as_kimi_code: z.boolean().optional(),
+});
+
 const replaceableConfigDomainSchema = z.enum([
   'experimental',
   'thread_communication',
@@ -201,7 +207,7 @@ export const patchConfigRequestSchema = z.object({
   workspace_instance: workspaceInstanceConfigRequestSchema.optional(),
   image: imageConfigRequestSchema.optional(),
   task: taskConfigRequestSchema.optional(),
-  identity: IdentityConfigSchema.optional(),
+  identity: identityConfigRequestSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
   skip_builtin_profile_installation: SkipBuiltinProfileInstallationConfigSchema,

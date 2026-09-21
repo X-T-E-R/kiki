@@ -43,6 +43,7 @@ import {
   type UsageRecordContext,
 } from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
+import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { INbSearchService } from '#/app/nbSearch/nbSearch';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { Event2 } from '#/app/event/event2';
@@ -300,6 +301,20 @@ function createService(
     get: () => options.contextMessages ?? history,
   };
   const tools = { list: () => [] };
+  const hostRequestHeaders = options.hostRequestHeaders ?? {
+    'X-Msh-Device-Name': 'example-host',
+    'X-Msh-Device-Model': 'Example Model',
+    'X-Msh-Os-Version': 'Example OS 1',
+    'X-Msh-Device-Id': '00000000-0000-4000-8000-000000000009',
+  };
+  const identitySnapshot = {
+    displayName: undefined,
+    slug: undefined,
+    outboundUserAgent: 'agent',
+    thirdPartyUserAgent: undefined,
+    requestHeaders: hostRequestHeaders,
+    upstreamRequestHeaders: hostRequestHeaders,
+  };
   const config: Partial<IConfigService> = {
     get: ((section: string) => {
       if (section === 'prompt') return options.promptConfig?.value;
@@ -356,6 +371,10 @@ function createService(
   });
   ix.stub(IAgentUsageService, usage);
   ix.stub(IConfigService, config);
+  ix.stub(IAgentIdentity, {
+    resolved: async () => identitySnapshot,
+    current: () => identitySnapshot,
+  });
   ix.stub(INbSearchService, { prepareToolDescriptions: async () => undefined, ...options.nbSearch });
   if (options.nativeWebSearch) {
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
@@ -367,14 +386,7 @@ function createService(
     platform: 'linux',
     arch: 'x64',
     getEnv: (name) => options.env?.[name],
-    args: {
-      requestHeaders: options.hostRequestHeaders ?? {
-        'X-Msh-Device-Name': 'example-host',
-        'X-Msh-Device-Model': 'Example Model',
-        'X-Msh-Os-Version': 'Example OS 1',
-        'X-Msh-Device-Id': '00000000-0000-4000-8000-000000000009',
-      },
-    },
+    args: { requestHeaders: hostRequestHeaders },
   });
   ix.stub(IRequestIdentityRegistry, {
     snapshot: async (input) => {
@@ -694,7 +706,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
     await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
 
     expect(captured[0]?.headers?.['originator']).toBe('global-client');
-    expect(captured[0]?.headers?.['User-Agent']).toBe('kimi-code-cli/1.0.0');
+    expect(captured[0]?.headers?.['User-Agent']).toBe('kiki-cli/1.0.0');
   });
 
   it('resolves two selected aliases on the same provider with different model layers', async () => {
@@ -830,7 +842,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
 
       await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
 
-      expect(captured[0]?.headers?.['User-Agent']).toBe('kimi-code-cli/1.0.0');
+      expect(captured[0]?.headers?.['User-Agent']).toBe('kiki-cli/1.0.0');
       expect(captured[0]?.headers?.['X-Msh-Device-Id'] !== undefined).toBe(hasDeviceIdentity);
       if (hasDeviceIdentity) {
         expect(captured[0]?.headers).toMatchObject({

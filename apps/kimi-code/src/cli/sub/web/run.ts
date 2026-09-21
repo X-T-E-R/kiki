@@ -298,7 +298,7 @@ async function runServerInProcess(
     // `web` User-Agent suffix distinguishes web-UI traffic from direct CLI
     // runs upstream (same product token, same platform).
     hostIdentity: {
-      ...createKimiCodeHostIdentity(version),
+      ...createKimiCodeHostIdentity(version, { configPath: externalCatalog?.configPath }),
       userAgentSuffix: WEB_USER_AGENT_SUFFIX,
     },
     logLevel: options.logLevel,

@@ -7,9 +7,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { loadRuntimeConfigSafe, resolveConfigPath } from '@kiki/node-sdk';
 import { createKimiUserAgent, KIMI_CODE_PLATFORM, type KimiHostIdentity } from '@kiki/oauth';
 
-import { CLI_USER_AGENT_PRODUCT } from '#/constant/app';
+import {
+  CLI_USER_AGENT_PRODUCT,
+  KIMI_CODE_CLI_USER_AGENT_PRODUCT,
+} from '#/constant/app';
 
 import { KIMI_BUILD_INFO } from './build-info';
 
@@ -47,18 +51,38 @@ export function getVersion(): string {
   return pkg.version;
 }
 
-export function createKimiCodeHostIdentity(version = getVersion()): KimiHostIdentity {
+export interface CliIdentityConfigLocation {
+  readonly homeDir?: string;
+  readonly configPath?: string;
+}
+
+export function createKimiCodeHostIdentity(
+  version = getVersion(),
+  config: CliIdentityConfigLocation = {},
+): KimiHostIdentity {
   return {
-    productName: CLI_USER_AGENT_PRODUCT,
+    productName: configuredUserAgentProduct(config),
     version,
     platform: KIMI_CODE_PLATFORM,
   };
 }
 
-/**
- * Product User-Agent (`kimi-code-cli/<version>`) for ad-hoc outbound fetches
- * that don't go through the provider pipeline (registry / catalog imports).
- */
-export function createKimiCodeUserAgent(version = getVersion()): string {
-  return createKimiUserAgent(createKimiCodeHostIdentity(version));
+/** Product User-Agent for ad-hoc outbound fetches outside the provider pipeline. */
+export function createKimiCodeUserAgent(
+  version = getVersion(),
+  config: CliIdentityConfigLocation = {},
+): string {
+  return createKimiUserAgent(createKimiCodeHostIdentity(version, config));
+}
+
+function configuredUserAgentProduct(config: CliIdentityConfigLocation): string {
+  const rawIdentity = loadRuntimeConfigSafe(resolveConfigPath(config)).config.raw?.['identity'];
+  const advertiseAsKimiCode =
+    typeof rawIdentity === 'object' &&
+    rawIdentity !== null &&
+    !Array.isArray(rawIdentity) &&
+    (rawIdentity as Record<string, unknown>)['advertise_as_kimi_code'] === true;
+  return advertiseAsKimiCode
+    ? KIMI_CODE_CLI_USER_AGENT_PRODUCT
+    : CLI_USER_AGENT_PRODUCT;
 }

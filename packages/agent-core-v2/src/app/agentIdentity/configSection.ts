@@ -12,6 +12,7 @@ export const IDENTITY_SECTION = 'identity';
 export const IdentityConfigSchema = z.object({
   name: z.string().optional(),
   slug: z.string().optional(),
+  advertiseAsKimiCode: z.boolean().default(false),
 });
 
 export type IdentityConfig = z.infer<typeof IdentityConfigSchema>;
@@ -35,7 +36,7 @@ export const identityEnvBindings: EnvBindings<IdentityConfig> = envBindings(
 export const stripIdentityEnv = stripEnvBoundFields(identityEnvBindings);
 
 registerConfigSection(IDENTITY_SECTION, IdentityConfigSchema, {
-  defaultValue: {},
+  defaultValue: { advertiseAsKimiCode: false },
   env: identityEnvBindings,
   stripEnv: stripIdentityEnv,
 });

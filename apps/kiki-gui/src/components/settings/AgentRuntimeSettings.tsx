@@ -10,13 +10,17 @@ import {
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 
 type AgentIdentityDraft = Pick<
   RuntimeConfigDraft,
-  'identityName' | 'identitySlug' | 'extraAgentDirs' | 'disabledNamedProfiles'
+  | 'identityName'
+  | 'identitySlug'
+  | 'advertiseAsKimiCode'
+  | 'extraAgentDirs'
+  | 'disabledNamedProfiles'
 >;
 
 function StringListEditor({ label, values, onChange, placeholder }: {
@@ -81,6 +85,7 @@ export function AgentRuntimeCard() {
       setDraft({
         identityName: projected.identityName,
         identitySlug: projected.identitySlug,
+        advertiseAsKimiCode: projected.advertiseAsKimiCode,
         extraAgentDirs: projected.extraAgentDirs,
         disabledNamedProfiles: projected.disabledNamedProfiles,
       });
@@ -101,8 +106,10 @@ export function AgentRuntimeCard() {
   };
 
   const save = async () => {
-    const identityChanged = draft.identityName.trim() !== (configQuery.data?.identity?.name ?? '')
-      || draft.identitySlug.trim() !== (configQuery.data?.identity?.slug ?? '');
+    const current = runtimeConfigDraftFromConfig(configQuery.data);
+    const identityChanged = draft.identityName.trim() !== current.identityName
+      || draft.identitySlug.trim() !== current.identitySlug
+      || draft.advertiseAsKimiCode !== current.advertiseAsKimiCode;
     setSaving(true);
     setFeedback(null);
     try {
@@ -112,6 +119,7 @@ export function AgentRuntimeCard() {
       setDraft({
         identityName: projected.identityName,
         identitySlug: projected.identitySlug,
+        advertiseAsKimiCode: projected.advertiseAsKimiCode,
         extraAgentDirs: projected.extraAgentDirs,
         disabledNamedProfiles: projected.disabledNamedProfiles,
       });
@@ -137,6 +145,14 @@ export function AgentRuntimeCard() {
             <label className="text-[11px] font-medium text-ink-soft">{t('st.agentIdentity.identitySlug')}
               <input className={`${INPUT} mt-1 font-mono`} value={draft.identitySlug} onChange={(event) => { updateDraft({ ...draft, identitySlug: event.target.value }); }} />
             </label>
+          </div>
+          <div className="space-y-1.5 rounded-md border border-hairline bg-paper px-3 py-2.5">
+            <Toggle
+              label={t('st.agentIdentity.advertiseAsKimiCode')}
+              checked={draft.advertiseAsKimiCode}
+              onChange={(advertiseAsKimiCode) => { updateDraft({ ...draft, advertiseAsKimiCode }); }}
+            />
+            <Hint>{t('st.agentIdentity.advertiseAsKimiCodeHint')}</Hint>
           </div>
           <StringListEditor label={t('st.agentIdentity.extraAgentDirs')} values={draft.extraAgentDirs} placeholder="C:\agents" onChange={(extraAgentDirs) => { updateDraft({ ...draft, extraAgentDirs }); }} />
           <StringListEditor label={t('st.agentIdentity.disabledProfiles')} values={draft.disabledNamedProfiles} placeholder="profile-name" onChange={(disabledNamedProfiles) => { updateDraft({ ...draft, disabledNamedProfiles }); }} />

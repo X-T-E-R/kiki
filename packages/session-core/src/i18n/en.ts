@@ -1848,6 +1848,8 @@ export const en = {
   'st.agentIdentity.hint': 'The identity this server presents and the agent profiles it loads. Changing the name or slug takes effect after a server restart.',
   'st.agentIdentity.identityName': 'Identity display name',
   'st.agentIdentity.identitySlug': 'Identity slug',
+  'st.agentIdentity.advertiseAsKimiCode': 'Identify as Kimi Code to upstream services',
+  'st.agentIdentity.advertiseAsKimiCodeHint': 'Compatibility mode. Sends kimi-code-cli instead of kiki-cli as the User-Agent product after the server restarts.',
   'st.agentIdentity.extraAgentDirs': 'Extra agent directories',
   'st.agentIdentity.disabledProfiles': 'Disabled built-in profiles',
   'st.agentIdentity.addEntry': 'Add entry',

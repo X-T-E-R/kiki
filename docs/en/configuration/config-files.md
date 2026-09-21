@@ -461,20 +461,22 @@ Per-workspace overrides are persisted separately and managed through the local R
 
 ## `identity`
 
-Customizes how the agent identifies itself. Leave it unset and nothing changes.
+Customizes how the agent identifies itself. By default, upstream requests use the `kiki-cli` product without claiming a custom name or slug.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `name` | `string` | — | Display name the agent calls itself in the system prompt (fills the `${product_name}` slot, including in your own `SYSTEM.md` and agent files) |
 | `slug` | `string` | derived from `name` | Machine identifier used in protocol fields: the `User-Agent` product token sent to third-party providers, and the client name announced to MCP servers. Derived from `name` when omitted: lowercased, with every run of non-alphanumeric characters folded to `-` |
+| `advertise_as_kimi_code` | `boolean` | `false` | Send `kimi-code-cli` as the upstream `User-Agent` product for Kimi Code compatibility, overriding the `slug` for upstream HTTP requests. By default, Kiki identifies itself as `kiki-cli` |
 
 ```toml
 [identity]
 name = "Acme Dev Agent"
-slug = "acme-dev"        # optional
+slug = "acme-dev"              # optional
+advertise_as_kimi_code = false
 ```
 
-Both fields can be set through the `KIKI_IDENTITY_NAME` and `KIKI_IDENTITY_SLUG` environment variables, which take higher priority than `config.toml` and are never written back to it — convenient for containers and CI, where writing a config file is awkward.
+`name` and `slug` can be set through the `KIKI_IDENTITY_NAME` and `KIKI_IDENTITY_SLUG` environment variables, which take higher priority than `config.toml` and are never written back to it — convenient for containers and CI, where writing a config file is awkward.
 
 A name that contains no ASCII letters or digits (for example a purely Chinese name) leaves nothing to derive a slug from and falls back to `agent`; write `slug` explicitly if you need a specific protocol token.
 

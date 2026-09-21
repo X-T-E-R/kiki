@@ -80,7 +80,7 @@ export async function runV2Print(
   writeExperimentalVersion(version, outputFormat, stdout, stderr);
 
   const homeDir = resolveKikiHome();
-  const identity = createKimiCodeHostIdentity(version);
+  const identity = createKimiCodeHostIdentity(version, { homeDir });
   const host = await createPrintClient({
     homeDir,
     clientIdentity: identity,

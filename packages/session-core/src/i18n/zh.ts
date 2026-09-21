@@ -1824,6 +1824,8 @@ export const zh: Record<I18nKey, string> = {
   'st.agentIdentity.hint': '服务器对外展示的身份，以及启动时加载的智能体 Profile。修改名称或 slug 后需要重启服务器生效。',
   'st.agentIdentity.identityName': '身份显示名称',
   'st.agentIdentity.identitySlug': '身份 slug',
+  'st.agentIdentity.advertiseAsKimiCode': '向上游标识为 Kimi Code',
+  'st.agentIdentity.advertiseAsKimiCodeHint': '兼容模式。服务器重启后，User-Agent 产品名将使用 kimi-code-cli，而不是 kiki-cli。',
   'st.agentIdentity.extraAgentDirs': '额外智能体目录',
   'st.agentIdentity.disabledProfiles': '禁用的内置 Profile',
   'st.agentIdentity.addEntry': '添加条目',

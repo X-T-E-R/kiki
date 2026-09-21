@@ -7,6 +7,7 @@ import type { NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { NamedAgentProfilesCard } from './AgentsSection';
 import { AgentTaskSettings } from './AgentTaskSettings';
+import { AgentRuntimeCard } from './AgentRuntimeSettings';
 
 const { client, dirtyReporter } = vi.hoisted(() => ({ dirtyReporter: vi.fn(), client: {
   listNamedAgentProfiles: vi.fn(), listWorkspaces: vi.fn(), getConfig: vi.fn(),
@@ -83,6 +84,30 @@ async function setInputValue(input: HTMLInputElement, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+
+describe('agent runtime identity settings', () => {
+  it('saves the Kimi Code compatibility switch in the identity section', async () => {
+    client.getConfig.mockResolvedValue({ identity: { advertiseAsKimiCode: false } });
+    client.patchConfig.mockResolvedValue({ identity: { advertiseAsKimiCode: true } });
+    await act(async () => root.render(
+      <QueryClientProvider client={queries}>
+        <I18nProvider><AgentRuntimeCard /></I18nProvider>
+      </QueryClientProvider>,
+    ));
+    await settle();
+
+    const card = container.querySelector('#st-card-agent-runtime')!;
+    expect(card.textContent).toContain('Identify as Kimi Code to upstream services');
+    await act(async () => card.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await act(async () => [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click());
+    await settle();
+
+    expect(client.patchConfig).toHaveBeenCalledWith(expect.objectContaining({
+      identity: expect.objectContaining({ advertise_as_kimi_code: true }),
+    }));
+  });
+});
+
 describe('default main profile settings', () => {
   it('keeps Todo as explanatory content without a toggle or configuration writes', async () => {
     await act(async () => root.render(<I18nProvider><AgentTaskSettings boardContent={<p>Real board owner slot</p>} /></I18nProvider>));

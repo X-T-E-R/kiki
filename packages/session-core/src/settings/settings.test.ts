@@ -299,7 +299,7 @@ describe('settings persistence and validation', () => {
       workspace_instance: { idleTtlMs: 120_000 },
       image: { maxEdgePx: 2048, readByteBudget: 4_000_000 },
       task: { maxRunningTasks: 4, keepAliveOnExit: true, printBackgroundMode: 'drain' },
-      identity: { name: 'Example Agent', slug: 'example-agent' },
+      identity: { name: 'Example Agent', slug: 'example-agent', advertiseAsKimiCode: true },
       extra_agent_dirs: ['C:\\agents'],
       disabled_named_profiles: ['reviewer'],
       mcp: { startupTimeoutMs: 30_000, toolTimeoutMs: 60_000 },
@@ -334,7 +334,11 @@ describe('settings persistence and validation', () => {
     });
 
     const identityPatch = agentIdentityPatch(draft);
-    expect(identityPatch.identity).toEqual({ name: 'Example Agent', slug: 'example-agent' });
+    expect(identityPatch.identity).toEqual({
+      name: 'Example Agent',
+      slug: 'example-agent',
+      advertise_as_kimi_code: true,
+    });
     expect(identityPatch.extra_agent_dirs).toEqual(['C:\\agents', 'D:\\agents']);
     expect(identityPatch.disabled_named_profiles).toEqual([]);
     expect(identityPatch.replace_domains).toEqual(['identity', 'extra_agent_dirs', 'disabled_named_profiles']);

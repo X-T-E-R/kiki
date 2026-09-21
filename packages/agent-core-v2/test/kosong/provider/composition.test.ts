@@ -455,7 +455,7 @@ describe('request identity final fetch projection', () => {
       }),
     );
     const body = await request.clone().json() as Record<string, unknown>;
-    expect(request.headers.get('user-agent')).toBe('kimi-code-cli/1.2.3');
+    expect(request.headers.get('user-agent')).toBe('kiki-cli/1.2.3');
     expect(body['prompt_cache_key']).toBe('session-example');
     if (isKimiProvider) {
       expect(request.headers.get('x-msh-platform')).toBe('kimi_code_cli');
@@ -505,7 +505,7 @@ describe('request identity final fetch projection', () => {
       }),
     );
     const body = await request.clone().json() as Record<string, unknown>;
-    expect(request.headers.get('user-agent')).toBe('kimi-code-cli/1.2.3');
+    expect(request.headers.get('user-agent')).toBe('kiki-cli/1.2.3');
     expect(body['metadata']).toEqual({ user_id: 'session-example' });
     expect(body['system']).toEqual([
       expect.objectContaining({ cache_control: { type: 'ephemeral' } }),

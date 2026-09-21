@@ -144,7 +144,11 @@ export interface RuntimeConfigProjection {
     readonly printBackgroundMode?: 'exit' | 'drain' | 'steer';
     readonly printMaxTurns?: number;
   };
-  readonly identity?: { readonly name?: string; readonly slug?: string };
+  readonly identity?: {
+    readonly name?: string;
+    readonly slug?: string;
+    readonly advertiseAsKimiCode?: boolean;
+  };
   readonly extra_agent_dirs?: string[];
   readonly skip_builtin_profile_installation?: string[];
   readonly disabled_named_profiles?: string[];
@@ -183,7 +187,11 @@ export interface RuntimeConfigPatch {
     readonly print_background_mode?: 'exit' | 'drain' | 'steer';
     readonly print_max_turns?: number;
   };
-  readonly identity?: { readonly name?: string; readonly slug?: string };
+  readonly identity?: {
+    readonly name?: string;
+    readonly slug?: string;
+    readonly advertise_as_kimi_code?: boolean;
+  };
   readonly extra_agent_dirs?: string[];
   readonly skip_builtin_profile_installation?: string[];
   readonly disabled_named_profiles?: string[];
