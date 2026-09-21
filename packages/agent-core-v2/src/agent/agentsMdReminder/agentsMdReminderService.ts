@@ -16,10 +16,7 @@ import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { ContextUndone } from '#/agent/undo/undoService';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { normalizeUserPath } from '#/tool/path-access';
-import {
-  AGENTS_MD_PLAIN_NAMES,
-  extractAgentsMdPathsFromSystemPrompt,
-} from '#/agent/profile/context';
+import { extractAgentsMdPathsFromSystemPrompt } from '#/agent/profile/context';
 import { profileKey } from '#/agent/profile/profileOps';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
@@ -30,8 +27,6 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentAgentsMdReminderService } from './agentsMdReminder';
 import { IAgentsMdDiscoveryService } from './agentsMdDiscoveryService';
 import { extractBashTargetDirs } from './bashTargets';
-
-const AGENTS_MD_BASENAMES: ReadonlySet<string> = new Set<string>(AGENTS_MD_PLAIN_NAMES);
 
 const BASH_PARSE_OPTIONS = { timeoutMs: 500, maxNodes: 10_000 } as const;
 const BASH_SHORT_RETRY_OPTIONS = {
@@ -261,7 +256,7 @@ export class AgentAgentsMdReminderService
       if (
         targetsFiles &&
         ctx.result.isError !== true &&
-        AGENTS_MD_BASENAMES.has(basename(access.path))
+        basename(access.path).toLowerCase() === 'agents.md'
       ) {
         selfKnown.push(access.path);
       }
@@ -314,17 +309,7 @@ function instructionProbeDirectory(
   pathClass: 'posix' | 'win32',
 ): string | undefined {
   const normalized = normalize(path);
-  const name = basename(normalized);
-  const comparableName = pathClass === 'win32' ? name.toLowerCase() : name;
-  if (
-    !AGENTS_MD_PLAIN_NAMES.some((candidate) =>
-      pathClass === 'win32'
-        ? candidate.toLowerCase() === comparableName
-        : candidate === comparableName,
-    )
-  ) {
-    return undefined;
-  }
+  if (basename(normalized).toLowerCase() !== 'agents.md') return undefined;
   const parent = dirname(normalized);
   const parentName = basename(parent);
   const isDotKiki =

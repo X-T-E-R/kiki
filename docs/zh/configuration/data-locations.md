@@ -59,7 +59,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 
 - **`config.toml`**：主运行时配置，存放供应商、模型、循环控制等用户级设置。详见[配置文件](./config-files.md)。
 - **`tui.toml`**：终端界面客户端偏好，例如主题、编辑器、通知和状态栏。
-- **`AGENTS.md`**：全局 Kiki 专属 Agent 指令。该文件会随 `KIKI_HOME` 移动；跨工具通用指令仍可放在 `~/.agents/AGENTS.md`。
+- **`AGENTS.md`**：用户级 Agent 指令。该文件会随 `KIKI_HOME` 移动，并与工作区根目录指令合并；工作区的 `.kiki/AGENTS.md` 可以覆盖它。
 - **`mcp.json`**：用户级 MCP server 声明，启动时与项目内的 `.kiki/mcp.json` 合并加载。详见 [MCP](../server/mcp.md)。
 - **`skills/`**：Kiki 专属用户级 Skills。该目录会随 `KIKI_HOME` 移动；跨工具通用 Skills 仍可放在 `~/.agents/skills/`。详见 [Agent Skills](../customization/skills.md)。
 - **`cognition/`**：`[models."<alias>".cognition]` 引用的提示词文件，路径相对于数据根目录。详见[模型认知](./config-files.md#模型认知)。

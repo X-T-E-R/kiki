@@ -78,12 +78,14 @@ export interface LoadedAgentsMd {
 
 export const AGENTS_MD_PLAIN_NAMES = ['AGENTS.md', 'agents.md'] as const;
 
+const AGENTS_MD_CASE_FOLDED_NAME = 'agents.md';
+
 export function dotKikiAgentsMdPath(dir: string): string {
   return join(dir, '.kiki', 'AGENTS.md');
 }
 
 export function agentsMdCandidatePaths(dir: string): string[] {
-  return [dotKikiAgentsMdPath(dir), ...AGENTS_MD_PLAIN_NAMES.map((name) => join(dir, name))];
+  return [dotKikiAgentsMdPath(dir), join(dir, 'AGENTS.md')];
 }
 
 export function extractAgentsMdPathsFromSystemPrompt(systemPrompt: string): string[] {
@@ -91,10 +93,7 @@ export function extractAgentsMdPathsFromSystemPrompt(systemPrompt: string): stri
   const seen = new Set<string>();
   for (const match of systemPrompt.matchAll(/^<!-- From: (.+) -->$/gm)) {
     const path = match[1];
-    if (
-      path === undefined ||
-      !AGENTS_MD_PLAIN_NAMES.some((candidate) => candidate === basename(path))
-    ) {
+    if (path === undefined || basename(path).toLowerCase() !== AGENTS_MD_CASE_FOLDED_NAME) {
       continue;
     }
     const normalized = normalize(path);
@@ -110,16 +109,33 @@ export async function findAgentsMdInDir(
   dir: string,
 ): Promise<string[]> {
   const found: string[] = [];
-  const dotKiki = dotKikiAgentsMdPath(dir);
-  if (await isNonEmptyFile(deps, dotKiki)) found.push(dotKiki);
-  for (const fileName of AGENTS_MD_PLAIN_NAMES) {
-    const candidate = join(dir, fileName);
-    if (await isNonEmptyFile(deps, candidate)) {
-      found.push(candidate);
-      break;
-    }
-  }
+  const dotKiki = await findAgentsMdPath(deps, join(dir, '.kiki'));
+  if (dotKiki !== undefined && (await isNonEmptyFile(deps, dotKiki))) found.push(dotKiki);
+  const plain = await findAgentsMdPath(deps, dir);
+  if (plain !== undefined && (await isNonEmptyFile(deps, plain))) found.push(plain);
   return found;
+}
+
+async function findAgentsMdPath(
+  deps: { readonly fs: IHostFileSystem },
+  dir: string,
+): Promise<string | undefined> {
+  let entries;
+  try {
+    entries = await deps.fs.readdir(dir);
+  } catch {
+    return undefined;
+  }
+  const matches = entries
+    .filter((entry) => entry.name.toLowerCase() === AGENTS_MD_CASE_FOLDED_NAME)
+    .toSorted((a, b) => agentsMdNameRank(a.name) - agentsMdNameRank(b.name) || a.name.localeCompare(b.name));
+  return matches[0] === undefined ? undefined : join(dir, matches[0].name);
+}
+
+function agentsMdNameRank(name: string): number {
+  if (name === 'AGENTS.md') return 0;
+  if (name === 'agents.md') return 1;
+  return 2;
 }
 
 async function isNonEmptyFile(
@@ -156,29 +172,35 @@ export async function loadAgentsMdForRoots(
     return true;
   };
 
-  const realHome = deps.homeDir;
-  const brandDir = brandHome ?? join(realHome, '.kiki');
-  await collect(join(brandDir, 'AGENTS.md'));
-
-  const genericDirs = [join(realHome, '.agents')];
-  const genericFiles = genericDirs.flatMap((dir) =>
-    AGENTS_MD_PLAIN_NAMES.map((name) => join(dir, name)),
-  );
-  for (const file of genericFiles) {
-    if (await collect(file)) break;
-  }
-
+  const brandDir = brandHome ?? join(deps.homeDir, '.kiki');
+  const workspaceFiles: { dotKiki: string | undefined; plain: string | undefined }[] = [];
+  const workspaceRoots = new Set<string>();
   for (const workDir of workDirs) {
     const rootWorkDir = normalize(workDir);
     const projectRoot = (await findGitWorkTree(deps.fs, rootWorkDir))?.root ?? rootWorkDir;
-    const dirs = dirsRootToLeaf(rootWorkDir, projectRoot);
+    if (workspaceRoots.has(projectRoot)) continue;
+    workspaceRoots.add(projectRoot);
+    workspaceFiles.push({
+      dotKiki: await findAgentsMdPath(deps, join(projectRoot, '.kiki')),
+      plain: await findAgentsMdPath(deps, projectRoot),
+    });
+  }
 
-    for (const dir of dirs) {
-      await collect(dotKikiAgentsMdPath(dir));
-      for (const fileName of AGENTS_MD_PLAIN_NAMES) {
-        if (await collect(join(dir, fileName))) break;
-      }
-    }
+  const hasWorkspaceOverride = (
+    await Promise.all(
+      workspaceFiles.map(async ({ dotKiki }) =>
+        dotKiki === undefined ? false : isFile(deps, dotKiki),
+      ),
+    )
+  ).some(Boolean);
+  if (!hasWorkspaceOverride) {
+    const userFile = await findAgentsMdPath(deps, brandDir);
+    if (userFile !== undefined) await collect(userFile);
+  }
+
+  for (const { dotKiki, plain } of workspaceFiles) {
+    if (dotKiki !== undefined) await collect(dotKiki);
+    if (plain !== undefined) await collect(plain);
   }
 
   const content = renderAgentFiles(discovered);
@@ -205,27 +227,16 @@ export async function agentsMdWatchRoots(
   workDir: string,
   brandHome?: string,
 ): Promise<readonly AgentsMdWatchRoot[]> {
-  const realHome = deps.homeDir;
-  const brandDir = brandHome ?? join(realHome, '.kiki');
-  const plan: AgentsMdWatchRoot[] = [
-    { root: brandDir, candidates: [join(brandDir, 'AGENTS.md')] },
-    {
-      root: realHome,
-      candidates: [join(realHome, '.agents', 'AGENTS.md'), join(realHome, '.agents', 'agents.md')],
-    },
-  ];
+  const brandDir = brandHome ?? join(deps.homeDir, '.kiki');
   const rootWorkDir = normalize(workDir);
   const projectRoot = (await findGitWorkTree(deps.fs, rootWorkDir))?.root ?? rootWorkDir;
-  const projectCandidates: string[] = [];
-  for (const dir of dirsRootToLeaf(rootWorkDir, projectRoot)) {
-    projectCandidates.push(
-      join(dir, '.kiki', 'AGENTS.md'),
-      join(dir, 'AGENTS.md'),
-      join(dir, 'agents.md'),
-    );
-  }
-  plan.push({ root: projectRoot, candidates: projectCandidates });
-  return plan;
+  return [
+    { root: brandDir, candidates: [join(brandDir, 'AGENTS.md')] },
+    {
+      root: projectRoot,
+      candidates: [join(projectRoot, 'AGENTS.md'), dotKikiAgentsMdPath(projectRoot)],
+    },
+  ];
 }
 
 async function loadAdditionalDirsInfo(

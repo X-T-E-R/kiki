@@ -59,7 +59,7 @@ Each top-level file under the data root serves a specific purpose; most are mana
 
 - **`config.toml`**: the main runtime configuration file, storing user-level settings such as providers, models, and loop control. See [Configuration files](./config-files.md).
 - **`tui.toml`**: terminal UI client preferences such as theme, editor, notifications, and status line.
-- **`AGENTS.md`**: global Kiki-specific agent instructions. This file moves with `KIKI_HOME`; generic cross-tool instructions can still live under `~/.agents/AGENTS.md`.
+- **`AGENTS.md`**: user-level agent instructions. This file moves with `KIKI_HOME` and is combined with workspace-root instructions unless `.kiki/AGENTS.md` overrides it.
 - **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kiki/mcp.json` on startup. See [MCP](../server/mcp.md).
 - **`skills/`**: Kiki-specific user-level Skills. This directory moves with `KIKI_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
 - **`cognition/`**: prompt files referenced by `[models."<alias>".cognition]`; paths are relative to the data root. See [Model cognition](./config-files.md#model-cognition).

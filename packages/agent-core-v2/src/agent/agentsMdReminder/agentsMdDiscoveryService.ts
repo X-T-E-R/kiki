@@ -162,10 +162,10 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
         await this.ensureWatcher(lease, cache, dotKikiDir, ownerKey);
         const nestedEntries = await readDir(fs, dotKikiDir);
         if (nestedEntries !== undefined) {
-          const candidate = join(dotKikiDir, 'AGENTS.md');
           const entry = namedEntry(nestedEntries, 'AGENTS.md', pathClass);
-          if (entry !== undefined && (await isNonEmptyFile(fs, candidate, entry))) {
-            paths.push(normalize(candidate));
+          if (entry !== undefined) {
+            const candidate = join(dotKikiDir, entry.name);
+            if (await isNonEmptyFile(fs, candidate, entry)) paths.push(normalize(candidate));
           }
         }
       }
@@ -173,7 +173,7 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     for (const name of AGENTS_MD_PLAIN_NAMES) {
       const entry = namedEntry(entries, name, pathClass);
       if (entry === undefined) continue;
-      const candidate = join(directory, name);
+      const candidate = join(directory, entry.name);
       if (await isNonEmptyFile(fs, candidate, entry)) {
         paths.push(normalize(candidate));
         break;
@@ -298,12 +298,14 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
 function namedEntry(
   entries: readonly HostDirEntry[],
   name: string,
-  pathClass: 'posix' | 'win32',
+  _pathClass: 'posix' | 'win32',
 ): HostDirEntry | undefined {
-  const expected = pathClass === 'win32' ? name.toLowerCase() : name;
-  return entries.find((entry) =>
-    pathClass === 'win32' ? entry.name.toLowerCase() === expected : entry.name === expected,
-  );
+  const expected = name.toLowerCase();
+  return entries
+    .filter((entry) => entry.name.toLowerCase() === expected)
+    .toSorted(
+      (a, b) => Number(b.name === name) - Number(a.name === name) || a.name.localeCompare(b.name),
+    )[0];
 }
 
 async function readDir(
@@ -364,7 +366,7 @@ async function mapBoundedOrdered<T, R>(
   concurrency: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
-  const output = new Array<R>(items.length);
+  const output: R[] = [];
   let next = 0;
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     for (;;) {

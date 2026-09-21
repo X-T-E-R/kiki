@@ -2,8 +2,8 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { defineState } from '#/state/state';
-import { TimeoutTimer } from '#/_base/utils/timer';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
+import { TimeoutTimer } from '#/_base/utils/timer';
 import { agentsMdWatchRoots, loadAgentsMdForRoots } from '#/agent/profile/context';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostEnvironment, type HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
@@ -116,8 +116,15 @@ export class WorkspaceInstructionsService
     );
     for (const { root, candidates } of plan) {
       try {
+        const ignored = subtreeWatchFilter(
+          root.toLowerCase(),
+          candidates.map((candidate) => candidate.toLowerCase()),
+        );
         const handle = this.fsWatch.watch(root, {
-          ignored: subtreeWatchFilter(root, candidates),
+          ignored: Object.assign(
+            (path: string) => ignored(path.toLowerCase()),
+            { subtree: (path: string) => ignored.subtree(path.toLowerCase()) },
+          ),
         });
         this._register(handle);
         this._register(

@@ -38,47 +38,52 @@ afterEach(async () => {
 });
 
 describe('loadAgentsMd user-level discovery', () => {
-  it('loads user-level branded and generic files before project-level', async () => {
+  it('injects the user-level and workspace-root files together', async () => {
     await mkdir(join(homeDir, '.kiki'), { recursive: true });
-    await writeFile(join(homeDir, '.kiki', 'AGENTS.md'), 'user branded', 'utf-8');
+    await writeFile(join(homeDir, '.kiki', 'AGENTS.md'), 'user instructions', 'utf-8');
+    await writeFile(join(workDir, 'AGENTS.md'), 'workspace instructions', 'utf-8');
+
+    const result = await loadAgentsMd({ fs, homeDir }, workDir);
+
+    expect(result).toContain('user instructions');
+    expect(result).toContain('workspace instructions');
+    expect(result.indexOf('user instructions')).toBeLessThan(
+      result.indexOf('workspace instructions'),
+    );
+  });
+
+  it('does not discover generic real-home instructions', async () => {
     await mkdir(join(homeDir, '.agents'), { recursive: true });
-    await writeFile(join(homeDir, '.agents', 'AGENTS.md'), 'user generic', 'utf-8');
-    await writeFile(join(workDir, 'AGENTS.md'), 'project instructions', 'utf-8');
+    await writeFile(join(homeDir, '.agents', 'AGENTS.md'), 'generic instructions', 'utf-8');
 
     const result = await loadAgentsMd({ fs, homeDir }, workDir);
 
-    expect(result).toContain('user branded');
-    expect(result).toContain('user generic');
-    expect(result).toContain('project instructions');
-    expect(result.indexOf('user branded')).toBeLessThan(result.indexOf('user generic'));
-    expect(result.indexOf('user generic')).toBeLessThan(result.indexOf('project instructions'));
+    expect(result).not.toContain('generic instructions');
   });
 
-  it('loads generic user-level .agents/AGENTS.md', async () => {
-    await mkdir(join(homeDir, '.agents'), { recursive: true });
-    await writeFile(join(homeDir, '.agents', 'AGENTS.md'), 'dot-agents generic', 'utf-8');
-
-    const result = await loadAgentsMd({ fs, homeDir }, workDir);
-
-    expect(result).toContain('dot-agents generic');
-  });
-
-  it('falls back to project-level only when no user-level files exist', async () => {
-    await writeFile(join(workDir, 'AGENTS.md'), 'project only', 'utf-8');
-
-    const result = await loadAgentsMd({ fs, homeDir }, workDir);
-
-    expect(result).toContain('project only');
-    expect(result).not.toContain(homeDir);
-  });
-
-  it('does not load the same file twice when the work dir is the home dir', async () => {
+  it('matches the instruction filename case-insensitively', async () => {
     await mkdir(join(homeDir, '.kiki'), { recursive: true });
-    await writeFile(join(homeDir, '.kiki', 'AGENTS.md'), 'home branded', 'utf-8');
+    await writeFile(join(homeDir, '.kiki', 'AgEnTs.Md'), 'mixed-case user', 'utf-8');
+    await writeFile(join(workDir, 'aGeNtS.mD'), 'mixed-case workspace', 'utf-8');
 
-    const result = await loadAgentsMd({ fs, homeDir }, homeDir);
+    const result = await loadAgentsMd({ fs, homeDir }, workDir);
 
-    expect(result.split('home branded').length - 1).toBe(1);
+    expect(result).toContain('mixed-case user');
+    expect(result).toContain('mixed-case workspace');
+  });
+
+  it('lets the workspace .kiki file override the user-level file', async () => {
+    await mkdir(join(homeDir, '.kiki'), { recursive: true });
+    await writeFile(join(homeDir, '.kiki', 'AGENTS.md'), 'user instructions', 'utf-8');
+    await mkdir(join(workDir, '.kiki'), { recursive: true });
+    await writeFile(join(workDir, '.kiki', 'agents.md'), 'workspace override', 'utf-8');
+    await writeFile(join(workDir, 'AGENTS.md'), 'workspace instructions', 'utf-8');
+
+    const result = await loadAgentsMd({ fs, homeDir }, workDir);
+
+    expect(result).not.toContain('user instructions');
+    expect(result).toContain('workspace override');
+    expect(result).toContain('workspace instructions');
   });
 });
 
@@ -127,15 +132,12 @@ describe('loadAgentsMd brand home (KIKI_HOME)', () => {
     await rm(brandHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  it('loads the branded AGENTS.md from the brand home and generic from the real home', async () => {
+  it('loads the user-level file from the configured brand home', async () => {
     await writeFile(join(brandHome, 'AGENTS.md'), 'brand home instructions', 'utf-8');
-    await mkdir(join(homeDir, '.agents'), { recursive: true });
-    await writeFile(join(homeDir, '.agents', 'AGENTS.md'), 'real home generic', 'utf-8');
 
     const result = await loadAgentsMd({ fs, homeDir }, workDir, brandHome);
 
     expect(result).toContain('brand home instructions');
-    expect(result).toContain('real home generic');
   });
 
   it('ignores the real-home .kiki/AGENTS.md when the brand home is elsewhere', async () => {
@@ -159,24 +161,42 @@ describe('loadAgentsMd brand home (KIKI_HOME)', () => {
   });
 });
 
-describe('loadAgentsMd nested project hierarchy', () => {
-  it('loads AGENTS.md from the project root down to the cwd in root→leaf order', async () => {
+describe('loadAgentsMd workspace boundaries', () => {
+  it('does not inject nested or arbitrary instruction files', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'kimi-agents-project-'));
     extraDirs.push(projectRoot);
     const leaf = join(projectRoot, 'packages', 'app');
+    const docs = join(projectRoot, 'docs');
     await mkdir(leaf, { recursive: true });
+    await mkdir(docs, { recursive: true });
     await mkdir(join(projectRoot, '.git'));
     await writeFile(join(projectRoot, 'AGENTS.md'), 'root instructions', 'utf-8');
     await writeFile(join(projectRoot, 'packages', 'AGENTS.md'), 'packages instructions', 'utf-8');
     await writeFile(join(leaf, 'AGENTS.md'), 'leaf instructions', 'utf-8');
+    await writeFile(join(docs, 'agents.md'), 'documentation instructions', 'utf-8');
 
     const result = await loadAgentsMd({ fs, homeDir }, leaf);
 
     expect(result).toContain('root instructions');
-    expect(result).toContain('packages instructions');
-    expect(result).toContain('leaf instructions');
-    expect(result.indexOf('root instructions')).toBeLessThan(result.indexOf('packages instructions'));
-    expect(result.indexOf('packages instructions')).toBeLessThan(result.indexOf('leaf instructions'));
+    expect(result).not.toContain('packages instructions');
+    expect(result).not.toContain('leaf instructions');
+    expect(result).not.toContain('documentation instructions');
+  });
+
+  it('does not inject instructions above the workspace root', async () => {
+    const ancestor = await mkdtemp(join(tmpdir(), 'kimi-agents-ancestor-'));
+    extraDirs.push(ancestor);
+    const projectRoot = join(ancestor, 'project');
+    const leaf = join(projectRoot, 'src');
+    await mkdir(join(projectRoot, '.git'), { recursive: true });
+    await mkdir(leaf, { recursive: true });
+    await writeFile(join(ancestor, 'AGENTS.md'), 'ancestor instructions', 'utf-8');
+    await writeFile(join(projectRoot, 'AGENTS.md'), 'workspace instructions', 'utf-8');
+
+    const result = await loadAgentsMd({ fs, homeDir }, leaf);
+
+    expect(result).toContain('workspace instructions');
+    expect(result).not.toContain('ancestor instructions');
   });
 });
 
@@ -249,8 +269,7 @@ describe('prepareSystemPromptContext additional directories', () => {
     const extraDirB = await mkdtemp(join(tmpdir(), 'kimi-agents-extra-b-'));
     extraDirs.push(extraDirA, extraDirB);
 
-    await mkdir(join(homeDir, '.agents'), { recursive: true });
-    await writeFile(join(homeDir, '.agents', 'AGENTS.md'), 'shared user instructions', 'utf-8');
+    await writeFile(join(brandHome, 'AGENTS.md'), 'shared user instructions', 'utf-8');
     await writeFile(join(extraDirA, 'AGENTS.md'), 'extra A instructions', 'utf-8');
     await writeFile(join(extraDirB, 'AGENTS.md'), 'extra B instructions', 'utf-8');
 
@@ -287,7 +306,6 @@ describe('loadAgentsMdDetailed discovered paths', () => {
     const result = await loadAgentsMdDetailed({ fs, homeDir }, workDir);
 
     expect(result.paths).toEqual([
-      normalize(join(homeDir, '.kiki', 'AGENTS.md')),
       normalize(join(workDir, '.kiki', 'AGENTS.md')),
       normalize(join(workDir, 'AGENTS.md')),
     ]);
