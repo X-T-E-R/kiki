@@ -152,7 +152,7 @@ export interface MirrorAgentRunOptions {
   readonly signal: AbortSignal;
   readonly cancel?: (reason?: unknown) => void;
   readonly deferStarted?: boolean;
-  /** Waits for task registration before emitting run-specific lifecycle facts. */
+  /** Waits for task registration and startup publication before emitting run-specific lifecycle facts. */
   readonly resolveTaskId?: () => string | undefined | Promise<string | undefined>;
 }
 

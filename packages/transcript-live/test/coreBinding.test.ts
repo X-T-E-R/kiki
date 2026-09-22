@@ -8,7 +8,9 @@ import {
   IAgentLoopService,
   IAgentPromptService,
   IAgentTaskService,
+  IAgentToolRegistryService,
   IEventBus,
+  ISessionDispatchService,
   ISessionIndex,
   ISessionInteractionService,
   ISessionMetadata,
@@ -38,8 +40,9 @@ import {
   type TranscriptOperation,
   type TranscriptTask,
   type TranscriptTurn,
+  type TranscriptWireRecord,
 } from '@kiki/transcript';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import {
   AgentTranscriptLiveAdapter,
@@ -1360,4 +1363,166 @@ describe('bindSessionTranscript', () => {
     expect(byAgent.get('sub-1')!.length).toBeGreaterThan(1);
     binding.dispose();
   });
+
+  it.each([1_000, 1_001])('materializes the first subagent spawn at %s and preserves its replayed terminal', (spawnedAt) => {
+    const liveTx = new AgentTranscript('main');
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const wireTx = new AgentTranscript('main');
+    const wireReducer = new TranscriptFactReducer(wireTx);
+    const wireAdapter = new TranscriptWireAdapter('main', { task: (id) => wireTx.getTask(id) });
+    const spawned = {
+      type: 'subagent.spawned',
+      subagentId: 'child-1',
+      subagentName: 'worker',
+      name: 'investigator',
+      description: 'Inspect files',
+      parentToolCallId: 'call-agent',
+      runInBackground: true,
+      taskId: 'task-1',
+      time: spawnedAt,
+    };
+    const started = { type: 'subagent.started', subagentId: 'child-1', taskId: 'task-1', time: spawnedAt };
+    const records = [
+      {
+        type: 'task.started',
+        info: {
+          taskId: 'task-1', kind: 'agent', agentId: 'child-1', status: 'running',
+          profile: 'worker', collaborationTaskName: 'investigator',
+          description: 'Inspect files', detached: true, startedAt: 1_000, endedAt: null,
+        },
+        time: 1_000,
+      },
+      spawned,
+      started,
+    ];
+    for (const record of records) {
+      liveTx.apply(liveAdapter.map(ev(record)));
+      wireReducer.apply(wireAdapter.add(record as TranscriptWireRecord));
+    }
+    const expected = {
+      taskId: 'task-1', kind: 'subagent', state: 'running', agentId: 'child-1',
+      name: 'investigator', subagentName: 'worker', description: 'Inspect files', detached: true,
+    };
+    expect(liveTx.getTask('task-1')).toMatchObject(expected);
+    expect(wireTx.getTask('task-1')).toMatchObject(expected);
+
+    const completed = {
+      type: 'subagent.completed', subagentId: 'child-1', taskId: 'task-1',
+      resultSummary: 'Done', time: 2_000,
+    };
+    for (const record of [completed, spawned, started]) {
+      wireReducer.apply(wireAdapter.add(record as TranscriptWireRecord));
+    }
+    expect(wireTx.getTask('task-1')).toMatchObject({ state: 'completed', resultSummary: 'Done' });
+  });
+
+  it.each([false, true])(
+    'keeps task terminal after producer events across dual projection when recordRun is gated (failed=%s)',
+    async (failed) => {
+      const { createAgentToolContext, createAgentLifecycleStub } = await import('./helpers/agentToolFixture');
+      const lifecycle = createAgentLifecycleStub({
+        createAgentIds: ['agent-child'],
+        runCompletion: async () => {
+          if (failed) throw new Error('failed immediately');
+          return { summary: 'finished immediately' };
+        },
+      });
+      const ctx = createAgentToolContext(lifecycle);
+      const captureTasks = ctx.get(IEventBus).subscribe((event) => {
+        if (event.type.startsWith('task.')) lifecycle.publishedEvents.push(event);
+      });
+      onTestFinished(async () => {
+        captureTasks.dispose();
+        await ctx.dispose();
+      });
+      const tasks = ctx.get(IAgentTaskService);
+      const gate = deferred<void>();
+      const entered = deferred<void>();
+      const dispatch = ctx.get(ISessionDispatchService);
+      const recordRun = dispatch.recordRun.bind(dispatch);
+      vi.spyOn(dispatch, 'recordRun').mockImplementation(async (agentId, taskId) => {
+        await tasks.wait(taskId, 10);
+        entered.resolve();
+        await gate.promise;
+        await recordRun(agentId, taskId);
+      });
+
+      const tool = ctx.get(IAgentToolRegistryService).resolve('AgentRun');
+      expect(tool).toBeDefined();
+      const pending = executeAgentTool(tool!, { prompt: 'Investigate', description: 'Find cause', background: true });
+      await entered.promise;
+      gate.resolve();
+      const result = await pending;
+      expect(result.isError).toBeFalsy();
+
+      if (typeof result.output !== 'string') throw new TypeError('expected string output');
+      const taskId = result.output.match(/task_id: (agent-[0-9a-z]{8})/)?.[1];
+      expect(taskId).toBeDefined();
+
+      await vi.waitFor(() => {
+        expect(tasks.getTask(taskId!)?.status).toBe(failed ? 'failed' : 'completed');
+        expect(lifecycle.publishedEvents).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            type: failed ? 'subagent.failed' : 'subagent.completed', subagentId: 'agent-child', taskId,
+          }),
+          expect.objectContaining({ type: 'task.started', info: expect.objectContaining({ taskId }) }),
+          expect.objectContaining({ type: 'task.terminated', info: expect.objectContaining({ taskId }) }),
+        ]));
+      });
+
+      const decisive = lifecycle.publishedEvents
+        .filter((event) => event.type.startsWith('subagent.'))
+        .map((event) => event.type);
+      expect.soft(decisive).toEqual(['subagent.spawned', 'subagent.started', failed ? 'subagent.failed' : 'subagent.completed']);
+
+      const liveTx = new AgentTranscript('main');
+      const liveAdapter = new AgentTranscriptLiveAdapter('main');
+      const wireTx = new AgentTranscript('main');
+      const wireReducer = new TranscriptFactReducer(wireTx);
+      const wireAdapter = new TranscriptWireAdapter('main', {
+        turn: (turnId) => wireTx.getTurn(turnId),
+        task: (id) => wireTx.getTask(id),
+      });
+      for (const event of lifecycle.publishedEvents) {
+        const record = { type: event.type, ...payloadOf(event) } as unknown as LiveAdapterBusEvent;
+        void liveTx.apply(liveAdapter.map(record));
+        wireReducer.apply(wireAdapter.add(record as unknown as TranscriptWireRecord));
+      }
+      expect.soft(liveTx.getTask(taskId!)?.state).toBe(failed ? 'failed' : 'completed');
+      expect.soft(wireTx.getTask(taskId!)?.state).toBe(failed ? 'failed' : 'completed');
+    },
+  );
 });
+
+function payloadOf(event: Event2): Record<string, unknown> {
+  const { type: _type, ...rest } = event as unknown as Record<string, unknown>;
+  return rest;
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason?: unknown): void;
+} {
+  let resolve: (value: T) => void = () => {};
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function executeAgentTool(
+  tool: NonNullable<ReturnType<IAgentToolRegistryService['resolve']>>,
+  args: Record<string, unknown>,
+): Promise<{ isError?: boolean; output?: unknown }> {
+  const resolved = args['model_alias'] === undefined ? { ...args, model_alias: 'mock-model' } : args;
+  const execution = await tool.resolveExecution(resolved as never);
+  if (execution.isError === true) return execution;
+  return execution.execute({
+    turnId: 0,
+    toolCallId: 'call_agent',
+    signal: new AbortController().signal,
+  } as never);
+}

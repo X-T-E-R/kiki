@@ -531,7 +531,7 @@ export class SubagentTool implements ISubagentTool {
         runtimeLease.dispose();
       }
 
-      let taskId: string;
+      let taskId: string | undefined;
       try {
         const registerOptions: RegisterAgentTaskOptions = {
           detached: runInBackground,
@@ -551,11 +551,26 @@ export class SubagentTool implements ISubagentTool {
           ),
           registerOptions,
         );
-        resolveRunTask(taskId);
         await this.dispatch.recordRun(handle.agentId, taskId);
         signal.removeEventListener('abort', abortBeforeRegister);
+        const requester = this.lifecycle.get(this.callerAgentId);
+        if (requester !== undefined) {
+          emitAgentRunSpawned(requester, handle.agentId, {
+            profileName: handle.profileName,
+            name: handle.name,
+            parentToolCallId: toolCallId,
+            description: runLabel,
+            runInBackground,
+            model: handle.model,
+            taskId,
+          });
+          await requester.accessor
+            .get(IEventDispatcher)
+            ?.dispatch(new SubagentStarted({ subagentId: handle.agentId, taskId }));
+        }
+        resolveRunTask(taskId);
       } catch (error) {
-        resolveRunTask(undefined);
+        resolveRunTask(taskId);
         controller.abort();
         void handle.completion.catch(() => {});
         signal.removeEventListener('abort', abortBeforeRegister);
@@ -573,22 +588,6 @@ export class SubagentTool implements ISubagentTool {
               : message,
           isError: true,
         };
-      }
-
-      const requester = this.lifecycle.get(this.callerAgentId);
-      if (requester !== undefined) {
-        emitAgentRunSpawned(requester, handle.agentId, {
-          profileName: handle.profileName,
-          name: handle.name,
-          parentToolCallId: toolCallId,
-          description: runLabel,
-          runInBackground,
-          model: handle.model,
-          taskId,
-        });
-        void requester.accessor
-          .get(IEventDispatcher)
-          ?.dispatch(new SubagentStarted({ subagentId: handle.agentId, taskId }));
       }
 
       if (runInBackground) {

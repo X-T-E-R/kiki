@@ -654,6 +654,7 @@ export class TranscriptWireAdapter {
       const operations: TranscriptOperation[] = [];
       if (sameRun) {
         this.#replayedSubagentSpawns.set(subagentId, taskId);
+        operations.push({ op: 'task.upsert', task: previous });
       } else {
         this.#replayedSubagentSpawns.delete(subagentId);
         const task: TranscriptTask = {
