@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 import { errorText, LocalizedError, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { DIALOG_PANEL_SIZES } from '../Dialog';
+import { Dialog, DIALOG_PANEL_SIZES } from '../Dialog';
 import { BoardAssociatedTodos } from './BoardAssociatedTodos';
 import { DEFAULT_BOARD_COLUMNS, type BoardColumnDef, type BoardTask, type BoardTaskStatus, type TaskPriority, type BoardSessionOption } from './types';
 
@@ -74,8 +74,9 @@ export const TaskDetailModal = memo(function TaskDetailModal({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const submitting = useRef(false);
+  const deletingRef = useRef(false);
   const baseRevision = useRef(task.revision);
-  const close = () => { if (!submitting.current && !deleting) onClose(); };
+  const close = () => { if (!submitting.current && !deletingRef.current) onClose(); };
   useEffect(() => {
     if (isEditing) return;
     setTitle(task.title); setDescription(task.description);
@@ -103,7 +104,8 @@ export const TaskDetailModal = memo(function TaskDetailModal({
   };
 
   const handleDelete = async () => {
-    if (onDelete === undefined || deleting) return;
+    if (onDelete === undefined || deletingRef.current || submitting.current) return;
+    deletingRef.current = true;
     setDeleting(true);
     try {
       await onDelete(task.id);
@@ -113,19 +115,21 @@ export const TaskDetailModal = memo(function TaskDetailModal({
       setError(errorText(locale, failure instanceof Error ? failure : fallback));
       setConfirmDelete(false);
     } finally {
+      deletingRef.current = false;
       setDeleting(false);
     }
   };
 
   return (
-    <div
-      data-task-detail-modal
-      className="fixed inset-0 z-50 flex items-center justify-center bg-shell/40 backdrop-blur-xs p-4"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) close();
-      }}
+    <Dialog
+      stacked
+      overlayId="task-board-detail"
+      overlayData={{ 'data-task-detail-modal': '' }}
+      ariaLabel={t('taskBoard.detail.title')}
+      onClose={close}
+      overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/40 backdrop-blur-xs p-4"
+      panelClassName={`flex max-h-[min(920px,calc(100vh-3rem))] w-[calc(100vw-3rem)] ${DIALOG_PANEL_SIZES.xl} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_20px_60px_-20px_rgba(28,25,23,0.45)] font-sans text-ink`}
     >
-      <div className={`flex max-h-[min(920px,calc(100vh-3rem))] w-[calc(100vw-3rem)] ${DIALOG_PANEL_SIZES.xl} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_20px_60px_-20px_rgba(28,25,23,0.45)] font-sans text-ink`}>
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-hairline bg-paper/50 px-6 py-4">
           <div className="flex min-w-0 items-center gap-2.5">
@@ -395,7 +399,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
               <button
                 type="button"
                 onClick={() => { setConfirmDelete(true); }}
-                disabled={deleting}
+                disabled={deleting || pending}
                 className="font-mono text-[12px] text-danger hover:underline"
               >
                 {t('taskBoard.detail.delete')}
@@ -417,7 +421,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                 <button
                   type="button"
                   disabled={pending}
-                  onClick={handleSave}
+                  onClick={() => { void handleSave(); }}
                   className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-panel shadow-xs transition-colors hover:bg-accent-deep"
                 >
                   {t('taskBoard.detail.save')}
@@ -446,7 +450,6 @@ export const TaskDetailModal = memo(function TaskDetailModal({
             )}
           </div>
         </div>
-      </div>
       <ConfirmDialog
         open={confirmDelete}
         title={t('taskBoard.detail.deleteTitle')}
@@ -455,8 +458,8 @@ export const TaskDetailModal = memo(function TaskDetailModal({
         busy={deleting}
         overlayId="task-board-delete-card"
         onConfirm={() => { void handleDelete(); }}
-        onCancel={() => { if (!deleting) setConfirmDelete(false); }}
+        onCancel={() => { if (!deletingRef.current) setConfirmDelete(false); }}
       />
-    </div>
+    </Dialog>
   );
 });

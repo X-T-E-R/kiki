@@ -74,6 +74,24 @@ const SUMMARY = {
 };
 
 describe('facade routing', () => {
+  it('passes task-board cancellation as transport metadata, not procedure arguments', async () => {
+    const channel = new FakeChannel();
+    const call = vi.spyOn(channel, 'call');
+    const klient = createKlientFromChannel(channel);
+    const signal = new AbortController().signal;
+    const input = { action: 'list' as const, workspaceId: 'workspace-a' };
+    channel.results.set('taskBoardService.read', {
+      ok: true, value: { workspaceId: 'workspace-a', cards: [], issues: [] },
+    });
+    channel.results.set('taskBoardService.overview', { ok: true, value: [] });
+
+    await klient.global.board.read(input, { signal });
+    expect(call).toHaveBeenNthCalledWith(1, {}, 'taskBoardService', 'read', [input], { signal });
+    await klient.global.board.overview({ signal });
+    expect(call).toHaveBeenNthCalledWith(2, {}, 'taskBoardService', 'overview', [], { signal });
+    await klient.close();
+  });
+
   it.each([
     { pendingInteraction: 'none', busy: false, expected: 'idle' },
     { pendingInteraction: 'none', busy: true, expected: 'running' },

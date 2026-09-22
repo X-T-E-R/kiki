@@ -8,7 +8,7 @@ import { useEffect, useRef } from 'react';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
-import { DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
+import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES, useStackedDialog } from './Dialog';
 import { DANGER_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 export interface ConfirmDialogProps {
@@ -41,18 +41,19 @@ export function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   const { t } = useI18n();
+  const stacked = useStackedDialog();
   const cancelRef = useRef<HTMLButtonElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || stacked) return;
     restoreRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     cancelRef.current?.focus();
     return () => { restoreRef.current?.focus(); };
-  }, [open]);
+  }, [open, stacked]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || stacked) return;
     const unregister = registerOverlay(overlayId);
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
@@ -66,7 +67,7 @@ export function ConfirmDialog({
       unregister();
       window.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [open, overlayId, onCancel]);
+  }, [open, overlayId, onCancel, stacked]);
 
   if (!open) return null;
 
@@ -92,41 +93,34 @@ export function ConfirmDialog({
     }
   };
 
+  const content = (
+    <>
+      <h3 className="font-display text-[17px] font-semibold text-ink">{title}</h3>
+      {body !== undefined ? <p className="mt-2.5 text-[13px] leading-relaxed text-ink-soft">{body}</p> : null}
+      {consequences !== undefined && consequences.length > 0 ? (
+        <ul className="mt-2.5 list-disc space-y-1.5 pl-5 text-[12.5px] leading-relaxed text-ink-soft">
+          {consequences.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      ) : null}
+      <div className="mt-6 flex justify-end gap-2.5">
+        <button ref={cancelRef} data-autofocus={stacked ? '' : undefined} type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onCancel}>
+          {cancelLabel ?? t('common.cancel')}
+        </button>
+        <button type="button" className={tone === 'danger' ? DANGER_BUTTON : PRIMARY_BUTTON} disabled={busy} onClick={onConfirm}>
+          {confirmLabel}
+        </button>
+      </div>
+    </>
+  );
+  if (stacked) return (
+    <Dialog role="alertdialog" ariaLabel={title} overlayId={overlayId} onClose={() => { if (!busy) onCancel(); }}>
+      {content}
+    </Dialog>
+  );
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4"
-      onClick={onCancel}
-    >
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-label={title}
-        className={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`}
-        onClick={(event) => { event.stopPropagation(); }}
-        onKeyDown={onKeyDown}
-      >
-        <h3 className="font-display text-[17px] font-semibold text-ink">{title}</h3>
-        {body !== undefined ? (
-          <p className="mt-2.5 text-[13px] leading-relaxed text-ink-soft">{body}</p>
-        ) : null}
-        {consequences !== undefined && consequences.length > 0 ? (
-          <ul className="mt-2.5 list-disc space-y-1.5 pl-5 text-[12.5px] leading-relaxed text-ink-soft">
-            {consequences.map((item) => <li key={item}>{item}</li>)}
-          </ul>
-        ) : null}
-        <div className="mt-6 flex justify-end gap-2.5">
-          <button ref={cancelRef} type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onCancel}>
-            {cancelLabel ?? t('common.cancel')}
-          </button>
-          <button
-            type="button"
-            className={tone === 'danger' ? DANGER_BUTTON : PRIMARY_BUTTON}
-            disabled={busy}
-            onClick={onConfirm}
-          >
-            {confirmLabel}
-          </button>
-        </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4" onClick={onCancel}>
+      <div role="alertdialog" aria-modal="true" aria-label={title} className={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`} onClick={(event) => { event.stopPropagation(); }} onKeyDown={onKeyDown}>
+        {content}
       </div>
     </div>
   );

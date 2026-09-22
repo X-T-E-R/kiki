@@ -30,6 +30,7 @@ interface WorkspaceRefresh {
   readonly cards: readonly BoardSummary[];
   readonly cardIssues: readonly BoardWorkspaceIssue[];
   readonly issue?: BoardWorkspaceIssue;
+  readonly nextCursor?: string;
 }
 function unwrap<T>(result: BoardResult<T>): T {
   if (!result.ok) {
@@ -74,25 +75,39 @@ function isOverviewMethodUnavailable(error: unknown): boolean {
 }
 
 const REFRESH_CONCURRENCY = 8;
+const MAX_PAGES = 100;
 
-async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length) as R[];
+async function mapBounded<T>(items: readonly T[], signal: AbortSignal, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await fn(items[index]!);
+  await Promise.all(Array.from({ length: Math.min(REFRESH_CONCURRENCY, items.length) }, async () => {
+    while (next < items.length && !signal.aborted) {
+      const item = items[next++]!;
+      await fn(item);
     }
+  }));
+}
+
+function idle(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    const done = () => { signal.removeEventListener('abort', cancel); resolve(); };
+    const useIdle = typeof requestIdleCallback === 'function';
+    const handle = useIdle ? requestIdleCallback(done, { timeout: 200 }) : setTimeout(done, 16);
+    const cancel = () => {
+      if (useIdle) cancelIdleCallback(handle as number);
+      else clearTimeout(handle);
+      done();
+    };
+    signal.addEventListener('abort', cancel, { once: true });
   });
-  await Promise.all(workers);
-  return results;
 }
 
 export class TaskBoardController {
   private state: TaskBoardSnapshot = { cards: [], loading: false, creating: false, pendingKeys: [], error: null, issues: [], cardIssues: [], refreshFailed: false };
   private listeners = new Set<() => void>();
   private epoch = 0;
+  private refreshAbort?: AbortController;
+  private accepted = new Map<string, BoardCard>();
   private intent?: { key: string; workspaceId: string; target: BoardCreateTarget };
   private sources = new Map<string, BoardStorageRef>();
   private creating?: Promise<void>;
@@ -102,6 +117,10 @@ export class TaskBoardController {
   constructor(private readonly client: TaskBoardClient) {}
   readonly getSnapshot = (): TaskBoardSnapshot => this.state;
   readonly subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
+  cancelRefresh(): void {
+    this.epoch += 1;
+    this.refreshAbort?.abort();
+  }
   private publish(patch: Partial<TaskBoardSnapshot>): void {
     this.state = { ...this.state, ...patch };
     for (const listener of this.listeners) listener();
@@ -110,41 +129,32 @@ export class TaskBoardController {
     const key = boardCardKey(card);
     const previous = this.state.cards.find((entry) => boardCardKey(entry) === key);
     if (previous && previous.revision > card.revision) return;
-    this.epoch += 1;
-    this.publish({ loading: false, cards: previous ? this.state.cards.map((entry) => boardCardKey(entry) === key ? card : entry) : [...this.state.cards, card], error: null });
+    // Keep successful edits and detail reads while later summary pages arrive.
+    this.accepted.set(key, card);
+    this.publish({ cards: previous ? this.state.cards.map((entry) => boardCardKey(entry) === key ? card : entry) : [...this.state.cards, card], error: null });
   }
   private pageRefresh(workspaceId: string, page: BoardPage): WorkspaceRefresh {
     if (page.storage) this.sources.set(workspaceId, page.storage);
     return {
       cards: page.cards,
       cardIssues: page.issues.map((issue) => workspaceIssue(workspaceId, issue.code, { key: 'taskBoard.error.cardIssue', params: { message: issue.message } })),
-      issue: undefined,
+      nextCursor: page.nextCursor,
     };
   }
-  private async readWorkspace(workspaceId: string, sessionId?: string): Promise<WorkspaceRefresh> {
+  private async readWorkspace(workspaceId: string, signal: AbortSignal, sessionId?: string, cursor?: string): Promise<WorkspaceRefresh> {
     try {
-      const cards: BoardSummary[] = [];
-      const cardIssues: BoardWorkspaceIssue[] = [];
-      let cursor: string | undefined;
-      const seen = new Set<string>();
-      do {
-        const value = unwrap(await this.client.read({ action: 'list', workspaceId, storage: this.sources.get(workspaceId), sessionId, cursor, limit: 100 }));
-        if (!('cards' in value)) throw new LocalizedError({ key: 'taskBoard.error.invalidListResponse' });
-        const page: BoardPage = value;
-        if (page.storage) this.sources.set(workspaceId, page.storage);
-        cards.push(...page.cards);
-        cardIssues.push(...page.issues.map((issue) => workspaceIssue(workspaceId, issue.code, { key: 'taskBoard.error.cardIssue', params: { message: issue.message } })));
-        cursor = page.nextCursor;
-        if (cursor && seen.has(cursor)) throw new LocalizedError({ key: 'taskBoard.error.paginationDidNotAdvance' });
-        if (cursor) seen.add(cursor);
-      } while (cursor);
-      return { cards, cardIssues, issue: undefined };
+      signal.throwIfAborted();
+      const value = unwrap(await this.client.read({ action: 'list', workspaceId, storage: this.sources.get(workspaceId), sessionId, cursor, limit: 100 }, { signal }));
+      signal.throwIfAborted();
+      if (!('cards' in value) || value.workspaceId !== workspaceId) throw new LocalizedError({ key: 'taskBoard.error.invalidListResponse' });
+      return this.pageRefresh(workspaceId, value);
     } catch (error) {
       return workspaceFailure(workspaceId, error);
     }
   }
-  private async readOverview(workspaceIds: readonly string[]): Promise<WorkspaceRefresh[]> {
-    const entries = unwrap(await this.client.overview!());
+  private async readOverview(workspaceIds: readonly string[], signal: AbortSignal): Promise<WorkspaceRefresh[]> {
+    const entries = unwrap(await this.client.overview!({ signal }));
+    signal.throwIfAborted();
     const byWorkspace = new Map(entries.map((entry) => [entry.workspaceId, entry]));
     return workspaceIds.map((workspaceId) => {
       const entry = byWorkspace.get(workspaceId);
@@ -153,7 +163,7 @@ export class TaskBoardController {
       }
       try {
         const page = unwrap(entry.result);
-        if (page.workspaceId !== workspaceId || page.nextCursor !== undefined) {
+        if (page.workspaceId !== workspaceId) {
           throw Object.assign(new LocalizedError({ key: 'taskBoard.error.overviewPageIncomplete' }), { code: 'BOARD_OVERVIEW_INCOMPLETE' });
         }
         return this.pageRefresh(workspaceId, page);
@@ -164,36 +174,67 @@ export class TaskBoardController {
   }
 
   async refresh(workspaceIds: readonly string[], sessionId?: string): Promise<void> {
-    const epoch = ++this.epoch;
+    this.cancelRefresh();
+    const epoch = this.epoch;
+    const abort = new AbortController();
+    this.refreshAbort = abort;
+    const { signal } = abort;
+    this.accepted.clear();
     this.publish({ loading: true, error: null, issues: [], cardIssues: [], refreshFailed: false });
     const unique = [...new Set(workspaceIds)];
-    // One workspace's broken store must not take the whole board down: each
-    // workspace is listed independently and its failure lands in `issues`,
-    // while per-card parse failures land separately in `cardIssues`. Fan-out
-    // is bounded; results merge in `unique` order so the published snapshot is
-    // deterministic regardless of completion order.
-    let pages: WorkspaceRefresh[];
-    // The overview endpoint reads every registered workspace server-side, so
-    // it only pays off for a multi-workspace scope; a single-workspace refresh
-    // always goes straight to that workspace's own list read.
+    const pages = new Map<string, WorkspaceRefresh>();
+    const publishPages = (loading: boolean) => {
+      if (signal.aborted || epoch !== this.epoch) return;
+      const ordered = unique.flatMap((id) => pages.has(id) ? [pages.get(id)!] : []);
+      const cards = new Map(ordered.flatMap((page) => page.cards).map((card) => [boardCardKey(card), card]));
+      for (const [key, card] of this.accepted) {
+        if ((cards.get(key)?.revision ?? -1) <= card.revision) cards.set(key, card);
+      }
+      const issues = ordered.flatMap((page) => page.issue ? [page.issue] : []);
+      const cardIssues = [...new Map(ordered.flatMap((page) => page.cardIssues).map((issue) => [JSON.stringify([issue.workspaceId, issue.code, issue.message]), issue])).values()];
+      this.publish({ cards: [...cards.values()], loading, issues, cardIssues, refreshFailed: !loading && unique.length > 0 && issues.length === unique.length && cards.size === 0 });
+    };
+    const readFirstPages = () => mapBounded(unique, signal, async (workspaceId) => {
+      pages.set(workspaceId, await this.readWorkspace(workspaceId, signal, sessionId));
+      publishPages(true);
+    });
+    // Single-workspace reads never enumerate unrelated workspace stores.
     if (unique.length > 1 && sessionId === undefined && !this.overviewUnavailable && this.client.overview !== undefined) {
       try {
-        pages = await this.readOverview(unique);
+        const overview = await this.readOverview(unique, signal);
+        overview.forEach((page, index) => pages.set(unique[index]!, page));
       } catch (error) {
+        if (signal.aborted) return;
         if (isOverviewMethodUnavailable(error)) {
           this.overviewUnavailable = true;
-          pages = await mapBounded(unique, REFRESH_CONCURRENCY, (workspaceId) => this.readWorkspace(workspaceId, sessionId));
-        } else {
-          pages = unique.map((workspaceId) => workspaceFailure(workspaceId, error));
-        }
+          await readFirstPages();
+        } else unique.forEach((id) => pages.set(id, workspaceFailure(id, error)));
       }
-    } else {
-      pages = await mapBounded(unique, REFRESH_CONCURRENCY, (workspaceId) => this.readWorkspace(workspaceId, sessionId));
-    }
-    const cards = pages.flatMap((page) => page.cards);
-    const cardIssues = pages.flatMap((page) => page.cardIssues);
-    const issues = pages.flatMap((page) => (page.issue === undefined ? [] : [page.issue]));
-    if (epoch === this.epoch) this.publish({ cards, loading: false, issues, cardIssues, refreshFailed: unique.length > 0 && issues.length === unique.length });
+    } else await readFirstPages();
+    if (signal.aborted) return;
+    const remaining = unique.filter((id) => pages.get(id)?.nextCursor !== undefined);
+    publishPages(remaining.length > 0);
+    // Return the first-page snapshot; continuation yields between pages so the
+    // browser can paint and input/scope changes can cancel queued work.
+    void mapBounded(remaining, signal, async (workspaceId) => {
+      const seen = new Set<string>();
+      let page = pages.get(workspaceId)!;
+      while (page.nextCursor !== undefined && !signal.aborted) {
+        const cursor = page.nextCursor;
+        if (seen.has(cursor) || seen.size >= MAX_PAGES - 1) {
+          pages.set(workspaceId, { ...page, nextCursor: undefined, issue: workspaceFailure(workspaceId, new LocalizedError({ key: 'taskBoard.error.paginationDidNotAdvance' })).issue });
+          break;
+        }
+        seen.add(cursor);
+        await idle(signal);
+        if (signal.aborted) return;
+        const next = await this.readWorkspace(workspaceId, signal, sessionId, cursor);
+        if (signal.aborted) return;
+        page = { ...next, cards: [...page.cards, ...next.cards], cardIssues: [...page.cardIssues, ...next.cardIssues] };
+        pages.set(workspaceId, page);
+        publishPages(true);
+      }
+    }).then(() => { publishPages(false); });
   }
 
   async open(key: string): Promise<void> {

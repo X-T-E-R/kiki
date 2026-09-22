@@ -14,7 +14,7 @@ import {
 const board = {
   read: vi.fn(async (_input: { action: string; workspaceId?: string }) => ({
     ok: true as const,
-    value: { cards: [], issues: [], storage: { root: '/store', storageId: 'store-a', kind: 'embedded' as const } },
+    value: { workspaceId: _input.workspaceId, cards: [], issues: [], storage: { root: '/store', storageId: 'store-a', kind: 'embedded' as const } },
   })),
   write: vi.fn(),
   overview: vi.fn(async () => ({

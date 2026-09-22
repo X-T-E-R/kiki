@@ -38,7 +38,6 @@ import type { FileMeta } from '@kiki/agent-core-v2/app/file/fileService';
 import type { ModelRecord } from '@kiki/agent-core-v2/kosong/model/model';
 import type { IModelCatalog } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@kiki/agent-core-v2/app/kosongConfig/discovery';
-import type { IModelCatalogMutationService } from '@kiki/agent-core-v2/app/kosongConfig/modelCatalogMutation';
 import type {
   CreateModelRequest,
   CreateProviderRequest,
@@ -484,9 +483,9 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
 
   return {
     board: {
-      read: (input) => call('taskBoardService', 'read', [input]) as ReturnType<BoardClient['read']>,
+      read: (input, options) => call('taskBoardService', 'read', [input], options) as ReturnType<BoardClient['read']>,
       write: (input) => call('taskBoardService', 'write', [input]) as ReturnType<BoardClient['write']>,
-      overview: () => call('taskBoardService', 'overview', []) as ReturnType<BoardOverviewClient['overview']>,
+      overview: (options) => call('taskBoardService', 'overview', [], options) as ReturnType<BoardOverviewClient['overview']>,
     },
     agentPanel: {
       read: (query, options) => call('agentPanelService', 'read', [query], options) as Promise<AgentCapabilitiesResponse>,

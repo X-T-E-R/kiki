@@ -61,7 +61,10 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
     [scopeSelection, workspaceIds],
   );
   const scopeKey = JSON.stringify(scopedWorkspaceIds);
-  useEffect(() => { void controller.refresh(JSON.parse(scopeKey) as string[]); }, [controller, scopeKey]);
+  useEffect(() => {
+    void controller.refresh(JSON.parse(scopeKey) as string[]);
+    return () => controller.cancelRefresh();
+  }, [controller, scopeKey]);
   const tasks = useMemo(() => snapshot.cards.map((card) => view(card, workspaces)), [snapshot.cards, workspaces]);
   const columns = OWN_WORK_BOARD_COLUMNS;
   const refresh = () => controller.refresh(scopedWorkspaceIds);

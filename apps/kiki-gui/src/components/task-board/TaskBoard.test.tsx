@@ -125,16 +125,16 @@ describe('TaskBoard Component Presentation', () => {
     });
 
     expect(container.textContent).toContain('需求与任务看板');
-    expect(container.querySelector('[data-board-column="backlog"]')).not.toBeNull();
-    expect(container.querySelector('[data-board-column="todo"]')).not.toBeNull();
-    expect(container.querySelector('[data-board-column="running"]')).not.toBeNull();
-    expect(container.querySelector('[data-board-column="done"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-column="backlog"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-column="todo"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-column="running"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-column="done"]')).not.toBeNull();
 
     // Check task cards in columns
-    expect(container.querySelector('[data-board-task-card="t-1"]')).not.toBeNull();
-    expect(container.querySelector('[data-board-task-card="t-2"]')).not.toBeNull();
-    expect(container.querySelector('[data-board-task-card="t-3"]')).not.toBeNull();
-    expect(container.querySelector('[data-board-task-card="t-4"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-task-card="t-1"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-task-card="t-2"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-task-card="t-3"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-task-card="t-4"]')).not.toBeNull();
   });
 
   it('filters cards by search query and workspace selection', async () => {
@@ -148,7 +148,7 @@ describe('TaskBoard Component Presentation', () => {
       );
     });
 
-    const searchInput = container.querySelector('input[type="search"]');
+    const searchInput = document.body.querySelector('input[type="search"]');
     expect(searchInput).not.toBeNull();
 
     // Search for '重构'
@@ -156,8 +156,8 @@ describe('TaskBoard Component Presentation', () => {
       changeInputValue(searchInput as HTMLInputElement, '重构');
     });
 
-    expect(container.querySelector('[data-board-task-card="t-1"]')).not.toBeNull();
-    expect(container.querySelector('[data-board-task-card="t-2"]')).toBeNull();
+    expect(document.body.querySelector('[data-board-task-card="t-1"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-task-card="t-2"]')).toBeNull();
   });
 
   it('opens detail modal when clicking a task card and allows editing', async () => {
@@ -173,14 +173,14 @@ describe('TaskBoard Component Presentation', () => {
       );
     });
 
-    const card = container.querySelector('[data-board-task-card="t-1"]');
+    const card = document.body.querySelector('[data-board-task-card="t-1"]');
     expect(card).not.toBeNull();
     await act(async () => {
       (card as HTMLElement).click();
     });
 
     // Detail modal opens
-    const modal = container.querySelector('[data-task-detail-modal]');
+    const modal = document.body.querySelector('[data-task-detail-modal]');
     expect(modal).not.toBeNull();
     expect(modal?.firstElementChild?.className).toContain('max-w-[1080px]');
     expect(modal?.textContent).toContain('重构右栏为独立 Agent Panel');
@@ -229,7 +229,7 @@ describe('TaskBoard Component Presentation', () => {
       );
     });
 
-    const newBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+    const newBtn = Array.from(document.body.querySelectorAll('button')).find((b) =>
       b.textContent?.includes('+ 新建需求')
     );
     expect(newBtn).toBeDefined();
@@ -237,7 +237,7 @@ describe('TaskBoard Component Presentation', () => {
       newBtn!.click();
     });
 
-    const newModal = container.querySelector('[data-new-task-modal]');
+    const newModal = document.body.querySelector('[data-new-task-modal]');
     expect(newModal).not.toBeNull();
     expect(newModal?.firstElementChild?.className).toContain('max-w-[880px]');
 
@@ -271,7 +271,7 @@ describe('TaskBoard Component Presentation', () => {
       );
     });
 
-    const card = container.querySelector('[data-board-task-card="t-1"]');
+    const card = document.body.querySelector('[data-board-task-card="t-1"]');
     expect(card).not.toBeNull();
     expect(card?.textContent).not.toContain('未记录执行');
     expect(card?.textContent).toContain('⌁ 1');
@@ -288,7 +288,7 @@ describe('TaskBoard Component Presentation', () => {
       );
     });
 
-    const emptyPlaceholders = container.querySelectorAll('.border-dashed');
+    const emptyPlaceholders = document.body.querySelectorAll('.border-dashed');
     expect(emptyPlaceholders.length).toBe(5); // Default 5 columns: backlog, todo, running, done, failed
     expect(container.textContent).toContain('暂无需求卡片');
   });

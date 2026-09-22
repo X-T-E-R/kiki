@@ -105,6 +105,9 @@ it('uses the bundled Own Work package over real HTTP without requiring workspace
     await mkdir(otherRoot);
     const other = await client.global.workspaces.createOrTouch({ root: otherRoot });
     expect(await client.global.board.read({ action: 'show', workspaceId: other.id, storage: globalCard.storage, id: globalCard.id })).toMatchObject({ ok: false, error: { code: 'BOARD_WORKSPACE_MISMATCH' } });
+    pageValue(await client.global.board.read({ action: 'list', workspaceId, storage: fixedCard.storage }));
+    expect(await client.global.board.read({ action: 'list', workspaceId: other.id, storage: fixedCard.storage, cursor: fixedCard.id })).toMatchObject({ ok: false, error: { code: 'BOARD_ACCESS_DENIED' } });
+    expect(await client.global.board.read({ action: 'list', workspaceId, storage: { ...fixedCard.storage, storageId: 'replaced-store' }, cursor: fixedCard.id })).toMatchObject({ ok: false, error: { code: 'BOARD_STORAGE_CHANGED' } });
     await client.close();
     await server.close();
     server = await startServer(options);
@@ -177,7 +180,7 @@ it('returns one server-enumerated overview while isolating an incompatible works
   }
 }, 120_000);
 
-it('caps a runaway workspace cursor without failing healthy overview entries', async () => {
+it('returns overview first pages and cursors without draining even a runaway workspace', async () => {
   const testRoot = resolve(process.cwd(), '../../.tmp');
   await mkdir(testRoot, { recursive: true });
   const root = await mkdtemp(join(testRoot, 'kiki-board-overview-limit-'));
@@ -234,10 +237,10 @@ it('caps a runaway workspace cursor without failing healthy overview entries', a
       ok: true,
       value: [
         { workspaceId: 'workspace-healthy', result: { ok: true, value: { cards: [], issues: [] } } },
-        { workspaceId: 'workspace-runaway', result: { ok: false, error: { code: 'BOARD_PAGINATION_LIMIT' } } },
+        { workspaceId: 'workspace-runaway', result: { ok: true, value: { cards: [], nextCursor: 'cursor-1' } } },
       ],
     });
-    expect(api.listTasks.mock.calls.filter(([options]) => options.workspaceId === 'workspace-runaway')).toHaveLength(100);
+    expect(api.listTasks.mock.calls.filter(([options]) => options.workspaceId === 'workspace-runaway')).toHaveLength(1);
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }

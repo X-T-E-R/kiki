@@ -12,10 +12,13 @@
  * element on close.
  */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-import { registerOverlay } from '../lib/uiBusy';
+import { canRestoreModalFocus, registerModal, registerOverlay } from '../lib/uiBusy';
+
+const ModalDepth = createContext<number | undefined>(undefined);
+export function useStackedDialog(): boolean { return useContext(ModalDepth) !== undefined; }
 
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -49,12 +52,8 @@ export const DIALOG_PANEL_SIZES = {
 const DEFAULT_PANEL_CLASS = `${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`;
 
 export function Dialog({
-  onClose,
-  ariaLabel,
-  overlayId,
-  panelClassName,
-  overlayClassName,
-  children,
+  onClose, ariaLabel, overlayId, panelClassName, overlayClassName, children,
+  stacked, role = 'dialog', overlayData,
 }: {
   onClose: () => void;
   /** Accessible name for the dialog (mirrors the visible title). */
@@ -65,55 +64,62 @@ export function Dialog({
   panelClassName?: string;
   /** Replaces the default backdrop layout (slide-overs and lightboxes restyle alignment/tint). */
   overlayClassName?: string;
+  /** Opt into top-modal keyboard/focus ownership; inherited by nested dialogs. */
+  stacked?: boolean;
+  role?: 'dialog' | 'alertdialog';
+  overlayData?: Record<`data-${string}`, string>;
   children: ReactNode;
 }) {
+  const parentDepth = useContext(ModalDepth);
+  const depth = (stacked ?? parentDepth !== undefined) ? (parentDepth ?? -1) + 1 : undefined;
   const panelRef = useRef<HTMLDivElement>(null);
+  const ownership = useRef<ReturnType<typeof registerModal> | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
-  // Escape closes; uiBusy keeps the global abort handler out of the way.
+  // Stack registration is stable across form edits and busy-state changes.
   useEffect(() => {
     const unregister = registerOverlay(overlayId);
+    const modal = depth !== undefined && panelRef.current ? registerModal(overlayId, depth, panelRef.current) : null;
+    ownership.current = modal;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || (modal && !modal.isTop())) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      onClose();
+      closeRef.current();
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => {
+      modal?.unregister();
+      ownership.current = null;
       unregister();
       window.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [onClose, overlayId]);
+  }, [overlayId, depth, depth === undefined ? onClose : undefined]);
 
-  // Initial focus, Tab trap, and focus restore on unmount.
   useEffect(() => {
     const panel = panelRef.current;
     if (panel === null) return;
-    const previous =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    // A marked-but-disabled autofocus target suppresses the fallback: moving
-    // initial focus to another control inside the child would defeat the
-    // child's own re-focus-on-enable once its blocking query resolves.
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const isTop = () => depth === undefined || ownership.current?.isTop() === true;
+    const focusable = () => [...panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
+      (element) => element.offsetParent !== null && (depth === undefined || !element.closest('[inert]')),
+    );
     const marked = panel.querySelector<HTMLElement>('[data-autofocus]:not([disabled])');
-    const initial =
-      marked ??
-      (panel.querySelector('[data-autofocus]') === null
-        ? panel.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
-        : null);
-    (initial ?? panel).focus();
-
+    const initial = marked ?? (panel.querySelector('[data-autofocus]') === null ? panel.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) : null);
+    if (isTop()) (initial ?? panel).focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Tab') return;
-      const focusable = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
-        (element) => element.offsetParent !== null,
-      );
-      if (focusable.length === 0) {
+      if (event.key !== 'Tab' || !isTop()) return;
+      if (depth !== undefined) event.stopPropagation();
+      const controls = focusable();
+      if (controls.length === 0) {
         event.preventDefault();
+        if (depth !== undefined) panel.focus();
         return;
       }
-      const first = focusable[0]!;
-      const last = focusable.at(-1)!;
+      const first = controls[0]!;
+      const last = controls.at(-1)!;
       const active = document.activeElement;
       if (event.shiftKey && (active === first || !panel.contains(active))) {
         event.preventDefault();
@@ -123,33 +129,38 @@ export function Dialog({
         first.focus();
       }
     };
-    panel.addEventListener('keydown', onKeyDown);
+    const onFocus = (event: FocusEvent) => {
+      if (isTop() && event.target instanceof Node && !panel.contains(event.target)) (focusable()[0] ?? panel).focus();
+    };
+    if (depth === undefined) panel.addEventListener('keydown', onKeyDown);
+    else {
+      window.addEventListener('keydown', onKeyDown, true);
+      document.addEventListener('focusin', onFocus);
+    }
     return () => {
       panel.removeEventListener('keydown', onKeyDown);
-      previous?.focus();
+      window.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('focusin', onFocus);
+      if (depth === undefined) previous?.focus();
+      else queueMicrotask(() => { if (previous && canRestoreModalFocus(previous)) previous.focus(); });
     };
-  }, []);
+  }, [depth]);
 
   return createPortal(
-    <div
-      className={
-        overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4'
-      }
-      onPointerDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
+    <ModalDepth.Provider value={depth}>
       <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={ariaLabel}
-        tabIndex={-1}
-        className={panelClassName ?? DEFAULT_PANEL_CLASS}
+        {...overlayData}
+        className={overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4'}
+        style={depth === undefined ? undefined : { zIndex: 50 + depth }}
+        onPointerDown={(event) => {
+          if (event.target === event.currentTarget && (depth === undefined || ownership.current?.isTop())) onClose();
+        }}
       >
-        {children}
+        <div ref={panelRef} role={role} aria-modal="true" aria-label={ariaLabel} tabIndex={-1} className={panelClassName ?? DEFAULT_PANEL_CLASS}>
+          {children}
+        </div>
       </div>
-    </div>,
+    </ModalDepth.Provider>,
     document.body,
   );
 }

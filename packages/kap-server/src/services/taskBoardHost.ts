@@ -5,13 +5,13 @@ import * as ownWork from 'own-work/tasks';
 import { IBootstrapService, IConfigService, IWorkspaceService, IAtomicDocumentStore, type Scope } from '@kiki/agent-core-v2';
 import { createOwnWorkBoardService, type OwnWorkTaskApi } from '@kiki/agent-core-v2/app/taskBoard/ownWorkAdapter';
 import { TaskBoardConfigSchema } from '@kiki/agent-core-v2/app/taskBoard/configSection';
-import type { BoardOverviewEntry, BoardPage, BoardReadInput, BoardResult, BoardWriteInput, ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
+import type { BoardOverviewEntry, BoardReadInput, BoardResult, BoardWriteInput, ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
+import { withTaskBoardSurveyCache } from './taskBoardSurveyCache';
 
 const bindingsSchema = z.array(z.object({ root: z.string(), canonical: z.string(), workspaceRoot: z.string() }));
 const normalize = (root: string): string => process.platform === 'win32' ? path.resolve(root).toLowerCase() : path.resolve(root);
 const OVERVIEW_CONCURRENCY = 8;
 const OVERVIEW_PAGE_LIMIT = 100;
-const OVERVIEW_MAX_PAGES = 100;
 type RegisteredWorkspace = { readonly id: string; readonly root: string };
 export interface TaskBoardHost extends ITaskBoardService {
   overview(): Promise<BoardResult<readonly BoardOverviewEntry[]>>;
@@ -24,7 +24,7 @@ function failed<T>(error: unknown): BoardResult<T> {
   return { ok: false, error: { code, message: error instanceof Error ? error.message : 'The task board is unavailable.' } };
 }
 async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length) as R[];
+  const results: R[] = [];
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (next < items.length) {
@@ -46,7 +46,7 @@ async function canonical(root: string): Promise<string> {
   }
 }
 
-export function createTaskBoardHost(getCore: () => Scope, api: OwnWorkTaskApi = ownWork): TaskBoardHost {
+export function createTaskBoardHost(getCore: () => Scope, api: OwnWorkTaskApi = withTaskBoardSurveyCache(ownWork)): TaskBoardHost {
   const run = async (input: BoardReadInput | BoardWriteInput, write: boolean, knownWorkspace?: RegisteredWorkspace) => {
     const core = getCore();
     const config = TaskBoardConfigSchema.parse(core.accessor.get(IConfigService).get('taskBoard') ?? {}).storage;
@@ -74,7 +74,7 @@ export function createTaskBoardHost(getCore: () => Scope, api: OwnWorkTaskApi = 
           const root = path.resolve(registered.root, selected.path);
           candidates.push({ root, canonical: await canonical(root) });
         }
-        return await use({
+        return use({
           workspaceId, workspaceRoot: registered.root, homeDir: host.homeDir, sessionsDir: host.sessionsDir,
           async authorizeStorage(root, access) {
             if (!path.isAbsolute(root)) denied('A storage root must be absolute.');
@@ -104,35 +104,13 @@ export function createTaskBoardHost(getCore: () => Scope, api: OwnWorkTaskApi = 
   const read = (input: BoardReadInput, knownWorkspace?: RegisteredWorkspace) => run(input, false, knownWorkspace) as ReturnType<ITaskBoardService['read']>;
   const overviewEntry = async (workspace: RegisteredWorkspace): Promise<BoardOverviewEntry> => {
     try {
-      const cards: BoardPage['cards'][number][] = [];
-      const issues: BoardPage['issues'][number][] = [];
-      let storage: BoardPage['storage'];
-      let cursor: string | undefined;
-      let pageCount = 0;
-      const seen = new Set<string>();
-      do {
-        if (pageCount >= OVERVIEW_MAX_PAGES) {
-          return { workspaceId: workspace.id, result: failed(Object.assign(new Error(`Board pagination exceeded ${OVERVIEW_MAX_PAGES} pages.`), { code: 'BOARD_PAGINATION_LIMIT' })) };
-        }
-        pageCount += 1;
-        const result = await read({ action: 'list', workspaceId: workspace.id, storage, cursor, limit: OVERVIEW_PAGE_LIMIT }, workspace);
-        if (!result.ok) return { workspaceId: workspace.id, result };
-        const value = result.value;
-        if (!('cards' in value) || !('issues' in value)) {
-          return { workspaceId: workspace.id, result: failed(Object.assign(new Error('The board list returned an invalid response.'), { code: 'BOARD_RESPONSE_INVALID' })) };
-        }
-        storage ??= value.storage;
-        cards.push(...value.cards);
-        issues.push(...value.issues);
-        cursor = value.nextCursor;
-        if (cursor !== undefined) {
-          if (seen.has(cursor)) {
-            return { workspaceId: workspace.id, result: failed(Object.assign(new Error('Board pagination did not advance.'), { code: 'BOARD_PAGINATION_INVALID' })) };
-          }
-          seen.add(cursor);
-        }
-      } while (cursor !== undefined);
-      return { workspaceId: workspace.id, result: { ok: true, value: { workspaceId: workspace.id, storage, cards, issues } } };
+      const result = await read({ action: 'list', workspaceId: workspace.id, limit: OVERVIEW_PAGE_LIMIT }, workspace);
+      if (!result.ok) return { workspaceId: workspace.id, result };
+      const value = result.value;
+      if (!('cards' in value) || !('issues' in value)) {
+        return { workspaceId: workspace.id, result: failed(Object.assign(new Error('The board list returned an invalid response.'), { code: 'BOARD_RESPONSE_INVALID' })) };
+      }
+      return { workspaceId: workspace.id, result: { ok: true, value } };
     } catch (error) {
       return { workspaceId: workspace.id, result: failed(error) };
     }

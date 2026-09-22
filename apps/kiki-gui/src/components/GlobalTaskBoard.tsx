@@ -199,6 +199,7 @@ export function GlobalTaskBoard({
           onClose={close}
           ariaLabel={t('st.agentBoard.title')}
           overlayId="global-task-board"
+          stacked
           panelClassName={`anim-enter flex h-[min(90vh,800px)] w-full ${DIALOG_PANEL_SIZES['2xl']} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-0 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]`}
         >
           {content}

@@ -36,12 +36,12 @@ function changeSelect(select: HTMLSelectElement, value: string) {
   select.dispatchEvent(new Event('change', { bubbles: true }));
 }
 function button(text: string): HTMLButtonElement {
-  const value = [...container.querySelectorAll('button')].find((entry) => entry.textContent?.includes(text));
+  const value = [...document.body.querySelectorAll('button')].find((entry) => entry.textContent?.includes(text));
   if (!value) throw new Error(`Missing button: ${text}`);
   return value;
 }
 function refreshButton(): HTMLButtonElement {
-  const value = container.querySelector<HTMLButtonElement>('[data-task-board-refresh]');
+  const value = document.body.querySelector<HTMLButtonElement>('[data-task-board-refresh]');
   if (!value) throw new Error('Missing task board refresh button.');
   return value;
 }
@@ -127,7 +127,7 @@ describe('board container and controlled forms (mock transport, no persistence c
     await act(async () => renderWithI18n(<TaskBoardContainer client={client} workspaceIds={['workspace-a']} currentWorkspaceId="workspace-a" workspaces={[{ id: 'workspace-a', title: 'Example' }]} sessions={[{ id: 'session-a', title: 'First' }, { id: 'session-b', title: 'Second' }]} />));
     expect(read.mock.calls.filter(([input]) => input.action === 'show')).toHaveLength(0);
     await act(async () => button('+ 新建需求').click());
-    const form = container.querySelector('[data-new-task-modal] form') as HTMLFormElement;
+    const form = document.body.querySelector('[data-new-task-modal] form') as HTMLFormElement;
     const title = form.querySelector('input[type=text]') as HTMLInputElement;
     await act(async () => change(title, 'An idea'));
     await act(async () => {
@@ -137,29 +137,29 @@ describe('board container and controlled forms (mock transport, no persistence c
     expect(write).toHaveBeenCalledTimes(1);
     expect(button('Create Task Card').disabled).toBe(true);
     await act(async () => rejectWrite(new Error('Storage temporarily unavailable')));
-    expect(container.querySelector('[data-new-task-modal]')).not.toBeNull();
+    expect(document.body.querySelector('[data-new-task-modal]')).not.toBeNull();
     expect(title.value).toBe('An idea');
-    expect(container.textContent).toContain('Storage temporarily unavailable');
+    expect(document.querySelector('[data-new-task-modal]')?.textContent).toContain('Storage temporarily unavailable');
     const first = write.mock.calls[0]![0];
     write.mockResolvedValueOnce({ ok: true, value: card });
     await act(async () => button('Create Task Card').click());
     const second = write.mock.calls[1]![0];
     expect(second).toEqual(first);
-    expect(container.querySelector('[data-new-task-modal]')).toBeNull();
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
+    expect(document.body.querySelector('[data-new-task-modal]')).toBeNull();
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
     listed = [summary];
     await act(async () => refreshButton().click());
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
     expect(read.mock.calls.filter(([input]) => input.action === 'show')).toHaveLength(0);
-    await act(async () => (container.querySelector('[data-board-task-card]') as HTMLElement).click());
+    await act(async () => (document.body.querySelector('[data-board-task-card]') as HTMLElement).click());
     expect(read.mock.calls.filter(([input]) => input.action === 'show')).toHaveLength(1);
     await act(async () => button('Edit Task').click());
-    const editTitle = container.querySelector('[data-task-detail-modal] input[type=text]') as HTMLInputElement;
+    const editTitle = document.body.querySelector('[data-task-detail-modal] input[type=text]') as HTMLInputElement;
     await act(async () => change(editTitle, 'Retained edit'));
     write.mockResolvedValueOnce({ ok: false, error: { code: 'TASK_REVISION_CONFLICT', message: 'Reload before reapplying.' } });
     await act(async () => button('Save Changes').click());
     expect(editTitle.value).toBe('Retained edit');
-    expect(container.querySelector('[data-task-detail-modal] input[type=text]')).not.toBeNull();
+    expect(document.body.querySelector('[data-task-detail-modal] input[type=text]')).not.toBeNull();
     expect(container.textContent).toContain('TASK_REVISION_CONFLICT');
     expect(write.mock.calls[2]![0]).toMatchObject({ action: 'update', id: card.id, storage, expectedRevision: 3, patch: { title: 'Retained edit', sessionIds: ['session-a'] } });
   });
@@ -168,7 +168,7 @@ describe('board container and controlled forms (mock transport, no persistence c
     const read = vi.fn<BoardClient['read']>().mockResolvedValue({ ok: true, value: { workspaceId: 'workspace-a', storage, cards: [summary], issues: [] } });
     const write = vi.fn<BoardClient['write']>().mockResolvedValue({ ok: true, value: card });
     await act(async () => renderWithI18n(<TaskBoardContainer client={{ read, write }} workspaceIds={['workspace-a']} currentWorkspaceId="workspace-a" currentSessionId="session-a" workspaces={[{ id: 'workspace-a', title: 'Example' }]} sessions={[{ id: 'session-a', title: 'First' }]} />));
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
     expect(read.mock.calls.find(([input]) => input.action === 'list')?.[0]).toMatchObject({ action: 'list', workspaceId: 'workspace-a', sessionId: undefined });
   });
 
@@ -206,14 +206,14 @@ describe('board container and controlled forms (mock transport, no persistence c
         sessions={[{ id: 'session-a', title: 'First' }, { id: 'session-b', title: 'Second' }]}
       />,
     ));
-    const workspaceFilter = container.querySelector('select') as HTMLSelectElement;
+    const workspaceFilter = document.body.querySelector('select') as HTMLSelectElement;
     expect(workspaceFilter.value).toBe('all');
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(3);
-    const sessionFilter = [...container.querySelectorAll('select')].find((entry) => entry.textContent?.includes('全部会话关联')) as HTMLSelectElement;
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(3);
+    const sessionFilter = [...document.body.querySelectorAll('select')].find((entry) => entry.textContent?.includes('全部会话关联')) as HTMLSelectElement;
     expect(sessionFilter.value).toBe('all');
     sessionFilter.value = 'session-a';
     await act(async () => sessionFilter.dispatchEvent(new Event('change', { bubbles: true })));
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
   });
 
   it('keys same native IDs by workspace and storage and does not let an old refresh erase a successful mutation', async () => {
@@ -252,12 +252,12 @@ describe('board container and controlled forms (mock transport, no persistence c
         workspaces={[{ id: 'workspace-a', title: 'Example' }]}
       />,
     ));
-    expect(container.querySelector('[data-board-column="in_progress"]')).not.toBeNull();
-    const boardCard = container.querySelector('[data-board-task-card]');
+    expect(document.body.querySelector('[data-board-column="in_progress"]')).not.toBeNull();
+    const boardCard = document.body.querySelector('[data-board-task-card]');
     expect(boardCard).not.toBeNull();
     await act(async () => (boardCard as HTMLElement).click());
     await act(async () => button('Edit Task').click());
-    const statusSelect = [...container.querySelectorAll<HTMLSelectElement>('[data-task-detail-modal] select')]
+    const statusSelect = [...document.body.querySelectorAll<HTMLSelectElement>('[data-task-detail-modal] select')]
       .find((select) => [...select.options].some((option) => option.value === 'in_progress'));
     expect(statusSelect).not.toBeUndefined();
     await act(async () => {
@@ -287,11 +287,11 @@ describe('board container and controlled forms (mock transport, no persistence c
         workspaces={[{ id: 'workspace-a', title: 'Example' }]}
       />,
     ));
-    const boardCard = container.querySelector('[data-board-task-card]');
+    const boardCard = document.body.querySelector('[data-board-task-card]');
     expect(boardCard).not.toBeNull();
     await act(async () => (boardCard as HTMLElement).click());
     await act(async () => button('Edit Task').click());
-    const statusSelect = [...container.querySelectorAll<HTMLSelectElement>('[data-task-detail-modal] select')]
+    const statusSelect = [...document.body.querySelectorAll<HTMLSelectElement>('[data-task-detail-modal] select')]
       .find((select) => [...select.options].some((option) => option.value === 'active'));
     expect(statusSelect).not.toBeUndefined();
     expect(statusSelect!.disabled).toBe(false);
@@ -316,12 +316,12 @@ describe('board container and controlled forms (mock transport, no persistence c
         </BoardAssociatedTodosProvider>
       </I18nProvider>,
     ));
-    const toggles = [...container.querySelectorAll<HTMLButtonElement>('[data-board-associated-todos] > button')];
+    const toggles = [...document.body.querySelectorAll<HTMLButtonElement>('[data-board-associated-todos] > button')];
     expect(toggles).toHaveLength(2);
     await act(async () => { toggles[0]!.click(); toggles[1]!.click(); });
     expect(container.textContent).toContain('Main todo');
     expect(container.textContent).toContain('Child todo');
-    expect([...container.querySelectorAll<HTMLInputElement>('[data-board-associated-todos-content] input[type="checkbox"]')].every((input) => input.disabled)).toBe(true);
+    expect([...document.body.querySelectorAll<HTMLInputElement>('[data-board-associated-todos-content] input[type="checkbox"]')].every((input) => input.disabled)).toBe(true);
     expect(source.openCount()).toBe(1);
     expect(source.closeCount()).toBe(0);
     expect(source.activeAgentSubscriptions()).toBe(1);
@@ -361,7 +361,7 @@ describe('board container and controlled forms (mock transport, no persistence c
         </BoardAssociatedTodosProvider>
       </I18nProvider>,
     ));
-    await act(async () => (container.querySelector('[data-board-associated-todos] > button') as HTMLButtonElement).click());
+    await act(async () => (document.body.querySelector('[data-board-associated-todos] > button') as HTMLButtonElement).click());
     expect(source.openCount()).toBe(0);
     expect(source.closeCount()).toBe(0);
     await act(async () => root.unmount());
@@ -412,23 +412,23 @@ describe('board container and controlled forms (mock transport, no persistence c
         sessions={[{ id: 'session-a', title: 'First' }, { id: 'session-b', title: 'Second' }]}
       />,
     ));
-    const scopeSelect = container.querySelector('[data-task-board-scope]') as HTMLSelectElement;
+    const scopeSelect = document.body.querySelector('[data-task-board-scope]') as HTMLSelectElement;
     expect(scopeSelect.value).toBe('workspace-a');
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(2);
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(2);
     const scopedListWorkspaceIds = () => read.mock.calls.map(([input]) => input).filter(isScopedListRead).map(({ workspaceId }) => workspaceId);
     expect(scopedListWorkspaceIds()).toEqual(['workspace-a']);
 
     // Switching the scope reloads that workspace instead of filtering locally.
     scopeSelect.value = 'workspace-b';
     await act(async () => scopeSelect.dispatchEvent(new Event('change', { bubbles: true })));
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
     expect(container.textContent).toContain('Beta task');
     expect(scopedListWorkspaceIds()).toEqual(['workspace-a', 'workspace-b']);
 
     // The 'all' scope fans out to every registered workspace.
     scopeSelect.value = 'all';
     await act(async () => scopeSelect.dispatchEvent(new Event('change', { bubbles: true })));
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(3);
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(3);
     expect(scopedListWorkspaceIds()).toEqual(['workspace-a', 'workspace-b', 'workspace-a', 'workspace-b']);
   });
 
@@ -450,13 +450,13 @@ describe('board container and controlled forms (mock transport, no persistence c
         workspaces={[{ id: 'workspace-a', title: 'Alpha' }, { id: 'workspace-b', title: 'Beta' }]}
       />,
     ));
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
-    const banner = container.querySelector('[data-task-board-issues]');
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
+    const banner = document.body.querySelector('[data-task-board-issues]');
     expect(banner).not.toBeNull();
     expect(banner?.textContent).toContain('1 workspace could not load');
     expect(banner?.textContent).not.toContain('workspaces could not load');
     expect(banner?.textContent).toContain('Beta');
-    expect(container.querySelector('[data-task-board-unavailable]')).toBeNull();
+    expect(document.body.querySelector('[data-task-board-unavailable]')).toBeNull();
     expect(container.textContent).not.toContain('BOARD_UNAVAILABLE:');
   });
 
@@ -483,8 +483,8 @@ describe('board container and controlled forms (mock transport, no persistence c
         workspaces={[{ id: 'workspace-a', title: 'Alpha' }, { id: 'workspace-b', title: 'Beta' }]}
       />,
     ));
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
-    const banner = container.querySelector('[data-task-board-issues]');
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
+    const banner = document.body.querySelector('[data-task-board-issues]');
     expect(banner).not.toBeNull();
     expect(banner?.textContent).toContain('1 workspace could not load');
     expect(banner?.textContent).toContain('3 cards could not load');
@@ -513,12 +513,12 @@ describe('board container and controlled forms (mock transport, no persistence c
         workspaces={[{ id: 'workspace-a', title: 'Alpha' }]}
       />,
     ));
-    const banner = container.querySelector('[data-task-board-issues]');
+    const banner = document.body.querySelector('[data-task-board-issues]');
     expect(banner).not.toBeNull();
     expect(banner?.textContent).toContain('3 cards could not load');
     expect(banner?.textContent).not.toContain('workspace could not load');
-    expect(container.querySelector('[data-task-board-unavailable]')).toBeNull();
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
+    expect(document.body.querySelector('[data-task-board-unavailable]')).toBeNull();
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
   });
 
   it('shows an unavailable fallback with retry and workspace-settings actions when every workspace fails', async () => {
@@ -536,12 +536,12 @@ describe('board container and controlled forms (mock transport, no persistence c
         onOpenSettings={openSettings}
       />,
     ));
-    const fallback = container.querySelector('[data-task-board-unavailable]');
+    const fallback = document.body.querySelector('[data-task-board-unavailable]');
     expect(fallback).not.toBeNull();
     expect(fallback?.textContent).toContain('Alpha');
     expect(fallback?.textContent).toContain('Beta');
-    expect(container.querySelector('[data-task-board-issues]')).toBeNull();
-    expect(container.querySelector('[data-board-column]')).toBeNull();
+    expect(document.body.querySelector('[data-task-board-issues]')).toBeNull();
+    expect(document.body.querySelector('[data-board-column]')).toBeNull();
     expect(container.textContent).not.toContain('BOARD_UNAVAILABLE:');
     const retry = fallback?.querySelector<HTMLButtonElement>('[data-task-board-unavailable-retry]');
     expect(retry).not.toBeNull();
@@ -564,7 +564,7 @@ describe('board container and controlled forms (mock transport, no persistence c
         workspaces={[{ id: 'workspace-a', title: 'Alpha' }]}
       />,
     ));
-    expect(container.querySelector('[data-task-board-unavailable]')).not.toBeNull();
+    expect(document.body.querySelector('[data-task-board-unavailable]')).not.toBeNull();
     read.mockImplementation(async (input) => {
       if (input.action !== 'list' || input.workspaceId === undefined) {
         throw new Error('This fixture only handles scoped list reads.');
@@ -572,10 +572,10 @@ describe('board container and controlled forms (mock transport, no persistence c
       return { ok: true, value: { workspaceId: input.workspaceId, storage, cards: [summary], issues: [] } };
     });
     await act(async () => {
-      (container.querySelector('[data-task-board-unavailable-retry]') as HTMLButtonElement).click();
+      (document.body.querySelector('[data-task-board-unavailable-retry]') as HTMLButtonElement).click();
     });
-    expect(container.querySelector('[data-task-board-unavailable]')).toBeNull();
-    expect(container.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
+    expect(document.body.querySelector('[data-task-board-unavailable]')).toBeNull();
+    expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
   });
 
   it('marks refreshFailed only when every workspace read fails and keeps per-workspace issues out of error', async () => {
@@ -779,5 +779,86 @@ describe('board container and controlled forms (mock transport, no persistence c
     expect(snapshot.issues).toEqual([]);
     expect(snapshot.cards.map((entry) => entry.workspaceId)).toEqual(workspaceIds);
     expect(maxInFlight).toBe(8);
+  });
+
+  it.each([100, 1000])('publishes only the first 100 of %i cards before idle continuation and deduplicates issues', async (count) => {
+    vi.useFakeTimers();
+    try {
+      const cards = Array.from({ length: count }, (_, index) => ({ ...summary, id: `task-${String(index).padStart(4, '0')}` }));
+      const read = vi.fn<BoardClient['read']>().mockImplementation(async (input) => {
+        if (input.action !== 'list') throw new Error('Expected list');
+        const start = input.cursor === undefined ? 0 : Number(input.cursor);
+        return { ok: true, value: { workspaceId: 'workspace-a', storage, cards: cards.slice(start, start + 100), issues: [{ code: 'BAD_CARD', message: 'One invalid envelope' }], nextCursor: start + 100 < count ? String(start + 100) : undefined } };
+      });
+      const controller = new TaskBoardController({ read, write: vi.fn() });
+      await controller.refresh(['workspace-a']);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(controller.getSnapshot().cards).toHaveLength(Math.min(100, count));
+      await vi.runAllTimersAsync();
+      expect(controller.getSnapshot().cards).toHaveLength(count);
+      expect(controller.getSnapshot().cardIssues).toHaveLength(1);
+      expect(controller.getSnapshot().loading).toBe(false);
+      expect(read).toHaveBeenCalledTimes(Math.ceil(count / 100));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('accepts overview first-page cursors and keeps detail edits through idle pages', async () => {
+    vi.useFakeTimers();
+    try {
+      const overview = vi.fn(async () => ({ ok: true as const, value: [
+        { workspaceId: 'workspace-a', result: { ok: true as const, value: { workspaceId: 'workspace-a', storage, cards: [summary], issues: [], nextCursor: 'next' } } },
+        { workspaceId: 'workspace-b', result: { ok: true as const, value: { workspaceId: 'workspace-b', cards: [], issues: [] } } },
+      ] }));
+      const read = vi.fn<BoardClient['read']>().mockImplementation(async (input) => input.action === 'show'
+        ? { ok: true, value: card }
+        : { ok: true, value: { workspaceId: 'workspace-a', storage, cards: [summary, { ...summary, id: 'later' }], issues: [] } });
+      const controller = new TaskBoardController({ read, write: vi.fn(), overview });
+      await controller.refresh(['workspace-a', 'workspace-b']);
+      expect(read).not.toHaveBeenCalled();
+      expect(controller.getSnapshot().cards).toEqual([summary]);
+      await controller.open(boardCardKey(card));
+      await vi.runAllTimersAsync();
+      expect(controller.getSnapshot().cards).toHaveLength(2);
+      expect(controller.getSnapshot().cards[0]).toEqual(card);
+      expect(read.mock.calls[1]![0]).toMatchObject({ action: 'list', cursor: 'next' });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('aborts old in-flight scope reads and never starts their queued workspaces or pages', async () => {
+    const signals: AbortSignal[] = [];
+    const read = vi.fn<BoardClient['read']>().mockImplementation(async (input, options) => {
+      if (input.action !== 'list') throw new Error('Expected list');
+      const signal = options!.signal!;
+      signals.push(signal);
+      if (input.workspaceId === 'workspace-new') return { ok: true, value: { workspaceId: input.workspaceId, cards: [], issues: [] } };
+      await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+      throw new Error('Never reached');
+    });
+    const controller = new TaskBoardController({ read, write: vi.fn() });
+    const old = controller.refresh(Array.from({ length: 20 }, (_, index) => `workspace-${index}`));
+    await controller.refresh(['workspace-new']);
+    await old;
+    expect(read).toHaveBeenCalledTimes(9);
+    expect(signals.slice(0, 8).every((signal) => signal.aborted)).toBe(true);
+    expect(controller.getSnapshot()).toMatchObject({ cards: [], issues: [], loading: false });
+    controller.cancelRefresh();
+    expect(signals.at(-1)!.aborted).toBe(true);
+  });
+
+  it('cancels scheduled pagination on unmount and keeps first-page cards on a later-page failure', async () => {
+    vi.useFakeTimers();
+    try {
+      const read = vi.fn<BoardClient['read']>().mockResolvedValueOnce({ ok: true, value: { workspaceId: 'workspace-a', storage, cards: [summary], issues: [], nextCursor: 'next' } });
+      const controller = new TaskBoardController({ read, write: vi.fn() });
+      await controller.refresh(['workspace-a']);
+      controller.cancelRefresh();
+      await vi.runAllTimersAsync();
+      expect(read).toHaveBeenCalledTimes(1);
+      read.mockResolvedValueOnce({ ok: true, value: { workspaceId: 'workspace-a', storage, cards: [summary], issues: [], nextCursor: 'next' } });
+      read.mockResolvedValueOnce({ ok: false, error: { code: 'BOARD_UNAVAILABLE', message: 'Later page failed' } });
+      await controller.refresh(['workspace-a']);
+      await vi.runAllTimersAsync();
+      expect(controller.getSnapshot()).toMatchObject({ cards: [summary], loading: false, refreshFailed: false, issues: [{ code: 'BOARD_UNAVAILABLE' }] });
+    } finally { vi.useRealTimers(); }
   });
 });

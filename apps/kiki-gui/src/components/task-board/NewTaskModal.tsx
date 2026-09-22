@@ -1,7 +1,7 @@
 import { memo, useRef, useState } from 'react';
 import { errorText, LocalizedError, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
-import { DIALOG_PANEL_SIZES } from '../Dialog';
+import { Dialog, DIALOG_PANEL_SIZES } from '../Dialog';
 import type { NewTaskFormData, TaskPriority, BoardWorkspaceOption, BoardSessionOption } from './types';
 
 export interface NewTaskModalProps {
@@ -66,17 +66,16 @@ export const NewTaskModal = memo(function NewTaskModal({
   };
 
   return (
-    <div
-      data-new-task-modal
-      className="fixed inset-0 z-50 flex items-center justify-center bg-shell/40 backdrop-blur-xs p-4"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) close();
-      }}
+    <Dialog
+      stacked
+      overlayId="task-board-new-card"
+      overlayData={{ 'data-new-task-modal': '' }}
+      ariaLabel={t('taskBoard.new.title')}
+      onClose={close}
+      overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/40 backdrop-blur-xs p-4"
+      panelClassName={`flex max-h-[calc(100vh-3rem)] w-[calc(100vw-3rem)] ${DIALOG_PANEL_SIZES.lg} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_20px_60px_-20px_rgba(28,25,23,0.45)] font-sans text-ink`}
     >
-      <form
-        onSubmit={handleSubmit}
-        className={`flex max-h-[calc(100vh-3rem)] w-[calc(100vw-3rem)] ${DIALOG_PANEL_SIZES.lg} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_20px_60px_-20px_rgba(28,25,23,0.45)] font-sans text-ink`}
-      >
+      <form onSubmit={(event) => { void handleSubmit(event); }} className="flex min-h-0 flex-col">
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-hairline bg-paper/50 px-6 py-4">
           <span className="font-mono text-[12px] font-semibold uppercase tracking-wider text-accent">
@@ -107,7 +106,7 @@ export const NewTaskModal = memo(function NewTaskModal({
             </label>
             <input
               type="text"
-              autoFocus
+              data-autofocus
               placeholder={t('taskBoard.new.titlePlaceholder')}
               value={title}
               onChange={(e) => {
@@ -218,6 +217,6 @@ export const NewTaskModal = memo(function NewTaskModal({
           </button>
         </div>
       </form>
-    </div>
+    </Dialog>
   );
 });

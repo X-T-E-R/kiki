@@ -29,10 +29,11 @@ export interface BoardStoragePreview {
 }
 export interface BoardOverviewEntry { readonly workspaceId: string; readonly result: BoardResult<BoardPage> }
 export type BoardReadValue = BoardCard | BoardPage | BoardStoragePreview | readonly BoardOverviewEntry[];
+export interface BoardReadOptions { readonly signal?: AbortSignal }
 export interface BoardClient {
-  read(input: BoardReadInput): Promise<BoardResult<BoardReadValue>>;
+  read(input: BoardReadInput, options?: BoardReadOptions): Promise<BoardResult<BoardReadValue>>;
   write(input: BoardWriteInput): Promise<BoardResult<BoardCard>>;
 }
 export interface BoardOverviewClient extends BoardClient {
-  overview(): Promise<BoardResult<readonly BoardOverviewEntry[]>>;
+  overview(options?: BoardReadOptions): Promise<BoardResult<readonly BoardOverviewEntry[]>>;
 }
