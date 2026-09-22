@@ -1,4 +1,5 @@
 import { createControlledPromise } from '@antfu/utils';
+import { release as osRelease } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -587,7 +588,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       'thread-id': '00000000-0000-4000-8000-000000000002',
       'x-client-request-id': '00000000-0000-4000-8000-000000000002',
       originator: 'codex_cli_rs',
-      'User-Agent': 'codex_cli_rs/1.0.0 (linux; x64)',
+      'User-Agent': `codex_cli_rs/1.0.0 (Linux ${osRelease()}; x86_64)`,
     });
     expect(captured[0]?.cacheKey).toBe('00000000-0000-4000-8000-000000000002');
     expect(captured[0]?.requestIdentity?.responsesClientMetadata).toMatchObject({

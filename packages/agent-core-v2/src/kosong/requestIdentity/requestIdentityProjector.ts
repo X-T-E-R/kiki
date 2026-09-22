@@ -102,7 +102,7 @@ export function projectRequestIdentity(input: {
     headers['originator'] = policy.client.originator.value;
   }
   if (policy.client.userAgent === 'codex') {
-    headers['User-Agent'] = `codex_cli_rs/${input.runtimeVersion} (${input.platform}; ${input.arch})`;
+    headers['User-Agent'] = codexUserAgent(input);
   } else if (policy.client.userAgent === 'grok_build') {
     headers['User-Agent'] = `grok-shell/${input.runtimeVersion} (${input.platform}; ${input.arch})`;
   } else if (policy.client.userAgent === 'kimi_code') {
@@ -280,6 +280,33 @@ function hostUserAgent(headers: Readonly<Record<string, string>> | undefined): s
     return cleaned === 'unknown' ? undefined : cleaned;
   }
   return undefined;
+}
+
+/**
+ * Donor-shaped Codex User-Agent (`codex-rs/login/src/auth/default_client.rs#get_codex_user_agent`):
+ * `{originator}/{version} ({os_type} {os_version}; {arch})`. The donor's trailing terminal token
+ * has no Kiki analog, so it is omitted. The os version degrades to the kernel release when no
+ * distro-style discovery exists.
+ */
+function codexUserAgent(
+  input: Parameters<typeof projectRequestIdentity>[0],
+): string {
+  const originator = input.policy.client.originator;
+  const originatorValue = originator.mode === 'custom' ? originator.value : 'codex_cli_rs';
+  return `${originatorValue}/${input.runtimeVersion} (${codexOsType(input.platform)} ${asciiHeader(release())}; ${codexArch(input.arch)})`;
+}
+
+function codexOsType(platform: NodeJS.Platform): string {
+  if (platform === 'win32') return 'Windows';
+  if (platform === 'darwin') return 'macOS';
+  if (platform === 'linux') return 'Linux';
+  return platform;
+}
+
+function codexArch(arch: string): string {
+  if (arch === 'x64') return 'x86_64';
+  if (arch === 'ia32') return 'x86';
+  return arch;
 }
 
 function deviceModel(): string {

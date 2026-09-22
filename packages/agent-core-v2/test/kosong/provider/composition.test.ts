@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { release as osRelease } from 'node:os';
 import { nativeSearchParameters, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -432,6 +433,28 @@ describe('request identity final fetch projection', () => {
     }
   });
 
+  it.each([
+    ['Windows', 'win32'],
+    ['macOS', 'darwin'],
+    ['Linux', 'linux'],
+  ] as const)('sends a donor-shaped Codex User-Agent for %s', (osType, platform) => {
+    const projection = projectRequestIdentity({
+      policy: resolveAuthoredRequestIdentity({ preset: 'codex_compatible' }),
+      protocol: 'openai_responses',
+      model: 'gpt-5',
+      rawSessionId: 'session-example',
+      rawAgentId: 'main',
+      isKimiProvider: false,
+      snapshot: codexTurnSnapshot({}),
+      runtimeVersion: '1.0.0',
+      platform,
+      arch: 'x64',
+    });
+    expect(projection.headers?.['User-Agent']).toBe(
+      `codex_cli_rs/1.0.0 (${osType} ${osRelease()}; x86_64)`,
+    );
+  });
+
   it('sends Codex canonical metadata and donor-shaped headers on Responses', async () => {
     const provider = new OpenAIResponsesChatProvider({
       model: 'gpt-5',
@@ -454,7 +477,7 @@ describe('request identity final fetch projection', () => {
           'thread-id': metadata.thread_id,
           'x-client-request-id': metadata.thread_id,
           originator: 'codex_cli_rs',
-          'User-Agent': 'codex_cli_rs/1.0.0 (linux; x64)',
+          'User-Agent': 'codex_cli_rs/1.0.0 (Linux 6.8.0; x86_64)',
         },
         requestIdentity: { responsesClientMetadata: metadata },
       }),
@@ -462,7 +485,7 @@ describe('request identity final fetch projection', () => {
     const body = await request.clone().json() as Record<string, unknown>;
     expect(request.headers.get('session-id')).toBe(metadata.session_id);
     expect(request.headers.get('x-client-request-id')).toBe(metadata.thread_id);
-    expect(request.headers.get('user-agent')).toBe('codex_cli_rs/1.0.0 (linux; x64)');
+    expect(request.headers.get('user-agent')).toBe('codex_cli_rs/1.0.0 (Linux 6.8.0; x86_64)');
     expect(body['prompt_cache_key']).toBe(metadata.session_id);
     expect(body['client_metadata']).toEqual(metadata);
   });
