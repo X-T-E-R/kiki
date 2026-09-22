@@ -25,6 +25,7 @@ export interface IAgentExecutionService {
 
   /** Retain execution capacity until completion; pass the returned cancellation signal to the admitted prompt. */
   trackPromptRun(completion: Promise<unknown>, signal: AbortSignal): AbortSignal;
+  /** Reports cancelling once all tracked runs receive cancellation, until they settle; a stop request alone does not release capacity. */
   status(): AgentExecutionStatus;
   steer?(message: ContextMessage): Promise<boolean>;
   cancel(reason?: unknown): boolean;

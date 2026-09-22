@@ -12,6 +12,8 @@ The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` in
 
 After a restart, restored queued messages wait for confirmation. Choose **Send now** on one message to send just that message, or **Resume queue** to release the queue. **Later** only collapses the explanation: the resume button stays visible while messages are held, and newly submitted messages may continue to queue until you resume.
 
+In a subagent's input box, the stop button is disabled while its stop request is pending. If the request fails, an error notice explains why and the button becomes available to retry. Stopping one run does not clear unrelated messages waiting in that subagent's queue.
+
 ## Approvals
 
 Operations that modify files or run shell commands appear as approval requests in the timeline. Each request names the operation before it runs; you approve once or for the session. Read-only operations run automatically by default. Tool calls interrupted by `Esc` stop before execution.

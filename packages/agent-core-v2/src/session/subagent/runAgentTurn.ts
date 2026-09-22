@@ -34,20 +34,30 @@ export async function runAgentTurn(
 ): Promise<AgentRunHandle> {
   options.signal.throwIfAborted();
   const promptService = target.accessor.get(IAgentPromptService);
-  const turn = request.kind === 'prompt'
-    ? await (await promptService.enqueue({ message: {
-        role: 'user',
-        content: [{ type: 'text', text: request.prompt }],
-        toolCalls: [],
-        origin: request.origin ?? AGENT_RUN_PROMPT_ORIGIN,
-      } })).launched
-    : request.kind === 'mailbox'
-      ? await (await promptService.enqueue({
-          message: request.message,
-          alreadyMaterialized: true,
-        })).launched
-      : await promptService.retry();
-  if (turn === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Agent turn could not be started');
+  let turn: Turn | undefined;
+  try {
+    turn = request.kind === 'prompt'
+      ? await (await promptService.enqueue({ message: {
+          role: 'user',
+          content: [{ type: 'text', text: request.prompt }],
+          toolCalls: [],
+          origin: request.origin ?? AGENT_RUN_PROMPT_ORIGIN,
+        }, signal: options.signal })).launched
+      : request.kind === 'mailbox'
+        ? await (await promptService.enqueue({
+            message: request.message,
+            alreadyMaterialized: true,
+            signal: options.signal,
+          })).launched
+        : await promptService.retry();
+  } catch (error) {
+    options.signal.throwIfAborted();
+    throw error;
+  }
+  if (turn === undefined) {
+    options.signal.throwIfAborted();
+    throw new Error2(ErrorCodes.INTERNAL, 'Agent turn could not be started');
+  }
 
   if (options.onReady !== undefined) {
     void turn.ready.then(() => options.onReady?.()).catch(() => {});
@@ -81,8 +91,12 @@ async function awaitRun(
       },
       cancelTurn,
     );
+    controller.signal.throwIfAborted();
     const usage = target.accessor.get(IAgentUsageService)?.status().total;
     return { summary, usage };
+  } catch (error) {
+    controller.signal.throwIfAborted();
+    throw error;
   } finally {
     unlink();
     if (controller.signal.aborted) {
@@ -131,7 +145,7 @@ async function distillSummary(
       content: [{ type: 'text', text: policy.continuationPrompt }],
       toolCalls: [],
       origin: AGENT_RUN_PROMPT_ORIGIN,
-    } })).launched;
+    }, signal: controller.signal })).launched;
     if (turn === undefined) break;
     setTurn(turn);
     const result = await awaitTurn(turn, controller, cancelTurn);

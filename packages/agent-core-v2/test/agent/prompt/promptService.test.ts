@@ -1,5 +1,7 @@
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { deferred } from '../../deferred';
+import { runAgentTurn } from '#/session/subagent/runAgentTurn';
+import { userCancellationReason } from '#/_base/utils/abort';
 
 import { Readable } from 'node:stream';
 
@@ -256,6 +258,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     }
   });
   return {
+    target: { id: 'main', accessor: ix },
     prompt: ix.get(IAgentPromptService),
     plan,
     swarm,
@@ -279,6 +282,49 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
 }
 
 describe('AgentPromptService', () => {
+  it.each(['prompt', 'mailbox'] as const)('cancels a queued native %s run without cancelling another active turn', async (kind) => {
+    const { prompt, loop, target } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active', message: message('other work') });
+    const controller = new AbortController();
+    const reason = userCancellationReason();
+    const pending = runAgentTurn(target, kind === 'prompt'
+      ? { kind, prompt: 'cancel this run' }
+      : { kind, prompt: 'cancel this run', message: message('cancel this run') }, { signal: controller.signal });
+    const outcome = pending.catch((error: unknown) => error);
+    await vi.waitFor(() => expect(prompt.list().pending).toHaveLength(1));
+    controller.abort(reason);
+    expect(prompt.list().pending).toEqual([]);
+    expect(await outcome).toBe(reason);
+    expect(loop.cancels).toEqual([]);
+    expect((await active.launched)?.signal.aborted).toBe(false);
+    loop.settleActive();
+    await active.completion;
+    expect(loop.launches).toHaveLength(1);
+  });
+
+  it('cancels a queued native summary continuation without launching it or stopping unrelated work', async () => {
+    const { prompt, loop, target } = harness({ manualTurnResult: true });
+    const controller = new AbortController();
+    const reason = userCancellationReason();
+    const run = await runAgentTurn(target, { kind: 'prompt', prompt: 'initial work' }, {
+      signal: controller.signal,
+      summaryPolicy: { minChars: 100, retries: 1, continuationPrompt: 'write summary' },
+    });
+    const outcome = run.completion.catch((error: unknown) => error);
+    const other = await prompt.enqueue({ id: 'other', message: message('other work') });
+    loop.settleActive();
+    await other.launched;
+    await vi.waitFor(() => expect(prompt.list().pending).toHaveLength(1));
+    controller.abort(reason);
+    expect(prompt.list().pending).toEqual([]);
+    expect(await outcome).toBe(reason);
+    expect((await other.launched)?.signal.aborted).toBe(false);
+    expect(loop.cancels.every((cancel) => cancel.turnId === run.turn.id)).toBe(true);
+    loop.settleActive();
+    await other.completion;
+    expect(loop.launches).toHaveLength(2);
+  });
+
   it('cancels a queued prompt while it is launching without cancelling the next prompt', async () => {
     const { prompt, loop } = harness({ manualTurnResult: true });
     const first = await prompt.enqueue({ id: 'first', message: message('first') });

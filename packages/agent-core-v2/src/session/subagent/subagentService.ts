@@ -99,6 +99,9 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         };
         void run.completion.then(settle, settle);
         return run;
+      }, (error: unknown) => {
+        if (this.agentLifecycle.get(agentId) === handle) this.scheduleRelease(agentId);
+        return Promise.reject(error);
       });
   }
 

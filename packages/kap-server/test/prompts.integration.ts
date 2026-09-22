@@ -31,6 +31,7 @@ import {
   resumeSessionById,
 } from '@kiki/agent-core-v2';
 import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
+import { createKlient as createHttpKlient } from '@kiki/klient/http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -1877,6 +1878,53 @@ describe('server-v2 /api prompts', () => {
     expect(list.body.code).toBe(0);
     expect(list.body.data.active).toBeNull();
     expect(list.body.data.queued).toEqual([]);
+  });
+
+  it('stops queued and active child tasks through the GUI HTTP facade without crossing prompt ownership', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({ binding: { profile: 'agent', model: 'stub', thinking: 'high' } });
+    const prompt = child.accessor.get(IAgentPromptService);
+    const execution = child.accessor.get(IAgentExecutionService);
+    child.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-http-stop', async (context) => {
+      await new Promise<void>((resolve) => {
+        if (context.signal.aborted) resolve();
+        else context.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      context.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const tasks = lifecycle.get('main')!.accessor.get(IAgentTaskService);
+    const ids: string[] = [];
+    for (const promptId of ['active-http', 'queued-http']) {
+      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        agent_id: child.id, prompt_id: promptId, content: [{ type: 'text', text: promptId }],
+      });
+      expect(submitted.body.code, submitted.body.msg).toBe(0);
+      const task = tasks.list(true).find((item) => item.kind === 'agent' && item.agentId === child.id && !ids.includes(item.taskId));
+      expect(task).toBeDefined();
+      ids.push(task!.taskId);
+    }
+    expect(prompt.list().active?.id).toBe('active-http');
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['queued-http']);
+    const klient = createHttpKlient({ endpoint: base, token: server!.authTokenService.getToken() });
+    try {
+      await klient.session(id).agent('main').stopTask({ taskId: ids[1]! });
+      expect(tasks.getTask(ids[1]!)?.status).toBe('killed');
+      expect(prompt.list().pending).toEqual([]);
+      expect(prompt.list().active?.id).toBe('active-http');
+      expect(tasks.getTask(ids[0]!)?.status).toBe('running');
+      await klient.session(id).agent('main').stopTask({ taskId: ids[0]! });
+      await execution.settled();
+      expect(tasks.getTask(ids[0]!)?.status).toBe('killed');
+      expect(prompt.list().active).toBeUndefined();
+      expect(execution.status().state).toBe('idle');
+      await klient.session(id).agent('main').stopTask({ taskId: ids[0]! });
+      expect(tasks.getTask(ids[0]!)?.status).toBe('killed');
+    } finally {
+      await klient.close();
+    }
   });
 
   it.each([

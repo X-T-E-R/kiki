@@ -113,6 +113,28 @@ describe('AgentExecutionService', () => {
     ix.dispose();
   });
 
+  it.each([undefined, 42])('reports caller-driven cancellation while turn %s is still settling', async (turnId) => {
+    const ix = new TestInstantiationService();
+    const service = executionService(ix, scope(), profile({ executorId: 'native' }), {} as IAgentExecutorRegistry, states());
+    const release = vi.fn();
+    ix.stub(ISessionDispatchService, 'reserveTurnExecution', () => release);
+    ix.stub(IAgentLoopService, 'status', () => ({ state: turnId === undefined ? 'idle' : 'running', activeTurnId: turnId, pendingTurnIds: [], hasPendingRequests: false }));
+    const completion = deferred<void>();
+    const controller = new AbortController();
+    service.trackPromptRun(completion.promise, controller.signal);
+    try {
+      controller.abort(new Error('stop this task'));
+      expect(service.status()).toEqual({ state: 'cancelling', turnId });
+      expect(release).not.toHaveBeenCalled();
+    } finally {
+      completion.resolve();
+      await service.settled();
+      expect(release).toHaveBeenCalledOnce();
+      expect(service.status()).toEqual({ state: 'idle' });
+      ix.dispose();
+    }
+  });
+
   it('holds shared dispatch capacity through real cancellation and admits the next execution only after settlement', async () => {
     const ix = new TestInstantiationService();
     const capacity = new DispatchCapacity();

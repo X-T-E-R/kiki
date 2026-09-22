@@ -193,6 +193,24 @@ describe('SessionSubagentService idle release', () => {
     expect(remove).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])('handles cancellation before a run launches without releasing a replacement scope (%s)', async (replaced) => {
+    const child = fakeAgent('agent-1');
+    agents.set('agent-1', child);
+    const admission = deferred<AgentRunHandle>();
+    child.run.mockReturnValueOnce(admission.promise);
+    const started = startRun('agent-1');
+    const reason = new Error('cancel before launch');
+    const rejected = expect(started).rejects.toBe(reason);
+    if (replaced) agents.set('agent-1', fakeAgent('agent-1'));
+    admission.reject(reason);
+    await rejected;
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS - 1);
+    expect(remove).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    if (replaced) expect(remove).not.toHaveBeenCalled();
+    else expect(remove).toHaveBeenCalledExactlyOnceWith('agent-1');
+  });
+
   it('releases after a failed run as well', async () => {
     const child = fakeAgent('agent-1');
     agents.set('agent-1', child);

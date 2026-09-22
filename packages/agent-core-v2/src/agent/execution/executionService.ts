@@ -166,8 +166,11 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
   status(): AgentExecutionStatus {
     if (this.broken !== undefined) return { state: 'broken' };
     if (this.runs.size > 0) {
-      const turnId = [...this.runs].find((run) => run.turnId !== undefined)?.turnId;
-      if (this.cancelling) return { state: 'cancelling', turnId };
+      const runs = [...this.runs];
+      const turnId = runs.find((run) => run.turnId !== undefined)?.turnId;
+      if (this.cancelling || runs.every((run) => run.controller.signal.aborted)) {
+        return { state: 'cancelling', turnId };
+      }
       return turnId === undefined ? { state: 'starting' } : { state: 'running', turnId };
     }
     return this.session?.status() ?? { state: 'idle' };
