@@ -84,7 +84,9 @@ export interface AgentExecutorDescriptor {
   readonly modelBinding?: string;
   readonly modelArgs?: readonly string[];
   readonly modelConfigCategory?: string;
+  readonly modelConfigId?: string;
   readonly thoughtConfigCategory?: string;
+  readonly thoughtConfigId?: string;
   readonly permissionModeMapping?: AgentExecutorPermissionModeMapping;
   readonly revision: string;
 }

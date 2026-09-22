@@ -220,7 +220,9 @@ function descriptorFromConfig(
     modelBinding: config.modelBinding,
     modelArgs: config.modelArgs,
     modelConfigCategory: config.modelConfigCategory,
+    modelConfigId: config.modelConfigId,
     thoughtConfigCategory: config.thoughtConfigCategory,
+    thoughtConfigId: config.thoughtConfigId,
     permissionModeMapping: config.permissionModeMapping,
     revision: descriptorRevisionFromConfig(config),
   };
@@ -259,7 +261,9 @@ export function descriptorRevisionFromConfig(config: AgentExecutorConfig): strin
     modelBinding: config.modelBinding,
     modelArgs: config.modelArgs,
     modelConfigCategory: config.modelConfigCategory,
+    modelConfigId: config.modelConfigId,
     thoughtConfigCategory: config.thoughtConfigCategory,
+    thoughtConfigId: config.thoughtConfigId,
     permissionModeMapping: config.permissionModeMapping,
     declaredRevision: config.revision,
   });

@@ -67,7 +67,9 @@ export const AgentExecutorConfigSchema = z
     modelBinding: z.string().trim().min(1).optional(),
     modelArgs: z.array(z.string()).optional(),
     modelConfigCategory: z.string().trim().min(1).optional(),
+    modelConfigId: sourceId.optional(),
     thoughtConfigCategory: z.string().trim().min(1).optional(),
+    thoughtConfigId: sourceId.optional(),
     permissionModeMapping: AgentExecutorPermissionModeMappingSchema.optional(),
     revision: z.string().trim().min(1).optional(),
   })
@@ -102,7 +104,9 @@ const TOML_TO_RUNTIME = {
   model_binding: 'modelBinding',
   model_args: 'modelArgs',
   model_config_category: 'modelConfigCategory',
+  model_config_id: 'modelConfigId',
   thought_config_category: 'thoughtConfigCategory',
+  thought_config_id: 'thoughtConfigId',
   permission_mode_mapping: 'permissionModeMapping',
   version_probe: 'versionProbe',
 } as const;
@@ -113,7 +117,9 @@ const RUNTIME_TO_TOML = {
   modelBinding: 'model_binding',
   modelArgs: 'model_args',
   modelConfigCategory: 'model_config_category',
+  modelConfigId: 'model_config_id',
   thoughtConfigCategory: 'thought_config_category',
+  thoughtConfigId: 'thought_config_id',
   permissionModeMapping: 'permission_mode_mapping',
   versionProbe: 'version_probe',
 } as const;
