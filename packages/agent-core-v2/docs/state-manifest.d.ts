@@ -1329,6 +1329,14 @@ export interface AgentStateSnapshot {
     };
     readonly sessionEpoch?: number;
     readonly profileDeliveredSessionId?: string;
+    readonly lastCumulativeUsage?: {
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+      thoughtTokens?: number;
+      cachedReadTokens?: number;
+      cachedWriteTokens?: number;
+    };
   };
   // src/agent/fullCompaction/compactionOps.ts
   // replayable · durable — folds: FullCompactionBegin, FullCompactionCancel, FullCompactionComplete

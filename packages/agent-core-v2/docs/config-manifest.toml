@@ -72,7 +72,9 @@
   # model_binding: string
   # model_args: string[]
   # model_config_category: string
+  # model_config_id: string
   # thought_config_category: string
+  # thought_config_id: string
   # permission_mode_mapping: object
     # config_id: string
     # config_category: string
