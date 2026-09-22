@@ -45,6 +45,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   ExecutorSessionUpdated,
   externalExecutorKey,
+  type ExecutorCumulativeUsage,
   type ExecutorLossCode,
   type ExecutorResumeMode,
 } from './externalExecutorOps';
@@ -181,7 +182,13 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const sessionOptions = this.#sessionOptions(options.signal);
     const opened = await this.#client.openSession(sessionOptions);
     const losses = new Set<ExecutorLossCode>(['acp_no_step_boundaries']);
-    const configured = await this.#configure(opened, options.signal);
+    if (
+      (sessionOptions.additionalDirectories?.length ?? 0) > 0 &&
+      opened.capabilities.sessionCapabilities?.additionalDirectories == null
+    ) {
+      losses.add('additional_directories_dropped');
+    }
+    const configured = await this.#configure(opened, options.signal, losses);
     const prior = this.#states.get(externalExecutorKey);
     const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);
     const reusablePrior = prior.bindingFingerprint === bindingFingerprint;
@@ -288,6 +295,16 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       result,
       controller,
       () => options.signal.removeEventListener('abort', relayAbort),
+      {
+        bindingFingerprint,
+        sessionRef: configured.sessionRef,
+        sessionEpoch,
+        profileDeliveredSessionId: deliverProfile
+          ? configured.sessionId
+          : prior.profileDeliveredSessionId,
+        priorCumulativeUsage: reusablePrior ? prior.lastCumulativeUsage : undefined,
+        sameSession: priorSessionId !== undefined && priorSessionId === configured.sessionId,
+      },
     );
     const active: ActiveExternalTurn = { turn, recorder, handle, completion };
     this.#active = active;
@@ -352,6 +369,14 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     result: ReturnType<typeof createControlledPromise<TurnResult>>,
     controller: AbortController,
     cleanup: () => void,
+    accounting: {
+      readonly bindingFingerprint: string;
+      readonly sessionRef: ExecutorSessionRefEnvelope;
+      readonly sessionEpoch: number;
+      readonly profileDeliveredSessionId: string | undefined;
+      readonly priorCumulativeUsage: ExecutorCumulativeUsage | undefined;
+      readonly sameSession: boolean;
+    },
   ): Promise<{ readonly summary: string; readonly usage?: TokenUsage }> {
     const pump = (async () => {
       for await (const event of handle.events) {
@@ -363,7 +388,25 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       await pump;
       const turnResult = turnResultFromAcp(completed);
       if (turnResult.type === 'completed') {
-        const usage = usageFromAcp(completed);
+        const accounted = usageFromAcp(
+          completed,
+          accounting.priorCumulativeUsage,
+          accounting.sameSession,
+        );
+        if (accounted !== undefined) {
+          await this.#dispatcher.dispatch(
+            new ExecutorSessionUpdated({
+              executorId: this.context.descriptor.id,
+              descriptorRevision: this.context.descriptor.revision,
+              bindingFingerprint: accounting.bindingFingerprint,
+              sessionRef: accounting.sessionRef,
+              sessionEpoch: accounting.sessionEpoch,
+              profileDeliveredSessionId: accounting.profileDeliveredSessionId,
+              lastCumulativeUsage: accounted.cumulative,
+            }),
+          );
+        }
+        const usage = accounted?.usage;
         turn.state = 'completed';
         await recorder.complete(completed.response.stopReason, usage);
         result.resolve(turnResult);
@@ -440,6 +483,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   async #configure(
     opened: AcpOpenSessionResult,
     signal: AbortSignal,
+    losses: Set<ExecutorLossCode>,
   ): Promise<AcpOpenSessionResult> {
     const modelBinding = this.context.descriptor.modelBinding ?? 'session_config';
     if (modelBinding !== 'session_config' && modelBinding !== 'argv') {
@@ -451,7 +495,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     let configured = opened;
     if (modelBinding === 'session_config') {
       const model = selectConfig(
-        opened.configOptions,
+        configured.configOptions,
+        this.context.descriptor.modelConfigId,
         this.context.descriptor.modelConfigCategory ?? 'model',
         this.context.binding.modelAlias,
         'model',
@@ -464,22 +509,34 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
 
     if (this.context.binding.thinkingLevel !== 'off') {
-      const thought = selectConfig(
+      const thought = selectConfigIfAvailable(
         configured.configOptions,
+        this.context.descriptor.thoughtConfigId,
         this.context.descriptor.thoughtConfigCategory ?? 'thought_level',
         this.context.binding.thinkingLevel,
         'thought level',
       );
-      configured = await this.#client.configureSession({
-        configOptions: [thought.selection],
-        signal,
-      });
-      assertConfigured(configured.configOptions, thought.selection, 'thought level');
+      if (thought === undefined) {
+        // The harness exposes no thought/reasoning config surface at all;
+        // run without configuring it rather than failing the whole turn.
+        losses.add('thought_level_unconfigured');
+      } else {
+        configured = await this.#client.configureSession({
+          configOptions: [thought.selection],
+          signal,
+        });
+        assertConfigured(configured.configOptions, thought.selection, 'thought level');
+      }
     }
 
+    const mapping = this.context.descriptor.permissionModeMapping;
+    if (mapping === undefined) {
+      losses.add('permission_mode_unverified');
+      return configured;
+    }
     const permission = permissionConfig(
       configured.configOptions,
-      this.context.descriptor.permissionModeMapping,
+      mapping,
       this.#permissionMode.mode,
     );
     const verified = await this.#client.configureSession({
@@ -613,36 +670,134 @@ function turnResultFromAcp(result: AcpTurnResult): TurnResult {
   }
 }
 
-function usageFromAcp(result: AcpTurnResult): TokenUsage | undefined {
+function usageFromAcp(
+  result: AcpTurnResult,
+  priorCumulative: ExecutorCumulativeUsage | undefined,
+  sameSession: boolean,
+): { readonly usage: TokenUsage | undefined; readonly cumulative: ExecutorCumulativeUsage } | undefined {
   const usage = result.response.usage;
   if (usage === undefined || usage === null) return undefined;
-  return {
-    inputOther: usage.inputTokens,
-    output: usage.outputTokens,
-    inputCacheRead: 0,
-    inputCacheCreation: 0,
+  const cumulative: ExecutorCumulativeUsage = {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    thoughtTokens: numberOrUndefined(usage.thoughtTokens),
+    cachedReadTokens: numberOrUndefined(usage.cachedReadTokens),
+    cachedWriteTokens: numberOrUndefined(usage.cachedWriteTokens),
   };
+  // ACP usage counters are cumulative across the remote session. Attribute
+  // this turn as a delta against the last persisted snapshot; when no
+  // trustworthy baseline exists (or counters moved backwards), report the
+  // usage as unknown instead of charging historical tokens to this turn.
+  if (sameSession && priorCumulative === undefined) {
+    return { usage: undefined, cumulative };
+  }
+  if (sameSession && !cumulativeUsageMonotonic(cumulative, priorCumulative!)) {
+    return { usage: undefined, cumulative };
+  }
+  const baseline = sameSession ? priorCumulative! : undefined;
+  return {
+    usage: {
+      inputOther: cumulative.inputTokens - (baseline?.inputTokens ?? 0),
+      output: cumulative.outputTokens - (baseline?.outputTokens ?? 0),
+      inputCacheRead: (cumulative.cachedReadTokens ?? 0) - (baseline?.cachedReadTokens ?? 0),
+      inputCacheCreation: (cumulative.cachedWriteTokens ?? 0) - (baseline?.cachedWriteTokens ?? 0),
+    },
+    cumulative,
+  };
+}
+
+function numberOrUndefined(value: number | null | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function cumulativeUsageMonotonic(
+  next: ExecutorCumulativeUsage,
+  prior: ExecutorCumulativeUsage,
+): boolean {
+  const fields = [
+    ['inputTokens', next.inputTokens, prior.inputTokens],
+    ['outputTokens', next.outputTokens, prior.outputTokens],
+    ['totalTokens', next.totalTokens, prior.totalTokens],
+    ['thoughtTokens', next.thoughtTokens, prior.thoughtTokens],
+    ['cachedReadTokens', next.cachedReadTokens, prior.cachedReadTokens],
+    ['cachedWriteTokens', next.cachedWriteTokens, prior.cachedWriteTokens],
+  ] as const;
+  return fields.every(([, value, before]) =>
+    value === undefined || before === undefined ? true : value >= before
+  );
 }
 
 function selectConfig(
   options: readonly AcpSessionConfigOption[],
+  configId: string | undefined,
   category: string,
   value: string | undefined,
   label: string,
 ): SelectedConfig {
+  const selected = resolveSelectConfig(options, configId, category, value, label);
+  if (selected === undefined) {
+    throw new Error2(
+      ErrorCodes.MODEL_NOT_FOUND,
+      `External ACP ${label} config category "${category}" is missing`,
+    );
+  }
+  return selected;
+}
+
+function selectConfigIfAvailable(
+  options: readonly AcpSessionConfigOption[],
+  configId: string | undefined,
+  category: string,
+  value: string | undefined,
+  label: string,
+): SelectedConfig | undefined {
+  return resolveSelectConfig(options, configId, category, value, label);
+}
+
+function resolveSelectConfig(
+  options: readonly AcpSessionConfigOption[],
+  configId: string | undefined,
+  category: string,
+  value: string | undefined,
+  label: string,
+): SelectedConfig | undefined {
   if (value === undefined || value.length === 0) {
     throw new Error2(ErrorCodes.MODEL_NOT_FOUND, `External ACP ${label} is not configured`);
   }
-  const matches = options.filter(
-    (option) => option.type === 'select' && option.category === category,
-  );
-  if (matches.length !== 1) {
+  const selects = options.filter((option) => option.type === 'select');
+  let candidates: readonly AcpSessionConfigOption[];
+  if (configId !== undefined) {
+    candidates = selects.filter((option) => option.id === configId);
+    if (candidates.length === 0) {
+      throw new Error2(
+        ErrorCodes.MODEL_NOT_FOUND,
+        `External ACP ${label} config id "${configId}" is missing`,
+      );
+    }
+  } else {
+    const categorized = selects.filter(
+      (option) => option.category != null && option.category === category,
+    );
+    if (categorized.length > 0) {
+      candidates = categorized;
+    } else {
+      // ACP session config categories are UX hints and MUST NOT be required
+      // for correctness. When the category is missing or unknown, fall back
+      // to the harness's uncategorized select options: a single unambiguous
+      // candidate is usable, while several still require an explicit config
+      // id in the descriptor so we never pick a config blindly.
+      candidates = selects.filter((option) => option.category == null);
+    }
+  }
+  if (candidates.length === 0) return undefined;
+  if (candidates.length !== 1) {
     throw new Error2(
       ErrorCodes.MODEL_NOT_FOUND,
-      `External ACP ${label} config category "${category}" is ${matches.length === 0 ? 'missing' : 'ambiguous'}`,
+      `External ACP ${label} config category "${category}" is ambiguous`,
     );
   }
-  const option = matches[0]!;
+  const option = candidates[0]!;
   const values = selectValues(option);
   if (!values.includes(value)) {
     throw new Error2(

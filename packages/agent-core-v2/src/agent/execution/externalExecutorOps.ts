@@ -18,11 +18,29 @@ export const EXECUTOR_LOSS_CODES = [
   'handoff_truncated',
   'unstable_acp_plan',
   'permission_mode_unverified',
+  'additional_directories_dropped',
+  'thought_level_unconfigured',
 ] as const;
 
 export type ExecutorLossCode = (typeof EXECUTOR_LOSS_CODES)[number];
 export type ExecutorResumeMode = 'live' | 'resume' | 'load' | 'new' | 'handoff';
 export type ExecutorProfileDelivery = 'native' | 'first_prompt_preamble';
+
+/**
+ * ACP reports usage as session-cumulative counters, not per-turn deltas.
+ * Persist the last observed cumulative snapshot so later turns of the same
+ * remote session can be attributed as deltas.
+ */
+export const executorCumulativeUsageSchema = z.object({
+  inputTokens: z.number().nonnegative(),
+  outputTokens: z.number().nonnegative(),
+  totalTokens: z.number().nonnegative(),
+  thoughtTokens: z.number().nonnegative().optional(),
+  cachedReadTokens: z.number().nonnegative().optional(),
+  cachedWriteTokens: z.number().nonnegative().optional(),
+});
+
+export type ExecutorCumulativeUsage = z.infer<typeof executorCumulativeUsageSchema>;
 
 export interface ExecutorTurnMetadataPayload {
   readonly turnId: number;
@@ -63,6 +81,7 @@ const executorSessionUpdatedSchema = z.object({
   }),
   sessionEpoch: z.number().int().positive(),
   profileDeliveredSessionId: z.string().optional(),
+  lastCumulativeUsage: executorCumulativeUsageSchema.optional(),
 });
 
 export class ExecutorSessionUpdated extends Event2<z.infer<typeof executorSessionUpdatedSchema>> {
@@ -125,19 +144,21 @@ export interface ExternalExecutorState {
   };
   readonly sessionEpoch?: number;
   readonly profileDeliveredSessionId?: string;
+  readonly lastCumulativeUsage?: ExecutorCumulativeUsage;
 }
 
 export const externalExecutorKey = defineState(
   'externalExecutor',
   (): ExternalExecutorState => ({}),
 ).replayable({ schema: z.custom<ExternalExecutorState>() })
-  .on(ExecutorSessionUpdated, (_state, event) => ({
+  .on(ExecutorSessionUpdated, (state, event) => ({
     executorId: event.executorId,
     descriptorRevision: event.descriptorRevision,
     bindingFingerprint: event.bindingFingerprint,
     sessionRef: event.sessionRef,
     sessionEpoch: event.sessionEpoch,
     profileDeliveredSessionId: event.profileDeliveredSessionId,
+    lastCumulativeUsage: event.lastCumulativeUsage ?? state.lastCumulativeUsage,
   }))
   .on(ExecutorTurnMetadata, () => {})
   .on(ExecutorPlanUpdate, () => {})

@@ -40,6 +40,7 @@ import {
   ExecutorSessionUpdated,
   ExecutorTurnMetadata,
   externalExecutorKey,
+  type ExecutorCumulativeUsage,
 } from '#/agent/execution/externalExecutorOps';
 import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
 import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
@@ -70,10 +71,13 @@ interface FakeHarnessOptions {
   readonly loadReplayObserved?: boolean;
   readonly permissionSurface?: boolean;
   readonly sessionConfigOptions?: readonly AcpSessionConfigOption[];
+  readonly capabilities?: AcpOpenSessionResult['capabilities'];
   readonly configureFailureId?: string;
   readonly configureReadbackFailureId?: string;
   readonly permissionMode?: 'manual' | 'auto' | 'yolo';
-  readonly permissionMapping?: AgentExecutorContext['descriptor']['permissionModeMapping'];
+  readonly permissionMapping?: AgentExecutorContext['descriptor']['permissionModeMapping'] | null;
+  readonly modelConfigId?: string;
+  readonly thoughtConfigId?: string;
   readonly completionUsage?: AcpTurnResult['response']['usage'];
   readonly executorId?: string;
   readonly providerName?: string;
@@ -141,6 +145,7 @@ function stateHarness(prior: {
   };
   readonly sessionEpoch?: number;
   readonly profileDeliveredSessionId?: string;
+  readonly lastCumulativeUsage?: ExecutorCumulativeUsage;
 } = {}) {
   const values = new Map<unknown, unknown>([
     [turnKey, { nextTurnId: 4, cancelledTurnIds: [] }],
@@ -269,7 +274,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     sessionId: 'remote-2',
     mode: options.mode ?? 'new',
     initialize: {} as AcpOpenSessionResult['initialize'],
-    capabilities: {},
+    capabilities: options.capabilities ?? {},
     configOptions: configured,
     sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
     loadReplayObserved: options.loadReplayObserved ?? false,
@@ -371,13 +376,17 @@ function createHarness(options: FakeHarnessOptions = {}) {
       modelBinding: options.modelBinding ?? 'session_config',
       modelArgs: options.modelArgs,
       modelConfigCategory: 'model',
+      modelConfigId: options.modelConfigId,
       thoughtConfigCategory: 'thought_level',
-      permissionModeMapping: options.permissionMapping ?? {
-        configId: 'auto_approve',
-        manual: false,
-        auto: false,
-        yolo: true,
-      },
+      thoughtConfigId: options.thoughtConfigId,
+      permissionModeMapping: options.permissionMapping === null
+        ? undefined
+        : options.permissionMapping ?? {
+            configId: 'auto_approve',
+            manual: false,
+            auto: false,
+            yolo: true,
+          },
       revision: 'r1',
     },
     binding: {
@@ -1382,4 +1391,278 @@ describe('ACP external executor', () => {
       }
     },
   );
+
+  it('skips thought configuration with a loss when the harness exposes no thought surface', async () => {
+    const sessionConfigOptions = [
+      ...configOptions(false).filter((option) => option.id !== 'thought-id'),
+      ...configOptions().filter((option) => option.id === 'auto_approve'),
+    ];
+    const harness = createHarness({
+      sessionConfigOptions,
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.starts).toHaveLength(1);
+    expect(harness.selections).toContainEqual({ configId: 'model-id', value: 'model-a' });
+    expect(harness.selections).not.toContainEqual({ configId: 'thought-id', value: 'high' });
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+    expect(metadata?.losses).toEqual(expect.arrayContaining(['thought_level_unconfigured']));
+  });
+
+  it('fails thought selection closed when the thought category is ambiguous', async () => {
+    const sessionConfigOptions: AcpSessionConfigOption[] = [
+      ...configOptions(false),
+      {
+        id: 'thought-id-2',
+        name: 'Thought 2',
+        category: 'thought_level',
+        type: 'select',
+        currentValue: 'low',
+        options: [
+          { value: 'low', name: 'Low' },
+          { value: 'high', name: 'High' },
+        ],
+      },
+    ];
+    const harness = createHarness({
+      sessionConfigOptions,
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    await expect(harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    )).rejects.toThrow(/ambiguous/);
+    expect(harness.starts).toHaveLength(0);
+  });
+
+  it('uses the sole uncategorized select as the thought config when no category matches', async () => {
+    const sessionConfigOptions: AcpSessionConfigOption[] = [
+      ...configOptions(false).filter((option) => option.id !== 'thought-id'),
+      ...configOptions().filter((option) => option.id === 'auto_approve'),
+      {
+        id: 'brain',
+        name: 'Brain',
+        type: 'select',
+        currentValue: 'low',
+        options: [
+          { value: 'low', name: 'Low' },
+          { value: 'high', name: 'High' },
+        ],
+      },
+    ];
+    const harness = createHarness({
+      sessionConfigOptions,
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.selections).toContainEqual({ configId: 'brain', value: 'high' });
+  });
+
+  it('resolves an ambiguous thought config through the explicit descriptor config id', async () => {
+    const uncategorized = (id: string): AcpSessionConfigOption => ({
+      id,
+      name: id,
+      type: 'select',
+      currentValue: 'low',
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'high', name: 'High' },
+      ],
+    });
+    const sessionConfigOptions: AcpSessionConfigOption[] = [
+      ...configOptions(false).filter((option) => option.id !== 'thought-id'),
+      ...configOptions().filter((option) => option.id === 'auto_approve'),
+      uncategorized('brain-1'),
+      uncategorized('brain-2'),
+    ];
+    const harness = createHarness({
+      sessionConfigOptions,
+      thoughtConfigId: 'brain-2',
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.selections).toContainEqual({ configId: 'brain-2', value: 'high' });
+    expect(harness.selections).not.toContainEqual({ configId: 'brain-1', value: 'high' });
+  });
+
+  it('runs with a permission_mode_unverified loss when the descriptor has no permission mapping', async () => {
+    const harness = createHarness({
+      permissionMapping: null,
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.starts).toHaveLength(1);
+    expect(harness.selections).not.toContainEqual({ configId: 'auto_approve', value: false });
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+    expect(metadata?.losses).toEqual(expect.arrayContaining(['permission_mode_unverified']));
+  });
+
+  it('records dropped additional directories when the harness does not declare support for them', async () => {
+    const harness = createHarness({
+      capabilities: {},
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+    expect(metadata?.losses).toEqual(expect.arrayContaining(['additional_directories_dropped']));
+  });
+
+  it('keeps additional directories without a loss once the harness declares support', async () => {
+    const harness = createHarness({
+      capabilities: { sessionCapabilities: { additionalDirectories: {} } },
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+    expect(metadata?.losses).not.toContain('additional_directories_dropped');
+  });
+
+  it('attributes resumed-session usage as a delta of the persisted cumulative counters', async () => {
+    const harness = createHarness({
+      mode: 'resume',
+      providerName: 'kimi',
+      completionUsage: {
+        inputTokens: 15,
+        outputTokens: 7,
+        totalTokens: 25,
+        thoughtTokens: 3,
+        cachedReadTokens: 4,
+        cachedWriteTokens: 2,
+      },
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+        profileDeliveredSessionId: 'remote-2',
+        lastCumulativeUsage: { inputTokens: 10, outputTokens: 3, totalTokens: 13 },
+      },
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await expect(run.completion).resolves.toEqual({
+      summary: '',
+      usage: { inputOther: 5, output: 4, inputCacheRead: 4, inputCacheCreation: 2 },
+    });
+
+    expect(harness.usageRecords).toEqual([[
+      'model-a',
+      { inputOther: 5, output: 4, inputCacheRead: 4, inputCacheCreation: 2 },
+      { type: 'turn', turnId: 4, step: 1 },
+      { provider: 'kimi', modelAlias: 'model-a', executorId: 'example-acp' },
+    ]]);
+    const updates = harness.events.filter(
+      (event): event is ExecutorSessionUpdated => event instanceof ExecutorSessionUpdated,
+    );
+    expect(updates.at(-1)).toMatchObject({
+      lastCumulativeUsage: {
+        inputTokens: 15,
+        outputTokens: 7,
+        totalTokens: 25,
+        thoughtTokens: 3,
+        cachedReadTokens: 4,
+        cachedWriteTokens: 2,
+      },
+    });
+  });
+
+  it('reports usage unknown instead of charging historical tokens when counters reset', async () => {
+    const harness = createHarness({
+      mode: 'resume',
+      providerName: 'kimi',
+      completionUsage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+        profileDeliveredSessionId: 'remote-2',
+        lastCumulativeUsage: { inputTokens: 10, outputTokens: 3, totalTokens: 13 },
+      },
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await expect(run.completion).resolves.toEqual({ summary: '', usage: undefined });
+
+    expect(harness.usageRecords).toEqual([[
+      'model-a',
+      { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 },
+      { type: 'turn', turnId: 4, step: 1 },
+      { provider: 'kimi', modelAlias: 'model-a', executorId: 'example-acp', usageKnown: false },
+    ]]);
+  });
+
+  it('reports usage unknown for a resumed session without a persisted cumulative baseline', async () => {
+    const harness = createHarness({
+      mode: 'resume',
+      providerName: 'kimi',
+      completionUsage: { inputTokens: 12, outputTokens: 5, totalTokens: 17 },
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+        profileDeliveredSessionId: 'remote-2',
+      },
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await expect(run.completion).resolves.toEqual({ summary: '', usage: undefined });
+
+    expect(harness.usageRecords[0]?.[3]).toMatchObject({ usageKnown: false });
+  });
 });
