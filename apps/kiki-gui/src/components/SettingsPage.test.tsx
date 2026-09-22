@@ -64,6 +64,7 @@ const client = {
     },
   })),
   listWorkspaces: vi.fn(async () => WORKSPACES),
+  listDiscoveredModels: vi.fn(async () => ({ items: [] })),
   listMcpServers: vi.fn(async () => ({ servers: [] })),
   listPlugins: vi.fn(async () => ({ plugins: [] })),
   listPluginMarketplace: vi.fn(async () => ({ configured: false, entries: [] })),
@@ -238,8 +239,8 @@ describe('SettingsPage scope header workspace sync', () => {
     const container = await renderSettings('/settings/ai?tab=models');
     const card = container.querySelector('#st-card-catalog-refresh');
     expect(card).not.toBeNull();
-    expect(card!.textContent).toContain('Model catalog refresh');
-    expect(card!.textContent).toContain('Refresh model catalog when the server starts');
+    expect(card!.textContent).toContain('Fetch provider models');
+    expect(card!.textContent).toContain('fetched only when you click Get models');
   });
 });
 

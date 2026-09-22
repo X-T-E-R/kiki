@@ -165,15 +165,18 @@ describe('conversation shell fallback phase', () => {
 });
 
 describe('connection-level model catalog refresh', () => {
-  it('invalidates only the models and providers queries for the global event', () => {
+  it('invalidates only the models, providers, and discovered-models queries for the global event', () => {
     const queryClient = { invalidateQueries: vi.fn(async () => undefined) };
 
     expect(handleGlobalConnectionFrame({ type: 'event.model_catalog.changed' }, queryClient)).toBe(
       true,
     );
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
     expect(queryClient.invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: ['models'] });
     expect(queryClient.invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ['providers'] });
+    expect(queryClient.invalidateQueries).toHaveBeenNthCalledWith(3, {
+      queryKey: ['discovered-models'],
+    });
   });
 
   it('does not handle session frames', () => {
