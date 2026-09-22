@@ -138,6 +138,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/discovered-models",
+    ],
+    [
+      "GET",
       "/api/external-delegation/seats",
     ],
     [
