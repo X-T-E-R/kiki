@@ -94,10 +94,28 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         capacityReservation: opts.capacityReservation,
       })
       .then((run) => {
-        const settle = (): void => this.scheduleRelease(agentId);
+        const settle = (): void => {
+          if (this.agentLifecycle.get(agentId) === handle) this.scheduleRelease(agentId);
+        };
         void run.completion.then(settle, settle);
         return run;
       });
+  }
+
+  trackPromptRun(agentId: string, completion: Promise<unknown>, signal: AbortSignal): AbortSignal {
+    const handle = this.agentLifecycle.get(agentId);
+    if (handle === undefined) {
+      throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Agent "${agentId}" does not exist`, {
+        details: { agentId },
+      });
+    }
+    const trackedSignal = handle.accessor.get(IAgentExecutionService).trackPromptRun(completion, signal);
+    this.cancelRelease(agentId);
+    const settle = (): void => {
+      if (this.agentLifecycle.get(agentId) === handle) this.scheduleRelease(agentId);
+    };
+    void completion.then(settle, settle);
+    return trackedSignal;
   }
 
   notifyAgentTaskStopped(context: AgentTaskStopHookContext): void {
@@ -165,7 +183,7 @@ export function isReleasable(handle: IAgentScopeHandle): boolean {
     const loop = handle.accessor.get(IAgentLoopService).status();
     if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return false;
     const prompts = handle.accessor.get(IAgentPromptService).list();
-    if (prompts.active !== undefined || prompts.pending.length > 0) return false;
+    if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0) return false;
     if (handle.accessor.get(IAgentTaskService).list(true).length > 0) return false;
     return !isSwarmActive(handle);
   } catch {

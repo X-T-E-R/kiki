@@ -150,6 +150,13 @@ export function liveSourcesFromSubagentBlocks(blocks: readonly SubagentBlock[]):
   }));
 }
 
+/**
+ * Snapshot roster rows outlive the run they describe: a disposed agent keeps
+ * its row so a later prompt can resume it, and the wire marks that row
+ * `live: false`. Its run start is the boundary at or before which active
+ * evidence is stale, so it lands on the descriptor as `disposedAt` — a run
+ * starting strictly later is a new generation and revives the row.
+ */
 export function rosterFromSnapshotSubagents(
   subagents: readonly SnapshotSubagent[] | undefined,
 ): readonly AgentRosterDescriptor[] {
@@ -160,6 +167,7 @@ export function rosterFromSnapshotSubagents(
     const label = presentSnapshotText(subagent.label);
     const description = presentSnapshotText(subagent.description);
     const name = label ?? description ?? presentSnapshotText(subagent.profile) ?? agentId;
+    const startedAt = subagent.started_at ?? subagent.created_at;
     return [
       {
         agentId,
@@ -170,9 +178,10 @@ export function rosterFromSnapshotSubagents(
         model: presentSnapshotText(subagent.model),
         thinkingEffort: presentSnapshotText(subagent.thinking_effort),
         status: subagent.subagent_phase === 'suspended' ? 'suspended' : subagent.status,
+        disposedAt: subagent.live === false ? startedAt : undefined,
         toolCallCount: subagent.tool_call_count,
         toolCallCountKnown: subagent.tool_call_count === undefined ? undefined : true,
-        startedAt: subagent.started_at ?? subagent.created_at,
+        startedAt,
         endedAt: subagent.completed_at,
         description,
         summary: presentSnapshotText(subagent.output_preview),
@@ -218,6 +227,7 @@ export function overlayLiveSourcesWithSnapshotSubagents(
       model: source.model ?? snapshot.model,
       thinkingEffort: source.thinkingEffort ?? snapshot.thinkingEffort,
       status: source.status === 'unknown' ? snapshot.status ?? source.status : source.status,
+      disposedAt: source.disposedAt ?? snapshot.disposedAt,
       description: source.description ?? snapshot.description,
       summary: source.summary ?? snapshot.summary,
       error: source.error ?? snapshot.error,

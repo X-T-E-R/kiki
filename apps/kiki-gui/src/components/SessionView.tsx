@@ -2384,20 +2384,13 @@ export function SessionView({
   );
   const handleGoalCancel = useCallback(() => client.cancelAgentGoal(sessionId), [client, sessionId]);
 
-  // Cold-recovery hold: the engine parks a queue restored from disk until a
-  // client calls resumeRecoveredQueue. The engine surfaces this as an explicit
-  // promptQueueHold contract in session view state.
-  const [recoveryDismissed, setRecoveryDismissed] = useState(false);
+  // Keep recovery controls mounted until the engine releases the queue hold.
   const [recoveryPending, setRecoveryPending] = useState(false);
-  const hasPromptQueueHold = state.promptQueueHold !== undefined;
-  const recoveryHold = hasPromptQueueHold && !recoveryDismissed;
+  const recoveryHold = state.promptQueueHold !== undefined;
   const handleRecoveryConfirm = useCallback(() => {
     setRecoveryPending(true);
     void client
       .resumeRecoveredQueue(sessionId)
-      .then(() => {
-        setRecoveryDismissed(false);
-      })
       .catch((error: unknown) => {
         pushToast({
           tone: 'error',
@@ -2410,7 +2403,6 @@ export function SessionView({
         setRecoveryPending(false);
       });
   }, [client, sessionId, t]);
-  const handleRecoveryDismiss = useCallback(() => { setRecoveryDismissed(true); }, []);
 
   const composerBusy = state.busy && state.activePromptId !== undefined;
   // The subagent page is read-only chrome over the same session: active
@@ -2697,7 +2689,6 @@ export function SessionView({
                   count={state.queuedPromptIds.length}
                   pending={recoveryPending}
                   onConfirm={handleRecoveryConfirm}
-                  onDismiss={handleRecoveryDismiss}
                 />
               ) : null}
               {queuedItems.length > 0 ? (

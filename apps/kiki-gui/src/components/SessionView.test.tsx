@@ -1673,3 +1673,14 @@ describe('nested subagent task ownership', () => {
     expect(resolved).toEqual({ ownerAgentId: 'agent-a', task: nestedTask });
   });
 });
+
+describe('recovered-queue hold gate', () => {
+  it('resets recovery controls per session through the route owner key', () => {
+    const noop = () => {};
+    const sessionA = SessionRouteView({ onToggleSidebar: noop, sessions: [], sessionId: 'session-a' });
+    const sessionB = SessionRouteView({ onToggleSidebar: noop, sessions: [], sessionId: 'session-b' });
+    expect(sessionA.key).toBe('session-a');
+    expect(sessionB.key).toBe('session-b');
+    expect(sessionB.key).not.toBe(sessionA.key);
+  });
+});

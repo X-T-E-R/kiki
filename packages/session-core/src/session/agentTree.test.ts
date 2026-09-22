@@ -1022,6 +1022,59 @@ describe('buildAgentForest', () => {
     expect(liveResume.byId['agent-1']!.endedAt).toBeUndefined();
   });
 
+  it('keeps a disposed run out of the active state until a later run starts', () => {
+    const startedAt = '2026-01-01T00:01:00.000Z';
+    const disposedRun = live({
+      subagentId: 'agent-1',
+      status: 'running',
+      startedAt,
+      disposedAt: startedAt,
+      model: 'k2',
+      summary: 'disposed run',
+    });
+
+    const retained = buildAgentForest(
+      [disposedRun],
+      [roster({ agentId: 'agent-1', parentAgentId: 'main', status: 'running', startedAt })],
+      [task({ id: 'task-old', agentId: 'agent-1', status: 'running', started_at: startedAt })],
+    );
+    expect(retained.byId['agent-1']).toMatchObject({
+      status: 'unknown',
+      busy: false,
+      parentAgentId: 'main',
+      toolCallCount: 0,
+    });
+    expect(retained.byId['agent-1']!.model).toBeUndefined();
+    expect(retained.byId['agent-1']!.startedAt).toBeUndefined();
+
+    const terminal = buildAgentForest([disposedRun], undefined, [
+      task({
+        id: 'task-old',
+        agentId: 'agent-1',
+        status: 'completed',
+        started_at: startedAt,
+        completed_at: '2026-01-01T00:01:30.000Z',
+      }),
+    ]);
+    expect(terminal.byId['agent-1']).toMatchObject({ status: 'completed', busy: false });
+
+    const queuedRow = buildAgentForest(
+      [live({ subagentId: 'agent-1', status: 'running', startedAt, disposedAt: startedAt })],
+      [roster({ agentId: 'agent-1', status: 'running', startedAt, disposedAt: startedAt })],
+    );
+    expect(queuedRow.byId['agent-1']).toMatchObject({ status: 'unknown', busy: false });
+
+    const resumed = buildAgentForest(
+      [live({ subagentId: 'agent-1', status: 'running', startedAt: '2026-01-01T00:03:00.000Z' })],
+      [roster({ agentId: 'agent-1', status: 'unknown', startedAt, disposedAt: startedAt })],
+    );
+    expect(resumed.byId['agent-1']).toMatchObject({
+      status: 'running',
+      busy: true,
+      startedAt: '2026-01-01T00:03:00.000Z',
+    });
+  });
+
   it('uses a stable task-id tie-break for exact task lifecycle ties', () => {
     const taskA = task({
       id: 'task-a',

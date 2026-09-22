@@ -42,6 +42,7 @@ import {
   projectAgentTranscriptView,
   queuedPromptPreviews,
   resolveActiveFloorId,
+  rosterFromSnapshotSubagents,
   sessionAgentForestFromAgentSnapshots,
   splitSystemReminders,
   turnExecutionFromItem,
@@ -85,6 +86,26 @@ function compactSnapshotSubagent(
     status: 'completed',
     created_at: FIXED_AT,
     ...overrides,
+  };
+}
+
+function unknownChildBlock(agentId = CHILD_AGENT_ID): SubagentBlock {
+  return {
+    kind: 'subagent',
+    id: `subagent-${agentId}`,
+    subagentId: agentId,
+    parentAgentId: 'main',
+    parentToolCallId: undefined,
+    name: agentId,
+    description: undefined,
+    model: undefined,
+    thinkingEffort: undefined,
+    status: 'unknown',
+    summary: undefined,
+    error: undefined,
+    endedAt: undefined,
+    toolCallCount: 0,
+    transcript: [],
   };
 }
 
@@ -601,6 +622,162 @@ describe('transcript authority projection', () => {
         name: 'Inspect the protocol',
       }),
     ]);
+  });
+
+  it('stops a retained snapshot row from claiming a live run in the forest', () => {
+    const retained = [
+      compactSnapshotSubagent({
+        id: CHILD_AGENT_ID,
+        agent_id: CHILD_AGENT_ID,
+        status: 'running',
+        subagent_phase: 'working',
+        live: false,
+        started_at: FIXED_AT_1,
+      }),
+    ];
+    expect(rosterFromSnapshotSubagents(retained)[0]).toMatchObject({
+      agentId: CHILD_AGENT_ID,
+      status: 'running',
+      startedAt: FIXED_AT_1,
+      disposedAt: FIXED_AT_1,
+    });
+
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([
+      ['main', applyOpsToSnapshot(emptySnapshot(), spawnChildOps())],
+    ]);
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, retained);
+    expect(forest.byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'unknown',
+      busy: false,
+      name: 'Inspect the protocol',
+    });
+  });
+
+  it('keeps a queued retained row out of the active state', () => {
+    const queued = [
+      compactSnapshotSubagent({
+        id: CHILD_AGENT_ID,
+        agent_id: CHILD_AGENT_ID,
+        status: 'running',
+        subagent_phase: 'queued',
+        live: false,
+        started_at: FIXED_AT_1,
+      }),
+    ];
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([
+      ['main', applyOpsToSnapshot(emptySnapshot(), spawnChildOps())],
+    ]);
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, queued);
+    expect(forest.byId[CHILD_AGENT_ID]).toMatchObject({ status: 'unknown', busy: false });
+  });
+
+  it('does not let a retained snapshot row promote an unknown subagent block to active', () => {
+    const queued = [
+      compactSnapshotSubagent({
+        id: 'agent-queued',
+        status: 'running',
+        subagent_phase: 'queued',
+        live: false,
+        started_at: FIXED_AT_1,
+      }),
+    ];
+    expect(overlaySnapshotSubagentFields([unknownChildBlock('agent-queued')], queued)[0]).toMatchObject({
+      status: 'unknown',
+    });
+
+    const olderServerRow = [
+      compactSnapshotSubagent({
+        id: 'agent-queued',
+        status: 'running',
+        subagent_phase: 'queued',
+        started_at: FIXED_AT_1,
+      }),
+    ];
+    expect(
+      overlaySnapshotSubagentFields([unknownChildBlock('agent-queued')], olderServerRow)[0],
+    ).toMatchObject({ status: 'running' });
+  });
+
+  it('preserves terminal snapshot evidence after its live scope is disposed', () => {
+    const completed = [compactSnapshotSubagent({
+      id: CHILD_AGENT_ID,
+      status: 'completed',
+      subagent_phase: 'completed',
+      live: false,
+      started_at: FIXED_AT_1,
+      completed_at: FIXED_AT_2,
+      output_preview: 'finished before disposal',
+    })];
+    expect(overlaySnapshotSubagentFields([unknownChildBlock()], completed)[0]).toMatchObject({
+      status: 'completed',
+      summary: 'finished before disposal',
+    });
+  });
+
+  it('keeps a running snapshot row active when the server sends no liveness field', () => {
+    const olderServerRow = [
+      compactSnapshotSubagent({
+        id: CHILD_AGENT_ID,
+        agent_id: CHILD_AGENT_ID,
+        status: 'running',
+        subagent_phase: 'working',
+        started_at: FIXED_AT_1,
+      }),
+    ];
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([
+      ['main', applyOpsToSnapshot(emptySnapshot(), spawnChildOps())],
+    ]);
+    expect(rosterFromSnapshotSubagents(olderServerRow)[0]?.disposedAt).toBeUndefined();
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, olderServerRow).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'running',
+      busy: true,
+    });
+  });
+
+  it('lets a run that starts after the retained row revive the forest node', () => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([
+      [
+        'main',
+        applyOpsToSnapshot(emptySnapshot(), [
+          ...spawnChildOps(),
+          {
+            op: 'task.upsert',
+            task: {
+              taskId: `task-${CHILD_AGENT_ID}`,
+              kind: 'subagent',
+              state: 'running',
+              detached: false,
+              description: 'Inspect the protocol',
+              agentId: CHILD_AGENT_ID,
+              outputTail: '',
+              startedAt: FIXED_AT_2,
+            },
+          },
+        ]),
+      ],
+    ]);
+    const retained = [
+      compactSnapshotSubagent({
+        id: CHILD_AGENT_ID,
+        agent_id: CHILD_AGENT_ID,
+        status: 'running',
+        subagent_phase: 'working',
+        live: false,
+        started_at: FIXED_AT_1,
+      }),
+    ];
+
+    const sources = overlayLiveSourcesWithSnapshotSubagents(
+      liveSourcesFromAgentSnapshots(snapshots),
+      retained,
+    );
+    const child = sources.find((entry) => entry.subagentId === CHILD_AGENT_ID);
+    expect(child).toMatchObject({ startedAt: FIXED_AT_2, disposedAt: FIXED_AT_1 });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, retained).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'running',
+      busy: true,
+      startedAt: FIXED_AT_2,
+    });
   });
 });
 

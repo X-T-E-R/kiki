@@ -161,9 +161,11 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | --- | --- |
 | `GET /api/sessions/{session_id}/prompts` | 进行中与排队中的提示词 |
 | `POST /api/sessions/{session_id}/prompts` | 提交提示词（内容块数组，可带模型 / 权限模式等覆盖） |
-| `POST /api/sessions/{session_id}/prompts:steer` | 把排队的提示词插入当前轮次 |
-| `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | 中止进行中的提示词 |
-| `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | 插入单个排队提示词 |
+| `POST /api/sessions/{session_id}/prompts:steer` | 立即发送选中的排队提示词 |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | 中止指定的排队中、启动中、运行中或已追加的提示词 |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | 立即发送单个排队提示词 |
+
+立即发送会把选中的提示词追加到活跃轮次；没有活跃轮次时，则按队列顺序分别启动新轮次。重启后，此操作只让选中项绕过恢复确认，其他恢复的提示词仍等待确认。中止已追加的提示词会取消它所加入的轮次，不会取消后续轮次。中止不存在或已经结束的提示词会返回 `40402`。
 
 ### 审批与提问
 

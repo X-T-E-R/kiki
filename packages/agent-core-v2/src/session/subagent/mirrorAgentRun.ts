@@ -61,10 +61,16 @@ registerEvent2Class(SubagentSpawned);
 
 export interface SubagentStartedPayload {
   readonly subagentId: string;
+  /** The task this run registered under, when the producer knows it. The
+   *  subagent id is reused across runs while each run gets its own task, so a
+   *  consumer must key lifecycle state by this id rather than by the latest
+   *  task seen for the agent. Optional for cross-version tolerance. */
+  readonly taskId?: string;
 }
 
 const subagentStartedSchema: z.ZodType<SubagentStartedPayload> = z.object({
   subagentId: z.string(),
+  taskId: z.string().optional(),
 });
 
 export class SubagentStarted extends Event2<SubagentStartedPayload> {
@@ -81,6 +87,9 @@ export interface SubagentCompletedPayload {
   readonly resultSummary: string;
   readonly usage?: TokenUsage;
   readonly contextTokens?: number;
+  /** The task this run registered under (see `SubagentStartedPayload.taskId`).
+   *  Optional for cross-version tolerance. */
+  readonly taskId?: string;
 }
 
 const subagentCompletedSchema: z.ZodType<SubagentCompletedPayload> = z.object({
@@ -88,6 +97,7 @@ const subagentCompletedSchema: z.ZodType<SubagentCompletedPayload> = z.object({
   resultSummary: z.string(),
   usage: z.custom<TokenUsage>().optional(),
   contextTokens: z.number().optional(),
+  taskId: z.string().optional(),
 });
 
 export class SubagentCompleted extends Event2<SubagentCompletedPayload> {
@@ -102,11 +112,15 @@ registerEvent2Class(SubagentCompleted);
 export interface SubagentFailedPayload {
   readonly subagentId: string;
   readonly error: string;
+  /** The task this run registered under (see `SubagentStartedPayload.taskId`).
+   *  Optional for cross-version tolerance. */
+  readonly taskId?: string;
 }
 
 const subagentFailedSchema: z.ZodType<SubagentFailedPayload> = z.object({
   subagentId: z.string(),
   error: z.string(),
+  taskId: z.string().optional(),
 });
 
 export class SubagentFailed extends Event2<SubagentFailedPayload> {
@@ -138,6 +152,8 @@ export interface MirrorAgentRunOptions {
   readonly signal: AbortSignal;
   readonly cancel?: (reason?: unknown) => void;
   readonly deferStarted?: boolean;
+  /** Waits for task registration before emitting run-specific lifecycle facts. */
+  readonly resolveTaskId?: () => string | undefined | Promise<string | undefined>;
 }
 
 export function emitAgentRunSpawned(
@@ -188,7 +204,9 @@ export async function mirrorAgentRun(
   const subagents = requester.accessor.get(ISessionSubagentService);
   const agentLifecycle = requester.accessor.get(IAgentLifecycleService);
   if (options.deferStarted !== true) {
-    void dispatcher?.dispatch(new SubagentStarted({ subagentId: run.agentId }));
+    void dispatcher?.dispatch(
+      new SubagentStarted({ subagentId: run.agentId, taskId: await options.resolveTaskId?.() }),
+    );
   }
   if (options.prompt !== undefined) {
     const cancelAndRethrow = (reason: unknown): never => {
@@ -218,6 +236,7 @@ export async function mirrorAgentRun(
         resultSummary: result.summary,
         usage: result.usage,
         contextTokens,
+        taskId: await options.resolveTaskId?.(),
       }),
     );
     subagents?.notifyAgentTaskStopped({
@@ -231,6 +250,7 @@ export async function mirrorAgentRun(
         new SubagentFailed({
           subagentId: run.agentId,
           error: errorMessage(error),
+          taskId: await options.resolveTaskId?.(),
         }),
       );
     }

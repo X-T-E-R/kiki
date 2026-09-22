@@ -36,6 +36,7 @@ import {
   type TranscriptOperation,
   type TranscriptTask,
   type TranscriptTurn,
+  type TranscriptWireRecord,
 } from '@kiki/transcript';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -1280,6 +1281,154 @@ describe('AgentTranscriptLiveAdapter', () => {
 
     expect(tx.getTask('task-9')).toMatchObject({ state: 'completed', resultSummary: 'done' });
     expect(tx.getTask('agent-1')).toBeUndefined();
+  });
+
+  it('keeps the newer run of one agent running when an earlier run completes with its own task id', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
+
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        time: 1_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-1',
+        description: 'First run',
+        runInBackground: false,
+        taskId: 'task-1',
+      }),
+    );
+    feed(ev({ type: 'subagent.started', time: 1_100, subagentId: 'agent-1', taskId: 'task-1' }));
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        time: 2_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-2',
+        description: 'Second run',
+        runInBackground: true,
+        taskId: 'task-2',
+      }),
+    );
+    feed(ev({ type: 'subagent.started', time: 2_100, subagentId: 'agent-1', taskId: 'task-2' }));
+    feed(
+      ev({
+        type: 'subagent.completed',
+        time: 3_000,
+        subagentId: 'agent-1',
+        resultSummary: 'first done',
+        taskId: 'task-1',
+      }),
+    );
+
+    expect(tx.getTask('task-1')).toMatchObject({
+      kind: 'subagent',
+      state: 'completed',
+      agentId: 'agent-1',
+      description: 'First run',
+      resultSummary: 'first done',
+      startedAt: new Date(1_000).toISOString(),
+      endedAt: new Date(3_000).toISOString(),
+    });
+    expect(tx.getTask('task-2')).toMatchObject({
+      kind: 'subagent',
+      state: 'running',
+      detached: true,
+      agentId: 'agent-1',
+      description: 'Second run',
+      startedAt: new Date(2_000).toISOString(),
+    });
+    expect(tx.getTask('task-2')?.endedAt).toBeUndefined();
+    expect(tx.getTask('task-2')?.resultSummary).toBeUndefined();
+    expect(tx.getTask('agent-1')).toBeUndefined();
+  });
+
+  it('folds a task-less terminal event into the latest run (legacy producers)', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
+
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        time: 1_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-1',
+        description: 'First run',
+        runInBackground: false,
+      }),
+    );
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        time: 2_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-2',
+        description: 'Second run',
+        runInBackground: true,
+        taskId: 'task-2',
+      }),
+    );
+    feed(ev({ type: 'subagent.completed', time: 3_000, subagentId: 'agent-1', resultSummary: 'done' }));
+
+    expect(tx.getTask('task-2')).toMatchObject({ state: 'completed', resultSummary: 'done' });
+  });
+
+  it('projects two runs of one agent identically live and from the wire', () => {
+    const records: Record<string, unknown>[] = [
+      {
+        type: 'subagent.spawned',
+        time: 1_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        name: 'worker',
+        parentToolCallId: 'call-1',
+        description: 'First run',
+        runInBackground: false,
+        taskId: 'task-1',
+      },
+      { type: 'subagent.started', time: 1_100, subagentId: 'agent-1', taskId: 'task-1' },
+      {
+        type: 'subagent.spawned',
+        time: 2_000,
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        name: 'worker',
+        parentToolCallId: 'call-2',
+        description: 'Second run',
+        runInBackground: true,
+        taskId: 'task-2',
+      },
+      { type: 'subagent.started', time: 2_100, subagentId: 'agent-1', taskId: 'task-2' },
+      {
+        type: 'subagent.completed',
+        time: 3_000,
+        subagentId: 'agent-1',
+        resultSummary: 'first done',
+        taskId: 'task-1',
+      },
+    ];
+
+    const liveTx = new AgentTranscript('main');
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    for (const record of records) liveTx.apply(liveAdapter.map(record as unknown as LiveAdapterBusEvent));
+
+    const wireTx = new AgentTranscript('main');
+    const wireReducer = new TranscriptFactReducer(wireTx);
+    const wireAdapter = new TranscriptWireAdapter('main');
+    for (const record of records) {
+      wireReducer.apply(wireAdapter.add(record as unknown as TranscriptWireRecord));
+    }
+
+    expect(liveTx.getTask('task-1')).toEqual(wireTx.getTask('task-1'));
+    expect(liveTx.getTask('task-2')).toEqual(wireTx.getTask('task-2'));
+    expect(wireTx.getTask('task-2')).toMatchObject({ state: 'running' });
+    expect(wireTx.getTask('task-1')).toMatchObject({ state: 'completed' });
   });
 
   it('projects goal updates into meta.goal plus an inline marker', () => {

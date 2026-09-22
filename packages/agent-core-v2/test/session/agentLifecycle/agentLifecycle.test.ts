@@ -16,6 +16,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { RESEARCH_READONLY_TOOLS } from '#/agent/profile/executionRestriction';
 import '#/agent/profile/profileService';
 import { ProfileBind } from '#/agent/profile/profileOps';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
@@ -936,18 +937,27 @@ describe('AgentLifecycleService', () => {
     expect(resolveExecutable).toHaveBeenCalledWith('native', undefined);
   });
 
-  it('restores a route-only binding without requiring a profile name', async () => {
+  it('restores a route-only binding and keeps its route, role, and tools when the model changes', async () => {
     ix.stub(IAppendLogStore, recordingAppendLog([
       createWireMetadataRecord(1),
       {
         type: 'profile.bind',
         routeId: 'route-only',
         modelAlias: 'provider/child-model',
+        lockedModelAlias: 'provider/child-model',
+        lockedThinkingEffort: 'high',
         thinkingEffort: 'high',
+        executionRestriction: 'research-readonly',
         executorId: 'native',
         executorProtocol: 'native',
-        systemPrompt: '',
-        disallowedTools: [],
+        systemPrompt: 'route prompt snapshot',
+        activeToolNames: ['Read'],
+        toolAllowPolicies: [['Read']],
+        disallowedTools: ['Write'],
+        subagents: ['explore'],
+        subagentLeases: { explore: { name: 'explore', modelAlias: 'provider/child-model' } },
+        appliedLease: { name: 'explore', modelAlias: 'provider/child-model' },
+        spawnPolicy: { allowedModels: ['provider/child-model'] },
         time: 2,
       },
     ]).store);
@@ -967,6 +977,10 @@ describe('AgentLifecycleService', () => {
       setArchived: async () => {},
       registerAgent,
     } as unknown as ISessionMetadata);
+    ix.stub(IModelCatalog, {
+      _serviceBrand: undefined,
+      get: () => ({ providerName: 'test-provider' }),
+    } as unknown as IModelCatalog);
     const svc = ix.get(IAgentLifecycleService);
 
     const restored = await svc.create({
@@ -979,12 +993,45 @@ describe('AgentLifecycleService', () => {
         executorProtocol: 'native',
       },
     });
+    const profile = restored.accessor.get(IAgentProfileService);
 
-    expect(restored.accessor.get(IAgentProfileService).data()).toMatchObject({
+    expect(profile.data()).toMatchObject({
       profileName: undefined,
       routeId: 'route-only',
       modelAlias: 'provider/child-model',
     });
+
+    const before = profile.data();
+    await profile.setModel('provider/other-model');
+    const after = profile.data();
+    const serialized = (value: unknown): string => JSON.stringify(value) ?? 'undefined';
+    const changedKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter((key) => serialized(before[key as keyof typeof before]) !== serialized(after[key as keyof typeof after]))
+      .sort();
+
+    expect(after.modelAlias).toBe('provider/other-model');
+    expect(changedKeys).toEqual([
+      'effectiveThinkingLevel',
+      'modelAlias',
+      'routeDetached',
+      'thinkingLevel',
+    ]);
+    expect(after).toMatchObject({
+      profileName: undefined,
+      routeId: 'route-only',
+      routeDetached: true,
+      lockedModelAlias: 'provider/child-model',
+      lockedThinkingEffort: 'high',
+      executionRestriction: 'research-readonly',
+      systemPrompt: 'route prompt snapshot',
+      activeToolNames: ['Read'],
+      disallowedTools: ['Write'],
+      subagents: ['explore'],
+      subagentLeases: { explore: { name: 'explore', modelAlias: 'provider/child-model' } },
+      appliedLease: { name: 'explore', modelAlias: 'provider/child-model' },
+      spawnPolicy: { allowedModels: ['provider/child-model'] },
+    });
+    expect(after.toolAllowPolicies).toEqual([['Read'], RESEARCH_READONLY_TOOLS]);
   });
 
   it('rejects restore when persisted binding metadata is incomplete', async () => {
@@ -1305,7 +1352,7 @@ describe('AgentLifecycleService', () => {
     releaseReady();
   });
 
-  it('exposes the in-flight handle and joins it after bootstrap', async () => {
+  it('keeps a restoring agent out of get and list until its bootstrap completes', async () => {
     let releaseRegister!: () => void;
     let registerStarted!: () => void;
     const registerCalled = new Promise<void>((resolve) => {
@@ -1318,17 +1365,77 @@ describe('AgentLifecycleService', () => {
       });
     });
     const svc = ix.get(IAgentLifecycleService);
+    const sealed: string[] = [];
+    disposables.add(svc.onWillCreate((handle) => sealed.push(handle.id)));
     const create = svc.create({ agentId: 'main' });
 
-    const early = svc.get('main');
-    expect(early).toBeDefined();
+    await registerCalled;
+    expect(sealed).toEqual(['main']);
+    expect(svc.get('main')).toBeUndefined();
+    expect(svc.list()).toEqual([]);
 
     const joined = svc.create({ agentId: 'main' });
-    await registerCalled;
     releaseRegister();
-    const handle = await joined;
-    await create;
-    expect(handle).toBe(early);
+    const handle = await create;
+    expect(await joined).toBe(handle);
+    expect(svc.get('main')).toBe(handle);
+    expect(svc.list()).toEqual([handle]);
+    expect(registerAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('voids an in-flight create when the identity is removed and never returns the disposed handle', async () => {
+    let releaseRegister!: () => void;
+    let registerStarted!: () => void;
+    const registerCalled = new Promise<void>((resolve) => {
+      registerStarted = resolve;
+    });
+    registerAgent.mockImplementationOnce(() => {
+      registerStarted();
+      return new Promise<void>((resolve) => {
+        releaseRegister = resolve;
+      });
+    });
+    const svc = ix.get(IAgentLifecycleService);
+    const disposed: string[] = [];
+    disposables.add(svc.onDidDispose((agentId) => disposed.push(agentId)));
+    const create = svc.create({ agentId: 'child' });
+    await registerCalled;
+
+    let removed = false;
+    const removal = svc.remove('child').then(() => {
+      removed = true;
+    });
+    const recreated = svc.create({ agentId: 'child' });
+    await Promise.resolve();
+    expect(removed).toBe(false);
+    expect(svc.get('child')).toBeUndefined();
+
+    releaseRegister();
+    await expect(create).rejects.toMatchObject({ code: ErrorCodes.AGENT_REMOVED });
+    await removal;
+    expect(svc.get('child')).toBeUndefined();
+    expect(disposed).toEqual(['child']);
+
+    const handle = await recreated;
+    expect(handle.id).toBe('child');
+    expect(svc.get('child')).toBe(handle);
+    expect(registerAgent).toHaveBeenCalledTimes(2);
+  });
+
+  it('joins the in-flight create when a listener creates the same id during onWillCreate', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    let reentrant: Promise<IAgentScopeHandle> | undefined;
+    disposables.add(svc.onWillCreate((handle) => {
+      if (reentrant !== undefined) return;
+      reentrant = svc.create({ agentId: 'main' });
+    }));
+
+    const handle = await svc.create({ agentId: 'main' });
+
+    expect(reentrant).toBeDefined();
+    expect(await reentrant).toBe(handle);
+    expect(registerAgent).toHaveBeenCalledTimes(1);
+    expect(svc.get('main')).toBe(handle);
   });
 
   it('ensureMainAgent returns one handle when calls start concurrently', async () => {

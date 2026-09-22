@@ -588,9 +588,14 @@ export function snapshotSubagentAgentId(subagent: SnapshotSubagent): string {
   return presentText(subagent.agent_id) ?? subagent.id;
 }
 
+/**
+ * Status a snapshot row asserts for a block with no status evidence of its
+ * own. A row kept after disposal (`live: false`) is not a live run, so it
+ * never promotes the block to an active status.
+ */
 function mapSnapshotSubagentStatus(subagent: SnapshotSubagent): SubagentBlock['status'] {
-  if (subagent.subagent_phase === 'suspended') return 'suspended';
-  return mapTaskState(subagent.status);
+  const status = subagent.subagent_phase === 'suspended' ? 'suspended' : mapTaskState(subagent.status);
+  return subagent.live === false && (status === 'running' || status === 'suspended') ? 'unknown' : status;
 }
 
 function overlaySubagentBlock(block: SubagentBlock, snapshot: SnapshotSubagent): SubagentBlock {

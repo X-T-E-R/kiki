@@ -888,6 +888,7 @@ export const subagentSpawnedEventSchema = z.object({
 export const subagentStartedEventSchema = z.object({
   type: z.literal('subagent.started'),
   subagentId: z.string(),
+  taskId: z.string().optional(),
 }) satisfies z.ZodType<SubagentStartedPayload>;
 
 export const subagentSuspendedEventSchema = z.object({
@@ -902,12 +903,14 @@ export const subagentCompletedEventSchema = z.object({
   resultSummary: z.string(),
   usage: tokenUsageSchema.optional(),
   contextTokens: z.number().optional(),
+  taskId: z.string().optional(),
 }) satisfies z.ZodType<SubagentCompletedPayload>;
 
 export const subagentFailedEventSchema = z.object({
   type: z.literal('subagent.failed'),
   subagentId: z.string(),
   error: z.string(),
+  taskId: z.string().optional(),
 }) satisfies z.ZodType<SubagentFailedPayload>;
 
 export const compactionStartedEventSchema = z.object({

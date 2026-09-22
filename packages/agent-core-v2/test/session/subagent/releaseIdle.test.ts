@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { deferred } from '../../deferred';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -60,8 +61,17 @@ function fakeAgent(id: string): FakeAgent {
     });
     return { agentId: id, turn: {} as AgentRunHandle['turn'], completion };
   });
+  let promptRuns = 0;
   const services = new Map<unknown, unknown>([
-    [IAgentExecutionService, { run, status: () => ({ state: agent.executionState }) }],
+    [IAgentExecutionService, {
+      run,
+      status: () => ({ state: promptRuns > 0 ? 'running' : agent.executionState }),
+      trackPromptRun: (completion: Promise<unknown>, signal: AbortSignal) => {
+        promptRuns++;
+        void completion.then(() => { promptRuns--; }, () => { promptRuns--; });
+        return signal;
+      },
+    }],
     [
       IAgentLoopService,
       {
@@ -132,6 +142,43 @@ describe('SessionSubagentService idle release', () => {
     const svc = ix.get(ISessionSubagentService);
     return svc.run(agentId, { kind: 'prompt', prompt: 'go' }, { signal: new AbortController().signal });
   }
+
+  it('tracks repeated direct prompt runs and releases only after the last queued run settles', async () => {
+    const child = fakeAgent('agent-1');
+    agents.set('agent-1', child);
+    const service = ix.get(ISessionSubagentService);
+    const first = deferred<void>();
+    const queued = deferred<void>();
+    service.trackPromptRun('agent-1', first.promise, new AbortController().signal);
+    service.trackPromptRun('agent-1', queued.promise, new AbortController().signal);
+    first.resolve();
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 2);
+    expect(remove).not.toHaveBeenCalled();
+    queued.resolve();
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS - 1);
+    expect(remove).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(remove).toHaveBeenCalledOnce();
+
+    const restored = fakeAgent('agent-1');
+    agents.set('agent-1', restored);
+    const next = deferred<void>();
+    service.trackPromptRun('agent-1', next.promise, new AbortController().signal);
+    next.resolve();
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS);
+    expect(remove).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not schedule release for a replacement scope from an old prompt completion', async () => {
+    const child = fakeAgent('agent-1');
+    agents.set('agent-1', child);
+    const completion = deferred<void>();
+    ix.get(ISessionSubagentService).trackPromptRun('agent-1', completion.promise, new AbortController().signal);
+    agents.set('agent-1', fakeAgent('agent-1'));
+    completion.resolve();
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 2);
+    expect(remove).not.toHaveBeenCalled();
+  });
 
   it('releases a completed subagent once it has stayed idle through the grace period', async () => {
     const child = fakeAgent('agent-1');

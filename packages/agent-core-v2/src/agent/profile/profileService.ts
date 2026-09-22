@@ -928,7 +928,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
     }
     const model = this.modelCatalog.get(canonicalAlias);
-    if (this.profileName === undefined) {
+    if (this.profileName === undefined && this.routeId === undefined) {
       await this.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: canonicalAlias });
       this.telemetry.track2('model_switch', { model: canonicalAlias });
     } else if (this.modelAlias !== canonicalAlias) {
@@ -1833,9 +1833,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private assertRouteBindable(requestedRoute?: string): void {
-    const current = this.profileName;
     const currentRoute = this.routeId;
-    if (current !== undefined && currentRoute !== requestedRoute) {
+    const bound = this.profileName !== undefined || currentRoute !== undefined;
+    if (bound && currentRoute !== requestedRoute) {
       throw new Error2(
         ErrorCodes.ROUTE_SWITCH_FORBIDDEN,
         `agent route is already bound to "${currentRoute ?? 'base'}"; cannot switch to "${requestedRoute ?? 'base'}" in this session`,

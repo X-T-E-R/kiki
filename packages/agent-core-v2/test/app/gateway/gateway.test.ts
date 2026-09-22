@@ -59,6 +59,7 @@ describe('RestGateway', () => {
     const execution: IAgentExecutionService = {
       _serviceBrand: undefined,
       run: executionRun,
+      trackPromptRun: (_completion, signal) => signal,
       status: () => ({ state: 'running', turnId: 7 }),
       cancel: (reason) => turnService.cancel(undefined, reason),
       settled: () => Promise.resolve(),

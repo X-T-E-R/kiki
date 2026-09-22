@@ -782,6 +782,7 @@ interface SubagentCompletedPayload {
     inputCacheCreation: number;
   };
   contextTokens?: number;
+  taskId?: string;
 }
 
 /**
@@ -792,6 +793,7 @@ interface SubagentFailedPayload {
   _name: 'subagent.failed';
   subagentId: string;
   error: string;
+  taskId?: string;
 }
 
 /**
@@ -823,6 +825,7 @@ interface SubagentSpawnedPayload {
 interface SubagentStartedPayload {
   _name: 'subagent.started';
   subagentId: string;
+  taskId?: string;
 }
 
 /**

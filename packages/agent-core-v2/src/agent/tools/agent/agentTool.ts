@@ -374,6 +374,7 @@ export class SubagentTool implements ISubagentTool {
     runtime: Runtime,
     snapshot: AgentProfileCatalogSnapshot | undefined,
     capturedLaunchPolicy: DispatchLaunchPolicy,
+    runTask: Promise<string | undefined>,
   ): Promise<SubagentHandle> {
     const policy = tightenDispatchLaunchPolicy(this.dispatch.readLaunchPolicy(this.callerAgentId), capturedLaunchPolicy);
     const admission = evaluateDispatchAdmission(policy, args.resume?.trim() ? 'resume' : 'spawn');
@@ -440,6 +441,7 @@ export class SubagentTool implements ISubagentTool {
       prompt,
       signal: controller.signal,
       deferStarted: true,
+      resolveTaskId: () => runTask,
       cancel: (reason) => {
         controller.abort(reason);
       },
@@ -509,9 +511,12 @@ export class SubagentTool implements ISubagentTool {
       }
 
       let handle: SubagentHandle;
+      let resolveRunTask!: (taskId: string | undefined) => void;
+      const runTask = new Promise<string | undefined>((resolve) => { resolveRunTask = resolve; });
       try {
-        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot, capturedLaunchPolicy);
+        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot, capturedLaunchPolicy, runTask);
       } catch (error) {
+        resolveRunTask(undefined);
         signal.removeEventListener('abort', abortBeforeRegister);
         this.log.warn('subagent launch failed', {
           toolCallId,
@@ -546,9 +551,11 @@ export class SubagentTool implements ISubagentTool {
           ),
           registerOptions,
         );
+        resolveRunTask(taskId);
         await this.dispatch.recordRun(handle.agentId, taskId);
         signal.removeEventListener('abort', abortBeforeRegister);
       } catch (error) {
+        resolveRunTask(undefined);
         controller.abort();
         void handle.completion.catch(() => {});
         signal.removeEventListener('abort', abortBeforeRegister);
@@ -581,7 +588,7 @@ export class SubagentTool implements ISubagentTool {
         });
         void requester.accessor
           .get(IEventDispatcher)
-          ?.dispatch(new SubagentStarted({ subagentId: handle.agentId }));
+          ?.dispatch(new SubagentStarted({ subagentId: handle.agentId, taskId }));
       }
 
       if (runInBackground) {

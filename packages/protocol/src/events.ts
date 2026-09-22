@@ -909,6 +909,11 @@ export interface SubagentSpawnedEvent {
 export interface SubagentStartedEvent {
   readonly type: 'subagent.started';
   readonly subagentId: string;
+  /** Background-task id this run registered under. One agent id serves many
+   *  runs, each with its own task, so a consumer keys lifecycle state by this
+   *  id instead of the latest task seen for the agent. Optional for
+   *  cross-version tolerance (older producers never send it). */
+  readonly taskId?: string;
 }
 
 export interface SubagentSuspendedEvent {
@@ -923,12 +928,18 @@ export interface SubagentCompletedEvent {
   readonly resultSummary: string;
   readonly usage?: TokenUsage;
   readonly contextTokens?: number;
+  /** Background-task id this run registered under (see
+   *  `SubagentStartedEvent.taskId`). Optional for cross-version tolerance. */
+  readonly taskId?: string;
 }
 
 export interface SubagentFailedEvent {
   readonly type: 'subagent.failed';
   readonly subagentId: string;
   readonly error: string;
+  /** Background-task id this run registered under (see
+   *  `SubagentStartedEvent.taskId`). Optional for cross-version tolerance. */
+  readonly taskId?: string;
 }
 
 export interface CompactionStartedEvent {
@@ -1971,6 +1982,7 @@ export const subagentSpawnedEventSchema = z.object({
 export const subagentStartedEventSchema = z.object({
   type: z.literal('subagent.started'),
   subagentId: z.string(),
+  taskId: z.string().optional(),
 }) satisfies z.ZodType<SubagentStartedEvent>;
 
 export const subagentSuspendedEventSchema = z.object({
@@ -1985,12 +1997,14 @@ export const subagentCompletedEventSchema = z.object({
   resultSummary: z.string(),
   usage: tokenUsageSchema.optional(),
   contextTokens: z.number().optional(),
+  taskId: z.string().optional(),
 }) satisfies z.ZodType<SubagentCompletedEvent>;
 
 export const subagentFailedEventSchema = z.object({
   type: z.literal('subagent.failed'),
   subagentId: z.string(),
   error: z.string(),
+  taskId: z.string().optional(),
 }) satisfies z.ZodType<SubagentFailedEvent>;
 
 export const compactionStartedEventSchema = z.object({

@@ -25,10 +25,12 @@ import {
   IFileService,
   ISessionContext,
   ISessionMetadata,
+  ISessionDispatchService,
   closeSessionById,
   getLiveSessionById,
   resumeSessionById,
 } from '@kiki/agent-core-v2';
+import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -560,6 +562,45 @@ describe('server-v2 /api prompts', () => {
     expect(list.body.code).toBe(0);
     expect(list.body.data.queued.map((prompt) => prompt.prompt_id)).toEqual(['recovered-prompt']);
     expect(list.body.data.recovery_hold).toEqual({ reason: 'recovery', count: 1 });
+  });
+
+  it.each([false, true])('sends a selected held prompt after cold resume without releasing the rest (bulk=%s)', async (bulk) => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const dispatcher = session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IEventDispatcher);
+    for (const [queueIndex, promptId] of ['held-first', 'send-now'].entries()) {
+      await dispatcher.dispatch(new PromptEnqueued({
+        schemaVersion: 1,
+        promptId,
+        userMessageId: promptId,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: promptId }], toolCalls: [], origin: { kind: 'user' } },
+        alreadyMaterialized: false,
+        appendTiming: 'agent_idle',
+        revision: 0,
+        queueIndex,
+      }));
+    }
+    await closeSessionById(server!.core.accessor, id);
+    await resumeSessionById(server!.core.accessor, id);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const prompt = main.accessor.get(IAgentPromptService);
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 2 });
+    expect(main.accessor.get(IAgentLoopService).status().activeTurnId).toBeUndefined();
+
+    const sent = bulk
+      ? await call('POST', `/api/sessions/${id}/prompts:steer`, { prompt_ids: ['send-now'] })
+      : await call('POST', `/api/sessions/${id}/prompts/send-now:steer`, {});
+    expect(sent.body.code, sent.body.msg).toBe(0);
+    await vi.waitFor(() => expect(prompt.list().active?.id).toBe('send-now'));
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['held-first']);
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    prompt.abort('send-now');
+    await main.accessor.get(IAgentLoopService).settled();
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['held-first']);
   });
 
   it('applies an optional plan_gate override before prompt execution', async () => {
@@ -1836,6 +1877,161 @@ describe('server-v2 /api prompts', () => {
     expect(list.body.code).toBe(0);
     expect(list.body.data.active).toBeNull();
     expect(list.body.data.queued).toEqual([]);
+  });
+
+  it.each([
+    ['live-terminal', false],
+    ['set-model', false],
+    ['second-restored', true],
+  ] as const)('registers every prompt run after %s (skills=%s)', async (mode, skills) => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    let child = await lifecycle.create({ binding: { profile: 'agent', model: 'stub', thinking: 'high' } });
+    const childId = child.id;
+    const blockInitial = (handle: typeof child): void => {
+      handle.accessor.get(IAgentPromptService).hooks.onBeforeSubmitPrompt.register('block-initial-run', (context) => {
+        if (context.promptMessage.content.some((part) => part.type === 'text' && part.text === 'initial run')) context.block = true;
+      });
+    };
+    blockInitial(child);
+    const initialSubscription = lifecycle.onDidCreate((handle) => { if (handle.id === childId) blockInitial(handle); });
+    if (mode !== 'live-terminal') await lifecycle.remove(childId);
+    if (mode === 'set-model') {
+      const klient = createMemoryKlient({ scope: server!.core });
+      await klient.session(id).agent(childId).setModel('stub-alt');
+      await klient.close();
+    } else {
+      const initial = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        agent_id: childId, content: [{ type: 'text', text: 'initial run' }],
+      });
+      expect(initial.body.code, initial.body.msg).toBe(0);
+      await lifecycle.get(childId)!.accessor.get(IAgentExecutionService).settled();
+    }
+    child = lifecycle.get(childId)!;
+    initialSubscription.dispose();
+    child.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-prompt-runs', async (context) => {
+      await new Promise<void>((resolve) => {
+        if (context.signal.aborted) resolve();
+        else context.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      context.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const tasks = lifecycle.get('main')!.accessor.get(IAgentTaskService);
+    const seen = new Set<string>();
+    for (let run = 0; run < 2; run++) {
+      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        agent_id: childId, content: [{ type: 'text', text: `managed run ${run}` }],
+        skills: skills ? [{ name: 'kiki-ops' }] : undefined,
+      });
+      expect(submitted.body.code, submitted.body.msg).toBe(0);
+      const task = await vi.waitFor(() => {
+        const found = tasks.list(true).filter((item) => item.kind === 'agent' && item.agentId === childId);
+        expect(found).toHaveLength(1);
+        return found[0]!;
+      });
+      expect(seen.has(task.taskId)).toBe(false);
+      seen.add(task.taskId);
+      expect(child.accessor.get(IAgentExecutionService).status().state).toBe('running');
+      await tasks.stopByUser(task.taskId);
+      await vi.waitFor(() => expect(tasks.getTask(task.taskId)?.status).toBe('killed'));
+      await child.accessor.get(IAgentExecutionService).settled();
+      expect(child.accessor.get(IAgentPromptService).list().active).toBeUndefined();
+    }
+  });
+
+  it.each([false, true])('admits the parent before submitting a child prompt (skills=%s)', async (skills) => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const parent = await lifecycle.create({ binding: { profile: 'agent', model: 'stub', thinking: 'high' } });
+    const child = await lifecycle.create({
+      delegator: { kind: 'agent', agentId: parent.id },
+      binding: { profile: 'agent', model: 'stub', thinking: 'high' },
+    });
+    await lifecycle.remove(parent.id);
+    const create = lifecycle.create.bind(lifecycle);
+    vi.spyOn(lifecycle, 'create').mockImplementation((options) => {
+      if (options?.agentId === parent.id) throw new Error('parent restore failed');
+      return create(options);
+    });
+    const enqueue = vi.spyOn(child.accessor.get(IAgentPromptService), 'enqueue');
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      agent_id: child.id, content: [{ type: 'text', text: 'must not start' }],
+      skills: skills ? [{ name: 'kiki-ops' }] : undefined,
+    });
+    expect(submitted.body.code).not.toBe(0);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(child.accessor.get(IAgentExecutionService).status().state).toBe('idle');
+    expect(child.accessor.get(IAgentPromptService).list().pending).toEqual([]);
+  });
+
+  it('does not submit a child when task admission fails', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({ binding: { profile: 'agent', model: 'stub', thinking: 'high' } });
+    vi.spyOn(session.accessor.get(ISessionDispatchService), 'recordRun').mockRejectedValueOnce(new Error('run registration failed'));
+    const enqueue = vi.spyOn(child.accessor.get(IAgentPromptService), 'enqueue');
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      agent_id: child.id, content: [{ type: 'text', text: 'must not start' }],
+    });
+    expect(submitted.body.code).not.toBe(0);
+    expect(enqueue).not.toHaveBeenCalled();
+    await child.accessor.get(IAgentExecutionService).settled();
+    expect(lifecycle.get('main')!.accessor.get(IAgentTaskService).list(true)).toEqual([]);
+  });
+
+  it('keeps the later cold prompt task running when the earlier task settles', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({ binding: { profile: 'agent', model: 'stub', thinking: 'high' } });
+    await lifecycle.remove(child.id);
+    const parent = lifecycle.get('main')!;
+    const runTasks: string[] = [];
+    const subscription = parent.accessor.get(IEventBus).subscribe((event) => {
+      if (event.type === 'subagent.started' && 'taskId' in event && typeof event.taskId === 'string') {
+        runTasks.push(event.taskId);
+      }
+    });
+    let creates = 0;
+    const onCreate = lifecycle.onDidCreate((handle) => {
+      if (handle.id !== child.id) return;
+      creates++;
+      handle.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-cold-prompts', async (context) => {
+        await new Promise<void>((resolve) => {
+          if (context.signal.aborted) resolve();
+          else context.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        context.signal.throwIfAborted();
+      }, { before: 'context-injector' });
+    });
+    await call('GET', `/api/sessions/${id}/transcript?agent_id=main`);
+    const submitted = await Promise.all(['cold-a', 'cold-b'].map((promptId) =>
+      call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        agent_id: child.id, prompt_id: promptId, content: [{ type: 'text', text: promptId }],
+      }),
+    ));
+    expect(submitted.map((response) => response.body.code)).toEqual([0, 0]);
+    expect(creates).toBe(1);
+    expect(new Set(runTasks).size).toBe(2);
+    const tasks = parent.accessor.get(IAgentTaskService);
+    await tasks.stopByUser(runTasks[0]!);
+    await vi.waitFor(async () => {
+      expect(tasks.getTask(runTasks[0]!)?.status).toBe('killed');
+      expect(tasks.getTask(runTasks[1]!)?.status).toBe('running');
+      const transcript = await call<{ tasks: { taskId: string; state: string }[] }>('GET', `/api/sessions/${id}/transcript?agent_id=main`);
+      expect(transcript.body.data.tasks.find((task) => task.taskId === runTasks[1])).toMatchObject({ state: 'running' });
+    });
+    await tasks.stopByUser(runTasks[1]!);
+    await lifecycle.get(child.id)!.accessor.get(IAgentExecutionService).settled();
+    onCreate.dispose();
+    subscription.dispose();
   });
 
   it('accepts a prompt for a live agent after its previous turn settled', async () => {

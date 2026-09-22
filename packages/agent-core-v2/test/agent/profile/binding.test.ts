@@ -27,7 +27,8 @@ import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
-import { IAgentProfileService, type ResolvedAgentProfile } from '#/agent/profile/profile';
+import { IAgentProfileService, type ProfileBindingSnapshot, type ResolvedAgentProfile } from '#/agent/profile/profile';
+import { RESEARCH_READONLY_TOOLS } from '#/agent/profile/executionRestriction';
 import { ProfileErrors } from '#/agent/profile/errors';
 import { IHostClock } from '#/os/interface/hostClock';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
@@ -1355,6 +1356,71 @@ describe('AgentProfileService.bind', () => {
     await svc.setModel(MOCK_MODEL);
 
     expect(svc.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);
+  });
+
+  it('setModel changes only the model of a route-only binding and keeps its route lock', async () => {
+    const { profile: svc } = buildContext();
+    await ctx.get(IModelService).set('other-model', {
+      provider: 'test-provider',
+      model: 'other-model',
+      maxContextSize: 1_000_000,
+      capabilities: ['thinking'],
+      supportEfforts: ['low', 'high'],
+    });
+    const snapshot: ProfileBindingSnapshot = {
+      routeId: 'route-only',
+      modelAlias: MOCK_MODEL,
+      lockedModelAlias: MOCK_MODEL,
+      lockedThinkingEffort: 'high',
+      thinkingLevel: 'high',
+      executionRestriction: 'research-readonly',
+      systemPrompt: 'route prompt snapshot',
+      activeToolNames: ['Read'],
+      toolAllowPolicies: [['Read']],
+      disallowedTools: ['Write'],
+      subagents: ['explore'],
+      subagentLeases: { explore: { name: 'explore', modelAlias: MOCK_MODEL } },
+      appliedLease: { name: 'explore', modelAlias: MOCK_MODEL },
+      spawnPolicy: { allowedModels: [MOCK_MODEL] },
+    };
+    svc.applyBindingSnapshot(snapshot);
+    expect(svc.data()).toMatchObject({
+      profileName: undefined,
+      routeId: 'route-only',
+      modelAlias: MOCK_MODEL,
+    });
+
+    const before = svc.data();
+    await svc.setModel('other-model');
+    const after = svc.data();
+    const serialized = (value: unknown): string => JSON.stringify(value) ?? 'undefined';
+    const changedKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter((key) => serialized(before[key as keyof typeof before]) !== serialized(after[key as keyof typeof after]))
+      .sort();
+
+    expect(after.modelAlias).toBe('other-model');
+    expect(changedKeys).toEqual(['modelAlias', 'modelCapabilities', 'routeDetached']);
+    expect(after).toMatchObject({
+      profileName: undefined,
+      routeId: 'route-only',
+      routeDetached: true,
+      lockedModelAlias: MOCK_MODEL,
+      lockedThinkingEffort: 'high',
+      executionRestriction: 'research-readonly',
+      systemPrompt: 'route prompt snapshot',
+      activeToolNames: ['Read'],
+      disallowedTools: ['Write'],
+      subagents: ['explore'],
+      subagentLeases: { explore: { name: 'explore', modelAlias: MOCK_MODEL } },
+      appliedLease: { name: 'explore', modelAlias: MOCK_MODEL },
+      spawnPolicy: { allowedModels: [MOCK_MODEL] },
+    });
+    expect(after.toolAllowPolicies).toEqual([['Read'], RESEARCH_READONLY_TOOLS]);
+
+    await expect(
+      svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: 'other-model' }),
+    ).rejects.toMatchObject({ code: 'agent_profile_route.switch_forbidden' });
+    expect(svc.data()).toEqual(after);
   });
 
   it('rebinds to a different base profile and applies the new profile pins', async () => {

@@ -696,7 +696,8 @@ export class TranscriptWireAdapter {
     ) {
       const subagentId = stringOf(record['subagentId']);
       if (subagentId === undefined) return [];
-      const taskId = this.#subagentTaskIds.get(subagentId) ?? subagentId;
+      const taskId =
+        stringOf(record['taskId']) ?? this.#subagentTaskIds.get(subagentId) ?? subagentId;
       if (
         record.type === 'subagent.started' &&
         this.#replayedSubagentSpawns.get(subagentId) === taskId

@@ -51,6 +51,8 @@ export interface PromptInput {
   readonly deferredDisabledTools?: readonly string[];
   readonly historyMutationLease?: SessionHistoryMutationLease;
   readonly alreadyMaterialized?: boolean;
+  /** Cancels this submission through admission, launch, and its own turn; never a later prompt. */
+  readonly signal?: AbortSignal;
 }
 
 export type PromptState =
@@ -91,6 +93,8 @@ export interface PromptQueueHold {
 export interface PromptQueueSnapshot {
   readonly active: PromptSnapshot | undefined;
   readonly pending: readonly PromptSnapshot[];
+  /** A prompt past admission that has not been assigned a turn yet. */
+  readonly launching?: PromptSnapshot;
   readonly hold?: PromptQueueHold;
 }
 
@@ -138,6 +142,7 @@ export interface PromptReservation extends IDisposable {
     execution?: PromptExecutionBinding,
     deferredDisabledTools?: readonly string[],
     appendTiming?: DeferredAppendTiming,
+    signal?: AbortSignal,
   ): Promise<PromptHandle>;
 }
 
@@ -158,6 +163,13 @@ export interface IAgentPromptService {
   /** Abort cancels only the wait; use abort(promptId) to cancel the submitted prompt. */
   submitAndWait(payload: PromptPayload, signal?: AbortSignal): Promise<PromptTerminalResult>;
   submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined>;
+  /**
+   * The queue as callers may act on it: `active` is the running prompt,
+   * `pending` the prompts still queued for their own turn, and `launching` the
+   * one admission has taken out of the queue and not yet assigned a turn. A
+   * launching prompt accepts `abort` only; replace/move/timing/steer cannot
+   * address it.
+   */
   list(): PromptQueueSnapshot;
   hasReadyPending(): boolean;
   resumeRecoveredQueue(): void;
@@ -169,7 +181,18 @@ export interface IAgentPromptService {
     expectedRevision?: number,
   ): PromptHandle;
   move(promptId: string, targetIndex: number): void;
+  /** Send selected prompts now: join the active turn, or launch their own turns while idle, bypassing timing and recovery holds only for those prompts. */
   steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]>;
+  /**
+   * Cancels one prompt and returns whether this call cancelled something.
+   * Targeted per state: a pending prompt leaves the queue, a prompt still
+   * launching is cancelled before it can start, and a running or steered
+   * prompt cancels its turn (a steered prompt shares the turn it joined, so
+   * that turn's prompt settles with it). `false` means the prompt is already
+   * cancelled or its turn is already over; an unknown prompt id — including
+   * one that already settled — throws `prompt.not_found` and never falls back
+   * to another prompt.
+   */
   abort(promptId: string, reason?: Error): boolean;
   drain(reason?: Error): Promise<void>;
   inject(message: ContextMessage): Promise<Turn | undefined>;

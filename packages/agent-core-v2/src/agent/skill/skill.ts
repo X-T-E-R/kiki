@@ -1,6 +1,6 @@
 import { createDecorator } from "#/_base/di/instantiation";
 import type { SkillActivationOrigin } from '#/agent/contextMemory/types';
-import type { DeferredAppendTiming, PromptExecutionBinding, PromptLaunchResult } from '#/agent/prompt/prompt';
+import type { DeferredAppendTiming, PromptExecutionBinding, PromptLaunchResult, PromptReservation } from '#/agent/prompt/prompt';
 import type { ContentPart } from '#/kosong/contract/message';
 
 export interface SkillActivationInput {
@@ -37,6 +37,23 @@ export interface IAgentSkillService {
   activate(input: SkillActivationInput): Promise<PromptLaunchResult>;
   promptWithSkills(input: PromptWithSkillsInput): Promise<PromptWithSkillsResult>;
   recordModelToolActivation(origin: SkillActivationOrigin): void;
+}
+
+export const skillPromptAdmission = Symbol('skillPromptAdmission');
+
+type SkillPromptAdmissionHook = (
+  input: PromptWithSkillsInput,
+  reservation: PromptReservation,
+) => Promise<PromptWithSkillsResult>;
+
+export function submitReservedSkillPrompt(
+  service: IAgentSkillService,
+  input: PromptWithSkillsInput,
+  reservation: PromptReservation,
+): Promise<PromptWithSkillsResult> {
+  return (service as IAgentSkillService & { [skillPromptAdmission]: SkillPromptAdmissionHook })[
+    skillPromptAdmission
+  ](input, reservation);
 }
 
 export const IAgentSkillService =

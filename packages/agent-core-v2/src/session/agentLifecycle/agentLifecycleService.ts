@@ -50,18 +50,28 @@ import {
 import { delegatorRef, labelsFromAgentMeta, withSubagentProfile } from './subagentMetadata';
 import { resolveDelegationPosition } from '#/agent/profile/delegationContext';
 
+interface AgentCreation {
+  generation: number;
+  pending: Promise<IAgentScopeHandle>;
+}
+
+interface AgentSlot {
+  generation: number;
+  handle: IAgentScopeHandle | undefined;
+  creating: AgentCreation | undefined;
+  removing: Promise<void> | undefined;
+  deferredCreateEvent: boolean;
+}
+
 export class AgentLifecycleService extends Disposable implements IAgentLifecycleService {
   declare readonly _serviceBrand: undefined;
   private nextAgentId = 0;
-  private readonly handles = new Map<string, IAgentScopeHandle>();
+  private readonly slots = new Map<string, AgentSlot>();
   private readonly onWillCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidDisposeEmitter = this._register(new Emitter<string>());
   private readonly interactionBusDisposables = new Map<string, IDisposable>();
   private readonly usageDisposables = new Map<string, IDisposable>();
-  private readonly creating = new Map<string, Promise<IAgentScopeHandle>>();
-  private readonly removing = new Map<string, Promise<void>>();
-  private readonly deferredCreateEvents = new Set<string>();
 
   get onWillCreate() {
     return this.onWillCreateEmitter.event;
@@ -100,6 +110,64 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         }
       },
     });
+  }
+
+  private slotOf(agentId: string): AgentSlot {
+    const existing = this.slots.get(agentId);
+    if (existing !== undefined) return existing;
+    const slot: AgentSlot = {
+      generation: 0,
+      handle: undefined,
+      creating: undefined,
+      removing: undefined,
+      deferredCreateEvent: false,
+    };
+    this.slots.set(agentId, slot);
+    return slot;
+  }
+
+  private releaseSlot(agentId: string, slot: AgentSlot): void {
+    if (
+      slot.handle !== undefined ||
+      slot.creating !== undefined ||
+      slot.removing !== undefined
+    ) {
+      return;
+    }
+    if (this.slots.get(agentId) === slot) this.slots.delete(agentId);
+  }
+
+  private liveHandles(): IAgentScopeHandle[] {
+    const handles: IAgentScopeHandle[] = [];
+    for (const slot of this.slots.values()) {
+      if (slot.handle !== undefined) handles.push(slot.handle);
+    }
+    return handles;
+  }
+
+  private isOccupied(agentId: string): boolean {
+    const slot = this.slots.get(agentId);
+    return (
+      slot !== undefined &&
+      (slot.handle !== undefined || slot.creating !== undefined || slot.removing !== undefined)
+    );
+  }
+
+  private pendingCreate(agentId: string): AgentCreation | undefined {
+    const slot = this.slots.get(agentId);
+    if (slot === undefined || slot.removing !== undefined) return undefined;
+    const creating = slot.creating;
+    if (creating === undefined || creating.generation !== slot.generation) return undefined;
+    return creating;
+  }
+
+  private assertCreateStillCurrent(agentId: string, slot: AgentSlot, generation: number): void {
+    if (this.slots.get(agentId) === slot && slot.generation === generation) return;
+    throw new Error2(
+      ErrorCodes.AGENT_REMOVED,
+      `Agent "${agentId}" was removed before its creation completed`,
+      { details: { agentId } },
+    );
   }
 
   private subscribeInteractionBus(handle: IAgentScopeHandle): void {
@@ -142,54 +210,72 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         userLabel: opts.userLabel ?? meta.userLabel,
       };
     }
-    if (opts.agentId !== undefined) {
-      const inflight = this.creating.get(opts.agentId);
-      if (inflight !== undefined) {
-        const handle = await inflight;
+    const agentId = opts.agentId ?? (await this.nextAvailableAgentId());
+    for (;;) {
+      const slot = this.slots.get(agentId);
+      if (slot === undefined) return this.startCreate(agentId, opts);
+      if (slot.removing !== undefined) {
+        await slot.removing.catch(() => undefined);
+        continue;
+      }
+      const creating = this.pendingCreate(agentId);
+      if (creating !== undefined) {
+        const handle = await creating.pending;
         if (opts.restoreBinding !== undefined) {
           await this.validateRestoredBinding(handle, opts.restoreBinding);
         }
         return handle;
       }
-      const removal = this.removing.get(opts.agentId);
-      if (removal !== undefined) {
-        await removal.catch(() => undefined);
-        return this.createInternal(opts);
+      if (slot.creating !== undefined) {
+        await slot.creating.pending.then(() => undefined, () => undefined);
+        continue;
       }
-      const existing = this.handles.get(opts.agentId);
-      if (existing !== undefined) {
-        const profile = existing.accessor.get(IAgentProfileService);
-        const persisted = profile.data();
-        const validation =
-          opts.binding === undefined
-            ? undefined
-            : profile.validateBinding({
-                modelAlias: opts.binding.model,
-                thinkingEffort: opts.binding.thinking,
-              });
-        if (validation !== undefined && !validation.ok) {
-          throw new Error2(ErrorCodes.CONFIG_INVALID, validation.diagnostic);
-        }
-        if (opts.binding !== undefined && opts.binding.route !== persisted.routeId) {
-          throw new Error2(
-            ErrorCodes.ROUTE_SWITCH_FORBIDDEN,
-            `Agent "${opts.agentId}" is bound to route "${persisted.routeId ?? 'base'}" and cannot switch to "${opts.binding.route}"`,
-          );
-        }
-        if (opts.restoreBinding !== undefined) {
-          await this.validateRestoredBinding(existing, opts.restoreBinding);
-        }
-        return existing;
-      }
+      if (slot.handle !== undefined) return this.reuseExisting(agentId, slot.handle, opts);
+      return this.startCreate(agentId, opts);
     }
-    const agentId = opts.agentId ?? (await this.nextAvailableAgentId());
-    const promise = this.doCreate(agentId, opts);
-    this.creating.set(agentId, promise);
-    try {
-      return await promise;
-    } finally {
-      this.creating.delete(agentId);
+  }
+
+  private async reuseExisting(
+    agentId: string,
+    handle: IAgentScopeHandle,
+    opts: CreateAgentOptions,
+  ): Promise<IAgentScopeHandle> {
+    const profile = handle.accessor.get(IAgentProfileService);
+    const persisted = profile.data();
+    const validation =
+      opts.binding === undefined
+        ? undefined
+        : profile.validateBinding({
+            modelAlias: opts.binding.model,
+            thinkingEffort: opts.binding.thinking,
+          });
+    if (validation !== undefined && !validation.ok) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, validation.diagnostic);
     }
+    if (opts.binding !== undefined && opts.binding.route !== persisted.routeId) {
+      throw new Error2(
+        ErrorCodes.ROUTE_SWITCH_FORBIDDEN,
+        `Agent "${agentId}" is bound to route "${persisted.routeId ?? 'base'}" and cannot switch to "${opts.binding.route}"`,
+      );
+    }
+    if (opts.restoreBinding !== undefined) {
+      await this.validateRestoredBinding(handle, opts.restoreBinding);
+    }
+    return handle;
+  }
+
+  private startCreate(agentId: string, opts: CreateAgentOptions): Promise<IAgentScopeHandle> {
+    const slot = this.slotOf(agentId);
+    const generation = slot.generation + 1;
+    slot.generation = generation;
+    const pending = this.doCreate(agentId, opts, slot, generation);
+    slot.creating = { generation, pending };
+    const settled = (): void => {
+      if (slot.creating?.pending === pending) slot.creating = undefined;
+      this.releaseSlot(agentId, slot);
+    };
+    void pending.then(settled, settled);
+    return pending;
   }
 
   private async nextAvailableAgentId(): Promise<string> {
@@ -198,7 +284,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       const match = /^agent-(\d+)$/.exec(id);
       if (match !== null) maxSuffix = Math.max(maxSuffix, Number(match[1]));
     };
-    for (const id of this.handles.keys()) consider(id);
+    for (const [agentId, slot] of this.slots) {
+      if (slot.handle !== undefined || slot.creating !== undefined) consider(agentId);
+    }
     const persisted = (await this.sessionMetadata.read()).agents ?? {};
     for (const id of Object.keys(persisted)) consider(id);
     for (;;) {
@@ -210,7 +298,12 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     }
   }
 
-  private async doCreate(agentId: string, opts: CreateAgentOptions): Promise<IAgentScopeHandle> {
+  private async doCreate(
+    agentId: string,
+    opts: CreateAgentOptions,
+    slot: AgentSlot,
+    generation: number,
+  ): Promise<IAgentScopeHandle> {
     let priorAgentMeta: AgentMeta | undefined;
     const agentScope = this.ctx.scope(`agents/${agentId}`);
     const agentHomedir = join(this.bootstrap.homeDir, agentScope);
@@ -237,7 +330,6 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         ],
       },
     ) as IAgentScopeHandle;
-    this.handles.set(agentId, handle);
     try {
       priorAgentMeta = (await this.sessionMetadata.read()).agents?.[agentId];
       const wire = handle.accessor.get(IWireService);
@@ -256,6 +348,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         await handle.accessor.get(IAgentToolActivationService).activate();
       }
       const delegationPosition = resolveDelegationPosition(agentId, opts.delegator);
+      this.assertCreateStillCurrent(agentId, slot, generation);
       await this.sessionMetadata.registerAgent(agentId, {
         homedir: agentHomedir,
         type: delegationPosition,
@@ -273,12 +366,14 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         executor: profile.executorId,
         executorProtocol: profile.executorProtocol,
       });
-      if (opts.deferCreateEvent === true) this.deferredCreateEvents.add(agentId);
+      this.assertCreateStillCurrent(agentId, slot, generation);
+      slot.handle = handle;
+      if (opts.deferCreateEvent === true) slot.deferredCreateEvent = true;
       else this.onDidCreateEmitter.fire(handle);
       return handle;
     } catch (error) {
-      this.deferredCreateEvents.delete(agentId);
-      if (this.handles.get(agentId) === handle) this.handles.delete(agentId);
+      slot.deferredCreateEvent = false;
+      if (slot.handle === handle) slot.handle = undefined;
       if (priorAgentMeta === undefined) {
         await this.sessionMetadata.unregisterAgent?.(agentId).catch(() => {});
       } else {
@@ -293,13 +388,16 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
 
   commitCreate(agentId: string): void {
-    if (!this.deferredCreateEvents.delete(agentId)) return;
-    const handle = this.handles.get(agentId);
-    if (handle !== undefined) this.onDidCreateEmitter.fire(handle);
+    const slot = this.slots.get(agentId);
+    if (slot === undefined || !slot.deferredCreateEvent) return;
+    slot.deferredCreateEvent = false;
+    if (slot.handle !== undefined) this.onDidCreateEmitter.fire(slot.handle);
+    this.releaseSlot(agentId, slot);
   }
 
   async discard(agentId: string): Promise<void> {
-    this.deferredCreateEvents.delete(agentId);
+    const slot = this.slots.get(agentId);
+    if (slot !== undefined) slot.deferredCreateEvent = false;
     await this.remove(agentId);
     await this.sessionMetadata.unregisterAgent?.(agentId);
   }
@@ -404,13 +502,13 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
 
   async fork(sourceAgentId: string, opts?: ForkAgentOptions): Promise<IAgentScopeHandle> {
-    const source = this.handles.get(sourceAgentId);
+    const source = this.slots.get(sourceAgentId)?.handle;
     if (source === undefined) {
       throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Source agent "${sourceAgentId}" does not exist`, {
         details: { agentId: sourceAgentId },
       });
     }
-    if (opts?.agentId !== undefined && this.handles.has(opts.agentId)) {
+    if (opts?.agentId !== undefined && this.isOccupied(opts.agentId)) {
       throw new Error2(ErrorCodes.AGENT_ALREADY_EXISTS, `Agent "${opts.agentId}" already exists`, {
         details: { agentId: opts.agentId },
       });
@@ -451,25 +549,25 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
 
   get(agentId: string): IAgentScopeHandle | undefined {
-    return this.handles.get(agentId);
+    return this.slots.get(agentId)?.handle;
   }
 
   list(filter?: AgentListFilter): readonly IAgentScopeHandle[] {
-    const all = [...this.handles.values()];
+    const all = this.liveHandles();
     const prefix = filter?.prefix;
     if (prefix === undefined) return all;
     return all.filter((handle) => handle.id.startsWith(prefix));
   }
 
   broadcastPermissionMode(mode: PermissionMode): void {
-    for (const handle of this.handles.values()) {
+    for (const handle of this.liveHandles()) {
       handle.accessor.get(IAgentPermissionModeService).setMode(mode);
     }
   }
 
   countPendingBackgroundTasks(): number {
     let count = 0;
-    for (const handle of this.handles.values()) {
+    for (const handle of this.liveHandles()) {
       count += handle.accessor.get(IAgentTaskService).list(true).length;
     }
     return count;
@@ -485,7 +583,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       const batch: Promise<unknown>[] = [];
       const suppressions: Promise<void>[] = [];
       let activeCount = 0;
-      for (const handle of this.handles.values()) {
+      for (const handle of this.liveHandles()) {
         const tasks = handle.accessor.get(IAgentTaskService);
         for (const task of tasks.list(true)) {
           activeCount++;
@@ -502,15 +600,30 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
 
   async remove(agentId: string): Promise<void> {
-    const handle = this.handles.get(agentId);
-    if (handle === undefined) return this.removing.get(agentId);
-    this.handles.delete(agentId);
-    this.deferredCreateEvents.delete(agentId);
-    const removal = this.doRemove(agentId, handle).finally(() => {
-      if (this.removing.get(agentId) === removal) this.removing.delete(agentId);
+    const slot = this.slots.get(agentId);
+    if (slot === undefined) return;
+    if (slot.removing !== undefined) return slot.removing;
+    slot.generation += 1;
+    slot.deferredCreateEvent = false;
+    const handle = slot.handle;
+    const creating = slot.creating?.pending;
+    slot.handle = undefined;
+    const removal = this.finishRemoval(agentId, handle, creating).finally(() => {
+      if (slot.removing === removal) slot.removing = undefined;
+      this.releaseSlot(agentId, slot);
     });
-    this.removing.set(agentId, removal);
+    slot.removing = removal;
     return removal;
+  }
+
+  private async finishRemoval(
+    agentId: string,
+    handle: IAgentScopeHandle | undefined,
+    creating: Promise<IAgentScopeHandle> | undefined,
+  ): Promise<void> {
+    if (creating !== undefined) await creating.then(() => undefined, () => undefined);
+    if (handle === undefined) return;
+    await this.doRemove(agentId, handle);
   }
 
   private async doRemove(agentId: string, handle: IAgentScopeHandle): Promise<void> {

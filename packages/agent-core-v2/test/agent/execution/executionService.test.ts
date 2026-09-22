@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { deferred } from '../../deferred';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
@@ -80,6 +81,38 @@ function executionService(
 }
 
 describe('AgentExecutionService', () => {
+  it('accounts for direct prompts before launch and keeps each cancellation signal through settlement', async () => {
+    const ix = new TestInstantiationService();
+    const service = executionService(ix, scope(), profile({ executorId: 'native' }), {} as IAgentExecutorRegistry, states());
+    const release = vi.fn();
+    ix.stub(ISessionDispatchService, 'reserveTurnExecution', () => release);
+    let activeTurnId: number | undefined;
+    ix.stub(IAgentLoopService, 'status', () => ({ state: activeTurnId === undefined ? 'idle' : 'running', activeTurnId, pendingTurnIds: [], hasPendingRequests: false }));
+    const first = deferred<void>();
+    const second = deferred<void>();
+    const firstController = new AbortController();
+    const firstSignal = service.trackPromptRun(first.promise, firstController.signal);
+    const secondSignal = service.trackPromptRun(second.promise, new AbortController().signal);
+    expect(service.status()).toEqual({ state: 'starting' });
+    activeTurnId = 42;
+    expect(service.status()).toEqual({ state: 'running', turnId: 42 });
+    firstController.abort(new Error('stop first'));
+    expect(firstSignal.aborted).toBe(true);
+    expect(secondSignal.aborted).toBe(false);
+    first.resolve();
+    await first.promise;
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(service.status().state).toBe('running');
+    service.cancel(new Error('stop remaining'));
+    expect(secondSignal.aborted).toBe(true);
+    expect(service.status().state).toBe('cancelling');
+    second.resolve();
+    await service.settled();
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(service.status()).toEqual({ state: 'idle' });
+    ix.dispose();
+  });
+
   it('holds shared dispatch capacity through real cancellation and admits the next execution only after settlement', async () => {
     const ix = new TestInstantiationService();
     const capacity = new DispatchCapacity();

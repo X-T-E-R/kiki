@@ -25,6 +25,37 @@ function spawn(subagentId: string, extra: Record<string, unknown> = {}): Event {
 }
 
 describe('SubagentRosterTracker', () => {
+  it('ignores late lifecycle events belonging to an older registered task', () => {
+    const tracker = new SubagentRosterTracker();
+    for (const [taskId, startedAt] of [['task-a', 100], ['task-b', 200]] as const) {
+      tracker.apply(SID, ev({
+        type: 'task.started',
+        time: startedAt,
+        info: {
+          taskId,
+          kind: 'agent',
+          agentId: 'child',
+          detached: false,
+          description: 'task child',
+          status: 'running',
+          startedAt,
+          endedAt: null,
+        },
+      }));
+      tracker.apply(SID, spawn('child', { taskId, time: startedAt }));
+    }
+    expect(tracker.get(SID)[0]).toMatchObject({
+      status: 'running',
+      started_at: new Date(200).toISOString(),
+    });
+    tracker.apply(SID, ev({ type: 'subagent.completed', subagentId: 'child', taskId: 'task-a', resultSummary: 'old complete', time: 300 }));
+    tracker.apply(SID, ev({ type: 'subagent.failed', subagentId: 'child', taskId: 'task-a', error: 'old error', time: 400 }));
+    expect(tracker.get(SID)[0]).toMatchObject({ status: 'running' });
+    tracker.apply(SID, ev({ type: 'subagent.completed', subagentId: 'child', taskId: 'task-b', resultSummary: 'new complete', time: 500 }));
+    tracker.apply(SID, ev({ type: 'subagent.started', subagentId: 'child', taskId: 'task-a', time: 600 }));
+    expect(tracker.get(SID)[0]).toMatchObject({ status: 'completed', output_preview: 'new complete' });
+  });
+
   it('seeds a roster entry from subagent.spawned with the swarm identity metadata', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawn('agent-1', { swarmIndex: 2, model: 'provider/secondary', thinkingEffort: 'low' }));

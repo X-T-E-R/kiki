@@ -377,6 +377,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
       servicesByAgentId.delete(agentId);
     },
     notifyAgentTaskStopped: vi.fn(),
+    trackPromptRun: (_agentId, _completion, signal) => signal,
     fork: vi.fn(async () => {
       throw new Error('unexpected fork');
     }),
@@ -2006,6 +2007,37 @@ describe('AgentRun tool execution contract', () => {
     expect(eventOrder.indexOf('subagent.spawned')).toBeGreaterThanOrEqual(0);
     expect(eventOrder.indexOf('subagent.started')).toBeGreaterThan(eventOrder.indexOf('subagent.spawned'));
     completion.resolve({ summary: 'finished later' });
+  });
+
+  it.each([false, true])('carries the registered task id on terminal events of a fast run (failed=%s)', async (failed) => {
+    const lifecycle = createAgentLifecycleStub({
+      createAgentIds: ['agent-child'],
+      runCompletion: async () => {
+        if (failed) throw new Error('failed immediately');
+        return { summary: 'finished immediately' };
+      },
+    });
+    const context = createAgentToolContext(lifecycle);
+    const tasks = context.get(IAgentTaskService);
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      background: true,
+    });
+
+    if (typeof result.output !== 'string') throw new TypeError('expected string output');
+    const taskId = result.output.match(/task_id: (agent-[0-9a-z]{8})/)?.[1];
+    expect(taskId).toBeDefined();
+    expect(lifecycle.publishedEvents).toContainEqual(expect.objectContaining({
+      type: 'subagent.started', subagentId: 'agent-child', taskId,
+    }));
+    await vi.waitFor(() => {
+      expect(tasks.getTask(taskId!)?.status).toBe(failed ? 'failed' : 'completed');
+      expect(lifecycle.publishedEvents).toContainEqual(expect.objectContaining({
+        type: failed ? 'subagent.failed' : 'subagent.completed', subagentId: 'agent-child', taskId,
+      }));
+    });
   });
 
   it('rejects background subagents when background execution is disabled', async () => {

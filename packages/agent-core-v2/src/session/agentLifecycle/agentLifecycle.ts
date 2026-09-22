@@ -55,7 +55,9 @@ export interface IAgentLifecycleService {
 
   fork(sourceAgentId: string, opts?: ForkAgentOptions): Promise<IAgentScopeHandle>;
 
+  /** Return only a fully restored, bound, and activated live agent scope. */
   get(agentId: string): IAgentScopeHandle | undefined;
+  /** List only fully restored, bound, and activated live agent scopes. */
   list(filter?: AgentListFilter): readonly IAgentScopeHandle[];
   broadcastPermissionMode(mode: PermissionMode): void;
   /** Pending tasks across live agents, including descendants. */

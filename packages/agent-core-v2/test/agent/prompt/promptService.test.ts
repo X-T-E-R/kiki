@@ -1,4 +1,5 @@
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { deferred } from '../../deferred';
 
 import { Readable } from 'node:stream';
 
@@ -278,6 +279,158 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
 }
 
 describe('AgentPromptService', () => {
+  it('cancels a queued prompt while it is launching without cancelling the next prompt', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const first = await prompt.enqueue({ id: 'first', message: message('first') });
+    const gate = deferred<void>();
+    const entered = deferred<void>();
+    prompt.hooks.onBeforeSubmitPrompt.register('hold-launch', async (context, next) => {
+      if (context.promptMessage.id === 'launching') {
+        entered.resolve();
+        await gate.promise;
+      }
+      await next();
+    });
+    const controller = new AbortController();
+    const launching = await reservePrompt(prompt, 'launching').submit(message('second'), undefined, undefined, undefined, controller.signal);
+    const next = await prompt.enqueue({ id: 'next', message: message('third') });
+    loop.settleActive();
+    await first.completion;
+    await entered.promise;
+    expect(prompt.list().launching?.id).toBe('launching');
+    controller.abort(new Error('stop second'));
+    expect((await launching.completion).state).toBe('cancelled');
+    expect(loop.cancels).toEqual([]);
+    gate.resolve();
+    await next.launched;
+    expect(prompt.list().active?.id).toBe('next');
+    expect(() => prompt.abort('launching')).toThrow(expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }));
+    expect(loop.cancels).toEqual([]);
+    loop.settleActive();
+    await next.completion;
+  });
+
+  it('holds an assigned launching cancellation until its own turn settles', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const enqueue = loop.enqueue.bind(loop);
+    const gate = deferred<void>();
+    const entered = deferred<void>();
+    vi.spyOn(loop, 'enqueue').mockImplementation((request, options) => {
+      const receipt = enqueue(request, options);
+      entered.resolve();
+      return { assigned: gate.promise.then(() => receipt.assigned), abort: receipt.abort };
+    });
+    const submitted = prompt.enqueue({ id: 'assigning', message: message('work') });
+    await entered.promise;
+    expect(prompt.abort('assigning')).toBe(true);
+    let returned = false;
+    void submitted.then(() => { returned = true; });
+    await Promise.resolve();
+    expect(returned).toBe(false);
+    gate.resolve();
+    const handle = await submitted;
+    const turn = await handle.launched;
+    expect(turn?.signal.aborted).toBe(true);
+    let completed = false;
+    void handle.completion.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    loop.settleActive({ type: 'cancelled', steps: 0, reason: new Error('stopped') });
+    expect((await handle.completion).state).toBe('cancelled');
+  });
+
+  it('cancels an in-flight steer assignment without settling before its assigned turn', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active', message: message('first') });
+    const activeTurn = await active.launched;
+    const controller = new AbortController();
+    const selected = await reservePrompt(prompt, 'selected').submit(message('steer'), undefined, undefined, undefined, controller.signal);
+    const next = await prompt.enqueue({ id: 'next', message: message('next') });
+    const gate = deferred<void>();
+    const entered = deferred<void>();
+    const enqueue = loop.enqueue.bind(loop);
+    vi.spyOn(loop, 'enqueue').mockImplementation((request, options) => {
+      const receipt = enqueue(request, options);
+      if (!(request instanceof SteerStepRequest)) return receipt;
+      entered.resolve();
+      return { assigned: gate.promise.then(() => receipt.assigned), abort: receipt.abort };
+    });
+    const steering = prompt.steer([selected.id]);
+    await entered.promise;
+    controller.abort(new Error('cancel during assignment'));
+    expect(loop.cancels).toEqual([{ turnId: activeTurn!.id, reason: controller.signal.reason }]);
+    let settled = false;
+    void selected.completion.then(() => { settled = true; });
+    gate.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    loop.settleActive({ type: 'cancelled', steps: 0, reason: controller.signal.reason });
+    await steering;
+    expect((await selected.completion).state).toBe('cancelled');
+    expect((await next.launched)?.signal.aborted).toBe(false);
+    expect(loop.cancels).toHaveLength(1);
+    loop.settleActive();
+    await next.completion;
+  });
+
+  it('cancels a steered prompt by its original turn and never a later active prompt', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const controller = new AbortController();
+    const active = await prompt.enqueue({ id: 'active', message: message('first') });
+    const steered = await reservePrompt(prompt, 'steered').submit(message('steer'), undefined, undefined, undefined, controller.signal);
+    const turn = await active.launched;
+    await prompt.steer(['steered']);
+    controller.abort(new Error('stop steer'));
+    expect(loop.cancels).toEqual([{ turnId: turn!.id, reason: controller.signal.reason }]);
+    loop.settleActive({ type: 'cancelled', steps: 0, reason: controller.signal.reason });
+    expect((await steered.completion).state).toBe('cancelled');
+    const later = await prompt.enqueue({ id: 'later', message: message('later') });
+    expect(() => prompt.abort('steered')).toThrow(expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }));
+    expect(loop.cancels).toHaveLength(1);
+    expect((await later.launched)?.signal.aborted).toBe(false);
+    loop.settleActive();
+    await later.completion;
+  });
+
+  it.each(['prompt.accepted', 'prompt.enqueued'])('cancels during %s persistence without starting or recovering a prompt', async (type) => {
+    const { prompt, dispatcher, states, loop } = harness();
+    const dispatch = dispatcher.dispatch.bind(dispatcher);
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    vi.spyOn(dispatcher, 'dispatch').mockImplementation(async (event) => {
+      await dispatch(event);
+      if (event.type === type) {
+        entered.resolve();
+        await gate.promise;
+      }
+    });
+    const controller = new AbortController();
+    const submitted = reservePrompt(prompt, 'admission').submit(message('work'), undefined, undefined, undefined, controller.signal);
+    const rejected = expect(submitted).rejects.toMatchObject({ code: ErrorCodes.PROMPT_ALREADY_COMPLETED });
+    await entered.promise;
+    controller.abort(new Error('cancel admission'));
+    gate.resolve();
+    await rejected;
+    expect(prompt.list().pending).toEqual([]);
+    expect(prompt.list().active).toBeUndefined();
+    expect(loop.launches).toEqual([]);
+    expect(states.get(promptQueueKey).entries.size).toBe(0);
+  });
+
+  it('removes a completed prompt signal listener before the next prompt starts', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const controller = new AbortController();
+    const first = await reservePrompt(prompt, 'complete').submit(message('first'), undefined, undefined, undefined, controller.signal);
+    loop.settleActive();
+    await first.completion;
+    const next = await prompt.enqueue({ id: 'next', message: message('next') });
+    controller.abort(new Error('late stop'));
+    expect(loop.cancels).toEqual([]);
+    expect((await next.launched)?.signal.aborted).toBe(false);
+    loop.settleActive();
+    await next.completion;
+  });
+
   it('applies runtime controls only after a prompt passes its submit hook', async () => {
     const { prompt, plan, swarm, goal } = harness();
     goal.createGoal.mockImplementation(async ({ objective }) => {
@@ -718,6 +871,56 @@ describe('AgentPromptService', () => {
     ).toBe('existing objective');
     expect(goal.createGoal).not.toHaveBeenCalled();
     expect(loop.launches).toEqual([0]);
+  });
+
+  it.each([1, 3])('sends only the selected recovered prompt as a new turn from a %s-item held queue', async (count) => {
+    const { prompt, loop, dispatcher, states, profile, setActiveTasks } = harness({ manualTurnResult: true });
+    for (let index = 0; index < count; index++) {
+      const id = `recovered-${index}`;
+      await dispatcher.dispatch(new PromptEnqueued({
+        schemaVersion: 1,
+        promptId: id,
+        userMessageId: id,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        message: message(id),
+        execution: { profile: `profile-${index}` },
+        goalId: null,
+        alreadyMaterialized: false,
+        appendTiming: 'tasks_done',
+        revision: 0,
+        queueIndex: index,
+      }));
+    }
+    await dispatcher.hooks.onDidRestore.run({});
+    setActiveTasks([{ taskId: 'busy-child', description: 'agent', status: 'running', startedAt: 1, endedAt: null, kind: 'agent' }]);
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count });
+    expect(loop.status().activeTurnId).toBeUndefined();
+    const selectedId = `recovered-${count - 1}`;
+    await expect(prompt.steer([selectedId, 'missing'])).rejects.toMatchObject({ code: ErrorCodes.PROMPT_NOT_FOUND });
+    expect(loop.launches).toEqual([]);
+    expect(prompt.list().hold).toEqual({ reason: 'recovery', count });
+
+    const [selected] = await prompt.steer([selectedId]);
+    expect((await selected!.launched)?.id).toBe(0);
+    expect(loop.launches).toEqual([0]);
+    expect(profile.bind).toHaveBeenCalledWith(expect.objectContaining({ profile: `profile-${count - 1}` }));
+    expect(prompt.list().active?.id).toBe(selectedId);
+    expect(states.get(promptQueueKey).order).not.toContain(selectedId);
+    expect(prompt.list().pending).toHaveLength(count - 1);
+    expect(prompt.list().hold).toEqual(count === 1 ? undefined : { reason: 'recovery', count: count - 1 });
+
+    loop.settleActive();
+    await selected!.completion;
+    expect(loop.launches).toEqual([0]);
+    if (count > 1) {
+      const fresh = await prompt.enqueue({ id: 'fresh', message: message('new message') });
+      expect(fresh.state).toBe('pending');
+      expect(prompt.list().hold).toEqual({ reason: 'recovery', count });
+      setActiveTasks([]);
+      prompt.resumeRecoveredQueue();
+      await vi.waitFor(() => expect(loop.launches).toEqual([0, 1]));
+      expect(prompt.list().active?.id).toBe('recovered-0');
+    }
   });
 
   it('rebuilds and releases the observable recovery hold from durable prompt state', async () => {

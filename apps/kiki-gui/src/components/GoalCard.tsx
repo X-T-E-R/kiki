@@ -18,8 +18,9 @@
  *
  * RecoveryHoldBar — the cold-recovery gate: after a server restart a restored
  * queue stays parked until someone confirms; this slim bar above the queue
- * strip is that confirmation ("queue restored, resume?"), with a Later
- * dismiss that keeps the queue parked.
+ * strip is that confirmation ("queue restored, resume?"). The Later dismiss
+ * collapses the explanation into a compact one-line resume button — it keeps
+ * the queue parked and the entry visible until the hold actually clears.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -395,14 +396,34 @@ export function RecoveryHoldBar({
   count,
   pending,
   onConfirm,
-  onDismiss,
 }: {
   readonly count: number;
   readonly pending: boolean;
   readonly onConfirm: () => void;
-  readonly onDismiss: () => void;
 }) {
   const { t, tp } = useI18n();
+  const [compact, setCompact] = useState(false);
+  if (compact) {
+    return (
+      <div className="px-6 pb-1.5" data-recovery-hold-wrapper>
+        <div
+          data-recovery-hold-compact
+          role="status"
+          aria-label={t('sv.queueRecovered.title')}
+          className="anim-enter mx-auto flex max-w-[760px] items-center justify-end gap-2"
+        >
+          <button
+            type="button"
+            disabled={pending}
+            onClick={onConfirm}
+            className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          >
+            {t('sv.queueRecovered.confirm')}
+          </button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="px-6 pb-1.5" data-recovery-hold-wrapper>
       <section
@@ -429,7 +450,7 @@ export function RecoveryHoldBar({
           <button
             type="button"
             disabled={pending}
-            onClick={onDismiss}
+            onClick={() => setCompact(true)}
             className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.dismiss')}

@@ -17,13 +17,14 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { Service } from '#/_base/di/service';
 import { ErrorCodes, Error2 } from '#/errors';
 import { isUserActivatableSkillType, type SkillDefinition } from '#/app/skillCatalog/types';
-import { IAgentPromptService, reservePrompt, type PromptLaunchResult } from '#/agent/prompt/prompt';
+import { IAgentPromptService, reservePrompt, type PromptLaunchResult, type PromptReservation } from '#/agent/prompt/prompt';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentLoopService, type Turn } from '#/agent/loop/loop';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   IAgentSkillService,
+  skillPromptAdmission,
   type PromptSkillActivation,
   type PromptWithSkillsInput,
   type PromptWithSkillsResult,
@@ -119,6 +120,18 @@ export class AgentSkillService extends Service implements IAgentSkillService {
   }
 
   async promptWithSkills(input: PromptWithSkillsInput): Promise<PromptWithSkillsResult> {
+    return this[skillPromptAdmission](input, reservePrompt(this.prompt));
+  }
+
+  async [skillPromptAdmission](input: PromptWithSkillsInput, reservation: PromptReservation): Promise<PromptWithSkillsResult> {
+    try {
+      return await this.submitReserved(input, reservation);
+    } finally {
+      reservation.dispose();
+    }
+  }
+
+  private async submitReserved(input: PromptWithSkillsInput, reservation: PromptReservation): Promise<PromptWithSkillsResult> {
     if (input.input.length === 0) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'promptWithSkills requires a non-empty prompt');
     }
@@ -144,41 +157,36 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     for (const activation of prepared) {
       void this.recordActivation(activation.origin);
     }
-    const reservation = reservePrompt(this.prompt);
-    try {
-      const handle = await reservation.submit({
-        role: 'user',
-        content: [...prepared.map((activation) => activation.part), ...input.input],
-        toolCalls: [],
-        origin: {
-          kind: 'user',
-          skillActivations: prepared.map((activation) => activation.entry),
-        },
-      }, input.execution, input.deferredDisabledTools, input.appendTiming);
-      if (handle.state === 'pending') {
-        return {
-          prompt_id: handle.id,
-          created_at: handle.createdAt,
-          state: 'queued',
-          append_timing: handle.appendTiming ?? 'agent_idle',
-          revision: handle.revision ?? 0,
-        };
-      }
-      const turn = await handle.launched;
-      if (turn === undefined && handle.state !== 'blocked') {
-        throw new Error2(ErrorCodes.INTERNAL, 'promptWithSkills failed to launch a turn');
-      }
+    const handle = await reservation.submit({
+      role: 'user',
+      content: [...prepared.map((activation) => activation.part), ...input.input],
+      toolCalls: [],
+      origin: {
+        kind: 'user',
+        skillActivations: prepared.map((activation) => activation.entry),
+      },
+    }, input.execution, input.deferredDisabledTools, input.appendTiming);
+    if (handle.state === 'pending') {
       return {
-        turn_id: turn?.id,
         prompt_id: handle.id,
         created_at: handle.createdAt,
-        state: handle.state === 'blocked' ? 'blocked' : 'running',
+        state: 'queued',
         append_timing: handle.appendTiming ?? 'agent_idle',
         revision: handle.revision ?? 0,
       };
-    } finally {
-      reservation.dispose();
     }
+    const turn = await handle.launched;
+    if (turn === undefined && handle.state !== 'blocked') {
+      throw new Error2(ErrorCodes.INTERNAL, 'promptWithSkills failed to launch a turn');
+    }
+    return {
+      turn_id: turn?.id,
+      prompt_id: handle.id,
+      created_at: handle.createdAt,
+      state: handle.state === 'blocked' ? 'blocked' : 'running',
+      append_timing: handle.appendTiming ?? 'agent_idle',
+      revision: handle.revision ?? 0,
+    };
   }
 
   recordModelToolActivation(origin: SkillActivationOrigin): void {

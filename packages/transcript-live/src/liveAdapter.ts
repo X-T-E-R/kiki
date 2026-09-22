@@ -1303,9 +1303,10 @@ export class AgentTranscriptLiveAdapter {
     usage?: StepUsage;
     error?: string;
     reason?: string;
+    taskId?: string;
   }): TranscriptOperation[] {
     const at = event.time === undefined ? nowIso() : epochMsToIso(event.time);
-    const taskKey = this.subagentTaskIds.get(event.subagentId) ?? event.subagentId;
+    const taskKey = event.taskId ?? this.subagentTaskIds.get(event.subagentId) ?? event.subagentId;
     if (
       event.type === 'subagent.started' &&
       this.replayedSubagentSpawns.get(event.subagentId) === taskKey

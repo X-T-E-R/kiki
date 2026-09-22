@@ -234,13 +234,7 @@ describe('RecoveryHoldBar', () => {
     await act(async () => {
       root.render(
         <I18nProvider>
-          <RecoveryHoldBar
-            count={2}
-            pending={false}
-            onConfirm={() => {}}
-            onDismiss={() => {}}
-            {...props}
-          />
+          <RecoveryHoldBar count={2} pending={false} onConfirm={() => {}} {...props} />
         </I18nProvider>,
       );
     });
@@ -249,29 +243,47 @@ describe('RecoveryHoldBar', () => {
 
   it('announces the restored queue and confirms through onConfirm', async () => {
     const onConfirm = vi.fn();
-    const onDismiss = vi.fn();
-    const { container } = await renderBar({ count: 2, onConfirm, onDismiss });
+    const { container } = await renderBar({ count: 2, onConfirm });
     const bar = container.querySelector('[data-recovery-hold]')!;
     expect(bar.getAttribute('role')).toBe('status');
     expect(bar.textContent).toContain('2 queued messages were restored');
     await click(bar.querySelector('button:not([disabled])')!);
-    // The primary confirm is the first button.
     expect(onConfirm).toHaveBeenCalledTimes(1);
-    expect(onDismiss).not.toHaveBeenCalled();
   });
 
-  it('dismisses without confirming and locks both buttons while pending', async () => {
-    const onConfirm = vi.fn();
-    const onDismiss = vi.fn();
-    const { container } = await renderBar({ onConfirm, onDismiss });
+  it('locks both buttons while confirmation is pending', async () => {
+    const { container } = await renderBar({ pending: true });
     const buttons = container.querySelectorAll<HTMLButtonElement>('[data-recovery-hold] button');
-    await click(buttons[1]!);
-    expect(onDismiss).toHaveBeenCalledTimes(1);
-    expect(onConfirm).not.toHaveBeenCalled();
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) expect(button.disabled).toBe(true);
+  });
 
-    const pending = await renderBar({ pending: true });
-    for (const button of pending.container.querySelectorAll<HTMLButtonElement>('[data-recovery-hold] button')) {
-      expect(button.disabled).toBe(true);
-    }
+  it('keeps a usable resume entry after clicking Later without confirming the queue', async () => {
+    const onConfirm = vi.fn();
+    const { container, root } = await renderBar({ onConfirm });
+    await click(container.querySelectorAll('[data-recovery-hold] button')[1]!);
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-recovery-hold]')).toBeNull();
+    const compact = container.querySelector('[data-recovery-hold-compact]')!;
+    expect(compact.getAttribute('role')).toBe('status');
+    expect(compact.textContent).toContain('Resume queue');
+    expect(compact.textContent).not.toContain('Later');
+    await click(compact.querySelector('button')!);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.render(<I18nProvider><RecoveryHoldBar count={2} pending onConfirm={onConfirm} /></I18nProvider>);
+    });
+    const pendingButton = container.querySelector<HTMLButtonElement>('[data-recovery-hold-compact] button')!;
+    expect(pendingButton.disabled).toBe(true);
+    await click(pendingButton);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+
+    await act(async () => { root.render(null); });
+    await act(async () => {
+      root.render(<I18nProvider><RecoveryHoldBar count={1} pending={false} onConfirm={onConfirm} /></I18nProvider>);
+    });
+    expect(container.querySelector('[data-recovery-hold]')).not.toBeNull();
+    expect(container.querySelector('[data-recovery-hold-compact]')).toBeNull();
   });
 });

@@ -2148,6 +2148,95 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('keeps the newer run of one agent running when an earlier run completes with its own task id', () => {
+    const transcript = replay([
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-1',
+        subagentName: 'worker',
+        name: 'worker',
+        parentToolCallId: 'call-1',
+        description: 'First run',
+        runInBackground: false,
+        taskId: 'task-1',
+        time: 1_000,
+      },
+      { type: 'subagent.started', subagentId: 'child-1', taskId: 'task-1', time: 1_100 },
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-1',
+        subagentName: 'worker',
+        name: 'worker',
+        parentToolCallId: 'call-2',
+        description: 'Second run',
+        runInBackground: true,
+        taskId: 'task-2',
+        time: 2_000,
+      },
+      { type: 'subagent.started', subagentId: 'child-1', taskId: 'task-2', time: 2_100 },
+      {
+        type: 'subagent.completed',
+        subagentId: 'child-1',
+        resultSummary: 'first done',
+        taskId: 'task-1',
+        time: 3_000,
+      },
+    ]);
+
+    expect(transcript.getTask('task-1')).toMatchObject({
+      kind: 'subagent',
+      state: 'completed',
+      agentId: 'child-1',
+      description: 'First run',
+      resultSummary: 'first done',
+      startedAt: new Date(1_000).toISOString(),
+      endedAt: new Date(3_000).toISOString(),
+    });
+    expect(transcript.getTask('task-2')).toMatchObject({
+      kind: 'subagent',
+      state: 'running',
+      detached: true,
+      agentId: 'child-1',
+      description: 'Second run',
+      startedAt: new Date(2_000).toISOString(),
+    });
+    expect(transcript.getTask('task-2')?.endedAt).toBeUndefined();
+    expect(transcript.getTask('task-2')?.resultSummary).toBeUndefined();
+    expect(transcript.getTask('child-1')).toBeUndefined();
+  });
+
+  it('folds a task-less terminal event into the latest run (legacy producers)', () => {
+    const transcript = replay([
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-1',
+        description: 'First run',
+        runInBackground: false,
+        time: 1_000,
+      },
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-2',
+        description: 'Second run',
+        runInBackground: true,
+        taskId: 'task-2',
+        time: 2_000,
+      },
+      {
+        type: 'subagent.completed',
+        subagentId: 'child-1',
+        resultSummary: 'done',
+        time: 3_000,
+      },
+    ]);
+
+    expect(transcript.getTask('task-2')).toMatchObject({ state: 'completed', resultSummary: 'done' });
+  });
+
   it('anchors task references after the current turn and leaves context-free references unanchored', () => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);

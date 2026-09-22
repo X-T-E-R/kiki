@@ -48,6 +48,9 @@ export interface ISessionSubagentService {
 
   run(agentId: string, request: AgentRunRequest, opts: RunAgentOptions): Promise<AgentRunHandle>;
 
+  /** Track an admitted prompt run and defer idle release until its completion in the same agent-scope generation. */
+  trackPromptRun(agentId: string, completion: Promise<unknown>, signal: AbortSignal): AbortSignal;
+
   notifyAgentTaskStopped(context: AgentTaskStopHookContext): void;
 }
 

@@ -63,6 +63,10 @@ export class SubagentRosterTracker {
   private readonly disposedAtBySession = new Map<string, Map<string, number>>();
 
   apply(sessionId: string, event: Event): void {
+    if (event.type === 'subagent.started' || event.type === 'subagent.completed' || event.type === 'subagent.failed') {
+      const currentTaskId = this.taskIdsBySession.get(sessionId)?.get(event.subagentId);
+      if (event.taskId !== undefined && currentTaskId !== undefined && event.taskId !== currentTaskId) return;
+    }
     switch (event.type) {
       case 'subagent.spawned': {
         const roster = this.roster(sessionId);

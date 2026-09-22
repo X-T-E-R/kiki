@@ -59,6 +59,13 @@ export interface AgentLiveSource {
   readonly error?: string;
   readonly startedAt?: string;
   readonly endedAt?: string;
+  /**
+   * Disposal boundary of the run this source describes: an ISO time at or
+   * before which the run is stale, so it never counts as currently active.
+   * A snapshot row kept after its agent was disposed (`live: false`) supplies
+   * its own run start, letting a strictly later run revive the card.
+   */
+  readonly disposedAt?: string;
   readonly toolCallCount?: number;
   readonly toolCallCountKnown?: boolean;
   readonly toolCallCountAuthoritative?: boolean;
@@ -770,16 +777,7 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   const disposedAt = parseStatusTimestamp(entry.disposedAt);
   if (disposedAt !== undefined && (draft.disposedAt === undefined || disposedAt > draft.disposedAt)) {
     draft.disposedAt = disposedAt;
-    if (
-      draft.status !== undefined &&
-      isActiveStatus(draft.status) &&
-      (draft.statusStartedAt === undefined || draft.statusStartedAt <= disposedAt)
-    ) {
-      draft.status = 'unknown';
-      draft.statusAuthority = STATUS_AUTHORITY.roster;
-      clearRunFields(draft);
-      draft.busy = false;
-    }
+    invalidateDisposedRun(draft, disposedAt, STATUS_AUTHORITY.roster);
   }
   const status = normalizeStatus(entry.status);
   const accepted =
@@ -800,6 +798,21 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   draft.error = firstPresent(entry.error) ?? draft.error;
 }
 
+/**
+ * A disposal boundary invalidates the run it covers: that run is no longer
+ * live, so its active status drops to unknown and its run fields go away,
+ * while identity and counts survive. A run starting strictly after the
+ * boundary is a new generation and re-activates the node.
+ */
+function invalidateDisposedRun(draft: DraftNode, disposedAt: number, authority: number): void {
+  if (draft.status === undefined || !isActiveStatus(draft.status)) return;
+  if (draft.statusStartedAt !== undefined && draft.statusStartedAt > disposedAt) return;
+  draft.status = 'unknown';
+  draft.statusAuthority = authority;
+  clearRunFields(draft);
+  draft.busy = false;
+}
+
 function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
   draft.parentAgentId = draft.parentAgentId ?? cleanId(block.parentAgentId);
   draft.parentToolCallId = firstPresent(block.parentToolCallId) ?? draft.parentToolCallId;
@@ -812,6 +825,11 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
     block.toolCallCountKnown,
     block.toolCallCountAuthoritative,
   );
+  const disposedAt = parseStatusTimestamp(block.disposedAt);
+  if (disposedAt !== undefined && (draft.disposedAt === undefined || disposedAt > draft.disposedAt)) {
+    draft.disposedAt = disposedAt;
+    invalidateDisposedRun(draft, disposedAt, STATUS_AUTHORITY.live);
+  }
   const status = normalizeStatus(block.status);
   const accepted =
     status === undefined

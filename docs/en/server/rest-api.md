@@ -161,9 +161,11 @@ Endpoints are grouped by resource below. A `:{action}` suffix in a path is the a
 | --- | --- |
 | `GET /api/sessions/{session_id}/prompts` | Active and queued prompts |
 | `POST /api/sessions/{session_id}/prompts` | Submit a prompt (content-part array, optional model / permission-mode overrides) |
-| `POST /api/sessions/{session_id}/prompts:steer` | Steer queued prompts into the active turn |
-| `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | Abort a running prompt |
-| `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | Steer one queued prompt |
+| `POST /api/sessions/{session_id}/prompts:steer` | Send selected queued prompts now |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | Abort one queued, launching, running, or steered prompt |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | Send one queued prompt now |
+
+Sending now adds the selected prompts to the active turn, or starts them as new turns in queue order when no turn is active. After a restart, it bypasses the recovery hold only for the selected prompts; other restored prompts still wait for confirmation. Aborting a steered prompt cancels the turn it joined, not a later turn. Aborting an unknown or already settled prompt returns `40402`.
 
 ### Approvals and questions
 

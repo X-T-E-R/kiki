@@ -135,6 +135,34 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     }
   }
 
+  trackPromptRun(completion: Promise<unknown>, signal: AbortSignal): AbortSignal {
+    if (this.shuttingDown) {
+      throw new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is shutting down`);
+    }
+    if (this.broken !== undefined) {
+      throw this.broken instanceof Error
+        ? this.broken
+        : new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is broken`, { cause: this.broken });
+    }
+    signal.throwIfAborted();
+    const release = this.dispatch.reserveTurnExecution(this.agent.id, this.scope.parentAgentId);
+    const controller = new AbortController();
+    let resolveSettled = (): void => {};
+    const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+    const loop = this.loop;
+    const active: ActiveRun = {
+      controller,
+      unlink: linkAbortSignal(signal, controller),
+      settled,
+      resolveSettled: () => { release(); resolveSettled(); },
+      get turnId() { return loop.status().activeTurnId; },
+    };
+    this.runs.add(active);
+    this.cancelling = false;
+    void completion.then(() => this.finishRun(active), () => this.finishRun(active));
+    return controller.signal;
+  }
+
   status(): AgentExecutionStatus {
     if (this.broken !== undefined) return { state: 'broken' };
     if (this.runs.size > 0) {

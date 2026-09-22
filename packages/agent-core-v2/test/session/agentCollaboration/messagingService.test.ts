@@ -1522,6 +1522,7 @@ function agentHandle(
   };
   const execution = {
     _serviceBrand: undefined,
+    trackPromptRun: (_completion: Promise<unknown>, signal: AbortSignal) => signal,
     run: async (request: AgentRunRequest, runOptions: RunAgentOptions) => {
       if (options.executorId === undefined) throw new Error('unexpected run');
       const afterStartCallbacks: Array<() => Promise<void>> = [];
