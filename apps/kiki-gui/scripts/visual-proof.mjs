@@ -1473,10 +1473,15 @@ async function scenarioSettings() {
     .fill(`${FIXTURE_URL}/provider-mock/v1`);
   await page.locator('input[type="password"]:visible').fill('fixture-key');
   await page.locator(`button:has-text("${S.fetchModelsButton}"):visible`).click();
-  await page.waitForSelector('text=mock-pro', { timeout: 10_000 });
+  // Fetched models stay unsaved suggestions: they surface inside the model
+  // picker's listbox, not as page text, until one is picked and saved.
   const modelPicker = page.locator('#provider-model-0-id:visible');
   await modelPicker.click();
   await page.locator('[role="listbox"]:visible').waitFor({ timeout: 5000 });
+  await page
+    .locator('[role="listbox"]:visible')
+    .locator('text=mock-pro')
+    .waitFor({ timeout: 10_000 });
   await page.waitForTimeout(300);
   await shot('settings-providers-wizard');
   await resizeViewport(390);
