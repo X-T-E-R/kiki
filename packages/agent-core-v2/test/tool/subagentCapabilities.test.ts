@@ -138,19 +138,22 @@ describe('subagent capability final bindings', () => {
     expect(strict.find((target) => target.profile === 'alternate')).toBeUndefined();
   });
 
-  it('CAP-R1 rejects a normalized model default outside the effort allowlist and keeps the visible target', () => {
+  it('CAP-R1 keeps a normalized default outside the effort allowlist runnable with an advisory', () => {
     const [conflict] = project(helper({ allowedEfforts: ['high'] }));
     expect(conflict).toMatchObject({
-      profile: 'helper', defaultsAvailable: false, unavailableReasonCode: 'binding_constraints_unsatisfied',
+      profile: 'helper', defaultsAvailable: true, modelAlias: 'example', thinkingEffort: 'low',
+      bindingAdvisories: [expect.objectContaining({
+        code: 'effort_not_allowed',
+        effectiveValue: 'low',
+        valueSource: 'model-default',
+      })],
     });
-    expect(conflict).not.toHaveProperty('modelAlias');
-    expect(conflict).not.toHaveProperty('thinkingEffort');
     expect(project(helper({ allowedEfforts: ['low'] }))[0]).toMatchObject({
       defaultsAvailable: true, modelAlias: 'example', thinkingEffort: 'low',
     });
   });
 
-  it('CAP-R1 rejects a route effort that an always-thinking model cannot honor', () => {
+  it('CAP-R1 reports an always-thinking adjustment as a route pin advisory', () => {
     model = { ...model, alwaysThinking: true };
     const profile = helper();
     const route = (effort: string): ResolvedAgentProfileRoute => ({
@@ -160,10 +163,12 @@ describe('subagent capability final bindings', () => {
     });
     const conflict = project(profile, route('off')).find((item) => item.route !== undefined);
     expect(conflict).toMatchObject({
-      route: 'helper.route', defaultsAvailable: false, unavailableReasonCode: 'binding_constraints_unsatisfied',
+      route: 'helper.route', defaultsAvailable: true, thinkingEffort: 'low',
+      bindingAdvisories: [expect.objectContaining({
+        code: 'effort_pin_overridden',
+        ruleSource: 'route:helper.route.thinking_effort',
+      })],
     });
-    expect(conflict).not.toHaveProperty('modelAlias');
-    expect(conflict).not.toHaveProperty('thinkingEffort');
     expect(project(profile, route('low')).find((item) => item.route !== undefined)).toMatchObject({
       defaultsAvailable: true, thinkingEffort: 'low',
     });
@@ -177,7 +182,7 @@ describe('subagent capability final bindings', () => {
     expect(validate).toHaveBeenCalledWith('external', {}, { modelAlias: 'example', thinkingEffort: 'off' });
   });
 
-  it('CAP-R2 consumes the executor-normalized model alias and rechecks its final constraints', () => {
+  it('CAP-R2 consumes an executor-normalized alias and reports role-policy drift', () => {
     vi.spyOn(services.executors, 'validateBinding').mockImplementation((_id, _options, binding) => ({
       ok: true, binding: { ...binding, modelAlias: binding.modelAlias === 'vendor-short' ? 'vendor/model' : binding.modelAlias },
     }));
@@ -186,8 +191,22 @@ describe('subagent capability final bindings', () => {
     });
     const conflict = project(helper({ executor: 'external', modelAlias: 'vendor-short', allowedModels: ['vendor-short'] }))[0];
     expect(conflict).toMatchObject({
-      defaultsAvailable: false, unavailableReasonCode: 'binding_constraints_unsatisfied',
+      defaultsAvailable: true,
+      modelAlias: 'vendor/model',
+      bindingAdvisories: [expect.objectContaining({
+        code: 'model_not_allowed',
+        effectiveValue: 'vendor/model',
+        valueSource: 'executor-normalized',
+      })],
     });
-    expect(conflict).not.toHaveProperty('modelAlias');
+  });
+
+  it('keeps machine [subagent].deny_models as a hard capability failure', () => {
+    vi.spyOn(services.config, 'get').mockImplementation((section: string) =>
+      section === 'subagent' ? { denyModels: ['example'] } : undefined);
+    expect(project(helper())[0]).toMatchObject({
+      defaultsAvailable: false,
+      unavailableReasonCode: 'binding_constraints_unsatisfied',
+    });
   });
 });

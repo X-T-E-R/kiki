@@ -2,6 +2,8 @@
 import { nothing, original } from 'immer';
 import { z } from 'zod';
 
+import type { BindingAdvisory } from '@kiki/agent-profiles/bindingAdvisory';
+
 import type { EnvironmentDisclosureSnapshot } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { SpawnConstraints, SubagentLease } from '#/app/agentProfileCatalog/subagentLease';
 import { Event2 } from '#/app/event/event2';
@@ -36,6 +38,7 @@ export interface ProfileModelState {
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
   readonly thinkingEffortAdjusted?: boolean;
+  readonly bindingAdvisories?: readonly BindingAdvisory[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly systemPrompt: string;
@@ -70,6 +73,7 @@ const profileBindSchema = z.object({
   executorDescriptorRevision: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>(),
   thinkingEffortAdjusted: z.boolean().optional(),
+  bindingAdvisories: z.array(z.custom<BindingAdvisory>()).readonly().optional(),
   serviceTier: ServiceTierSchema.optional(),
   requestParams: RequestParamsSchema.readonly().optional(),
   systemPrompt: z.string(),
@@ -104,6 +108,7 @@ const configUpdateSchema = z.object({
   thinkingEffort: z.custom<ThinkingEffort>().optional(),
   thinkingLevel: z.custom<ThinkingEffort>().optional(),
   thinkingEffortAdjusted: z.boolean().optional(),
+  bindingAdvisories: z.array(z.custom<BindingAdvisory>()).readonly().optional(),
   allowParentNotify: z.boolean().optional(),
   systemPrompt: z.string().optional(),
   environmentDisclosure: z.custom<EnvironmentDisclosureSnapshot>().optional(),
@@ -143,6 +148,7 @@ export interface ToolsResetActiveTools extends z.infer<typeof toolsResetActiveTo
 export interface WarningIssuedPayload {
   readonly message: string;
   readonly code?: string;
+  readonly advisory?: BindingAdvisory;
 }
 
 export class WarningIssued extends Event2<WarningIssuedPayload> {
@@ -175,6 +181,7 @@ export const profileKey = defineState(
     executorDescriptorRevision: e.executorDescriptorRevision,
     thinkingLevel: e.thinkingEffort,
     thinkingEffortAdjusted: e.thinkingEffortAdjusted ?? false,
+    bindingAdvisories: e.bindingAdvisories ?? [],
     serviceTier: e.serviceTier,
     requestParams: e.requestParams,
     systemPrompt: e.systemPrompt,
@@ -207,6 +214,9 @@ export const profileKey = defineState(
     }
     if (e.thinkingEffortAdjusted !== undefined) {
       s.thinkingEffortAdjusted = e.thinkingEffortAdjusted;
+    }
+    if (e.bindingAdvisories !== undefined) {
+      s.bindingAdvisories = structuredClone(e.bindingAdvisories) as typeof s.bindingAdvisories;
     }
     if (e.allowParentNotify !== undefined) {
       s.allowParentNotify = e.allowParentNotify;

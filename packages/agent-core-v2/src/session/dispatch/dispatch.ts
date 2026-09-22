@@ -2,7 +2,7 @@ import type { Event } from '#/_base/event';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
-import type { ProfileData } from '#/agent/profile/profile';
+import type { BindingSelectionInput, ProfileData } from '#/agent/profile/profile';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import type { Runtime } from '#/runtime/runtime';
@@ -12,6 +12,7 @@ import type { AgentRunHandle, AgentRunRequest } from '#/session/subagent/subagen
 export interface DispatchResolvedBinding {
   readonly model: string;
   readonly thinking?: string;
+  readonly selection?: BindingSelectionInput;
 }
 
 export interface DispatchLaunchInput {
@@ -82,6 +83,7 @@ export interface DispatchChild {
   readonly thinkingEffortSource?: ProfileData['thinkingEffortSource'];
   readonly routeDetached?: boolean;
   readonly profileSource?: ProfileData['profileSource'];
+  readonly bindingAdvisories?: ProfileData['bindingAdvisories'];
   readonly dispatchDecision?: ProfileData['dispatchDecision'];
   readonly effectiveProfile?: AgentProfile;
   readonly meta?: AgentMeta;

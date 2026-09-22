@@ -1,3 +1,5 @@
+import type { BindingAdvisory } from '@kiki/agent-profiles/bindingAdvisory';
+
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 import { isAbortError } from '#/_base/utils/abort';
@@ -23,6 +25,7 @@ export type SubagentHandle = {
   readonly thinkingEffortSource?: import('#/agent/profile/profile').ThinkingEffortSource;
   readonly routeDetached?: boolean;
   readonly profileSource?: import('#/agent/profile/profile').ProfileBindingSource;
+  readonly bindingAdvisories?: readonly BindingAdvisory[];
   readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
   readonly parentNotify?: 'enabled' | 'disabled';
   readonly completion: Promise<SubagentCompletion>;

@@ -6,6 +6,7 @@ export * from './agentProfileContribution';
 export * from './agentProfileFromFile';
 export * from './agentProfileRoute';
 export * from './applySubagentLease';
+export * from './bindingAdvisory';
 export * from './agentRouteFile';
 export * from './contribution';
 export * from './agentSourceGraph';

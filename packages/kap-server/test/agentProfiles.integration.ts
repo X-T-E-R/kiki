@@ -460,10 +460,12 @@ describe('GET /api/agents', () => {
       const body = await response.json() as Envelope<{ targets: Array<{ profile: string; route?: string; defaults_available: boolean; model_alias?: string; model_source?: string; thinking_effort?: string; unavailable_reason?: string }> }>;
       expect(body.code).toBe(0);
       expect(body.data.targets.map((target) => target.route ?? target.profile).toSorted()).toEqual([
+        'blocked-helper',
         'explore',
         'general',
         'hidden-helper',
         'leased-helper',
+        'leased-helper.denied',
         'leased-helper.stub',
         'private-helper',
         'unbound-helper',

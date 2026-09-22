@@ -8,9 +8,9 @@ import { listAvailableSubagentTargets, resolveSubagentTarget, type SubagentDispa
 import type { IConfigService } from '#/app/config/config';
 import type { IModelService } from '#/kosong/model/model';
 
-import { assertBoundModelAllowed } from './configSection';
-import { roleConstraintsFromProfile } from './modelConstraints';
-import { assertProfileRouteBinding } from './profileRouteBinding';
+import { assertSubagentModelNotDenied } from './configSection';
+import { roleConstraintsFromProfile, roleModelRecommended } from './modelConstraints';
+import { profileRouteBindingRecommended } from './profileRouteBinding';
 
 export function projectSubagentModelCatalog(
   catalog: SubagentDispatchCatalog,
@@ -64,10 +64,12 @@ export function projectSubagentModelCatalog(
       ...(profile.allowedModels ?? []),
       ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
     ].filter((alias): alias is string => alias !== undefined);
+    const constraints = roleConstraintsFromProfile(profile);
     const allowedModels = [...new Set(candidates)].filter((alias) => {
+      if (!profileRouteBindingRecommended(route, { modelAlias: alias }, resolver)) return false;
+      if (!roleModelRecommended(alias, constraints, native ? models : undefined)) return false;
       try {
-        assertProfileRouteBinding(route, { modelAlias: alias }, resolver);
-        assertBoundModelAllowed(config, alias, roleConstraintsFromProfile(profile), native ? models : undefined);
+        assertSubagentModelNotDenied(config, alias, native ? models : undefined);
         return true;
       } catch {
         return false;

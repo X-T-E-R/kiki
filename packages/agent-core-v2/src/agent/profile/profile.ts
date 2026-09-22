@@ -1,3 +1,4 @@
+import type { BindingAdvisory, BindingValueSource } from '@kiki/agent-profiles/bindingAdvisory';
 import type {
   ExecutorBinding,
   ExecutorValidationResult,
@@ -66,6 +67,7 @@ export interface ProfileData extends AgentConfigData {
   readonly thinkingEffortSource?: ThinkingEffortSource;
   readonly routeDetached?: boolean;
   readonly profileSource?: ProfileBindingSource;
+  readonly bindingAdvisories?: readonly BindingAdvisory[];
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
   readonly executorId?: string;
@@ -97,6 +99,7 @@ export type ProfileUpdateData = Partial<{
   profileName: string;
   thinkingLevel: string;
   thinkingEffortAdjusted: boolean;
+  bindingAdvisories: readonly BindingAdvisory[];
   allowParentNotify: boolean;
   systemPrompt: string;
   environmentDisclosure: EnvironmentDisclosureSnapshot;
@@ -121,6 +124,7 @@ export interface ProfileBindingSnapshot {
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
   readonly thinkingEffortAdjusted?: boolean;
+  readonly bindingAdvisories?: readonly BindingAdvisory[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly systemPrompt: string;
@@ -166,6 +170,21 @@ export interface ProfileSetModelResult {
   readonly providerName?: string | undefined;
 }
 
+export interface BindingSelectionValue {
+  readonly source: BindingValueSource;
+  readonly requestedValue?: string;
+}
+
+export interface BindingSelectionInput {
+  readonly model: BindingSelectionValue;
+  readonly thinking?: BindingSelectionValue;
+}
+
+export interface BindingConstraintInput {
+  readonly constraints: SpawnConstraints | SubagentLease;
+  readonly ruleSource: string;
+}
+
 export interface BindAgentInput {
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
@@ -175,6 +194,7 @@ export interface BindAgentInput {
   readonly resolvedRoute?: ResolvedAgentProfileRoute;
   readonly model?: string;
   readonly thinking?: string;
+  readonly bindingSelection?: BindingSelectionInput;
   readonly strictThinking?: boolean;
   readonly inheritedUserToolNames?: readonly string[];
   readonly delegationPosition?: 'main' | 'sub' | 'independent';
@@ -198,8 +218,9 @@ export interface IAgentProfileService {
     readonly thinkingEffort?: string;
     readonly allowModelChange?: boolean;
     readonly allowParentNotify?: boolean;
-    readonly callerConstraints?: readonly SpawnConstraints[];
+    readonly callerConstraints?: readonly (BindingConstraintInput | SpawnConstraints)[];
   }): Promise<() => void>;
+  publishBindingAdvisories(): void;
   republishStatus(): void;
   getModel(): string;
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void;

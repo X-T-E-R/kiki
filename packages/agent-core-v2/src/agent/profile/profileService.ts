@@ -1,3 +1,7 @@
+import {
+  bindingAdvisoryKey,
+  type BindingAdvisory,
+} from '@kiki/agent-profiles/bindingAdvisory';
 import type {
   ExecutorBinding,
   ExecutorValidationResult,
@@ -106,7 +110,6 @@ import {
   applyLease,
   applySpawnPolicy,
   intersectSpawnPolicy,
-  spawnConstraintOrigin,
 } from '#/app/agentProfileCatalog/applySubagentLease';
 import { resolveSnapshotProfileDefinition } from '#/app/agentProfileCatalog/subagentDispatch';
 import type {
@@ -118,12 +121,11 @@ import {
   resolveMainThinkingCandidate,
 } from '#/agent/profile/mainModelCandidate';
 import {
-  humanProfileDeviations,
+  pinBindingAdvisory,
+  roleBindingAdvisories,
   roleConstraintsFromProfile,
-  routeModelOverrideMessage,
-  routeThinkingOverrideMessage,
 } from '#/session/subagent/modelConstraints';
-import { assertBoundModelAllowed } from '#/session/subagent/configSection';
+import { assertSubagentModelNotDenied } from '#/session/subagent/configSection';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -135,6 +137,8 @@ import {
 import type {
   ApplyProfileOptions,
   BindAgentInput,
+  BindingConstraintInput,
+  BindingSelectionValue,
   ProfileBindingSnapshot,
   ProfileData,
   ProfileModelContext,
@@ -169,6 +173,7 @@ export interface WarningEvent {
   readonly type: 'warning';
   readonly message: string;
   readonly code?: string;
+  readonly advisory?: BindingAdvisory;
 }
 
 function describeInactiveToolPattern(
@@ -223,7 +228,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private activeProfile: ResolvedAgentProfile | undefined;
   private activeProfileDefinitionId: string | undefined;
-  private readonly emittedDeviationWarnings = new Set<string>();
+  private readonly emittedBindingAdvisories = new Set<string>();
   private delegationPosition: DelegationPosition = 'main';
   private promptFieldSnapshot: ResolvedPromptFieldOverrides = { values: {}, fields: [] };
 
@@ -398,6 +403,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         executorDescriptorRevision: snapshot.executorDescriptorRevision,
         thinkingEffort: snapshot.thinkingLevel,
         thinkingEffortAdjusted: snapshot.thinkingEffortAdjusted,
+        bindingAdvisories: snapshot.bindingAdvisories,
         serviceTier: snapshot.serviceTier,
         requestParams:
           snapshot.requestParams === undefined ? undefined : { ...snapshot.requestParams },
@@ -565,41 +571,44 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const thinkingEffortAdjusted =
       normalizedRequestedThinking !== undefined && normalizedRequestedThinking !== thinkingLevel;
 
-    if (requested.source === 'input' || input.thinking !== undefined) {
-      for (const message of humanProfileDeviations({
-        model: alias,
-        thinking: thinkingLevel,
-        constraints: roleConstraintsFromProfile(
-          profile,
-          spawnConstraintOrigin(input.lease, input.spawnPolicy),
-        ),
-        models: this.models,
-        profileName: selection.baseProfile.name,
-        checkModel: requested.source === 'input',
-        checkThinking: input.thinking !== undefined,
-      })) {
-        this.emitDeviationWarning(message);
-      }
-    }
-
     if (this.delegationPosition !== 'main') {
-      assertBoundModelAllowed(
-        this.config,
-        alias,
-        roleConstraintsFromProfile(
-          profile,
-          spawnConstraintOrigin(input.lease, input.spawnPolicy),
-        ),
-        this.models,
-        thinkingLevel,
-      );
+      assertSubagentModelNotDenied(this.config, alias, this.models);
     }
-    this.validatedForcedThinkingEffort(
-      thinkingLevel,
-      model,
+    const forcedThinking = this.validatedForcedThinkingEffort(thinkingLevel, model, alias);
+    const modelSelection = input.bindingSelection?.model ?? {
+      source: requested.source === 'input' ? 'dispatch-explicit'
+        : requested.source === 'route' ? 'route-default'
+          : requested.source === 'default' ? 'config-default' : 'profile-default',
+      requestedValue: requestedAlias,
+    };
+    const profileModelThinking = resolveModelProfileEntry(
+      profile.modelProfiles,
       alias,
-      roleConstraintsFromProfile(profile, spawnConstraintOrigin(input.lease, input.spawnPolicy)),
-    );
+      (id) => this.models.resolveId(id),
+    )?.thinkingEffort;
+    const baseThinkingSelection = input.bindingSelection?.thinking ?? {
+      source: input.thinking !== undefined ? 'dispatch-explicit'
+        : selection.route?.lockedThinkingEffort !== undefined ? 'route-default'
+          : profileModelThinking !== undefined ? 'model-profile-default'
+            : requestedThinking !== undefined ? 'profile-default' : 'model-default',
+      requestedValue: requestedThinking,
+    };
+    const thinkingSelection = forcedThinking === undefined ? baseThinkingSelection : {
+      source: 'environment-forced' as const,
+      requestedValue: thinkingLevel,
+    };
+    const bindingAdvisories = this.delegationPosition === 'main' ? [] : this.collectBindingAdvisories({
+      profile: selection.baseProfile,
+      profileName: selection.baseProfile.name,
+      route: selection.route,
+      lease: input.lease,
+      spawnPolicy: input.spawnPolicy,
+      model: alias,
+      thinking: forcedThinking ?? thinkingLevel,
+      modelSelection,
+      thinkingSelection,
+      models: this.models,
+    });
 
     this.assertProfileToolPatterns(profile, input.inheritedUserToolNames);
     this.activeProfile = profile;
@@ -622,6 +631,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorDescriptorRevision: 'native',
       thinkingEffort: thinkingLevel,
       thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
+      bindingAdvisories,
       serviceTier: profile.serviceTier,
       requestParams:
         profile.requestParams === undefined ? undefined : { ...profile.requestParams },
@@ -696,11 +706,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         `model is required to bind external executor profile "${selection.baseProfile.name}"`,
       );
     }
-    const requestedThinking = resolveMainThinkingCandidate({
+    const configuredThinking = resolveMainThinkingCandidate({
       inputThinking: input.thinking,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(profile, requestedAlias, (id) => id),
-    }) ?? 'off';
+    });
+    const requestedThinking = configuredThinking ?? 'off';
     const validated = this.requireValidBinding(
       this.executors.validateBinding(executor.descriptor.id, executor.options, {
         modelAlias: requestedAlias,
@@ -723,16 +734,39 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const context = await this.buildSystemPromptContext(profile);
     this.assertRouteBindable(selection.route?.id);
     const assembled = await this.assembleBoundSystemPrompt(profile, context, alias);
-    assertBoundModelAllowed(
-      this.config,
-      alias,
-      roleConstraintsFromProfile(
-        profile,
-        spawnConstraintOrigin(input.lease, input.spawnPolicy),
-      ),
-      undefined,
-      thinkingLevel,
-    );
+    assertSubagentModelNotDenied(this.config, alias);
+    const profileModelThinking = resolveModelProfileEntry(profile.modelProfiles, alias, (id) => id)?.thinkingEffort;
+    const baseModelSelection = input.bindingSelection?.model ?? {
+      source: requested.source === 'input' ? 'dispatch-explicit'
+        : requested.source === 'route' ? 'route-default' : 'profile-default',
+      requestedValue: requestedAlias,
+    };
+    const modelSelection = alias === requestedAlias ? baseModelSelection : {
+      source: 'executor-normalized' as const,
+      requestedValue: requestedAlias,
+    };
+    const baseThinkingSelection = input.bindingSelection?.thinking ?? {
+      source: input.thinking !== undefined ? 'dispatch-explicit'
+        : selection.route?.lockedThinkingEffort !== undefined ? 'route-default'
+          : profileModelThinking !== undefined ? 'model-profile-default'
+            : configuredThinking !== undefined ? 'profile-default' : 'model-default',
+      requestedValue: requestedThinking,
+    };
+    const thinkingSelection = thinkingLevel === requestedThinking ? baseThinkingSelection : {
+      source: 'executor-normalized' as const,
+      requestedValue: requestedThinking,
+    };
+    const bindingAdvisories = this.collectBindingAdvisories({
+      profile: selection.baseProfile,
+      profileName: selection.baseProfile.name,
+      route: selection.route,
+      lease: input.lease,
+      spawnPolicy: input.spawnPolicy,
+      model: alias,
+      thinking: thinkingLevel,
+      modelSelection,
+      thinkingSelection,
+    });
     this.activeProfile = profile;
     this.activeProfileDefinitionId = selection.baseProfile.definitionId;
     this.activeToolNamesOverlay = undefined;
@@ -756,6 +790,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorDescriptorRevision: executor.descriptor.revision,
       thinkingEffort: thinkingLevel,
       thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
+      bindingAdvisories,
       systemPrompt: assembled.text,
       environmentDisclosure: assembled.environment,
       agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text),
@@ -829,14 +864,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         { details: { previousModel: previous.modelAlias, requestedModel: model, requiredParameter: 'allow_model_change' } });
     }
     const constraints = previous.boundProfile ?? this.resolveActiveProfile();
-    if (constraints === undefined && (changedModel || thinking !== previous.thinkingLevel)) {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role constraints cannot be resolved; resume without changing the binding.');
+    if (constraints === undefined && changedModel) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role constraints cannot be resolved; resume without changing the model.');
     }
-    const resolver = this.isExternalExecutor ? undefined : this.models;
-    assertBoundModelAllowed(this.config, model, constraints, resolver, thinking);
-    for (const ceiling of input.callerConstraints ?? []) {
-      assertBoundModelAllowed(this.config, model, ceiling, resolver, thinking);
-    }
+    assertSubagentModelNotDenied(this.config, model, this.isExternalExecutor ? undefined : this.models);
     if (this.isExternalExecutor) {
       if (changedModel || thinking !== previous.thinkingLevel) {
         throw new Error2(ErrorCodes.REQUEST_INVALID,
@@ -846,6 +877,40 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     } else {
       this.assertThinkingEffortSupported(thinking, this.modelCatalog.get(model), model);
     }
+    const forcedThinking = this.isExternalExecutor
+      ? undefined
+      : this.validatedForcedThinkingEffort(thinking as ThinkingEffort, this.modelCatalog.get(model), model);
+    const modelSelection = {
+      source: input.modelAlias === undefined ? 'resume-existing' as const : 'dispatch-explicit' as const,
+      requestedValue: input.modelAlias ?? previous.modelAlias,
+    };
+    const baseThinkingSelection = {
+      source: input.thinkingEffort === undefined ? 'resume-existing' as const : 'dispatch-explicit' as const,
+      requestedValue: input.thinkingEffort ?? previous.thinkingLevel,
+    };
+    const thinkingSelection = forcedThinking === undefined ? baseThinkingSelection : {
+      source: 'environment-forced' as const,
+      requestedValue: thinking,
+    };
+    const route = previous.routeId === undefined ? undefined : {
+      id: previous.routeId,
+      lockedModelAlias: previous.lockedModelAlias,
+      lockedThinkingEffort: previous.lockedThinkingEffort,
+    };
+    const bindingAdvisories = this.collectBindingAdvisories({
+      profile: constraints,
+      profileName: previous.profileName ?? 'saved',
+      profileIncludesOverlays: true,
+      route,
+      lease: previous.appliedLease,
+      spawnPolicy: previous.spawnPolicy,
+      additionalConstraints: input.callerConstraints,
+      model,
+      thinking: forcedThinking ?? thinking,
+      modelSelection,
+      thinkingSelection,
+      models: this.isExternalExecutor ? undefined : this.models,
+    });
     let systemPrompt: string | undefined;
     let environmentDisclosure: EnvironmentDisclosureSnapshot | undefined;
     if (changedModel) {
@@ -867,17 +932,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         || current.allowParentNotify !== previous.allowParentNotify) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'The agent binding changed during resume admission. Retry against its current binding.');
       }
-      assertBoundModelAllowed(this.config, model, constraints, resolver, thinking);
-      if (changedModel || thinking !== previous.thinkingLevel || changedParentNotify) {
+      assertSubagentModelNotDenied(this.config, model, this.isExternalExecutor ? undefined : this.models);
+      const advisoriesChanged = !bindingAdvisoriesEqual(previous.bindingAdvisories, bindingAdvisories);
+      if (changedModel || thinking !== previous.thinkingLevel || changedParentNotify || advisoriesChanged) {
         this.update({
           modelAlias: model,
           thinkingLevel: thinking,
           thinkingEffortAdjusted,
+          bindingAdvisories: advisoriesChanged ? bindingAdvisories : undefined,
           allowParentNotify: changedParentNotify ? allowParentNotify : undefined,
           systemPrompt,
           environmentDisclosure,
         });
       }
+      this.publishBindingAdvisories();
     };
   }
 
@@ -885,53 +953,32 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.isExternalExecutor) {
       const validated = this.requireValidBinding(this.validateBinding({ modelAlias: alias }));
       const externalAlias = validated.modelAlias!;
-      if (
-        this.profileState.lockedModelAlias !== undefined &&
-        externalAlias !== this.profileState.lockedModelAlias
-      ) {
-        this.emitDeviationWarning(
-          routeModelOverrideMessage(
-            this.routeId,
-            this.profileState.lockedModelAlias,
-            externalAlias,
-          ),
-        );
-      }
-      if (this.modelAlias !== externalAlias) {
+      if (this.delegationPosition !== 'main') assertSubagentModelNotDenied(this.config, externalAlias);
+      const changed = this.modelAlias !== externalAlias;
+      if (changed) {
         this.update({ modelAlias: externalAlias });
         this.telemetry.track2('model_switch', { model: externalAlias });
       }
-      if (this.activeProfile !== undefined) {
-        for (const message of humanProfileDeviations({
-          model: externalAlias,
-          thinking: this.thinkingLevel,
-          constraints: roleConstraintsFromProfile(this.activeProfile),
-          profileName: this.activeProfile.name,
-          checkThinking: false,
-        })) {
-          this.emitDeviationWarning(message);
-        }
-      }
+      this.refreshCurrentBindingAdvisories(
+        { source: validated.modelAlias === alias ? 'runtime-explicit' : 'executor-normalized', requestedValue: alias },
+        { source: 'resume-existing', requestedValue: this.thinkingLevel },
+      );
       return { model: externalAlias };
     }
     const canonicalAlias = this.resolveModelId(alias);
-    if (
-      this.profileState.lockedModelAlias !== undefined &&
-      canonicalAlias !== this.profileState.lockedModelAlias
-    ) {
-      this.emitDeviationWarning(
-        routeModelOverrideMessage(
-          this.routeId,
-          this.profileState.lockedModelAlias,
-          canonicalAlias,
-        ),
-      );
+    if (this.delegationPosition !== 'main') {
+      assertSubagentModelNotDenied(this.config, canonicalAlias, this.models);
     }
     const model = this.modelCatalog.get(canonicalAlias);
+    const changed = this.modelAlias !== canonicalAlias;
     if (this.profileName === undefined && this.routeId === undefined) {
-      await this.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: canonicalAlias });
+      await this.bind({
+        profile: DEFAULT_AGENT_PROFILE_NAME,
+        model: canonicalAlias,
+        bindingSelection: { model: { source: 'runtime-explicit', requestedValue: alias } },
+      });
       this.telemetry.track2('model_switch', { model: canonicalAlias });
-    } else if (this.modelAlias !== canonicalAlias) {
+    } else if (changed) {
       const previousAlias = this.modelAlias;
       this.update({ modelAlias: canonicalAlias });
       this.telemetry.track2('model_switch', { model: canonicalAlias });
@@ -944,18 +991,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         await this.refreshSystemPrompt();
       }
     }
-    if (this.activeProfile !== undefined) {
-      for (const message of humanProfileDeviations({
-        model: canonicalAlias,
-        thinking: this.thinkingLevel,
-        constraints: roleConstraintsFromProfile(this.activeProfile),
-        models: this.models,
-        profileName: this.activeProfile.name,
-        checkThinking: false,
-      })) {
-        this.emitDeviationWarning(message);
-      }
-    }
+    this.refreshCurrentBindingAdvisories(
+      { source: 'runtime-explicit', requestedValue: alias },
+      changed
+        ? { source: 'model-default', requestedValue: this.thinkingLevel }
+        : { source: 'resume-existing', requestedValue: this.thinkingLevel },
+    );
     return {
       model: canonicalAlias,
       providerName: model.providerName,
@@ -964,41 +1005,25 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   setThinking(level: string): void {
     const external = this.isExternalExecutor;
+    const modelAlias = this.modelAlias;
+    if (modelAlias !== undefined && this.delegationPosition !== 'main') {
+      assertSubagentModelNotDenied(this.config, modelAlias, external ? undefined : this.models);
+    }
     let effort: string;
     if (external) {
       const validated = this.requireValidBinding(this.validateBinding({ thinkingEffort: level }));
       effort = validated.thinkingEffort!;
     } else {
-      this.assertThinkingEffortSupported(level, this.tryResolveRawModel(), this.modelAlias ?? '');
+      this.assertThinkingEffortSupported(level, this.tryResolveRawModel(), modelAlias ?? '');
       effort = normalizeRequestedThinkingEffort(level) ?? level;
-    }
-    if (
-      this.profileState.lockedThinkingEffort !== undefined &&
-      effort !== this.profileState.lockedThinkingEffort
-    ) {
-      this.emitDeviationWarning(
-        routeThinkingOverrideMessage(
-          this.routeId,
-          this.profileState.lockedThinkingEffort,
-          effort,
-        ),
-      );
     }
     const previousEffort = this.thinkingLevel;
     const requestedEffort = normalizeRequestedThinkingEffort(level) ?? level.trim().toLowerCase();
     this.update({ thinkingLevel: effort, thinkingEffortAdjusted: requestedEffort !== effort });
-    if (this.activeProfile !== undefined && this.modelAlias !== undefined) {
-      for (const message of humanProfileDeviations({
-        model: this.modelAlias,
-        thinking: effort,
-        constraints: roleConstraintsFromProfile(this.activeProfile),
-        models: external ? undefined : this.models,
-        profileName: this.activeProfile.name,
-        checkModel: false,
-      })) {
-        this.emitDeviationWarning(message);
-      }
-    }
+    this.refreshCurrentBindingAdvisories(
+      { source: 'resume-existing', requestedValue: modelAlias },
+      { source: external && effort !== requestedEffort ? 'executor-normalized' : 'runtime-explicit', requestedValue: level },
+    );
     if (effort !== previousEffort) {
       this.telemetry.track2('thinking_toggle', {
         enabled: effort !== 'off',
@@ -1016,7 +1041,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const normalized = normalizeRequestedThinkingEffort(requested);
     const efforts = model?.supportEfforts ?? [];
     const declared = normalized === 'on' || normalized === 'off' ||
-      (efforts.length === 0 ? !this.strictThinkingValidation(model) : efforts.includes(normalized ?? ''));
+      efforts.length === 0 || efforts.includes(normalized ?? '');
     if (normalized !== undefined && declared && this.supportsThinkingEffort(normalized, model)) return;
     const supported = efforts.length === 0 ? 'off' : ['off', ...efforts].join(', ');
     throw new ProfileError(
@@ -1149,15 +1174,169 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     );
   }
 
-  private emitDeviationWarning(message: string): void {
-    if (this.emittedDeviationWarnings.has(message)) return;
-    this.emittedDeviationWarnings.add(message);
-    void this.dispatcher.dispatch(
-      new WarningIssued({
-        code: 'profile-constraint-override',
-        message,
+  publishBindingAdvisories(): void {
+    for (const advisory of this.profileState.bindingAdvisories ?? []) {
+      const key = bindingAdvisoryKey(advisory);
+      if (this.emittedBindingAdvisories.has(key)) continue;
+      this.emittedBindingAdvisories.add(key);
+      void this.dispatcher.dispatch(
+        new WarningIssued({
+          code: 'profile-binding-advisory',
+          message: advisory.message,
+          advisory,
+        }),
+      );
+    }
+  }
+
+  private collectBindingAdvisories(input: {
+    readonly profile?: ResolvedAgentProfile | import('./boundProfile').BoundProfile;
+    readonly profileName: string;
+    readonly profileIncludesOverlays?: boolean;
+    readonly route?: {
+      readonly id: string;
+      readonly lockedModelAlias?: string;
+      readonly lockedThinkingEffort?: string;
+    };
+    readonly lease?: SubagentLease;
+    readonly spawnPolicy?: SpawnConstraints;
+    readonly additionalConstraints?: readonly (BindingConstraintInput | SpawnConstraints)[];
+    readonly model: string;
+    readonly thinking: string;
+    readonly modelSelection: BindingSelectionValue;
+    readonly thinkingSelection: BindingSelectionValue;
+    readonly models?: IModelService;
+  }): readonly BindingAdvisory[] {
+    const layers: BindingConstraintInput[] = [];
+    if (input.profile !== undefined) {
+      const profileConstraints = input.profileIncludesOverlays === true
+        ? roleConstraintsFromProfile(input.profile)
+        : roleConstraintsFromProfile({
+            ...input.profile,
+            modelProfiles: input.lease?.modelProfiles === undefined
+              ? input.profile.modelProfiles
+              : undefined,
+          });
+      layers.push({
+        constraints: profileConstraints,
+        ruleSource: input.profile.fileDefinition === undefined
+          ? `profile:${input.profileName}`
+          : `profile-file:${input.profile.sourcePath ?? input.profileName}`,
+      });
+    }
+    if (input.profileIncludesOverlays !== true && input.lease !== undefined) {
+      layers.push({
+        constraints: input.lease,
+        ruleSource: `caller-lease:${input.profileName}`,
+      });
+    }
+    if (input.profileIncludesOverlays !== true && input.spawnPolicy !== undefined) {
+      layers.push({
+        constraints: input.spawnPolicy,
+        ruleSource: 'caller-spawn-constraints',
+      });
+    }
+    for (const [index, entry] of (input.additionalConstraints ?? []).entries()) {
+      layers.push('constraints' in entry
+        ? entry
+        : { constraints: entry, ruleSource: `caller-constraint:${String(index + 1)}` });
+    }
+    const advisories: BindingAdvisory[] = layers.flatMap((layer) =>
+      roleBindingAdvisories({
+        model: input.model,
+        requestedModel: input.modelSelection.requestedValue,
+        thinking: input.thinking,
+        requestedThinking: input.thinkingSelection.requestedValue,
+        constraints: layer.constraints,
+        models: input.models,
+        ruleSource: layer.ruleSource,
+        modelValueSource: input.modelSelection.source,
+        thinkingValueSource: input.thinkingSelection.source,
       }),
     );
+    if (input.route?.lockedModelAlias !== undefined) {
+      const advisory = pinBindingAdvisory({
+        dimension: 'model',
+        ruleSource: `route:${input.route.id}`,
+        pinnedValue: input.route.lockedModelAlias,
+        requestedValue: input.modelSelection.requestedValue,
+        effectiveValue: input.model,
+        valueSource: input.modelSelection.source,
+        model: input.model,
+        models: input.models,
+      });
+      if (advisory !== undefined) advisories.push(advisory);
+    }
+    if (input.route?.lockedThinkingEffort !== undefined) {
+      const advisory = pinBindingAdvisory({
+        dimension: 'thinking_effort',
+        ruleSource: `route:${input.route.id}`,
+        pinnedValue: input.route.lockedThinkingEffort,
+        requestedValue: input.thinkingSelection.requestedValue,
+        effectiveValue: input.thinking,
+        valueSource: input.thinkingSelection.source,
+        model: input.model,
+      });
+      if (advisory !== undefined) advisories.push(advisory);
+    }
+    if (input.route?.lockedModelAlias === undefined && input.lease?.modelAlias !== undefined) {
+      const advisory = pinBindingAdvisory({
+        dimension: 'model',
+        ruleSource: `caller-lease:${input.profileName}`,
+        pinnedValue: input.lease.modelAlias,
+        requestedValue: input.modelSelection.requestedValue,
+        effectiveValue: input.model,
+        valueSource: input.modelSelection.source,
+        model: input.model,
+        models: input.models,
+      });
+      if (advisory !== undefined) advisories.push(advisory);
+    }
+    if (input.route?.lockedThinkingEffort === undefined && input.lease?.thinkingEffort !== undefined) {
+      const advisory = pinBindingAdvisory({
+        dimension: 'thinking_effort',
+        ruleSource: `caller-lease:${input.profileName}`,
+        pinnedValue: input.lease.thinkingEffort,
+        requestedValue: input.thinkingSelection.requestedValue,
+        effectiveValue: input.thinking,
+        valueSource: input.thinkingSelection.source,
+        model: input.model,
+      });
+      if (advisory !== undefined) advisories.push(advisory);
+    }
+    return [...new Map(advisories.map((advisory) => [bindingAdvisoryKey(advisory), advisory])).values()];
+  }
+
+  private refreshCurrentBindingAdvisories(
+    modelSelection: BindingSelectionValue,
+    thinkingSelection: BindingSelectionValue,
+  ): void {
+    const data = this.data();
+    if (data.modelAlias === undefined) return;
+    const effectiveThinkingSelection = data.thinkingEffortSource === 'forced'
+      ? { source: 'environment-forced' as const, requestedValue: data.thinkingLevel }
+      : thinkingSelection;
+    const advisories = this.collectBindingAdvisories({
+      profile: data.boundProfile ?? this.activeProfile,
+      profileName: data.profileName ?? 'saved',
+      profileIncludesOverlays: true,
+      route: data.routeId === undefined ? undefined : {
+        id: data.routeId,
+        lockedModelAlias: data.lockedModelAlias,
+        lockedThinkingEffort: data.lockedThinkingEffort,
+      },
+      lease: data.appliedLease,
+      spawnPolicy: data.spawnPolicy,
+      model: data.modelAlias,
+      thinking: data.effectiveThinkingLevel ?? data.thinkingLevel,
+      modelSelection,
+      thinkingSelection: effectiveThinkingSelection,
+      models: this.isExternalExecutor ? undefined : this.models,
+    });
+    if (!bindingAdvisoriesEqual(data.bindingAdvisories, advisories)) {
+      this.update({ bindingAdvisories: advisories });
+    }
+    this.publishBindingAdvisories();
   }
 
   private promptFieldSignature(
@@ -1342,6 +1521,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         : this.profileState.thinkingEffortAdjusted ? 'adjusted' : undefined,
       routeDetached,
       profileSource: this.profileState.boundProfile?.fileSources === undefined ? 'registered' : 'profile-file',
+      bindingAdvisories: this.profileState.bindingAdvisories,
       systemPrompt: this.systemPrompt,
       agentsMdPaths: this.profileState.agentsMdPaths,
       activeToolNames: this.activeToolNames === undefined ? undefined : [...this.activeToolNames],
@@ -1561,6 +1741,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (changed.promptBase !== undefined) payload.promptBase = changed.promptBase;
     if (changed.modelAlias !== undefined) payload.modelAlias = changed.modelAlias;
     if (changed.profileName !== undefined) payload.profileName = changed.profileName;
+    if (changed.bindingAdvisories !== undefined) payload.bindingAdvisories = [...changed.bindingAdvisories];
     if (changed.allowParentNotify !== undefined) payload.allowParentNotify = changed.allowParentNotify;
     if (
       changed.thinkingEffortAdjusted !== undefined &&
@@ -1747,12 +1928,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   } {
     const base = this.thinkingLevel;
     if (this.isExternalExecutor) return { effective: base, forced: undefined };
-    const forced = this.validatedForcedThinkingEffort(
-      base,
-      model,
-      this.modelAlias,
-      this.profileState.boundProfile ?? this.activeProfile,
-    );
+    const forced = this.validatedForcedThinkingEffort(base, model, this.modelAlias);
     return { effective: forced ?? base, forced };
   }
 
@@ -1760,7 +1936,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     base: ThinkingEffort,
     model: Model | undefined,
     modelAlias: string | undefined,
-    constraints: Parameters<typeof assertBoundModelAllowed>[2],
   ): ThinkingEffort | undefined {
     const forced = resolveForcedThinkingEffort(
       this.config.get<ThinkingConfig>(THINKING_SECTION)?.forcedEffort,
@@ -1768,7 +1943,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       drivesThinkingThroughTraits(model?.providerType),
     );
     if (forced === undefined || modelAlias === undefined) return forced;
-    assertBoundModelAllowed(this.config, modelAlias, constraints, this.models, forced);
+    if (model !== undefined) this.assertThinkingEffortSupported(forced, model, modelAlias);
     return forced;
   }
 
@@ -2111,6 +2286,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.plugins.hasLoadedSnapshot()) this.frozenPluginSections = resolved;
     return resolved;
   }
+}
+
+function bindingAdvisoriesEqual(
+  left: readonly BindingAdvisory[] | undefined,
+  right: readonly BindingAdvisory[],
+): boolean {
+  if ((left?.length ?? 0) !== right.length) return false;
+  return right.every((advisory, index) =>
+    left?.[index] !== undefined && bindingAdvisoryKey(left[index]) === bindingAdvisoryKey(advisory),
+  );
 }
 
 registerScopedService(

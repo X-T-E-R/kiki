@@ -1645,6 +1645,19 @@ export interface AgentStateSnapshot {
     readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
     readonly thinkingEffortAdjusted?: boolean;
+    readonly bindingAdvisories?: readonly /* BindingAdvisory — packages/agent-profiles/src/bindingAdvisory.ts */ {
+      readonly version: 1;
+      readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
+      readonly dimension: /* BindingAdvisoryDimension — packages/agent-profiles/src/bindingAdvisory.ts */ 'model' | 'thinking_effort';
+      readonly ruleSource: string;
+      readonly ruleValue?: string;
+      readonly ruleValues?: readonly string[];
+      readonly requestedValue?: string;
+      readonly effectiveValue: string;
+      readonly valueSource: /* BindingValueSource — packages/agent-profiles/src/bindingAdvisory.ts */ 'dispatch-explicit' | 'runtime-explicit' | 'resume-existing' | 'route-default' | 'caller-lease-default' | 'profile-default' | 'model-profile-default' | 'model-default' | 'config-default' | 'executor-normalized' | 'environment-forced';
+      readonly model?: string;
+      readonly message: string;
+    }[];
     readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
     readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
     readonly systemPrompt: string;
@@ -2360,6 +2373,19 @@ export interface AgentStateSnapshot {
           readonly thinkingEffortSource?: 'forced' | 'adjusted';
           readonly routeDetached?: boolean;
           readonly profileSource?: 'registered' | 'profile-file';
+          readonly bindingAdvisories?: readonly /* BindingAdvisory — packages/agent-profiles/src/bindingAdvisory.ts */ {
+            readonly version: 1;
+            readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
+            readonly dimension: /* BindingAdvisoryDimension — packages/agent-profiles/src/bindingAdvisory.ts */ 'model' | 'thinking_effort';
+            readonly ruleSource: string;
+            readonly ruleValue?: string;
+            readonly ruleValues?: readonly string[];
+            readonly requestedValue?: string;
+            readonly effectiveValue: string;
+            readonly valueSource: /* BindingValueSource — packages/agent-profiles/src/bindingAdvisory.ts */ 'dispatch-explicit' | 'runtime-explicit' | 'resume-existing' | 'route-default' | 'caller-lease-default' | 'profile-default' | 'model-profile-default' | 'model-default' | 'config-default' | 'executor-normalized' | 'environment-forced';
+            readonly model?: string;
+            readonly message: string;
+          }[];
           readonly executionRestriction?: 'research-readonly';
           readonly allowParentNotify?: boolean;
           readonly executorId?: string;

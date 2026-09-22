@@ -13,7 +13,6 @@ import { collectRemovedKeyDiagnostics } from '#/app/config/deprecations';
 import type { IModelService } from '#/kosong/model/model';
 
 import {
-  assertRoleSpawnConstraints,
   resolveRoleThinkingDefault,
   type SubagentRoleModelConstraints,
 } from './modelConstraints';
@@ -181,7 +180,7 @@ function deniedModelIdentities(config: IConfigService, models?: IModelService): 
   return new Set(denyModels.map((model) => resolveModelIdentity(model, models)));
 }
 
-function assertModelNotDenied(
+export function assertSubagentModelNotDenied(
   config: IConfigService,
   model: string,
   models?: IModelService,
@@ -193,33 +192,6 @@ function assertModelNotDenied(
     `Subagent model "${canonicalModel}" is denied by [subagent].deny_models.`,
     { details: { model: canonicalModel, deniedModels: [canonicalModel] } },
   );
-}
-
-function assertRoleModelConstraints(
-  config: IConfigService,
-  model: string,
-  constraints: SubagentRoleModelConstraints | undefined,
-  models?: IModelService,
-  thinking?: string,
-): void {
-  assertRoleSpawnConstraints(
-    model,
-    constraints,
-    models,
-    deniedModelIdentities(config, models),
-    thinking,
-  );
-}
-
-export function assertBoundModelAllowed(
-  config: IConfigService,
-  model: string,
-  constraints: SubagentRoleModelConstraints | undefined,
-  models?: IModelService,
-  thinking?: string,
-): void {
-  assertModelNotDenied(config, model, models);
-  assertRoleModelConstraints(config, model, constraints, models, thinking);
 }
 
 export const SUBAGENT_MODEL_UNBOUND_HINT =
@@ -266,7 +238,7 @@ export function resolveSubagentBinding(
     (profileModel !== undefined && resolveModelIdentity(profileModel, models) === resolveModelIdentity(model, models)
       ? normalized(profileRequest.thinkingEffort)
       : undefined);
-  assertBoundModelAllowed(config, model, roleConstraints, models, thinking);
+  assertSubagentModelNotDenied(config, model, models);
   return recordBindingMetadata({ model, thinking, displayModel: model }, { source });
 }
 
@@ -283,7 +255,7 @@ export function buildSubagentModelDescriptions(aliases: readonly string[]): stri
     );
   }
   lines.push(
-    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; never copy your own model or effort. Explicit overrides must satisfy the selected target\'s Allowed models, effort constraints, caller lease, and route locks. A model listed for another target does not grant permission here. Dispatch validates the final binding. If no model is bound, pass an allowed model_alias explicitly.',
+    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; never copy your own model or effort. Executable explicit overrides are accepted; deviations from role model/effort guidance, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, pass model_alias explicitly.',
   );
   return lines.join('\n');
 }

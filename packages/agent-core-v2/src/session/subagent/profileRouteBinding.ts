@@ -4,40 +4,21 @@ import { Error2, ErrorCodes } from '#/errors';
 import type { ResolvedAgentProfileRoute } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { IModelCatalog } from '#/kosong/model/catalog';
 
-/** `subagent` domain — named profile-route binding guards shared by Agent tools: route model pins
- *  keep their conflict semantics, while identity comparison and availability checks use the app model
- *  registry's canonical resolver. */
-export function assertProfileRouteBinding(
+/** Returns whether a binding matches a route's recommended model and effort pins. */
+export function profileRouteBindingRecommended(
   route: ResolvedAgentProfileRoute | undefined,
   input: {
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;
   },
   models: ModelAliasResolver,
-): void {
-  if (route === undefined) return;
-  if (
-    route.lockedModelAlias !== undefined &&
-    input.modelAlias !== undefined &&
-    resolveModelId(models, input.modelAlias) !== resolveModelId(models, route.lockedModelAlias)
-  ) {
-    throw new Error2(
-      ErrorCodes.ROUTE_BINDING_CONFLICT,
-      `Agent profile route "${route.id}" locks model_alias to "${route.lockedModelAlias}"`,
-      { details: { route: route.id, lockedModelAlias: route.lockedModelAlias } },
-    );
-  }
-  if (
-    route.lockedThinkingEffort !== undefined &&
-    input.thinkingEffort !== undefined &&
-    input.thinkingEffort !== route.lockedThinkingEffort
-  ) {
-    throw new Error2(
-      ErrorCodes.ROUTE_BINDING_CONFLICT,
-      `Agent profile route "${route.id}" locks thinking_effort to "${route.lockedThinkingEffort}"`,
-      { details: { route: route.id, lockedThinkingEffort: route.lockedThinkingEffort } },
-    );
-  }
+): boolean {
+  if (route === undefined) return true;
+  const modelMatches = route.lockedModelAlias === undefined || input.modelAlias === undefined ||
+    resolveModelId(models, input.modelAlias) === resolveModelId(models, route.lockedModelAlias);
+  const effortMatches = route.lockedThinkingEffort === undefined || input.thinkingEffort === undefined ||
+    input.thinkingEffort === route.lockedThinkingEffort;
+  return modelMatches && effortMatches;
 }
 
 export function assertProfileRouteModelAvailable(

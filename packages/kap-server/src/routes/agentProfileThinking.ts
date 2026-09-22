@@ -13,7 +13,7 @@ import {
   resolveThinkingEffortForModel,
   type ThinkingConfig,
 } from '@kiki/agent-core-v2/kosong/model/thinking';
-import { assertBoundModelAllowed } from '@kiki/agent-core-v2/session/subagent/configSection';
+import { assertSubagentModelNotDenied } from '@kiki/agent-core-v2/session/subagent/configSection';
 import type { PanelProfileDefinition } from './agentPanelProfileResolution';
 import type { PersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 
@@ -59,13 +59,7 @@ export function projectPersistedAgentThinking(
     drivesThinkingThroughTraits(model?.providerType),
   );
   if (forced !== undefined && snapshot.modelAlias !== undefined) {
-    assertBoundModelAllowed(
-      config,
-      snapshot.modelAlias,
-      snapshot.boundProfile ?? profile,
-      models,
-      forced,
-    );
+    assertSubagentModelNotDenied(config, snapshot.modelAlias, models);
   }
   return {
     effectiveThinkingLevel: forced ?? base,

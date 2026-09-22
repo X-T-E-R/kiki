@@ -187,6 +187,39 @@ export const agentCapabilityEffortSourceSchema = z.enum([
   'caller-lease', 'route', 'profile', 'model-profile', 'model', 'config', 'executor',
 ]);
 
+export const agentBindingAdvisorySchema = z.object({
+  version: z.literal(1),
+  code: z.enum([
+    'model_not_allowed',
+    'model_denied',
+    'effort_not_allowed',
+    'model_pin_overridden',
+    'effort_pin_overridden',
+  ]),
+  dimension: z.enum(['model', 'thinking_effort']),
+  rule_source: z.string(),
+  rule_value: z.string().optional(),
+  rule_values: z.array(z.string()).optional(),
+  requested_value: z.string().optional(),
+  effective_value: z.string(),
+  value_source: z.enum([
+    'dispatch-explicit',
+    'runtime-explicit',
+    'resume-existing',
+    'route-default',
+    'caller-lease-default',
+    'profile-default',
+    'model-profile-default',
+    'model-default',
+    'config-default',
+    'executor-normalized',
+    'environment-forced',
+  ]),
+  model: z.string().optional(),
+  message: z.string(),
+});
+export type AgentBindingAdvisory = z.infer<typeof agentBindingAdvisorySchema>;
+
 export const agentCapabilityTargetSchema = z.object({
   profile: z.string(),
   route: z.string().optional(),
@@ -200,6 +233,7 @@ export const agentCapabilityTargetSchema = z.object({
   recommendation_status: z.enum(['preferred', 'allowed_nonpreferred', 'blocked', 'unconfigured']).optional(),
   advisory_deviation: z.boolean().optional(),
   defaults_available: z.boolean(),
+  binding_advisories: z.array(agentBindingAdvisorySchema).optional(),
   unavailable_reason: z.string().optional(),
   unavailable_reason_code: agentCapabilityReasonCodeWireSchema.optional(),
   launch_allowed: z.boolean().optional(),
@@ -255,6 +289,7 @@ export const agentPanelProfileSchema = z.object({
   thinking_effort_source: z.enum(['forced', 'adjusted']).optional(),
   route_detached: z.boolean().optional(),
   profile_source: z.enum(['registered', 'profile-file']).optional(),
+  binding_advisories: z.array(agentBindingAdvisorySchema).optional(),
   executor: z.string().optional(),
   service_tier: z.string().optional(),
   tools: z.array(z.string()).optional(),

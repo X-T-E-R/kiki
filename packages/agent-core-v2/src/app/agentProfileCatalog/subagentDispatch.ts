@@ -22,7 +22,6 @@ import type {
 import {
   aliasIdentity,
   appliedDispatchProfile,
-  assertAutomaticDispatchPermitted,
   type CallerLeaseOwner,
 } from './applySubagentLease';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
@@ -256,7 +255,6 @@ export function resolveSubagentTarget(
     resolved.snapshot?.defaultProfile ?? catalog.getDefault(),
     resolveId,
   );
-  assertAutomaticDispatchPermitted(dispatched.profile);
   return {
     ...resolved,
     effectiveProfile: dispatched.profile,

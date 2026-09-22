@@ -9,8 +9,6 @@ import type {
 import {
   aliasIdentity,
   appliedDispatchProfile,
-  isDispatchBlocked,
-  routePermittedByProfile,
   type CallerLeaseOwner,
 } from './applySubagentLease';
 import {
@@ -194,11 +192,7 @@ export function listAvailableSubagentTargets(
       defaults,
       resolveIdFor(binding.profile),
     ).profile;
-    if (
-      profile.main === true ||
-      !subagentDispatchAllowed(catalog, caller, binding.alias) ||
-      isDispatchBlocked(profile)
-    ) {
+    if (profile.main === true || !subagentDispatchAllowed(catalog, caller, binding.alias)) {
       return [];
     }
     return [profile];
@@ -214,23 +208,11 @@ export function listAvailableSubagentTargets(
         resolveIdFor(profile),
       ).profile,
     )
-    .filter(
-      (profile) =>
-        subagentDispatchAllowed(catalog, caller, profile.name) && !isDispatchBlocked(profile),
-    );
+    .filter((profile) => subagentDispatchAllowed(catalog, caller, profile.name));
   const routes = input.routes.filter((route) => {
     if (!subagentDispatchAllowed(catalog, caller, route.profile)) return false;
-    const base = (input.snapshot?.resolvableProfiles ?? input.snapshot?.publicProfiles)?.get(route.profile) ?? catalog.get(route.profile);
-    if (base === undefined) return false;
-    const resolver = modelAliasResolverForExecutor(base.executor, models);
-    const effective = appliedDispatchProfile(
-      base,
-      route.profile,
-      caller,
-      defaults,
-      aliasIdentity(resolver),
-    ).profile;
-    return routePermittedByProfile(route, effective, resolver);
+    return (input.snapshot?.resolvableProfiles ?? input.snapshot?.publicProfiles)?.has(route.profile)
+      ?? catalog.get(route.profile) !== undefined;
   });
   return {
     profiles: [...publicProfiles, ...scopedProfiles].toSorted((left, right) =>

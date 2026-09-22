@@ -371,7 +371,7 @@ describe('delegation context at bind', () => {
     expect(profile.getSystemPrompt()).not.toContain(TASK_AGENT_ROLE_PREFIX);
   });
 
-  it('rejects a sub bind whose model is outside the child allowed_models', async () => {
+  it('binds a sub model outside allowed_models and records an advisory', async () => {
     const custom = normalizeAgentProfile({
       name: 'locked-child',
       allowedModels: ['grok-4.6'],
@@ -381,13 +381,15 @@ describe('delegation context at bind', () => {
       homeDirServices(homeDir),
       sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
     );
-    await expect(
-      ctx.get(IAgentProfileService).bind({
-        profile: 'locked-child',
-        model: MOCK_MODEL,
-        delegationPosition: 'sub',
-      }),
-    ).rejects.toSatisfy((error) => isError2(error) && error.code === ErrorCodes.CONFIG_INVALID);
+    const profile = ctx.get(IAgentProfileService);
+    await expect(profile.bind({
+      profile: 'locked-child',
+      model: MOCK_MODEL,
+      delegationPosition: 'sub',
+    })).resolves.toBeUndefined();
+    expect(profile.data().bindingAdvisories).toEqual([
+      expect.objectContaining({ code: 'model_not_allowed', effectiveValue: MOCK_MODEL }),
+    ]);
   });
 
   it('rejects a sub bind denied by [subagent].deny_models even without a lease', async () => {

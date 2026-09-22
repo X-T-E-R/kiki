@@ -43,7 +43,7 @@ import {
   resolveDispatchCapacityLimits,
   resolveSubagentBinding,
 } from '#/session/subagent/configSection';
-import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
+import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagent/subagent';
 
 import {
@@ -200,6 +200,7 @@ export class SessionDispatchService implements ISessionDispatchService {
           resolvedRoute: selection.route,
           model: binding.model,
           thinking: binding.thinking,
+          bindingSelection: binding.selection,
           strictThinking:
             input.strictThinking ??
             (input.strictThinkingFromProfile === true
@@ -254,6 +255,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       if (name !== undefined) this.names.commit(name, input.delegator);
       retained = true;
       this.lifecycle.commitCreate(child.id);
+      child.accessor.get(IAgentProfileService).publishBindingAdvisories?.();
       if (input.delegator.kind === 'agent') {
         this.recordDelegatedRun(input.requesterAgentId, dispatchChild.agentId);
       }
@@ -391,28 +393,36 @@ export class SessionDispatchService implements ISessionDispatchService {
     const readCallerConstraints = () => {
       const caller = options.requesterAgentId === undefined ? undefined
         : this.requireHandle(options.requesterAgentId, 'Requester agent').accessor.get(IAgentProfileService).data();
-      const lease = caller?.subagentLeases?.[childProfile.data().profileName ?? child.profileName];
-      return [caller?.spawnPolicy, lease].filter((value) => value !== undefined);
+      const childProfileName = childProfile.data().profileName ?? child.profileName;
+      const lease = caller?.subagentLeases?.[childProfileName];
+      return [
+        ...(caller?.spawnPolicy === undefined ? [] : [{
+          constraints: caller.spawnPolicy,
+          ruleSource: 'caller-spawn-constraints',
+        }]),
+        ...(lease === undefined ? [] : [{
+          constraints: lease,
+          ruleSource: `caller-lease:${childProfileName}`,
+        }]),
+      ];
     };
     await options.onBeforeRun?.(child);
     checkResume();
     this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
     const callerConstraints = readCallerConstraints();
     const callerConstraintKey = JSON.stringify(callerConstraints);
-    const applyBinding = options.bindingOverride === undefined && options.allowParentNotify === undefined
-      ? undefined
-      : await childProfile.prepareResumeBinding({
-          ...options.bindingOverride,
-          allowParentNotify: options.allowParentNotify,
-          callerConstraints,
-        });
+    const applyBinding = await childProfile.prepareResumeBinding({
+      ...options.bindingOverride,
+      allowParentNotify: options.allowParentNotify,
+      callerConstraints,
+    });
     checkResume();
     this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
     options.signal.throwIfAborted();
-    if (applyBinding !== undefined && callerConstraintKey !== JSON.stringify(readCallerConstraints())) {
+    if (callerConstraintKey !== JSON.stringify(readCallerConstraints())) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller constraints changed during resume admission. Retry against the current caller policy.');
     }
-    applyBinding?.();
+    applyBinding();
     const request: AgentRunRequest =
       typeof requestInput === 'string'
         ? { kind: 'prompt', prompt: requestInput }
@@ -421,7 +431,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       this.recordDelegatedRun(options.requesterAgentId, child.agentId);
     }
     return {
-      child: applyBinding === undefined ? child : this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta),
+      child: this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta),
       request,
       lineage: options.lineage,
       started: this.runs.run(child.agentId, request, {
@@ -523,7 +533,16 @@ export class SessionDispatchService implements ISessionDispatchService {
     if (input.resolvedBinding !== undefined) {
       const model = resolver.resolveId(input.resolvedBinding.model) ?? input.resolvedBinding.model;
       if (native) this.modelCatalog.get(model);
-      return { model, thinking: input.resolvedBinding.thinking };
+      return {
+        model,
+        thinking: input.resolvedBinding.thinking,
+        selection: input.resolvedBinding.selection ?? {
+          model: { source: 'dispatch-explicit', requestedValue: input.resolvedBinding.model },
+          thinking: input.resolvedBinding.thinking === undefined ? undefined : {
+            source: 'dispatch-explicit', requestedValue: input.resolvedBinding.thinking,
+          },
+        },
+      };
     }
     const filled = fillLeasePins(
       { modelAlias: input.modelAlias, thinkingEffort: input.thinkingEffort },
@@ -548,7 +567,30 @@ export class SessionDispatchService implements ISessionDispatchService {
     );
     const binding = native ? canonicalizeSubagentBinding(resolved, this.models) : resolved;
     if (native) this.modelCatalog.get(binding.model);
-    return binding;
+    const modelSource = input.modelAlias !== undefined ? 'dispatch-explicit' as const
+      : selection.route?.lockedModelAlias !== undefined ? 'route-default' as const
+        : target.lease?.modelAlias !== undefined ? 'caller-lease-default' as const
+          : 'profile-default' as const;
+    const profileThinking = resolveRoleThinkingDefault(
+      roleConstraints,
+      binding.model,
+      native ? this.models : undefined,
+    );
+    const thinkingSource = input.thinkingEffort !== undefined ? 'dispatch-explicit' as const
+      : selection.route?.lockedThinkingEffort !== undefined ? 'route-default' as const
+        : target.lease?.thinkingEffort !== undefined ? 'caller-lease-default' as const
+          : profileThinking !== undefined ? 'model-profile-default' as const
+            : binding.thinking !== undefined ? 'profile-default' as const : 'model-default' as const;
+    return {
+      ...binding,
+      selection: {
+        model: { source: modelSource, requestedValue: resolved.displayModel },
+        thinking: {
+          source: thinkingSource,
+          requestedValue: resolved.thinking,
+        },
+      },
+    };
   }
 
   private childView(
@@ -569,6 +611,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       thinkingEffortSource: data.thinkingEffortSource,
       routeDetached: data.routeDetached,
       profileSource: data.profileSource,
+      bindingAdvisories: data.bindingAdvisories,
       dispatchDecision: data.dispatchDecision,
       effectiveProfile,
       meta,

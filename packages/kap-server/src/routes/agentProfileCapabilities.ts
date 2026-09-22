@@ -31,6 +31,7 @@ import type { AgentCapabilitiesQuery, AgentCapabilitiesProducerResponse, AgentPa
 import {
   livePanelCapabilities,
   panelSkills,
+  projectBindingAdvisories,
   READ_ONLY_DISPLAY_TOOL_NAMES,
   resolvePanelProfile,
   snapshotPanelCapabilities,
@@ -303,7 +304,9 @@ function project(core: Pick<Scope, 'accessor'>, input: SubagentCapabilityCatalog
     thinking_effort: target.thinkingEffort, effort_source: target.effortSource,
     dispatch_policy: target.dispatchPolicy, recommendation_status: target.recommendationStatus,
     advisory_deviation: target.advisoryDeviation,
-    defaults_available: target.defaultsAvailable, unavailable_reason: target.unavailableReason,
+    defaults_available: target.defaultsAvailable,
+    binding_advisories: projectBindingAdvisories(target.bindingAdvisories),
+    unavailable_reason: target.unavailableReason,
     unavailable_reason_code: target.unavailableReasonCode,
     launch_allowed: target.dispatchAllowed,
     launch_unavailable_reason: target.dispatchAllowed ? undefined : 'Blocked by strict subagent policy',

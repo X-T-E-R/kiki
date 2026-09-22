@@ -467,6 +467,7 @@ export class SubagentTool implements ISubagentTool {
       thinkingEffortSource: run.child.thinkingEffortSource,
       routeDetached: run.child.routeDetached,
       profileSource: run.child.profileSource,
+      bindingAdvisories: run.child.bindingAdvisories,
       dispatchDecision: run.child.dispatchDecision,
       parentNotify,
       completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
@@ -639,7 +640,8 @@ registerAgentToolService(ISubagentTool, SubagentTool, {
   requiredRuntimeCapabilities: ['process'],
 });
 
-function bindingResultLines(handle: SubagentHandle): string[] {
+export function bindingResultLines(handle: SubagentHandle): string[] {
+  const bindingAdvisories = handle.bindingAdvisories ?? [];
   return [
     `actual_profile: ${handle.profileName}`,
     ...(handle.profileSource === 'profile-file' ? ['profile_source: profile_file'] : []),
@@ -660,6 +662,10 @@ function bindingResultLines(handle: SubagentHandle): string[] {
           `thinking_effort_source: ${handle.thinkingEffortSource}`,
         ]),
     ...(handle.routeDetached === true ? ['route_status: detached'] : []),
+    ...(bindingAdvisories.length === 0 ? [] : [
+      `binding_advisory_count: ${String(bindingAdvisories.length)}`,
+      `binding_advisory_first: ${JSON.stringify(bindingAdvisories[0])}`,
+    ]),
     `parent_notify: ${handle.parentNotify ?? 'enabled'}`,
   ];
 }

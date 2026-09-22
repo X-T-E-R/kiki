@@ -1,3 +1,4 @@
+import type { BindingAdvisory, BindingValueSource } from '@kiki/agent-profiles/bindingAdvisory';
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
 import type { AgentCapabilityReasonCode } from '@kiki/protocol';
 
@@ -10,11 +11,11 @@ import type { IConfigService } from '#/app/config/config';
 import { ErrorCodes, isError2 } from '#/errors';
 import type { IModelCatalog } from '#/kosong/model/catalog';
 import type { IModelService } from '#/kosong/model/model';
-import { normalizeRequestedThinkingEffort, requiresStrictThinkingValidation, resolveThinkingEffortForModel, type ThinkingConfig } from '#/kosong/model/thinking';
+import { requiresStrictThinkingValidation, resolveThinkingEffortForModel, type ThinkingConfig } from '#/kosong/model/thinking';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
-import { assertBoundModelAllowed, canonicalizeSubagentBinding, resolveSubagentBinding } from '#/session/subagent/configSection';
-import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
-import { assertProfileRouteBinding, assertProfileRouteModelAvailable } from '#/session/subagent/profileRouteBinding';
+import { assertSubagentModelNotDenied, canonicalizeSubagentBinding, resolveSubagentBinding } from '#/session/subagent/configSection';
+import { pinBindingAdvisory, resolveRoleThinkingDefault, roleBindingAdvisories, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
+import { assertProfileRouteModelAvailable } from '#/session/subagent/profileRouteBinding';
 
 export interface SubagentCapabilityCatalog {
   readonly catalog: SubagentDispatchCatalog;
@@ -38,6 +39,7 @@ export interface SubagentCapabilityTarget {
   readonly advisoryDeviation: boolean;
   readonly dispatchAllowed: boolean;
   readonly defaultsAvailable: boolean;
+  readonly bindingAdvisories?: readonly BindingAdvisory[];
   readonly unavailableReason?: string;
   readonly unavailableReasonCode?: AgentCapabilityReasonCode;
 }
@@ -94,17 +96,22 @@ export function projectSubagentCapabilities(
       const native = (profile.executor ?? 'native') === 'native';
       const resolver = modelAliasResolverForExecutor(profile.executor, services.models);
       const filled = fillLeasePins<{ modelAlias?: string; thinkingEffort?: string }>({}, target.lease, route);
-      if (native) {
-        assertProfileRouteBinding(route, filled, resolver);
-        assertProfileRouteModelAvailable(route, services.modelCatalog, resolver);
-      }
+      if (native) assertProfileRouteModelAvailable(route, services.modelCatalog, resolver);
       const constraints = roleConstraintsFromProfile(profile, spawnConstraintOrigin(target.lease, target.spawnPolicy));
       const binding = resolveSubagentBinding(services.config, { ...filled, thinkingEffort: filled.thinkingEffort ?? route?.lockedThinkingEffort }, {
         modelAlias: route?.lockedModelAlias ?? profile.modelAlias,
         thinkingEffort: route?.lockedThinkingEffort ?? profile.thinkingEffort,
       }, native ? services.models : undefined, constraints, { profileName, routeId });
       const resolved = native ? canonicalizeSubagentBinding(binding, services.models) : binding;
+      const requestedModel = resolved.displayModel;
+      const requestedThinking = resolved.thinking;
+      const modelSource: SubagentCapabilityTarget['modelSource'] =
+        filled.modelAlias !== undefined ? 'caller-lease' : route?.lockedModelAlias !== undefined ? 'route' : 'profile';
+      let modelValueSource: BindingValueSource =
+        modelSource === 'caller-lease' ? 'caller-lease-default'
+          : modelSource === 'route' ? 'route-default' : 'profile-default';
       let modelAlias = resolved.displayModel;
+      let effectiveModel = resolved.model;
       let thinking = resolved.thinking;
       let effortSource: SubagentCapabilityTarget['effortSource'] =
         filled.thinkingEffort !== undefined ? 'caller-lease'
@@ -117,11 +124,7 @@ export function projectSubagentCapabilities(
         const defaults = services.config.get<ThinkingConfig>('thinking');
         thinking = resolveThinkingEffortForModel(thinking, defaults, model,
           requiresStrictThinkingValidation(services.protocols, model.protocol, model.providerType));
-        assertProfileRouteBinding(route === undefined ? undefined : {
-          ...route,
-          lockedThinkingEffort: normalizeRequestedThinkingEffort(route.lockedThinkingEffort),
-        }, { modelAlias: resolved.model, thinkingEffort: thinking }, resolver);
-        assertBoundModelAllowed(services.config, resolved.model, constraints, services.models, thinking);
+        assertSubagentModelNotDenied(services.config, resolved.model, services.models);
         effortSource ??= model.overrides?.defaultEffort !== undefined ? 'model'
           : defaults?.effort !== undefined || defaults?.enabled !== undefined ? 'config' : 'model';
       } else {
@@ -138,7 +141,9 @@ export function projectSubagentCapabilities(
           };
         }
         modelAlias = validated.binding.modelAlias;
+        effectiveModel = validated.binding.modelAlias;
         thinking = validated.binding.thinkingEffort;
+        if (modelAlias !== resolved.model) modelValueSource = 'executor-normalized';
         if (route !== undefined) {
           const locked = services.executors.validateBinding(executor.descriptor.id, executor.options, {
             modelAlias: route.lockedModelAlias ?? modelAlias,
@@ -150,23 +155,68 @@ export function projectSubagentCapabilities(
             unavailableReason: 'Executor route binding is unavailable',
             unavailableReasonCode: 'executor_route_binding_unavailable',
           };
-          assertProfileRouteBinding({
-            ...route,
-            lockedModelAlias: route.lockedModelAlias === undefined ? undefined : locked.binding.modelAlias,
-            lockedThinkingEffort: route.lockedThinkingEffort === undefined ? undefined : locked.binding.thinkingEffort,
-          }, { modelAlias, thinkingEffort: thinking }, resolver);
         }
-        assertBoundModelAllowed(services.config, modelAlias, constraints, undefined, thinking);
+        assertSubagentModelNotDenied(services.config, modelAlias);
         effortSource ??= 'executor';
       }
+      const thinkingValueSource = thinkingValueSourceFor(effortSource, requestedThinking, thinking);
+      const bindingAdvisories = [
+        ...roleBindingAdvisories({
+          model: effectiveModel,
+          requestedModel,
+          thinking,
+          requestedThinking,
+          constraints,
+          models: native ? services.models : undefined,
+          ruleSource: `profile:${profileName}`,
+          modelValueSource,
+          thinkingValueSource,
+        }),
+        pinBindingAdvisory({
+          dimension: 'model',
+          ruleSource: `route:${route?.id ?? routeId ?? profileName}`,
+          pinnedValue: route?.lockedModelAlias ?? effectiveModel,
+          requestedValue: requestedModel,
+          effectiveValue: effectiveModel,
+          valueSource: modelValueSource,
+          model: effectiveModel,
+          models: native ? services.models : undefined,
+        }),
+        pinBindingAdvisory({
+          dimension: 'thinking_effort',
+          ruleSource: `route:${route?.id ?? routeId ?? profileName}`,
+          pinnedValue: route?.lockedThinkingEffort ?? thinking ?? 'off',
+          requestedValue: requestedThinking,
+          effectiveValue: thinking ?? 'off',
+          valueSource: thinkingValueSource,
+          model: effectiveModel,
+        }),
+        route?.lockedModelAlias === undefined && target.lease?.modelAlias !== undefined
+          ? pinBindingAdvisory({
+              dimension: 'model', ruleSource: `caller-lease:${profileName}`,
+              pinnedValue: target.lease.modelAlias, requestedValue: requestedModel,
+              effectiveValue: effectiveModel, valueSource: modelValueSource,
+              model: effectiveModel, models: native ? services.models : undefined,
+            })
+          : undefined,
+        route?.lockedThinkingEffort === undefined && target.lease?.thinkingEffort !== undefined
+          ? pinBindingAdvisory({
+              dimension: 'thinking_effort', ruleSource: `caller-lease:${profileName}`,
+              pinnedValue: target.lease.thinkingEffort, requestedValue: requestedThinking,
+              effectiveValue: thinking ?? 'off', valueSource: thinkingValueSource,
+              model: effectiveModel,
+            })
+          : undefined,
+      ].filter((advisory): advisory is BindingAdvisory => advisory !== undefined);
       return {
         ...identity,
         executor: profile.executor ?? 'native',
         modelAlias,
-        modelSource: filled.modelAlias !== undefined ? 'caller-lease' : route?.lockedModelAlias !== undefined ? 'route' : 'profile',
+        modelSource,
         thinkingEffort: thinking,
         effortSource,
         defaultsAvailable: true,
+        bindingAdvisories: bindingAdvisories.length === 0 ? undefined : bindingAdvisories,
       };
     } catch (error) {
       const failure = capabilityFailure(error);
@@ -177,6 +227,25 @@ export function projectSubagentCapabilities(
         unavailableReasonCode: failure.reasonCode,
       };
     }
+  }
+}
+
+function thinkingValueSourceFor(
+  source: SubagentCapabilityTarget['effortSource'],
+  requested: string | undefined,
+  effective: string | undefined,
+): BindingValueSource {
+  if (source === 'executor' && requested !== undefined && requested !== effective) return 'executor-normalized';
+  switch (source) {
+    case 'caller-lease': return 'caller-lease-default';
+    case 'route': return 'route-default';
+    case 'profile': return 'profile-default';
+    case 'model-profile': return 'model-profile-default';
+    case 'config': return 'config-default';
+    case 'executor': return 'model-default';
+    case 'model':
+    default:
+      return 'model-default';
   }
 }
 

@@ -22,7 +22,7 @@ Kiki 的模型选择把三件事分开：配置文件里的模型键、派发 su
 1. 派发时传入的 `model_alias`。
 2. 生效 profile、route 或调用方 lease（caller lease，外部委派方为调用方预设的约束）上的 `model_alias` pin。
 
-两者都存在时以派发值为准。两者都没有时，派生以 `model.not_configured` 失败；subagent 不会继承调用方模型，也不会回退到某个默认模型。未知 alias、被机器级或 role 约束拒绝的模型，同样会在子 Agent 启动前失败。
+两者都存在时以派发值为准。两者都没有时，派生以 `model.not_configured` 失败；subagent 不会继承调用方模型，也不会回退到某个默认模型。未知 alias 与被机器级策略禁止的模型会在子 Agent 启动前失败。若模型只是不符合 role 指引，或偏离 route / caller lease pin，只要实际可执行就会继续，并产生结构化绑定 advisory。
 
 恢复或重试的 subagent 会保持已持久化的绑定，除非 `AgentRun` 的 `resume` 显式请求修改。省略 `effort` 会保留当前值；显式传入的 effort 应用于下一次空闲运行。显式传入的 `model_alias` 只有在 `allow_model_change: true` 确认时才能切换模型；如果解析到同一规范模型，则不产生变化。
 
@@ -30,7 +30,7 @@ Kiki 的模型选择把三件事分开：配置文件里的模型键、派发 su
 
 Agent 文件与 profile route sidecar 使用 `model_alias` 固定模型。旧字段 `model_preference` 会被显式拒绝，并给出迁移诊断；其他工具写入的未知 `model` 元数据会被忽略。
 
-Route 声明的 `model_alias` 对自动派发锁定：派发方可以省略它，或重复同一个解析后模型；冲突值会被拒绝。Role 级 `allowed_models`、`deny_models` 与机器级 `[subagent].deny_models` 只能继续收紧允许集合，不能放宽。
+Route 声明的 `model_alias` 是 route 默认值。派发方可以用另一个可执行模型覆盖它；绑定仍保留 route 身份，同时标记为 detached 并携带 advisory。Role 级 `allowed_models` / `deny_models` 与 effort 列表属于推荐策略；机器级 `[subagent].deny_models` 才是硬模型边界。
 
 ## 模型 ID 解析
 

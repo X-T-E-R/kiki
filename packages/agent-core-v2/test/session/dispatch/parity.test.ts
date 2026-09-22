@@ -38,7 +38,7 @@ import {
   SubagentToolInputSchema,
   type SubagentToolInput,
 } from '#/agent/tools/agent/agent';
-import { SubagentTool } from '#/agent/tools/agent/agentTool';
+import { bindingResultLines, SubagentTool } from '#/agent/tools/agent/agentTool';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -1369,9 +1369,13 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(bound.subagents).toEqual(['coder', 'outside']);
     expect(bound.systemPrompt({})).toContain('FILE INSTRUCTIONS');
     await complete(lane, 0);
-    const denied = await lane.runInternal({ profile_file: 'custom.md', model_alias: 'outside-model', prompt: 'fail', description: 'Reject escape', background: true });
-    expect(denied.isError).toBe(true);
-    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    const overridden = await lane.runInternal({ profile_file: 'custom.md', model_alias: 'outside-model', prompt: 'continue', description: 'Override model', background: true });
+    expect(overridden.isError).not.toBe(true);
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(2);
+    expect(lane.lifecycleCreate.mock.calls[1]?.[0]?.binding).toMatchObject({
+      model: 'outside-model',
+      bindingSelection: { model: { source: 'dispatch-explicit', requestedValue: 'outside-model' } },
+    });
     await expect(lane.ix.get(ISubagentTool).resolveExecution({ profile_file: '/outside/custom.md', prompt: 'fail', description: 'Outside path' })).rejects.toMatchObject({ code: 'fs.path_escapes' });
   });
 
@@ -2103,6 +2107,34 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(externalWireUsage(status.usage)).toEqual(internal.probe.engineUsage[0]);
     expect(externalWireUsage(result.dispatch.usage)).toEqual(internal.probe.engineUsage[0]);
     expect(result.text).toBe(internal.probe.terminals[0]?.[1]);
+  });
+
+  it('summarizes structured binding advisories in AgentRun receipts', () => {
+    const lines = bindingResultLines({
+      agentId: 'agent_child_1',
+      profileName: 'reviewer',
+      bindingAdvisories: [{
+        version: 1,
+        code: 'model_not_allowed',
+        dimension: 'model',
+        ruleSource: 'profile:reviewer.allowed_models',
+        ruleValues: ['fast-model'],
+        requestedValue: 'large-model',
+        effectiveValue: 'provider/large-model',
+        valueSource: 'dispatch-explicit',
+        model: 'provider/large-model',
+        message: 'Model deviates from the role recommendation.',
+      }],
+      completion: Promise.resolve({ result: '' }),
+    });
+    const fields = fieldMap(lines.join('\n'));
+    expect(fields['binding_advisory_count']).toBe('1');
+    expect(JSON.parse(fields['binding_advisory_first']!)).toMatchObject({
+      code: 'model_not_allowed',
+      ruleSource: 'profile:reviewer.allowed_models',
+      requestedValue: 'large-model',
+      effectiveValue: 'provider/large-model',
+    });
   });
 
   it('C-2 converts a foreground timeout detach into the background receipt path', async () => {

@@ -53,7 +53,7 @@ describe('profile file runtime isolation', () => {
       const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
       Object.defineProperty(fake, 'fs', { value: {
         realpath: async (path: string) => path,
-        readText: async () => '---\nname: coder\ndescription: File role\ntools: [Read, Write]\nsubagents: [coder, explore]\n---\nFile role',
+        readText: async () => '---\nname: coder\ndescription: File role\nallowed_models: [preferred-model]\ntools: [Read, Write]\nsubagents: [coder, explore]\n---\nFile role',
       } as unknown as IHostFileSystem });
       const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
         thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
@@ -62,6 +62,7 @@ describe('profile file runtime isolation', () => {
       const svc = ctx.get(IAgentProfileService);
       await svc.bind({
         resolvedProfile: loaded.snapshot.publicProfiles.get('coder')!, model: 'mock-model',
+        delegationPosition: 'sub',
         lease: { name: 'coder', tools: ['Read', 'Write'], disallowedTools: [], subagents: ['coder', 'explore'] },
       });
       const policy = ctx.get(IAgentToolPolicyService);
@@ -69,6 +70,13 @@ describe('profile file runtime isolation', () => {
       expect(policy.isToolActive('Write')).toBe(false);
       expect(svc.data().disallowedTools).toContain('Bash');
       expect(svc.data().subagents).toEqual(['coder', 'explore']);
+      expect(svc.data().bindingAdvisories).toEqual([
+        expect.objectContaining({
+          code: 'model_not_allowed',
+          ruleSource: 'profile-file:/workspace/role.md.allowed_models',
+          effectiveValue: 'mock-model',
+        }),
+      ]);
       const apply = await svc.prepareResumeBinding({});
       apply();
       expect(policy.isToolActive('Write')).toBe(false);

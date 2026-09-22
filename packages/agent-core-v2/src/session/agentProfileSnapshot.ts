@@ -19,7 +19,7 @@ type PersistedProfileFields = Pick<ProfileModelState,
   'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'executionRestriction' |
   'allowParentNotify' | 'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortAdjusted' |
-  'serviceTier' | 'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
+  'bindingAdvisories' | 'serviceTier' | 'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
   'subagentPolicy' | 'subagentDeclaration' | 'subagents' | 'subagentLeases' |
   'spawnPolicy' | 'appliedLease' | 'boundProfile'>;
 
@@ -155,6 +155,7 @@ async function scanPersistedAgentProfileSnapshot(
     executorProtocol: state.executorProtocol,
     thinkingLevel: state.thinkingLevel,
     thinkingEffortAdjusted: state.thinkingEffortAdjusted,
+    bindingAdvisories: state.bindingAdvisories,
     serviceTier: state.serviceTier,
     activeToolNames,
     activeToolsKnown,

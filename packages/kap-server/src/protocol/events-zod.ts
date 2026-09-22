@@ -707,10 +707,43 @@ export const errorEventSchema = kimiErrorPayloadObjectSchema.extend({
   type: z.literal('error'),
 });
 
+const bindingAdvisoryEventSchema = z.object({
+  version: z.literal(1),
+  code: z.enum([
+    'model_not_allowed',
+    'model_denied',
+    'effort_not_allowed',
+    'model_pin_overridden',
+    'effort_pin_overridden',
+  ]),
+  dimension: z.enum(['model', 'thinking_effort']),
+  ruleSource: z.string(),
+  ruleValue: z.string().optional(),
+  ruleValues: z.array(z.string()).readonly().optional(),
+  requestedValue: z.string().optional(),
+  effectiveValue: z.string(),
+  valueSource: z.enum([
+    'dispatch-explicit',
+    'runtime-explicit',
+    'resume-existing',
+    'route-default',
+    'caller-lease-default',
+    'profile-default',
+    'model-profile-default',
+    'model-default',
+    'config-default',
+    'executor-normalized',
+    'environment-forced',
+  ]),
+  model: z.string().optional(),
+  message: z.string(),
+});
+
 export const warningEventSchema = z.object({
   type: z.literal('warning'),
   message: z.string(),
   code: z.string().optional(),
+  advisory: bindingAdvisoryEventSchema.optional(),
 }) satisfies z.ZodType<WarningEvent>;
 
 export const turnStartedEventSchema = z.object({

@@ -112,6 +112,7 @@ interface ConfigUpdatePayload {
   /** ThinkingEffort */
   thinkingLevel?: 'off' | 'on' | (string & {});
   thinkingEffortAdjusted?: boolean;
+  bindingAdvisories?: BindingAdvisory[];
   allowParentNotify?: boolean;
   systemPrompt?: string;
   environmentDisclosure?: EnvironmentDisclosureSnapshot;
@@ -163,6 +164,15 @@ interface ContextAppendMessagePayload {
     origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | undefined;
     isError?: boolean;
     note?: string;
+  };
+  delivery?: {
+    deliveryId: string;
+    messageId: string;
+    turnId?: number;
+    stepId?: string;
+    step?: number;
+    deliveredAt: string;
+    origin: 'user' | 'queue' | 'mailbox' | 'recovery' | 'injection';
   };
 }
 
@@ -535,6 +545,7 @@ interface ProfileBindPayload {
   /** ThinkingEffort */
   thinkingEffort: 'off' | 'on' | (string & {});
   thinkingEffortAdjusted?: boolean;
+  bindingAdvisories?: BindingAdvisory[];
   serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
   requestParams?: Record<string, string | number | boolean>;
   systemPrompt: string;
@@ -1079,6 +1090,7 @@ interface TurnPromptPayload {
   input: readonly ContentPart[];
   /** PromptOrigin */
   origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message';
+  managed?: boolean;
 }
 
 /**
@@ -1098,6 +1110,7 @@ interface TurnSteerPayload {
   input: readonly ContentPart[];
   /** PromptOrigin */
   origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message';
+  managed?: boolean;
 }
 
 /**

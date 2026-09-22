@@ -1067,12 +1067,12 @@ describe('AgentProfileService.bind', () => {
     expect(warnings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: 'profile-constraint-override',
-          message: expect.stringContaining('locks model_alias'),
+          code: 'profile-binding-advisory',
+          message: expect.stringContaining('recommends model_alias'),
         }),
         expect.objectContaining({
-          code: 'profile-constraint-override',
-          message: expect.stringContaining('locks thinking_effort'),
+          code: 'profile-binding-advisory',
+          message: expect.stringContaining('recommends thinking_effort'),
         }),
       ]),
     );
@@ -1095,12 +1095,17 @@ describe('AgentProfileService.bind', () => {
     expect(profile.data().routeId).toBeUndefined();
 
     await expect(
-      profile.bind({ route: 'reviewer.ui-k3', model: MOCK_MODEL }),
+      profile.bind({ route: 'reviewer.ui-k3', model: MOCK_MODEL, delegationPosition: 'sub' }),
     ).resolves.toBeUndefined();
     expect(profile.data()).toMatchObject({
       modelAlias: MOCK_MODEL,
       lockedModelAlias: 'removed-model',
       routeDetached: true,
+      bindingAdvisories: [expect.objectContaining({
+        code: 'model_pin_overridden',
+        ruleSource: 'route:reviewer.ui-k3.model_alias',
+        valueSource: 'dispatch-explicit',
+      })],
     });
   });
 
@@ -1139,7 +1144,91 @@ describe('AgentProfileService.bind', () => {
     expect(profile.data().effectiveThinkingLevel).not.toBe('ultra');
   });
 
-  it('rejects a forced effort that violates the target profile allowlist before binding', async () => {
+  it('queues structured binding advisories until creation publication and deduplicates them', async () => {
+    const configured = resumeProfile({ allowedModels: [RESUME_OLD_MODEL] });
+    ctx = createTestAgent(
+      nativeResumeOptions(),
+      hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)),
+    );
+    const profile = ctx.get(IAgentProfileService);
+    const warnings: WarningIssued[] = [];
+    ctx.get(IEventBus).subscribe(WarningIssued, (event) => warnings.push(event));
+
+    await profile.bind({
+      profile: configured.name,
+      model: RESUME_NEW_MODEL,
+      delegationPosition: 'sub',
+      bindingSelection: {
+        model: { source: 'dispatch-explicit', requestedValue: RESUME_NEW_MODEL },
+      },
+    });
+    expect(warnings).toEqual([]);
+    expect(profile.data().bindingAdvisories).toEqual([
+      expect.objectContaining({
+        code: 'model_not_allowed',
+        ruleSource: 'profile:resume-profile.allowed_models',
+      }),
+    ]);
+
+    profile.publishBindingAdvisories();
+    profile.publishBindingAdvisories();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      code: 'profile-binding-advisory',
+      advisory: expect.objectContaining({ code: 'model_not_allowed' }),
+    });
+  });
+
+  it('distinguishes a nonrecommended profile default from an explicit dispatch pin', async () => {
+    const configured = resumeProfile({
+      modelAlias: RESUME_NEW_MODEL,
+      allowedModels: [RESUME_OLD_MODEL],
+    });
+    ctx = createTestAgent(
+      nativeResumeOptions(),
+      hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)),
+    );
+    const profile = ctx.get(IAgentProfileService);
+
+    await profile.bind({ profile: configured.name, delegationPosition: 'sub' });
+    expect(profile.data().bindingAdvisories).toEqual([
+      expect.objectContaining({
+        code: 'model_not_allowed',
+        requestedValue: RESUME_NEW_MODEL,
+        effectiveValue: RESUME_NEW_MODEL,
+        valueSource: 'profile-default',
+      }),
+    ]);
+  });
+
+  it('allows an explicit model to override a caller lease pin with a source-located advisory', async () => {
+    const configured = resumeProfile();
+    ctx = createTestAgent(
+      nativeResumeOptions(),
+      hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)),
+    );
+    const profile = ctx.get(IAgentProfileService);
+
+    await profile.bind({
+      profile: configured.name,
+      model: RESUME_NEW_MODEL,
+      delegationPosition: 'sub',
+      lease: { name: configured.name, modelAlias: RESUME_OLD_MODEL },
+    });
+    expect(profile.data()).toMatchObject({
+      modelAlias: RESUME_NEW_MODEL,
+      bindingAdvisories: [expect.objectContaining({
+        code: 'model_pin_overridden',
+        ruleSource: 'caller-lease:resume-profile.model_alias',
+        valueSource: 'dispatch-explicit',
+      })],
+    });
+  });
+
+  it('binds a forced effort outside the target profile allowlist with an advisory', async () => {
     const configured = resumeProfile({ thinkingEffort: 'low', allowedEfforts: ['low', 'high'] });
     const options = nativeResumeOptions();
     ctx = createTestAgent(
@@ -1163,8 +1252,16 @@ describe('AgentProfileService.bind', () => {
 
     await expect(
       profile.bind({ profile: configured.name, delegationPosition: 'sub' }),
-    ).rejects.toThrow(/allowed_efforts/);
-    expect(profile.data().profileName).toBeUndefined();
+    ).resolves.toBeUndefined();
+    expect(profile.data()).toMatchObject({
+      profileName: configured.name,
+      effectiveThinkingLevel: 'max',
+      bindingAdvisories: [expect.objectContaining({
+        code: 'effort_not_allowed',
+        effectiveValue: 'max',
+        valueSource: 'environment-forced',
+      })],
+    });
   });
 
   it('marks a route detached when forced effort differs from its effort pin', async () => {
@@ -1188,6 +1285,10 @@ describe('AgentProfileService.bind', () => {
       effectiveThinkingLevel: 'high',
       thinkingEffortSource: 'forced',
       routeDetached: true,
+      bindingAdvisories: [expect.objectContaining({
+        code: 'effort_pin_overridden',
+        valueSource: 'environment-forced',
+      })],
     });
   });
 
@@ -1399,7 +1500,7 @@ describe('AgentProfileService.bind', () => {
       .sort();
 
     expect(after.modelAlias).toBe('other-model');
-    expect(changedKeys).toEqual(['modelAlias', 'modelCapabilities', 'routeDetached']);
+    expect(changedKeys).toEqual(['bindingAdvisories', 'modelAlias', 'modelCapabilities', 'routeDetached']);
     expect(after).toMatchObject({
       profileName: undefined,
       routeId: 'route-only',
@@ -1798,78 +1899,115 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('rejects a role allowed_models violation before changing the binding', async () => {
+  it('keeps machine [subagent].deny_models hard for direct model changes', async () => {
+    const options = nativeResumeOptions();
+    ctx = createTestAgent(
+      {
+        initialConfig: {
+          ...options.initialConfig,
+          subagent: { denyModels: [RESUME_NEW_MODEL] },
+        },
+      },
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: 'resume-profile', model: RESUME_OLD_MODEL, thinking: 'low', delegationPosition: 'sub' });
+
+    await expect(svc.setModel(RESUME_NEW_MODEL)).rejects.toThrow(/\[subagent\]\.deny_models/);
+    expect(svc.data().modelAlias).toBe(RESUME_OLD_MODEL);
+  });
+
+  it('rechecks machine deny drift on an ordinary resume with no overrides', async () => {
+    const svc = await bindNativeResumeProfile(resumeProfile());
+    await ctx.get(IConfigService).set(
+      'subagent',
+      { denyModels: [RESUME_OLD_MODEL] },
+      ConfigTarget.Memory,
+    );
+
+    await expect(prepareResumeBinding(svc, {})).rejects.toThrow(/\[subagent\]\.deny_models/);
+    expect(svc.data().modelAlias).toBe(RESUME_OLD_MODEL);
+  });
+
+  it('allows a role allowed_models violation and records the resume advisory', async () => {
     const svc = await bindNativeResumeProfile(
       resumeProfile({ allowedModels: [RESUME_OLD_MODEL] }),
     );
 
-    await expect(
-      prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }),
-    ).rejects.toThrow(/allowed_models/);
+    const apply = await prepareResumeBinding(svc, {
+      modelAlias: RESUME_NEW_MODEL,
+      allowModelChange: true,
+    });
+    apply();
     expect(svc.data()).toMatchObject({
-      modelAlias: RESUME_OLD_MODEL,
-      thinkingLevel: 'low',
+      modelAlias: RESUME_NEW_MODEL,
+      bindingAdvisories: [expect.objectContaining({
+        code: 'model_not_allowed',
+        valueSource: 'dispatch-explicit',
+      })],
     });
   });
 
-  it('rejects a role deny_models violation before changing the binding', async () => {
+  it('allows a role deny_models violation and records the resume advisory', async () => {
     const svc = await bindNativeResumeProfile(
       resumeProfile({ denyModels: [RESUME_NEW_MODEL] }),
     );
 
-    await expect(
-      prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, allowModelChange: true }),
-    ).rejects.toThrow(/deny_models/);
+    const apply = await prepareResumeBinding(svc, {
+      modelAlias: RESUME_NEW_MODEL,
+      allowModelChange: true,
+    });
+    apply();
     expect(svc.data()).toMatchObject({
-      modelAlias: RESUME_OLD_MODEL,
-      thinkingLevel: 'low',
+      modelAlias: RESUME_NEW_MODEL,
+      bindingAdvisories: [expect.objectContaining({ code: 'model_denied' })],
     });
   });
 
-  it('rejects a role allowed_efforts violation before changing the binding', async () => {
+  it('allows a role allowed_efforts violation and records the resume advisory', async () => {
     const svc = await bindNativeResumeProfile(
       resumeProfile({ allowedEfforts: ['low'] }),
     );
 
-    await expect(prepareResumeBinding(svc, { thinkingEffort: 'high' })).rejects.toThrow(/allowed_efforts/);
+    const apply = await prepareResumeBinding(svc, { thinkingEffort: 'high' });
+    apply();
     expect(svc.data()).toMatchObject({
       modelAlias: RESUME_OLD_MODEL,
-      thinkingLevel: 'low',
+      thinkingLevel: 'high',
+      bindingAdvisories: [expect.objectContaining({ code: 'effort_not_allowed' })],
     });
   });
 
-  it('rejects caller allowed_models, deny_models, and allowed_efforts before changing the binding', async () => {
+  it('allows caller model and effort policy deviations with source-located advisories', async () => {
     const cases = [
       {
         constraints: { allowedModels: [RESUME_OLD_MODEL] },
         input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true },
-        message: /allowed_models/,
+        code: 'model_not_allowed',
       },
       {
         constraints: { denyModels: [RESUME_NEW_MODEL] },
         input: { modelAlias: RESUME_NEW_MODEL, allowModelChange: true },
-        message: /deny_models/,
+        code: 'model_denied',
       },
       {
         constraints: { allowedEfforts: ['low'] },
         input: { thinkingEffort: 'high' },
-        message: /allowed_efforts/,
+        code: 'effort_not_allowed',
       },
     ] as const;
 
-    for (const { constraints, input, message } of cases) {
+    for (const { constraints, input, code } of cases) {
       const svc = await bindNativeResumeProfile(resumeProfile());
-
-      await expect(
-        prepareResumeBinding(svc, {
-          ...input,
-          callerConstraints: [constraints],
-        }),
-      ).rejects.toThrow(message);
-      expect(svc.data()).toMatchObject({
-        modelAlias: RESUME_OLD_MODEL,
-        thinkingLevel: 'low',
+      const apply = await prepareResumeBinding(svc, {
+        ...input,
+        callerConstraints: [{ constraints, ruleSource: 'caller-lease:reviewer' }],
       });
+      apply();
+      expect(svc.data().bindingAdvisories).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code, ruleSource: expect.stringContaining('caller-lease:reviewer') }),
+      ]));
       await ctx.dispose();
     }
   });

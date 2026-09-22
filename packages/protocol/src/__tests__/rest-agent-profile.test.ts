@@ -107,6 +107,36 @@ describe('named agent profile REST protocol', () => {
     ]) expect(agentCapabilitiesQuerySchema.safeParse(query).success).toBe(false);
   });
 
+  it('keeps binding advisories optional and validates their structured values', () => {
+    const advisory = {
+      version: 1 as const,
+      code: 'model_not_allowed' as const,
+      dimension: 'model' as const,
+      rule_source: 'profile:reviewer.allowed_models',
+      rule_values: ['fast-model'],
+      requested_value: 'large-model',
+      effective_value: 'provider/large-model',
+      value_source: 'dispatch-explicit' as const,
+      model: 'provider/large-model',
+      message: 'Model deviates from the role recommendation.',
+    };
+    const parsed = agentCapabilitiesResponseSchema.parse({
+      context: 'live', owner: { agent_id: 'main' }, available: true,
+      targets: [{
+        profile: 'reviewer', executor: 'native', defaults_available: true,
+        binding_advisories: [advisory],
+      }],
+      profile: { name: 'reviewer', binding_advisories: [advisory] },
+    });
+    expect(parsed.targets[0]?.binding_advisories).toEqual([advisory]);
+    expect(parsed.profile?.binding_advisories).toEqual([advisory]);
+    expect(agentCapabilitiesResponseSchema.safeParse({
+      context: 'live', owner: { agent_id: 'main' }, available: true,
+      targets: [{ profile: 'reviewer', executor: 'native', defaults_available: true }],
+      profile: { name: 'reviewer' },
+    }).success).toBe(true);
+  });
+
   it('separates live launch admission from defaults without inventing draft policy', () => {
     const target = { profile: 'helper', executor: 'native', defaults_available: false,
       dispatch_policy: 'advisory', recommendation_status: 'allowed_nonpreferred', advisory_deviation: true,

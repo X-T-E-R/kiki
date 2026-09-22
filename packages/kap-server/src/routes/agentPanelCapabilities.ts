@@ -1,4 +1,4 @@
-import type { AgentCapabilitiesProducerResponse, AgentPanelProfile } from '@kiki/protocol';
+import type { AgentBindingAdvisory, AgentCapabilitiesProducerResponse, AgentPanelProfile } from '@kiki/protocol';
 import {
   IAgentProfileService,
   IAgentToolRegistryService,
@@ -39,11 +39,13 @@ import {
 import type { PersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { projectPersistedAgentThinking } from './agentProfileThinking';
 
+type BindingAdvisory = NonNullable<ProfileData['bindingAdvisories']>[number];
+
 type PanelBindingData = Partial<Pick<ProfileData,
   'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'thinkingLevel' |
   'effectiveThinkingLevel' | 'thinkingEffortSource' | 'routeDetached' |
-  'profileSource' | 'executorId' | 'serviceTier' | 'activeToolNames' |
+  'profileSource' | 'bindingAdvisories' | 'executorId' | 'serviceTier' | 'activeToolNames' |
   'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
   'subagentPolicy' | 'executionRestriction' | 'allowParentNotify' | 'spawnPolicy' | 'appliedLease' |
   'boundProfile'>> & { readonly thinkingEffortAdjusted?: boolean };
@@ -264,6 +266,7 @@ function panelProfile(
     thinking_effort_source: data.thinkingEffortSource,
     route_detached: routeDetached,
     profile_source: data.profileSource,
+    binding_advisories: projectBindingAdvisories(data.bindingAdvisories),
     executor: data.executorId,
     service_tier: data.serviceTier ?? definition?.serviceTier,
     tools: data.activeToolNames === undefined ? undefined : [...data.activeToolNames],
@@ -281,6 +284,25 @@ function panelProfile(
       disallowed_tools: data.spawnPolicy.disallowedTools === undefined ? undefined : [...data.spawnPolicy.disallowedTools],
     },
   };
+}
+
+export function projectBindingAdvisories(
+  advisories: readonly BindingAdvisory[] | undefined,
+): AgentBindingAdvisory[] | undefined {
+  if (advisories === undefined || advisories.length === 0) return undefined;
+  return advisories.map((advisory) => ({
+    version: advisory.version,
+    code: advisory.code,
+    dimension: advisory.dimension,
+    rule_source: advisory.ruleSource,
+    rule_value: advisory.ruleValue,
+    rule_values: advisory.ruleValues === undefined ? undefined : [...advisory.ruleValues],
+    requested_value: advisory.requestedValue,
+    effective_value: advisory.effectiveValue,
+    value_source: advisory.valueSource,
+    model: advisory.model,
+    message: advisory.message,
+  }));
 }
 
 function panelEffortSource(

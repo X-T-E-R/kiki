@@ -27,7 +27,7 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 默认的 v2 引擎（Kiki 桌面端和 `kiki` CLI/TUI）会给主 `agent` profile 提供三个子 Agent 工具，不需要实验开关：`AgentRun`、`AgentList` 和 `AgentSend`。内置 subagent profile 没有它们。每个调用方只能列出和发消息给自己直接创建的子 Agent；孙级或别人创建的子 Agent 都不是有效目标。已退役的 `AgentSwarm` 可调用工具不再支持新调用，但历史 swarm 子 Agent 记录仍可读取。
 
-`AgentRun` 用来启动新的子 Agent，或继续已有的。每次调用都必须提供 `prompt` 和用于界面展示、长度为 3–5 个词的短 `description`。新派生还可以设置 `profile`（省略时，显式配置的 `[subagent].default_profile` 会选择对应 profile；该配置键不存在时使用内建通用 subagent 提示词；显式留空时必须指定目标）、`profile_file`（显式 subagent role Markdown 文件，绝对路径或工作区相对路径；它是 role 定义而非共享提示词模板，并且与 `profile`、`route`、`resume` 互斥）、`route`、`name`、`background`、`model_alias` 和 `effort`。`allow_model_change` 仅在 `resume` 同时显式传入 `model_alias` 时有意义；该 alias 解析到不同规范模型时必须传入它。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续直属子 Agent 时，把 `resume` 设为它的名称或 agent id；它与 `name`、`profile`、`profile_file` 和 `route` 互斥。省略 `effort` 会保留已保存的 effort，也可以传入让下一次空闲运行使用。省略 `model_alias` 会保留已保存的模型；切换到不同规范模型必须传 `allow_model_change: true`，而解析到同一规范模型则不产生变化。调用方、role、route 与 executor 限制仍会强制执行。外部 executor 不支持修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。新派生项的模型来自 `model_alias` 参数或生效 profile / route / caller lease 上的 pin，参数优先；两者都没有时调用以 `model.not_configured` 失败，不会创建子 Agent。effort 独立解析：工具 `effort` → profile `thinking_effort` → 所绑定模型自身的默认档位。显式传入未知 `model_alias` 时会报错。传入 `background: true` 可让任务在后台运行，否则父 Agent 会等待结果。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。
+`AgentRun` 用来启动新的子 Agent，或继续已有的。每次调用都必须提供 `prompt` 和用于界面展示、长度为 3–5 个词的短 `description`。新派生还可以设置 `profile`（省略时，显式配置的 `[subagent].default_profile` 会选择对应 profile；该配置键不存在时使用内建通用 subagent 提示词；显式留空时必须指定目标）、`profile_file`（显式 subagent role Markdown 文件，绝对路径或工作区相对路径；它是 role 定义而非共享提示词模板，并且与 `profile`、`route`、`resume` 互斥）、`route`、`name`、`background`、`model_alias` 和 `effort`。`allow_model_change` 仅在 `resume` 同时显式传入 `model_alias` 时有意义；该 alias 解析到不同规范模型时必须传入它。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续直属子 Agent 时，把 `resume` 设为它的名称或 agent id；它与 `name`、`profile`、`profile_file` 和 `route` 互斥。省略 `effort` 会保留已保存的 effort，也可以传入让下一次空闲运行使用。省略 `model_alias` 会保留已保存的模型；切换到不同规范模型必须传 `allow_model_change: true`，而解析到同一规范模型则不产生变化。Role 的模型 / effort 指引，以及 route 与 caller lease 的 pin 都属于软建议：只要实际绑定可执行，显式覆盖会继续运行并产生结构化告警。机器级 `[subagent].deny_models`、缺失或不受支持的模型能力、route 身份、换模确认，以及 executor / thread 限制仍是硬错误。外部 executor 不支持修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。新派生项的模型来自 `model_alias` 参数或生效 profile / route / caller lease 上的 pin，参数优先；两者都没有时调用以 `model.not_configured` 失败，不会创建子 Agent。effort 独立解析：工具 `effort` → profile `thinking_effort` → 所绑定模型自身的默认档位。显式传入未知 `model_alias` 时会报错。传入 `background: true` 可让任务在后台运行，否则父 Agent 会等待结果。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。
 
 `AgentList` 返回这些直属子 Agent，包括保留的历史 swarm 条目。默认 `include_finished=false` 列出运行中的，以及没有跟踪任务的；需要已经结束或失败的，再传 `true`。最多返回 50 条，运行中的排在前面。
 
@@ -145,9 +145,9 @@ disallowedTools:
 | `model_alias` | 否 | `[models]` 中区分大小写的精确 alias。它就是该 profile 的模型 pin：派发未指定模型时绑定它；没有它的 profile 只能由显式 `model_alias` 的派发使用 |
 | `thinking_effort` | 否 | 该 profile 作为新子 Agent 启动时请求的 thinking effort，与模型选择器独立解析 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
-| `allowed_models` | 否 | 该 role 允许绑定的模型 alias 白名单。写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。字段存在且非空时，绑定结果必须是其中一员。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。这份名单只能**收紧**机器已经允许的集合，不能重新放行 `[subagent].deny_models` 或本文件 `deny_models` 禁止的模型。只写一项就是把该 role 钉死到那个 alias 的做法，不必再为“只改模型”单独建 route sidecar。省略字段或写 `"*"` 表示不再额外限制；`[]` 表示不允许任何模型，会阻止自动派发。Caller lease 与 `spawn_constraints` 中语义相同。旧文件若用空列表表示不限制，请改成 `"*"` |
-| `deny_models` | 否 | 该 role 禁止绑定的模型 alias 名单，写法与 `allowed_models` 相同。自动派发会被拒绝；人类显式选择放行并给一次性提示。机器级 `[subagent].deny_models` 仍拒绝所有路径，包括人类 |
-| `allowed_efforts` | 否 | 该 role 允许的 thinking effort 白名单，写法与 `tools` 相同。角色级与匹配到的 `model_profiles` 条目求交。自动派发（`AgentRun`）超出交集即拒绝；人类显式选择放行并给一次性提示 |
+| `allowed_models` | 否 | 该 role 推荐使用的模型 alias，支持 YAML 列表或逗号分隔字符串。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。只要模型存在且 executor 支持，列表外的模型仍可执行；子 Agent 会记录结构化 advisory，而不是拒绝派发。只写一项表示强推荐，不是权限边界。省略字段或写 `"*"` 表示不提供推荐；`[]` 表示没有推荐模型，但不会阻止显式、可执行的绑定。Caller lease 与 `spawn_constraints` 采用同样的软建议语义。机器级 `[subagent].deny_models` 仍然具有最终否决权 |
+| `deny_models` | 否 | 该 role 建议避免的模型 alias 名单，写法与 `allowed_models` 相同。选中其中模型时会继续执行并产生醒目的结构化 advisory。需要在所有路径硬拒绝某个模型时，应使用机器级 `[subagent].deny_models` |
+| `allowed_efforts` | 否 | 该 role 推荐的 thinking effort 列表。角色级与命中的 `model_profiles` 条目求交，用于推荐和诊断。只要实际档位可执行，交集外的 effort 会继续运行并产生结构化 advisory；provider 或 executor 无法执行的档位仍是硬错误 |
 | `model_profiles` | 否 | 该角色在某个模型上的跑法。只支持 YAML mapping 列表。必填 `alias`；可选 `when`、`thinking_effort`、`allowed_efforts`、`prompt_mode`（`prepend` / `append` / `wrap`）、`prompt`、`prompt_overrides`、`service_tier`、`request_params`、`context_budget` 与 `max_completion_tokens`。`when` 只给派发方看，渲进 `AgentRun` 工具说明，不写进子 Agent 自己的提示词。带 `prompt_mode` 的条目在角色正文之后、模型 cognition overlay 之前组合；`wrap` 要求正文恰好一次 `${parent_prompt}`（或其别名 `${base_prompt}`）。本机 `[models]` 表解析不到的 alias 既不出现在工具说明里，也不生效。重复 alias 会全部保留在文件里，overlay 只匹配第一条解析成功的 |
 | `prompt_overrides` | 否 | 该 profile 的提示词字段覆写，可含 `files` 与 `fields`。此层覆盖全局与模型值；匹配的 `model_profiles[].prompt_overrides` 条目再覆盖它。详见 [`prompt`](../configuration/config-files.md#prompt) |
 | `system_prompt_mode` | 否 | 提示词正文模式：`replace`（默认）、`prepend`、`append` 或 `inherit`。`inherit` 要求正文为空且 `prompt_overrides` 非空；它保留下层同名 profile 定义，并应用本文件的字段覆写 |
@@ -183,7 +183,7 @@ model_profiles:
 
 给单个模型补充提示词，仍用模型 cognition 通道（`[models."<alias>".cognition]`）：`model_profiles.prompt_mode` 与 `prompt` 扩的是 role 自身正文，alias cognition 扩的是模型的系统提示词——两者是不同位置，不要把 `prompt_mode` 当作模型认知开关的替代。
 
-`allowed_models` 与 `deny_models` 只能收紧，不能放宽。机器级 `[subagent].deny_models` 始终优先，即使 role 的白名单里写了同一个 alias。只含一项的 `allowed_models` 用来把该 role 钉死到一个模型；route sidecar 不能声明这两个字段。
+`allowed_models`、role `deny_models` 与 `allowed_efforts` 用来形成推荐，并在实际绑定偏离时产生 advisory；它们不会扩大或收紧机器权限边界。机器级 `[subagent].deny_models` 始终优先，即使 role 推荐了同一个 alias；route sidecar 不能声明这些 role 列表字段。
 
 ```yaml
 allowed_models:
@@ -194,11 +194,11 @@ deny_models:
 ```
 
 ```yaml
-# 把该 role 钉死到一个 alias：
+# 为该 role 推荐一个 alias：
 allowed_models: [fast-model]
 ```
 
-写白名单时要同时写上你想钉死的 `model_alias`。只声明 `allowed_models` 而不写 `model_alias` 的 profile 仍会加载并给出告警，但派发时若没有指定模型会直接 fail closed，而不是退到某个还要由白名单再判一次的默认模型。
+把这份推荐与希望作为默认值的 `model_alias` 一起写。只声明 `allowed_models` 而不写 `model_alias` 的 profile 仍会加载并给出告警，但派发时若没有指定模型会直接 fail closed，因为推荐列表本身不会选择模型。
 
 内置工具与用户工具按名称精确匹配（区分大小写）；以 `mcp__` 开头的条目按 glob 匹配 MCP 工具。有三种写法永远匹配不到任何工具，在 profile 生效时会给出警告：`mcp__` 模式之外使用通配符（`disallowedTools` 里单独的 `*` 什么也禁不掉）；不是完整 `mcp__<服务器>__<工具>` 形式的 `mcp__` 字面量（`mcp__github` 匹配不到任何工具 —— 匹配整个服务器要用 `mcp__github__*`）；以及任何已注册或内置工具都没有的名字（通常是笔误，如把 `Read` 写成 `read`）。
 
@@ -232,13 +232,13 @@ request_params:
 重点检查交互回归、无障碍与视觉一致性。
 ```
 
-必填字段为 `id`、`profile`、`description` 和 `prompt_mode`。可选字段为 `whenToUse`、`model_alias`、`thinking_effort`、`service_tier`、`request_params`、`tools`、`disallowedTools`、`subagents`。与普通 Agent 文件不同，route Frontmatter 使用严格解析。未知字段、非法类型、路径 / ID / profile 不匹配、同一来源内重复 ID、互斥的模型选择器只会让该 sidecar 被跳过并产生带 code 的诊断；基础 profile 和其他 route 仍会加载。`model_profiles`、`allowed_models`、`deny_models` 等仅属于 Agent 文件的字段在这里属于未知字段，会导致该 sidecar 被跳过。Route 可以钉死 `model_alias`，但该钉死值仍要接受基础 profile 的 `allowed_models` / `deny_models` 检查。
+必填字段为 `id`、`profile`、`description` 和 `prompt_mode`。可选字段为 `whenToUse`、`model_alias`、`thinking_effort`、`service_tier`、`request_params`、`tools`、`disallowedTools`、`subagents`。与普通 Agent 文件不同，route Frontmatter 使用严格解析。未知字段、非法类型、路径 / ID / profile 不匹配、同一来源内重复 ID、互斥的模型选择器只会让该 sidecar 被跳过并产生带 code 的诊断；基础 profile 和其他 route 仍会加载。`model_profiles`、`allowed_models`、`deny_models` 等仅属于 Agent 文件的字段在这里属于未知字段，会导致该 sidecar 被跳过。Route 可以推荐默认 `model_alias`；它若偏离基础 profile 的模型指引，会显示 advisory，而不会让 route 变得不可执行。
 
 `prompt_mode` 始终保留基础提示词：`inherit` 要求正文为空；`prepend` 与 `append` 要求正文非空且不能包含 `${parent_prompt}` / `${base_prompt}`；`wrap` 要求正文必须且只能包含一次 `${parent_prompt}` 或 `${base_prompt}`。不提供无保护的 replace 模式。
 
 Route 若声明 `tools`、`disallowedTools` 或 `subagents`，该字段整体替换基础值；省略则继承基础。`subagents: []` 会让 route 成为叶子。调用方检查仍针对基础 role，因此 route 不能引入调用方原本不能派发的 role。需要另一个 role 身份时，应新建并 allowlist 一个基础 profile。
 
-请求字段省略时继承基础值。`service_tier: null` 清除基础 tier，其他值直接替换；`request_params: null` 清除基础 map，传入 map 时按标量 key 覆盖。Route 声明的 `model_alias` 或 `thinking_effort` 对自动派发锁定：`AgentRun` 可以省略或重复同一值，冲突值会被拒绝。锁定的 alias 不存在时会在分配 Agent 之前报错，不会走普通 profile alias 的回退逻辑；所选模型无法精确执行锁定 effort 时，派发同样会失败。已经绑定的会话里，人类显式 `/model` 或切换 effort 会放行并给一次性提示，快照上的锁仍在。
+请求字段省略时继承基础值。`service_tier: null` 清除基础 tier，其他值直接替换；`request_params: null` 清除基础 map，传入 map 时按标量 key 覆盖。Route 声明的 `model_alias` 或 `thinking_effort` 是 route 默认值。`AgentRun` 可以显式覆盖任一值；子 Agent 仍保留该 route 身份，同时标记为 detached 并记录结构化 advisory。若没有覆盖，缺失的 route 模型，或所选 provider / executor 无法执行的 effort，仍属于硬能力错误。
 
 启用后，`AgentRun` 会列出经调用方基础 role allowlist 过滤后的精简 route 条目。条目只包含 route ID、基础 role、描述 / 使用提示、模型与 effort 默认值、被覆盖的字段名，绝不包含提示词正文。调用时传入 `route: reviewer.ui-k3`；可以省略 `profile` 让系统推导 `reviewer`，也可以显式传入这个匹配的基础 role。Role 不匹配会产生带 code 的错误。系统不会自动排序选择或静默回退。
 
@@ -246,11 +246,11 @@ Route 若声明 `tools`、`disallowedTools` 或 `subagents`，该字段整体替
 
 新派生子 Agent 的模型只有两个来源：工具参数 `model_alias`，或生效 profile / route / caller lease 上的 `model_alias` pin；两者都在时以派发参数为准。两者都没有时派发以 `model.not_configured` 失败，子 Agent 不会被创建——子 Agent 不会跑在调用方的模型上，也没有可回退的配置默认值。effort 独立解析且允许留空：工具显式 `effort` → profile `thinking_effort`，但仅当所绑定 alias 与 profile pin 的 `model_alias` 命中同一规范模型时生效 → 所绑定模型自身的默认档位。未知 alias 无论来自派发参数还是 profile pin 都会报错。
 
-使用 `AgentRun` 恢复时，`model_alias` 与 `effort` 同时省略则保留已保存绑定。`model_alias` 解析到同一规范模型时不产生变化。仅切换 `effort` 时，新值在下次空闲运行生效，已保存模型不变。切换到不同规范模型必须传 `allow_model_change: true`，且 `effort` 同时省略时重新解析目标模型的默认档位，不沿用旧 effort。显式 `effort` 若目标模型无法支持则报错；非严格模式的未知 capability 透传给底层协议。调用方、role、route 与 executor 限制仍会强制执行。外部 executor 不支持修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。
+使用 `AgentRun` 恢复时，`model_alias` 与 `effort` 同时省略则保留已保存绑定。`model_alias` 解析到同一规范模型时不产生变化。仅切换 `effort` 时，新值在下次空闲运行生效，已保存模型不变。切换到不同规范模型必须传 `allow_model_change: true`，且 `effort` 同时省略时重新解析目标模型的默认档位，不沿用旧 effort。Role 指引与已保存的 route / caller lease pin 只产生 advisory，不会阻止可运行的恢复。Provider 无法执行的显式 effort、机器级模型禁止、executor thread 绑定限制和准入一致性检查仍是硬错误。
 
-新建子 Agent 时，省略 `model_alias` 和 `effort` 即可使用目标的默认值。`AgentRun` 按调用方有效的 profile、lease、route 和模型约束列出已配置且允许选择的模型。每个 profile 或 route 有各自的允许列表；某个 alias 出现在另一目标下，不代表当前目标也能使用它。显式覆盖会在创建子 Agent 前接受校验。要把角色限制在指定模型池内，需同时声明 `allowed_models` 和默认 `model_alias`；`model_profiles` 只提供推荐，不授予使用权限。Route 的档位覆盖（包括 `service_tier: null`）不会清除模型级档位配置。
+新建子 Agent 时，省略 `model_alias` 和 `effort` 即可使用目标的默认值。`AgentRun` 按每个目标的有效 profile、lease、route 和模型指引列出推荐模型。某个 alias 出现在另一目标下，不代表它也是当前目标的推荐值，但显式、可执行的覆盖会被接受并记录诊断。把 `allowed_models` 与默认 `model_alias` 一起声明，可以发布推荐模型池；`model_profiles` 提供逐模型建议。Route 的档位覆盖（包括 `service_tier: null`）不会清除模型级档位配置。
 
-subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比较。机器级 `[subagent] deny_models` 在所有派发入口拒绝名单内的模型。role 文件可以用 `allowed_models` 与 `deny_models` 再收紧这个集合；它们不能放宽机器已经禁止的模型，只含一项的 `allowed_models` 就是该 role 的硬钉死。字段与校验规则见[配置参考](../configuration/config-files.md#subagent)。
+subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比较。机器级 `[subagent].deny_models` 是硬模型策略，在所有 subagent 入口拒绝名单内模型。Role `allowed_models` / `deny_models`、model-profile effort 列表、route 默认值和 caller lease pin 都属于软建议；偏离事实会保存在子 Agent 绑定中，并在父侧 `AgentRun` 结果里给出摘要。字段与校验规则见[配置参考](../configuration/config-files.md#subagent)。
 
 目录中发现的非法文件会被跳过并告警，不影响其他文件。通过 `--agent-file` 显式传入的文件必须合法 —— 否则 CLI 会报错并退出。
 

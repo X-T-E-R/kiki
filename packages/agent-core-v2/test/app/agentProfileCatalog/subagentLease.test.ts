@@ -392,7 +392,7 @@ describe('resolved subagent targets', () => {
     expect(target.spawnPolicy).toBe(spawnPolicy);
   });
 
-  it('uses the same effective target rules when describing available profiles and routes', () => {
+  it('keeps role-policy deviations visible in available profiles and routes', () => {
     const lease = { name: 'worker', tools: ['Read'] } as const;
     const caller = {
       profileName: 'parent',
@@ -421,7 +421,9 @@ describe('resolved subagent targets', () => {
 
     expect(available.profiles).toHaveLength(1);
     expect(available.profiles[0]).toMatchObject({ name: 'worker', tools: ['Read'] });
-    expect(available.routes).toEqual([]);
+    expect(available.routes).toEqual([
+      expect.objectContaining({ id: 'worker.route', modelAlias: 'route-model' }),
+    ]);
   });
 
   it('does not fall back to a public profile when a scoped alias is unavailable', () => {

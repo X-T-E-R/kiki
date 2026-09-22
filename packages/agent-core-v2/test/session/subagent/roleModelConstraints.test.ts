@@ -15,6 +15,7 @@ import {
   type SubagentBindingRequest,
   type SubagentRoleModelConstraints,
 } from '#/session/subagent/configSection';
+import { roleBindingAdvisories } from '#/session/subagent/modelConstraints';
 import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentRouteFile';
 
 import { StubConfigService } from '../../kosong/stubs';
@@ -144,38 +145,50 @@ describe('a subagent model comes only from a profile pin or the dispatch', () =>
   });
 });
 
-describe('role model constraints at bind time: role allowed_models / deny_models only narrow, machine [subagent].deny_models stays authoritative', () => {
-  it('rejects any other dispatch-time model_alias when allowed_models has a single pin', () => {
-    const pin: SubagentRoleModelConstraints = { allowedModels: ['fast-model'] };
-
-    expect(bindSubagent({ modelAlias: 'fast-model' }, pin)).toMatchObject({
-      model: 'fast-model',
-    });
-    expect(bindSubagent(undefined, pin, { modelAlias: 'fast-model' })).toMatchObject({
-      model: 'fast-model',
-    });
-    const error = configError(() => bindSubagent({ modelAlias: 'k3-review' }, pin));
-    expect(error.message).toContain('provider/k3');
-    expect(error.message).toContain('not in this agent\'s allowed_models');
-    expect(error.message).toContain('Permitted models: fast-model');
-    expect(error.details?.['permittedModels']).toEqual(['fast-model']);
+describe('role model constraints are advisory while machine deny stays authoritative', () => {
+  const evaluate = (
+    model: string,
+    constraints: SubagentRoleModelConstraints,
+    thinking?: string,
+  ) => roleBindingAdvisories({
+    model,
+    requestedModel: model,
+    thinking,
+    requestedThinking: thinking,
+    constraints,
+    models: catalog,
+    ruleSource: 'profile:reviewer',
+    modelValueSource: 'dispatch-explicit',
+    thinkingValueSource: 'dispatch-explicit',
   });
 
-  it('rejects a dispatch-time model_alias listed only in the role deny_models', () => {
-    const error = configError(() =>
-      bindSubagent({ modelAlias: 'heavy-model' }, { denyModels: ['heavy-model'] }),
-    );
-    expect(error.message).toContain('provider/heavy');
-    expect(error.message).toContain('denied by this agent\'s deny_models');
-    expect(error.message).not.toContain('[subagent].deny_models');
+  it('allows a model outside role allowed_models and returns a structured advisory', () => {
+    const constraints: SubagentRoleModelConstraints = { allowedModels: ['fast-model'] };
+    expect(bindSubagent({ modelAlias: 'k3-review' }, constraints)).toMatchObject({ model: 'k3-review' });
+    expect(evaluate('k3-review', constraints)).toEqual([
+      expect.objectContaining({
+        code: 'model_not_allowed',
+        ruleSource: 'profile:reviewer.allowed_models',
+        requestedValue: 'k3-review',
+        effectiveValue: 'provider/k3',
+        valueSource: 'dispatch-explicit',
+      }),
+    ]);
   });
 
-  it('treats an empty allowed_models list as deny-all for automatic dispatch', () => {
-    const error = configError(() =>
-      bindSubagent({ modelAlias: 'fast-model' }, { allowedModels: [] }),
-    );
-    expect(error.message).toContain('not in this agent\'s allowed_models');
-    expect(error.message).toContain('(none)');
+  it('allows role deny_models and empty allowed_models with prominent advisories', () => {
+    expect(bindSubagent({ modelAlias: 'heavy-model' }, { denyModels: ['heavy-model'] }))
+      .toMatchObject({ model: 'heavy-model' });
+    expect(evaluate('heavy-model', { denyModels: ['heavy-model'] })[0]).toMatchObject({
+      code: 'model_denied',
+      ruleSource: 'profile:reviewer.deny_models',
+    });
+    expect(bindSubagent({ modelAlias: 'fast-model' }, { allowedModels: [] }))
+      .toMatchObject({ model: 'fast-model' });
+    expect(evaluate('fast-model', { allowedModels: [] })[0]).toMatchObject({
+      code: 'model_not_allowed',
+      ruleValues: [],
+    });
   });
 
   it('does not let role allowed_models re-permit a machine [subagent].deny_models entry', () => {
@@ -191,31 +204,24 @@ describe('role model constraints at bind time: role allowed_models / deny_models
     expect(error.details?.['deniedModels']).toEqual(['provider/blocked']);
   });
 
-  it('matches a bare allowlist/denylist entry against a qualified dispatch alias', () => {
-    expect(
-      bindSubagent({ modelAlias: 'provider/fast' }, { allowedModels: ['fast'] }),
-    ).toMatchObject({ model: 'provider/fast' });
-    expect(
-      configError(() =>
-        bindSubagent({ modelAlias: 'provider/heavy' }, { denyModels: ['heavy-model'] }),
-      ).message,
-    ).toContain('provider/heavy');
+  it('matches canonical aliases when evaluating role guidance', () => {
+    expect(bindSubagent({ modelAlias: 'provider/fast' }, { allowedModels: ['fast'] }))
+      .toMatchObject({ model: 'provider/fast' });
+    expect(evaluate('provider/heavy', { denyModels: ['heavy-model'] })[0]).toMatchObject({
+      code: 'model_denied',
+      effectiveValue: 'provider/heavy',
+    });
   });
 
-  it('rejects a route-pinned model_alias that the base profile constraints forbid', () => {
+  it('allows a route default outside the base profile guidance and reports it', () => {
     const resolved = resolveAgentProfileRoute(routePin('k3-review'), reviewer());
-    expect(resolved.effectiveProfile.allowedModels).toEqual(['fast-model']);
-    expect(resolved.effectiveProfile.modelAlias).toBe('k3-review');
-    expect(resolved.lockedModelAlias).toBe('k3-review');
-
-    const error = configError(() =>
-      bindSubagent(undefined, {
-        allowedModels: resolved.effectiveProfile.allowedModels,
-        denyModels: resolved.effectiveProfile.denyModels,
-      }, { modelAlias: resolved.effectiveProfile.modelAlias }),
-    );
-    expect(error.message).toContain('provider/k3');
-    expect(error.message).toContain('allowed_models');
+    const constraints = {
+      allowedModels: resolved.effectiveProfile.allowedModels,
+      denyModels: resolved.effectiveProfile.denyModels,
+    };
+    expect(bindSubagent(undefined, constraints, { modelAlias: resolved.effectiveProfile.modelAlias }))
+      .toMatchObject({ model: 'k3-review' });
+    expect(evaluate('k3-review', constraints)[0]).toMatchObject({ code: 'model_not_allowed' });
   });
 
   it('rejects a route sidecar that declares allowed_models as an unknown field', () => {
@@ -238,35 +244,26 @@ describe('role model constraints at bind time: role allowed_models / deny_models
     ).toThrow(/Unknown frontmatter field "allowed_models"/);
   });
 
-  it('does not let constraint-like fields on the tool request grant permission', () => {
-    const error = configError(() =>
-      bindSubagent(
-        { modelAlias: 'k3-review', allowedModels: ['k3-review'] } as SubagentBindingRequest,
-        { allowedModels: ['fast-model'] },
-      ),
-    );
-    expect(error.message).toContain('allowed_models');
+  it('ignores constraint-like fields on the tool request', () => {
+    const constraints = { allowedModels: ['fast-model'] };
+    expect(bindSubagent(
+      { modelAlias: 'k3-review', allowedModels: ['k3-review'] } as SubagentBindingRequest,
+      constraints,
+    )).toMatchObject({ model: 'k3-review' });
+    expect(evaluate('k3-review', constraints)[0]).toMatchObject({ code: 'model_not_allowed' });
   });
 
-  it('intersects role allowed_efforts with a matching model_profiles entry', () => {
+  it('allows an effort outside the role and model-profile intersection with an advisory', () => {
     const constraints: SubagentRoleModelConstraints = {
       allowedEfforts: ['high', 'max'],
-      modelProfiles: [
-        {
-          alias: 'fast-model',
-          when: 'when fast',
-          allowedEfforts: ['max'],
-        },
-      ],
+      modelProfiles: [{ alias: 'fast-model', when: 'when fast', allowedEfforts: ['max'] }],
     };
-
-    expect(
-      bindSubagent({ modelAlias: 'fast-model', thinkingEffort: 'max' }, constraints),
-    ).toMatchObject({ thinking: 'max' });
-    const error = configError(() =>
-      bindSubagent({ modelAlias: 'fast-model', thinkingEffort: 'high' }, constraints),
-    );
-    expect(error.message).toContain('allowed_efforts');
-    expect(error.message).toContain('max');
+    expect(bindSubagent({ modelAlias: 'fast-model', thinkingEffort: 'high' }, constraints))
+      .toMatchObject({ thinking: 'high' });
+    expect(evaluate('fast-model', constraints, 'high')[0]).toMatchObject({
+      code: 'effort_not_allowed',
+      ruleValues: ['max'],
+      effectiveValue: 'high',
+    });
   });
 });
