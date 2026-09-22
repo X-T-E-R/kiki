@@ -33,6 +33,7 @@ import {
   cwdStdioFixture,
   hangingListStdioFixture,
   hostProcessPathClass,
+  noToolsStdioFixture,
   slowStdioFixture,
   slowToolStdioFixture,
   stderrThenExitFixture,
@@ -103,6 +104,22 @@ describe('McpConnectionManager', () => {
       expect(cm.get('good')?.status).toBe('connected');
       expect(cm.get('bad')?.status).toBe('failed');
       expect(cm.get('bad')?.error).toBeDefined();
+    } finally {
+      await cm.shutdown();
+    }
+  }, 20000);
+
+  it('marks a server without a tools capability as connected with zero tools', async () => {
+    const cm = createManager();
+    try {
+      await cm.connectAll({ promptsOnly: stdioConfig([noToolsStdioFixture]) });
+      const entry = cm.get('promptsOnly');
+      expect(entry?.status).toBe('connected');
+      expect(entry?.toolCount).toBe(0);
+      expect(entry?.error).toBeUndefined();
+      const resolved = cm.resolved('promptsOnly');
+      expect(resolved?.tools).toEqual([]);
+      expect(resolved?.rawTools).toEqual([]);
     } finally {
       await cm.shutdown();
     }

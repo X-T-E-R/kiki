@@ -3,6 +3,7 @@ import type { McpServerSseConfig } from './config-schema';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/sse.js';
+import type { ServerCapabilities } from '@modelcontextprotocol/sdk/types.js';
 
 import {
   buildRequestOptions,
@@ -103,6 +104,10 @@ export class SseMcpClient implements MCPClient {
       buildRequestOptions(this.startupTimeoutMs, undefined),
     );
     return result.tools.map(toMcpToolDefinition);
+  }
+
+  getServerCapabilities(): ServerCapabilities | undefined {
+    return this.client.getServerCapabilities();
   }
 
   async callTool(

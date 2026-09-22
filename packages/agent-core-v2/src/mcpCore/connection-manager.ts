@@ -328,7 +328,7 @@ export class McpConnectionManager implements McpConnectionView {
       client = startupClient;
       entry.client = startupClient;
       const discovered = await withTimeout(
-        this.connectAndDiscoverTools(startupClient),
+        this.connectAndDiscoverTools(startupClient, entry.name),
         timeoutMs,
         () => {
           void this.closeRuntimeClient(startupClient);
@@ -455,8 +455,19 @@ export class McpConnectionManager implements McpConnectionView {
 
   private async connectAndDiscoverTools(
     client: RuntimeMcpClient,
+    name: string,
   ): Promise<{ tools: Tool[]; rawTools: MCPToolDefinition[] }> {
     await client.connect();
+    const capabilities = client.getServerCapabilities();
+    if (capabilities !== undefined && capabilities.tools === undefined) {
+      // A server that declares its capabilities without `tools` is a valid
+      // MCP server (prompts/resources only); report it as connected with
+      // zero tools instead of failing discovery.
+      this.log.debug?.('mcp server connected without a tools capability', {
+        server: name,
+      });
+      return { rawTools: [], tools: [] };
+    }
     const mcpTools = await client.listTools();
     return {
       rawTools: mcpTools,

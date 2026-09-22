@@ -34,6 +34,7 @@ export const slowToolStdioFixture = fixtureFile('slow-tool-stdio-server.mjs');
 export const hangingListStdioFixture = fixtureFile('hanging-list-stdio-server.mjs');
 export const crashAfterConnectFixture = fixtureFile('crash-after-connect-stdio-server.mjs');
 export const stderrThenExitFixture = fixtureFile('stderr-then-exit-stdio-server.mjs');
+export const noToolsStdioFixture = fixtureFile('mock-no-tools-stdio-server.mjs');
 export const hostProcessPathClass = process.platform === 'win32' ? 'win32' : 'posix';
 
 export function createMemoryMcpOAuthStore(): McpOAuthStore {

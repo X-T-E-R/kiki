@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCMessage, ServerCapabilities } from '@modelcontextprotocol/sdk/types.js';
 
 import { ErrorCodes, Error2 } from '#/errors';
 import type { IHostProcess } from '#/os/interface/hostProcess';
@@ -103,6 +103,10 @@ export class StdioMcpClient implements MCPClient {
 
   stderrSnapshot(): string {
     return this.stderrBuffer.snapshot();
+  }
+
+  getServerCapabilities(): ServerCapabilities | undefined {
+    return this.client.getServerCapabilities();
   }
 
   async listTools(): Promise<MCPToolDefinition[]> {
