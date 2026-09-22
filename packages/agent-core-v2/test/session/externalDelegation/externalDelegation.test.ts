@@ -309,6 +309,7 @@ describe('SessionExternalDelegationService', () => {
             thinkingEffort: binding.thinkingEffort ?? thinkingLevel,
           },
         }),
+        prepareResumeBinding: async () => () => {},
       });
       permissionModes.set(id, 'auto');
       const setPermissionMode = (mode: PermissionMode): void => {
@@ -2868,7 +2869,7 @@ describe('SessionExternalDelegationService', () => {
           thinkingEffort: 'medium',
         },
       ],
-      tools: 'Read, Write',
+      tools: 'Read, Write\n  Tool availability is conditional on the child runtime, feature configuration, and invocation approval.',
     });
   });
 

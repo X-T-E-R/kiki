@@ -1011,6 +1011,7 @@ describe('AgentLifecycleService', () => {
 
     expect(after.modelAlias).toBe('provider/other-model');
     expect(changedKeys).toEqual([
+      'bindingAdvisories',
       'effectiveThinkingLevel',
       'modelAlias',
       'routeDetached',

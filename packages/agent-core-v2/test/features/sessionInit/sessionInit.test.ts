@@ -135,6 +135,10 @@ describe('SessionInitService', () => {
           return { isFile: true, isDirectory: false, size: AGENTS_MD.length };
         throw new Error(`ENOENT: ${path}`);
       }),
+      readdir: vi.fn(async (path: string) => {
+        if (path === WORK_DIR) return [{ name: 'AGENTS.md', isFile: true, isDirectory: false }];
+        throw new Error(`ENOENT: ${path}`);
+      }),
       readText: vi.fn(async (path: string) => {
         if (path === AGENTS_MD_PATH) return AGENTS_MD;
         throw new Error(`ENOENT: ${path}`);

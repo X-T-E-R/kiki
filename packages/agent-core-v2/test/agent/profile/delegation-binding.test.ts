@@ -168,11 +168,11 @@ describe('delegation context at bind', () => {
     expect(prompt).not.toContain('${delegation_context}');
   });
 
-  it('prepends the TASK prefix to coder when bound as a subagent', async () => {
+  it('prepends the TASK prefix to general when bound as a subagent', async () => {
     ctx = createTestAgent(homeDirServices(homeDir));
     const profile = ctx.get(IAgentProfileService);
     await profile.bind({
-      profile: 'coder',
+      profile: 'general',
       model: MOCK_MODEL,
       delegationPosition: 'sub',
     });
