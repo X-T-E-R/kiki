@@ -696,7 +696,10 @@ export class AcpProcessClient {
     this.#setState('initializing');
     const initializeRequest: InitializeRequest = {
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: { plan: {} },
+      clientCapabilities: {
+        plan: {},
+        session: { configOptions: { boolean: {} } },
+      },
       clientInfo: {
         name: this.#descriptor.clientName ?? 'kiki-acp-client',
         version: '0.0.1',
@@ -777,9 +780,9 @@ export class AcpProcessClient {
     const connection = this.#connection!;
     const common: NewSessionRequest = {
       cwd: options.cwd,
-      additionalDirectories: options.additionalDirectories === undefined
-        ? undefined
-        : [...options.additionalDirectories],
+      additionalDirectories: this.#additionalDirectoriesForSession(
+        options.additionalDirectories,
+      ),
       mcpServers: options.mcpServers === undefined ? [] : [...options.mcpServers],
     };
     const priorSessionId =
@@ -789,7 +792,7 @@ export class AcpProcessClient {
 
     if (
       priorSessionId !== undefined &&
-      this.#capabilities.sessionCapabilities?.resume !== undefined
+      this.#capabilities.sessionCapabilities?.resume != null
     ) {
       this.#setOpeningMode('resume');
       try {
@@ -843,6 +846,22 @@ export class AcpProcessClient {
       mode: 'new',
       configOptions: sessionConfigOptionsFromResponse(response),
     };
+  }
+
+  #additionalDirectoriesForSession(
+    additionalDirectories: readonly string[] | undefined,
+  ): string[] | undefined {
+    if (additionalDirectories === undefined || additionalDirectories.length === 0) {
+      return undefined;
+    }
+    if (this.#capabilities.sessionCapabilities?.additionalDirectories != null) {
+      return [...additionalDirectories];
+    }
+    this.#options.logger?.debug?.(
+      'ACP agent does not declare additionalDirectories support; omitting additional directories',
+      { count: additionalDirectories.length },
+    );
+    return undefined;
   }
 
   #handleSessionUpdate(params: unknown): void {
@@ -1095,8 +1114,14 @@ export function sessionConfigOptionsFromResponse(value: unknown): SessionConfigO
     if (item === undefined) continue;
     const valueId = item['id'];
     const category = item['category'];
-    if (typeof valueId !== 'string' || (category !== 'model' && category !== 'mode')) continue;
-    const optionId = category === 'model' ? 'model' : 'reasoning_effort';
+    // Keep unknown vendor categories visible instead of dropping them: the
+    // ACP spec allows arbitrary category names, and descriptors can address
+    // them through explicit config ids or custom config categories.
+    if (typeof valueId !== 'string' || typeof category !== 'string') continue;
+    const known = category === 'model' || category === 'mode';
+    const optionId = known
+      ? (category === 'model' ? 'model' : 'reasoning_effort')
+      : category;
     const existing = options.find((candidate) => candidate.id === optionId);
     const choice = {
       value: valueId,
@@ -1106,12 +1131,12 @@ export function sessionConfigOptionsFromResponse(value: unknown): SessionConfigO
     if (existing === undefined) {
       options.push({
         id: optionId,
-        name: category === 'model' ? 'Model' : 'Reasoning effort',
-        category: category === 'model' ? 'model' : 'thought_level',
+        name: known ? (category === 'model' ? 'Model' : 'Reasoning effort') : category,
+        category: known ? (category === 'model' ? 'model' : 'thought_level') : category,
         type: 'select',
         currentValue: item['selected'] === true ? valueId : '',
         options: [choice],
-        _meta: { 'kiki.transport': 'session/set_model' },
+        ...(known ? { _meta: { 'kiki.transport': 'session/set_model' } } : {}),
       });
       continue;
     }

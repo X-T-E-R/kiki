@@ -105,6 +105,30 @@ describe('in-process scripted ACP agent fixture', () => {
     ]);
   });
 
+  it('keeps unknown vendor session config categories visible', () => {
+    expect(sessionConfigOptionsFromResponse({
+      _meta: {
+        'x.ai/sessionConfig': {
+          options: [
+            { id: 'grok-4.6', category: 'model', label: 'Grok 4.6', selected: true },
+            { id: 'verbose', category: 'verbosity', label: 'Verbose', selected: true },
+            { id: 'quiet', category: 'verbosity', label: 'Quiet', selected: false },
+          ],
+        },
+      },
+    })).toContainEqual({
+      id: 'verbosity',
+      name: 'verbosity',
+      category: 'verbosity',
+      type: 'select',
+      currentValue: 'verbose',
+      options: [
+        { value: 'verbose', name: 'Verbose', description: undefined },
+        { value: 'quiet', name: 'Quiet', description: undefined },
+      ],
+    });
+  });
+
   it('scripts resume/load method-not-found and unknown-session failures', async () => {
     const { app: agentApp } = createInProcessScriptedAgent({
       resume: 'method_not_found',

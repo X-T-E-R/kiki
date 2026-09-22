@@ -27,6 +27,10 @@ export interface InProcessAgentHistory {
   readonly methods: string[];
   readonly configValues: Array<{ configId: string; value: string | boolean }>;
   readonly permissionResponses: unknown[];
+  readonly initializeParams: unknown[];
+  readonly sessionNewParams: unknown[];
+  readonly sessionResumeParams: unknown[];
+  readonly sessionLoadParams: unknown[];
   cancelCount: number;
 }
 
@@ -68,6 +72,10 @@ export function createInProcessScriptedAgent(
     methods: [],
     configValues: [],
     permissionResponses: [],
+    initializeParams: [],
+    sessionNewParams: [],
+    sessionResumeParams: [],
+    sessionLoadParams: [],
     cancelCount: 0,
   };
   let settlePrompt: ((stopReason: StopReason) => void) | undefined;
@@ -75,6 +83,7 @@ export function createInProcessScriptedAgent(
   const app = agent({ name: 'in-process-scripted-agent' })
     .onRequest(methods.agent.initialize, ({ params }) => {
       history.methods.push('initialize');
+      history.initializeParams.push(params);
       return {
         protocolVersion: params.protocolVersion,
         agentCapabilities: script.capabilities ?? {
@@ -84,17 +93,20 @@ export function createInProcessScriptedAgent(
         agentInfo: { name: 'scripted-agent', version: '1.0.0' },
       };
     })
-    .onRequest(methods.agent.session.new, () => {
+    .onRequest(methods.agent.session.new, ({ params }) => {
       history.methods.push('session/new');
+      history.sessionNewParams.push(params);
       return { sessionId, configOptions };
     })
-    .onRequest(methods.agent.session.resume, () => {
+    .onRequest(methods.agent.session.resume, ({ params }) => {
       history.methods.push('session/resume');
+      history.sessionResumeParams.push(params);
       openFailure('session/resume', script.resume);
       return { configOptions };
     })
-    .onRequest(methods.agent.session.load, async ({ client }) => {
+    .onRequest(methods.agent.session.load, async ({ params, client }) => {
       history.methods.push('session/load');
+      history.sessionLoadParams.push(params);
       openFailure('session/load', script.load);
       for (const update of script.loadReplay ?? []) {
         await client.notify(methods.client.session.update as string, {
