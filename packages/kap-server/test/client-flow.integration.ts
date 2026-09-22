@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IFileService } from '@kiki/agent-core-v2';
+import { IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IFileService, getLiveSessionById } from '@kiki/agent-core-v2';
+import { SessionController } from '../../session-core/src/session/sessionController';
 import { applyTranscriptShell, projectAgentTranscriptView } from '../../session-core/src/session/transcript/project';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { startServer, type RunningServer } from '../src/start';
@@ -214,6 +215,89 @@ describe('GUI shared client against an isolated KAP host', () => {
       } finally {
         subscription.close();
       }
+    }
+  }, 40000);
+
+  it.each(['live', 'cold'] as const)('publishes child prompt restarts and terminal states through the %s GUI view', async (mode) => {
+    const id = await session();
+    await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'establish parent' }] });
+    await settled(id, 1);
+    const live = getLiveSessionById(host.core.accessor, id)!;
+    const child = await live.accessor.get(IAgentLifecycleService).create({
+      delegator: { kind: 'agent', agentId: 'main' },
+      binding: { profile: 'agent', model: 'first' },
+    });
+    await client.sendAgentMessage(id, child.id, 'initial child prompt');
+    await child.accessor.get(IAgentExecutionService).settled();
+    if (mode === 'cold') {
+      await client.klient.close();
+      await host.close();
+      host = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home, instancesDir: join(home, 'instances'), host: '127.0.0.1', port: 0, logLevel: 'silent' });
+      endpoint = `http://127.0.0.1:${host.port}`;
+      client = new KikiClient({ baseUrl: endpoint, token: host.authTokenService.getToken() });
+      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+      const response = await fetch(`${endpoint}/api/sessions/${id}/transcript?agent_id=main`, {
+        headers: { authorization: `Bearer ${host.authTokenService.getToken()}` },
+      });
+      const cold = await response.json() as { code: number; data: { tasks: { agentId?: string; state: string }[] } };
+      expect(cold.code).toBe(0);
+      expect(cold.data.tasks.find((task) => task.agentId === child.id)?.state).toBe('completed');
+      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+    }
+    const controller = new SessionController(client.sessions, client.sessionView(id), id);
+    const mainChanges = vi.fn();
+    const childChanges = vi.fn();
+    const offMain = controller.subscribe(mainChanges);
+    const offChild = controller.subscribeAgent(child.id, childChanges);
+    try {
+      await controller.open();
+      await vi.waitFor(() => {
+        controller.flushFrames();
+        expect(controller.getForest()?.byId[child.id]?.status).toBe('completed');
+      });
+      for (const ending of ['completed', 'failed', 'cancelled'] as const) {
+        hold = true;
+        mainChanges.mockClear();
+        childChanges.mockClear();
+        const beforeRequests = requests.length;
+        await client.sendAgentMessage(id, child.id, `follow-up ${ending}`);
+        await vi.waitFor(() => expect(requests).toHaveLength(beforeRequests + 1), { timeout: 10000 });
+        await vi.waitFor(() => {
+          controller.flushFrames();
+          expect(controller.getForest()?.byId[child.id]?.status).toBe('background');
+          expect(controller.getState().tasks.some((task) => task.agent_id === child.id && task.status === 'running')).toBe(true);
+          expect(controller.getAgentState(child.id).busy).toBe(true);
+        });
+        expect(mainChanges).toHaveBeenCalled();
+        expect(childChanges).toHaveBeenCalled();
+        if (ending === 'cancelled') {
+          const current = getLiveSessionById(host.core.accessor, id)!;
+          const tasks = current.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentTaskService);
+          const task = tasks.list(true).find((task) => task.kind === 'agent' && task.agentId === child.id)!;
+          expect(task.taskId).not.toBe(child.id);
+          await client.klient.session(id).agent('main').stopTask({ taskId: task.taskId });
+        } else {
+          for (const response of held) {
+            if (ending === 'failed') {
+              response.writeHead(400, { 'content-type': 'application/json' });
+              response.end(JSON.stringify({ error: { message: 'Synthetic provider failure', type: 'invalid_request_error' } }));
+            } else {
+              response.writeHead(200, { 'content-type': 'text/event-stream' });
+              response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'follow-up complete' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+            }
+          }
+          held.clear();
+        }
+        await vi.waitFor(() => {
+          controller.flushFrames();
+          expect(controller.getForest()?.byId[child.id]?.status).toBe(ending);
+          expect(controller.getAgentState(child.id).busy).toBe(false);
+        }, { timeout: 10000 });
+      }
+    } finally {
+      offMain();
+      offChild();
+      controller.close();
     }
   }, 40000);
 

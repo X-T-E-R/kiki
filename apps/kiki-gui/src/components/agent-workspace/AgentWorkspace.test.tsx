@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createRef, type ComponentProps, type ReactNode } from 'react';
+import { act, createRef, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -15,6 +15,7 @@ import {
 
 import { I18nProvider } from '../../i18n';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
+import { AgentTreeView } from '../AgentTreeView';
 import { AgentWorkspace } from './AgentWorkspace';
 
 const harness = vi.hoisted(() => ({
@@ -234,6 +235,76 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
   expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Abort the running prompt"]')?.click(); });
   expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
+});
+
+it.each([false, true])('updates a mounted child tree and composer after send and settlement (preview=%s)', async (preview) => {
+  harness.sendAgentMessage.mockResolvedValue({});
+  const listeners = new Set<() => void>();
+  let sessionState = { ...createViewState('session'), loaded: true };
+  let childState = { ...createViewState('session'), loaded: true };
+  let forest = testForest('completed');
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+  };
+  const controller = {
+    subscribe,
+    subscribeAgent: (_agentId: string, listener: () => void) => subscribe(listener),
+    getState: () => sessionState,
+    getAgentState: () => childState,
+    getForest: () => forest,
+  } as unknown as SessionController;
+  function MountedWorkspace() {
+    const state = useSyncExternalStore(subscribe, () => sessionState);
+    return <>
+      <AgentTreeView forest={forest} selectedAgentId="child" onOpen={vi.fn()} />
+      <AgentWorkspace
+        target={{ sessionId: 'session', agentId: 'child' }}
+        controller={controller} sessionState={state} forest={forest}
+        navigation={{ openAgent: vi.fn(), openAgentRoute: vi.fn(), openSession: vi.fn() }}
+        railOpen={false} railIsOverlay={preview} onToggleRail={vi.fn()} onCloseRail={vi.fn()}
+        onCancelTask={vi.fn()} onStopAgentTask={vi.fn().mockResolvedValue(undefined)}
+        inheritMediaPreview={preview} showBreadcrumb={!preview} showPreviewToggle={!preview}
+        slots={preview ? { header, dock, rail: null, heroFooter: null, footer: null, preview: null } : undefined}
+      />
+    </>;
+  }
+  await act(async () => root.render(
+    <QueryClientProvider client={queries}><I18nProvider><MemoryRouter>
+      <MountedWorkspace />
+    </MemoryRouter></I18nProvider></QueryClientProvider>,
+  ));
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const statusText = () => container.querySelector('[data-agent-id="child"]')?.textContent;
+  expect(statusText()).toContain(translate('en', 'subagent.status.completed'));
+  expect(dock.querySelector('[aria-label="Abort the running prompt"]')).toBeNull();
+  await typeText(textarea, 'continue');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click(); });
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'continue', [{ type: 'text', text: 'continue' }]);
+  const publishStatus = async (status: 'background' | 'completed') => {
+    const busy = status === 'background';
+    await act(async () => {
+      forest = testForest(status, busy);
+      childState = { ...childState, busy };
+      sessionState = { ...sessionState, tasks: [{
+        id: 'new-run-task', session_id: 'session', kind: 'subagent', status: busy ? 'running' : 'completed',
+        description: 'Follow-up', agent_id: 'child', created_at: '2026-01-01T00:00:00Z', started_at: '2026-01-01T00:00:00Z',
+      }] };
+      for (const listener of listeners) listener();
+    });
+    await settle();
+  };
+  for (const status of ['background', 'completed'] as const) {
+    const busy = status === 'background';
+    await publishStatus(status);
+    expect(statusText()).toContain(translate('en', `subagent.status.${status}`));
+    expect(container.querySelector('[data-agent-id="child"] .status-dot-busy') !== null).toBe(busy);
+    expect(dock.querySelector('[aria-label="Abort the running prompt"]') !== null).toBe(busy);
+    expect(dock.querySelector('textarea[data-composer]')).toBe(textarea);
+    expect(textarea.disabled).toBe(false);
+    expect(header.querySelector('h1')?.textContent).toBe('General');
+  }
 });
 
 it.each(['completed', 'cancelled', 'failed'] as const)(
