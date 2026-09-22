@@ -1,4 +1,5 @@
 import picomatch from 'picomatch';
+import { isSubagentToolAllowed, type SubagentToolPolicy } from '@kiki/agent-profiles/subagentToolPolicy';
 
 import { isMcpToolName, type ToolSource } from '#/tool/toolContract';
 import { allowsResearchTool, type ExecutionRestriction } from '#/agent/profile/executionRestriction';
@@ -67,6 +68,7 @@ export interface ToolPolicyLayers {
   readonly profile: ToolActivationPolicy;
   readonly global?: GlobalToolsPolicy;
   readonly sessionDisabledTools?: readonly string[];
+  readonly subagent?: SubagentToolPolicy;
 }
 
 export function isToolActiveComposed(
@@ -75,6 +77,7 @@ export function isToolActiveComposed(
   source: ToolSource = 'builtin',
 ): boolean {
   return (
+    (layers.subagent === undefined || isSubagentToolAllowed(layers.subagent, name, source)) &&
     isToolActive({ disallowedTools: layers.workspaceDisabledTools }, name, source) &&
     isToolActive(layers.profile, name, source) &&
     isToolActive(

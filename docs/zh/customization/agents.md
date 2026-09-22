@@ -107,7 +107,7 @@ extra_agent_dirs = ["~/team-agents", ".agents/team-agents"]
 **内置副本** 安装在 `$KIKI_HOME/agents/builtin/`，作为用户作用域的文件加载。它们在两个用户目录中的普通文件之后扫描，因此同名用户定义始终优先，无需 `override: true`，也不受文件名字母序或安装时间影响。同名冲突诊断会列出双方路径。通过 `--agent-file` 加载的文件优先于所有目录作用域，且仅对本次启动生效。另可通过 `$KIKI_HOME/SYSTEM.md` 永久覆盖默认 main agent 的系统提示词，优先级交互见下文。
 
 ::: warning 信任模型
-Agent 文件属于提示词配置，而项目级文件来自仓库本身 —— 包括你刚刚 clone、尚不可信的仓库。项目作用域的文件可以完全接管内置 Agent：名为 `agent.md` 的文件可以替换**默认 main agent 的整个系统提示词**，`general.md` 可以替换默认 subagent 类型，无需声明 `override: true`。与 `AGENTS.md` 内容（作为参考资料注入提示词）不同，override 文件**就是**系统提示词本身，且不写 `tools` 的文件保留全部工具。在不熟悉的仓库中运行 Kiki 之前，请以对待脚本同样的谨慎检查其中的 `.kiki/agents/` 与 `.agents/agents/` 目录。
+Agent 文件属于提示词配置，而项目级文件来自仓库本身 —— 包括你刚刚 clone、尚不可信的仓库。项目作用域的文件可以完全接管内置 Agent：名为 `agent.md` 的文件可以替换**默认 main agent 的整个系统提示词**，`general.md` 可以替换默认 subagent 类型，无需声明 `override: true`。与 `AGENTS.md` 内容（作为参考资料注入提示词）不同，override 文件**就是**系统提示词本身；不写 `tools` 表示不在适用的运行时策略之外增加 profile 白名单限制。在不熟悉的仓库中运行 Kiki 之前，请以对待脚本同样的谨慎检查其中的 `.kiki/agents/` 与 `.agents/agents/` 目录。
 :::
 
 ### Agent 文件格式
@@ -155,7 +155,7 @@ disallowedTools:
 | `request_params` | 否 | 附加请求参数，标量 map（值只允许字符串 / 数字 / 布尔值），该子 Agent 的每个请求都会携带。OpenAI 系协议展开进请求体（Kimi 经 `extra_body`），不会覆盖引擎生成的字段；Anthropic 协议静默忽略；与 `service_tier` 等一等字段冲突时一等字段优先。键名原样发送，provider 可能拒绝它不认识的键。`kimi` provider 的 typed 参数（如 `temperature`、`top_p`）写在这里——只有底层模型真正支持时才传 |
 | `context_budget` | 否 | 该 profile 的上下文窗口 token 上限。仅作为上限声明，不得超过所绑定模型的 `max_context_size`。生效值取所有声明层的最小值；只能缩小预算，不能放大到超过模型真实 capacity |
 | `max_completion_tokens` | 否 | 单次 LLM step 的输出 token 上限。仅作为上限声明，生效值取所有声明层的最小值；与输入上限、总上下文窗口互相独立，详见[配置文件](../configuration/config-files.md#models) |
-| `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省表示允许全部工具；单独的 `*` 同样表示允许全部工具；空列表（`tools: []`）表示禁用全部工具 |
+| `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省或单独的 `*` 表示不增加 profile 白名单限制；空列表（`tools: []`）表示禁用全部工具。[subagent 默认限制](../configuration/config-files.md#subagent)及其他策略仍然生效；看板工具需要精确点名或服务端显式允许 |
 | `disallowedTools` | 否 | 禁止列表，写法与匹配规则相同，在 `tools` 之后应用 |
 | `disabled-tool-groups` | 否 | 内置工具组的禁止列表，YAML 列表或逗号分隔字符串，如 `disabled-tool-groups: [shell, web]`。组内每个内置工具都会被收回，除非该工具在 `tools` 中被显式点名；未知的组名会在加载时报错。同一 profile 内的优先级，从最具体开始：`disallowedTools`（被点名的工具保持禁用）> `tools`（显式列出的工具不受组禁用影响）> `disabled-tool-groups`。只有内置工具属于工具组，MCP 工具与用户工具永远不匹配。各组归属：`agent`（`AgentRun`、`AgentList`、`AgentSend`、`AgentNotify`）、`board`（`BoardRead`、`BoardWrite`）、`cron`（`CronCreate`、`CronList`、`CronDelete`）、`fsRead`（`Read`、`ReadMediaFile`、`Glob`、`Grep`）、`fsWrite`（`Write`、`Edit`）、`goal`（`CreateGoal`、`GetGoal`、`UpdateGoal`、`SetGoalBudget`）、`plan`（`EnterPlanMode`、`ExitPlanMode`、`TodoList`）、`question`（`AskUserQuestion`）、`shell`（`Bash`）、`skill`（`Skill`）、`task`（`TaskList`、`TaskOutput`、`TaskStop`、`TaskWait`）、`thread`（`ThreadList`、`ThreadRead`、`ThreadSend`、`ThreadWait`）、`toolSelect`（`SelectTools`）、`web`（`WebSearch`、`FetchURL`） |
 | `subagents` | 否 | 允许委派的子 Agent 名称列表，写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。省略字段或单独写 `*` 表示不限制；空列表（`subagents: []`）表示禁止派发任何子 Agent；其他显式名称构成白名单 |

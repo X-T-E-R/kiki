@@ -9,6 +9,9 @@ import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolic
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 import type { ToolSource } from '#/tool/toolContract';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { SUBAGENT_SECTION, type SubagentConfig } from '#/session/subagent/configSection';
+import type { SubagentToolPolicy } from '@kiki/agent-profiles/subagentToolPolicy';
 
 import { isToolActiveComposed, type ToolActivationPolicy } from './evaluate';
 import { IAgentToolPolicyService } from './toolPolicy';
@@ -22,6 +25,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     @ISessionToolPolicy private readonly sessionToolPolicy: ISessionToolPolicy,
     @ISessionToolPolicyGate private readonly toolPolicyGate: ISessionToolPolicyGate,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
+    @IAgentScopeContext private readonly scope: IAgentScopeContext,
   ) {
     super();
     this._register(
@@ -39,33 +43,32 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
 
   isToolActive(name: string, source: ToolSource = 'builtin'): boolean {
     const profile = this.profile.data();
-    return this.isToolActiveForProfile(
+    return this.evaluate(
       {
         tools: profile.activeToolNames,
         toolAllowPolicies: profile.toolAllowPolicies,
         disallowedTools: profile.disallowedTools,
         disabledToolGroups: profile.disabledToolGroups,
+        executionRestriction: profile.executionRestriction,
       },
       name,
       source,
+      this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.boundProfile?.tools),
     );
   }
 
   isToolActiveForDisclosure(name: string, source: ToolSource = 'builtin'): boolean {
+    if (name !== SELECT_TOOLS_TOOL_NAME) return this.isToolActive(name, source);
     const profile = this.profile.data();
-    return isToolActiveComposed(
+    return this.evaluate(
       {
-        workspaceDisabledTools: this.toolPolicyGate.disabledTools,
-        profile: {
-          disallowedTools: profile.disallowedTools,
-          disabledToolGroups: profile.disabledToolGroups,
-          executionRestriction: profile.executionRestriction,
-        },
-        global: this.config.get<ToolsConfig>(TOOLS_SECTION),
-        sessionDisabledTools: this.sessionToolPolicy.disabledTools(),
+        disallowedTools: profile.disallowedTools,
+        disabledToolGroups: profile.disabledToolGroups,
+        executionRestriction: profile.executionRestriction,
       },
       name,
       source,
+      this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.boundProfile?.tools),
     );
   }
 
@@ -74,15 +77,37 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     name: string,
     source: ToolSource = 'builtin',
   ): boolean {
+    return this.evaluate(
+      {
+        ...profile,
+        executionRestriction: this.profile.data().executionRestriction ?? profile.executionRestriction,
+      },
+      name,
+      source,
+      this.subagentPolicy(profile.tools),
+    );
+  }
+
+  private subagentPolicy(explicitProfileTools: readonly string[] | undefined): SubagentToolPolicy {
+    return {
+      explicitProfileTools,
+      allowedTools: this.config.get<SubagentConfig>(SUBAGENT_SECTION)?.allowedTools,
+    };
+  }
+
+  private evaluate(
+    profile: ToolActivationPolicy,
+    name: string,
+    source: ToolSource,
+    subagent: SubagentToolPolicy | undefined,
+  ): boolean {
     return isToolActiveComposed(
       {
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,
-        profile: {
-          ...profile,
-          executionRestriction: this.profile.data().executionRestriction ?? profile.executionRestriction,
-        },
+        profile,
         global: this.config.get<ToolsConfig>(TOOLS_SECTION),
         sessionDisabledTools: this.sessionToolPolicy.disabledTools(),
+        subagent,
       },
       name,
       source,

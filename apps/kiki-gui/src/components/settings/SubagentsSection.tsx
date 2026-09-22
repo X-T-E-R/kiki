@@ -24,6 +24,7 @@ import { SECONDARY_BUTTON } from '../ui';
 import { NamedAgentProfilesCard, SubagentGovernanceCard } from './AgentsSection';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
+import { SubagentToolDefaultsCard } from './SubagentToolDefaultsCard';
 
 const STRICT_TARGET_VALUE = '__strict__';
 
@@ -298,6 +299,7 @@ function SubagentTimeoutCard() {
 export function SubagentsSection() {
   return (
     <div className="space-y-4">
+      <SubagentToolDefaultsCard />
       <SubagentDefaultTargetCard />
       <SubagentOpenModeCard />
       <NamedAgentProfilesCard bucket="sub" />

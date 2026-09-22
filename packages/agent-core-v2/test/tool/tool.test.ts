@@ -844,7 +844,19 @@ describe('AgentRun tool description', () => {
     const description = agentDescription();
 
     expect(description).toContain('- restricted: Restricted agent\n  Allowed models: mock-model\n  Tools: Read');
-    expect(description).toContain('- allow-all-except: Allow all except one\n  Allowed models: mock-model\n  Tools: all except Bash');
+    const toolsLine = description.match(/- allow-all-except: [^\n]*\n  Allowed models: mock-model\n  Tools: ([^\n]*)\n  Tool availability is conditional on the child runtime, feature configuration, and invocation approval\./)?.[1];
+    expect(toolsLine).toBeDefined();
+    const tools = toolsLine?.split(', ');
+    expect(tools).toContain('Read');
+    for (const name of [
+      'Bash', 'BoardRead', 'BoardWrite', 'AskUserQuestion',
+      'CronCreate', 'CronDelete', 'CronList', 'EnterPlanMode', 'ExitPlanMode',
+      'CreateGoal', 'GetGoal', 'UpdateGoal', 'SetGoalBudget',
+      'ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait',
+    ]) {
+      expect(tools).not.toContain(name);
+    }
+    expect(description).not.toContain('Tools: all');
     expect(description).not.toContain('Tools: Bash, Read, mcp__github__*');
   });
 

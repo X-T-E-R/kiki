@@ -8,6 +8,7 @@ export interface IAgentToolPolicyService {
 
   isToolActive(name: string, source?: ToolSource): boolean;
   isToolActiveForDisclosure(name: string, source?: ToolSource): boolean;
+  /** Evaluates a prospective native subagent profile, not the caller's own identity. */
   isToolActiveForProfile(
     profile: ToolActivationPolicy,
     name: string,

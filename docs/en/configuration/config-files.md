@@ -414,11 +414,23 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 | --- | --- | --- | --- |
 | `default_profile` | `string` | built-in general-purpose prompt | Explicit profile override when `AgentRun` omits `profile`, `route`, and `profile_file`. If the key is absent, including from a partial `[subagent]` table, `AgentRun` uses the built-in general-purpose subagent prompt without loading a catalog profile. Set `""` to require an explicit target (strict mode) |
 | `deny_models` | `string[]` | — | Denylist applied to every subagent model binding after alias resolution, whether the alias came from the dispatch or from a profile pin |
+| `allowed_tools` | `string[]` | `[]` | Exact tool names to allow past the native subagent default restriction. Currently applies to `BoardRead` and `BoardWrite`; it does not override profile allowlists, denylists, or other policy limits |
 | `max_direct_children` | `integer` | `16` | Maximum simultaneous dispatched child runs per caller, including startup and cancellation; `0` disables this limit |
 | `max_total_subagents` | `integer` | `0` | Maximum simultaneous dispatched subagent runs throughout one session tree, including grandchildren and deeper descendants but not main; `0` disables this limit |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`AgentRun`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kiki -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
-`timeout_ms` can be overridden by the `KIKI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `deny_models` or the two concurrency limits.
+Native subagents are denied `BoardRead` and `BoardWrite` by default. To allow either tool, name it explicitly in the subagent profile's [`tools`](../customization/agents.md#agent-file-format) list, or set a server default in `config.toml`:
+
+```toml
+[subagent]
+allowed_tools = ["BoardRead"]
+```
+
+Omitting `tools` or using `*` does not opt in. `allowed_tools = []` removes server opt-ins without removing explicit profile entries. Profile allowlists, `disallowedTools`, disabled tool groups, caller restrictions, global and session policy, feature flags, Plan mode, and invocation approval still apply. Cron, thread, Plan-entry/exit, question, and goal tools remain main-only; these opt-ins cannot open them. MCP tools, inherited user tools, and other extensions keep their existing defaults. External executors control their own tools.
+
+Tool lists in profile descriptions and settings are configuration previews, not guarantees of runtime availability. Features, the child runtime, and approval can still prevent a call.
+
+`timeout_ms` can be overridden by the `KIKI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `allowed_tools`, `deny_models`, or the two concurrency limits.
 
 The limits are global configuration defaults, but counts are isolated to each session. Idle and historical children do not count. A running descendant still counts after its parent finishes; resuming a child takes an execution slot without creating another agent. Admission reserves capacity before asynchronous startup and releases it after startup failure or execution completion. Exceeding either limit immediately returns `dispatch.limit_exceeded` with `layer`, `current`, `limit`, and `owner` (REST business code `42904`); it does not queue work or stop another agent. Wait for an active run to finish or explicitly raise the relevant configuration limit. Automatic task-completion wakeups obey the same limits. If a wakeup is rejected, the finished task and its output remain available through `TaskOutput`; the notification is not marked delivered.
 

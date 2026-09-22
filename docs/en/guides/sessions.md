@@ -40,7 +40,7 @@ Cards appear a page at a time; counts and search results cover the cards loaded 
 
 Trust the workspace before creating or editing cards. Storage is controlled by the `taskBoard.storage` setting: `auto` reuses a compatible workspace store first, or uses `sessions/<workspaceId>/.board`; `global` uses the `boards` directory under the Kiki home; `fixed` uses an absolute path or a path relative to the workspace that you provide. Paths are not executed as scripts. Previewing a location does not create it or grant write access; save the configuration before creating there. Nonempty incompatible directories are rejected.
 
-Changing the storage setting does not migrate cards; existing cards keep referencing their original store. If another edit wins, reload the card before retrying; failed edits retain the draft. The main agent can read and write the board with the `BoardRead` and `BoardWrite` tools under normal tool policy and approval rules; subagents keep TodoList. Plan mode cannot use `BoardWrite`.
+Changing the storage setting does not migrate cards; existing cards keep referencing their original store. If another edit wins, reload the card before retrying; failed edits retain the draft. The main agent can read and write the board with the `BoardRead` and `BoardWrite` tools under normal tool policy and approval rules. Subagents keep their own `TodoList`; board tools require [explicit permission](../configuration/config-files.md#subagent). Plan mode cannot use `BoardWrite`.
 
 ## Starting and resuming sessions
 

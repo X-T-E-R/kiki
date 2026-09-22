@@ -30,6 +30,7 @@ import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interact
 import { ISessionSkillCatalog } from '@kiki/agent-core-v2/session/sessionSkillCatalog/skillCatalog';
 import { ISessionToolPolicyGate } from '@kiki/agent-core-v2/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '@kiki/agent-core-v2/session/subagent/modelConstraints';
+import { SUBAGENT_SECTION, type SubagentConfig } from '@kiki/agent-core-v2/session/subagent/configSection';
 import {
   resolveBoundPanelProfile,
   type PanelProfileDefinition,
@@ -100,6 +101,8 @@ export async function snapshotPanelCapabilities(
   const definition = resolution.profile;
   const persisted = snapshot.source === 'wire';
   const activeToolNames = snapshot.activeToolsKnown ? snapshot.activeToolNames : definition.tools;
+  const profileToolSource = snapshot.boundProfile ?? definition;
+  const explicitProfileTools = profileToolSource.tools === undefined ? undefined : [...profileToolSource.tools];
   const binding: PanelBindingData = {
     ...snapshot,
     ...projectPersistedAgentThinking(session, snapshot, definition),
@@ -127,6 +130,10 @@ export async function snapshotPanelCapabilities(
     global: config.get<GlobalToolsPolicy>('tools'),
     workspaceDisabledTools: session.accessor.get(ISessionToolPolicyGate).disabledTools,
     sessionDisabledTools: sessionPolicy.disabledTools(),
+    subagent: hasParent ? {
+      allowedTools: config.get<SubagentConfig>(SUBAGENT_SECTION)?.allowedTools,
+      explicitProfileTools,
+    } : undefined,
   };
   const parentNotifyConfigEnabled = isParentNotifyEnabled(
     config.get<AgentsConfig>(AGENTS_SECTION),
@@ -134,7 +141,8 @@ export async function snapshotPanelCapabilities(
   const unavailableReason = 'Snapshot inventory only; agent runtime and invocation approval are unavailable';
   const unavailableReasonCode = 'snapshot_inventory_only';
   const tools: NonNullable<AgentCapabilitiesProducerResponse['tools']> = getAgentToolContributions().map(({ options }) => {
-    const active = isToolActiveComposed(policy, options.name, options.source);
+    const source = options.source ?? 'builtin';
+    const active = isToolActiveComposed(policy, options.name, source);
     const conditionAvailable = options.name !== 'AgentNotify' || isAgentNotifyAvailable({
       hasParent,
       allowParentNotify: binding.allowParentNotify,
@@ -149,7 +157,7 @@ export async function snapshotPanelCapabilities(
       : !conditionAvailable ? 'activation_condition_unmet' : unavailableReasonCode;
     return {
       name: options.name,
-      source: options.source ?? 'builtin',
+      source,
       category: options.domain ?? 'other',
       group: toolGroupForName(options.name),
       state,

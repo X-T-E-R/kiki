@@ -40,7 +40,7 @@ Kiki 把每次对话持久化为一个「会话」，保留消息历史和元数
 
 创建或编辑卡片前，请先信任工作区。看板的存储位置由 `taskBoard.storage` 设置控制：`auto` 优先复用兼容的工作区存储，否则使用 `sessions/<workspaceId>/.board`；`global` 使用 Kiki home 下的 `boards` 目录；`fixed` 使用你指定的绝对路径或相对工作区的路径。路径不会作为脚本执行。预览不会创建目录，也不会授予写入权限；请先保存配置，再在该位置创建卡片。非空且不兼容的目录会被拒绝。
 
-更改存储设置不会迁移旧卡片，已有卡片仍引用原来的存储位置。如果同一张卡片已被其他编辑抢先保存，重新读取后再重试；编辑失败时草稿会保留。main agent 可以在正常工具策略和审批规则下用 `BoardRead`、`BoardWrite` 两个工具读写看板，subagent 继续使用 TodoList。Plan 模式下不能使用 `BoardWrite`。
+更改存储设置不会迁移旧卡片，已有卡片仍引用原来的存储位置。如果同一张卡片已被其他编辑抢先保存，重新读取后再重试；编辑失败时草稿会保留。main agent 可以在正常工具策略和审批规则下用 `BoardRead`、`BoardWrite` 两个工具读写看板。subagent 保留自己的 `TodoList`，看板工具需要[显式授权](../configuration/config-files.md#subagent)。Plan 模式下不能使用 `BoardWrite`。
 
 ## 启动与恢复会话
 

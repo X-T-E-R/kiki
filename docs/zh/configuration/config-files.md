@@ -410,11 +410,23 @@ retry = false
 | --- | --- | --- | --- |
 | `default_profile` | `string` | 内建通用提示词 | `AgentRun` 省略 `profile`、`route` 和 `profile_file` 时采用的显式 profile 覆盖。该键不存在时（包括只配置了部分字段的 `[subagent]` 表），`AgentRun` 使用内建通用 subagent 提示词，不加载目录中的 profile。设为 `""` 要求显式指定目标（严格模式） |
 | `deny_models` | `string[]` | — | alias 解析后应用于所有 subagent 模型绑定的黑名单，无论该 alias 来自派发参数还是 profile pin |
+| `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，目前适用于 `BoardRead` 和 `BoardWrite`；不会覆盖 profile 白名单、黑名单或其他策略限制 |
 | `max_direct_children` | `integer` | `16` | 每个派遣者同时在途的直属子 Agent 执行数上限，包括启动中和取消中；`0` 表示不限 |
 | `max_total_subagents` | `integer` | `0` | 单棵会话树同时在途的子 Agent 执行总数上限，包括孙代及更深后代，不含 main；`0` 表示不限 |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`AgentRun`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kiki -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
 
-`timeout_ms` 可被环境变量 `KIKI_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。`deny_models` 和两个并发限额没有对应的环境变量。
+原生 subagent 默认不能使用 `BoardRead` 和 `BoardWrite`。要允许其中任一工具，可在 subagent profile 的 [`tools`](../customization/agents.md#agent-文件格式) 列表中精确点名，或在 `config.toml` 中设置服务端默认值：
+
+```toml
+[subagent]
+allowed_tools = ["BoardRead"]
+```
+
+省略 `tools` 或使用 `*` 不算显式允许。`allowed_tools = []` 会清除服务端额外允许，但不会移除 profile 的显式条目。profile 白名单、`disallowedTools`、禁用工具组、调用方限制、全局与会话策略、功能开关、Plan 模式和调用审批仍然生效。Cron、Thread、进入/退出 Plan 模式、提问和 Goal 工具仍仅供 main agent 使用，不能通过这两个入口开放。MCP 工具、继承的用户工具及其他扩展保持原有默认行为；外部执行器自行管理工具。
+
+profile 描述和设置页中的工具列表是配置预览，不保证运行时可用。功能开关、子 Agent 运行环境和审批仍可能阻止调用。
+
+`timeout_ms` 可被环境变量 `KIKI_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。`allowed_tools`、`deny_models` 和两个并发限额没有对应的环境变量。
 
 限额是全局配置默认值，计数则按会话隔离。空闲子 Agent 和历史记录不计数；父 Agent 结束后仍运行的后代继续计数。恢复已有子 Agent 会占用执行名额，不会重复创建 Agent。派遣在异步启动前占位，启动失败或执行真正结束后释放。触及任一层上限会立即返回 `dispatch.limit_exceeded`，附带 `layer`、`current`、`limit`、`owner`（REST 业务码为 `42904`），不会排队或停止其他 Agent。可等待正在执行的任务结束，或显式调高对应配置限额。任务完成后的自动唤醒也遵守相同限额；唤醒被拒绝时，已完成任务及其输出仍可通过 `TaskOutput` 读取，通知不会被标记为已送达。
 

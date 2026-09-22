@@ -150,7 +150,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 任务看板是跨会话持久化的需求记录。`BoardRead` 支持 `preview` / `list` / `show` / `overview`，可查看当前工作区或其他已授权工作区中的卡。`BoardWrite` 的 `create` 始终以 `active` 开始，因此不要传 `status`；`update` 只有在改状态时才显式传 `status`。允许的状态值包括 `active`、`in_progress`、`paused`、`done`、`cancelled` 和 `superseded`；`done`、`cancelled`、`superseded` 是终态，将 `status` 改回 `active`、`in_progress` 或 `paused` 即可重开，重开会清空 `completedAt`。修改必须使用卡片当前的 `revision`；发生冲突后，重新读取卡片再重试。
 
-卡是持久化需求记录，不是 Agent 运行，也不是每个 Agent 自己的 `TodoList`。读卡不会改卡；各 Agent 的 `TodoList` 相互独立；Todo 全部 `done` 也不会自动改卡。两个工具默认只提供给主 Agent，并受 `task_board` 实验开关控制。Plan 模式下可以用 `BoardRead` 读取，但 `BoardWrite` 会在审批前直接拒绝（见[Plan 模式](#plan-模式)）。写卡遵循普通权限策略，不额外要求 workspace trust（工作区信任）。
+卡是持久化需求记录，不是 Agent 运行，也不是每个 Agent 自己的 `TodoList`。读卡不会改卡；各 Agent 的 `TodoList` 相互独立；Todo 全部 `done` 也不会自动改卡。两个工具默认只提供给主 Agent，并受 `task_board` 实验开关控制。原生 subagent 默认不能使用这两个工具；可通过其 profile 的 `tools` 列表或 [`subagent.allowed_tools`](../configuration/config-files.md#subagent) 显式允许其中任一工具，但不会绕过其他工具限制。Plan 模式下可以用 `BoardRead` 读取，但 `BoardWrite` 会在审批前直接拒绝（见[Plan 模式](#plan-模式)）。写卡遵循普通权限策略，不额外要求 workspace trust（工作区信任）。
 
 在「设置 → 计划与任务」中选择 `auto`、`global` 或 `fixed` 存储方式。固定位置可以是绝对路径，也可以是相对工作区的路径；不会执行脚本。任务看板为内置功能，无需单独安装。选择 `auto` 时，优先复用项目已有的兼容存储，否则使用会话数据区。
 

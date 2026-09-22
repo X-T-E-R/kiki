@@ -8,6 +8,15 @@ import {
 } from '../rest/nbSearch';
 
 describe('config REST protocol', () => {
+  it('preserves subagent tool opt-ins and an explicit reset on the wire', () => {
+    for (const allowedTools of [['BoardRead'], []]) {
+      expect(patchConfigRequestSchema.parse({ subagent: { allowed_tools: allowedTools } }))
+        .toEqual({ subagent: { allowed_tools: allowedTools } });
+      expect(configResponseSchema.parse({ subagent: { allowedTools } }).subagent)
+        .toEqual({ allowedTools });
+    }
+  });
+
   it('omits the retired telemetry patch field', () => {
     expect(patchConfigRequestSchema.parse({ telemetry: false })).toEqual({});
   });

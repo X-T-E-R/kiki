@@ -56,7 +56,7 @@ describe('buildProfileDescriptions recommended models: advisory lines, catalog f
         '  Model alias: gpt-5.6-sol',
         '  Thinking effort: high',
         '  Alternative models: axon-message/grok-4.6 (thinking_effort=high) — Scope and acceptance checks are already named.; axon-message/deepseek-v4-pro-0813 — Ordinary coding where DeepSeek Pro can finish.',
-        '  Tools: all',
+        '  Tools: not inventoried; availability must be checked in the child runtime',
       ].join('\n'),
     );
   });
@@ -78,6 +78,7 @@ describe('buildProfileDescriptions recommended models: advisory lines, catalog f
       modelProfiles: [{ alias: 'grok-4.6-fast', when: 'Fast external pass.', thinkingEffort: 'xhigh' }],
     }), []);
 
+    expect(text).toContain('  Tools: managed by the external executor; native tool availability is not implied');
     expect(text).toContain('  Model alias: grok-4.6');
     expect(text).toContain('  Thinking effort: xhigh');
     expect(text).toContain(
@@ -93,7 +94,7 @@ describe('buildProfileDescriptions recommended models: advisory lines, catalog f
         '- implementer: Does the implementation slice When the scope is named',
         '  Model alias: gpt-5.6-sol',
         '  Thinking effort: high',
-        '  Tools: all',
+        '  Tools: not inventoried; availability must be checked in the child runtime',
       ].join('\n'),
     );
     expect(text).not.toContain('Alternative models');
@@ -112,7 +113,7 @@ describe('buildProfileDescriptions recommended models: advisory lines, catalog f
         '  Thinking effort: high',
         '  Allowed models: fast-model, k3-review',
         '  Alternative models: axon-message/grok-4.6 (thinking_effort=high) — Scope and acceptance checks are already named.; axon-message/deepseek-v4-pro-0813 — Ordinary coding where DeepSeek Pro can finish.',
-        '  Tools: all',
+        '  Tools: not inventoried; availability must be checked in the child runtime',
       ].join('\n'),
     );
   });

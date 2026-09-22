@@ -28,6 +28,10 @@ import {
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import type { StepRequest } from '#/agent/loop/stepRequest';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IConfigService } from '#/app/config/config';
+import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
+import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
+import { AgentToolPolicyService } from '#/agent/toolPolicy/toolPolicyService';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
@@ -348,7 +352,7 @@ function mountAnnouncements(ix: TestInstantiationService): void {
   ix.get(IAgentToolSelectSchemasService);
 }
 
-function createHarness(): Harness {
+function createHarness(configure?: (reg: ServiceRegistration) => void): Harness {
   const contextMemory = new FakeContextMemory();
   const loop = new FakeLoopService();
   const eventBus = new RecordingEventBus();
@@ -356,6 +360,7 @@ function createHarness(): Harness {
     additionalServices: (reg) => {
       registerSharedServices(reg, contextMemory, loop, eventBus);
       reg.defineInstance(IAgentToolExecutorService, stubToolExecutor());
+      configure?.(reg);
     },
     strict: true,
   });
@@ -689,6 +694,40 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
       MCP_ALPHA,
       MCP_BETA,
     ]);
+  });
+
+  it('does not let selection or restored schemas bypass the native subagent board default', () => {
+    let allowedTools: string[] = [];
+    const h = createHarness((reg) => {
+      reg.definePartialInstance(IAgentProfileService, {
+        getModelCapabilities: () => capabilities,
+        data: () => ({ modelCapabilities: capabilities, thinkingLevel: 'off', systemPrompt: '' }),
+      });
+      reg.definePartialInstance(IConfigService, {
+        get: <T>(section: string) => (section === 'subagent' ? { allowedTools } : {}) as T,
+      });
+      reg.definePartialInstance(ISessionToolPolicy, { disabledTools: () => [] });
+      reg.definePartialInstance(ISessionToolPolicyGate, { disabledTools: [] });
+      reg.defineInstance(IAgentScopeContext, makeAgentScopeContext({
+        agentId: 'child', agentScope: '', parentAgentId: 'main',
+      }));
+      reg.define(IAgentToolPolicyService, AgentToolPolicyService);
+    });
+    disposables.add(h.registry.register(new EchoTool('BoardRead'), { source: 'builtin', disclosure: 'deferred' }));
+    h.contextMemory.history.push(schemaMessage('BoardRead'));
+
+    expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: [], unknown: ['BoardRead'] });
+    expect(h.sut.shapeTools(h.registry.list())).toEqual([]);
+    expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
+
+    allowedTools = ['BoardRead'];
+    expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: ['BoardRead'], unknown: [] });
+    expect(h.sut.shapeTools(h.registry.list()).map((tool) => tool.name)).toEqual(['BoardRead']);
+    expect(h.sut.shapeHistory(h.contextMemory.get())[0]?.tools?.map((tool) => tool.name)).toEqual(['BoardRead']);
+
+    allowedTools = [];
+    expect(h.sut.load(['BoardRead']).unknown).toEqual(['BoardRead']);
+    expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
   });
 
   it('shapeHistory removes a deferred user schema after unregister', () => {

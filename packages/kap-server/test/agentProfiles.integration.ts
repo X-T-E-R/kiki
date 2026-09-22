@@ -228,6 +228,94 @@ describe('GET /api/agents', () => {
     expect(snapshot.tools?.every((tool) => tool.state === 'unknown' || tool.state === 'disabled')).toBe(true);
   });
 
+  it('keeps board and main-only tools disabled for an unrestricted child on live and snapshot paths', async () => {
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'agents', 'board-default.md'), '---\nname: board-default\ndescription: Default tools\n---\nWork with the default tool policy.');
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "stub"',
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
+      'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'agent', model: 'stub' } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const session = server.core.accessor.get(ISessionManager).get(created.data.id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    await lifecycle.create({
+      agentId: 'child-optin',
+      delegator: { kind: 'agent', agentId: 'main' },
+      binding: { profile: 'board-default', model: 'stub' },
+    });
+    const readTools = async () => {
+      const response = await authedFetch(server!, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=child-optin`);
+      const body = await response.json() as Envelope<unknown>;
+      expect(body.code).toBe(0);
+      return agentCapabilitiesResponseSchema.parse(body.data).tools ?? [];
+    };
+
+    const liveDefault = await readTools();
+    expect(liveDefault.find((tool) => tool.name === 'BoardRead')?.state).toBe('disabled');
+    expect(liveDefault.find((tool) => tool.name === 'BoardWrite')?.state).toBe('disabled');
+    expect(liveDefault.find((tool) => tool.name === 'AskUserQuestion')?.state).toBe('disabled');
+    expect(liveDefault.find((tool) => tool.name === 'Read')?.state).toBe('enabled');
+
+    await lifecycle.remove('child-optin');
+    const snapshot = await readTools();
+    expect(snapshot.find((tool) => tool.name === 'BoardRead')?.state).toBe('disabled');
+    expect(snapshot.find((tool) => tool.name === 'BoardWrite')?.state).toBe('disabled');
+    expect(snapshot.find((tool) => tool.name === 'AskUserQuestion')?.state).toBe('disabled');
+    expect(snapshot.find((tool) => tool.name === 'Read')?.state).toBe('unknown');
+  });
+
+  it.each(['server', 'profile'] as const)('allows child BoardRead through %s opt-in on the live and snapshot paths', async (optIn) => {
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'agents', 'board-reader.md'), [
+      '---', 'name: board-reader', 'description: Board reader',
+      ...(optIn === 'profile' ? ['tools: [Read, BoardRead]'] : []),
+      '---', 'Read authorized board cards.',
+    ].join('\n'));
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "stub"',
+      '[subagent]', `allowed_tools = ${optIn === 'server' ? '["BoardRead"]' : '[]'}`,
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
+      'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'agent', model: 'stub' } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const session = server.core.accessor.get(ISessionManager).get(created.data.id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    await lifecycle.create({
+      agentId: 'child-allowed',
+      delegator: { kind: 'agent', agentId: 'main' },
+      binding: { profile: 'board-reader', model: 'stub' },
+    });
+    const readTools = async () => {
+      const response = await authedFetch(server!, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=child-allowed`);
+      const body = await response.json() as Envelope<unknown>;
+      expect(body.code).toBe(0);
+      return agentCapabilitiesResponseSchema.parse(body.data).tools ?? [];
+    };
+    const live = await readTools();
+    expect(live.find((tool) => tool.name === 'BoardRead')?.state).toBe('enabled');
+    expect(live.find((tool) => tool.name === 'BoardWrite')?.state).toBe('disabled');
+    expect(live.find((tool) => tool.name === 'AskUserQuestion')?.state).toBe('disabled');
+
+    await lifecycle.remove('child-allowed');
+    const snapshot = await readTools();
+    expect(snapshot.find((tool) => tool.name === 'BoardRead')?.state).toBe('unknown');
+    expect(snapshot.find((tool) => tool.name === 'BoardWrite')?.state).toBe('disabled');
+    expect(snapshot.find((tool) => tool.name === 'AskUserQuestion')?.state).toBe('disabled');
+  });
+
   it('writes the winning SYSTEM source rather than a same-name user file and refreshes draft capabilities', async () => {
     const systemPath = join(home!, 'SYSTEM.md');
     const agentPath = join(home!, 'agents', 'agent.md');

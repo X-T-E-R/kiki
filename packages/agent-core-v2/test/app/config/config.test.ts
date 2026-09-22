@@ -2132,6 +2132,7 @@ describe('subagent config section', () => {
       maxDirectChildren: 16,
       maxTotalSubagents: 0,
       defaultProfile: DEFAULT_SUBAGENT_PROFILE,
+      allowedTools: [],
     });
 
     disposables.dispose();

@@ -33,6 +33,7 @@ export const SubagentConfigSchema = z.object({
   maxDirectChildren: z.number().int().min(0).optional(),
   maxTotalSubagents: z.number().int().min(0).optional(),
   defaultProfile: z.string().optional(),
+  allowedTools: z.array(z.string()).optional(),
 });
 
 export const DEFAULT_MAX_DIRECT_CHILDREN = 16;
@@ -99,6 +100,7 @@ registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
     maxDirectChildren: DEFAULT_MAX_DIRECT_CHILDREN,
     maxTotalSubagents: DEFAULT_MAX_TOTAL_SUBAGENTS,
     defaultProfile: DEFAULT_SUBAGENT_PROFILE,
+    allowedTools: [],
   },
   env: subagentEnvBindings,
   stripEnv: stripSubagentEnv,

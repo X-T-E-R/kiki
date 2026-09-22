@@ -24,8 +24,8 @@ function denied(message: string): ExecutableToolErrorResult {
   return { isError: true, output: JSON.stringify({ ok: false, error: { code: 'BOARD_ACCESS_DENIED', message } }) };
 }
 
-function enabledMain(scope: IAgentScopeContext, flags: IFlagService): boolean {
-  return scope.agentId === 'main' && scope.parentAgentId === undefined && flags.enabled(TASK_BOARD_FLAG_ID);
+function enabledAgent(scope: IAgentScopeContext, flags: IFlagService): boolean {
+  return (scope.agentId === 'main' || scope.parentAgentId !== undefined) && flags.enabled(TASK_BOARD_FLAG_ID);
 }
 
 export class BoardReadTool implements IBoardReadTool {
@@ -48,8 +48,8 @@ export class BoardReadTool implements IBoardReadTool {
       description: 'Reading Own Work requirements',
       accesses: ToolAccesses.all(),
       execute: async () => {
-        if (!enabledMain(this.scope, this.flags) || !this.policy.isToolActive(this.name)) {
-          return denied('BoardRead is available only to the enabled main agent under its active tool policy.');
+        if (!enabledAgent(this.scope, this.flags) || !this.policy.isToolActive(this.name)) {
+          return denied('BoardRead is disabled by the board feature or active tool policy. Subagents require an explicit profile tools entry or subagent.allowed_tools opt-in.');
         }
         const result = await this.board.read(input.action === 'overview'
           ? input
@@ -83,8 +83,8 @@ export class BoardWriteTool implements IBoardWriteTool {
       description: 'Updating Own Work requirements',
       accesses: ToolAccesses.all(),
       execute: async () => {
-        if (!enabledMain(this.scope, this.flags) || !this.policy.isToolActive(this.name)) {
-          return denied('BoardWrite is available only to the enabled main agent under its active tool policy.');
+        if (!enabledAgent(this.scope, this.flags) || !this.policy.isToolActive(this.name)) {
+          return denied('BoardWrite is disabled by the board feature or active tool policy. Subagents require an explicit profile tools entry or subagent.allowed_tools opt-in.');
         }
         if (await this.plan.status() !== null) {
           return denied('Requirements cannot be changed in plan mode.');
@@ -98,10 +98,11 @@ export class BoardWriteTool implements IBoardWriteTool {
   }
 }
 
-const mainOnly = (accessor: ServicesAccessor): boolean =>
-  enabledMain(accessor.get(IAgentScopeContext), accessor.get(IFlagService));
+const available = (accessor: ServicesAccessor, name: string): boolean =>
+  enabledAgent(accessor.get(IAgentScopeContext), accessor.get(IFlagService)) &&
+  accessor.get(IAgentToolPolicyService).isToolActive(name);
 
 export const BOARD_TOOL_CONTRIBUTIONS = [
-  { id: IBoardReadTool, ctor: BoardReadTool, options: { name: 'BoardRead', domain: 'taskBoard', when: mainOnly } },
-  { id: IBoardWriteTool, ctor: BoardWriteTool, options: { name: 'BoardWrite', domain: 'taskBoard', when: mainOnly } },
+  { id: IBoardReadTool, ctor: BoardReadTool, options: { name: 'BoardRead', domain: 'taskBoard', when: (accessor: ServicesAccessor) => available(accessor, 'BoardRead') } },
+  { id: IBoardWriteTool, ctor: BoardWriteTool, options: { name: 'BoardWrite', domain: 'taskBoard', when: (accessor: ServicesAccessor) => available(accessor, 'BoardWrite') } },
 ] as const;

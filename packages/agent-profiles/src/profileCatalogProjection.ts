@@ -1,7 +1,8 @@
 import type { AgentProfile } from './agentProfile';
+import { subagentToolDefault } from './subagentToolPolicy';
 import {
   isToolActive as evaluateToolActive,
-  literalToolNames,
+  isMcpToolName,
   resolveActiveToolNames,
   type ToolReference,
 } from './toolPolicy';
@@ -138,26 +139,28 @@ function projectedTools(
   ) => boolean,
   unavailableTools: ReadonlySet<string> | undefined,
 ): string {
+  if (profile.executor !== undefined && profile.executor !== 'native') {
+    return 'managed by the external executor; native tool availability is not implied';
+  }
   const activeTools = resolveActiveToolNames(profile);
-  const restricted =
-    literalToolNames(activeTools ?? []).some((name) => unavailableTools?.has(name)) ||
-    tools.some(
-      (tool) =>
-        evaluateToolActive(profile, tool.name, tool.source) &&
-        !isToolActive(profile, tool.name, tool.source),
-    );
-  if (restricted) {
-    const effectiveTools = tools
-      .filter((tool) => isToolActive(profile, tool.name, tool.source))
-      .map((tool) => tool.name);
-    return effectiveTools.length === 0 ? 'none' : effectiveTools.join(', ');
+  if (tools.length === 0 && activeTools === undefined) {
+    return 'not inventoried; availability must be checked in the child runtime';
   }
-  if (activeTools === undefined) {
-    return (profile.disallowedTools?.length ?? 0) > 0
-      ? `all except ${profile.disallowedTools!.join(', ')}`
-      : 'all';
+  const candidates = new Map<string, ToolReference>();
+  for (const name of activeTools ?? []) {
+    const known = tools.find((tool) => tool.name === name);
+    candidates.set(name, known ?? { name, source: isMcpToolName(name) ? 'mcp' : 'builtin' });
   }
-  return activeTools.length === 0 ? 'none' : activeTools.join(', ');
+  for (const tool of tools) candidates.set(tool.name, tool);
+  const effectiveTools = [...candidates.values()]
+    .filter(({ name, source }) =>
+      !unavailableTools?.has(name) &&
+      subagentToolDefault(name, source) !== 'main-only' &&
+      evaluateToolActive(profile, name, source) &&
+      isToolActive(profile, name, source))
+    .map(({ name }) => name);
+  if (effectiveTools.length === 0) return 'none';
+  return `${effectiveTools.join(', ')}\n  Tool availability is conditional on the child runtime, feature configuration, and invocation approval.`;
 }
 
 function collapseWhitespace(value: string): string {

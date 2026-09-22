@@ -345,6 +345,21 @@ describe('server-v2 /api/config', () => {
     expect(persisted).toContain('default_profile = ""');
   });
 
+  it('round-trips the subagent allowed_tools and clears it back while keeping other fields', async () => {
+    await boot();
+
+    await patchConfig({ subagent: { timeout_ms: 60_000, default_profile: 'explore' } });
+    const allowed = await patchConfig({ subagent: { allowed_tools: ['BoardRead'] } });
+    expect(allowed.subagent).toMatchObject({ timeoutMs: 60_000, defaultProfile: 'explore', allowedTools: ['BoardRead'] });
+    expect((await getConfig()).subagent?.allowedTools).toEqual(['BoardRead']);
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toMatch(/allowed_tools\s*=\s*\[\s*"BoardRead"\s*\]/);
+
+    const cleared = await patchConfig({ subagent: { allowed_tools: [] } });
+    expect(cleared.subagent).toMatchObject({ timeoutMs: 60_000, defaultProfile: 'explore', allowedTools: [] });
+    expect((await getConfig()).subagent).toMatchObject({ timeoutMs: 60_000, defaultProfile: 'explore', allowedTools: [] });
+  });
+
   it('preserves the Kimi Code compatibility flag across partial identity patches', async () => {
     await boot('[identity]\nadvertise_as_kimi_code = true\n');
 

@@ -184,6 +184,7 @@ export const patchConfigRequestSchema = z.object({
     max_direct_children: SubagentConfigSchema.shape.maxDirectChildren,
     max_total_subagents: SubagentConfigSchema.shape.maxTotalSubagents,
     default_profile: SubagentConfigSchema.shape.defaultProfile,
+    allowed_tools: SubagentConfigSchema.shape.allowedTools,
   }).strict().optional(),
   agents: z.object({
     enabled: z.boolean().optional(),
