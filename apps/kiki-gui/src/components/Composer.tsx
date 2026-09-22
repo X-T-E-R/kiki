@@ -75,7 +75,7 @@ import type { NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
-import { ContextMeter } from './ContextMeter';
+import { ContextMeter, type ContextMeterUsage } from './ContextMeter';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
@@ -219,6 +219,7 @@ export function Composer({
   onChangeEffort,
   onSend,
   onAbort,
+  abortPending = false,
   queueEditing = false,
   onQueueEditConfirm,
   onQueueEditCancel,
@@ -283,8 +284,12 @@ export function Composer({
   effort: string | undefined;
   /** Session context usage for the footer's mini meter (hidden when absent). */
   contextUsage?: { readonly used: number; readonly limit: number };
-  /** Lifetime session usage for the context meter's detail card (hidden when absent). */
-  sessionUsage?: SessionUsage;
+  /**
+   * Lifetime cumulative usage for the context meter's detail card (hidden when
+   * absent). Main sessions pass the session record's `SessionUsage`; the
+   * subagent variant passes that agent's projected totals (no cost pricing).
+   */
+  sessionUsage?: ContextMeterUsage;
   /** Placeholder while busy (queue steering on /s, creation progress on /new). */
   busyPlaceholder?: string;
   /** Session scope for the skills catalog + session-scoped shortcuts. */
@@ -354,6 +359,12 @@ export function Composer({
   ) => void | Promise<unknown>;
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
+  /**
+   * A stop request is in flight: the stop button disables itself so clicks
+   * during the round trip cannot fan out duplicate cancels, and it clears
+   * once the request settles (success or failure).
+   */
+  abortPending?: boolean;
   /**
    * Queue-edit mode (a queued message's text is parked in the draft): the send
    * button becomes a confirm check that routes to onQueueEditConfirm — the
@@ -1956,9 +1967,10 @@ export function Composer({
                 <button
                   type="button"
                   onClick={onAbort}
-                  title={t('composer.abortTitle')}
-                  aria-label={t('composer.abortTitle')}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none"
+                  disabled={abortPending}
+                  title={abortPending === true ? t('tasks.stopping') : t('composer.abortTitle')}
+                  aria-label={abortPending === true ? t('tasks.stopping') : t('composer.abortTitle')}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span aria-hidden className="text-[11px] font-bold">■</span>
                 </button>
@@ -2024,6 +2036,7 @@ export function Composer({
               used={contextUsage.used}
               limit={contextUsage.limit}
               usage={sessionUsage}
+              usageScope={variant === 'subagent' ? 'agent' : 'session'}
               sessionId={sessionId}
               onCompact={onCompactContext}
             />

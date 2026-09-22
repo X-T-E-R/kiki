@@ -73,7 +73,6 @@ vi.mock('../ConversationShell', () => ({
 }));
 vi.mock('../ActivityHistory', () => ({ revealSubagentCard: () => true }));
 vi.mock('../AgentBreadcrumb', () => ({ AgentBreadcrumb: () => null, AgentRelations: () => null }));
-vi.mock('../ContextMeter', () => ({ ContextMeter: () => null }));
 vi.mock('../mediaPreview', () => ({
   MediaPreviewProvider: (props: { children?: ReactNode; apiRef?: unknown }) => {
     harness.mediaProviderProps.push(props);
@@ -285,6 +284,83 @@ it('toasts a failed model change and leaves the live model selected', async () =
   });
   // The trigger reads the live agent, so a rejected pick must not read as applied.
   expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')!.textContent).toBe(before);
+});
+
+it('toasts a rejected stop and stays retryable; a pending stop double-click fires once and recovers', async () => {
+  let rejectStop: (error: Error) => void = () => undefined;
+  harness.stopAgentTask.mockImplementation(
+    () => new Promise<void>((_resolve, reject) => { rejectStop = reject; }),
+  );
+  await renderWorkspace({
+    forest: testForest('running', true),
+    sessionState: {
+      ...createViewState('session'),
+      loaded: true,
+      tasks: [{ id: 'task-1', kind: 'subagent', status: 'running', agent_id: 'child' }] as never,
+    },
+  });
+  await settle();
+  // The stop control keeps one stable element across the pending state, but
+  // its label flips to "stopping" while the request is in flight.
+  const abort = () =>
+    dock.querySelector<HTMLButtonElement>(
+      '[aria-label="Abort the running prompt"], [aria-label="Stopping…"]',
+    )!;
+  expect(abort()).not.toBeNull();
+  // Both clicks land in the same batch: the second must not fan out another
+  // cancel even before React commits the pending state between the events.
+  await act(async () => {
+    abort().click();
+    abort().click();
+  });
+  expect(harness.stopAgentTask).toHaveBeenCalledTimes(1);
+  expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
+  expect(abort().disabled).toBe(true);
+  expect(abort().getAttribute('aria-label')).toBe(translate('en', 'tasks.stopping'));
+  expect(harness.pushToast).not.toHaveBeenCalled();
+  // The stop rejects: the failure surfaces as an error toast, never as success,
+  // and the guard clears so the user can retry.
+  await act(async () => { rejectStop(new Error('stop unavailable')); });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'error',
+    text: translate('en', 'sv.stopTaskFailed', { detail: 'stop unavailable' }),
+  });
+  expect(abort().disabled).toBe(false);
+  // Retry: a fresh request goes out and settles cleanly this time.
+  harness.stopAgentTask.mockResolvedValue(undefined);
+  await act(async () => { abort().click(); });
+  await settle();
+  expect(harness.stopAgentTask).toHaveBeenCalledTimes(2);
+  expect(abort().disabled).toBe(false);
+  expect(harness.pushToast).toHaveBeenCalledTimes(1);
+});
+
+it('recovers the stop control after a successful stop pending round trip', async () => {
+  let resolveStop: () => void = () => undefined;
+  harness.stopAgentTask.mockImplementation(
+    () => new Promise<void>((resolve) => { resolveStop = resolve; }),
+  );
+  await renderWorkspace({
+    forest: testForest('running', true),
+    sessionState: {
+      ...createViewState('session'),
+      loaded: true,
+      tasks: [{ id: 'task-1', kind: 'subagent', status: 'running', agent_id: 'child' }] as never,
+    },
+  });
+  await settle();
+  const abort = () =>
+    dock.querySelector<HTMLButtonElement>(
+      '[aria-label="Abort the running prompt"], [aria-label="Stopping…"]',
+    )!;
+  await act(async () => { abort().click(); });
+  expect(abort().disabled).toBe(true);
+  await act(async () => { resolveStop(); });
+  await settle();
+  expect(harness.stopAgentTask).toHaveBeenCalledTimes(1);
+  expect(abort().disabled).toBe(false);
+  expect(harness.pushToast).not.toHaveBeenCalled();
 });
 
 it('stops a nested subagent task through its parent agent scope', async () => {
@@ -503,5 +579,101 @@ it('embeds into caller-provided slots: no shell, no owned preview provider, no p
     expect(localHeader.querySelector('[data-preview-toggle-probe]')).toBeNull();
   } finally {
     localHeader.remove();
+  }
+});
+
+it('renders the agent’s own context meter and cumulative totals in the fullscreen dock', async () => {
+  const childState = {
+    ...createViewState('session'),
+    loaded: true,
+    contextTokens: 5_000,
+    maxContextTokens: 10_000,
+    usage: { total: { inputOther: 1_200, output: 340, inputCacheRead: 56, inputCacheCreation: 8 } },
+  };
+  await renderWorkspace({
+    controller: controllerStub({ forest: testForest(), agentStates: { child: childState } }),
+  });
+  await settle();
+
+  const meter = dock.querySelector<HTMLButtonElement>('[data-context-meter]');
+  expect(meter).not.toBeNull();
+  // 50% exactly is the warn threshold.
+  expect(meter?.getAttribute('data-context-level')).toBe('warn');
+  expect(meter?.textContent).toContain('50');
+
+  await act(async () => { meter!.click(); });
+  const details = dock.querySelector('[data-context-details]');
+  const usageCard = details?.querySelector('[data-context-usage]');
+  expect(usageCard?.textContent).toContain('Agent cumulative');
+  expect(usageCard?.textContent).not.toContain('Session cumulative');
+  expect(usageCard?.textContent).toContain('1.2k');
+  expect(usageCard?.textContent).toContain('340');
+  // Per-agent projections carry no pricing: the cost row stays hidden rather
+  // than reading as $0.00, and a subagent has no compact action.
+  expect(usageCard?.textContent).not.toContain('Cost');
+  expect(details?.querySelector('[data-context-compact]')).toBeNull();
+  // The deep link still targets the owning session's usage page.
+  expect(usageCard?.querySelector('[data-context-usage-link]')).not.toBeNull();
+});
+
+it('turns the agent meter red past the danger threshold and neutral below warn', async () => {
+  const childState = {
+    ...createViewState('session'),
+    loaded: true,
+    contextTokens: 8_500,
+    maxContextTokens: 10_000,
+  };
+  await renderWorkspace({
+    controller: controllerStub({ forest: testForest(), agentStates: { child: childState } }),
+  });
+  await settle();
+  expect(dock.querySelector('[data-context-meter]')?.getAttribute('data-context-level')).toBe('danger');
+});
+
+it('omits the meter when the agent projection carries no context data', async () => {
+  await renderWorkspace({
+    controller: controllerStub({
+      forest: testForest(),
+      agentStates: { child: { ...createViewState('session'), loaded: true } },
+    }),
+  });
+  await settle();
+  expect(dock.querySelector('[data-composer-variant="subagent"]')).not.toBeNull();
+  expect(dock.querySelector('[data-context-meter]')).toBeNull();
+});
+
+it('renders the agent context meter in the preview-tab dock slots', async () => {
+  const previewHeader = document.createElement('div');
+  const previewDock = document.createElement('div');
+  document.body.append(previewHeader, previewDock);
+  try {
+    const childState = {
+      ...createViewState('session'),
+      loaded: true,
+      contextTokens: 2_000,
+      maxContextTokens: 10_000,
+    };
+    await renderWorkspace({
+      controller: controllerStub({ forest: testForest(), agentStates: { child: childState } }),
+      slots: {
+        header: previewHeader,
+        dock: previewDock,
+        heroFooter: null,
+        footer: null,
+        rail: null,
+        preview: null,
+      },
+      inheritMediaPreview: true,
+      showPreviewToggle: false,
+      showBreadcrumb: false,
+    });
+    await settle();
+    const meter = previewDock.querySelector('[data-context-meter]');
+    expect(meter).not.toBeNull();
+    expect(meter?.getAttribute('data-context-level')).toBe('ok');
+    expect(meter?.textContent).toContain('20');
+  } finally {
+    previewHeader.remove();
+    previewDock.remove();
   }
 });

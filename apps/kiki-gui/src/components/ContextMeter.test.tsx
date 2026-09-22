@@ -164,9 +164,6 @@ describe('ContextMeter interaction', () => {
               cache_read_tokens: 8_000,
               cache_creation_tokens: 500,
               total_cost_usd: 0.0432,
-              context_tokens: 80_000,
-              context_limit: 200_000,
-              turn_count: 4,
             }}
           />
         </I18nProvider>,
@@ -186,6 +183,45 @@ describe('ContextMeter interaction', () => {
     expect(usage?.textContent).toContain('Cache read');
     expect(usage?.textContent).toContain('Cache write');
     expect(usage?.textContent).toContain('$0.043');
+    expect(usage?.textContent).toContain('Total tokens');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('titles agent-scoped usage as the agent and hides the unpriced cost row', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ContextMeter
+            used={40_000}
+            limit={200_000}
+            usageScope="agent"
+            usage={{
+              input_tokens: 12_400,
+              output_tokens: 2_100,
+              cache_read_tokens: 8_000,
+              cache_creation_tokens: 500,
+              total_cost_usd: null,
+            }}
+          />
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click();
+    });
+
+    const usage = container.querySelector('[data-context-usage]');
+    expect(usage?.textContent).toContain('Agent cumulative');
+    expect(usage?.textContent).not.toContain('Session cumulative');
+    // Per-agent projections carry no pricing: the cost row hides instead of
+    // reading as $0.00, while the token rows and their total stay.
+    expect(usage?.textContent).not.toContain('Cost');
+    expect(usage?.textContent).toContain('Input');
     expect(usage?.textContent).toContain('Total tokens');
     await act(async () => { root.unmount(); });
   });
@@ -210,9 +246,6 @@ describe('ContextMeter interaction', () => {
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
                 total_cost_usd: 0.01,
-                context_tokens: 80_000,
-                context_limit: 200_000,
-                turn_count: 1,
               }}
             />
           </MemoryRouter>

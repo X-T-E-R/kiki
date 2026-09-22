@@ -14,7 +14,7 @@
  * with the shell, expressed here through `navigation` and the rail props.
  */
 
-import { useCallback, useMemo, useState, useSyncExternalStore, type RefObject } from 'react';
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 
 import type { PermissionMode } from '@kiki/protocol';
@@ -43,6 +43,7 @@ import {
   type ConversationShellSlots,
 } from '../ConversationShell';
 import { Composer } from '../Composer';
+import type { ContextMeterUsage } from '../ContextMeter';
 import { MediaPreviewProvider, PreviewToggleButton } from '../mediaPreview';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { RightRail } from '../RightRail';
@@ -381,9 +382,29 @@ export function AgentWorkspace({
     setDraft('');
     setAttachments([]);
   };
+  // Stop is a server-side cancel that can fail; duplicate requests during the
+  // round trip are guarded by a synchronous ref (a state-only guard can be
+  // crossed by two events in the same batch), mirrored to state for the
+  // disabled UI. Both clear in finally, so a rejected stop stays retryable.
+  const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
+  const stoppingRef = useRef<string | null>(null);
   const handleTerminateAgent = async () => {
-    if (runningAgentTask === undefined) return;
-    await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
+    if (runningAgentTask === undefined || stoppingRef.current !== null) return;
+    stoppingRef.current = runningAgentTask.id;
+    setStoppingTaskId(runningAgentTask.id);
+    try {
+      await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        text: t('sv.stopTaskFailed', {
+          detail: error instanceof Error ? error.message : String(error),
+        }),
+      });
+    } finally {
+      stoppingRef.current = null;
+      setStoppingTaskId(null);
+    }
   };
   const handleChangeAgentModel = async (model: string | undefined) => {
     if (!agentKnown || model === undefined || model === displayModel) return;
@@ -408,6 +429,21 @@ export function AgentWorkspace({
   const displayContextTokens = agentLiveState.contextTokens ?? selectedNode?.contextTokens;
   const displayMaxContextTokens = agentLiveState.maxContextTokens ?? selectedNode?.maxContextTokens;
   const displayUsage = agentLiveState.usage ?? selectedNode?.usage;
+  // The composer footer's context meter is the same one the main session
+  // renders; its cumulative card reads THIS agent's projected lifetime totals.
+  // Per-agent projections price nothing, so the cost stays unknown (null)
+  // rather than reading as $0.00.
+  const composerUsage: ContextMeterUsage | undefined = useMemo(() => {
+    const total = displayUsage?.total;
+    if (total === undefined) return undefined;
+    return {
+      input_tokens: total.inputOther,
+      output_tokens: total.output,
+      cache_read_tokens: total.inputCacheRead,
+      cache_creation_tokens: total.inputCacheCreation,
+      total_cost_usd: null,
+    };
+  }, [displayUsage]);
   const agentState: SessionViewState = {
     ...agentLiveState,
     session: sessionState.session,
@@ -481,6 +517,7 @@ export function AgentWorkspace({
                     ? { used: displayContextTokens, limit: displayMaxContextTokens }
                     : undefined
                 }
+                sessionUsage={composerUsage}
                 sessionId={sessionId}
                 agentProfileCatalogMode={{ mode: 'disabled' }}
                 attachments={attachments}
@@ -492,6 +529,7 @@ export function AgentWorkspace({
                 onChangeEffort={() => {}}
                 onSend={handleComposerSend}
                 onAbort={runningAgentTask !== undefined ? handleTerminateAgent : undefined}
+                abortPending={stoppingTaskId !== null}
               />
               <ResyncStatusBanner
                 resyncing={sessionState.resyncing}

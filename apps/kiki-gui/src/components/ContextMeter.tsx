@@ -34,6 +34,19 @@ export const CONTEXT_DANGER_RATIO = 0.8;
 
 export type ContextUsageLevel = 'ok' | 'warn' | 'danger';
 
+/**
+ * The detail card's cumulative rows. Structurally a subset of the session
+ * record's `SessionUsage`, but the cost is nullable: per-agent projections
+ * (UsageStatus totals) carry token kinds without pricing, and an invented
+ * `$0.00` would read as free. A null cost hides the row instead.
+ */
+export type ContextMeterUsage = Pick<
+  SessionUsage,
+  'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_creation_tokens'
+> & {
+  readonly total_cost_usd: number | null;
+};
+
 /** Percentage (0-100, clamped) of the context window in use. */
 export function contextUsagePercent(used: number, limit: number): number {
   if (limit <= 0) return 0;
@@ -89,14 +102,21 @@ export function ContextMeter({
   used,
   limit,
   usage,
+  usageScope = 'session',
   sessionId,
   onCompact,
   placement = 'above',
 }: {
   used: number;
   limit: number;
-  /** Lifetime session usage (lifetime cumulative `session.usage`) for the detail card. */
-  usage?: SessionUsage;
+  /** Lifetime cumulative usage for the detail card (session record, or an agent's projected totals). */
+  usage?: ContextMeterUsage;
+  /**
+   * Whose cumulative usage the detail card reports: the whole session, or the
+   * one agent whose composer carries this meter. Only changes the section
+   * title; the numbers come from `usage` either way.
+   */
+  usageScope?: 'session' | 'agent';
   /** Enables the prefetched deep link to this session on the /usage page (§9.5). */
   sessionId?: string;
   /** Requests a compaction (the session view's /compact action). */
@@ -185,7 +205,7 @@ export function ContextMeter({
           data-context-details
           role="dialog"
           aria-label={t('context.detailsTitle')}
-          className={`anim-enter absolute right-0 z-30 w-72 rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] ${
+          className={`anim-enter absolute right-0 z-30 w-72 max-w-[calc(100vw-48px)] rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] ${
             placement === 'below' ? 'top-full mt-2' : 'bottom-full mb-2'
           }`}
         >
@@ -250,19 +270,29 @@ export function ContextMeter({
               className="mt-3 space-y-1.5 border-t border-hairline pt-2.5 text-[11px]"
             >
               <div className="flex items-baseline justify-between gap-3">
-                <p className="text-[10.5px] font-medium text-ink-soft">{t('context.sessionUsage')}</p>
+                <p className="text-[10.5px] font-medium text-ink-soft">
+                  {t(usageScope === 'agent' ? 'context.agentUsage' : 'context.sessionUsage')}
+                </p>
                 <span className="text-[9.5px] text-ink-faint">{t('context.sessionUsageHint')}</span>
               </div>
               <TokenRow label={t('usage.tokens.input')} value={usage.input_tokens} title={String(usage.input_tokens)} />
               <TokenRow label={t('usage.tokens.output')} value={usage.output_tokens} title={String(usage.output_tokens)} />
               <TokenRow label={t('usage.tokens.cacheRead')} value={usage.cache_read_tokens} title={String(usage.cache_read_tokens)} />
               <TokenRow label={t('usage.tokens.cacheWrite')} value={usage.cache_creation_tokens} title={String(usage.cache_creation_tokens)} />
-              <div className="flex items-center justify-between gap-3 border-t border-hairline pt-1.5">
-                <dt className="text-ink-faint">{t('usage.card.cost')}</dt>
-                <dd className="font-mono text-ink tabular-nums">{formatCostUsd(usage.total_cost_usd)}</dd>
-              </div>
+              {usage.total_cost_usd !== null ? (
+                <div className="flex items-center justify-between gap-3 border-t border-hairline pt-1.5">
+                  <dt className="text-ink-faint">{t('usage.card.cost')}</dt>
+                  <dd className="font-mono text-ink tabular-nums">{formatCostUsd(usage.total_cost_usd)}</dd>
+                </div>
+              ) : null}
               {usageTotal !== undefined ? (
-                <div className="flex items-center justify-between gap-3">
+                <div
+                  className={`flex items-center justify-between gap-3 ${
+                    // With a priced session the cost row carries the separator;
+                    // cost-less projections (per-agent totals) move it here.
+                    usage.total_cost_usd === null ? 'border-t border-hairline pt-1.5' : ''
+                  }`}
+                >
                   <dt className="text-ink-faint">{t('usage.card.tokens')}</dt>
                   <dd className="font-mono text-ink tabular-nums">{time.formatTokens(usageTotal)}</dd>
                 </div>
