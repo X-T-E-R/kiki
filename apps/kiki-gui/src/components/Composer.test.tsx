@@ -1422,7 +1422,7 @@ describe('Composer slash skill catalog', () => {
     expect(onChangePlanMode).not.toHaveBeenCalled();
   });
 
-  it('runs VS Code autosave preflight before activating a workspace skill', async () => {
+  it('sends a hand-typed `/skill args` draft as plain prompt text (VS Code preflight)', async () => {
     vscodeRuntime.value = true;
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onActivateSkill = vi.fn();
@@ -1439,19 +1439,23 @@ describe('Composer slash skill catalog', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     await settle();
-    expect(preparePrompt).toHaveBeenCalledWith('', expect.any(String), false);
-    expect(onActivateSkill).toHaveBeenCalledWith('review', '--fix', []);
-    expect(onSend).not.toHaveBeenCalled();
+    // No menu accept happened: the draft is prose and ships verbatim (with
+    // the VS Code autosave preflight of a normal send).
+    expect(preparePrompt).toHaveBeenCalledWith('/review --fix', expect.any(String), true);
+    expect(onSend).toHaveBeenCalledWith('/review --fix', []);
+    expect(onActivateSkill).not.toHaveBeenCalled();
   });
 
-  it('activates Tauri skills synchronously without VS Code preflight state', async () => {
+  it('sends a hand-typed `/skill args` draft as plain prompt text (desktop)', async () => {
     desktopRuntime.value = true;
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onActivateSkill = vi.fn();
+    const onSend = vi.fn();
     const { container } = await renderComposer({
       value: '/review --fix',
       workspaceId: 'wd_fixture_0123456789ab',
       onActivateSkill,
+      onSend,
     });
     for (let index = 0; index < 8; index += 1) await settle();
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
@@ -1460,9 +1464,52 @@ describe('Composer slash skill catalog', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
 
-    expect(onActivateSkill).toHaveBeenCalledWith('review', '--fix', []);
+    expect(onSend).toHaveBeenCalledWith('/review --fix', []);
+    expect(onActivateSkill).not.toHaveBeenCalled();
     expect(preparePrompt).not.toHaveBeenCalled();
-    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
+  });
+
+  it('still activates a bare hand-typed `/skill` command', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onActivateSkill = vi.fn();
+    const onSend = vi.fn();
+    const { container } = await renderComposer({
+      value: '/review',
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill,
+      onSend,
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '', []);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('lets an open IME composition own Enter instead of accepting a slash row', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onChange = vi.fn();
+    const { container } = await renderComposer({
+      value: '/rev',
+      workspaceId: 'wd_fixture_0123456789ab',
+      onChange,
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+    await openSlashMenu(container);
+    expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/review');
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }),
+      );
+    });
+
+    // The IME commit key passed through: no token completion, no send, menu open.
+    expect(onChange).not.toHaveBeenCalledWith('/review ');
+    expect(container.querySelector('[data-composer-menu]')).not.toBeNull();
   });
 
   it('sends a slash skill as prompt text when onActivateSkill is omitted', async () => {

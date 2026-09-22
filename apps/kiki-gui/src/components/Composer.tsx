@@ -456,6 +456,12 @@ export function Composer({
     name: string;
     reason: 'unknown' | 'disabled';
   } | null>(null);
+  // A skill row accepted from the slash menu earns its args: `/name args`
+  // composed after a menu accept activates on send. A hand-typed `/name args`
+  // draft is prose — it ships as plain text instead of being eaten by a skill
+  // activation. Cleared as soon as the draft no longer starts with the
+  // accepted token.
+  const menuAcceptedSkillRef = useRef<string | null>(null);
   // Queue-edit remove is a two-step control: the first click arms the button
   // ("Remove?"), the second actually drops the queued message. The arm times
   // out so a stray hover never leaves a live one-click remove behind.
@@ -873,6 +879,7 @@ export function Composer({
       if (trigger === null) return;
       const completed = completeSlashTrigger(text, trigger, item.name);
       pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+      menuAcceptedSkillRef.current = item.name;
       onChange(completed.text);
       lastCursorRef.current = completed.cursor;
       // Caret to the end of the completed token after the controlled value lands.
@@ -1141,8 +1148,18 @@ export function Composer({
         return;
       }
       if (classified.item.kind === 'skill' && onActivateSkill !== undefined) {
-        activateSkill(classified.item.skill?.name ?? classified.item.name, classified.args);
-        return;
+        // Args-bearing activations require a menu accept (tracked by
+        // `menuAcceptedSkillRef`); a hand-typed `/name args` draft is prose
+        // and falls through to the plain-text send below. Bare `/name` is an
+        // unambiguous command and always activates.
+        const menuAccepted =
+          menuAcceptedSkillRef.current !== null &&
+          classified.item.name.toLowerCase() === menuAcceptedSkillRef.current.toLowerCase();
+        if (classified.args === '' || menuAccepted) {
+          menuAcceptedSkillRef.current = null;
+          activateSkill(classified.item.skill?.name ?? classified.item.name, classified.args);
+          return;
+        }
       }
       if (classified.item.kind === 'action' && classified.item.action !== undefined) {
         // `/goal <text>` sends immediately with the args as `goal_objective`.
@@ -1151,9 +1168,13 @@ export function Composer({
           sendPrompt(classified.args, { goalObjective: classified.args });
           return;
         }
-        onChange('');
-        runAction(classified.item.action);
-        return;
+        // Prose after a client shortcut (`/plan do it`) is a message, not a
+        // command — only a bare action token runs the shortcut.
+        if (classified.args === '') {
+          onChange('');
+          runAction(classified.item.action);
+          return;
+        }
       }
     }
     void sendPrompt(text.trim(), goalMode && onChangeGoalMode !== undefined ? { goalObjective: text.trim() } : undefined);
@@ -1241,6 +1262,12 @@ export function Composer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // IME composition owns every key while it is open — Enter/Tab/arrows/
+    // Escape all belong to the candidate window. Intercepting them (the menu
+    // branches below used to run first) eats the commit key and leaves the
+    // half-committed text stranded. keyCode 229 covers engines that skip the
+    // isComposing flag on keydown.
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (menu !== null && menuRowCount > 0) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
@@ -1276,7 +1303,6 @@ export function Composer({
       onQueueEditCancel?.();
       return;
     }
-    if (event.nativeEvent.isComposing) return;
     // Composer-local undo/redo: the controlled value defeats the native
     // textarea undo stack, so these walk our snapshot lane instead.
     if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
@@ -1742,6 +1768,15 @@ export function Composer({
                 // An edit while browsing history ends the browse; the edited
                 // text stands (the pre-browse draft is superseded by it).
                 historyIndexRef.current = null;
+                // The menu-accepted skill token earns args only while the
+                // draft still leads with that token.
+                const acceptedSkill = menuAcceptedSkillRef.current;
+                if (
+                  acceptedSkill !== null &&
+                  !event.target.value.toLowerCase().startsWith(`/${acceptedSkill.toLowerCase()}`)
+                ) {
+                  menuAcceptedSkillRef.current = null;
+                }
                 onChange(event.target.value);
                 lastCursorRef.current = event.target.selectionStart;
                 setSlashConfirm(null);
