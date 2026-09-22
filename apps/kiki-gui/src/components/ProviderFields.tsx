@@ -536,6 +536,7 @@ function ModelDraftRow({
         <button
           type="button"
           disabled={!canRemove}
+          aria-label={t('st.providers.removeModel')}
           onClick={onRemove}
           className={`${SECONDARY_BUTTON} shrink-0 px-2 text-danger`}
         >
@@ -789,6 +790,26 @@ export function ProviderFields({
           <p className="text-[11px] font-medium text-ink-soft">{t('st.providers.models')}</p>
           <button type="button" className={SECONDARY_BUTTON} onClick={() => { onChange({ ...draft, models: [...draft.models, blankModel()] }); }}>{t('st.providers.addModel')}</button>
         </div>
+        {idLocked ? (
+          <label className="block text-[11px] font-medium text-ink-soft">
+            {t('st.models.providerDefault')}
+            <select
+              className={`${INPUT} mt-1`}
+              value={draft.defaultModel}
+              onChange={(event) => { onChange({ ...draft, defaultModel: event.target.value }); }}
+            >
+              <option value="">{t('st.auth.none')}</option>
+              {draft.defaultModel !== '' && !draft.models.some((model) => (model.id || model.remoteId) === draft.defaultModel) ? (
+                <option value={draft.defaultModel}>{draft.defaultModel}</option>
+              ) : null}
+              {draft.models.filter((model) => model.remoteId !== '').map((model, index) => (
+                <option key={model.id || `new-${index}`} value={model.id || model.remoteId}>
+                  {model.displayName || model.id || model.remoteId}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {draft.models.map((model, index) => (
           <ModelDraftRow
             key={model.id || `new-${index}`}
@@ -798,17 +819,18 @@ export function ProviderFields({
               model.remoteId !== ''
               && (model.id === draft.defaultModel || model.remoteId === draft.defaultModel)
             }
-            canRemove={draft.models.length > 1}
+            canRemove
             catalogModels={availableCatalogModels}
             onChange={(patch) => { updateModel(index, patch); }}
             onRemove={() => {
               const models = draft.models.filter((_, modelIndex) => modelIndex !== index);
+              const first = models[0];
               onChange({
                 ...draft,
                 models,
                 defaultModel:
                   model.id === draft.defaultModel || model.remoteId === draft.defaultModel
-                    ? (models[0]?.id ?? models[0]?.remoteId ?? '')
+                    ? (first === undefined ? '' : first.id || first.remoteId)
                     : draft.defaultModel,
               });
             }}
@@ -838,6 +860,8 @@ export function ProviderEditor({
   const { client } = useConnection();
   const initial = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
   const [draft, setDraft] = useState(initial);
+  const [baseline, setBaseline] = useState(initial);
+  const [readSnapshot, setReadSnapshot] = useState(initial);
   const [directoryModels, setDirectoryModels] = useState<readonly CatalogModelItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -852,8 +876,16 @@ export function ProviderEditor({
     (discovered.data?.items.find((group) => group.provider_id === provider.id)?.models ?? []).map(discoveredCatalogChoice),
     directoryModels.map(directoryCatalogChoice),
   ), [directoryModels, discovered.data, models, provider.id]);
+  const dirty = draft !== null && baseline !== null && isProviderDraftDirty(draft, baseline);
 
-  useEffect(() => { setDraft(initial); }, [initial]);
+  // A dirty editor keeps its baseline AND revisions, even when another writer
+  // refreshes the shared catalog. New reads must not bless a stale draft.
+  useEffect(() => {
+    if (initial === readSnapshot || dirty || saving) return;
+    setDraft(initial);
+    setBaseline(initial);
+    setReadSnapshot(initial);
+  }, [initial, readSnapshot, dirty, saving]);
   useEffect(() => {
     let current = true;
     setDirectoryModels([]);
@@ -869,7 +901,7 @@ export function ProviderEditor({
     setRevisions(null);
     void Promise.all([
       client.getProviderEntity(provider.id),
-      Promise.all((initial?.models ?? []).filter((model) => model.id !== '').map(
+      Promise.all((readSnapshot?.models ?? []).filter((model) => model.id !== '').map(
         async (model) => [model.id, (await client.getModel(model.id)).revision] as const,
       )),
     ]).then(([providerEntity, modelEntries]) => {
@@ -878,12 +910,11 @@ export function ProviderEditor({
       if (current) setFeedback({ tone: 'error', text: errorText(locale, error) });
     });
     return () => { current = false; };
-  }, [initial, provider.id]);
+  }, [readSnapshot, provider.id]);
 
-  const dirty = draft !== null && initial !== null && isProviderDraftDirty(draft, initial);
   useDirtyReporter(`provider:${provider.id}`, dirty);
 
-  if (draft === null) {
+  if (draft === null || baseline === null) {
     return (
       <div className="rounded-xl border border-hairline bg-paper p-3">
         <p className="text-[13px] font-semibold text-ink">{provider.id}</p>
@@ -894,7 +925,7 @@ export function ProviderEditor({
 
   const save = async (override?: Partial<ProviderDraft>) => {
     const next = { ...draft, ...override };
-    const validation = validateProviderDraft(next);
+    const validation = validateProviderDraft(next, baseline);
     if (validation !== null) {
       setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
@@ -905,24 +936,28 @@ export function ProviderEditor({
     let mutationSucceeded = false;
     try {
       let normalized = next;
+      let savedBaseline = baseline;
       const revisionMap = new Map(revisions.models);
       for (const [index, row] of next.models.entries()) {
         if (row.id !== '') continue;
         const created = await client.createModel(modelCreateBody(provider.id, row));
         mutationSucceeded = true;
         revisionMap.set(created.id, created.revision);
+        const savedRow = { ...row, id: created.id };
         normalized = {
           ...normalized,
           models: normalized.models.map((candidate, candidateIndex) =>
-            candidateIndex === index ? { ...candidate, id: created.id } : candidate),
+            candidateIndex === index ? savedRow : candidate),
         };
+        savedBaseline = { ...savedBaseline, models: [...savedBaseline.models, savedRow] };
         setDraft(normalized);
+        setBaseline(savedBaseline);
         setRevisions({ provider: revisions.provider, models: revisionMap });
       }
       for (const row of normalized.models) {
-        const baseline = initial!.models.find((model) => model.id === row.id);
-        if (baseline === undefined) continue;
-        const rowPatch = modelPatchBody(row, baseline);
+        const previous = savedBaseline.models.find((model) => model.id === row.id);
+        if (previous === undefined) continue;
+        const rowPatch = modelPatchBody(row, previous);
         if (rowPatch === null) continue;
         const baseRevision = revisionMap.get(row.id);
         if (baseRevision === undefined) throw new Error(`Missing revision for model ${row.id}`);
@@ -932,9 +967,14 @@ export function ProviderEditor({
         });
         mutationSucceeded = true;
         revisionMap.set(row.id, updated.revision);
+        savedBaseline = {
+          ...savedBaseline,
+          models: savedBaseline.models.map((model) => model.id === row.id ? row : model),
+        };
+        setBaseline(savedBaseline);
         setRevisions({ provider: revisions.provider, models: revisionMap });
       }
-      for (const row of initial!.models) {
+      for (const row of savedBaseline.models) {
         const kept = normalized.models.some((model) => model.id === row.id);
         if (kept || row.id === '') continue;
         const baseRevision = revisionMap.get(row.id);
@@ -942,9 +982,11 @@ export function ProviderEditor({
         await client.deleteModel(row.id, { baseRevision });
         mutationSucceeded = true;
         revisionMap.delete(row.id);
+        savedBaseline = { ...savedBaseline, models: savedBaseline.models.filter((model) => model.id !== row.id) };
+        setBaseline(savedBaseline);
         setRevisions({ provider: revisions.provider, models: revisionMap });
       }
-      const connectionPatch = providerPatchBody(normalized, initial!);
+      const connectionPatch = providerPatchBody(normalized, savedBaseline);
       if (connectionPatch !== null) {
         const updatedProvider = await client.updateProvider(provider.id, {
           ...connectionPatch,
@@ -953,12 +995,14 @@ export function ProviderEditor({
         mutationSucceeded = true;
         setRevisions({ provider: updatedProvider.revision, models: revisionMap });
       }
-      setDraft({ ...normalized, apiKey: '', clearApiKey: false });
+      const saved = { ...normalized, apiKey: '', clearApiKey: false };
+      setDraft(saved);
+      setBaseline(saved);
       await onSaved();
       setFeedback({ tone: 'success', text: t('st.providers.savedEcho', { id: provider.id }) });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
-      if (mutationSucceeded) await onSaved();
+      if (mutationSucceeded) await onSaved().catch(() => {});
     } finally {
       setSaving(false);
     }
@@ -1011,16 +1055,18 @@ export function ProviderEditor({
         ) : null}
       </summary>
       <div className="mt-4 space-y-4">
-        <ProviderFields
-          draft={draft}
-          onChange={setDraft}
-          hasStoredKey={provider.has_api_key}
-          managed={managed}
-          idLocked
-          refreshProviderId={provider.id}
-          catalogModels={catalogModels}
-          onRefreshed={onSaved}
-        />
+        <fieldset disabled={saving} className="min-w-0 disabled:opacity-60">
+          <ProviderFields
+            draft={draft}
+            onChange={setDraft}
+            hasStoredKey={provider.has_api_key}
+            managed={managed}
+            idLocked
+            refreshProviderId={provider.id}
+            catalogModels={catalogModels}
+            onRefreshed={onSaved}
+          />
+        </fieldset>
         {/* OAuth-managed providers keep the save button for the editable
             fields; the credential clear/delete danger zone stays hidden. */}
         <div className="flex flex-wrap items-center gap-2">

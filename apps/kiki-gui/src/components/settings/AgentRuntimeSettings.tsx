@@ -1,14 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
-  agentIdentityPatch,
+  agentIdentitySparsePatch,
   markRestartRequired,
   runtimeConfigDraftFromConfig,
   type RuntimeConfigDraft,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
+import { invalidateAgentProfileCatalogs } from '../../lib/agentProfileCatalog';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -23,6 +24,34 @@ type AgentIdentityDraft = Pick<
   | 'disabledNamedProfiles'
 >;
 
+/**
+ * Stable per-row keys: the entry id is minted when the row is added (or when
+ * the baseline values load) and never derived from the edited text, so every
+ * keystroke keeps the same input node and caret position.
+ */
+interface StringListEntry {
+  readonly id: string;
+  readonly value: string;
+}
+
+let stringListEntrySeq = 0;
+function nextStringListId(): string {
+  stringListEntrySeq += 1;
+  return `entry-${stringListEntrySeq}`;
+}
+
+function toStringListEntries(values: readonly string[]): StringListEntry[] {
+  return values.map((value) => ({ id: nextStringListId(), value }));
+}
+
+function stringListValues(entries: readonly StringListEntry[]): string[] {
+  return entries.map((entry) => entry.value);
+}
+
+function stringListsEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 function StringListEditor({ label, values, onChange, placeholder }: {
   label: string;
   values: string[];
@@ -30,36 +59,53 @@ function StringListEditor({ label, values, onChange, placeholder }: {
   placeholder: string;
 }) {
   const { t } = useI18n();
+  // The entries are seeded from the incoming values, then owned locally: the
+  // editor re-seeds only when the value list identity changes from outside
+  // (a save echo or a fresh baseline), never on the user's own edits.
+  const [entries, setEntries] = useState<StringListEntry[]>(() => toStringListEntries(values));
+  const lastValuesRef = useRef(values);
+  if (values !== lastValuesRef.current) {
+    lastValuesRef.current = values;
+    if (values.length !== entries.length || values.some((value, index) => value !== entries[index]?.value)) {
+      setEntries(toStringListEntries(values));
+    }
+  }
+  const update = (next: StringListEntry[]) => {
+    const nextValues = stringListValues(next);
+    lastValuesRef.current = nextValues;
+    setEntries(next);
+    onChange(nextValues);
+  };
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
         <span className="text-[11px] font-medium text-ink-soft">{label}</span>
-        <button type="button" className={SECONDARY_BUTTON} onClick={() => { onChange([...values, '']); }}>
+        <button type="button" className={SECONDARY_BUTTON} onClick={() => { update([...entries, { id: nextStringListId(), value: '' }]); }}>
           {t('st.agentIdentity.addEntry')}
         </button>
       </div>
-      {values.map((value, index) => (
-        <div key={`${index}:${value}`} className="flex gap-2">
+      {entries.map((entry, index) => (
+        <div key={entry.id} className="flex gap-2">
           <input
             className={`${INPUT} font-mono`}
-            value={value}
+            value={entry.value}
             placeholder={placeholder}
             aria-label={`${label} ${index + 1}`}
             onChange={(event) => {
-              onChange(values.map((entry, candidate) => candidate === index ? event.target.value : entry));
+              update(entries.map((candidate) => candidate === entry ? { ...candidate, value: event.target.value } : candidate));
             }}
           />
           <button
             type="button"
             className={SECONDARY_BUTTON}
             aria-label={t('st.agentIdentity.removeEntry', { n: index + 1 })}
-            onClick={() => { onChange(values.filter((_, candidate) => candidate !== index)); }}
+            onClick={() => { update(entries.filter((candidate) => candidate !== entry)); }}
           >
             ×
           </button>
         </div>
       ))}
-      {values.length === 0 ? <Hint>{t('st.agentIdentity.listEmpty')}</Hint> : null}
+      {entries.length === 0 ? <Hint>{t('st.agentIdentity.listEmpty')}</Hint> : null}
     </div>
   );
 }
@@ -68,31 +114,43 @@ function StringListEditor({ label, values, onChange, placeholder }: {
  * Identity and agent-profile loading (runtime split): the server-facing
  * identity plus the profile sources loaded at startup sit next to the main
  * agent profiles they govern. Name/slug edits need a server restart.
+ *
+ * Field-level dirty tracking selects the domains to replace; saving identity
+ * alone never writes the profile switches' server-wide disable list.
  */
 export function AgentRuntimeCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<AgentIdentityDraft | null>(null);
-  const [dirty, setDirty] = useState(false);
+  const [saved, setSaved] = useState<AgentIdentityDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const lastConfig = useRef<typeof configQuery.data>(undefined);
 
   useEffect(() => {
-    if (configQuery.data !== undefined && !dirty) {
-      const projected = runtimeConfigDraftFromConfig(configQuery.data);
-      setDraft({
-        identityName: projected.identityName,
-        identitySlug: projected.identitySlug,
-        advertiseAsKimiCode: projected.advertiseAsKimiCode,
-        extraAgentDirs: projected.extraAgentDirs,
-        disabledNamedProfiles: projected.disabledNamedProfiles,
-      });
-    }
-  }, [configQuery.data, dirty]);
+    if (configQuery.data === undefined || configQuery.data === lastConfig.current || saving) return;
+    lastConfig.current = configQuery.data;
+    const projected = runtimeConfigDraftFromConfig(configQuery.data);
+    const next = {
+      identityName: projected.identityName,
+      identitySlug: projected.identitySlug,
+      advertiseAsKimiCode: projected.advertiseAsKimiCode,
+      extraAgentDirs: projected.extraAgentDirs,
+      disabledNamedProfiles: projected.disabledNamedProfiles,
+    };
+    setDraft(draft === null || saved === null ? next : {
+      identityName: draft.identityName === saved.identityName ? next.identityName : draft.identityName,
+      identitySlug: draft.identitySlug === saved.identitySlug ? next.identitySlug : draft.identitySlug,
+      advertiseAsKimiCode: draft.advertiseAsKimiCode === saved.advertiseAsKimiCode ? next.advertiseAsKimiCode : draft.advertiseAsKimiCode,
+      extraAgentDirs: stringListsEqual(draft.extraAgentDirs, saved.extraAgentDirs) ? next.extraAgentDirs : draft.extraAgentDirs,
+      disabledNamedProfiles: stringListsEqual(draft.disabledNamedProfiles, saved.disabledNamedProfiles) ? next.disabledNamedProfiles : draft.disabledNamedProfiles,
+    });
+    setSaved(next);
+  }, [configQuery.data, draft, saved, saving]);
 
-  if (draft === null) {
+  if (draft === null || saved === null) {
     return (
       <SectionCard id="st-card-agent-runtime" title={t('st.agentIdentity.title')}>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
@@ -102,28 +160,35 @@ export function AgentRuntimeCard() {
 
   const updateDraft = (next: AgentIdentityDraft) => {
     setDraft(next);
-    setDirty(true);
   };
 
+  const touched = {
+    identityName: draft.identityName !== saved.identityName,
+    identitySlug: draft.identitySlug !== saved.identitySlug,
+    advertiseAsKimiCode: draft.advertiseAsKimiCode !== saved.advertiseAsKimiCode,
+    extraAgentDirs: !stringListsEqual(draft.extraAgentDirs, saved.extraAgentDirs),
+    disabledNamedProfiles: !stringListsEqual(draft.disabledNamedProfiles, saved.disabledNamedProfiles),
+  };
+  const dirty = Object.values(touched).some(Boolean);
+
   const save = async () => {
-    const current = runtimeConfigDraftFromConfig(configQuery.data);
-    const identityChanged = draft.identityName.trim() !== current.identityName
-      || draft.identitySlug.trim() !== current.identitySlug
-      || draft.advertiseAsKimiCode !== current.advertiseAsKimiCode;
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await client.patchConfig(agentIdentityPatch(draft));
+      const identityChanged = touched.identityName || touched.identitySlug || touched.advertiseAsKimiCode;
+      const echoed = await client.patchConfig(agentIdentitySparsePatch(draft, touched));
       queryClient.setQueryData(['config'], echoed);
+      await invalidateAgentProfileCatalogs(queryClient);
       const projected = runtimeConfigDraftFromConfig(echoed);
-      setDraft({
+      const next = {
         identityName: projected.identityName,
         identitySlug: projected.identitySlug,
         advertiseAsKimiCode: projected.advertiseAsKimiCode,
         extraAgentDirs: projected.extraAgentDirs,
         disabledNamedProfiles: projected.disabledNamedProfiles,
-      });
-      setDirty(false);
+      };
+      setDraft(next);
+      setSaved(next);
       if (identityChanged) markRestartRequired(['identity']);
       setFeedback({ tone: 'success', text: t('st.agentIdentity.saved') });
     } catch (error) {

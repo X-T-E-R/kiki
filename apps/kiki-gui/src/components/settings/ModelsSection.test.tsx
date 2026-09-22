@@ -18,7 +18,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { GetModelResponse, ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 import type { ServerConnection } from '@kiki/session-core/settings';
 
+import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
+import { DirtyGuardContext } from '../dirtyGuard';
 import { CatalogRefreshCard, ModelCatalogCard } from './ModelsSection';
 
 const listDiscoveredModels = vi.fn();
@@ -94,6 +96,7 @@ const roots: Root[] = [];
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
 });
 
 beforeEach(() => {
@@ -112,8 +115,8 @@ beforeEach(() => {
   updateModel.mockReset().mockResolvedValue(ENTITY);
 });
 
-afterEach(() => {
-  for (const root of roots.splice(0)) root.unmount();
+afterEach(async () => {
+  await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
   for (const container of containers.splice(0)) container.remove();
 });
 
@@ -121,7 +124,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderCard(): Promise<HTMLDivElement> {
+async function renderCard(reportDirty = (_id: string, _dirty: boolean) => {}): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -133,8 +136,10 @@ async function renderCard(): Promise<HTMLDivElement> {
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <I18nProvider>
-            <ModelCatalogCard />
-            <CatalogRefreshCard />
+            <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+              <ModelCatalogCard />
+              <CatalogRefreshCard />
+            </DirtyGuardContext.Provider>
           </I18nProvider>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -156,6 +161,12 @@ function setSelectValue(select: HTMLSelectElement, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
   setter.call(select, value);
   select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function setTextareaValue(textarea: HTMLTextAreaElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+  setter.call(textarea, value);
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 describe('ModelCatalogCard row editor', () => {
@@ -384,5 +395,91 @@ describe('ModelCatalogCard row editor draft retention', () => {
     await act(async () => { buttonByText(container, 'Close').click(); });
     expect(container.querySelector('[role="alertdialog"]')).toBeNull();
     expect(editorWrapper(container)).toBeNull();
+  });
+
+  it('keeps a dirty editor mounted across filtering for another model and clearing the query', async () => {
+    listModels.mockResolvedValue({ items: [...MODELS, { ...MODELS[0], id: 'other', remote_id: 'other-model', display_name: 'Other model' }] });
+    const container = await renderCard();
+    await openEditor(container);
+    const input = nameInput(container);
+    await act(async () => { setInputValue(input, 'K2 Thinking'); });
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
+    await act(async () => { setInputValue(search, 'other-model'); });
+    const row = editorWrapper(container)!.parentElement!;
+    expect(row.style.display).toBe('none');
+    expect(nameInput(container)).toBe(input);
+    expect(input.value).toBe('K2 Thinking');
+    expect(container.textContent).not.toContain('No models match');
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for other"]')!.closest<HTMLElement>('.rounded-lg')!.style.display).toBe('');
+
+    await act(async () => { setInputValue(search, 'zzz-no-match'); });
+    expect(container.textContent).toContain('No models match');
+    expect(row.parentElement!.parentElement!.style.display).toBe('none');
+    await act(async () => { setInputValue(search, ''); });
+    expect(row.style.display).toBe('');
+    expect(row.parentElement!.parentElement!.style.display).toBe('');
+    expect(nameInput(container)).toBe(input);
+    expect(input.value).toBe('K2 Thinking');
+    expect(buttonByText(container, 'Save').disabled).toBe(false);
+    expect(updateModel).not.toHaveBeenCalled();
+  });
+
+  it('reports the dirty state to the guard while the row is hidden by search', async () => {
+    const reportDirty = vi.fn();
+    const container = await renderCard(reportDirty);
+    await openEditor(container);
+    await act(async () => { setInputValue(nameInput(container), 'K2 Thinking'); });
+    expect(reportDirty).toHaveBeenCalledWith('catalog-model:kimi-code/kimi-k2', true);
+    reportDirty.mockClear();
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
+    await act(async () => { setInputValue(search, 'zzz-no-match'); });
+    expect(editorWrapper(container)!.parentElement!.style.display).toBe('none');
+    expect(reportDirty).not.toHaveBeenCalledWith('catalog-model:kimi-code/kimi-k2', false);
+    await act(async () => { setInputValue(search, ''); });
+    expect(reportDirty).not.toHaveBeenCalledWith('catalog-model:kimi-code/kimi-k2', false);
+    await act(async () => { editToggle(container).click(); });
+    expect(container.querySelector('[data-collapsed-draft]')?.textContent).toBe('Unsaved');
+  });
+});
+
+describe('ModelCatalogRowEditor request identity save guard', () => {
+  it.each([
+    { locale: 'en', text: '', expected: 'Custom overrides require a non-empty JSON object.' },
+    { locale: 'en', text: '{', expected: 'Request identity overrides must be valid JSON.' },
+    { locale: 'zh', text: '', expected: '仅自定义覆盖模式需要非空 JSON 对象。' },
+    { locale: 'zh', text: '{', expected: '请求身份覆盖必须是有效的 JSON。' },
+  ])('shows $locale inline feedback for "$text" without PATCH or unhandled rejection', async ({ locale, text, expected }) => {
+    localStorage.setItem('kiki.locale', locale);
+    const errors: unknown[] = [];
+    const onError = (error: unknown) => { errors.push(error); };
+    process.on('unhandledRejection', onError);
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onError);
+    try {
+      const container = await renderCard();
+      const editLabel = translate(locale as 'en' | 'zh', 'st.models.editAria', { model: ENTITY.id });
+      const toggle = [...container.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === editLabel)!;
+      await act(async () => { toggle.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const identityLabel = translate(locale as 'en' | 'zh', 'st.models.requestIdentity');
+      const select = [...container.querySelectorAll<HTMLSelectElement>('[data-model-row-editor] label select')]
+        .find((candidate) => candidate.closest('label')?.textContent?.startsWith(identityLabel))!;
+      await act(async () => { setSelectValue(select, 'custom_overrides'); });
+      const textarea = container.querySelector<HTMLTextAreaElement>('[data-model-row-editor] textarea')!;
+      await act(async () => { setTextareaValue(textarea, text); });
+      const saveLabel = translate(locale as 'en' | 'zh', 'common.save');
+      const save = [...container.querySelectorAll('button')].find((button) => button.textContent === saveLabel)!;
+      await act(async () => { save.click(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(container.textContent).toContain(expected);
+      expect(updateModel).not.toHaveBeenCalled();
+      expect(textarea.value).toBe(text);
+      expect(errors).toEqual([]);
+    } finally {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onError);
+      process.off('unhandledRejection', onError);
+      localStorage.removeItem('kiki.locale');
+    }
   });
 });

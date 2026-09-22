@@ -14,15 +14,18 @@
  *    aliases) round-trips without being rewritten.
  */
 
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
-import { ProviderEditor } from './ProviderFields';
+import { NewProviderWizard, ProviderEditor } from './ProviderFields';
+import { DirtyGuardContext } from './dirtyGuard';
+import { ConnectionsTab } from './settings/ProvidersSection';
 
 const listDiscoveredModels = vi.fn(async () => ({ items: [] as Array<{ provider_id: string; fetched_at: number | null; attempted_at: number; models: Array<{ remote_id: string }> }> }));
 const refreshProvider = vi.fn();
@@ -34,9 +37,16 @@ const updateModel = vi.fn();
 const createModel = vi.fn();
 const deleteModel = vi.fn();
 const deleteProviderEntity = vi.fn();
+const createProvider = vi.fn();
+const listProviders = vi.fn();
+const listModels = vi.fn();
+const getAuth = vi.fn();
+const getOAuthStatus = vi.fn();
+const reportDirty = vi.fn();
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
+    config: {},
     client: {
       listDiscoveredModels,
       refreshProvider,
@@ -48,6 +58,11 @@ vi.mock('../state/connection', () => ({
       createModel,
       deleteModel,
       deleteProviderEntity,
+      createProvider,
+      listProviders,
+      listModels,
+      getAuth,
+      getOAuthStatus,
     },
   }),
 }));
@@ -156,6 +171,12 @@ beforeEach(() => {
   });
   deleteModel.mockReset().mockResolvedValue(undefined);
   deleteProviderEntity.mockReset().mockResolvedValue(undefined);
+  createProvider.mockReset().mockImplementation(async (body) => ({ ...body, revision: 'created-rev' }));
+  listProviders.mockReset().mockResolvedValue({ items: [COLON_PROVIDER, MANAGED_PROVIDER] });
+  listModels.mockReset().mockResolvedValue({ items: [...FAST_MODELS, ...MANAGED_MODELS] });
+  getAuth.mockReset().mockResolvedValue({ ready: true, providers_count: 2 });
+  getOAuthStatus.mockReset().mockResolvedValue(null);
+  reportDirty.mockClear();
 });
 
 afterEach(async () => {
@@ -170,12 +191,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderEditor(
-  provider: ProviderCatalogItem,
-  models: readonly ModelCatalogItem[],
-  managed: boolean,
-  onSaved: () => Promise<void>,
-): Promise<HTMLDivElement> {
+async function renderSurface(children: ReactNode) {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -184,15 +200,30 @@ async function renderEditor(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(
-      <QueryClientProvider client={client}>
-        <I18nProvider>
-          <ProviderEditor provider={provider} models={models} managed={managed} onSaved={onSaved} />
-        </I18nProvider>
-      </QueryClientProvider>,
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+              {children}
+            </DirtyGuardContext.Provider>
+          </I18nProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
   });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-  return container;
+  return { container, client };
+}
+
+async function renderEditor(
+  provider: ProviderCatalogItem,
+  models: readonly ModelCatalogItem[],
+  managed: boolean,
+  onSaved: () => Promise<void>,
+): Promise<HTMLDivElement> {
+  return (await renderSurface(
+    <ProviderEditor provider={provider} models={models} managed={managed} onSaved={onSaved} />,
+  )).container;
 }
 
 function setInputValue(input: HTMLInputElement, value: string): void {
@@ -210,6 +241,108 @@ function buttonByText(container: HTMLElement, text: string): HTMLButtonElement {
 }
 
 describe('ProviderEditor save channel', () => {
+  it('keeps provider A draft and baseline through provider B save and real query invalidation', async () => {
+    updateModel.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
+      const renamed = { ...MANAGED_MODELS[0]!, display_name: String(patch['display_name']) };
+      listModels.mockResolvedValue({ items: [...FAST_MODELS, renamed] });
+      return { ...renamed, revision: `${id}-rev-2`, issues: [] };
+    });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    const editors = [...container.querySelectorAll<HTMLDetailsElement>('#st-card-providers details')];
+    const first = editors[0]!;
+    const second = editors[1]!;
+    await act(async () => { for (const editor of editors) editor.open = true; });
+    const baseUrl = [...first.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
+    const apiKey = first.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(async () => {
+      setInputValue(baseUrl, 'https://draft.example.test/v1');
+      setInputValue(apiKey, 'YOUR_API_KEY');
+      second.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click();
+    });
+    const name = second.querySelector<HTMLInputElement>('input[aria-label="Model 1 display name"]')!;
+    await act(async () => { setInputValue(name, 'Changed elsewhere'); });
+    await act(async () => { buttonByText(second, 'Save provider').click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(listModels.mock.calls.length).toBeGreaterThan(1);
+    expect(baseUrl.value).toBe('https://draft.example.test/v1');
+    expect(apiKey.value).toBe('YOUR_API_KEY');
+    expect(buttonByText(first, 'Save provider').disabled).toBe(false);
+    expect(reportDirty.mock.calls.findLast(([id]) => id === 'provider:edge:gateway')).toEqual(['provider:edge:gateway', true]);
+    expect(getProviderEntity.mock.calls.filter(([id]) => id === 'edge:gateway')).toHaveLength(1);
+    await act(async () => { buttonByText(first, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenCalledWith('edge:gateway', {
+      base_url: 'https://draft.example.test/v1', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',
+    });
+    expect(updateModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a dirty draft and its original revision through refresh and background catalog updates', async () => {
+    const { container, client } = await renderSurface(<ConnectionsTab />);
+    const first = container.querySelector<HTMLDetailsElement>('#st-card-providers details')!;
+    const baseUrl = [...first.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
+    await act(async () => { setInputValue(baseUrl, 'https://draft.example.test/v1'); });
+    const external = { ...COLON_PROVIDER, base_url: 'https://external.example.test/v1' };
+    getProviderEntity.mockResolvedValue({ ...external, revision: 'provider-rev-2' });
+    listProviders.mockResolvedValue({ items: [external, MANAGED_PROVIDER] });
+    refreshProvider.mockResolvedValue({ changed: [{ provider_id: COLON_PROVIDER.id, added: 1, removed: 0 }], failed: [], unchanged: [] });
+    await act(async () => { buttonByText(first, 'Test connection & pull models').click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => {
+      client.setQueryData(['models'], { items: [...FAST_MODELS, { ...MANAGED_MODELS[0], display_name: 'Background catalog change' }] });
+    });
+    expect(baseUrl.value).toBe('https://draft.example.test/v1');
+    expect(getProviderEntity.mock.calls.filter(([id]) => id === 'edge:gateway')).toHaveLength(1);
+    updateProvider.mockRejectedValueOnce(new Error('Provider changed since it was read.'));
+    await act(async () => { buttonByText(first, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenCalledWith('edge:gateway', {
+      base_url: 'https://draft.example.test/v1', base_revision: 'provider-rev-1',
+    });
+    expect(first.textContent).toContain('Provider changed since it was read.');
+    expect(baseUrl.value).toBe('https://draft.example.test/v1');
+    expect(buttonByText(first, 'Save provider').disabled).toBe(false);
+  });
+
+  it('saves a connection without models after removing the last wizard row', async () => {
+    const onSaved = vi.fn(async () => {});
+    const { container } = await renderSurface(<NewProviderWizard onSaved={onSaved} />);
+    const template = [...container.querySelectorAll('button')].find((button) => button.textContent?.startsWith('OpenAI'))!;
+    await act(async () => { template.click(); });
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'YOUR_API_KEY'); });
+    const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove model"]')!;
+    expect(remove.disabled).toBe(false);
+    await act(async () => { remove.click(); });
+    expect(container.querySelector('#provider-model-0-id')).toBeNull();
+    await act(async () => { buttonByText(container, 'Create provider').click(); });
+    expect(createProvider).toHaveBeenCalledWith(expect.objectContaining({ id: 'openai', api_key: 'YOUR_API_KEY', models: [] }));
+    expect(createProvider.mock.calls[0]![0].default_model).toBeUndefined();
+    expect(createModel).not.toHaveBeenCalled();
+    expect(onSaved).toHaveBeenCalledOnce();
+  });
+
+  it('allows unrelated repairs with a dangling default and exposes clearing or replacing it', async () => {
+    const dangling = { ...COLON_PROVIDER, default_model: 'removed-alias' };
+    const container = await renderEditor(dangling, FAST_MODELS, false, async () => {});
+    const baseUrl = [...container.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
+    await act(async () => {
+      setInputValue(baseUrl, 'https://repaired.example.test/v1');
+      setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'YOUR_API_KEY');
+    });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
+      base_url: 'https://repaired.example.test/v1', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',
+    });
+    const select = [...container.querySelectorAll('select')].find((input) => input.value === 'removed-alias')!;
+    expect([...select.options].map((option) => option.value)).toEqual(['', 'removed-alias', 'fast']);
+    await act(async () => { select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { default_model: null, base_revision: 'provider-rev-2' });
+    await act(async () => { select.value = 'fast'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { default_model: 'fast', base_revision: 'provider-rev-2' });
+    expect(updateModel).not.toHaveBeenCalled();
+  });
+
   it('patches an unchanged managed:kimi-code id without any model list or id rewrite', async () => {
     const onSaved = vi.fn(async () => {});
     const container = await renderEditor(MANAGED_PROVIDER, MANAGED_MODELS, true, onSaved);
@@ -411,6 +544,27 @@ describe('ProviderEditor save channel', () => {
     expect(updateProvider).toHaveBeenCalledTimes(2);
     expect(onSaved).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('Server saved provider edge:gateway.');
+  });
+
+  it('does not replay successful model edits or deletions after a partial provider save failure', async () => {
+    updateProvider.mockRejectedValueOnce(new Error('Provider changed since it was read.'));
+    const obsolete = { ...FAST_MODELS[0]!, id: 'obsolete', remote_id: 'obsolete' };
+    const container = await renderEditor(COLON_PROVIDER, [...FAST_MODELS, obsolete], false, async () => {});
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>('input[aria-label="Model 1 display name"]')!, 'Renamed'); });
+    await act(async () => { container.querySelectorAll<HTMLButtonElement>('button[aria-label="Remove model"]')[1]!.click(); });
+    const baseUrl = [...container.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
+    await act(async () => { setInputValue(baseUrl, 'https://changed.example.test/v1'); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(deleteModel).toHaveBeenCalledWith('obsolete', { baseRevision: 'obsolete-rev-1' });
+    expect(container.textContent).toContain('Provider changed since it was read.');
+    expect(baseUrl.value).toBe('https://changed.example.test/v1');
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(deleteModel).toHaveBeenCalledTimes(1);
+    expect(updateProvider).toHaveBeenCalledTimes(2);
+    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
   });
 
   it('fills known parameters when a directory model is selected', async () => {

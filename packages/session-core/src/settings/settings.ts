@@ -1193,13 +1193,32 @@ export function providerDefaultRow(draft: ProviderDraft): ProviderModelDraft | u
   );
 }
 
-export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | null {
-  if (!isProviderWireType(draft.type)) return { key: 'val.providerProtocol' };
-  const providerIdentityIssue = validateRequestIdentityLayerDraft(draft);
-  if (providerIdentityIssue !== null) return providerIdentityIssue;
-  const providerImageIssue = validateImagePolicyDraft(draft);
-  if (providerImageIssue !== null) return providerImageIssue;
-  if (draft.baseUrl !== '') {
+function requestIdentityDraftChanged(
+  draft: RequestIdentityLayerDraft,
+  baseline: RequestIdentityLayerDraft | undefined,
+): boolean {
+  return baseline === undefined
+    || draft.requestIdentityChoice !== baseline.requestIdentityChoice
+    || draft.requestIdentityOverridesJson !== baseline.requestIdentityOverridesJson;
+}
+
+/** Validate creation in full, or only authored fields when saving a sparse patch. */
+export function validateProviderDraft(
+  draft: ProviderDraft,
+  baseline?: ProviderDraft,
+): ValidationIssue | null {
+  if ((baseline === undefined || draft.type !== baseline.type) && !isProviderWireType(draft.type)) {
+    return { key: 'val.providerProtocol' };
+  }
+  if (requestIdentityDraftChanged(draft, baseline)) {
+    const issue = validateRequestIdentityLayerDraft(draft);
+    if (issue !== null) return issue;
+  }
+  if (baseline === undefined || !imagePolicyDraftsEqual(draft, baseline)) {
+    const issue = validateImagePolicyDraft(draft);
+    if (issue !== null) return issue;
+  }
+  if (draft.baseUrl !== '' && (baseline === undefined || draft.baseUrl !== baseline.baseUrl)) {
     let url: URL;
     try {
       url = new URL(draft.baseUrl);
@@ -1213,32 +1232,41 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
       return { key: 'val.baseUrlEnv' };
     }
   }
-  if (draft.apiKey.includes('\n') || draft.apiKey.includes('\r')) {
+  if (!draft.clearApiKey && (draft.apiKey.includes('\n') || draft.apiKey.includes('\r'))) {
     return { key: 'val.apiKeyLineBreaks' };
   }
   const seen = new Set<string>();
   for (const model of draft.models) {
     const label = model.id || model.remoteId || '(unnamed)';
-    if (model.remoteId.trim() === '') return { key: 'val.modelIdEmpty' };
     const stored = model.id !== '';
+    const previous = stored ? baseline?.models.find((row) => row.id === model.id) : undefined;
+    if ((previous === undefined || model.remoteId !== previous.remoteId) && model.remoteId.trim() === '') {
+      return { key: 'val.modelIdEmpty' };
+    }
     const unconfiguredSize = model.maxContextSize === 0;
     if (
-      (!stored || !unconfiguredSize) &&
-      (!Number.isInteger(model.maxContextSize) || model.maxContextSize < 1)
+      (previous === undefined || model.maxContextSize !== previous.maxContextSize)
+      && (!stored || !unconfiguredSize)
+      && (!Number.isInteger(model.maxContextSize) || model.maxContextSize < 1)
     ) {
       return { key: 'val.modelContextSize', params: { model: label } };
     }
-    const modelIdentityIssue = validateRequestIdentityLayerDraft(model);
-    if (modelIdentityIssue !== null) {
-      return { key: 'val.modelRequestIdentity', params: { model: label } };
+    if (requestIdentityDraftChanged(model, previous)) {
+      const issue = validateRequestIdentityLayerDraft(model);
+      if (issue !== null) return { key: 'val.modelRequestIdentity', params: { model: label } };
     }
-    const modelImageIssue = validateImagePolicyDraft(model, draft.imageAcceptedTypes);
-    if (modelImageIssue !== null) return modelImageIssue;
+    if (previous === undefined || !imagePolicyDraftsEqual(model, previous)) {
+      const issue = validateImagePolicyDraft(model, draft.imageAcceptedTypes);
+      if (issue !== null) return issue;
+    }
     const key = stored ? model.id : `${draft.id}/${model.remoteId}`;
     if (seen.has(key)) return { key: 'val.modelDuplicate', params: { model: label } };
     seen.add(key);
   }
-  if (draft.defaultModel !== '' && providerDefaultRow(draft) === undefined) {
+  if (
+    (baseline === undefined || draft.defaultModel !== baseline.defaultModel)
+    && draft.defaultModel !== '' && providerDefaultRow(draft) === undefined
+  ) {
     return { key: 'val.defaultModelInModels' };
   }
   return null;

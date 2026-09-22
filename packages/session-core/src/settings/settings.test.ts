@@ -526,6 +526,52 @@ describe('settings persistence and validation', () => {
     expect(validateNewProviderDraft(providerDraft({ id: 'valid-provider_1' }))).toBeNull();
   });
 
+  it('creates a connection with zero models and no default pointer', () => {
+    const draft = providerDraft({ models: [], defaultModel: '' });
+    expect(validateNewProviderDraft(draft)).toBeNull();
+    expect(providerCreateBody(draft)).toMatchObject({ models: [], default_model: undefined });
+    expect(validateNewProviderDraft({ ...draft, defaultModel: 'missing' })?.key).toBe('val.defaultModelInModels');
+  });
+
+  it('does not validate an unchanged dangling default when writing independent fields', () => {
+    const baseline = providerDraft({ defaultModel: 'removed-alias' });
+    const next = { ...baseline, apiKey: 'YOUR_API_KEY', baseUrl: 'https://fixed.example.test/v1' };
+    expect(validateProviderDraft(next, baseline)).toBeNull();
+    expect(providerPatchBody(next, baseline)).toEqual({ api_key: 'YOUR_API_KEY', base_url: 'https://fixed.example.test/v1' });
+    expect(validateProviderDraft({ ...baseline, defaultModel: 'another-missing' }, baseline)?.key).toBe('val.defaultModelInModels');
+    expect(validateProviderDraft({ ...baseline, defaultModel: '' }, baseline)).toBeNull();
+    expect(providerPatchBody({ ...baseline, defaultModel: '' }, baseline)).toEqual({ default_model: null });
+    expect(validateProviderDraft({ ...baseline, defaultModel: 'example/chat' }, baseline)).toBeNull();
+    expect(providerPatchBody({ ...baseline, defaultModel: 'example/chat' }, baseline)).toEqual({ default_model: 'example/chat' });
+  });
+
+  it('validates only edited fields of existing providers and model rows, but validates new rows fully', () => {
+    const baseline = providerDraft({
+      baseUrl: 'legacy-endpoint',
+      defaultModel: 'removed-alias',
+      requestIdentityChoice: 'custom_overrides',
+      requestIdentityOverridesJson: '{',
+      imageAcceptedTypes: [],
+      models: [{
+        ...providerDraft().models[0]!, remoteId: '', maxContextSize: -1,
+        requestIdentityChoice: 'custom_overrides', requestIdentityOverridesJson: '{', imageAcceptedTypes: [],
+      }],
+    });
+    const next = { ...baseline, apiKey: 'YOUR_API_KEY' };
+    expect(validateProviderDraft(next, baseline)).toBeNull();
+    expect(providerPatchBody(next, baseline)).toEqual({ api_key: 'YOUR_API_KEY' });
+    const renamed = { ...baseline.models[0]!, displayName: 'Renamed' };
+    expect(validateProviderDraft({ ...baseline, models: [renamed] }, baseline)).toBeNull();
+    expect(modelPatchBody(renamed, baseline.models[0]!)).toEqual({ display_name: 'Renamed' });
+    expect(validateProviderDraft({ ...next, baseUrl: 'another-invalid' }, baseline)?.key).toBe('val.baseUrlAbsolute');
+    expect(validateProviderDraft({ ...next, requestIdentityOverridesJson: '[1]' }, baseline)?.key).toBe('val.requestIdentityOverridesInvalid');
+    expect(validateProviderDraft({ ...next, imageAcceptedTypes: ['invalid'] }, baseline)?.key).toBe('val.imageMime');
+    expect(validateProviderDraft({ ...next, models: [{ ...renamed, remoteId: ' ' }] }, baseline)?.key).toBe('val.modelIdEmpty');
+    expect(validateProviderDraft({ ...next, models: [{ ...renamed, maxContextSize: -2 }] }, baseline)?.key).toBe('val.modelContextSize');
+    expect(validateProviderDraft({ ...next, models: [{ ...renamed, requestIdentityOverridesJson: '[1]' }] }, baseline)?.key).toBe('val.modelRequestIdentity');
+    expect(validateProviderDraft({ ...next, models: [{ ...renamed, id: '' }] }, baseline)?.key).toBe('val.modelIdEmpty');
+  });
+
   it('maps authored image policies and preserves model inheritance', () => {
     const draft = providerDraftFromCatalog(
       {

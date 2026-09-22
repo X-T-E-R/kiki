@@ -2,7 +2,8 @@ import type { NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease
 
 import type { I18nKey } from '../i18n';
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
-import { configObjectOrEmpty, normalizeConfigStringList } from './settings';
+import type { RuntimeConfigDraft } from './settings';
+import { configObjectOrEmpty, normalizeConfigStringList, normalizeTags } from './settings';
 
 export interface SubagentGovernanceDraft {
   readonly denyModels: string;
@@ -145,6 +146,50 @@ export function disabledProfilePatch(
     ? current.filter((name) => name !== profile.name)
     : [...new Set([...current, profile.name])];
   return { disabled_named_profiles: next };
+}
+
+export interface AgentIdentitySparsePatch {
+  readonly identityName?: boolean;
+  readonly identitySlug?: boolean;
+  readonly advertiseAsKimiCode?: boolean;
+  readonly extraAgentDirs?: boolean;
+  readonly disabledNamedProfiles?: boolean;
+}
+
+/**
+ * Replace only edited domains. Identity replacement must carry all its fields,
+ * including unchanged siblings, while untouched profile lists are omitted.
+ */
+export function agentIdentitySparsePatch(
+  draft: Pick<
+    RuntimeConfigDraft,
+    'identityName' | 'identitySlug' | 'advertiseAsKimiCode' | 'extraAgentDirs' | 'disabledNamedProfiles'
+  >,
+  touched: AgentIdentitySparsePatch,
+): KikiConfigPatch {
+  const patch: {
+    identity?: NonNullable<KikiConfigPatch['identity']>;
+    extra_agent_dirs?: string[];
+    disabled_named_profiles?: string[];
+    replace_domains: string[];
+  } = { replace_domains: [] };
+  if (touched.identityName || touched.identitySlug || touched.advertiseAsKimiCode) {
+    patch.identity = {
+      name: draft.identityName.trim() || undefined,
+      slug: draft.identitySlug.trim() || undefined,
+      advertise_as_kimi_code: draft.advertiseAsKimiCode,
+    };
+    patch.replace_domains.push('identity');
+  }
+  if (touched.extraAgentDirs) {
+    patch.extra_agent_dirs = normalizeTags(draft.extraAgentDirs);
+    patch.replace_domains.push('extra_agent_dirs');
+  }
+  if (touched.disabledNamedProfiles) {
+    patch.disabled_named_profiles = normalizeTags(draft.disabledNamedProfiles);
+    patch.replace_domains.push('disabled_named_profiles');
+  }
+  return patch;
 }
 
 /**

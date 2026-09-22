@@ -13,6 +13,7 @@ import {
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   validateImagePolicyDraft,
+  validateRequestIdentityLayerDraft,
   writeSettings,
   type ProviderModelDraft,
   type RequestIdentityLayerDraft,
@@ -141,18 +142,27 @@ export function ModelCatalogCard() {
 
   // Provider grouping: default provider's group first, default model first
   // inside its group; the search box filters by id, name, provider, or chip.
-  const groups = useMemo(() => {
+  // Search HIDES non-matching rows instead of unmounting them, so a row with
+  // an unsaved draft (and its dirty flag) survives filtering and clearing the
+  // query — the same retention a collapse gets.
+  const matchedIds = useMemo(() => {
+    if (modelQuery.trim() === '') return null;
     const needle = modelQuery.trim().toLowerCase();
-    const matched = needle === ''
-      ? items
-      : items.filter((item) =>
-          item.id.toLowerCase().includes(needle)
-          || item.remote_id.toLowerCase().includes(needle)
-          || (item.display_name ?? '').toLowerCase().includes(needle)
-          || item.provider_id.toLowerCase().includes(needle)
-          || (item.capabilities ?? []).some((capability) => capability.toLowerCase().includes(needle)));
+    return new Set(items
+      .filter((item) =>
+        item.id.toLowerCase().includes(needle)
+        || item.remote_id.toLowerCase().includes(needle)
+        || (item.display_name ?? '').toLowerCase().includes(needle)
+        || item.provider_id.toLowerCase().includes(needle)
+        || (item.capabilities ?? []).some((capability) => capability.toLowerCase().includes(needle)))
+      .map((item) => item.id));
+  }, [items, modelQuery]);
+  const groups = useMemo(() => {
     const byProvider = new Map<string, ModelCatalogItem[]>();
-    for (const item of matched) {
+    // Every row stays rendered (mounted); visibility is a `hidden` flag on the
+    // row, so a row with an unsaved draft keeps its editor, baseline and dirty
+    // reporter while the query does not match it.
+    for (const item of items) {
       const list = byProvider.get(item.provider_id) ?? [];
       list.push(item);
       byProvider.set(item.provider_id, list);
@@ -167,7 +177,7 @@ export function ModelCatalogCard() {
       .toSorted((a, b) =>
         Number(b.provider === defaultProvider) - Number(a.provider === defaultProvider)
         || a.provider.localeCompare(b.provider));
-  }, [items, modelQuery, defaultModel, defaultProvider]);
+  }, [items, defaultModel, defaultProvider]);
 
   // Starring a model carries its provider along as the global default provider.
   const selectDefaultModel = async (item: ModelCatalogItem) => {
@@ -214,8 +224,9 @@ export function ModelCatalogCard() {
           {groups.map((group) => {
             const provider: ProviderCatalogItem | undefined = providers.get(group.provider);
             const providerDefault = provider?.default_model;
+            const hidden = matchedIds !== null && !group.models.some((item) => matchedIds.has(item.id));
             return (
-              <div key={group.provider}>
+              <div key={group.provider} style={hidden ? { display: 'none' } : undefined}>
                 <div className="mb-1.5 flex flex-wrap items-center gap-2">
                   <p className="font-mono text-[11px] font-semibold text-ink-soft">{group.provider}</p>
                   {group.provider === defaultProvider ? (
@@ -238,6 +249,7 @@ export function ModelCatalogCard() {
                       provider={provider}
                       isDefault={item.id === defaultModel}
                       busy={busy}
+                      hidden={matchedIds !== null && !matchedIds.has(item.id)}
                       onSetDefault={() => void selectDefaultModel(item)}
                       onSaved={refreshCatalog}
                     />
@@ -247,7 +259,7 @@ export function ModelCatalogCard() {
             );
           })}
         </div>
-        {modelQuery.trim() !== '' && groups.length === 0 ? (
+        {modelQuery.trim() !== '' && matchedIds !== null && matchedIds.size === 0 ? (
           <Hint>{t('st.models.searchEmpty', { query: modelQuery.trim() })}</Hint>
         ) : null}
         {catalogEmpty ? (
@@ -576,6 +588,7 @@ function ModelRow({
   provider,
   isDefault,
   busy,
+  hidden,
   onSetDefault,
   onSaved,
 }: {
@@ -583,6 +596,8 @@ function ModelRow({
   provider: ProviderCatalogItem | undefined;
   isDefault: boolean;
   busy: boolean;
+  /** Search filtering hides the row instead of unmounting it, keeping any draft. */
+  hidden: boolean;
   onSetDefault: () => void;
   onSaved: () => Promise<void>;
 }) {
@@ -612,7 +627,10 @@ function ModelRow({
     setEditorOpen(false);
   };
   return (
-    <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
+    <div
+      className="rounded-lg border border-hairline bg-paper px-3 py-2"
+      style={hidden ? { display: 'none' } : undefined}
+    >
       <div className="flex items-center gap-3">
         <button
           type="button"
@@ -761,11 +779,20 @@ function ModelCatalogRowEditor({
       setFeedback({ tone: 'error', text: issueText(locale, imageIssue) });
       return;
     }
-    const patch = modelPatchBody(draft, baseline);
-    if (patch === null) return;
+    // The request-identity layer validates inside the patch body (and throws a
+    // LocalizedError for bad JSON or an empty custom layer); it runs inside the
+    // try so the event-entry `void save()` surfaces it as inline feedback
+    // instead of an unhandled rejection, and no PATCH leaves the page.
     setSaving(true);
     setFeedback(null);
     try {
+      const identityIssue = validateRequestIdentityLayerDraft(draft);
+      if (identityIssue !== null) {
+        setFeedback({ tone: 'error', text: issueText(locale, identityIssue) });
+        return;
+      }
+      const patch = modelPatchBody(draft, baseline);
+      if (patch === null) return;
       await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
       await onSaved();
       await entityQuery.refetch();

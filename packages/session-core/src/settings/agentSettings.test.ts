@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   agentProfileSourceLabelKey,
   agentProfileValueOrigin,
+  agentIdentitySparsePatch,
   DEFAULT_SUBAGENT_PROFILE_NAME,
   disabledProfilePatch,
   experimentalFlagRows,
@@ -80,6 +81,48 @@ describe('disabled profile channels', () => {
       { name: 'reviewer' },
       true,
     )).toEqual({ disabled_named_profiles: ['frontend'] });
+  });
+});
+
+describe('agentIdentitySparsePatch', () => {
+  const draft = {
+    identityName: 'Example',
+    identitySlug: 'example',
+    advertiseAsKimiCode: false,
+    extraAgentDirs: ['C:/agents'],
+    disabledNamedProfiles: ['reviewer'],
+  };
+
+  it('replaces only touched domains and retains unedited identity siblings', () => {
+    expect(agentIdentitySparsePatch(draft, { identityName: true })).toEqual({
+      identity: { name: 'Example', slug: 'example', advertise_as_kimi_code: false },
+      replace_domains: ['identity'],
+    });
+    expect(agentIdentitySparsePatch(draft, { disabledNamedProfiles: true })).toEqual({
+      disabled_named_profiles: ['reviewer'],
+      replace_domains: ['disabled_named_profiles'],
+    });
+    expect(agentIdentitySparsePatch(draft, {})).toEqual({ replace_domains: [] });
+  });
+
+  it('normalizes the lists it touches, the same as the shared editor', () => {
+    expect(agentIdentitySparsePatch(
+      { ...draft, extraAgentDirs: ['  C:/agents ', '', 'C:/agents'] },
+      { extraAgentDirs: true },
+    )).toEqual({
+      extra_agent_dirs: ['C:/agents'],
+      replace_domains: ['extra_agent_dirs'],
+    });
+  });
+
+  it('clears a blank name while preserving unedited identity siblings on replacement', () => {
+    expect(agentIdentitySparsePatch(
+      { ...draft, identityName: '  ' },
+      { identityName: true },
+    )).toEqual({
+      identity: { name: undefined, slug: 'example', advertise_as_kimi_code: false },
+      replace_domains: ['identity'],
+    });
   });
 });
 

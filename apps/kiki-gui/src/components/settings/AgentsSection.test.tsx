@@ -106,6 +106,97 @@ describe('agent runtime identity settings', () => {
       identity: expect.objectContaining({ advertise_as_kimi_code: true }),
     }));
   });
+
+  it('keeps the same-page profile toggle when saving an identity draft and preserves identity siblings', async () => {
+    let config = { identity: { name: 'Example', slug: 'custom-slug', advertiseAsKimiCode: true }, disabled_named_profiles: ['reviewer'] };
+    client.getConfig.mockImplementation(async () => config);
+    client.listNamedAgentProfiles.mockImplementation(async () => ({ items: [{ ...profile, disabled: config.disabled_named_profiles.includes('agent') }] }));
+    client.patchConfig.mockImplementation(async (patch) => {
+      config = {
+        identity: patch.identity === undefined ? config.identity : {
+          name: patch.identity.name, slug: patch.identity.slug, advertiseAsKimiCode: patch.identity.advertise_as_kimi_code,
+        },
+        disabled_named_profiles: patch.disabled_named_profiles ?? config.disabled_named_profiles,
+      };
+      return config;
+    });
+    await act(async () => root.render(
+      <QueryClientProvider client={queries}>
+        <I18nProvider><AgentRuntimeCard /><NamedAgentProfilesCard bucket="main" /></I18nProvider>
+      </QueryClientProvider>,
+    ));
+    await settle();
+    const card = container.querySelector('#st-card-agent-runtime')!;
+    const identityInput = [...card.querySelectorAll('input')].find((input) => input.value === 'Example')!;
+    await setInputValue(identityInput, 'Edited name');
+    const checkbox = container.querySelector<HTMLInputElement>('[data-agent-profile="agent"] input[type="checkbox"]')!;
+    await act(async () => { checkbox.click(); });
+    await settle();
+    expect(client.patchConfig).toHaveBeenNthCalledWith(1, { disabled_named_profiles: ['reviewer', 'agent'] });
+    expect(checkbox.checked).toBe(false);
+    expect(identityInput.value).toBe('Edited name');
+    expect([...card.querySelectorAll('input')].some((input) => input.value === 'agent')).toBe(true);
+    await act(async () => [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click());
+    await settle();
+    expect(client.patchConfig).toHaveBeenNthCalledWith(2, {
+      identity: { name: 'Edited name', slug: 'custom-slug', advertise_as_kimi_code: true }, replace_domains: ['identity'],
+    });
+    expect(config.disabled_named_profiles).toEqual(['reviewer', 'agent']);
+    expect(config.identity).toEqual({ name: 'Edited name', slug: 'custom-slug', advertiseAsKimiCode: true });
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it.each(['Extra agent directories', 'Disabled built-in profiles'])('keeps %s nodes, focus and caret across typing, paste and preceding-row removal', async (label) => {
+    client.getConfig.mockResolvedValue({ extra_agent_dirs: ['first', 'second'], disabled_named_profiles: ['first', 'second'] });
+    await act(async () => root.render(
+      <QueryClientProvider client={queries}><I18nProvider><AgentRuntimeCard /></I18nProvider></QueryClientProvider>,
+    ));
+    await settle();
+    const getSecond = () => container.querySelector<HTMLInputElement>(`input[aria-label="${label} 2"]`)!;
+    const input = getSecond();
+    input.focus();
+    for (const value of ['seconds', 'seconds-more', 'pasted-value', 'pasted-value-edited']) {
+      await setInputValue(input, value);
+      expect(getSecond()).toBe(input);
+      expect(document.activeElement).toBe(input);
+      expect(input.selectionStart).toBe(value.length);
+    }
+    input.setSelectionRange(3, 3);
+    const listEditor = input.parentElement!.parentElement!;
+    await act(async () => { listEditor.querySelector<HTMLButtonElement>('button[aria-label="Remove entry 1"]')!.click(); });
+    expect(container.querySelector(`input[aria-label="${label} 1"]`)).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(3);
+  });
+
+  it('refreshes the profile toggle after saving the disabled-profile list', async () => {
+    let disabled: string[] = [];
+    client.getConfig.mockImplementation(async () => ({ disabled_named_profiles: disabled }));
+    client.listNamedAgentProfiles.mockImplementation(async () => ({ items: [{ ...profile, disabled: disabled.includes('agent') }] }));
+    client.patchConfig.mockImplementation(async (patch) => {
+      disabled = patch.disabled_named_profiles;
+      return { disabled_named_profiles: disabled };
+    });
+    queries.setQueryData(['agentProfiles', 'cwd', '/fixture', 'effective'], { items: [profile] });
+    await act(async () => root.render(
+      <QueryClientProvider client={queries}>
+        <I18nProvider><AgentRuntimeCard /><NamedAgentProfilesCard bucket="main" /></I18nProvider>
+      </QueryClientProvider>,
+    ));
+    await settle();
+    const checkbox = container.querySelector<HTMLInputElement>('[data-agent-profile="agent"] input[type="checkbox"]')!;
+    expect(checkbox.checked).toBe(true);
+    const card = container.querySelector('#st-card-agent-runtime')!;
+    const listEditor = [...card.querySelectorAll('.space-y-2')].find((block) => /Disabled built-in profiles/.test(block.textContent ?? ''))!;
+    await act(async () => { listEditor.querySelector<HTMLButtonElement>('button')!.click(); });
+    await setInputValue(listEditor.querySelector<HTMLInputElement>('input')!, 'agent');
+    await act(async () => [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click());
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledWith({ disabled_named_profiles: ['agent'], replace_domains: ['disabled_named_profiles'] });
+    expect(client.listNamedAgentProfiles.mock.calls.length).toBeGreaterThan(1);
+    expect(checkbox.checked).toBe(false);
+    expect(queries.getQueryState(['agentProfiles', 'cwd', '/fixture', 'effective'])?.isInvalidated).toBe(true);
+  });
 });
 
 describe('default main profile settings', () => {
