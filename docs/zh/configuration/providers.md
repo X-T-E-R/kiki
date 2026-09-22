@@ -32,7 +32,15 @@ Kiki 支持同时接入多家 LLM 平台——用 Kimi Code 托管服务一键�
 添加时有两条路径：
 
 - **Known third-party provider**：从 [models.dev](https://models.dev/) 拉取模型目录，选供应商 → 输入 API 密钥 → 选默认模型。目录未声明协议类型的供应商（如 xai、openrouter 这类厂商专用 SDK）会按 OpenAI 兼容协议导入并显示 "guessed" 提示；目录没有可用端点时会先弹出 base URL 输入框；Amazon Bedrock / Cohere 等专有协议和无法识别的显式协议会被拒绝导入。已下线（deprecated）和 alpha 状态的模型不会出现在导入列表中。如果公共目录不可达，CLI 会回退到内置目录快照，离线或网络受限环境下也能完成导入
-- **Custom registry (api.json)**：粘贴自定义 registry 地址和 Bearer token，CLI 自动创建 `providers` / `models` 条目。后续启动时，同一个 registry 地址下的供应商会一起刷新，因此上游新增、删除供应商以及模型元数据变化都会同步。
+- **Custom registry (api.json)**：粘贴自定义 registry 地址和 Bearer token，本次显式导入会创建 `providers` / `models` 条目。后续启动不会同步上游新增、删除供应商或模型元数据变化。
+
+### 获取模型建议
+
+在 GUI **设置 → 模型与提供商** 中点击**获取模型**，可从已配置的提供商获取建议。API 密钥提供商和自定义 registry 只在请求时获取，不随启动或定时任务刷新。获取不会修改提供商、已配置模型或默认模型；选中建议并单独保存后才会添加模型，上游删除也不会删除已有模型。
+
+建议只保存在服务器内存中，服务器重启后消失。修改或删除提供商连接会丢弃该连接的缓存建议。获取失败会显示错误并保留上次成功的建议；成功返回空列表则清空建议。该提供商已配置的模型不会重复出现，即使本地别名与上游模型 ID 不同。
+
+Kimi Code **OAuth** 账号保留原有的托管账号目录同步。手动填写的 Kimi API 密钥即使使用托管端点，也只产生建议。
 
 ::: warning
 通过 `/login` 登录的 Kimi Code OAuth 托管账号不会在 `/provider` 里显示，请用 `/login` 和 `/logout` 管理。

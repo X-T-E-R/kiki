@@ -160,8 +160,6 @@ describe('server-v2 /api provider write endpoints', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-provider-write-'));
-    process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'] = '0';
-    process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
   });
 
   afterEach(async () => {
@@ -173,8 +171,6 @@ describe('server-v2 /api provider write endpoints', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
-    delete process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'];
-    delete process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
   });
 
   async function boot(toml?: string): Promise<void> {
@@ -1183,8 +1179,6 @@ describe('server-v2 /api entity-level model editing', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-model-entity-'));
-    process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'] = '0';
-    process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
   });
 
   afterEach(async () => {
@@ -1196,8 +1190,6 @@ describe('server-v2 /api entity-level model editing', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
-    delete process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'];
-    delete process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
   });
 
   async function boot(toml?: string): Promise<void> {

@@ -197,11 +197,6 @@ export * from '#/kosong/model/catalog';
 export * from '#/kosong/model/catalogService';
 export * from '#/kosong/model/modelRequester';
 import '#/kosong/model/errors';
-export {
-  MODEL_CATALOG_SECTION,
-  ModelCatalogConfigSchema,
-  type ModelCatalogConfig,
-} from '#/app/kosongConfig/configSection';
 export * from '#/app/kosongConfig/kosongConfig';
 export * from '#/app/kosongConfig/kosongConfigService';
 export * from '#/app/kosongConfig/modelCatalogMutation';

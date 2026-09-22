@@ -42,7 +42,6 @@ const KIMI_CONFIG_DOMAINS = [
   'subagent',
   'mcp',
   'image',
-  'modelCatalog',
   'experimental',
   'telemetry',
 ] as const;

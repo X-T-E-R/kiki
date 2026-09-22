@@ -89,6 +89,7 @@ export function handleGlobalConnectionFrame(
   if (frame.type !== 'event.model_catalog.changed') return false;
   void queryClient.invalidateQueries({ queryKey: ['models'] });
   void queryClient.invalidateQueries({ queryKey: ['providers'] });
+  void queryClient.invalidateQueries({ queryKey: ['discovered-models'] });
   return true;
 }
 

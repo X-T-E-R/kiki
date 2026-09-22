@@ -32,7 +32,15 @@ The manager displays providers as a list of entries grouped by source. Navigatio
 Two paths when adding:
 
 - **Known third-party provider**: fetches the model catalog from [models.dev](https://models.dev/), select a provider → enter an API key → select a default model. Vendors whose protocol the catalog does not declare (e.g. xai, openrouter, and other vendor-specific SDKs) are imported as OpenAI-compatible with a "guessed" note; when the catalog provides no usable endpoint, a base URL prompt appears first; proprietary protocols (Amazon Bedrock, Cohere) and unrecognized explicit protocols are refused. Deprecated and alpha-status models are excluded from the import list. If the public catalog is unreachable, the CLI falls back to a built-in snapshot of the catalog, so the import still works offline or in blocked networks
-- **Custom registry (api.json)**: paste a custom registry URL and Bearer token; the CLI automatically creates the `providers` / `models` entries. On later startup, providers from the same registry URL are refreshed together, so upstream provider additions, removals, and model metadata changes are synced.
+- **Custom registry (api.json)**: paste a custom registry URL and Bearer token; this explicit import creates the `providers` / `models` entries. Later startup does not synchronize upstream additions, removals, or model metadata changes.
+
+### Fetching model suggestions
+
+In GUI **Settings → Models & providers**, click **Get models** to fetch suggestions from configured providers. API-key providers and custom registries are fetched only on request, not at startup or on a timer. Fetching does not change your providers, configured models, or default model. Choose a suggestion and save it separately to add a model; an upstream removal does not delete an existing model.
+
+Suggestions are kept in server memory and disappear when the server restarts. Changing or deleting a provider connection discards its cached suggestions. A failed fetch shows an error while retaining the last successful suggestions; a successful empty response clears them. Models already configured for that provider are excluded even if their local aliases differ from the upstream model IDs.
+
+Kimi Code **OAuth** accounts retain their managed account-catalog synchronization. A manually entered Kimi API key uses the suggestion-only flow, including at the managed endpoint.
 
 ::: warning
 Kimi Code OAuth managed accounts logged in via `/login` do not appear in `/provider`. Use `/login` and `/logout` to manage them.

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,7 +11,6 @@ import {
   type IModelCatalog as IModelCatalogType,
   type IOAuthService as IOAuthServiceType,
   type IProviderDiscoveryService as IProviderDiscoveryServiceType,
-  type ModelCatalogConfig,
   type ScopeSeed,
 } from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -72,11 +71,10 @@ describe('server-v2 /api model/provider catalog', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-model-catalog-'));
-    process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'] = '0';
-    process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -85,8 +83,6 @@ describe('server-v2 /api model/provider catalog', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
-    delete process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'];
-    delete process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
   });
 
   async function boot(toml?: string, seeds?: ScopeSeed): Promise<void> {
@@ -355,8 +351,8 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(body.data).toEqual({ changed: [], unchanged: [], failed: [] });
   });
 
-  it('returns an empty refresh result through the providers:refresh route', async () => {
-    await boot(CATALOG_TOML);
+  it('returns an empty refresh result through the providers:refresh route when no providers are configured', async () => {
+    await boot('');
     const { status, body } = await postJson<{
       changed: unknown[];
       unchanged: unknown[];
@@ -397,7 +393,7 @@ describe('server-v2 /api model/provider catalog', () => {
   function discoveryStub(
     refreshProviderModels: IProviderDiscoveryServiceType['refreshProviderModels'],
   ): IProviderDiscoveryServiceType {
-    return { _serviceBrand: undefined, refreshProviderModels };
+    return { _serviceBrand: undefined, refreshProviderModels, listDiscoveredModels: async () => ({ items: [] }) };
   }
 
   function oauthStub(
@@ -500,13 +496,56 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(refreshProviderModels).not.toHaveBeenCalled();
   });
 
-  it('loads the [model_catalog] config section from TOML', async () => {
-    await boot(
-      ['[model_catalog]', 'refresh_interval_ms = 1000', 'refresh_on_start = false', ''].join('\n'),
-    );
-    const cfg = server!.core.accessor.get(IConfigService);
-    await cfg.ready;
-    const value = cfg.get<ModelCatalogConfig | undefined>('modelCatalog');
-    expect(value).toEqual({ refreshIntervalMs: 1000, refreshOnStart: false });
+  it('keeps manual discoveries off disk until a normal model create and forgets them after restart', async () => {
+    const realFetch = globalThis.fetch;
+    const upstream = vi.fn(async () => Response.json({ data: [{ id: 'kimi-k2' }, { id: 'remote-new' }] }));
+    vi.stubGlobal('fetch', ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith('https://api.example.test/')) return upstream();
+      return realFetch(input, init);
+    }) as typeof fetch);
+    await boot(CATALOG_TOML);
+    const before = await readFile(join(home!, 'config.toml'), 'utf8');
+    expect((await getJson('/api/discovered-models')).body.data).toEqual({ items: [] });
+    await getJson('/api/models');
+    await getJson('/api/providers');
+    expect(upstream).not.toHaveBeenCalled();
+
+    const refreshed = await postJson<{ changed: unknown[]; discovered: unknown[] }>('/api/providers/kimi:refresh', {});
+    expect(refreshed.body.code).toBe(0);
+    expect(refreshed.body.data.changed).toEqual([]);
+    expect(refreshed.body.data.discovered).toEqual([expect.objectContaining({
+      provider_id: 'kimi', fetched_at: expect.any(Number), attempted_at: expect.any(Number),
+      models: [{ remote_id: 'remote-new' }],
+    })]);
+    expect(await readFile(join(home!, 'config.toml'), 'utf8')).toBe(before);
+    expect((await getJson<{ items: unknown[] }>('/api/discovered-models')).body.data.items).toEqual(refreshed.body.data.discovered);
+    const created = await postJson('/api/models', { id: 'chosen-alias', provider_id: 'kimi', remote_id: 'remote-new', max_context_size: 128000 });
+    expect(created.body.code).toBe(0);
+    expect(await readFile(join(home!, 'config.toml'), 'utf8')).toContain('chosen-alias');
+    expect((await getJson<{ items: Array<{ models: unknown[] }> }>('/api/discovered-models')).body.data.items[0]?.models).toEqual([]);
+    await server!.close();
+    server = undefined;
+    await boot();
+    expect((await getJson('/api/discovered-models')).body.data).toEqual({ items: [] });
+    expect(upstream).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['sk-example-key\\nsecond-line', 'sk-example-key'])('does not serialize credential material in refresh failures (%s)', async (key) => {
+    const realFetch = globalThis.fetch;
+    const upstream = vi.fn(async () => Response.json({ error: { message: `invalid key: ${key}` } }, { status: 401 }));
+    vi.stubGlobal('fetch', ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith('https://api.example.test/')) return upstream();
+      return realFetch(input, init);
+    }) as typeof fetch);
+    await boot(CATALOG_TOML.replace('api_key = "sk-test"', `api_key = ${JSON.stringify(key.replace('\\n', '\n'))}`));
+    const result = await postJson<{ failed: Array<{ reason: string }> }>('/api/providers/kimi:refresh', {});
+    expect(result.body.code).toBe(0);
+    expect(result.body.data.failed).toHaveLength(1);
+    expect(JSON.stringify(result.body)).not.toContain('sk-example-key');
+    const list = await getJson('/api/discovered-models');
+    expect(JSON.stringify(list.body)).not.toContain('sk-example-key');
+    if (key.includes('\\n')) expect(upstream).not.toHaveBeenCalled();
   });
 });

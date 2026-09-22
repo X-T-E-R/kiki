@@ -309,6 +309,7 @@ import {
   setDefaultModelResponseSchema,
 } from '../src/contract/global/catalog.js';
 import {
+  listDiscoveredModelsResponseSchema,
   refreshProviderModelsOptionsSchema,
   refreshProviderModelsResponseSchema,
 } from '../src/contract/global/providerDiscovery.js';
@@ -528,6 +529,10 @@ const _refreshProviderModelsOptions: AssertWire<
 const _refreshProviderModelsResponse: AssertWire<
   typeof refreshProviderModelsResponseSchema,
   RefreshProviderModelsResponse
+> = true;
+const _listDiscoveredModelsResponse: AssertWire<
+  typeof listDiscoveredModelsResponseSchema,
+  Awaited<ReturnType<IProviderDiscoveryService['listDiscoveredModels']>>
 > = true;
 
 // models.ts

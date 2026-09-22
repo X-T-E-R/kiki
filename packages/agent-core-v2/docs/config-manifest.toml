@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (38 sections · 1 overlay(s))
+# Index (37 sections · 1 overlay(s))
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
 #   background                      src/agent/task/configSection.ts
@@ -26,7 +26,6 @@
 #   loopControl                     src/agent/loop/configSection.ts
 #   mcp                             src/app/mcpConfig/configSection.ts
 #   mergeAllAvailableSkills         src/app/skillCatalog/configSection.ts
-#   modelCatalog                    src/app/kosongConfig/configSection.ts
 #   models                          src/app/kosongConfig/configSection.ts
 #   nbSearch                        src/app/nbSearch/configSection.ts
 #   nbSearchSource                  src/app/nbSearch/configSection.ts
@@ -284,16 +283,6 @@ compaction_soft_context_size = 0
 # ##########################################################################
 
 merge_all_available_skills = true
-
-# ##########################################################################
-# modelCatalog (config.toml: model_catalog)
-#   owner: src/app/kosongConfig/configSection.ts
-#   scope: core
-# ##########################################################################
-
-[model_catalog]
-# refresh_interval_ms: integer
-# refresh_on_start: boolean
 
 # ##########################################################################
 # models

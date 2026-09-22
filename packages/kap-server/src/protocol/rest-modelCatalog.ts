@@ -12,6 +12,7 @@ export {
   importCatalogProviderResponseSchema,
   importCustomRegistryResponseSchema,
   listCatalogProvidersResponseSchema,
+  listDiscoveredModelsResponseSchema,
   listModelsResponseSchema,
   listProvidersResponseSchema,
   modelCatalogItemSchema,

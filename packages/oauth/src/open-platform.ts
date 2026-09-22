@@ -3,6 +3,12 @@ import { isRecord } from './utils';
 import { parseKimiCodeCustomHeaders } from './identity';
 import { parseSupportsThinkingType, parseThinkEfforts } from './managed-kimi-code';
 import { MANAGED_KIMI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
+import {
+  assertProviderCredential,
+  assertProviderHeaders,
+  sanitizeProviderError,
+  sanitizeProviderUrl,
+} from './provider-error';
 import type {
   ManagedKimiCodeModelInfo,
   ManagedKimiConfigShape,
@@ -114,23 +120,36 @@ export async function fetchOpenPlatformModels(
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
 ): Promise<ManagedKimiCodeModelInfo[]> {
+  // Reject a credential the runtime would only reject after quoting it back in
+  // its own `TypeError` (an internal newline is the practical case: a pasted
+  // multi-line key). The reason names the problem, never the key.
+  assertProviderCredential(apiKey);
+  const headers: Record<string, string> = {
+    ...parseKimiCodeCustomHeaders(),
+    Authorization: `Bearer ${apiKey}`,
+    Accept: 'application/json',
+  };
+  assertProviderHeaders(headers);
+
+  const safeError = (error: unknown): never => {
+    throw new Error(sanitizeProviderError(error, { apiKey, baseUrl: platform.baseUrl, headers }));
+  };
   const res = await fetchImpl(`${platform.baseUrl.replace(/\/+$/, '')}/models`, {
-    headers: {
-      ...parseKimiCodeCustomHeaders(),
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'application/json',
-    },
+    headers,
     signal,
-  });
+  }).catch(safeError);
   if (!res.ok) {
     throw new OpenPlatformApiError(
-      await readApiErrorMessage(res, `Failed to list models (HTTP ${res.status}).`),
+      sanitizeProviderError(
+        await readApiErrorMessage(res, `Failed to list models (HTTP ${res.status}).`),
+        { apiKey, baseUrl: platform.baseUrl, headers },
+      ),
       res.status,
     );
   }
-  const payload: unknown = await res.json();
+  const payload: unknown = await res.json().catch(safeError);
   if (!isRecord(payload) || !Array.isArray(payload['data'])) {
-    throw new Error(`Unexpected models response for ${platform.baseUrl}.`);
+    throw new Error(`Unexpected models response for ${sanitizeProviderUrl(platform.baseUrl)}.`);
   }
   return payload['data']
     .map((item) => toModelInfo(item))

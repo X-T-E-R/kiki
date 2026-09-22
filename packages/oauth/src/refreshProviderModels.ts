@@ -1,29 +1,36 @@
 import { readApiErrorMessage } from './api-error';
 import {
-  applyCustomRegistryProvider,
   fetchCustomRegistry,
-  removeCustomRegistryProvider,
+  resolveCustomRegistryMaxContextSize,
+  resolveCustomRegistryCapabilities,
+  type CustomRegistryProviderEntry,
   type CustomRegistrySource,
 } from './custom-registry';
 import {
-  applyManagedApiKeyProviderModels,
   applyManagedKimiCodeConfig,
   fetchManagedKimiCodeModels,
   KIMI_CODE_PLATFORM_ID,
   KIMI_CODE_PROVIDER_NAME,
   resolveKimiCodeRuntimeAuth,
+  type ManagedKimiCodeModelInfo,
   type ManagedKimiConfigShape,
   type ManagedKimiModelAlias,
   type ManagedKimiOAuthRef,
 } from './managed-kimi-code';
 import { isManagedKimiCodeBaseUrl } from './managed-usage';
 import {
-  applyOpenPlatformConfig,
+  capabilitiesForModel,
   fetchOpenPlatformModels,
   filterModelsByPrefix,
   getOpenPlatformById,
   isOpenPlatformId,
 } from './open-platform';
+import {
+  assertProviderCredential,
+  assertProviderHeaders,
+  sanitizeProviderError,
+  sanitizeProviderUrl,
+} from './provider-error';
 import { isRecord } from './utils';
 
 /**
@@ -53,12 +60,45 @@ export interface ProviderChange {
   readonly removed: number;
 }
 
+/** One model reported by a provider's own catalog endpoint. */
+export interface DiscoveredModel {
+  /** Model id exactly as the remote catalog reports it. */
+  readonly remoteId: string;
+  readonly displayName?: string;
+  readonly maxContextSize?: number;
+  readonly capabilities?: readonly string[];
+  readonly supportEfforts?: readonly string[];
+}
+
+/** A provider catalog fetched during this refresh. */
+export interface DiscoveredProviderModels {
+  readonly providerId: string;
+  /** Epoch milliseconds when the catalog was fetched. */
+  readonly fetchedAt: number;
+  readonly models: readonly DiscoveredModel[];
+}
+
 export interface RefreshResult {
-  /** Providers whose model list actually changed. */
+  /**
+   * Providers whose model list was actually persisted. Managed Kimi Code
+   * (OAuth) is the only provider this refresh writes back; every other
+   * provider is reported through `discovered` instead.
+   */
   readonly changed: readonly ProviderChange[];
-  /** Providers whose model list stayed identical after refresh. */
+  /**
+   * Providers that were refreshed successfully without a persisted change:
+   * managed providers whose model list stayed identical, and every non-managed
+   * provider that produced a `discovered` entry.
+   */
   readonly unchanged: readonly string[];
   readonly failed: ReadonlyArray<{ readonly provider: string; readonly reason: string }>;
+  /**
+   * Model catalogs discovered from non-managed providers (open platforms,
+   * managed-endpoint API-key providers, generic API-key providers, custom
+   * registries). These are suggestions only — nothing is written to config.
+   * Omitted entirely when no provider was probed.
+   */
+  readonly discovered?: readonly DiscoveredProviderModels[];
 }
 
 export type RefreshProviderScope = 'all' | 'oauth';
@@ -67,8 +107,8 @@ export interface RefreshProviderOptions {
   readonly scope?: RefreshProviderScope;
   /**
    * Refresh only this provider. When set, managed / open-platform branches
-   * skip every other provider; for a custom-registry provider the registry
-   * group it belongs to is fetched but only the target entry is applied.
+   * skip every other provider and a custom-registry group is only reported for
+   * the target entry.
    */
   readonly providerId?: string;
 }
@@ -107,6 +147,18 @@ function resolveProviderApiKey(provider: ProviderView): string | undefined {
   return envName === undefined ? undefined : nonEmptyString(provider.env[envName]);
 }
 
+/** Credential-shaped values from a provider's config `env` bag, for redaction. */
+function providerEnvBag(
+  provider: ProviderView,
+): Readonly<Record<string, string | undefined>> | undefined {
+  if (!isRecord(provider.env)) return undefined;
+  const bag: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(provider.env)) {
+    if (typeof value === 'string') bag[key] = value;
+  }
+  return Object.keys(bag).length > 0 ? bag : undefined;
+}
+
 function readProvider(
   config: ManagedKimiConfigShape,
   providerId: string,
@@ -143,7 +195,7 @@ interface GenericProviderModel {
 
 function parseGenericProviderModels(payload: unknown, baseUrl: string): GenericProviderModel[] {
   if (!isRecord(payload) || !Array.isArray(payload['data'])) {
-    throw new Error(`Unexpected models response for ${baseUrl}.`);
+    throw new Error(`Unexpected models response for ${sanitizeProviderUrl(baseUrl)}.`);
   }
   const ids = new Set<string>();
   for (const item of payload['data']) {
@@ -162,6 +214,10 @@ async function fetchGenericProviderModels(
   const baseUrl = nonEmptyString(provider.baseUrl);
   if (baseUrl === undefined) return [];
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+  // Reject an invalid credential before the request headers exist: the fetch
+  // implementation quotes the offending header value verbatim in its own
+  // TypeError, which would hand the key back to the caller.
+  assertProviderCredential(apiKey);
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (provider.type === 'anthropic') {
     headers['x-api-key'] = apiKey;
@@ -169,17 +225,18 @@ async function fetchGenericProviderModels(
   } else {
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
+  assertProviderHeaders(headers);
+
   const response = await fetch(`${normalizedBaseUrl}/models`, {
     headers,
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
-    throw new Error(
-      await readApiErrorMessage(
-        response,
-        `Failed to list models for provider "${providerId}" (HTTP ${response.status}).`,
-      ),
+    const message = await readApiErrorMessage(
+      response,
+      `Failed to list models for provider "${providerId}" (HTTP ${response.status}).`,
     );
+    throw new Error(sanitizeProviderError(message, { apiKey, baseUrl: normalizedBaseUrl, headers }));
   }
   return parseGenericProviderModels(await response.json(), normalizedBaseUrl);
 }
@@ -226,29 +283,33 @@ function providerSourceStatus(providerId: string, provider: ProviderView): Provi
   return 'missing';
 }
 
-function applyGenericProviderModels(
-  config: ManagedKimiConfigShape,
-  providerId: string,
-  models: readonly GenericProviderModel[],
-): void {
-  const aliasPrefix = `${providerId}/`;
-  const existingModels = config.models ?? {};
-  const upstreamKeys = new Set(models.map((model) => `${aliasPrefix}${model.id}`));
-  for (const [alias, model] of Object.entries(existingModels)) {
-    if (isRecord(model) && model['provider'] === providerId && !upstreamKeys.has(alias)) {
-      delete existingModels[alias];
-    }
+// ── discovered-catalog mapping ─────────────────────────────────────────
+
+function discoveredModelFromKimiModel(model: ManagedKimiCodeModelInfo): DiscoveredModel {
+  const capabilities = capabilitiesForModel(model);
+  return {
+    remoteId: model.id,
+    displayName: model.displayName,
+    maxContextSize: Number.isInteger(model.contextLength) && model.contextLength > 0
+      ? model.contextLength
+      : undefined,
+    capabilities,
+    supportEfforts: model.supportEfforts,
+  };
+}
+
+function discoveredModelsFromCustomEntry(entry: CustomRegistryProviderEntry): DiscoveredModel[] {
+  const models: DiscoveredModel[] = [];
+  for (const model of Object.values(entry.models)) {
+    models.push({
+      remoteId: model.id,
+      displayName: model.name ?? model.id,
+      maxContextSize: resolveCustomRegistryMaxContextSize(model),
+      capabilities: resolveCustomRegistryCapabilities(model),
+      supportEfforts: model.support_efforts,
+    });
   }
-  for (const model of models) {
-    const alias = `${aliasPrefix}${model.id}`;
-    const existing = isRecord(existingModels[alias]) ? existingModels[alias] : {};
-    existingModels[alias] = {
-      ...existing,
-      provider: providerId,
-      model: model.id,
-    };
-  }
-  config.models = existingModels;
+  return models;
 }
 
 function customRegistrySourceKey(source: CustomRegistrySource): string {
@@ -281,6 +342,8 @@ async function fetchCustomRegistryFromSources(
   if (typeof lastError === 'string') throw new Error(lastError);
   throw new Error('No custom registry sources configured.');
 }
+
+// ── managed (persisted) refresh helpers ────────────────────────────────
 
 function collectModelIdsForAliases(
   config: ManagedKimiConfigShape,
@@ -374,18 +437,6 @@ function providerModelsEqual(
   );
 }
 
-function providerConfigSnapshot(config: ManagedKimiConfigShape, providerId: string): string {
-  return JSON.stringify(config.providers[providerId] ?? null);
-}
-
-function providerConfigEqual(
-  config: ManagedKimiConfigShape,
-  nextConfig: ManagedKimiConfigShape,
-  providerId: string,
-): boolean {
-  return providerConfigSnapshot(config, providerId) === providerConfigSnapshot(nextConfig, providerId);
-}
-
 function providerRefreshAliasKeys(
   config: ManagedKimiConfigShape,
   nextConfig: ManagedKimiConfigShape,
@@ -458,47 +509,29 @@ function clearDefaultThinkingWhenDefaultRemoved(
   }
 }
 
-function pickDefaultModel(
-  config: ManagedKimiConfigShape,
-  providerId: string,
-  models: Array<{ id: string }>,
-): string {
-  const firstModel = models[0];
-  if (firstModel === undefined) return '';
-
-  const existingDefault = config.defaultModel;
-  if (existingDefault !== undefined) {
-    const alias = readModel(config, existingDefault);
-    if (alias !== undefined && alias.provider === providerId) {
-      const stillAvailable = models.find((m) => m.id === alias.model);
-      if (stillAvailable !== undefined) {
-        return stillAvailable.id;
-      }
-    }
-  }
-  return firstModel.id;
-}
-
 /**
- * Refresh remote model metadata for the configured providers and persist any
- * changes through the host. Handles five provider kinds, in order:
+ * Refresh remote model metadata for the configured providers.
  *
- *  1. Managed Kimi Code (OAuth) — `GET /models` against the runtime endpoint.
- *  2. Open platforms (moonshot-cn, moonshot-ai, …) — platform catalog fetch.
- *  2.5. Managed-endpoint API-key providers — hand-written `type: 'kimi'`
- *     providers (including a hand-written `managed:kimi-code` without an oauth
- *     ref) whose baseUrl is exactly the managed Kimi Code endpoint; refreshed
- *     via `GET /models` with the configured API key as Bearer. Only model
- *     aliases are merged; the provider record is user-owned and never
- *     rewritten.
- *  2.75. Generic API-key providers — `GET {baseUrl}/models` with Anthropic or
- *     Bearer authentication and an OpenAI-shaped response.
- *  3. Custom registries (models.dev-style, keyed by `provider.source`).
+ * Only the managed Kimi Code (OAuth) provider is written back to config, via
+ * the host's `removeProvider` / `setConfig`. Every other provider kind —
+ * open platforms (moonshot-cn, moonshot-ai, …), managed-endpoint API-key
+ * providers (a hand-written `type: 'kimi'` provider pointed at the managed
+ * Kimi Code endpoint), generic API-key providers (`GET {baseUrl}/models` with
+ * Anthropic or Bearer auth) and custom registries (`provider.source`) — is
+ * fetched and returned as a *suggestion* in `discovered`. Those branches never
+ * call `removeProvider` / `setConfig`, never add a provider, and never touch
+ * the user's configured provider connection: the manual refresh only reports
+ * what the remote catalog currently offers. Custom registries are only probed
+ * for providers that are already configured; entries that appear upstream
+ * without a configured provider are ignored.
  *
- * Each branch diffs old vs new and only writes when something actually changed
- * (`removeProvider` then `setConfig`). Failures are collected per-provider and
- * never abort the whole refresh. Pass `providerId` to scope the refresh to a
- * single provider; pass `scope: 'oauth'` to refresh only the managed provider.
+ * `discovered` entries always carry the remote ids as reported by the endpoint,
+ * never ids reverse-engineered from configured aliases. An empty remote catalog
+ * is a successful empty model list (it clears previously suggested models), not
+ * a failure. Failures are collected per-provider, sanitized of credential
+ * material, and never abort the whole refresh. Pass `providerId` to scope the
+ * refresh to a single provider; pass `scope: 'oauth'` to touch only the managed
+ * provider.
  */
 export async function refreshProviderModels(
   host: RefreshProviderHost,
@@ -507,13 +540,14 @@ export async function refreshProviderModels(
   const changed: ProviderChange[] = [];
   const unchanged: string[] = [];
   const failed: Array<{ provider: string; reason: string }> = [];
+  const discovered: DiscoveredProviderModels[] = [];
   const scope = options.scope ?? 'all';
   const targetId = options.providerId;
 
   let config = await host.getConfig();
 
   // ---------------------------------------------------------------------------
-  // 1. Managed Kimi Code (OAuth)
+  // 1. Managed Kimi Code (OAuth) — the only persisted (write-back) branch
   // ---------------------------------------------------------------------------
   const managedProvider = readProvider(config, KIMI_CODE_PROVIDER_NAME);
   const managedWanted = targetId === undefined || targetId === KIMI_CODE_PROVIDER_NAME;
@@ -523,12 +557,16 @@ export async function refreshProviderModels(
     managedProvider.type === 'kimi' &&
     managedProvider.oauth !== undefined
   ) {
+    let managedBaseUrl = nonEmptyString(managedProvider.baseUrl);
+    let managedAccessToken: string | undefined;
     try {
       const auth = resolveKimiCodeRuntimeAuth({
         configuredBaseUrl: managedProvider.baseUrl,
         configuredOAuthRef: managedProvider.oauth,
       });
+      managedBaseUrl = auth.baseUrl;
       const accessToken = await host.resolveOAuthToken(KIMI_CODE_PROVIDER_NAME, auth.oauthRef);
+      managedAccessToken = accessToken;
       const models = await fetchManagedKimiCodeModels({
         accessToken,
         baseUrl: auth.baseUrl,
@@ -581,7 +619,11 @@ export async function refreshProviderModels(
     } catch (error) {
       failed.push({
         provider: KIMI_CODE_PROVIDER_NAME,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: sanitizeProviderError(error, {
+          secrets: [managedAccessToken],
+          baseUrl: managedBaseUrl,
+          env: providerEnvBag(managedProvider),
+        }),
       });
     }
   }
@@ -595,7 +637,7 @@ export async function refreshProviderModels(
   }
 
   // ---------------------------------------------------------------------------
-  // 2. Open Platforms (moonshot-cn, moonshot-ai, …)
+  // 2. Open Platforms (moonshot-cn, moonshot-ai, …) — suggestion only
   // ---------------------------------------------------------------------------
   const openPlatformIds = Object.keys(config.providers).filter((id) => isOpenPlatformId(id));
   for (const providerId of openPlatformIds) {
@@ -609,57 +651,21 @@ export async function refreshProviderModels(
     if (typeof apiKey !== 'string' || apiKey.length === 0) continue;
 
     try {
-      let models = await fetchOpenPlatformModels(platform, apiKey);
-      models = filterModelsByPrefix(models, platform);
-      if (models.length === 0) continue;
-
-      const selectedModelId = pickDefaultModel(config, providerId, models);
-      const selectedModel = models.find((m) => m.id === selectedModelId);
-      if (selectedModel === undefined) continue;
-      const next = structuredClone(config);
-      applyOpenPlatformConfig(next, {
-        platform,
-        models,
-        selectedModel,
-        thinking: false,
-        apiKey,
-      });
-      const refreshedAliasKeys = providerRefreshAliasKeys(
-        config,
-        next,
+      const models = filterModelsByPrefix(await fetchOpenPlatformModels(platform, apiKey), platform);
+      discovered.push({
         providerId,
-        `${providerId}/`,
-      );
-      restoreProviderAliases(next, preserveUserProviderAliases(config, providerId, refreshedAliasKeys));
-      restoreDefaultSelection(next, config.defaultModel, config.thinking?.enabled);
-      clampDanglingDefault(next);
-      clearDefaultThinkingWhenDefaultRemoved(next, config.defaultModel);
-
-      if (providerModelsEqual(config, next, providerId, refreshedAliasKeys)) {
-        unchanged.push(providerId);
-      } else {
-        const { added, removed } = computeChanges(
-          collectModelIdsForAliases(config, refreshedAliasKeys),
-          collectModelIdsForAliases(next, refreshedAliasKeys),
-        );
-        await host.removeProvider(providerId);
-        config = await host.setConfig({
-          providers: next.providers,
-          models: next.models,
-          defaultModel: next.defaultModel,
-          thinking: next.thinking,
-        });
-        changed.push({
-          providerId,
-          providerName: platform.name,
-          added,
-          removed,
-        });
-      }
+        fetchedAt: Date.now(),
+        models: models.map((model) => discoveredModelFromKimiModel(model)),
+      });
+      unchanged.push(providerId);
     } catch (error) {
       failed.push({
         provider: providerId,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: sanitizeProviderError(error, {
+          apiKey,
+          baseUrl: platform.baseUrl,
+          env: providerEnvBag(providerConfig),
+        }),
       });
     }
   }
@@ -669,9 +675,10 @@ export async function refreshProviderModels(
   // ---------------------------------------------------------------------------
   // A hand-written `type: 'kimi'` provider whose baseUrl is exactly the managed
   // Kimi Code endpoint, carrying an API key (inline or via `env.KIMI_API_KEY`)
-  // instead of an oauth ref, gets its model list refreshed from
-  // `{baseUrl}/models` just like the OAuth branch. Strict baseUrl matching
-  // keeps proxies / gateways with an untrusted `/models` schema out.
+  // instead of an oauth ref, gets its model list read from `{baseUrl}/models`
+  // just like the OAuth branch — but it is user-owned, so the catalog is only
+  // suggested. Strict baseUrl matching keeps proxies / gateways with an
+  // untrusted `/models` schema out.
   for (const providerId of Object.keys(config.providers)) {
     if (isOpenPlatformId(providerId)) continue;
     if (targetId !== undefined && targetId !== providerId) continue;
@@ -690,53 +697,20 @@ export async function refreshProviderModels(
         baseUrl: provider.baseUrl,
         credentialKind: 'apiKey',
       });
-      if (models.length === 0) continue;
-
-      // A hand-written `managed:kimi-code` shares the OAuth branch's
-      // `kimi-code/` alias prefix so the two shapes merge cleanly if the user
-      // later logs in via OAuth; ordinary providers use their own id.
-      const aliasPrefix =
-        providerId === KIMI_CODE_PROVIDER_NAME ? `${KIMI_CODE_PLATFORM_ID}/` : `${providerId}/`;
-      const next = structuredClone(config);
-      applyManagedApiKeyProviderModels(next, providerId, models, aliasPrefix);
-      const refreshedAliasKeys = providerRefreshAliasKeys(config, next, providerId, aliasPrefix);
-      restoreProviderAliases(
-        next,
-        preserveUserProviderAliases(config, providerId, refreshedAliasKeys),
-      );
-      restoreDefaultSelection(next, config.defaultModel, config.thinking?.enabled);
-      clampDanglingDefault(next);
-      clearDefaultThinkingWhenDefaultRemoved(next, config.defaultModel);
-
-      if (providerModelsEqual(config, next, providerId, refreshedAliasKeys)) {
-        unchanged.push(providerId);
-      } else {
-        const { added, removed } = computeChanges(
-          collectModelIdsForAliases(config, refreshedAliasKeys),
-          collectModelIdsForAliases(next, refreshedAliasKeys),
-        );
-        await host.removeProvider(providerId);
-        config = await host.setConfig({
-          providers: next.providers,
-          models: next.models,
-          defaultModel: next.defaultModel,
-          thinking: next.thinking,
-          // The v1 `removeProvider` RPC clears `defaultProvider` when it points
-          // at this provider; the clone still holds the original value, so
-          // write it back — a refresh must not silently drop the fallback.
-          defaultProvider: next['defaultProvider'],
-        });
-        changed.push({
-          providerId,
-          providerName: providerId,
-          added,
-          removed,
-        });
-      }
+      discovered.push({
+        providerId,
+        fetchedAt: Date.now(),
+        models: models.map((model) => discoveredModelFromKimiModel(model)),
+      });
+      unchanged.push(providerId);
     } catch (error) {
       failed.push({
         provider: providerId,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: sanitizeProviderError(error, {
+          apiKey,
+          baseUrl: provider.baseUrl,
+          env: providerEnvBag(provider),
+        }),
       });
     }
   }
@@ -754,49 +728,20 @@ export async function refreshProviderModels(
 
     try {
       const models = await fetchGenericProviderModels(providerId, provider, apiKey);
-      if (models.length === 0) {
-        failed.push({ provider: providerId, reason: 'provider models endpoint returned no models' });
-        continue;
-      }
-
-      const aliasPrefix = `${providerId}/`;
-      const next = structuredClone(config);
-      applyGenericProviderModels(next, providerId, models);
-      const refreshedAliasKeys = providerRefreshAliasKeys(config, next, providerId, aliasPrefix);
-      restoreProviderAliases(
-        next,
-        preserveUserProviderAliases(config, providerId, refreshedAliasKeys),
-      );
-      restoreDefaultSelection(next, config.defaultModel, config.thinking?.enabled);
-      clampDanglingDefault(next);
-      clearDefaultThinkingWhenDefaultRemoved(next, config.defaultModel);
-
-      if (providerModelsEqual(config, next, providerId, refreshedAliasKeys)) {
-        unchanged.push(providerId);
-      } else {
-        const { added, removed } = computeChanges(
-          collectModelIdsForAliases(config, refreshedAliasKeys),
-          collectModelIdsForAliases(next, refreshedAliasKeys),
-        );
-        await host.removeProvider(providerId);
-        config = await host.setConfig({
-          providers: next.providers,
-          models: next.models,
-          defaultModel: next.defaultModel,
-          thinking: next.thinking,
-          defaultProvider: next['defaultProvider'],
-        });
-        changed.push({
-          providerId,
-          providerName: providerId,
-          added,
-          removed,
-        });
-      }
+      discovered.push({
+        providerId,
+        fetchedAt: Date.now(),
+        models: models.map((model) => ({ remoteId: model.id })),
+      });
+      unchanged.push(providerId);
     } catch (error) {
       failed.push({
         provider: providerId,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: sanitizeProviderError(error, {
+          apiKey,
+          baseUrl: provider.baseUrl,
+          env: providerEnvBag(provider),
+        }),
       });
     }
   }
@@ -839,112 +784,39 @@ export async function refreshProviderModels(
 
   for (const { sources, providerIds } of customSources.values()) {
     // When scoped to a single provider, only refresh the registry group it
-    // belongs to and only apply the target entry (siblings under the same URL
-    // are left untouched).
+    // belongs to and only report the target entry (siblings under the same URL
+    // are left alone).
     if (targetId !== undefined && !providerIds.includes(targetId)) continue;
+    let entries: Awaited<ReturnType<typeof fetchCustomRegistry>>;
     try {
-      const { entries, source } = await fetchCustomRegistryFromSources(sources, host.userAgent);
-      // Build the whole batch on one clone so that several changed providers
-      // from the same source do not overwrite each other's aliases, and so the
-      // config we compare is exactly the config we persist.
-      const next = structuredClone(config);
-      const changedProviders: Array<{
-        readonly providerId: string;
-        readonly providerName: string;
-        readonly added: number;
-        readonly removed: number;
-      }> = [];
-      const providersToRemoveBeforeSet = new Set<string>();
-      let hasUnreportedConfigChange = false;
-      const remoteEntries = Object.values(entries);
-      const remoteEntriesByProviderId = new Map(
-        remoteEntries.map((entry) => [entry.id, entry]),
-      );
-      const providerIdsToSync = new Set(providerIds);
-      // Only pull in newly-appeared providers from the registry when running an
-      // unscoped refresh; a scoped refresh must not add siblings.
-      if (targetId === undefined) {
-        for (const entry of remoteEntries) providerIdsToSync.add(entry.id);
-      }
-
-      for (const providerId of providerIdsToSync) {
-        if (targetId !== undefined && providerId !== targetId) continue;
-        const entry = remoteEntriesByProviderId.get(providerId);
-        if (entry === undefined) {
-          const oldIds = collectModelIdsForAliases(config, providerAliasKeys(config, providerId));
-          removeCustomRegistryProvider(next, providerId);
-          changedProviders.push({
-            providerId,
-            providerName: providerId,
-            added: 0,
-            removed: oldIds.size,
-          });
-          providersToRemoveBeforeSet.add(providerId);
-          continue;
-        }
-
-        const existed = config.providers[providerId] !== undefined;
-        applyCustomRegistryProvider(next, entry, source);
-        const refreshedAliasKeys = providerRefreshAliasKeys(config, next, providerId, `${providerId}/`);
-        if (existed) {
-          restoreProviderAliases(next, preserveUserProviderAliases(config, providerId, refreshedAliasKeys));
-        }
-
-        if (
-          existed &&
-          providerModelsEqual(config, next, providerId, refreshedAliasKeys) &&
-          providerConfigEqual(config, next, providerId)
-        ) {
-          unchanged.push(providerId);
-        } else if (existed && providerModelsEqual(config, next, providerId, refreshedAliasKeys)) {
-          unchanged.push(providerId);
-          providersToRemoveBeforeSet.add(providerId);
-          hasUnreportedConfigChange = true;
-        } else {
-          const { added, removed } = computeChanges(
-            collectModelIdsForAliases(config, refreshedAliasKeys),
-            collectModelIdsForAliases(next, refreshedAliasKeys),
-          );
-          changedProviders.push({
-            providerId,
-            providerName: entry.name || providerId,
-            added,
-            removed,
-          });
-          if (existed) providersToRemoveBeforeSet.add(providerId);
-        }
-      }
-
-      if (changedProviders.length > 0 || hasUnreportedConfigChange) {
-        restoreDefaultSelection(next, config.defaultModel, config.thinking?.enabled);
-        clampDanglingDefault(next);
-        clearDefaultThinkingWhenDefaultRemoved(next, config.defaultModel);
-        for (const providerId of providersToRemoveBeforeSet) {
-          await host.removeProvider(providerId);
-        }
-        config = await host.setConfig({
-          providers: next.providers,
-          models: next.models,
-          defaultModel: next.defaultModel,
-          thinking: next.thinking,
-        });
-        for (const change of changedProviders) {
-          changed.push({
-            providerId: change.providerId,
-            providerName: change.providerName,
-            added: change.added,
-            removed: change.removed,
-          });
-        }
-      }
+      ({ entries } = await fetchCustomRegistryFromSources(sources, host.userAgent));
     } catch (error) {
       const reportedIds = targetId !== undefined ? [targetId] : providerIds;
+      const reason = sanitizeProviderError(error, {
+        secrets: sources.map((source) => source.apiKey),
+        baseUrl: sources[0]?.url,
+      });
       for (const providerId of reportedIds) {
-        failed.push({
-          provider: providerId,
-          reason: error instanceof Error ? error.message : String(error),
-        });
+        failed.push({ provider: providerId, reason });
       }
+      continue;
+    }
+
+    const entriesByProviderId = new Map(
+      Object.values(entries).map((entry) => [entry.id, entry]),
+    );
+    for (const providerId of providerIds) {
+      if (targetId !== undefined && providerId !== targetId) continue;
+      const entry = entriesByProviderId.get(providerId);
+      // A configured provider that the registry no longer lists yields an
+      // empty suggestion: the manual refresh never removes a provider record,
+      // it only stops suggesting models for it.
+      discovered.push({
+        providerId,
+        fetchedAt: Date.now(),
+        models: entry === undefined ? [] : discoveredModelsFromCustomEntry(entry),
+      });
+      unchanged.push(providerId);
     }
   }
 
@@ -968,5 +840,10 @@ export async function refreshProviderModels(
     });
   }
 
-  return { changed, unchanged, failed };
+  return {
+    changed,
+    unchanged,
+    failed,
+    discovered: discovered.length > 0 ? discovered : undefined,
+  };
 }

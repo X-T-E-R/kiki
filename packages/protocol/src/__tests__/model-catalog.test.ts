@@ -5,6 +5,8 @@ import {
   createProviderRequestSchema,
   getProviderResponseSchema,
   listModelsResponseSchema,
+  listDiscoveredModelsResponseSchema,
+  refreshProviderModelsResponseSchema,
   patchConfigRequestSchema,
   listProvidersResponseSchema,
   modelCatalogItemSchema,
@@ -44,6 +46,13 @@ describe('model catalog schemas', () => {
     status: 'connected',
     models: ['k2'],
   };
+
+  it('round-trips process-local suggestions without inventing configured aliases', () => {
+    const items = [{ provider_id: 'edge', fetched_at: null, attempted_at: 100, failure_reason: 'HTTP 401', models: [] },
+      { provider_id: 'other', fetched_at: 99, attempted_at: 100, models: [{ remote_id: 'vendor/new' }] }];
+    expect(listDiscoveredModelsResponseSchema.parse({ items })).toEqual({ items });
+    expect(refreshProviderModelsResponseSchema.parse({ changed: [], unchanged: [], failed: [], discovered: items }).discovered).toEqual(items);
+  });
 
   it('round-trips a model catalog item', () => {
     expect(modelCatalogItemSchema.parse(model)).toEqual(model);

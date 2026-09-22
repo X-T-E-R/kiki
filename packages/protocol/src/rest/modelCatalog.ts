@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   createModelRequestSchema,
   createProviderRequestSchema,
+  discoveredProviderModelsSchema,
   getModelResponseSchema,
   modelCatalogItemSchema,
   modelEntitySchema,
@@ -68,6 +69,7 @@ export const refreshProviderModelsResponseSchema = z.object({
   changed: z.array(providerRefreshChangeSchema),
   unchanged: z.array(z.string().min(1)),
   failed: z.array(providerRefreshFailureSchema),
+  discovered: z.array(discoveredProviderModelsSchema).optional(),
 });
 export type RefreshProviderModelsResponse = z.infer<
   typeof refreshProviderModelsResponseSchema

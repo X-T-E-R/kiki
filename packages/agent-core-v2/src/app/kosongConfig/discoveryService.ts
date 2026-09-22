@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   refreshProviderModels,
   type ManagedKimiConfigShape,
@@ -14,7 +16,7 @@ import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IConfigService } from '#/app/config/config';
 import { IEventService } from '#/app/event/event';
 import { ModelCatalogErrors } from '#/kosong/model/errors';
-import { type ModelRecord } from '#/kosong/model/model';
+import { IModelService, type ModelRecord } from '#/kosong/model/model';
 import {
   IProviderService,
   type ModelSource,
@@ -32,6 +34,8 @@ import {
 import {
   IProviderDiscoveryService,
   ModelCatalogChanged,
+  type DiscoveredProviderModels,
+  type ListDiscoveredModelsResponse,
   type RefreshProviderModelsOptions,
   type RefreshProviderModelsResponse,
 } from './discovery';
@@ -43,12 +47,18 @@ interface StaticExclusion {
   readonly thinking?: ManagedKimiConfigShape['thinking'];
 }
 
+interface DiscoveryCacheEntry {
+  readonly connection: string;
+  readonly value: DiscoveredProviderModels;
+}
+
 const EMPTY_EXCLUSION: StaticExclusion = { providers: {}, models: {} };
 
 export class ProviderDiscoveryService implements IProviderDiscoveryService {
   declare readonly _serviceBrand: undefined;
 
   private refreshChain: Promise<unknown> = Promise.resolve();
+  private readonly discovered = new Map<string, DiscoveryCacheEntry>();
 
   constructor(
     @IProviderService private readonly providerService: IProviderService,
@@ -56,7 +66,35 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
     @IOAuthService private readonly oauth: IOAuthService,
     @IEventService private readonly events: IEventService,
     @IAgentIdentity private readonly identity: IAgentIdentity,
+    @IModelService private readonly modelService: IModelService,
   ) {}
+
+  async listDiscoveredModels(): Promise<ListDiscoveredModelsResponse> {
+    await this.config.ready;
+    await this.modelService.ready;
+    const providers = this.readUserConfigShape().providers;
+    const configured = new Map<string, Set<string>>();
+    for (const model of Object.values(this.modelService.list())) {
+      const providerId = model.providerId ?? model.provider ?? this.providerService.getDefaultProvider();
+      const remoteId = model.name ?? model.model;
+      if (providerId === undefined || remoteId === undefined) continue;
+      const ids = configured.get(providerId) ?? new Set<string>();
+      ids.add(remoteId);
+      configured.set(providerId, ids);
+    }
+    const items: DiscoveredProviderModels[] = [];
+    for (const [id, entry] of this.discovered) {
+      if (entry.connection !== connectionFingerprint(providers[id])) {
+        this.discovered.delete(id);
+        continue;
+      }
+      items.push({
+        ...entry.value,
+        models: entry.value.models.filter((model) => !configured.get(id)?.has(model.remote_id)),
+      });
+    }
+    return structuredClone({ items });
+  }
 
   refreshProviderModels(
     options: RefreshProviderModelsOptions = {},
@@ -82,18 +120,63 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
         );
       }
       if (this.effectiveModelSource(provider) === 'static') {
+        this.discovered.delete(options.providerId);
         return { changed: [], unchanged: [options.providerId], failed: [] };
       }
     }
 
     const exclusion = this.computeStaticExclusion();
+    const initial = this.readUserConfigShape(exclusion);
+    const connections = new Map(Object.entries(initial.providers).map(([id, provider]) =>
+      [id, connectionFingerprint(provider)]));
     const { outboundUserAgent } = await this.identity.resolved();
-    const result = await refreshProviderModels(this.buildRefreshHost(exclusion, outboundUserAgent), {
+    const result = await refreshProviderModels(this.buildRefreshHost(exclusion, outboundUserAgent, initial), {
       scope: options.scope,
       providerId: options.providerId,
     });
+    const attemptedAt = Date.now();
+    for (const group of result.discovered ?? []) {
+      const connection = connections.get(group.providerId);
+      if (connection === undefined) continue;
+      this.discovered.set(group.providerId, {
+        connection,
+        value: {
+          provider_id: group.providerId,
+          fetched_at: group.fetchedAt,
+          attempted_at: attemptedAt,
+          models: group.models.map((model) => ({
+            remote_id: model.remoteId,
+            display_name: model.displayName,
+            max_context_size: model.maxContextSize,
+            capabilities: model.capabilities === undefined ? undefined : [...model.capabilities],
+            support_efforts: model.supportEfforts === undefined ? undefined : [...model.supportEfforts],
+          })),
+        },
+      });
+    }
+    for (const failure of result.failed) {
+      const connection = connections.get(failure.provider);
+      if (connection === undefined) continue;
+      const previous = this.discovered.get(failure.provider);
+      const value = previous?.connection === connection ? previous.value : undefined;
+      this.discovered.set(failure.provider, {
+        connection,
+        value: {
+          provider_id: failure.provider,
+          fetched_at: value?.fetched_at ?? null,
+          attempted_at: attemptedAt,
+          failure_reason: failure.reason,
+          models: value?.models ?? [],
+        },
+      });
+    }
     const response = mapRefreshResult(result);
-    if (response.changed.length > 0) {
+    if (result.discovered !== undefined) {
+      const refreshedIds = new Set(result.discovered.map((group) => group.providerId));
+      response.discovered = (await this.listDiscoveredModels()).items.filter((group) =>
+        refreshedIds.has(group.provider_id));
+    }
+    if (response.changed.length > 0 || (response.discovered?.length ?? 0) > 0 || response.failed.length > 0) {
       this.events.publish(new ModelCatalogChanged({ payload: response }));
     }
     return response;
@@ -141,9 +224,13 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
     };
   }
 
-  private buildRefreshHost(exclusion: StaticExclusion, userAgent: string): RefreshProviderHost {
+  private buildRefreshHost(
+    exclusion: StaticExclusion,
+    userAgent: string,
+    initial: ManagedKimiConfigShape,
+  ): RefreshProviderHost {
     return {
-      getConfig: async () => this.readUserConfigShape(exclusion),
+      getConfig: async () => structuredClone(initial),
       removeProvider: (providerId) => this.shapeWithoutProvider(providerId),
       setConfig: (patch) => this.applyRefreshPatch(patch, exclusion),
       resolveOAuthToken: (providerName, oauthRef) => this.resolveOAuthToken(providerName, oauthRef),
@@ -254,6 +341,20 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
     }
     return tokenProvider.getAccessToken();
   }
+}
+
+function connectionFingerprint(provider: ManagedKimiConfigShape['providers'][string] | undefined): string {
+  if (provider === undefined) return '';
+  return createHash('sha256').update(JSON.stringify({
+    type: provider.type,
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    env: provider['env'],
+    customHeaders: provider['customHeaders'],
+    oauth: provider.oauth,
+    source: provider['source'],
+    modelSource: provider['modelSource'],
+  })).digest('hex');
 }
 
 function withoutKeys<T>(

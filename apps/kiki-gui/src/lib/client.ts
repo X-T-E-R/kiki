@@ -31,6 +31,7 @@ import type {
   GoalFollowUpTiming,
   GoalSnapshot,
   GetCatalogProviderResponse,
+  ListDiscoveredModelsResponse,
   ListMcpServersResponse,
   ListModelsResponse,
   ListProvidersResponse,
@@ -1113,6 +1114,27 @@ export class KikiClient {
   /** Server-side model probe using the configured provider credentials. */
   refreshProvider(providerId: string): Promise<RefreshProviderModelsResponse> {
     return this.run(this.klient.global.kosong.refreshProviders({ providerId }));
+  }
+
+  /**
+   * The explicit user-triggered fetch of every configured provider's model
+   * list. Only the managed OAuth provider writes its models back; every other
+   * provider's result is a suggestion until the user saves it.
+   */
+  refreshAllProviders(): Promise<RefreshProviderModelsResponse> {
+    return this.run(this.klient.global.kosong.refreshProviders());
+  }
+
+  /**
+   * Model suggestions from earlier explicit fetches, grouped by provider. This
+   * is a read: it never contacts a provider and never writes configuration.
+   */
+  listDiscoveredModels(): Promise<ListDiscoveredModelsResponse> {
+    return this.run(
+      this.klient.global.kosong.listDiscoveredModels().then((response) => ({
+        items: [...response.items],
+      })),
+    );
   }
 
   setDefaultModel(modelId: string): Promise<SetDefaultModelResponse> {

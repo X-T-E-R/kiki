@@ -315,18 +315,18 @@ describe('server-v2 /api/config', () => {
       subagent: { timeout_ms: 60_000, deny_models: ['example/blocked'] },
       agents: { enabled: false },
       builtin_product_skills: false,
-      model_catalog: { refresh_interval_ms: 300_000, refresh_on_start: true },
+      image: { max_edge_px: 2048 },
     });
 
     expect(cfg.subagent).toEqual({ timeoutMs: 60_000, denyModels: ['example/blocked'] });
     expect(cfg.agents).toEqual({ enabled: false, notify_parent: true });
     expect(cfg.builtin_product_skills).toBe(false);
-    expect(cfg.model_catalog).toEqual({ refreshIntervalMs: 300_000, refreshOnStart: true });
+    expect(cfg.image?.maxEdgePx).toBe(2048);
 
     const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
     expect(persisted).toContain('api_key = "secret-kept"');
     expect(persisted).toContain('timeout_ms = 60000');
-    expect(persisted).toContain('refresh_interval_ms = 300000');
+    expect(persisted).toContain('max_edge_px = 2048');
   });
 
   it('round-trips the subagent default_profile, including the strict empty string', async () => {
@@ -633,14 +633,32 @@ describe('server-v2 /api/config', () => {
 
     await Promise.all([
       patchConfig({ agents: { enabled: false } }),
-      patchConfig({ model_catalog: { refresh_on_start: true } }),
+      patchConfig({ image: { max_edge_px: 2048 } }),
       patchConfig({ subagent: { deny_models: ['provider/blocked'] } }),
     ]);
 
     const after = await getConfig();
     expect(after.agents).toEqual({ enabled: false, notify_parent: true });
     expect(after.subagent?.denyModels).toEqual(['provider/blocked']);
-    expect(after.model_catalog?.refreshOnStart).toBe(true);
+    expect(after.image?.maxEdgePx).toBe(2048);
+  });
+
+  it('no longer exposes or accepts the model catalog refresh config domain', async () => {
+    await boot();
+
+    expect(await getConfig()).not.toHaveProperty('model_catalog');
+
+    const res = await authedFetch(server as RunningServer, base, '/api/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model_catalog: { refresh_on_start: true } }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Envelope<null>;
+    expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
+
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8').catch(() => '');
+    expect(persisted).not.toContain('model_catalog');
   });
 
   it('replace_domains lets GUI list editors delete pool and experimental map entries', async () => {

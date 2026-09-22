@@ -94,10 +94,6 @@ export interface ServerFileSettings {
     enabled: boolean;
   };
   builtinProductSkills: boolean;
-  modelCatalog: {
-    refreshIntervalMs: number;
-    refreshOnStart: boolean;
-  };
 }
 
 export function configObjectOrEmpty(value: unknown): Record<string, unknown> {
@@ -120,7 +116,6 @@ export function serverFileSettingsFromConfig(config: unknown): ServerFileSetting
   const source = configObjectOrEmpty(config);
   const subagent = configObjectOrEmpty(source['subagent']);
   const agents = configObjectOrEmpty(source['agents']);
-  const modelCatalog = configObjectOrEmpty(source['model_catalog']);
   return {
     subagent: {
       timeoutMs: typeof subagent['timeoutMs'] === 'number' ? subagent['timeoutMs'] : 7_200_000,
@@ -129,13 +124,6 @@ export function serverFileSettingsFromConfig(config: unknown): ServerFileSetting
       enabled: agents['enabled'] !== false,
     },
     builtinProductSkills: source['builtin_product_skills'] !== false,
-    modelCatalog: {
-      refreshIntervalMs:
-        typeof modelCatalog['refreshIntervalMs'] === 'number'
-          ? modelCatalog['refreshIntervalMs']
-          : 0,
-      refreshOnStart: modelCatalog['refreshOnStart'] === true,
-    },
   };
 }
 
@@ -155,18 +143,6 @@ export function serverFileSettingsPatch(
         ? settings.agents.enabled
         : undefined,
   };
-  const modelCatalog = {
-    refresh_interval_ms:
-      baseline === undefined
-      || settings.modelCatalog.refreshIntervalMs !== baseline.modelCatalog.refreshIntervalMs
-        ? settings.modelCatalog.refreshIntervalMs
-        : undefined,
-    refresh_on_start:
-      baseline === undefined
-      || settings.modelCatalog.refreshOnStart !== baseline.modelCatalog.refreshOnStart
-        ? settings.modelCatalog.refreshOnStart
-        : undefined,
-  };
   return {
     subagent: Object.values(subagent).some((value) => value !== undefined) ? subagent : undefined,
     agents: Object.values(agents).some((value) => value !== undefined) ? agents : undefined,
@@ -174,8 +150,6 @@ export function serverFileSettingsPatch(
       baseline === undefined || settings.builtinProductSkills !== baseline.builtinProductSkills
         ? settings.builtinProductSkills
         : undefined,
-    model_catalog:
-      Object.values(modelCatalog).some((value) => value !== undefined) ? modelCatalog : undefined,
   };
 }
 
@@ -1016,19 +990,12 @@ export function setToolPolicy(
 
 export function validateDesktopConfigDraft(input: {
   subagentTimeoutMs: number;
-  modelCatalogRefreshIntervalMs: number;
 }): ValidationIssue | null {
   if (!Number.isInteger(input.subagentTimeoutMs) || input.subagentTimeoutMs < 0) {
     return { key: 'val.timeoutWhole' };
   }
   if (input.subagentTimeoutMs > 86_400_000) {
     return { key: 'val.timeoutMax' };
-  }
-  if (
-    !Number.isInteger(input.modelCatalogRefreshIntervalMs) ||
-    input.modelCatalogRefreshIntervalMs < 0
-  ) {
-    return { key: 'val.catalogIntervalWhole' };
   }
   return null;
 }
@@ -1513,6 +1480,7 @@ export function remoteModelsUrl(baseUrl: string): string {
 export function remoteModelsHeaders(type: ProviderWireType, apiKey: string): Record<string, string> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   const key = apiKey.trim();
+  if (/[\u0000-\u001F\u007F]/.test(key)) throw new LocalizedError({ key: 'val.apiKeyLineBreaks' });
   if (type === 'anthropic') {
     if (key !== '') headers['x-api-key'] = key;
     headers['anthropic-version'] = '2023-06-01';
@@ -1576,26 +1544,24 @@ export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<Provi
     throw new LocalizedError({ key: 'val.baseUrlHttp' });
   }
 
+  const headers = remoteModelsHeaders(probe.type, probe.apiKey);
   const controller = new AbortController();
   const timeout = setTimeout(() => { controller.abort(); }, 15_000);
-  let response: Response;
+  let payload: unknown;
   try {
-    response = await fetch(url, {
-      headers: remoteModelsHeaders(probe.type, probe.apiKey),
-      signal: controller.signal,
-    });
+    const response = await fetch(url, { headers, signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    try { payload = await response.json(); }
+    catch { throw new LocalizedError({ key: 'val.remoteModelsShape' }); }
   } catch (error) {
-    throw error instanceof Error && error.name === 'AbortError'
-      ? new Error('Model probe timed out after 15000ms')
-      : error;
+    if (error instanceof LocalizedError || (error instanceof Error && /^HTTP \d+$/.test(error.message))) throw error;
+    // eslint-disable-next-line preserve-caught-error -- transport causes may echo credentials
+    throw new Error(error instanceof Error && error.name === 'AbortError'
+      ? 'Model probe timed out after 15000ms'
+      : 'Model probe failed. Check the endpoint and credentials.');
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) {
-    const detail = (await response.text()).replaceAll(/\s+/g, ' ').trim().slice(0, 200);
-    throw new Error(`HTTP ${response.status}${detail === '' ? '' : ` — ${detail}`}`);
-  }
-  const payload = (await response.json()) as unknown;
   const ids = parseRemoteModels(payload);
   if (ids.length === 0) throw new LocalizedError({ key: 'val.remoteModelsEmpty' });
   const contextSize = providerTemplateFor(probe.type).defaultContextSize;
@@ -1816,7 +1782,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'general', cardId: 'st-card-session-title', titleKey: 'st.experimental.sessionTitle', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff', 'st.sessionTitleModel.hint', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder', 'st.models.remoteIdAria', 'st.images.acceptedTypes', 'st.images.convertUnsupported'], synonyms: ['模型目录', 'model catalog', '模型列表', 'model editing', '模型编辑', 'remote id', '远端模型 ID', 'image policy', '图片策略', '图片类型', '图片转换'] },
-  { section: 'ai', tab: 'models', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.sidecar.catalogInterval', 'st.sidecar.refreshOnStart'], synonyms: ['模型目录刷新', 'catalog refresh'] },
+  { section: 'ai', tab: 'models', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.catalogRefresh.hint', 'st.catalogRefresh.getModels'], synonyms: ['模型目录刷新', 'catalog refresh', '获取模型', 'get models'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },

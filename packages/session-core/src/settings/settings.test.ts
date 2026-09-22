@@ -263,11 +263,9 @@ describe('settings persistence and validation', () => {
     expect(validateServerDefaults('auto')).toBeNull();
     expect(validateDesktopConfigDraft({
       subagentTimeoutMs: 60_000,
-      modelCatalogRefreshIntervalMs: 0,
     })).toBeNull();
     expect(validateDesktopConfigDraft({
       subagentTimeoutMs: 86_400_001,
-      modelCatalogRefreshIntervalMs: 0,
     })?.key).toBe('val.timeoutMax');
     expect(validateProviderDraft(providerDraft({ baseUrl: 'file:///secret' }))?.key).toBe('val.baseUrlHttp');
     expect(validateProviderDraft(providerDraft({ apiKey: 'bad\nkey' }))?.key).toBe('val.apiKeyLineBreaks');
@@ -293,14 +291,12 @@ describe('settings persistence and validation', () => {
       subagent: { timeoutMs: 60_000 },
       agents: { enabled: false },
       builtin_product_skills: false,
-      model_catalog: { refreshIntervalMs: 300_000, refreshOnStart: true },
     });
 
     expect(serverFileSettingsPatch(settings)).toEqual({
       subagent: { timeout_ms: 60_000 },
       agents: { enabled: false },
       builtin_product_skills: false,
-      model_catalog: { refresh_interval_ms: 300_000, refresh_on_start: true },
     });
   });
 
@@ -417,24 +413,21 @@ describe('settings persistence and validation', () => {
       subagent: { timeoutMs: 60_000 },
       agents: { enabled: true },
       builtin_product_skills: true,
-      model_catalog: { refreshIntervalMs: 0, refreshOnStart: false },
     });
     const first = structuredClone(baseline);
     first.agents.enabled = false;
     const second = structuredClone(baseline);
-    second.modelCatalog.refreshOnStart = true;
+    second.builtinProductSkills = false;
 
     expect(serverFileSettingsPatch(first, baseline)).toEqual({
       subagent: undefined,
       agents: { enabled: false },
       builtin_product_skills: undefined,
-      model_catalog: undefined,
     });
     expect(serverFileSettingsPatch(second, baseline)).toEqual({
       subagent: undefined,
       agents: undefined,
-      builtin_product_skills: undefined,
-      model_catalog: { refresh_interval_ms: undefined, refresh_on_start: true },
+      builtin_product_skills: false,
     });
   });
 
@@ -827,6 +820,20 @@ describe('remote /models probe', () => {
     expect(models[0]?.capabilities).toEqual([]);
   });
 
+  it('rejects control characters before fetch and hides echoed credentials in failures', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'secret\nsecond' }))
+      .rejects.toThrow(/line breaks|control characters/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValueOnce(new Response('secret-echo-value', { status: 401 }));
+    await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'secret-echo-value' }))
+      .rejects.toThrow(/^HTTP 401$/);
+    fetchMock.mockRejectedValueOnce(new Error('transport echoed secret-echo-value'));
+    await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'secret-echo-value' }))
+      .rejects.toThrow(/^Model probe failed\. Check the endpoint and credentials\.$/);
+  });
+
   it('rejects bad input and upstream failures with localized or HTTP errors', async () => {
     await expect(fetchRemoteModels({ type: 'openai', baseUrl: ' ', apiKey: '' }))
       .rejects.toThrow(/Fill in the Base URL/);
@@ -1018,7 +1025,7 @@ describe('settings search breadcrumbs and synonyms', () => {
 
   it('points the catalog-refresh hit at the models tab so the card is mounted on arrival', () => {
     const index = buildSettingsSearchIndex({}, t);
-    const hit = searchSettings(index, 'Catalog refresh interval')
+    const hit = searchSettings(index, 'Get models')
       .find((entry) => entry.cardId === 'st-card-catalog-refresh');
     expect(hit).toMatchObject({ section: 'ai', tab: 'models' });
   });

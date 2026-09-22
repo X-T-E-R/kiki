@@ -42,6 +42,7 @@ import type { IModelCatalogMutationService } from '@kiki/agent-core-v2/app/koson
 import type {
   CreateModelRequest,
   CreateProviderRequest,
+  ListDiscoveredModelsResponse,
   ModelEntity,
   PatchModelRequest,
   PatchProviderRequest,
@@ -220,6 +221,8 @@ export interface GlobalKosongFacade {
   addProvider(config: AnonymousProviderInput): Promise<void>;
   removeProvider(id: string): Promise<void>;
   refreshProviders(opts?: RefreshProviderModelsOptions): Promise<RefreshProviderModelsResponse>;
+  /** Read process-local suggestions from explicit fetches, without contacting any provider. */
+  listDiscoveredModels(): Promise<ListDiscoveredModelsResponse>;
 
   // -- Model ------------------------------------------------------------
   listModels(): Promise<readonly ModelCatalogItem[]>;
@@ -597,6 +600,8 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         call('providerDiscovery', 'refreshProviderModels', [
           opts,
         ]) as Promise<RefreshProviderModelsResponse>,
+      listDiscoveredModels: () =>
+        call('providerDiscovery', 'listDiscoveredModels', []) as Promise<ListDiscoveredModelsResponse>,
 
       listModels: () =>
         call('modelResolver', 'listModels', []) as Promise<readonly ModelCatalogItem[]>,

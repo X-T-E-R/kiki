@@ -1036,6 +1036,40 @@ describe('ModelCatalog ping', () => {
     }
   });
 
+  it.each(['api-key', 'newline', 'oauth'] as const)('redacts probe %s and URL/header credentials at the boundary', async (kind) => {
+    const apiKey = kind === 'newline' ? 'sk-probe\nsecond-line' : 'sk-probe-example-key';
+    const baseUrl = 'https://build:pa55word@gateway.example.test/v1?api_key=qz7bHQ2';
+    const { host, catalog } = createHost({
+      providers: {
+        gateway: {
+          type: 'openai', baseUrl,
+          apiKey: kind === 'oauth' ? undefined : apiKey,
+          oauth: kind === 'oauth' ? { storage: 'file', key: 'oauth/example' } : undefined,
+          customHeaders: { 'X-Api-Key': 'header-secret-value' },
+        },
+      },
+      models: { 'probe-model': { provider: 'gateway', model: 'gpt-probe', maxContextSize: 4096 } },
+    }, stubModelOAuthTokens(stubTokenProvider([apiKey])));
+    const generate = vi.fn(async () => {
+      throw new Error(`invalid key: ${apiKey}; cannot reach ${baseUrl}; header-secret-value`);
+    });
+    const factory = vi.spyOn(host.app.accessor.get(IProtocolAdapterRegistry), 'createChatProvider').mockReturnValue({
+      name: 'echoing-provider', modelName: 'gpt-probe', thinkingEffort: null, generate,
+    } as unknown as ChatProvider);
+    try {
+      const result = await catalog.ping('probe-model');
+      expect(result.ok).toBe(false);
+      for (const secret of ['sk-probe', 'second-line', 'pa55word', 'qz7bHQ2', 'header-secret-value']) {
+        expect(JSON.stringify(result)).not.toContain(secret);
+      }
+      if (kind === 'newline') expect(generate).not.toHaveBeenCalled();
+      else expect(result.error).toContain('[redacted]');
+    } finally {
+      factory.mockRestore();
+      host.dispose();
+    }
+  });
+
   it('rejects with config.invalid for unknown models', async () => {
     const { host, catalog } = createHost(kimiSections);
     try {

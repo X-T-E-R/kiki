@@ -10,7 +10,6 @@ import {
   IConfigService,
   IEventService,
   IMcpOAuthService,
-  IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
   ISessionActivityView,
@@ -84,7 +83,6 @@ import { createSecurityHeadersHook } from './middleware/securityHeaders';
 import { createAuthHook } from './middleware/auth';
 import { GuiStoreService } from './services/guiStore/guiStoreService';
 import { TranscriptService } from './services/transcript/transcriptService';
-import { ModelCatalogRefreshScheduler } from './services/modelCatalog/modelCatalogRefreshScheduler';
 import { createAuthFailureLimiter } from './middleware/rateLimit';
 import {
   createAuthTokenService,
@@ -325,11 +323,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       );
     }
   }
-  const modelCatalogRefreshScheduler = new ModelCatalogRefreshScheduler(
-    core.accessor.get(IProviderDiscoveryService),
-    core.accessor.get(IConfigService),
-    logger,
-  );
   core.accessor.get(IModelPricingService);
 
   let postListenWarmup: Promise<void> | undefined;
@@ -462,7 +455,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     pluginChangeSubscription.dispose();
     capabilityInstallSubscription.dispose();
     authFailureLimiter?.dispose();
-    modelCatalogRefreshScheduler.dispose();
     transcriptService.dispose();
     try {
       await postListenWarmup;
@@ -850,13 +842,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     }, intervalMs);
     idleTimer.unref();
   }
-
-  void modelCatalogRefreshScheduler.start().catch((error) => {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'provider-model catalog auto-refresh failed to start',
-    );
-  });
 
   return {
     app,

@@ -1,5 +1,11 @@
 import { readApiErrorMessage } from './api-error';
 import { CUSTOM_REGISTRY_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
+import {
+  assertProviderCredential,
+  assertProviderHeaders,
+  sanitizeProviderError,
+  sanitizeProviderUrl,
+} from './provider-error';
 import { isRecord } from './utils';
 import type { ManagedKimiConfigShape, ManagedKimiModelAlias } from './managed-kimi-code';
 
@@ -211,25 +217,40 @@ export async function fetchCustomRegistry(
     headers['User-Agent'] = userAgent;
   }
   if (source.apiKey.length > 0) {
+    // A credential the runtime would reject, and quote back, must never reach
+    // the header bag: reject it here with a value-free reason instead.
+    assertProviderCredential(source.apiKey);
     headers['Authorization'] = `Bearer ${source.apiKey}`;
   }
+  assertProviderHeaders(headers);
 
   const init: RequestInit = { headers };
   if (signal !== undefined) init.signal = signal;
 
-  const response = await fetchImpl(source.url, init);
+  // The URL itself may carry credentials in userinfo or a sensitive query
+  // parameter; only its redacted form reaches an error, a log, or the user.
+  const safeUrl = sanitizeProviderUrl(source.url);
+  const safeError = (error: unknown): never => {
+    throw new Error(sanitizeProviderError(error, { apiKey: source.apiKey, baseUrl: source.url, headers }));
+  };
+  const response = await fetchImpl(source.url, init).catch(safeError);
   if (!response.ok) {
-    const message = await readApiErrorMessage(
-      response,
-      `Failed to fetch custom registry at ${source.url} (HTTP ${response.status}).`,
+    throw new CustomRegistryApiError(
+      sanitizeProviderError(
+        await readApiErrorMessage(
+          response,
+          `Failed to fetch custom registry at ${safeUrl} (HTTP ${response.status}).`,
+        ),
+        { apiKey: source.apiKey, baseUrl: source.url, headers },
+      ),
+      response.status,
     );
-    throw new CustomRegistryApiError(message, response.status);
   }
 
-  const payload: unknown = await response.json();
+  const payload: unknown = await response.json().catch(safeError);
   if (!isRecord(payload)) {
     throw new Error(
-      `Unexpected custom registry response at ${source.url}: expected a JSON object keyed by provider id.`,
+      `Unexpected custom registry response at ${safeUrl}: expected a JSON object keyed by provider id.`,
     );
   }
 
@@ -242,7 +263,10 @@ export async function fetchCustomRegistry(
       // existing providers working when kokub adds a new provider type that
       // this client doesn't yet recognize.
       console.warn(
-        `[custom-registry] Skipping invalid entry "${key}" at ${source.url}: missing required fields or unsupported type (id, name, api, type, models).`,
+        sanitizeProviderError(
+          `[custom-registry] Skipping invalid entry "${key}" at ${safeUrl}: missing required fields or unsupported type (id, name, api, type, models).`,
+          { apiKey: source.apiKey, baseUrl: source.url, headers },
+        ),
       );
       continue;
     }
@@ -282,7 +306,13 @@ function hasRichCapabilityHints(model: CustomRegistryModelEntry): boolean {
   );
 }
 
-function resolveMaxContextSize(model: CustomRegistryModelEntry): number {
+/**
+ * Context window a custom-registry entry maps onto, with the tuned default
+ * substituted when the entry declares no usable limit. Shared with the
+ * suggestion-only refresh so the reported catalog matches what an applied
+ * registry entry would write.
+ */
+export function resolveCustomRegistryMaxContextSize(model: CustomRegistryModelEntry): number {
   const context = model.limit?.context;
   const output = model.limit?.output;
   if (typeof context === 'number' && Number.isInteger(context) && context > 0) {
@@ -294,7 +324,12 @@ function resolveMaxContextSize(model: CustomRegistryModelEntry): number {
   return CUSTOM_REGISTRY_DEFAULT_MAX_CONTEXT;
 }
 
-function resolveCapabilities(model: CustomRegistryModelEntry): string[] {
+/**
+ * Capabilities a custom-registry entry maps onto. Entries without rich hints
+ * fall back to the tuned default set; shared with the suggestion-only refresh
+ * so a reported catalog matches an applied registry entry.
+ */
+export function resolveCustomRegistryCapabilities(model: CustomRegistryModelEntry): string[] {
   if (hasRichCapabilityHints(model)) {
     return capabilitiesFromCustomEntry(model);
   }
@@ -339,8 +374,8 @@ export function applyCustomRegistryProvider(
 
   for (const [modelKey, model] of Object.entries(entry.models)) {
     const aliasKey = `${providerKey}/${modelKey}`;
-    const maxContextSize = resolveMaxContextSize(model);
-    const capabilities = resolveCapabilities(model);
+    const maxContextSize = resolveCustomRegistryMaxContextSize(model);
+    const capabilities = resolveCustomRegistryCapabilities(model);
     const displayName =
       typeof model.name === 'string' && model.name.length > 0 ? model.name : model.id;
     const existing = isRecord(existingModels[aliasKey]) ? existingModels[aliasKey] : {};

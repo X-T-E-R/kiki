@@ -6,6 +6,12 @@ import { OAuthUnauthorizedError } from './errors';
 import { parseKimiCodeCustomHeaders } from './identity';
 import { DEFAULT_KIMI_CODE_BASE_URL, kimiCodeBaseUrl } from './managed-usage';
 import { MANAGED_KIMI_MODEL_FIELDS, mergeRefreshedModelAlias } from './model-alias-merge';
+import {
+  assertProviderCredential,
+  assertProviderHeaders,
+  sanitizeProviderError,
+  sanitizeProviderUrl,
+} from './provider-error';
 import { isRecord } from './utils';
 
 export const KIMI_CODE_PLATFORM_ID = 'kimi-code';
@@ -477,32 +483,43 @@ export async function fetchManagedKimiCodeModels(
 ): Promise<ManagedKimiCodeModelInfo[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const baseUrl = defaultBaseUrl(options.baseUrl);
-  const response = await fetchImpl(`${baseUrl}/models`, {
-    headers: {
-      ...parseKimiCodeCustomHeaders(),
-      ...options.headers,
-      Authorization: `Bearer ${options.accessToken}`,
-      Accept: 'application/json',
-    },
-  });
+  // The access token may be an OAuth token or a hand-configured API key; both
+  // reach the wire as a header value, so an internal control character must be
+  // rejected here rather than echoed by the runtime's own header validation.
+  assertProviderCredential(options.accessToken);
+  const headers: Record<string, string> = {
+    ...parseKimiCodeCustomHeaders(),
+    ...options.headers,
+    Authorization: `Bearer ${options.accessToken}`,
+    Accept: 'application/json',
+  };
+  assertProviderHeaders(headers);
+
+  const safeError = (error: unknown): never => {
+    throw new Error(sanitizeProviderError(error, { apiKey: options.accessToken, baseUrl, headers }));
+  };
+  const response = await fetchImpl(`${baseUrl}/models`, { headers }).catch(safeError);
   if (!response.ok) {
-    const message = await readApiErrorMessage(
-      response,
-      `Failed to list Kimi Code models (HTTP ${response.status}).`,
+    const message = sanitizeProviderError(
+      await readApiErrorMessage(
+        response,
+        `Failed to list Kimi Code models (HTTP ${response.status}).`,
+      ),
+      { apiKey: options.accessToken, baseUrl, headers },
     );
     if (response.status === 401 || response.status === 402 || response.status === 403) {
       throw new ManagedKimiCodeModelsAuthError({
         status: response.status,
-        baseUrl,
+        baseUrl: sanitizeProviderUrl(baseUrl),
         message,
         credentialKind: options.credentialKind,
       });
     }
     throw new Error(message);
   }
-  const payload: unknown = await response.json();
+  const payload: unknown = await response.json().catch(safeError);
   if (!isRecord(payload) || !Array.isArray(payload['data'])) {
-    throw new Error(`Unexpected models response for ${baseUrl}.`);
+    throw new Error(`Unexpected models response for ${sanitizeProviderUrl(baseUrl)}.`);
   }
   return payload['data']
     .map((item) => toModelInfo(item))

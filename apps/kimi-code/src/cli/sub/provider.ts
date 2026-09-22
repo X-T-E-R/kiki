@@ -6,10 +6,8 @@
  * a provider, or inspect what is configured without launching the TUI.
  *
  * `add` writes the same `source = { kind: 'apiJson', url, apiKey }` blob the
- * TUI does; the next launch's `refreshAllProviderModels`
- * (apps/kimi-code/src/tui/utils/refresh-providers.ts) groups by URL, retries
- * available API-key candidates, and re-fetches the model list, so periodic
- * refresh is automatic.
+ * TUI does. Later explicit model discovery groups these sources by URL and
+ * returns unsaved suggestions; startup never synchronizes these providers.
  */
 
 import {

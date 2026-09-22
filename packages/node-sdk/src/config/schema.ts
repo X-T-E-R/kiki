@@ -246,15 +246,6 @@ export const ImageConfigSchema = z.object({
 
 export type ImageConfig = z.infer<typeof ImageConfigSchema>;
 
-export const ModelCatalogConfigSchema = z.object({
-  /** Interval (ms) between automatic provider-model refreshes. `0` disables. */
-  refreshIntervalMs: z.number().int().min(0).optional(),
-  /** Refresh once shortly after the daemon starts. */
-  refreshOnStart: z.boolean().optional(),
-});
-
-export type ModelCatalogConfig = z.infer<typeof ModelCatalogConfigSchema>;
-
 export const ExperimentalConfigSchema = z.record(z.string(), z.boolean());
 
 export type ExperimentalConfig = z.infer<typeof ExperimentalConfigSchema>;
@@ -405,7 +396,6 @@ export const KimiConfigSchema = z.object({
   agents: AgentsConfigSchema.optional(),
   mcp: McpConfigSchema.optional(),
   image: ImageConfigSchema.optional(),
-  modelCatalog: ModelCatalogConfigSchema.optional(),
   experimental: ExperimentalConfigSchema.optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
@@ -422,7 +412,6 @@ const SubagentConfigPatchSchema = SubagentConfigSchema.partial();
 const AgentsConfigPatchSchema = AgentsConfigSchema.partial();
 const McpConfigPatchSchema = McpConfigSchema.partial();
 const ImageConfigPatchSchema = ImageConfigSchema.partial();
-const ModelCatalogConfigPatchSchema = ModelCatalogConfigSchema.partial();
 const ExperimentalConfigPatchSchema = ExperimentalConfigSchema;
 
 export const KimiConfigPatchSchema = z
@@ -449,7 +438,6 @@ export const KimiConfigPatchSchema = z
     agents: AgentsConfigPatchSchema.optional(),
     mcp: McpConfigPatchSchema.optional(),
     image: ImageConfigPatchSchema.optional(),
-    modelCatalog: ModelCatalogConfigPatchSchema.optional(),
     experimental: ExperimentalConfigPatchSchema.optional(),
   })
   .strict();

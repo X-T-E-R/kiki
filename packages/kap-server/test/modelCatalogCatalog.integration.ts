@@ -126,8 +126,6 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-catalog-'));
-    process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'] = '0';
-    process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'] = '0';
     resetModelsDevUpstreamForTest();
     setModelsDevUpstreamForTest({ fetchImpl: catalogFetchOk() });
   });
@@ -142,8 +140,6 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
-    delete process.env['KIKI_MODEL_CATALOG_REFRESH_ON_START'];
-    delete process.env['KIKI_MODEL_CATALOG_REFRESH_INTERVAL_MS'];
   });
 
   async function boot(toml?: string): Promise<void> {

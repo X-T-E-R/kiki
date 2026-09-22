@@ -194,7 +194,7 @@ describe('KikiClient config responses', () => {
       expect(init?.method).toBe('POST');
       expect(JSON.parse(init?.body as string)).toEqual({
         agents: { enabled: false },
-        model_catalog: { refresh_on_start: true },
+        builtin_product_skills: false,
       });
       return new Response(JSON.stringify({
         code: 0,
@@ -202,7 +202,7 @@ describe('KikiClient config responses', () => {
         data: {
           providers: {},
           agents: { enabled: false },
-          model_catalog: { refreshOnStart: true },
+          builtin_product_skills: false,
         },
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     });
@@ -211,11 +211,11 @@ describe('KikiClient config responses', () => {
 
     const result = await client.patchConfig({
       agents: { enabled: false },
-      model_catalog: { refresh_on_start: true },
+      builtin_product_skills: false,
     });
 
     expect(result.agents?.enabled).toBe(false);
-    expect(result.model_catalog?.refreshOnStart).toBe(true);
+    expect(result.builtin_product_skills).toBe(false);
     expect(result.skip_builtin_profile_installation).toEqual([]);
     expect(result.disabled_named_profiles).toEqual([]);
   });

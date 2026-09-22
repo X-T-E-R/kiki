@@ -24,6 +24,7 @@ import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import { ProviderEditor } from './ProviderFields';
 
+const listDiscoveredModels = vi.fn(async () => ({ items: [] as Array<{ provider_id: string; fetched_at: number | null; attempted_at: number; models: Array<{ remote_id: string }> }> }));
 const refreshProvider = vi.fn();
 const getCatalogProvider = vi.fn();
 const getProviderEntity = vi.fn();
@@ -37,6 +38,7 @@ const deleteProviderEntity = vi.fn();
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
     client: {
+      listDiscoveredModels,
       refreshProvider,
       getCatalogProvider,
       getProviderEntity,
@@ -107,6 +109,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  listDiscoveredModels.mockReset().mockResolvedValue({ items: [] });
   refreshProvider.mockReset();
   getCatalogProvider.mockReset().mockImplementation(async (id: string) => {
     if (id !== 'edge:gateway') throw new Error('catalog entry not found');
@@ -451,6 +454,32 @@ describe('ProviderEditor save channel', () => {
       .toBe('');
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Model 2 context size"]')!.value)
       .toBe('128');
+  });
+
+  it('fetches only on click and creates a discovered model only after choosing and saving', async () => {
+    const items = [{ provider_id: 'edge:gateway', fetched_at: 100, attempted_at: 100, models: [{ remote_id: 'remote-suggested' }] }];
+    refreshProvider.mockImplementation(async () => {
+      listDiscoveredModels.mockResolvedValue({ items });
+      return { changed: [], unchanged: ['edge:gateway'], failed: [], discovered: items };
+    });
+    const onSaved = vi.fn(async () => {});
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, onSaved);
+    expect(refreshProvider).not.toHaveBeenCalled();
+    await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(createModel).not.toHaveBeenCalled();
+    expect(updateModel).not.toHaveBeenCalled();
+    expect(updateProvider).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
+    await act(async () => { buttonByText(container, 'Add model').click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('#provider-model-1-id')!.click(); });
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((row) => row.textContent?.includes('remote-suggested'))!;
+    expect(option.textContent).toContain('from provider');
+    await act(async () => { option.click(); });
+    expect(createModel).not.toHaveBeenCalled();
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(createModel).toHaveBeenCalledWith(expect.objectContaining({ provider_id: 'edge:gateway', remote_id: 'remote-suggested' }));
+    expect(updateModel).not.toHaveBeenCalled();
   });
 
   it('reports an empty refresh result as unsupported instead of unchanged success', async () => {

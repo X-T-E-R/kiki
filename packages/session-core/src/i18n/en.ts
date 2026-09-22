@@ -1525,8 +1525,22 @@ export const en = {
   'st.models.providerDefaultHint': 'Used only when a session on this provider does not name a model; edited inside the provider on the Connections tab.',
   'st.models.emptyCatalog': 'No models yet — connect a provider first, then pull or define its models.',
   'st.models.goProviders': 'Go to Connections',
-  'st.catalogRefresh.title': 'Model catalog refresh',
-  'st.catalogRefresh.hint': 'How often the server re-pulls provider model catalogs (0 disables automatic refresh), and whether it refreshes them on start. Applies after the next server restart.',
+  'st.catalogRefresh.title': 'Fetch provider models',
+  'st.catalogRefresh.alias': 'Local model alias',
+  'st.catalogRefresh.saveHint': 'This suggestion is not configured yet. Check the alias and context size, then save to create the model.',
+  'st.catalogRefresh.hint':
+    'API-key and registry model lists are fetched only when you click Get models, never at server start or on a timer. Select and save a suggestion to configure it. Unsaved suggestions disappear on server restart. Kimi Code OAuth accounts retain managed catalog synchronization.',
+  'st.catalogRefresh.getModels': 'Get models',
+  'st.catalogRefresh.fetching': 'Fetching…',
+  'st.catalogRefresh.fetched':
+    'Fetched {count} suggested models from {providers} providers. Choose and save a suggestion below or in its provider’s model list.',
+  'st.catalogRefresh.fetchedNone':
+    'Fetched the provider lists — no new suggestions.',
+  'st.catalogRefresh.failed': 'Could not fetch: {providers}.',
+  'st.catalogRefresh.suggestedCount': '{count} suggested',
+  'st.catalogRefresh.lastFailure': 'last fetch failed: {reason}',
+  'st.catalogRefresh.empty':
+    'Nothing fetched in this server process yet. A fetched model stays a suggestion here until you save it.',
   'st.models.loading': 'Loading model catalog…',
   'st.models.context': 'context',
   'st.models.default': 'Default',
@@ -1693,10 +1707,17 @@ export const en = {
   'st.providers.modelCapsAria': 'Model {n} capabilities',
   'st.providers.modelEffortsAria': 'Model {n} efforts',
   'st.providers.modelExpandAria': 'Edit model {n} details',
-  'st.providers.modelSearchPlaceholder': 'Search directory models or enter an ID',
+  'st.providers.modelSearchPlaceholder': 'Search suggested models or enter an ID',
   'st.providers.useCustomModel': 'Use “{id}”',
-  'st.providers.catalogEmpty': 'No directory models. Enter a model ID above.',
-  'st.providers.catalogModelHint': 'Selecting a directory model fills its known parameters. Every field remains editable.',
+  'st.providers.catalogEmpty': 'No suggested models yet. Enter a model ID above.',
+  'st.providers.catalogModelHint':
+    'Picking a suggestion only fills this row. The model is configured when you save the provider, and every field stays editable.',
+  'st.providers.catalogGroupConfigured': 'Configured',
+  'st.providers.catalogGroupSuggested': 'Suggestions — not configured yet',
+  'st.providers.catalogGroupDraft': 'In this form',
+  'st.providers.catalogFromProvider': 'from provider',
+  'st.providers.catalogFromDirectory': 'from model directory',
+  'st.providers.catalogSuggestionNote': 'Suggestion — saving the provider configures this model.',
   'st.providers.catalogEfforts': '{count} effort levels',
   'st.wizard.chooseTemplate': 'Pick a protocol. The base URL is prefilled, so you only paste an API key.',
   'st.wizard.manual': 'Custom protocol',
@@ -1708,6 +1729,10 @@ export const en = {
   'st.fetchModels.serverChanged': 'Refresh completed. {added} added, {removed} removed.',
   'st.fetchModels.serverUpdated': 'Refresh completed. Model metadata was updated.',
   'st.fetchModels.serverUnchanged': 'Refresh completed. Catalog unchanged.',
+  'st.fetchModels.suggestions':
+    'Fetched {count} suggested models. Pick one in the model list and save to configure it.',
+  'st.fetchModels.noNewSuggestions':
+    'Fetched the provider list — no new suggestions.',
   'st.fetchModels.serverUnsupported':
     'This provider has no refreshable catalog source. Choose a directory model below or enter an ID.',
   'st.providers.managedHint':
@@ -2224,9 +2249,7 @@ export const en = {
     'This profile pins no model; dispatches without an explicit model_alias use the default model.',
   'st.subagentDefault.saved': 'Default subagent profile saved.',
   'st.sidecar.subagentTimeout': 'Subagent timeout',
-  'st.sidecar.catalogInterval': 'Catalog refresh interval',
   'st.sidecar.builtinSkills': 'Include built-in product skills',
-  'st.sidecar.refreshOnStart': 'Refresh model catalog when the server starts',
   'st.sidecar.savedEcho': 'Server validated, saved, and echoed these defaults.',
   'st.sidecar.save': 'Save subagent timeout',
   'st.sidecar.saving': 'Saving file…',
@@ -2444,8 +2467,6 @@ export const en = {
   'val.timeoutWhole': 'Subagent timeout must be a non-negative whole number of milliseconds.',
   'val.timeoutMax': 'Subagent timeout cannot exceed 24 hours (86,400,000 ms).',
   'val.requestTimeoutSeconds': 'Request timeout must be a whole number from 5 to 600 seconds.',
-  'val.catalogIntervalWhole':
-    'Catalog refresh interval must be a non-negative whole number of milliseconds.',
   'val.providerId':
     'Provider ID must start with a letter or digit and use only letters, digits, spaces, - or _.',
   'val.providerProtocol': 'Choose a supported provider protocol.',

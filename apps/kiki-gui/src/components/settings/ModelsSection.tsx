@@ -7,20 +7,15 @@ import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   KNOWN_CAPABILITIES,
   KNOWN_EFFORTS,
-  markRestartRequired,
   modelPatchBody,
   providerModelDraftFromCatalog,
   providerModelDraftsEqual,
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
-  serverFileSettingsFromConfig,
-  serverFileSettingsPatch,
-  validateDesktopConfigDraft,
   validateImagePolicyDraft,
   writeSettings,
   type ProviderModelDraft,
   type RequestIdentityLayerDraft,
-  type ServerFileSettings,
 } from '@kiki/session-core/settings';
 import { formatTokens } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
@@ -29,9 +24,9 @@ import { ChipSelect } from '../ChipSelect';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
-import { ContextStepper, ImagePolicyEditor, MsUnitInput } from '../ProviderFields';
+import { ContextStepper, ImagePolicyEditor } from '../ProviderFields';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
-import { useRestartRequirement } from '../RestartBanner';
+import { SearchableSelect } from '../SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { useSavedTick } from './useSavedTick';
@@ -437,99 +432,107 @@ export function ThinkingCard() {
   );
 }
 
-/**
- * Catalog refresh policy (redesign §10.3: "模型目录刷新" lives with the model
- * catalog, not the agents sidecar). Owns only the `model_catalog` config
- * domain — the PATCH diffs just this card's slice against the server echo, so
- * the sidecar's subagent/skills fields are never touched here. Same
- * validation, server echo, and restart-required semantics as before the move.
- */
+/** Explicit fetching and a separate, user-confirmed model creation flow. */
 export function CatalogRefreshCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const restart = useRestartRequirement();
-  const [catalog, setCatalog] = useState<ServerFileSettings['modelCatalog']>(
-    () => serverFileSettingsFromConfig({}).modelCatalog,
-  );
-  const [savedCatalog, setSavedCatalog] = useState(catalog);
-  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const [selected, setSelected] = useState('');
+  const [alias, setAlias] = useState('');
+  const [context, setContext] = useState(128000);
+  const discovered = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
+  const choices = (discovered.data?.items ?? []).flatMap((group) => group.models.map((model) => ({
+    value: JSON.stringify([group.provider_id, model.remote_id]),
+    providerId: group.provider_id,
+    model,
+  })));
+  const choice = choices.find((item) => item.value === selected);
+  useDirtyReporter('discovered-model-draft', choice !== undefined);
 
-  useEffect(() => {
-    if (configQuery.data === undefined) return;
-    const next = serverFileSettingsFromConfig(configQuery.data).modelCatalog;
-    setCatalog(next);
-    setSavedCatalog(next);
-  }, [configQuery.data]);
-
-  const dirty = catalog.refreshIntervalMs !== savedCatalog.refreshIntervalMs
-    || catalog.refreshOnStart !== savedCatalog.refreshOnStart;
-
-  const save = async () => {
-    // The shared validator also takes the subagent timeout; this card doesn't
-    // edit it, so feed the server-known value through unchanged.
-    const validation = validateDesktopConfigDraft({
-      subagentTimeoutMs: serverFileSettingsFromConfig(configQuery.data ?? {}).subagent.timeoutMs,
-      modelCatalogRefreshIntervalMs: catalog.refreshIntervalMs,
-    });
-    if (validation !== null) {
-      setFeedback({ tone: 'error', text: issueText(locale, validation) });
-      return;
-    }
-    setSaving(true);
+  const fetchModels = async () => {
+    setBusy(true);
     setFeedback(null);
     try {
-      const base = serverFileSettingsFromConfig(configQuery.data ?? {});
-      const echoed = await client.patchConfig(serverFileSettingsPatch(
-        { ...base, modelCatalog: catalog },
-        { ...base, modelCatalog: savedCatalog },
-      ));
-      queryClient.setQueryData(['config'], echoed);
-      const next = serverFileSettingsFromConfig(echoed).modelCatalog;
-      setCatalog(next);
-      setSavedCatalog(next);
-      markRestartRequired(['model_catalog']);
-      setFeedback({ tone: 'success', text: t('st.sidecar.savedEcho') });
+      const result = await client.refreshAllProviders();
+      await queryClient.invalidateQueries({ queryKey: ['discovered-models'] });
+      if (result.changed.length > 0) {
+        await Promise.all(['models', 'providers', 'config'].map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
+      }
+      const count = result.discovered?.reduce((sum, group) => sum + group.models.length, 0) ?? 0;
+      setFeedback(result.failed.length > 0
+        ? { tone: 'error', text: t('st.catalogRefresh.failed', { providers: result.failed.map((failure) => failure.provider).join(', ') }) }
+        : { tone: 'success', text: count > 0
+          ? t('st.catalogRefresh.fetched', { count, providers: result.discovered?.length ?? 0 })
+          : t('st.catalogRefresh.fetchedNone') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
+    } finally { setBusy(false); }
+  };
+
+  const save = async () => {
+    if (choice === undefined) return;
+    setBusy(true);
+    setFeedback(null);
+    try {
+      await client.createModel({
+        id: alias.trim() || undefined,
+        provider_id: choice.providerId,
+        remote_id: choice.model.remote_id,
+        display_name: choice.model.display_name,
+        max_context_size: context,
+        capabilities: choice.model.capabilities,
+        support_efforts: choice.model.support_efforts,
+      });
+      setSelected('');
+      await Promise.all(['models', 'providers', 'discovered-models'].map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
+      setFeedback({ tone: 'success', text: t('st.models.paramsSaved', { model: alias || choice.model.remote_id }) });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally { setBusy(false); }
   };
 
   return (
-    <SectionCard
-      id="st-card-catalog-refresh"
-      title={t('st.catalogRefresh.title')}
-      badge={restart.required && restart.fields.includes('model_catalog') ? 'restart' : undefined}
-    >
+    <SectionCard id="st-card-catalog-refresh" title={t('st.catalogRefresh.title')}>
       <div className="space-y-3">
-        <fieldset disabled={configQuery.isLoading || saving} className="space-y-3 disabled:opacity-60">
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.sidecar.catalogInterval')}
-            <MsUnitInput
-              value={catalog.refreshIntervalMs}
-              onChange={(refreshIntervalMs) => { setCatalog({ ...catalog, refreshIntervalMs }); }}
-              ariaLabel={t('st.sidecar.catalogInterval')}
-            />
-          </label>
-          <Toggle
-            label={t('st.sidecar.refreshOnStart')}
-            checked={catalog.refreshOnStart}
-            onChange={(refreshOnStart) => { setCatalog({ ...catalog, refreshOnStart }); }}
-          />
-        </fieldset>
         <Hint>{t('st.catalogRefresh.hint')}</Hint>
-        <button
-          type="button"
-          className={PRIMARY_BUTTON}
-          disabled={configQuery.isLoading || saving || !dirty}
-          onClick={() => void save()}
-        >
-          {saving ? t('st.sidecar.saving') : t('common.save')}
+        <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={() => void fetchModels()}>
+          {busy ? t('st.catalogRefresh.fetching') : t('st.catalogRefresh.getModels')}
         </button>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+        <SearchableSelect
+          value={selected}
+          options={choices.map((item) => ({ value: item.value, label: item.model.remote_id, description: item.model.display_name, group: item.providerId, badges: [{ label: t('st.providers.catalogGroupSuggested'), accent: true }] }))}
+          onChange={(value) => {
+            setSelected(value);
+            const item = choices.find((candidate) => candidate.value === value);
+            setAlias(item === undefined ? '' : `${item.providerId}/${item.model.remote_id}`);
+            setContext(item?.model.max_context_size ?? 128000);
+          }}
+          ariaLabel={t('st.providers.catalogGroupSuggested')}
+          searchPlaceholder={t('st.providers.modelSearchPlaceholder')}
+          emptyText={t('st.catalogRefresh.empty')}
+          disabled={busy}
+        />
+        {choice !== undefined ? (
+          <div className="space-y-2 rounded-lg border border-hairline p-3">
+            <Hint>{t('st.catalogRefresh.saveHint')}</Hint>
+            <label className="block text-[11px] text-ink-soft">{t('st.catalogRefresh.alias')}
+              <input className={INPUT} value={alias} disabled={busy} onChange={(event) => { setAlias(event.target.value); }} />
+            </label>
+            <ContextStepper value={context} onChange={setContext} ariaLabel={t('st.models.contextAria', { model: choice.model.remote_id })} />
+            <button type="button" className={PRIMARY_BUTTON} disabled={busy} onClick={() => void save()}>{t('common.save')}</button>
+            <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={() => { setSelected(''); }}>{t('common.cancel')}</button>
+          </div>
+        ) : null}
+        {(discovered.data?.items ?? []).map((group) => (
+          <p key={group.provider_id} className="text-[11px] text-ink-faint">
+            {group.provider_id} · {t('st.catalogRefresh.suggestedCount', { count: group.models.length })}
+            {group.fetched_at === null ? '' : ` · ${new Date(group.fetched_at).toLocaleString(locale)}`}
+            {group.failure_reason === undefined ? '' : ` · ${t('st.catalogRefresh.lastFailure', { reason: group.failure_reason })}`}
+          </p>
+        ))}
+        {discovered.isError ? <InlineError error={discovered.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
     </SectionCard>

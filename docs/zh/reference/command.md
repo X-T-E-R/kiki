@@ -327,7 +327,7 @@ kiki provider <action> [options]
 
 #### `kiki provider add <url>`
 
-从自定义 registry（`api.json`）批量导入所有供应商。命令会拉取 registry，为每个条目创建 `[providers.<id>]` 和 `[models.<alias>]`，并写入 `source` 元数据，使 TUI 下次启动时自动刷新同一 registry 地址下的供应商和模型。
+从自定义 registry（`api.json`）批量导入所有供应商。本次显式命令会拉取 registry，为每个条目创建 `[providers.<id>]` 和 `[models.<alias>]`，并在 `source` 元数据中记录 registry。后续启动不会同步 registry；手动获取模型只会为已有提供商返回未保存的建议，详见[获取模型建议](../configuration/providers.md#获取模型建议)。
 
 | 参数 / 选项 | 说明 |
 | --- | --- |

@@ -14,8 +14,14 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { CatalogModelItem, ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
+import type {
+  CatalogModelItem,
+  DiscoveredModel,
+  ModelCatalogItem,
+  ProviderCatalogItem,
+} from '@kiki/protocol';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
@@ -53,32 +59,105 @@ import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
+/**
+ * Where a model-picker option came from. `configured` is a stored model entity
+ * the server can already use; `discovered` is a provider list an explicit fetch
+ * brought back; `directory` is the local models.dev directory; `draft` is a row
+ * this form already holds. Only `configured` options are configured models —
+ * every other source is a suggestion that becomes a model on the next save.
+ */
+type ProviderModelChoiceSource = 'configured' | 'discovered' | 'directory' | 'draft';
+
 interface ProviderModelCatalogChoice {
-  readonly id: string;
+  /**
+   * The exact model name sent upstream. A local alias (`ProviderModelDraft.id`)
+   * is never derived from it, and picking an option never clears the alias of
+   * an existing row.
+   */
+  readonly remoteId: string;
   readonly name?: string;
+  /** `0` means the source reports no context size for this model. */
   readonly maxContextSize: number;
   readonly capabilities: readonly string[];
   readonly supportEfforts: readonly string[];
+  readonly source: ProviderModelChoiceSource;
 }
 
 function configuredCatalogChoice(model: ModelCatalogItem): ProviderModelCatalogChoice {
   return {
-    id: model.remote_id,
+    remoteId: model.remote_id,
     name: model.display_name,
     maxContextSize: model.max_context_size,
     capabilities: model.capabilities ?? [],
     supportEfforts: model.support_efforts ?? [],
+    source: 'configured',
   };
 }
 
 function directoryCatalogChoice(model: CatalogModelItem): ProviderModelCatalogChoice {
   return {
-    id: model.id,
+    remoteId: model.id,
     name: model.name,
     maxContextSize: model.max_context_size,
     capabilities: model.capabilities ?? [],
     supportEfforts: model.support_efforts ?? [],
+    source: 'directory',
   };
+}
+
+function discoveredCatalogChoice(model: DiscoveredModel): ProviderModelCatalogChoice {
+  return {
+    remoteId: model.remote_id,
+    name: model.display_name,
+    maxContextSize: model.max_context_size ?? 0,
+    capabilities: model.capabilities ?? [],
+    supportEfforts: model.support_efforts ?? [],
+    source: 'discovered',
+  };
+}
+
+function draftCatalogChoice(model: ProviderModelDraft): ProviderModelCatalogChoice {
+  return {
+    remoteId: model.remoteId,
+    name: model.displayName === '' ? undefined : model.displayName,
+    maxContextSize: model.maxContextSize,
+    capabilities: model.capabilities,
+    supportEfforts: model.supportEfforts,
+    source: 'draft',
+  };
+}
+
+/**
+ * Merge option sources by remote id. The first source owns the entry (its
+ * provenance and its metadata); later sources only fill fields the winner left
+ * empty, so a configured model is never relabelled as a suggestion and a
+ * provider's bare model list still benefits from directory metadata.
+ */
+export function mergeModelCatalogChoices(
+  ...sources: readonly (readonly ProviderModelCatalogChoice[])[]
+): ProviderModelCatalogChoice[] {
+  const merged = new Map<string, ProviderModelCatalogChoice>();
+  for (const source of sources) {
+    for (const choice of source) {
+      const existing = merged.get(choice.remoteId);
+      merged.set(
+        choice.remoteId,
+        existing === undefined
+          ? choice
+          : {
+              ...existing,
+              name: existing.name ?? choice.name,
+              maxContextSize:
+                existing.maxContextSize > 0 ? existing.maxContextSize : choice.maxContextSize,
+              capabilities:
+                existing.capabilities.length > 0 ? existing.capabilities : choice.capabilities,
+              supportEfforts:
+                existing.supportEfforts.length > 0 ? existing.supportEfforts : choice.supportEfforts,
+            },
+      );
+    }
+  }
+  return [...merged.values()];
 }
 
 export function blankProviderDraft(): ProviderDraft {
@@ -366,14 +445,33 @@ function ModelDraftRow({
     ? 'inherit'
     : model.requestIdentityChoice;
   const rowLabel = model.id || model.remoteId;
+  const selectedChoice = catalogModels.find((candidate) => candidate.remoteId === model.remoteId);
+  // A row without a stored alias does not exist on the server yet, so a
+  // suggestion picked here is configured only by the next save.
+  const selectedIsSuggestion = model.remoteId !== ''
+    && model.id === ''
+    && (selectedChoice?.source === 'discovered' || selectedChoice?.source === 'directory');
   const catalogOptions = useMemo<readonly SearchableSelectOption[]>(() =>
     catalogModels.map((candidate) => ({
-      value: candidate.id,
-      label: candidate.id,
+      value: candidate.remoteId,
+      label: candidate.remoteId,
       description: candidate.name,
       keywords: candidate.name,
+      group: candidate.source === 'configured'
+        ? t('st.providers.catalogGroupConfigured')
+        : candidate.source === 'draft'
+          ? t('st.providers.catalogGroupDraft')
+          : t('st.providers.catalogGroupSuggested'),
       badges: [
-        { label: formatTokens(candidate.maxContextSize) },
+        ...(candidate.source === 'directory' || candidate.source === 'discovered'
+          ? [{
+              label: candidate.source === 'discovered'
+                ? t('st.providers.catalogFromProvider')
+                : t('st.providers.catalogFromDirectory'),
+              accent: true,
+            }]
+          : []),
+        ...(candidate.maxContextSize > 0 ? [{ label: formatTokens(candidate.maxContextSize) }] : []),
         ...candidate.capabilities.slice(0, 2).map((capability) => ({ label: capability })),
         ...(candidate.supportEfforts.length > 0
           ? [{ label: t('st.providers.catalogEfforts', { count: candidate.supportEfforts.length }) }]
@@ -381,7 +479,7 @@ function ModelDraftRow({
       ],
     })), [catalogModels, t]);
   const selectModelId = (remoteId: string) => {
-    const catalogModel = catalogModels.find((candidate) => candidate.id === remoteId);
+    const catalogModel = catalogModels.find((candidate) => candidate.remoteId === remoteId);
     if (catalogModel === undefined) {
       onChange({ remoteId });
       return;
@@ -389,7 +487,7 @@ function ModelDraftRow({
     onChange({
       remoteId,
       displayName: catalogModel.name ?? '',
-      maxContextSize: catalogModel.maxContextSize,
+      maxContextSize: catalogModel.maxContextSize > 0 ? catalogModel.maxContextSize : model.maxContextSize,
       capabilities: [...catalogModel.capabilities],
       supportEfforts: [...catalogModel.supportEfforts],
     });
@@ -465,6 +563,11 @@ function ModelDraftRow({
                 panelClassName="anim-enter absolute left-0 top-full z-40 mt-1 w-[min(30rem,calc(100vw-48px))] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
               />
               <Hint>{t('st.providers.catalogModelHint')}</Hint>
+              {selectedIsSuggestion ? (
+                <p data-model-suggestion className="text-[10.5px] font-medium text-accent">
+                  {t('st.providers.catalogSuggestionNote')}
+                </p>
+              ) : null}
             </div>
             <input
               className={INPUT}
@@ -546,6 +649,12 @@ export function ProviderFields({
   idLocked?: boolean;
   /** When set, Test connection uses the server-side provider discovery service. */
   refreshProviderId?: string;
+  /**
+   * Model-picker options. A saved provider passes its configured models plus
+   * the local directory and any fetched suggestions (see
+   * `mergeModelCatalogChoices`); the unsaved wizard passes none and the picker
+   * falls back to the rows this form already holds.
+   */
   catalogModels?: readonly ProviderModelCatalogChoice[];
   onRefreshed?: () => Promise<void>;
 }) {
@@ -553,18 +662,14 @@ export function ProviderFields({
   const { client } = useConnection();
   const [probing, setProbing] = useState(false);
   const [probeFeedback, setProbeFeedback] = useState<Feedback>(null);
-  const availableCatalogModels = useMemo<readonly ProviderModelCatalogChoice[]>(() =>
-    catalogModels.length > 0
-      ? catalogModels
-      : draft.models
-          .filter((model) => model.remoteId !== '')
-          .map((model) => ({
-            id: model.remoteId,
-            name: model.displayName || undefined,
-            maxContextSize: model.maxContextSize,
-            capabilities: model.capabilities,
-            supportEfforts: model.supportEfforts,
-          })), [catalogModels, draft.models]);
+  const queryClient = useQueryClient();
+  const [localSuggestions, setLocalSuggestions] = useState<readonly ProviderModelCatalogChoice[]>([]);
+  useEffect(() => { setLocalSuggestions([]); }, [draft.baseUrl, draft.apiKey, draft.type]);
+  const availableCatalogModels = useMemo(() => mergeModelCatalogChoices(
+    catalogModels,
+    localSuggestions,
+    draft.models.filter((model) => model.remoteId !== '').map(draftCatalogChoice),
+  ), [catalogModels, localSuggestions, draft.models]);
 
   const updateModel = (index: number, patch: Partial<ProviderModelDraft>) => {
     onChange({
@@ -579,37 +684,30 @@ export function ProviderFields({
     try {
       if (refreshProviderId !== undefined) {
         const result = await client.refreshProvider(refreshProviderId);
+        await queryClient.invalidateQueries({ queryKey: ['discovered-models'] });
         const failure = result.failed.find((entry) => entry.provider === refreshProviderId);
         if (failure !== undefined) throw new Error(failure.reason);
         const change = result.changed.find((entry) => entry.provider_id === refreshProviderId);
-        const unchanged = result.unchanged.includes(refreshProviderId);
-        if (change === undefined && !unchanged) {
-          setProbeFeedback({ tone: 'error', text: t('st.fetchModels.serverUnsupported') });
+        if (change !== undefined) {
+          await onRefreshed?.();
+          setProbeFeedback({ tone: 'success', text: t('st.fetchModels.serverChanged', { added: change.added, removed: change.removed }) });
           return;
         }
-        await onRefreshed?.();
-        setProbeFeedback({
-          tone: 'success',
-          text: change === undefined
-            ? t('st.fetchModels.serverUnchanged')
-            : change.added === 0 && change.removed === 0
-              ? t('st.fetchModels.serverUpdated')
-              : t('st.fetchModels.serverChanged', {
-                  added: change.added,
-                  removed: change.removed,
-                }),
-        });
+        const suggestions = result.discovered?.find((group) => group.provider_id === refreshProviderId);
+        if (suggestions !== undefined) {
+          setProbeFeedback({ tone: 'success', text: suggestions.models.length === 0
+            ? t('st.fetchModels.noNewSuggestions')
+            : t('st.fetchModels.suggestions', { count: suggestions.models.length }) });
+          return;
+        }
+        setProbeFeedback(result.unchanged.includes(refreshProviderId)
+          ? { tone: 'success', text: t('st.fetchModels.serverUnchanged') }
+          : { tone: 'error', text: t('st.fetchModels.serverUnsupported') });
         return;
       }
       const models = await fetchRemoteModels({ type: draft.type, baseUrl: draft.baseUrl, apiKey: draft.apiKey });
-      onChange({
-        ...draft,
-        models,
-        defaultModel: models.some((model) => model.remoteId === draft.defaultModel)
-          ? draft.defaultModel
-          : (models[0]?.remoteId ?? ''),
-      });
-      setProbeFeedback({ tone: 'success', text: t('st.fetchModels.success', { count: models.length }) });
+      setLocalSuggestions(models.map((model) => ({ ...draftCatalogChoice(model), source: 'discovered' })));
+      setProbeFeedback({ tone: 'success', text: t('st.fetchModels.suggestions', { count: models.length }) });
     } catch (error) {
       // A failed fetch surfaces as a bare TypeError ("Failed to fetch") —
       // unreachable host or a desktop CSP block; give it readable copy.
@@ -748,14 +846,12 @@ export function ProviderEditor({
     provider: string;
     models: ReadonlyMap<string, string>;
   } | null>(null);
-  const catalogModels = useMemo(() => {
-    const choices = new Map<string, ProviderModelCatalogChoice>();
-    for (const model of models) {
-      if (model.provider_id === provider.id) choices.set(model.remote_id, configuredCatalogChoice(model));
-    }
-    for (const model of directoryModels) choices.set(model.id, directoryCatalogChoice(model));
-    return [...choices.values()];
-  }, [directoryModels, models, provider.id]);
+  const discovered = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
+  const catalogModels = useMemo(() => mergeModelCatalogChoices(
+    models.filter((model) => model.provider_id === provider.id).map(configuredCatalogChoice),
+    (discovered.data?.items.find((group) => group.provider_id === provider.id)?.models ?? []).map(discoveredCatalogChoice),
+    directoryModels.map(directoryCatalogChoice),
+  ), [directoryModels, discovered.data, models, provider.id]);
 
   useEffect(() => { setDraft(initial); }, [initial]);
   useEffect(() => {

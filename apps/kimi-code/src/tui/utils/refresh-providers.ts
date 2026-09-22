@@ -26,7 +26,8 @@ export type { ProviderChange, RefreshProviderOptions, RefreshProviderScope, Refr
 /**
  * Refresh remote model metadata for the configured providers. Thin adapter over
  * the shared `refreshProviderModels` orchestrator in `@kiki/oauth`
- * (which is also what the daemon's scheduled/manual refresh uses).
+ * (also used by the daemon's explicit refresh). Only managed OAuth writes its
+ * catalog back; other providers return unsaved suggestions.
  */
 export async function refreshAllProviderModels(
   host: RefreshProviderHost,

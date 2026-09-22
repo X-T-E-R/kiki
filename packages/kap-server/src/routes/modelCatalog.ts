@@ -27,6 +27,7 @@ import {
   importCatalogProviderResponseSchema,
   importCustomRegistryResponseSchema,
   listCatalogProvidersResponseSchema,
+  listDiscoveredModelsResponseSchema,
   listModelsResponseSchema,
   listProvidersResponseSchema,
   patchModelRequestSchema,
@@ -138,6 +139,25 @@ async function loadOAuth(core: Scope): Promise<IOAuthService> {
 }
 
 export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Scope): void {
+  const discoveredModelsRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/discovered-models',
+      success: { data: listDiscoveredModelsResponseSchema },
+      description: 'Read process-local model suggestions grouped by provider, with fetch times and failures. This never fetches upstream or writes configuration; save a suggestion with POST /models to configure it.',
+      tags: ['models'],
+      operationId: 'listDiscoveredModels',
+    },
+    async (req, reply) => {
+      reply.send(okEnvelope(await (await loadDiscovery(core)).listDiscoveredModels(), req.id));
+    },
+  );
+  app.get(
+    discoveredModelsRoute.path,
+    discoveredModelsRoute.options,
+    discoveredModelsRoute.handler as Parameters<ModelCatalogRouteHost['get']>[2],
+  );
+
   const listModelsRoute = defineRoute(
     {
       method: 'GET',
@@ -453,7 +473,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.CATALOG_UNAVAILABLE]: {},
       },
       description:
-        'Provider collection actions. Use `:refresh` for all providers or `:refresh_oauth` for OAuth-backed providers only. Use `:import_catalog` to import a models.dev directory entry as a configured provider (201): the wire protocol and endpoint come from the catalog resolution (`base_url` overrides it; required when the entry resolves to needs-base-url), all catalogued models are written as aliases, and importing an id that already exists is a refresh — the provider entry and its aliases are rewritten from the catalog (OAuth-managed providers are rejected instead). `id` overrides the catalog id as the local provider id. Use `:import_registry` to import a models.dev-shaped private registry (api.json `url` + optional Bearer `api_key`, 201): every listed provider is written with a `source` blob so scheduled refreshes rediscover it, and re-importing the same URL removes providers that disappeared upstream (the URL is the stable registry identity). For both imports the global default_provider/default_model pointers are never modified — except that a default_model is seeded from the first imported model when none is configured at all (fresh setup).',
+        'Provider collection actions. Use `:refresh` to explicitly fetch model suggestions for all providers; only managed Kimi OAuth writes its catalog back. Other results stay in process memory until the user creates a model with POST /models. Use `:refresh_oauth` for OAuth-backed providers only. Use `:import_catalog` to import a models.dev directory entry as a configured provider (201): the wire protocol and endpoint come from the catalog resolution (`base_url` overrides it; required when the entry resolves to needs-base-url), all catalogued models are written as aliases, and importing an id that already exists is a refresh — the provider entry and its aliases are rewritten from the catalog (OAuth-managed providers are rejected instead). `id` overrides the catalog id as the local provider id. Use `:import_registry` to import a models.dev-shaped private registry (api.json `url` + optional Bearer `api_key`, 201): every listed provider is written with a `source` blob for later explicit discovery, and re-importing the same URL removes providers that disappeared upstream (the URL is the stable registry identity). For both imports the global default_provider/default_model pointers are never modified — except that a default_model is seeded from the first imported model when none is configured at all (fresh setup).',
       tags: ['providers'],
       operationId: 'providerCollectionAction',
     },

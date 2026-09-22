@@ -483,14 +483,3 @@ registerConfigSection(THINKING_SECTION, ThinkingConfigSchema, {
   env: thinkingEnvBindings,
   stripEnv: stripThinkingEnv,
 });
-
-export const MODEL_CATALOG_SECTION = 'modelCatalog';
-
-export const ModelCatalogConfigSchema = z.object({
-  refreshIntervalMs: z.number().int().min(0).optional(),
-  refreshOnStart: z.boolean().optional(),
-});
-
-export type ModelCatalogConfig = z.infer<typeof ModelCatalogConfigSchema>;
-
-registerConfigSection(MODEL_CATALOG_SECTION, ModelCatalogConfigSchema);

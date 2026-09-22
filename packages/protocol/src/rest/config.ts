@@ -38,11 +38,6 @@ export const agentsConfigResponseSchema = z.object({
   notify_parent: z.boolean().optional(),
 });
 
-export const modelCatalogConfigResponseSchema = z.object({
-  refreshIntervalMs: z.number().optional(),
-  refreshOnStart: z.boolean().optional(),
-});
-
 export const sessionTitleConfigResponseSchema = z.object({
   model: z.string().optional(),
 });
@@ -84,7 +79,6 @@ export const configResponseSchema = z.object({
   subagent: subagentConfigResponseSchema.optional(),
   agents: agentsConfigResponseSchema.optional(),
   builtin_product_skills: z.boolean().optional(),
-  model_catalog: modelCatalogConfigResponseSchema.optional(),
   session_title: sessionTitleConfigResponseSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
@@ -129,10 +123,6 @@ export const patchConfigRequestSchema = z.object({
     notify_parent: z.boolean().optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
-  model_catalog: z.object({
-    refresh_interval_ms: z.number().optional(),
-    refresh_on_start: z.boolean().optional(),
-  }).optional(),
   session_title: z.object({
     model: z.string().optional(),
   }).optional(),

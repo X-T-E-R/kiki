@@ -114,11 +114,6 @@ export const agentsConfigResponseSchema = z.object({
   notify_parent: z.boolean().optional(),
 });
 
-export const modelCatalogConfigResponseSchema = z.object({
-  refreshIntervalMs: z.number().optional(),
-  refreshOnStart: z.boolean().optional(),
-});
-
 export const configResponseSchema = z.object({
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
@@ -141,7 +136,6 @@ export const configResponseSchema = z.object({
   subagent: subagentConfigResponseSchema.optional(),
   agents: agentsConfigResponseSchema.optional(),
   builtin_product_skills: z.boolean().optional(),
-  model_catalog: modelCatalogConfigResponseSchema.optional(),
   session_title: z.object({ model: z.string().optional() }).optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   cron: cronConfigResponseSchema.optional(),
@@ -196,10 +190,6 @@ export const patchConfigRequestSchema = z.object({
     notify_parent: z.boolean().optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
-  model_catalog: z.object({
-    refresh_interval_ms: z.number().optional(),
-    refresh_on_start: z.boolean().optional(),
-  }).optional(),
   session_title: z.object({ model: z.string().optional() }).optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   thread_communication: ThreadCommunicationConfigSchema.optional(),

@@ -1,4 +1,4 @@
-import { parseKimiCodeCustomHeaders } from '@kiki/oauth';
+import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHeaders, sanitizeProviderError } from '@kiki/oauth';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -74,6 +74,7 @@ type MutableProtocolProviderOptions = {
 
 interface CatalogEntry {
   readonly model: Model;
+  readonly credentials: readonly string[];
   readonly requester: ModelRequester;
   readonly trace: ResolutionTraceCollector;
 }
@@ -127,10 +128,11 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     const cached = this.cache.get(canonicalId);
     if (cached !== undefined) return cached;
     const trace = new ResolutionTraceCollector();
-    const model = this.buildModel(canonicalId, trace);
+    const built = this.buildModel(canonicalId, trace);
     const entry: CatalogEntry = {
-      model,
-      requester: new ModelRequesterImpl(model, this.protocolRegistry),
+      model: built.model,
+      credentials: built.credentials,
+      requester: new ModelRequesterImpl(built.model, this.protocolRegistry),
       trace,
     };
     this.cache.set(canonicalId, entry);
@@ -143,9 +145,28 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   }
 
   async ping(id: string): Promise<ModelPingResult> {
-    const { requester } = this.entry(id);
+    const { model, credentials } = this.entry(id);
+    const secrets = [...credentials];
+    const headers = { ...model.headers };
     const startedAt = Date.now();
     try {
+      assertProviderHeaders(headers);
+      const requester = new ModelRequesterImpl({
+        ...model,
+        authProvider: {
+          canRefresh: model.authProvider.canRefresh,
+          getAuth: async (options) => {
+            const auth = await model.authProvider.getAuth(options);
+            if (auth?.apiKey !== undefined) {
+              secrets.push(auth.apiKey);
+              assertProviderCredential(auth.apiKey);
+            }
+            Object.assign(headers, auth?.headers);
+            assertProviderHeaders(headers);
+            return auth;
+          },
+        },
+      }, this.protocolRegistry);
       let text = '';
       let usage: TokenUsage | undefined;
       let finishReason: string | undefined;
@@ -171,7 +192,11 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       return {
         ok: false,
         durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeProviderError(error, {
+          secrets,
+          baseUrl: model.baseUrl,
+          headers,
+        }),
       };
     }
   }
@@ -290,7 +315,10 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     return this.providers.get(providerId ?? '')?.type ?? record.protocol;
   }
 
-  private buildModel(id: string, trace: ResolutionTraceCollector): Model {
+  private buildModel(
+    id: string,
+    trace: ResolutionTraceCollector,
+  ): { model: Model; credentials: readonly string[] } {
     const configuredModel = this.models.get(id);
     if (configuredModel === undefined) {
       throw new Error2(
@@ -385,35 +413,38 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     trace.capture(TRACE.thirdPartyHeaders, this.hostRequestHeaders.thirdPartyHeaders);
     trace.capture(TRACE.identitySlug, this.hostRequestHeaders.identitySlug);
     return {
-      id,
-      name: wireName,
-      aliases: model.aliases ?? [],
-      protocol,
-      baseUrl: resolvedBaseUrl,
-      headers: resolveOutboundHeaders(
-        providerConfig?.type,
-        providerConfig?.customHeaders,
-        this.hostRequestHeaders,
-      ),
-      capabilities,
-      maxContextSize: model.maxContextSize,
-      maxInputSize: model.maxInputSize,
-      maxOutputSize: model.maxOutputSize,
-      displayName: model.displayName,
-      reasoningKey: model.reasoningKey,
-      supportEfforts: model.supportEfforts,
-      defaultEffort: model.defaultEffort,
-      overrides: configuredModel.overrides,
-      contextBudget: model.contextBudget,
-      maxCompletionTokens: model.maxCompletionTokens,
-      requestParams: model.requestParams,
-      serviceTier: model.serviceTier,
-      alwaysThinking: declared.has('always_thinking'),
-      providerType,
-      providerName,
-      imagePolicy,
-      authProvider,
-      providerOptions,
+      model: {
+        id,
+        name: wireName,
+        aliases: model.aliases ?? [],
+        protocol,
+        baseUrl: resolvedBaseUrl,
+        headers: resolveOutboundHeaders(
+          providerConfig?.type,
+          providerConfig?.customHeaders,
+          this.hostRequestHeaders,
+        ),
+        capabilities,
+        maxContextSize: model.maxContextSize,
+        maxInputSize: model.maxInputSize,
+        maxOutputSize: model.maxOutputSize,
+        displayName: model.displayName,
+        reasoningKey: model.reasoningKey,
+        supportEfforts: model.supportEfforts,
+        defaultEffort: model.defaultEffort,
+        overrides: configuredModel.overrides,
+        contextBudget: model.contextBudget,
+        maxCompletionTokens: model.maxCompletionTokens,
+        requestParams: model.requestParams,
+        serviceTier: model.serviceTier,
+        alwaysThinking: declared.has('always_thinking'),
+        providerType,
+        providerName,
+        imagePolicy,
+        authProvider,
+        providerOptions,
+      },
+      credentials: probeCredentials(auth),
     };
   }
 
@@ -713,6 +744,10 @@ function hasConfiguredApiKey(provider: ProviderConfig): boolean {
   if (nonEmpty(provider.apiKey) !== undefined) return true;
   if (provider.type === undefined) return false;
   return resolveProviderEndpoint(provider.type, provider.env ?? {}).apiKey !== undefined;
+}
+
+function probeCredentials(auth: ResolvedModelAuthMaterial): string[] {
+  return auth.apiKey === undefined ? [] : [auth.apiKey];
 }
 
 registerScopedService(

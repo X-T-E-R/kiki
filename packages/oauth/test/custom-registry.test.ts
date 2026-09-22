@@ -61,6 +61,27 @@ const KOKUB_SOURCE: CustomRegistrySource = {
 };
 
 describe('fetchCustomRegistry', () => {
+  it('redacts echoed credentials in transport errors, parse errors, and warning logs', async () => {
+    const source = { kind: 'apiJson' as const, url: 'https://user:pa55word@registry.example.test/api.json?api_key=query-secret', apiKey: 'registry-secret-key' };
+    const message = `rejected ${source.apiKey} ${source.url}`;
+    for (const fetchImpl of [
+      vi.fn(async () => { throw new Error(message); }),
+      vi.fn(async () => new Response(message)),
+    ]) {
+      const error = await fetchCustomRegistry(source, { fetchImpl }).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(Error);
+      for (const secret of [source.apiKey, 'pa55word', 'query-secret']) expect(String(error)).not.toContain(secret);
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await fetchCustomRegistry(source, { fetchImpl: vi.fn(async () => makeJsonResponse({ [message]: {} })) });
+      expect(warn).toHaveBeenCalledOnce();
+      for (const secret of [source.apiKey, 'pa55word', 'query-secret']) expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('parses a kokub-shaped 200 response into three providers', async () => {
     const fetchMock = vi.fn(async () => makeJsonResponse(makeKokubResponseBody()));
 

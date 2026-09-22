@@ -181,12 +181,30 @@ export type {
 
 export { refreshProviderModels } from './refreshProviderModels';
 export type {
+  DiscoveredModel,
+  DiscoveredProviderModels,
   ProviderChange,
   RefreshProviderHost,
   RefreshProviderOptions,
   RefreshProviderScope,
   RefreshResult,
 } from './refreshProviderModels';
+
+export {
+  assertProviderCredential,
+  assertProviderHeaders,
+  isSensitiveProviderName,
+  sanitizeProviderError,
+  sanitizeProviderHeaders,
+  sanitizeProviderUrl,
+  validateProviderCredential,
+  validateProviderHeader,
+} from './provider-error';
+export type {
+  ProviderCredentialCheck,
+  ProviderErrorSanitizeOptions,
+  ProviderHeaderInput,
+} from './provider-error';
 
 export type { OAuthTokenTransactionOptions } from './oauth-token-transaction';
 export { OAuthTokenTransaction } from './oauth-token-transaction';

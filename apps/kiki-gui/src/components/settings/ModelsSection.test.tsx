@@ -19,7 +19,11 @@ import type { GetModelResponse, ModelCatalogItem, ProviderCatalogItem } from '@k
 import type { ServerConnection } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
-import { ModelCatalogCard } from './ModelsSection';
+import { CatalogRefreshCard, ModelCatalogCard } from './ModelsSection';
+
+const listDiscoveredModels = vi.fn();
+const refreshAllProviders = vi.fn();
+const createModel = vi.fn();
 
 const listModels = vi.fn();
 const getConfig = vi.fn();
@@ -34,6 +38,9 @@ const CONNECTION: ServerConnection = { url: 'https://server.example.test/', toke
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
+      listDiscoveredModels,
+      refreshAllProviders,
+      createModel,
       listModels,
       getConfig,
       listProviders,
@@ -90,6 +97,9 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  listDiscoveredModels.mockReset().mockResolvedValue({ items: [] });
+  refreshAllProviders.mockReset();
+  createModel.mockReset().mockResolvedValue({});
   listModels.mockReset().mockResolvedValue({ items: MODELS });
   getConfig.mockReset().mockResolvedValue({
     default_model: 'kimi-code/kimi-k2',
@@ -124,6 +134,7 @@ async function renderCard(): Promise<HTMLDivElement> {
         <QueryClientProvider client={client}>
           <I18nProvider>
             <ModelCatalogCard />
+            <CatalogRefreshCard />
           </I18nProvider>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -148,6 +159,29 @@ function setSelectValue(select: HTMLSelectElement, value: string): void {
 }
 
 describe('ModelCatalogCard row editor', () => {
+  it('fetches suggestions only on click and saves the selected suggestion as a model', async () => {
+    const items = [{ provider_id: 'gateway', fetched_at: 100, attempted_at: 100, models: [{ remote_id: 'remote-suggested' }] }];
+    refreshAllProviders.mockImplementation(async () => {
+      listDiscoveredModels.mockResolvedValue({ items });
+      return { changed: [], unchanged: ['gateway'], failed: [], discovered: items };
+    });
+    const container = await renderCard();
+    expect(refreshAllProviders).not.toHaveBeenCalled();
+    expect(patchConfig).not.toHaveBeenCalled();
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Get models')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(createModel).not.toHaveBeenCalled();
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Suggestions — not configured yet"]')!.click(); });
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((button) => button.textContent?.includes('remote-suggested'))!;
+    expect(option.textContent).toContain('Suggestions — not configured yet');
+    await act(async () => { option.click(); });
+    expect(createModel).not.toHaveBeenCalled();
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    expect(createModel).toHaveBeenCalledWith(expect.objectContaining({ id: 'gateway/remote-suggested', provider_id: 'gateway', remote_id: 'remote-suggested', max_context_size: 128000 }));
+    expect(setDefaultModel).not.toHaveBeenCalled();
+    expect(patchConfig).not.toHaveBeenCalled();
+  });
+
   it('reads the model entity and saves a sparse patch with its revision', async () => {
     const container = await renderCard();
     expect(container.textContent).toContain('kimi-k2');

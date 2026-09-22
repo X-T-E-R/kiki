@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createScopedTestHost } from '#/_base/di/test';
 import { isError2 } from '#/_base/errors/errors';
-import { ILogService, type LogPayload } from '#/_base/log/log';
+import { ILogService } from '#/_base/log/log';
 import { IOAuthService } from '#/app/auth/auth';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -12,19 +12,12 @@ import { ConfigRegistry } from '#/app/config/configService';
 import { IEventService } from '#/app/event/event';
 import { IProviderDiscoveryService } from '#/app/kosongConfig/discovery';
 import '#/app/kosongConfig/discoveryService';
-import { MODEL_CATALOG_SECTION } from '#/app/kosongConfig/configSection';
 import { IKosongConfigService } from '#/app/kosongConfig/kosongConfig';
 import '#/app/kosongConfig/kosongConfigService';
 import '#/kosong/model/errors';
-import {
-  IModelService,
-  type ModelRecord,
-} from '#/kosong/model/model';
+import { IModelService } from '#/kosong/model/model';
 import '#/kosong/model/modelService';
-import {
-  IProviderService,
-  type ProviderConfig,
-} from '#/kosong/provider/provider';
+import { IProviderService } from '#/kosong/provider/provider';
 import '#/kosong/provider/providerService';
 import '#/kosong/provider/providers/kimi/kimi.contrib';
 import '#/kosong/provider/providers/standard.contrib';
@@ -39,9 +32,7 @@ function stubEvents(): IEventService & { published: Array<{ type: string; payloa
     published,
     _serviceBrand: undefined,
     onDidPublish: () => ({ dispose: () => {} }),
-    publish: (event: { type: string; payload: unknown }) => {
-      published.push(event);
-    },
+    publish: (event: { type: string; payload: unknown }) => { published.push(event); },
     subscribe: () => ({ dispose: () => {} }),
   } as unknown as IEventService & { published: Array<{ type: string; payload: unknown }> };
 }
@@ -56,23 +47,14 @@ function stubLogService(): ILogService {
     warn: () => {},
     info: () => {},
     debug: () => {},
-    child: () => {
-      throw new Error('child loggers are not used by KosongConfigService');
-    },
-  } satisfies ILogService;
+    child: () => { throw new Error('child logger not used'); },
+  };
 }
 
 async function createHost(
   sections: Record<string, unknown> = {},
   oauth: IOAuthService = stubOAuthService(),
-): Promise<{
-  host: ReturnType<typeof createScopedTestHost>;
-  config: StubConfigService;
-  events: ReturnType<typeof stubEvents>;
-  discovery: IProviderDiscoveryService;
-  providers: IProviderService;
-  models: IModelService;
-}> {
+) {
   const config = new StubConfigService(sections);
   const events = stubEvents();
   const host = createScopedTestHost([
@@ -80,27 +62,27 @@ async function createHost(
     [IOAuthService, oauth],
     [IEventService, events],
     [ILogService, stubLogService()],
-    [
-      IBootstrapService,
-      stubBootstrap('/tmp/kimi-home', {}, { requestHeaders: { 'User-Agent': 'kimi-test/1.0' } }),
-    ],
-    [
-      IAgentIdentity,
-      stubAgentIdentity({ hostRequestHeaders: { 'User-Agent': 'kimi-test/1.0' } }),
-    ],
+    [IBootstrapService, stubBootstrap('/tmp/kimi-home', {}, { requestHeaders: { 'User-Agent': 'kimi-test/1.0' } })],
+    [IAgentIdentity, stubAgentIdentity({ hostRequestHeaders: { 'User-Agent': 'kimi-test/1.0' } })],
   ]);
   const providers = host.app.accessor.get(IProviderService);
   const models = host.app.accessor.get(IModelService);
-  const bridge = host.app.accessor.get(IKosongConfigService);
-  await bridge.ready;
-  return {
-    host,
-    config,
-    events,
-    discovery: host.app.accessor.get(IProviderDiscoveryService),
-    providers,
-    models,
-  };
+  await host.app.accessor.get(IKosongConfigService).ready;
+  return { host, config, events, providers, models, discovery: host.app.accessor.get(IProviderDiscoveryService) };
+}
+
+const connection = { type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-example-key' };
+const sections = {
+  providers: { gateway: connection },
+  models: {
+    'gateway/fast': { provider: 'gateway', model: 'remote-existing', maxContextSize: 1000, displayName: 'My alias' },
+  },
+  defaultModel: 'gateway/fast',
+  thinking: { enabled: true },
+};
+
+function catalogResponse(...ids: string[]): Response {
+  return Response.json({ data: ids.map((id) => ({ id })) });
 }
 
 afterEach(() => {
@@ -108,423 +90,199 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-const staticProviders: Record<string, ProviderConfig> = {
-  'static-p': { type: 'openai', modelSource: 'static', apiKey: 'sk-static' },
-};
+describe('manual provider discovery', () => {
+  it('does not fetch on construction or read and returns a defensive copy of unconfigured suggestions', async () => {
+    const fetchMock = vi.fn(async () => catalogResponse('remote-existing', 'remote-new'));
+    vi.stubGlobal('fetch', fetchMock);
+    const { host, discovery, config, events, models } = await createHost(sections);
+    const writes = vi.spyOn(config, 'replaceSections');
+    try {
+      expect(await discovery.listDiscoveredModels()).toEqual({ items: [] });
+      expect(fetchMock).not.toHaveBeenCalled();
+      const result = await discovery.refreshProviderModels({ providerId: 'gateway' });
+      expect(result.changed).toEqual([]);
+      expect(result.unchanged).toEqual(['gateway']);
+      expect(result.failed).toEqual([]);
+      expect(result.discovered).toEqual([expect.objectContaining({
+        provider_id: 'gateway', fetched_at: expect.any(Number), attempted_at: expect.any(Number),
+        models: [{ remote_id: 'remote-new' }],
+      })]);
+      expect(writes).not.toHaveBeenCalled();
+      expect(models.list()).toEqual(sections.models);
+      expect(config.get('defaultModel')).toBe('gateway/fast');
+      expect(config.get('thinking')).toEqual({ enabled: true });
+      expect(events.published).toEqual([expect.objectContaining({ type: 'event.model_catalog.changed' })]);
+      const list = await discovery.listDiscoveredModels();
+      list.items[0]!.models.length = 0;
+      expect((await discovery.listDiscoveredModels()).items[0]?.models).toEqual([{ remote_id: 'remote-new' }]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { host.dispose(); }
+  });
 
-const staticModels: Record<string, ModelRecord> = {
-  s1: { provider: 'static-p', model: 'static-model', maxContextSize: 1000 },
-};
+  it('filters saved remote IDs independently of aliases, and forgets suggestions on a new app instance', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => catalogResponse('remote-new')));
+    const first = await createHost(sections);
+    try {
+      await first.discovery.refreshProviderModels({ providerId: 'gateway' });
+      await first.config.replaceSections({ models: { ...sections.models, custom: { provider: 'gateway', model: 'remote-new' } } });
+      expect((await first.discovery.listDiscoveredModels()).items[0]?.models).toEqual([]);
+      const second = await createHost(sections);
+      try { expect(await second.discovery.listDiscoveredModels()).toEqual({ items: [] }); }
+      finally { second.host.dispose(); }
+    } finally { first.host.dispose(); }
+  });
 
-const staticSections: Record<string, unknown> = {
-  providers: staticProviders,
-  models: staticModels,
-  defaultModel: 's1',
-};
+  it('keeps the last successful suggestions with a failed-attempt status then clears them on an empty success', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(catalogResponse('remote-new'))
+      .mockResolvedValueOnce(Response.json({ error: { message: 'invalid key: sk-example-key' } }, { status: 401 }))
+      .mockResolvedValueOnce(catalogResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    const { host, discovery } = await createHost(sections);
+    try {
+      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      const before = (await discovery.listDiscoveredModels()).items[0]!;
+      const failed = await discovery.refreshProviderModels({ providerId: 'gateway' });
+      expect(failed.failed[0]?.reason).not.toContain('sk-example-key');
+      expect((await discovery.listDiscoveredModels()).items[0]).toMatchObject({
+        fetched_at: before.fetched_at, failure_reason: expect.any(String), models: [{ remote_id: 'remote-new' }],
+      });
+      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      expect((await discovery.listDiscoveredModels()).items[0]).toMatchObject({ models: [] });
+      expect((await discovery.listDiscoveredModels()).items[0]).not.toHaveProperty('failure_reason');
+    } finally { host.dispose(); }
+  });
 
-describe('refreshProviderModels modelSource short-circuit', () => {
-  it('answers scoped refreshes of static providers with unchanged and no I/O', async () => {
+  it('discards stale results when the connection changes while a fetch is pending without overwriting concurrent edits', async () => {
+    let release!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const fetchMock = vi.fn(() => pending);
+    vi.stubGlobal('fetch', fetchMock);
+    const { host, discovery, config, models } = await createHost(sections);
+    try {
+      const refresh = discovery.refreshProviderModels({ providerId: 'gateway' });
+      await vi.waitFor(() => { expect(fetchMock).toHaveBeenCalledOnce(); });
+      await config.replaceSections({
+        providers: { gateway: { ...connection, apiKey: 'sk-replacement' } },
+        models: { ...sections.models, concurrent: { provider: 'gateway', model: 'manual' } },
+      });
+      release(catalogResponse('remote-new'));
+      const result = await refresh;
+      expect(result.discovered).toEqual([]);
+      expect(await discovery.listDiscoveredModels()).toEqual({ items: [] });
+      expect(models.list()['concurrent']).toEqual({ provider: 'gateway', model: 'manual' });
+      expect(config.get('providers')).toEqual({ gateway: { ...connection, apiKey: 'sk-replacement' } });
+    } finally { host.dispose(); }
+  });
+
+  it.each([
+    { gateway: { ...connection, modelSource: 'static' } },
+    {},
+  ])('invalidates saved discoveries after changing or removing the provider', async (providers) => {
+    vi.stubGlobal('fetch', vi.fn(async () => catalogResponse('remote-new')));
+    const { host, discovery, config } = await createHost(sections);
+    try {
+      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      await config.replaceSections({ providers });
+      expect(await discovery.listDiscoveredModels()).toEqual({ items: [] });
+    } finally { host.dispose(); }
+  });
+
+  it('records a first failure without pretending a successful fetch occurred', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const { host, discovery } = await createHost(staticSections);
-    try {
-      const result = await discovery.refreshProviderModels({ providerId: 'static-p' });
-      expect(result).toEqual({ changed: [], unchanged: ['static-p'], failed: [] });
-      expect(fetchMock).not.toHaveBeenCalled();
-    } finally {
-      host.dispose();
-    }
-  });
-
-  it('returns an empty result when nothing is refreshable', async () => {
-    const { host, discovery, events } = await createHost(staticSections);
-    try {
-      const result = await discovery.refreshProviderModels({ scope: 'all' });
-      expect(result).toEqual({ changed: [], unchanged: [], failed: [] });
-      expect(events.published).toEqual([]);
-    } finally {
-      host.dispose();
-    }
-  });
-
-  it('reports a scoped provider that has no refresh source instead of returning an empty success', async () => {
-    const { host, discovery } = await createHost({
-      providers: {
-        plain: {
-          type: 'openai',
-          apiKey: 'sk-test',
-        },
-      },
-      models: {
-        'plain/model': {
-          provider: 'plain',
-          model: 'model',
-          maxContextSize: 128000,
-        },
-      },
-    });
+    const { host, discovery } = await createHost({ providers: { plain: { type: 'openai' } } });
     try {
       const result = await discovery.refreshProviderModels({ providerId: 'plain' });
-      expect(result).toEqual({
-        changed: [],
-        unchanged: [],
-        failed: [{
-          provider: 'plain',
-          reason: 'provider has no refreshable model source',
-        }],
-      });
-    } finally {
-      host.dispose();
-    }
+      expect(result.failed).toHaveLength(1);
+      expect((await discovery.listDiscoveredModels()).items).toEqual([{
+        provider_id: 'plain', fetched_at: null, attempted_at: expect.any(Number),
+        failure_reason: result.failed[0]!.reason, models: [],
+      }]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { host.dispose(); }
   });
 
-  it('hides static entries from the orchestrator and merges them back verbatim', async () => {
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            acme: {
-              id: 'acme',
-              name: 'Acme',
-              api: 'https://acme.example.test/v1',
-              type: 'openai',
-              models: { m1: { id: 'm1', name: 'M1' } },
-            },
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ),
-    );
+  it('never fetches static providers and rejects unknown provider IDs', async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-
-    const { host, config, discovery, events, providers, models } = await createHost({
-      providers: {
-        ...staticProviders,
-        acme: {
-          type: 'openai',
-          apiKey: 'sk-acme',
-          source: { kind: 'apiJson', url: 'https://registry.example.test/api.json', apiKey: 'sk-registry' },
-        },
-      },
-      models: staticModels,
-      defaultModel: 's1',
-      thinking: { enabled: true },
-    });
+    const { host, discovery, events } = await createHost({ providers: { gateway: { ...connection, modelSource: 'static' } } });
     try {
-      const result = await discovery.refreshProviderModels({ scope: 'all' });
-      expect(result.changed).toEqual([
-        { provider_id: 'acme', provider_name: 'Acme', added: 1, removed: 0 },
-      ]);
-      expect(result.unchanged).toEqual([]);
-      expect(result.failed).toEqual([]);
-      expect(events.published).toEqual([
-        expect.objectContaining({ type: 'event.model_catalog.changed' }),
-      ]);
-
-      const providerRecords = providers.list();
-      expect(Object.keys(providerRecords).toSorted()).toEqual(['acme', 'static-p']);
-      expect(providerRecords['static-p']).toEqual({ type: 'openai', modelSource: 'static', apiKey: 'sk-static' });
-      const modelRecords = models.list();
-      expect(modelRecords['s1']).toEqual({ provider: 'static-p', model: 'static-model', maxContextSize: 1000 });
-      expect(modelRecords['acme/m1']).toBeDefined();
-      expect(config.get<string>('defaultModel')).toBe('s1');
-      expect(config.get('thinking')).toEqual({ enabled: true });
-    } finally {
-      host.dispose();
-    }
-  });
-
-  it('throws provider.not_found for an unknown scoped provider', async () => {
-    const { host, discovery } = await createHost(staticSections);
-    try {
+      expect(await discovery.refreshProviderModels({ providerId: 'gateway' })).toEqual({ changed: [], unchanged: ['gateway'], failed: [] });
+      expect(await discovery.refreshProviderModels()).toEqual({ changed: [], unchanged: [], failed: [] });
       await expect(discovery.refreshProviderModels({ providerId: 'missing' })).rejects.toSatisfy(
         (error) => isError2(error) && error.code === 'provider.not_found',
       );
-    } finally {
-      host.dispose();
-    }
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(events.published).toEqual([]);
+    } finally { host.dispose(); }
   });
-});
 
-describe('refreshProviderModels write behavior', () => {
-  it('serializes concurrent runs so they never overlap', async () => {
-    const { host, discovery } = await createHost(
-      {
-        providers: {
-          [KIMI_CODE_PROVIDER_NAME]: {
-            type: 'kimi',
-            baseUrl: 'https://api.example.test/v1',
-            oauth: { storage: 'file', key: 'oauth/kimi-code' },
-          },
-        },
-        models: {},
-      },
-      stubOAuthService(stubTokenProvider(['access-token'])),
-    );
+  it('suggests custom-registry entries without importing providers or writing config', async () => {
+    const fetchMock = vi.fn(async () => Response.json({
+      gateway: { id: 'gateway', name: 'Example', api: 'https://changed.example.test', type: 'openai', models: { m1: { id: 'm1', name: 'M1' } } },
+      other: { id: 'other', name: 'Other', api: 'https://other.example.test', type: 'openai', models: { m2: { id: 'm2' } } },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const providers = { gateway: { ...connection, source: { kind: 'apiJson', url: 'https://registry.example.test/api.json', apiKey: 'sk-registry' } } };
+    const { host, discovery, config } = await createHost({ ...sections, providers });
+    const writes = vi.spyOn(config, 'replaceSections');
     try {
-      let inFlight = 0;
-      let maxInFlight = 0;
-      const fetchMock = vi.fn().mockImplementation(async () => {
-        inFlight++;
-        maxInFlight = Math.max(maxInFlight, inFlight);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        inFlight--;
-        return {
-          ok: true,
-          json: async () => ({
-            data: [
-              {
-                id: 'kimi-k2',
-                context_length: 131072,
-                supports_reasoning: true,
-                display_name: 'Kimi K2',
-              },
-            ],
-          }),
-        };
-      });
-      vi.stubGlobal('fetch', fetchMock);
+      const result = await discovery.refreshProviderModels();
+      expect(result.changed).toEqual([]);
+      expect(result.discovered).toEqual([expect.objectContaining({ provider_id: 'gateway', models: [expect.objectContaining({ remote_id: 'm1' })] })]);
+      expect(writes).not.toHaveBeenCalled();
+      expect(config.get('providers')).toEqual(providers);
+      expect(fetchMock).toHaveBeenCalledWith('https://registry.example.test/api.json', expect.objectContaining({ headers: expect.objectContaining({ 'User-Agent': 'kimi-test/1.0' }) }));
+    } finally { host.dispose(); }
+  });
 
-      await Promise.all([
-        discovery.refreshProviderModels({ scope: 'all' }),
-        discovery.refreshProviderModels({ scope: 'all' }),
-      ]);
+  it('treats managed-endpoint API-key providers as user-owned suggestions', async () => {
+    const baseUrl = 'https://api.managed.example.test/coding/v1';
+    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ id: 'kimi-next', context_length: 262144 }] })));
+    const { host, discovery, config } = await createHost({ ...sections, providers: { gateway: { type: 'kimi', baseUrl, apiKey: 'sk-distributed' } } });
+    const writes = vi.spyOn(config, 'replaceSections');
+    try {
+      const result = await discovery.refreshProviderModels();
+      expect(result.changed).toEqual([]);
+      expect(result.discovered?.[0]?.models).toEqual([expect.objectContaining({ remote_id: 'kimi-next', max_context_size: 262144 })]);
+      expect(writes).not.toHaveBeenCalled();
+      expect(config.get('defaultModel')).toBe('gateway/fast');
+      expect(config.get('models')).toEqual(sections.models);
+    } finally { host.dispose(); }
+  });
 
+  it('retains managed OAuth write-back and serializes explicit fetches', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchMock = vi.fn(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      inFlight--;
+      return Response.json({ data: [{ id: 'kimi-k2', context_length: 131072 }] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { host, discovery, config, models } = await createHost({
+      providers: { [KIMI_CODE_PROVIDER_NAME]: { type: 'kimi', baseUrl: 'https://api.example.test/v1', oauth: { storage: 'file', key: 'oauth/kimi-code' } } },
+      models: {},
+    }, stubOAuthService(stubTokenProvider(['access-token'])));
+    const writes = vi.spyOn(config, 'replaceSections');
+    try {
+      const [first] = await Promise.all([discovery.refreshProviderModels(), discovery.refreshProviderModels()]);
+      expect(first.changed).toHaveLength(1);
+      expect(first.discovered).toBeUndefined();
+      expect(models.list()['kimi-code/kimi-k2']).toBeDefined();
+      expect(writes).toHaveBeenCalledTimes(1);
       expect(maxInFlight).toBe(1);
       expect(fetchMock).toHaveBeenCalledTimes(2);
-    } finally {
-      host.dispose();
-    }
-  });
-
-  it('sends the host User-Agent on custom-registry fetches', async () => {
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            acme: {
-              id: 'acme',
-              name: 'Acme',
-              api: 'https://acme.example.test/v1',
-              type: 'openai',
-              models: { m1: { id: 'm1', name: 'M1' } },
-            },
-          }),
-          { headers: { 'Content-Type': 'application/json' } },
-        ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const { host, discovery } = await createHost({
-      providers: {
-        acme: {
-          type: 'openai',
-          apiKey: 'sk-acme',
-          source: {
-            kind: 'apiJson',
-            url: 'https://registry.example.test/api.json',
-            apiKey: 'sk-registry',
-          },
-        },
-      },
-      models: {},
-    });
-    try {
-      await discovery.refreshProviderModels({ scope: 'all' });
-
-      expect(fetchMock).toHaveBeenCalledWith(
-        'https://registry.example.test/api.json',
-        expect.objectContaining({
-          headers: expect.objectContaining({ 'User-Agent': 'kimi-test/1.0' }),
-        }),
-      );
-    } finally {
-      host.dispose();
-    }
-  });
-
-  it('refreshes a hand-configured API-key provider at the managed endpoint', async () => {
-    const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            data: [
-              {
-                id: 'kimi-k2',
-                context_length: 262144,
-                supports_reasoning: true,
-                display_name: 'Fresh K2',
-              },
-              { id: 'kimi-k2.5', context_length: 131072 },
-            ],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const { host, config, discovery, events, providers, models } = await createHost({
-      providers: {
-        'my-kimi': { type: 'kimi', baseUrl, apiKey: 'sk-distributed-key' },
-      },
-      models: {
-        'my-kimi/kimi-k2': {
-          provider: 'my-kimi',
-          model: 'kimi-k2',
-          maxContextSize: 262144,
-          displayName: 'Old K2',
-        },
-      },
-      defaultModel: 'my-kimi/kimi-k2',
-    });
-    try {
-      const result = await discovery.refreshProviderModels({ scope: 'all' });
-
-      expect(result.failed).toEqual([]);
-      expect(result.changed).toEqual([
-        { provider_id: 'my-kimi', provider_name: 'my-kimi', added: 1, removed: 0 },
-      ]);
-      expect(events.published).toEqual([
-        expect.objectContaining({ type: 'event.model_catalog.changed' }),
-      ]);
-      expect(fetchMock).toHaveBeenCalledWith(
-        `${baseUrl}/models`,
-        expect.objectContaining({
-          headers: expect.objectContaining({ Authorization: 'Bearer sk-distributed-key' }),
-        }),
-      );
-      expect(providers.list()['my-kimi']).toEqual({
-        type: 'kimi',
-        baseUrl,
-        apiKey: 'sk-distributed-key',
-      });
-      const modelRecords = models.list();
-      expect(modelRecords['my-kimi/kimi-k2']?.displayName).toBe('Fresh K2');
-      expect(modelRecords['my-kimi/kimi-k2.5']).toBeDefined();
-      expect(config.get<string>('defaultModel')).toBe('my-kimi/kimi-k2');
-    } finally {
-      host.dispose();
-    }
-  });
-
-  it('clears a stale defaultModel whose alias upstream dropped', async () => {
-    const baseUrl = 'https://api.managed.example.test/coding/v1';
-    vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            data: [{ id: 'kimi-k3', context_length: 1048576, supports_reasoning: true }],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const { host, config, discovery, models } = await createHost({
-      providers: {
-        'my-kimi': { type: 'kimi', baseUrl, apiKey: 'sk-distributed-key' },
-      },
-      models: {
-        'my-kimi/kimi-k2': {
-          provider: 'my-kimi',
-          model: 'kimi-k2',
-          maxContextSize: 262144,
-          displayName: 'Old K2',
-        },
-      },
-      defaultModel: 'my-kimi/kimi-k2',
-      thinking: { enabled: true },
-    });
-    try {
-      const result = await discovery.refreshProviderModels({ scope: 'all' });
-
-      expect(result.failed).toEqual([]);
-      expect(result.changed).toEqual([
-        { provider_id: 'my-kimi', provider_name: 'my-kimi', added: 1, removed: 1 },
-      ]);
-      expect(config.get('defaultModel')).toBeUndefined();
-      expect(config.get('thinking')).toBeUndefined();
-      const modelRecords = models.list();
-      expect(modelRecords['my-kimi/kimi-k3']).toBeDefined();
-      expect(modelRecords['my-kimi/kimi-k2']).toBeUndefined();
-    } finally {
-      host.dispose();
-    }
-  });
-
-  it('never exposes a halfway-removed catalog: the registries stay untouched until the single atomic write', async () => {
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            acme: {
-              id: 'acme',
-              name: 'Acme',
-              api: 'https://acme.example.test/v1',
-              type: 'openai',
-              models: { m2: { id: 'm2', name: 'M2' } },
-            },
-          }),
-          { headers: { 'Content-Type': 'application/json' } },
-        ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const { host, config, discovery, providers, models } = await createHost({
-      providers: {
-        acme: {
-          type: 'openai',
-          apiKey: 'sk-acme',
-          source: {
-            kind: 'apiJson',
-            url: 'https://registry.example.test/api.json',
-            apiKey: 'sk-registry',
-          },
-        },
-      },
-      models: {
-        'acme/m1': { provider: 'acme', model: 'm1', maxContextSize: 1000 },
-      },
-      defaultModel: 'acme/m1',
-    });
-    try {
-      let seenDuringWrite: { providers: readonly string[]; models: readonly string[] } | undefined;
-      const originalReplaceSections = config.replaceSections.bind(config);
-      vi.spyOn(config, 'replaceSections').mockImplementation(async (sections) => {
-        seenDuringWrite = {
-          providers: Object.keys(providers.list()),
-          models: Object.keys(models.list()),
-        };
-        await originalReplaceSections(sections);
-      });
-
-      const result = await discovery.refreshProviderModels({ scope: 'all' });
-
-      expect(result.failed).toEqual([]);
-      expect(seenDuringWrite).toEqual({ providers: ['acme'], models: ['acme/m1'] });
-      expect(vi.mocked(config.replaceSections).mock.calls.length).toBe(1);
-      expect(providers.list()['acme']).toBeDefined();
-      expect(models.list()['acme/m2']).toBeDefined();
-      expect(models.list()['acme/m1']).toBeUndefined();
-      expect(config.get('defaultModel')).toBeUndefined();
-    } finally {
-      host.dispose();
-    }
+    } finally { host.dispose(); }
   });
 });
 
-describe('modelCatalog config section', () => {
-  it('self-registers and validates', () => {
-    const registry = new ConfigRegistry();
-    expect(registry.getSection(MODEL_CATALOG_SECTION)).toBeDefined();
-    expect(
-      registry.validate(MODEL_CATALOG_SECTION, {
-        refreshIntervalMs: 1000,
-        refreshOnStart: false,
-      }),
-    ).toEqual({ refreshIntervalMs: 1000, refreshOnStart: false });
-    expect(() => registry.validate(MODEL_CATALOG_SECTION, { refreshIntervalMs: -1 })).toThrow();
+describe('catalog scheduling retirement', () => {
+  it('does not register an automatic refresh configuration section', () => {
+    expect(new ConfigRegistry().getSection('modelCatalog')).toBeUndefined();
   });
 });

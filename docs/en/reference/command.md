@@ -327,7 +327,7 @@ Supports five actions:
 
 #### `kiki provider add <url>`
 
-Import all providers in bulk from a custom registry (`api.json`). The command fetches the registry, creates `[providers.<id>]` and `[models.<alias>]` for each entry, and writes `source` metadata so the TUI refreshes providers and models from the same URL on its next launch.
+Import all providers in bulk from a custom registry (`api.json`). This explicit command fetches the registry, creates `[providers.<id>]` and `[models.<alias>]` for each entry, and records the registry in `source` metadata. Later startup does not synchronize the registry. Manual model fetching returns unsaved suggestions for existing providers; see [Fetching model suggestions](../configuration/providers.md#fetching-model-suggestions).
 
 | Parameter / Option | Description |
 | --- | --- |

@@ -474,6 +474,7 @@ export function defineKlientConformance(
 
     it('kosong lists models/providers and anonymous provider round-trips', async () => {
       const kosong = target.klient.global.kosong;
+      expect(await kosong.listDiscoveredModels()).toEqual({ items: [] });
       expect(Array.isArray(await kosong.listModels())).toBe(true);
       expect(Array.isArray(await kosong.listProviders())).toBe(true);
 
