@@ -1877,6 +1877,28 @@ export function agentTranscriptToBlocks(
       : new Map(attachments.map((attachment) => [attachment.attachmentId, attachment]));
   for (const item of response.items) {
     if (item.kind === 'marker') {
+      if (
+        item.marker === 'message.delivery' &&
+        typeof (item as { payload?: unknown }).payload === 'object' &&
+        (item as { payload?: unknown }).payload !== null
+      ) {
+        const payload = (item as { payload?: unknown }).payload as Record<string, unknown>;
+        const messageId = recordString(payload, 'messageId');
+        const text = recordString(payload, 'text');
+        if (messageId !== undefined && text !== undefined) {
+          blocks.push(...classifiedTextToBlocks({
+            id: messageId,
+            classified: classifyTranscriptText({ text, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
+            createdAt: item.at ?? '',
+            userMessageId: messageId,
+            media: mediaFromAttachmentIds(
+              Array.isArray(payload['attachmentIds']) ? payload['attachmentIds'].filter((id): id is string => typeof id === 'string') : undefined,
+              attachmentsById,
+            ),
+          }));
+        }
+        continue;
+      }
       const marker = markerToBlock(item);
       if (marker !== undefined) blocks.push(marker);
       continue;
@@ -1941,7 +1963,7 @@ export function agentTranscriptToBlocks(
           origin,
           subagentPromptAsUser,
         }),
-        createdAt: item.startedAt ?? '',
+        createdAt: (item as { delivery?: { deliveredAt?: string } }).delivery?.deliveredAt ?? item.startedAt ?? '',
         turnId: item.turnId,
         promptId: identity.promptId,
         userMessageId: turnUserMessageId,
@@ -1996,7 +2018,11 @@ export function agentTranscriptToBlocks(
                     id: frame.frameId,
                     subagentPromptAsUser,
                   }),
-                  createdAt: step.startedAt ?? item.startedAt ?? '',
+                  createdAt:
+                    (frame as { delivery?: { deliveredAt?: string } }).delivery?.deliveredAt ??
+                    step.startedAt ??
+                    item.startedAt ??
+                    '',
                   turnId: item.turnId,
                   userMessageId,
                   media: mediaFromAttachmentIds(

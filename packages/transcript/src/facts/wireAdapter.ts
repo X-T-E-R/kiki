@@ -1,7 +1,7 @@
 import type { TranscriptFact } from './reducer';
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import type { AttachmentSource } from '../model/attachment';
-import type { ToolCallFrame } from '../model/frame';
+import type { MessageDelivery, ToolCallFrame } from '../model/frame';
 import { projectInteractionEndState, type TranscriptInteraction } from '../model/interaction';
 import type { GoalMeta, GoalStatus } from '../model/meta';
 import type { TranscriptPrompt, TranscriptPromptAppendTiming } from '../model/prompt';
@@ -47,6 +47,23 @@ export interface PendingSteer {
   readonly origin: unknown;
 }
 
+interface DeliveryUndoRecord {
+  readonly ordinal: number;
+  readonly anchor: boolean;
+}
+
+interface FrameRecord {
+  readonly ordinal: number;
+  readonly operation: Extract<TranscriptOperation, { op: 'frame.upsert' }>;
+}
+
+interface MessageProjectionCheckpoint {
+  readonly deliveries: readonly [string, DeliveryUndoRecord][];
+  readonly frames: readonly [string, FrameRecord][];
+  readonly turns: readonly [string, number][];
+  readonly steps: readonly [string, number][];
+}
+
 export interface TranscriptWireAdapterCheckpoint {
   readonly version: 1 | 2;
   readonly agentId: string;
@@ -84,6 +101,8 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly currentPromptId?: string;
   readonly prompts?: readonly [string, TranscriptPrompt][];
   readonly hiddenPromptIds?: readonly string[];
+  readonly deliveries?: readonly [string, MessageDelivery][];
+  readonly messageProjection?: MessageProjectionCheckpoint;
 }
 
 export class TranscriptWireAdapter {
@@ -114,6 +133,11 @@ export class TranscriptWireAdapter {
   readonly #executions = new Map<string, TranscriptTurnExecution>();
   readonly #prompts = new Map<string, TranscriptPrompt>();
   readonly #hiddenPromptIds = new Set<string>();
+  readonly #deliveries = new Map<string, MessageDelivery>();
+  readonly #deliveryUndoRecords = new Map<string, DeliveryUndoRecord>();
+  readonly #frameRecords = new Map<string, FrameRecord>();
+  readonly #turnRecordOrdinals = new Map<string, number>();
+  readonly #stepRecordOrdinals = new Map<string, number>();
   #goal: GoalMeta | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
   #recordOrdinal = 0;
@@ -165,6 +189,11 @@ export class TranscriptWireAdapter {
       currentPromptId: this.#currentPromptId,
       prompts: [...this.#prompts],
       hiddenPromptIds: [...this.#hiddenPromptIds],
+      deliveries: [...this.#deliveries],
+      messageProjection: {
+        deliveries: [...this.#deliveryUndoRecords], frames: [...this.#frameRecords],
+        turns: [...this.#turnRecordOrdinals], steps: [...this.#stepRecordOrdinals],
+      },
     };
   }
 
@@ -212,6 +241,11 @@ export class TranscriptWireAdapter {
     this.#currentPromptId = checkpoint.currentPromptId;
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
+    replaceMap(this.#deliveries, checkpoint.deliveries ?? []);
+    replaceMap(this.#deliveryUndoRecords, checkpoint.messageProjection?.deliveries ?? []);
+    replaceMap(this.#frameRecords, checkpoint.messageProjection?.frames ?? []);
+    replaceMap(this.#turnRecordOrdinals, checkpoint.messageProjection?.turns ?? []);
+    replaceMap(this.#stepRecordOrdinals, checkpoint.messageProjection?.steps ?? []);
   }
 
   add(record: TranscriptWireRecord): TranscriptFact[] {
@@ -219,6 +253,7 @@ export class TranscriptWireAdapter {
     if (record.time !== undefined) this.#lastRecordTime = record.time;
     const operations = this.operations(record, ordinal);
     if (operations.length === 0) return [];
+    this.rememberProjection(operations, ordinal);
     return [
       {
         factId: factId(record, ordinal),
@@ -226,6 +261,20 @@ export class TranscriptWireAdapter {
         operations,
       },
     ];
+  }
+
+  private rememberProjection(operations: readonly TranscriptOperation[], ordinal: number): void {
+    for (const operation of operations) {
+      if (operation.op === 'turn.upsert' && !this.#turnRecordOrdinals.has(operation.turn.turnId)) {
+        this.#turnRecordOrdinals.set(operation.turn.turnId, ordinal);
+      } else if (operation.op === 'step.upsert' && !this.#stepRecordOrdinals.has(operation.step.stepId)) {
+        this.#stepRecordOrdinals.set(operation.step.stepId, ordinal);
+      } else if (operation.op === 'frame.upsert') {
+        const key = `${operation.turnId}\0${operation.stepId}\0${operation.frame.frameId}`;
+        const previous = this.#frameRecords.get(key);
+        this.#frameRecords.set(key, { ordinal: previous?.ordinal ?? ordinal, operation });
+      }
+    }
   }
 
   finish(): TranscriptFact[] {
@@ -893,12 +942,15 @@ export class TranscriptWireAdapter {
     const turnId = `t${turnOrdinal}`;
     this.#canonicalTurns.add(turnId);
     this.trackTurn(turnId);
-    if (isUndoAnchorOrigin(record['origin'])) this.#undoAnchors.add(turnId);
-    const input = arrayOf(record['input']);
-    const activations = bundledSkillActivations(record['origin']);
+    const promptId = stringOf(record['promptId']) ?? stringOf(record['messageId']);
+    const alreadyDelivered = promptId !== undefined && this.#deliveries.has(promptId);
+    if (alreadyDelivered && this.#turnHeaders.get(turnId)?.message?.messageId === promptId) return [];
+    const headerOnly = record['managed'] === true || alreadyDelivered;
+    if (isUndoAnchorOrigin(record['origin']) && !headerOnly) this.#undoAnchors.add(turnId);
+    const input = headerOnly ? [] : arrayOf(record['input']);
+    const activations = headerOnly ? [] : bundledSkillActivations(record['origin']);
     const openingInput = input.slice(activations.length);
     const prompt = openingInput.map(textOfPart).join('');
-    const promptId = stringOf(record['promptId']) ?? stringOf(record['messageId']);
     this.#currentTurnId = turnId;
     this.#currentPromptId = promptId;
     const attachmentIds: string[] = [];
@@ -954,7 +1006,7 @@ export class TranscriptWireAdapter {
         },
         lineage: lineageOf(record['lineage']),
       },
-      prompt: prompt.length > 0 ? prompt : undefined,
+      prompt: record['managed'] === true || alreadyDelivered ? undefined : prompt.length > 0 ? prompt : undefined,
       attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
       startedAt: isoOf(record.time),
     };
@@ -964,6 +1016,7 @@ export class TranscriptWireAdapter {
   }
 
   private turnSteer(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
+    if (record['managed'] === true) return [];
     const turnId = turnIdOf(record['turnId'], this.#currentTurnId);
     if (turnId === undefined) return [];
     const input = arrayOf(record['input']);
@@ -1072,17 +1125,18 @@ export class TranscriptWireAdapter {
     const messageId = stringOf(message['id']) ?? `legacy:v1:r${ordinal}:message`;
     const content = arrayOf(message['content']);
     if (role === 'user') {
-      if (messageId === this.#currentPromptId) return [];
-      const origin = objectOf(message['origin']);
       const notificationId = taskNotificationIdOfMessage(message);
-      if (
-        notificationId !== undefined &&
-        this.#projectedTaskNotificationIds.delete(notificationId)
-      ) {
-        return [];
-      }
+      if (notificationId !== undefined && this.#projectedTaskNotificationIds.has(notificationId)) return [];
+      const canonicalDelivery = objectOf(record['delivery']);
+      if (canonicalDelivery !== undefined) return this.deliveredMessage(record, message, ordinal, canonicalDelivery);
+      if (messageId === this.#currentPromptId || this.#deliveries.has(messageId)) return [];
+      const origin = objectOf(message['origin']);
       if (this.consumeSteeredUserMessage(messageId, origin)) return [];
-      if (stringOf(origin?.['kind']) === 'injection') return this.legacyInjectedMessage(message, ordinal);
+      if (
+        origin?.['kind'] === 'agent_message' ||
+        origin?.['kind'] === 'injection' ||
+        (this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
+      ) return this.deliveredMessage(record, message, ordinal);
       const turnOrdinal = this.#legacyTurnOrdinal++;
       if (!isVisibleLegacyTurnOrigin(this.agentId, origin)) return [];
       const turnId = `t${turnOrdinal}`;
@@ -1168,34 +1222,117 @@ export class TranscriptWireAdapter {
     return [];
   }
 
-  private legacyInjectedMessage(
+  private deliveredMessage(
+    record: TranscriptWireRecord,
     message: Readonly<Record<string, unknown>>,
     ordinal: number,
+    canonical?: Readonly<Record<string, unknown>>,
   ): TranscriptOperation[] {
-    const turnId = this.#currentTurnId;
-    const step = turnId === undefined ? undefined : this.#steps.get(turnId);
-    if (turnId === undefined || step === undefined) return [];
-    const messageId = stringOf(message['id']) ?? `legacy:v1:r${ordinal}:message`;
-    return [
-      {
-        op: 'frame.upsert',
-        turnId,
-        stepId: step.stepId,
-        frame: {
-          kind: 'text',
-          frameId: messageId,
-          part: {
-            partId: messageId,
-            messageId,
-            revision: 0,
-            provenance: { source: 'legacy-wire', recordOrdinal: ordinal },
-          },
-          role: 'user',
-          text: arrayOf(message['content']).map(textOfPart).join(''),
-          origin: message['origin'],
+    const messageId = stringOf(canonical?.['messageId']) ?? stringOf(message['id']) ?? `legacy:v1:r${ordinal}:message`;
+    if (this.#deliveries.has(messageId)) return [];
+    const origin = objectOf(message['origin']);
+    const current = this.#currentTurnId === undefined ? undefined : this.#turnHeaders.get(this.#currentTurnId);
+    const turnId = canonical === undefined
+      ? current?.state === 'running' ? current.turnId : undefined
+      : turnIdOf(canonical['turnId'], undefined);
+    const priorStep = turnId === undefined ? undefined : this.#steps.get(turnId);
+    const acceptedStepId = canonical === undefined ? priorStep?.stepId : stringOf(canonical['stepId']);
+    const acceptedStep = canonical === undefined ? priorStep?.ordinal : numberOf(canonical['step']);
+    const stepId = turnId === undefined ? undefined : acceptedStepId ?? priorStep?.stepId ?? `${turnId}.delivery`;
+    const stepOrdinal = acceptedStep ?? priorStep?.ordinal ?? 0;
+    const delivery: MessageDelivery = {
+      deliveryId: stringOf(canonical?.['deliveryId']) ?? `legacy:delivery:${messageId}`,
+      messageId,
+      turnId,
+      stepId: acceptedStepId,
+      step: acceptedStep,
+      deliveredAt: stringOf(canonical?.['deliveredAt']) ?? isoOf(record.time),
+      origin: deliveryOrigin(canonical?.['origin'], origin?.['kind']),
+    };
+    this.#deliveries.set(messageId, delivery);
+    const turn = turnId === undefined ? undefined : this.#turnHeaders.get(turnId);
+    this.#deliveryUndoRecords.set(messageId, {
+      ordinal,
+      anchor: isUndoAnchorOrigin(message['origin']) && turn?.message?.messageId !== messageId,
+    });
+    if (turn?.message?.messageId === messageId) {
+      if (isUndoAnchorOrigin(message['origin'])) this.#undoAnchors.add(turn.turnId);
+      if (turn.prompt !== undefined) return [];
+    }
+    const input = arrayOf(message['content']);
+    const activations = bundledSkillActivations(message['origin']);
+    const content = input.slice(activations.length);
+    const text = content.map(textOfPart).join('');
+    const operations: TranscriptOperation[] = [];
+    if (turn?.message?.messageId === messageId && activations.length > 0) {
+      this.#turnOwnedItemIds.set(turn.turnId, activations.map((activation) => `wire:v2:skill:${activation.activationId}`));
+      operations.push(...activations.map((activation, index): TranscriptOperation => ({
+        op: 'marker.upsert',
+        item: {
+          kind: 'marker', markerId: `wire:v2:skill:${activation.activationId}`, marker: 'skill',
+          payload: { text: textOfPart(input[index]), origin: { kind: 'skill_activation', trigger: 'user-slash', ...activation } },
+          at: delivery.deliveredAt,
         },
+        beforeTurn: turn.ordinal,
+      })));
+    }
+    const attachmentIds: string[] = [];
+    for (const media of mediaPartsOf(content)) {
+      const attachmentId = `${messageId}.att${attachmentIds.length + 1}`;
+      attachmentIds.push(attachmentId);
+      operations.push({
+        op: 'attachment.upsert',
+        attachment: {
+          attachmentId, mediaType: `${media.kind}/*`, name: media.name, source: media.source,
+          owner: turn?.message?.messageId === messageId ? { kind: 'turn', turnId: turn.turnId }
+            : turnId === undefined || stepId === undefined ? undefined : { kind: 'frame', turnId, stepId, frameId: messageId },
+        },
+      });
+    }
+    if (turn?.message?.messageId === messageId) {
+      const deliveredTurn: TurnHeader = {
+        ...turn, prompt: text.length === 0 ? undefined : text,
+        attachmentIds: attachmentIds.length === 0 ? undefined : attachmentIds, delivery,
+      };
+      this.#turnHeaders.set(turn.turnId, deliveredTurn);
+      operations.push({ op: 'turn.upsert', turn: deliveredTurn });
+      return operations;
+    }
+    if (turnId === undefined || stepId === undefined) {
+      operations.push({
+        op: 'marker.upsert',
+        item: {
+          kind: 'marker', markerId: `message-delivery:${messageId}`, marker: 'message.delivery',
+          at: delivery.deliveredAt,
+          payload: { messageId, text, origin: message['origin'], delivery, attachmentIds },
+        },
+      });
+      return operations;
+    }
+    if (turn === undefined) operations.push(this.ensureTurn(turnId));
+    if (!this.#stepHeaders.has(stepId)) {
+      const step: StepHeader = {
+        kind: 'step', turnId, stepId, ordinal: stepOrdinal,
+        state: canonical?.['stepId'] === undefined ? 'completed' : 'running',
+        startedAt: delivery.deliveredAt,
+      };
+      this.storeStep(stepId, step);
+      operations.push({ op: 'step.upsert', turnId, step });
+    }
+    operations.push({
+      op: 'frame.upsert', turnId, stepId,
+      frame: {
+        kind: 'text', frameId: messageId,
+        part: {
+          partId: messageId, messageId, revision: numberOf(message['revision']) ?? 0,
+          provenance: { source: canonical === undefined ? 'legacy-wire' : 'engine', recordOrdinal: canonical === undefined ? ordinal : undefined },
+        },
+        role: 'user', text,
+        origin: projectTranscriptUserOrigin(message['origin']) ?? message['origin'],
+        delivery, attachmentIds: attachmentIds.length === 0 ? undefined : attachmentIds,
       },
-    ];
+    });
+    return operations;
   }
 
   private legacyAssistant(
@@ -1554,6 +1691,7 @@ export class TranscriptWireAdapter {
       state: turnState(reason),
       origin: previous?.origin ?? { kind: 'other' },
       message: previous?.message,
+      delivery: previous?.delivery,
       prompt: previous?.prompt,
       attachmentIds: previous?.attachmentIds,
       startedAt: previous?.startedAt,
@@ -1697,27 +1835,88 @@ export class TranscriptWireAdapter {
   }
 
   private undo(count: number): TranscriptOperation[] {
-    const target = Math.max(0, count);
-    if (target === 0) return [];
-    let anchors = 0;
-    for (let index = this.#turns.length - 1; index >= 0; index -= 1) {
-      const turnId = this.#turns[index]!;
-      if (!this.#undoAnchors.has(turnId)) continue;
-      anchors += 1;
-      if (anchors === target) return this.removeTurnSuffix(index);
+    if (count <= 0) return [];
+    const anchors: { ordinal: number; turnId?: string; messageId?: string }[] = [];
+    for (const turnId of this.#undoAnchors) {
+      anchors.push({ turnId, ordinal: this.#turnRecordOrdinals.get(turnId) ?? this.#turns.indexOf(turnId) });
     }
-    return [];
+    for (const [messageId, record] of this.#deliveryUndoRecords) {
+      if (record.anchor) anchors.push({ messageId, ordinal: record.ordinal, turnId: this.#deliveries.get(messageId)?.turnId });
+    }
+    const anchor = anchors.toSorted((a, b) => b.ordinal - a.ordinal)[count - 1];
+    if (anchor === undefined) return [];
+    if (anchor.messageId === undefined) {
+      const operations = this.removeTurnSuffix(this.#turns.indexOf(anchor.turnId!));
+      return [...operations, ...this.removeDeliverySuffix(anchor.ordinal)];
+    }
+    const retainedTurn = anchor.turnId === undefined ? undefined : this.#turnHeaders.get(anchor.turnId);
+    const retainedFrames = [...this.#frameRecords].filter(([, frame]) => frame.operation.turnId === anchor.turnId && frame.ordinal < anchor.ordinal);
+    const retainedToolIds = new Set(retainedFrames.flatMap(([, record]) => record.operation.frame.kind === 'tool' ? [record.operation.frame.toolCallId] : []));
+    const retainedInteractions = [...this.#interactions.values()].filter((interaction) => interaction.toolCallId !== undefined && retainedToolIds.has(interaction.toolCallId));
+    const retainedSteps = [...this.#stepHeaders].filter(([stepId, step]) => step.turnId === anchor.turnId && (this.#stepRecordOrdinals.get(stepId) ?? Infinity) < anchor.ordinal);
+    const retainedStepOrdinals = retainedSteps.map(([stepId]) => [stepId, this.#stepRecordOrdinals.get(stepId)!] as const);
+    const turnOrdinal = anchor.turnId === undefined ? undefined : this.#turnRecordOrdinals.get(anchor.turnId);
+    const isTurnAnchor = anchor.turnId !== undefined && this.#undoAnchors.has(anchor.turnId);
+    const isCanonical = anchor.turnId !== undefined && this.#canonicalTurns.has(anchor.turnId);
+    const owned = anchor.turnId === undefined ? [] : this.#turnOwnedItemIds.get(anchor.turnId) ?? [];
+    const start = anchor.turnId === undefined
+      ? this.#turns.findIndex((turnId) => (this.#turnRecordOrdinals.get(turnId) ?? -1) >= anchor.ordinal)
+      : this.#turns.indexOf(anchor.turnId);
+    const operations: TranscriptOperation[] = start < 0 ? [] : this.removeTurnSuffix(start).map((op) =>
+      op.op === 'items.remove' ? { ...op, ids: op.ids.filter((id) => !owned.includes(id)) } : op,
+    );
+    operations.push(...this.removeDeliverySuffix(anchor.ordinal));
+    if (retainedTurn !== undefined) {
+      this.trackTurn(retainedTurn.turnId);
+      this.#turnHeaders.set(retainedTurn.turnId, retainedTurn);
+      if (turnOrdinal !== undefined) this.#turnRecordOrdinals.set(retainedTurn.turnId, turnOrdinal);
+      if (isTurnAnchor) this.#undoAnchors.add(retainedTurn.turnId);
+      if (isCanonical) this.#canonicalTurns.add(retainedTurn.turnId);
+      this.#turnOwnedItemIds.set(retainedTurn.turnId, owned);
+      operations.push({ op: 'turn.upsert', turn: retainedTurn });
+      for (const [stepId, step] of retainedSteps) {
+        this.storeStep(stepId, step);
+        this.#steps.set(step.turnId, { stepId, ordinal: step.ordinal });
+        operations.push({ op: 'step.upsert', turnId: step.turnId, step });
+      }
+      for (const [stepId, ordinal] of retainedStepOrdinals) this.#stepRecordOrdinals.set(stepId, ordinal);
+      for (const [key, record] of retainedFrames) {
+        this.#frameRecords.set(key, record);
+        const { operation } = record;
+        if (operation.frame.kind === 'tool') this.storeTool(operation.frame.toolCallId, { turnId: operation.turnId, stepId: operation.stepId, frame: operation.frame });
+        operations.push(operation);
+      }
+      for (const interaction of retainedInteractions) {
+        this.#interactions.set(interaction.interactionId, interaction);
+        operations.push({ op: 'interaction.upsert', interaction });
+      }
+      this.#currentTurnId = retainedTurn.turnId;
+      this.#currentPromptId = retainedTurn.message?.messageId;
+    }
+    return operations;
+  }
+
+  private removeDeliverySuffix(ordinal: number): TranscriptOperation[] {
+    const ids: string[] = [];
+    for (const [messageId, record] of this.#deliveryUndoRecords) {
+      if (record.ordinal < ordinal) continue;
+      if (this.#deliveries.get(messageId)?.turnId === undefined) ids.push(`message-delivery:${messageId}`);
+      this.#deliveries.delete(messageId);
+      this.#deliveryUndoRecords.delete(messageId);
+    }
+    return ids.length === 0 ? [] : [{ op: 'items.remove', ids }];
   }
 
   private removeTurns(count: number): TranscriptOperation[] {
-    if (count === 0) return [];
-    return this.removeTurnSuffix(Math.max(0, this.#turns.length - count));
+    const operations = count === 0 ? [] : this.removeTurnSuffix(Math.max(0, this.#turns.length - count));
+    return [...operations, ...this.removeDeliverySuffix(0)];
   }
 
   private removeTurnSuffix(start: number): TranscriptOperation[] {
     const turns = this.#turns.splice(start);
     if (turns.length === 0) return [];
     const ids = turns.flatMap((turnId) => [turnId, ...(this.#turnOwnedItemIds.get(turnId) ?? [])]);
+    const removedToolIds = new Set(turns.flatMap((turnId) => [...(this.#toolIdsByTurn.get(turnId) ?? [])]));
     for (const turnId of turns) {
       this.#turnIds.delete(turnId);
       this.#undoAnchors.delete(turnId);
@@ -1740,6 +1939,17 @@ export class TranscriptWireAdapter {
       }
       this.#toolIdsByTurn.delete(turnId);
       this.#runningToolIdsByTurn.delete(turnId);
+    }
+    for (const [interactionId, interaction] of this.#interactions) {
+      if (interaction.toolCallId !== undefined && removedToolIds.has(interaction.toolCallId)) this.#interactions.delete(interactionId);
+    }
+    const removed = new Set(turns);
+    for (const turnId of turns) this.#turnRecordOrdinals.delete(turnId);
+    for (const stepId of this.#stepRecordOrdinals.keys()) {
+      if (!this.#stepHeaders.has(stepId)) this.#stepRecordOrdinals.delete(stepId);
+    }
+    for (const [key, record] of this.#frameRecords) {
+      if (removed.has(record.operation.turnId)) this.#frameRecords.delete(key);
     }
     this.#currentTurnId = this.#turns.at(-1);
     this.#currentPromptId = undefined;
@@ -2146,6 +2356,12 @@ function objectOf(value: unknown): Readonly<Record<string, unknown>> | undefined
 
 function arrayOf(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function deliveryOrigin(value: unknown, messageOrigin: unknown): MessageDelivery['origin'] {
+  if (value === 'user' || value === 'queue' || value === 'mailbox' || value === 'recovery' || value === 'injection') return value;
+  if (messageOrigin === 'agent_message') return 'mailbox';
+  return messageOrigin === undefined || messageOrigin === 'user' ? 'user' : 'injection';
 }
 
 function stringOf(value: unknown): string | undefined {

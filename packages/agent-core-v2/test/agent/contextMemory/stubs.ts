@@ -8,6 +8,7 @@ import {
 import { computeUndoCut, type UndoCut } from '#/agent/contextMemory/contextOps';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
+import type { MessageDelivery } from '#/agent/contextMemory/messageDelivery';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
@@ -45,6 +46,11 @@ export function stubContextMemory(eventBus?: IEventBus): StubContextMemory {
       publishSplice(eventBus, { start, deleteCount: 0, messages: [...inserted] });
     },
     appendObservable: (message) => {
+      const start = messages.length;
+      messages.push(message);
+      publishSplice(eventBus, { start, deleteCount: 0, messages: [message] });
+    },
+    appendManaged: (message, _delivery) => {
       const start = messages.length;
       messages.push(message);
       publishSplice(eventBus, { start, deleteCount: 0, messages: [message] });
@@ -100,6 +106,9 @@ class StubContextMemoryService implements IAgentContextMemoryService {
   }
   appendObservable(message: ContextMessage): void {
     this.impl.appendObservable(message);
+  }
+  appendManaged(message: ContextMessage, delivery: MessageDelivery): void {
+    this.impl.appendManaged(message, delivery);
   }
   clear(): void {
     this.impl.clear();

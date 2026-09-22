@@ -27,6 +27,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { projectAgentTranscriptView } from '@kiki/session-core/session/transcript/project';
 import { createViewState } from '@kiki/session-core/session/transcript/types';
+import { MessageStepRequest } from '@kiki/agent-core-v2/agent/loop/stepRequest';
 import {
   AgentTranscript,
   TranscriptFactReducer,
@@ -472,6 +473,473 @@ describe('bindSessionTranscript', () => {
     );
     binding.dispose();
   });
+
+  it('keeps legacy mailbox deliveries equivalent across a multi-step turn and the next turn', () => {
+    const mailbox = (id: string, time: number): TranscriptWireRecord => ({
+      type: 'context.append_message',
+      time,
+      message: {
+        id,
+        role: 'user',
+        content: [{ type: 'text', text: `mailbox ${id}` }],
+        toolCalls: [],
+        origin: { kind: 'agent_message', messageId: id, senderAgentId: 'agent-1', senderTaskName: 'worker' },
+      },
+    });
+    const records = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-1',
+          uuid: 'part-1',
+          part: { type: 'text', text: 'before' },
+        },
+        time: 2_500,
+      },
+      mailbox('mail-1', 3_000),
+      mailbox('mail-2', 3_100),
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1', finishReason: 'stop' },
+        time: 3_500,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 4_000,
+      },
+      mailbox('mail-3', 4_100),
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-2',
+          uuid: 'part-2',
+          part: { type: 'text', text: 'after' },
+        },
+        time: 4_500,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 5_000,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 6_000 },
+      {
+        type: 'turn.prompt',
+        turnId: 1,
+        promptId: 'prompt-2',
+        input: [{ type: 'text', text: 'next' }],
+        origin: { kind: 'user' },
+        time: 7_000,
+      },
+      mailbox('mail-1', 3_000),
+    ];
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+    });
+    for (const record of records) coldReducer.apply(coldAdapter.add(record));
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    for (const record of records) main.bus.emit(record as unknown as Event2<any>);
+
+    const live = store.getAgent('main')!;
+    expect(live.snapshot()).toEqual(cold.snapshot());
+    expect(
+      live.getItems().filter((item) => item.kind === 'turn').map((item) => (item as TranscriptTurn).turnId),
+    ).toEqual(['t0', 't1']);
+    const frames = live.getTurn('t0')?.steps.flatMap((step) => step.frames) ?? [];
+    expect(
+      frames
+        .filter((frame) => frame.kind === 'text' && frame.role === 'user')
+        .map((frame) => (frame as { frameId: string }).frameId),
+    ).toEqual(['mail-1', 'mail-2', 'mail-3']);
+    expect(frames[1]).toMatchObject({
+      kind: 'text',
+      frameId: 'mail-1',
+      delivery: { messageId: 'mail-1', turnId: 't0', stepId: 'step-1', origin: 'mailbox' },
+    });
+    expect(live.getTurn('t1')?.steps).toEqual([]);
+    binding.dispose();
+  });
+
+  it('keeps cold and live mailbox facts identical with time fields preserved', () => {
+    const message = {
+      id: 'agent-message-2',
+      role: 'user',
+      content: [{ type: 'text', text: 'mid-run mailbox' }],
+      toolCalls: [],
+      origin: { kind: 'agent_message', messageId: 'agent-message-2', senderAgentId: 'agent-2' },
+    } as const;
+    const promptRecord = {
+      type: 'turn.prompt', turnId: 0, promptId: 'p', input: [{ type: 'text', text: 'go' }], origin: { kind: 'user' }, time: 1_000,
+    } as const;
+    const stepBegin = {
+      type: 'context.append_loop_event', time: 1_500, event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+    } as const;
+    const mailboxRecord = { type: 'context.append_message', message, time: 2_000 } as const;
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+    });
+    for (const record of [promptRecord, stepBegin, mailboxRecord]) {
+      coldReducer.apply(coldAdapter.add(record));
+    }
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    for (const record of [promptRecord, stepBegin, mailboxRecord]) {
+      main.bus.emit(record as unknown as Event2<any>);
+    }
+    expect(store.getAgent('main')!.snapshot()).toEqual(cold.snapshot());
+    binding.dispose();
+  });
+
+  it(
+    'keeps the cold facts rebuild identical to the live transcript across a dual-path mailbox delivery',
+    { timeout: 30_000 },
+    async () => {
+      const { createAgentToolContext, createAgentLifecycleStub } = await import('./helpers/agentToolFixture');
+      const lifecycle = createAgentLifecycleStub({
+        createAgentIds: ['agent-child'],
+        runCompletion: async () => ({ summary: 'finished immediately' }),
+      });
+      const ctx = createAgentToolContext(lifecycle);
+      onTestFinished(async () => {
+        await ctx.dispose();
+      });
+
+      const store = new TranscriptStore('s1');
+      const interactions = new SessionInteractionService(new TestSessionStateService());
+      const bus = ctx.get(IEventBus);
+      const agents = new FakeAgents();
+      const main = agents.add('main', { loopStatus: { state: 'idle' } });
+      const session = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IAgentLifecycleService) return agents;
+            if (token === ISessionInteractionService) return interactions;
+            if (token === ISessionMetadata) return { read: async () => ({ agents: {} }) };
+            return undefined;
+          },
+        },
+      } as unknown as ISessionScopeHandle;
+      const binding = bindSessionTranscript(store, session);
+      const forwarder = bus.subscribe((event) => {
+        main.bus.emit(event);
+      });
+      onTestFinished(() => forwarder.dispose());
+
+      const memory = ctx.context;
+      memory.appendObservable({
+        id: 'mailbox-dual-path',
+        role: 'user',
+        content: [{ type: 'text', text: 'Message from agent "worker" (main):\n\ndual path check' }],
+        toolCalls: [],
+        origin: { kind: 'agent_message', messageId: 'mailbox-dual-path', senderAgentId: 'agent-child', senderTaskName: 'worker' },
+      });
+
+      const live = store.getAgent('main')!;
+
+      const captured = await ctx.persistedWireRecords();
+      const deliveryRecords = captured.filter(
+        (record) => record.type === 'context.append_message' && record['delivery'] !== undefined,
+      );
+      expect(deliveryRecords.length).toBe(1);
+      expect(deliveryRecords[0]).toMatchObject({
+        delivery: { messageId: 'mailbox-dual-path', origin: 'mailbox' },
+      });
+      const cold = new AgentTranscript('main');
+      const coldReducer = new TranscriptFactReducer(cold);
+      const coldAdapter = new TranscriptWireAdapter('main', {
+        turn: (turnId) => cold.getTurn(turnId),
+      });
+      for (const record of captured) coldReducer.apply(coldAdapter.add(record));
+      coldReducer.apply(coldAdapter.finish());
+
+      expect(live.snapshot()).toEqual(cold.snapshot());
+      const frames = live.getItems().flatMap((item) => (item.kind === 'turn' ? item.steps.flatMap((step) => step.frames) : []));
+      const markers = live.getItems().filter((item) => item.kind === 'marker' && (item as { marker: string }).marker === 'message.delivery');
+      const mailboxFrames = frames.filter(
+        (frame) => frame.kind === 'text' && (frame as { frameId: string }).frameId === 'mailbox-dual-path',
+      );
+      expect(mailboxFrames.length + markers.length).toBe(1);
+      if (mailboxFrames.length > 0) {
+        expect(mailboxFrames[0]).toMatchObject({ kind: 'text', role: 'user', text: 'Message from agent "worker" (main):\n\ndual path check' });
+      } else {
+        expect(markers[0]).toMatchObject({ kind: 'marker', marker: 'message.delivery' });
+      }
+      binding.dispose();
+    },
+  );
+
+  it('preserves durable step timestamps when a live completion follows the recorded step end', () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    onTestFinished(() => binding.dispose());
+    const records = [
+      { type: 'turn.prompt', turnId: 0, promptId: 'timed', input: [{ type: 'text', text: 'start' }], origin: { kind: 'user' }, time: 1_000 },
+      { type: 'turn.step.started', turnId: 0, step: 1, stepId: 'timed-step', time: 1_500 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'timed-step' }, time: 2_000 },
+      { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 0, step: 1, uuid: 'timed-step' }, time: 4_000 },
+      { type: 'turn.step.completed', turnId: 0, step: 1, stepId: 'timed-step', time: 5_000 },
+    ];
+    for (const record of records) main.bus.emit(ev(record));
+    expect(store.getAgent('main')?.getTurn('t0')?.steps[0]).toMatchObject({
+      startedAt: new Date(2_000).toISOString(), endedAt: new Date(4_000).toISOString(),
+    });
+  });
+
+  it(
+    'projects a real managed opening delivery through the actual loop pipeline with exactly one delivery',
+    { timeout: 30_000 },
+    async () => {
+      const { createAgentToolContext, createAgentLifecycleStub } = await import('./helpers/agentToolFixture');
+      const lifecycle = createAgentLifecycleStub({
+        createAgentIds: ['agent-child'],
+        runCompletion: async () => ({ summary: 'finished immediately' }),
+      });
+      const ctx = createAgentToolContext(lifecycle);
+      onTestFinished(async () => {
+        await ctx.dispose();
+      });
+
+      const store = new TranscriptStore('s1');
+      const interactions = new SessionInteractionService(new TestSessionStateService());
+      const bus = ctx.get(IEventBus);
+      const agents = new FakeAgents();
+      const main = agents.add('main', { loopStatus: { state: 'idle' } });
+      const session = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IAgentLifecycleService) return agents;
+            if (token === ISessionInteractionService) return interactions;
+            if (token === ISessionMetadata) return { read: async () => ({ agents: {} }) };
+            return undefined;
+          },
+        },
+      } as unknown as ISessionScopeHandle;
+      const binding = bindSessionTranscript(store, session);
+      const forwarder = bus.subscribe((event) => {
+        main.bus.emit(event);
+      });
+      onTestFinished(() => forwarder.dispose());
+
+      ctx.mockNextResponse({ type: 'text', text: 'Opening answer.' });
+      const launch = await ctx.rpc.prompt({ input: [{ type: 'text', text: 'managed opening' }], promptId: 'prompt-real' });
+      expect(launch).toMatchObject({ turn_id: 0 });
+
+      const live = store.getAgent('main')!;
+      const turn = live.getTurn('t0')!;
+      expect(turn.prompt).toBe('managed opening');
+      expect(turn.message).toMatchObject({ messageId: 'prompt-real' });
+      const openingDeliveries = turn.steps
+        .flatMap((step) => step.frames)
+        .filter((frame) => frame.kind === 'text' && (frame as { frameId: string }).frameId === 'prompt-real');
+      expect(openingDeliveries).toHaveLength(0);
+
+      const captured = await ctx.persistedWireRecords();
+      const openingDeliveryRecords = captured.filter(
+        (record) =>
+          record.type === 'context.append_message' &&
+          (record['delivery'] as { messageId?: string } | undefined)?.messageId === 'prompt-real',
+      );
+      expect(openingDeliveryRecords.length).toBe(1);
+      const openingDelivery = openingDeliveryRecords[0]!['delivery'] as {
+        deliveryId: string;
+        messageId: string;
+        turnId?: number;
+        stepId?: string;
+        step?: number;
+        deliveredAt: string;
+        origin: string;
+      };
+      expect(openingDelivery.deliveryId).toBeDefined();
+      expect(openingDelivery.messageId).toBe('prompt-real');
+      expect(openingDelivery.turnId).toBe(0);
+      expect(openingDelivery.stepId).toBeDefined();
+      expect(openingDelivery.step).toBe(1);
+      expect(openingDelivery.deliveredAt).toBeDefined();
+      expect(openingDelivery.origin).toBe('user');
+
+      const cold = new AgentTranscript('main');
+      const coldReducer = new TranscriptFactReducer(cold);
+      const coldAdapter = new TranscriptWireAdapter('main', {
+        turn: (turnId) => cold.getTurn(turnId),
+      });
+      for (const record of captured) coldReducer.apply(coldAdapter.add(record));
+      coldReducer.apply(coldAdapter.finish());
+      const coldTurn = cold.getTurn('t0')!;
+      expect(coldTurn.prompt).toBe('managed opening');
+      expect(coldTurn.delivery).toMatchObject({
+        messageId: 'prompt-real',
+        origin: 'user',
+        deliveredAt: openingDelivery.deliveredAt,
+        turnId: 't0',
+        stepId: openingDelivery.stepId,
+        step: 1,
+      });
+      expect(coldTurn.delivery?.deliveryId).toBe(openingDelivery.deliveryId);
+      const liveFrames = turn.steps.flatMap((step) => step.frames);
+      const coldFrames = coldTurn.steps.flatMap((step) => step.frames);
+      const liveUserFrames = liveFrames.filter((frame) => frame.kind === 'text' && frame.role === 'user');
+      const coldUserFrames = coldFrames.filter((frame) => frame.kind === 'text' && frame.role === 'user');
+      expect(liveUserFrames).toEqual(coldUserFrames);
+      expect(liveUserFrames).toHaveLength(0);
+      binding.dispose();
+    },
+  );
+
+  it(
+    'projects a real mid-turn managed delivery from an enqueued step request through the actual loop pipeline',
+    { timeout: 30_000 },
+    async () => {
+      const { createAgentToolContext, createAgentLifecycleStub } = await import('./helpers/agentToolFixture');
+      const lifecycle = createAgentLifecycleStub({
+        createAgentIds: ['agent-child'],
+        runCompletion: async () => ({ summary: 'finished immediately' }),
+      });
+      const ctx = createAgentToolContext(lifecycle);
+      onTestFinished(async () => {
+        await ctx.dispose();
+      });
+
+      const store = new TranscriptStore('s1');
+      const interactions = new SessionInteractionService(new TestSessionStateService());
+      const bus = ctx.get(IEventBus);
+      const agents = new FakeAgents();
+      const main = agents.add('main', { loopStatus: { state: 'idle' } });
+      const session = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IAgentLifecycleService) return agents;
+            if (token === ISessionInteractionService) return interactions;
+            if (token === ISessionMetadata) return { read: async () => ({ agents: {} }) };
+            return undefined;
+          },
+        },
+      } as unknown as ISessionScopeHandle;
+      const binding = bindSessionTranscript(store, session);
+      const forwarder = bus.subscribe((event) => {
+        main.bus.emit(event);
+      });
+      onTestFinished(() => forwarder.dispose());
+
+      const loop = ctx.get(IAgentLoopService);
+      let enqueued = false;
+      loop.hooks.onDidFinishStep.register('test-mid-turn-delivery', async (_hookCtx, next) => {
+        if (!enqueued) {
+          enqueued = true;
+          loop.enqueue(
+            new MessageStepRequest({
+              id: 'mail-mid-turn',
+              role: 'user',
+              content: [{ type: 'text', text: 'Message from agent "worker" (mid-turn):\n\nreal pipeline delivery' }],
+              toolCalls: [],
+              origin: { kind: 'agent_message', messageId: 'mail-mid-turn', senderAgentId: 'agent-child', senderTaskName: 'worker' },
+            }),
+          );
+        }
+        await next();
+      });
+
+      ctx.mockNextResponse({ type: 'text', text: 'First answer.' });
+      ctx.mockNextResponse({ type: 'text', text: 'Second answer.' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] });
+      await ctx.untilTurnEnd();
+
+      const live = store.getAgent('main')!;
+      const turn = live.getTurn('t0')!;
+      expect(turn.state).toBe('completed');
+      const allUserFrames = turn.steps.flatMap((step) => step.frames)
+        .filter((frame) => frame.kind === 'text' && frame.role === 'user');
+      expect(allUserFrames).toHaveLength(1);
+      const textFrame = allUserFrames[0] as Extract<TranscriptFrame, { kind: 'text' }>;
+      expect(textFrame).toMatchObject({
+        frameId: 'mail-mid-turn',
+        text: 'Message from agent "worker" (mid-turn):\n\nreal pipeline delivery',
+        delivery: { messageId: 'mail-mid-turn', turnId: 't0', step: 2, origin: 'mailbox' },
+      });
+      const anchoredStep = turn.steps.find((step) => step.ordinal === 2)!;
+      expect(textFrame.delivery?.stepId).toBe(anchoredStep.stepId);
+      expect(anchoredStep.frames).toContainEqual(textFrame);
+
+      const captured = await ctx.persistedWireRecords();
+      const midDeliveryRecords = captured.filter(
+        (record) => record.type === 'context.append_message' &&
+          (record['delivery'] as { origin?: string } | undefined)?.origin === 'mailbox',
+      );
+      expect(midDeliveryRecords).toHaveLength(1);
+      expect(midDeliveryRecords[0]).toMatchObject({
+        message: { id: 'mail-mid-turn' },
+        delivery: { ...textFrame.delivery, turnId: 0 },
+      });
+      expect(textFrame.delivery?.deliveryId).toEqual(expect.any(String));
+      expect(textFrame.delivery?.deliveredAt).toEqual(expect.any(String));
+
+      const cold = new AgentTranscript('main');
+      const coldReducer = new TranscriptFactReducer(cold);
+      const coldAdapter = new TranscriptWireAdapter('main', {
+        turn: (turnId) => cold.getTurn(turnId),
+      });
+      for (const record of captured) coldReducer.apply(coldAdapter.add(record));
+      coldReducer.apply(coldAdapter.finish());
+      const coldMailboxFrames = cold.getTurn('t0')!.steps
+        .flatMap((step) => step.frames)
+        .filter((frame) => frame.kind === 'text' && frame.role === 'user' && (frame as { delivery?: { origin?: string } }).delivery?.origin === 'mailbox');
+      expect(coldMailboxFrames).toEqual(allUserFrames);
+      expect(coldMailboxFrames).toHaveLength(1);
+
+      const liveBlocks = projectAgentTranscriptView(
+        createViewState('session_test'), 'main', live.snapshot(),
+      ).blocks;
+      const coldBlocks = projectAgentTranscriptView(
+        createViewState('session_test'), 'main', cold.snapshot(),
+      ).blocks;
+      expect(liveBlocks).toEqual(coldBlocks);
+      expect(liveBlocks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'user',
+            text: 'Message from agent "worker" (mid-turn):\n\nreal pipeline delivery',
+          }),
+        ]),
+      );
+      binding.dispose();
+    },
+  );
 
   it('keeps live and cold task notification blocks equivalent without a user bubble', () => {
     const records = [
@@ -1220,6 +1688,140 @@ describe('bindSessionTranscript', () => {
     agents.remove('sub-1');
     sub.bus.emit(ev({ type: 'turn.ended', turnId: 0, reason: 'completed' }));
     expect(store.getAgent('sub-1')?.getItems()[0]).toMatchObject({ kind: 'turn', state: 'running' });
+    binding.dispose();
+  });
+
+  it('projects an unanchored canonical delivery onto the unknown-header turn without duplicating it', () => {
+    const records = [
+      { type: 'turn.started', time: 1_000, turnId: 0, origin: { kind: 'user' } },
+      {
+        type: 'context.append_message',
+        time: 1_500,
+        delivery: {
+          deliveryId: 'delivery-open', messageId: 'prompt-open', turnId: 0, stepId: 'step-1', step: 1,
+          deliveredAt: new Date(1_500).toISOString(), origin: 'user',
+        },
+        message: {
+          id: 'prompt-open',
+          role: 'user',
+          content: [{ type: 'text', text: 'opening prompt' }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+      },
+      { type: 'turn.ended', time: 2_000, turnId: 0, reason: 'completed' },
+    ] as const;
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+    });
+    for (const record of records) coldReducer.apply(coldAdapter.add(record));
+    coldReducer.apply(coldAdapter.finish());
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    for (const record of records) main.bus.emit(record as unknown as Event2<any>);
+
+    const live = store.getAgent('main')!;
+    const liveFrames = live.getTurn('t0')?.steps.flatMap((step) => step.frames) ?? [];
+    const coldFrames = cold.getTurn('t0')?.steps.flatMap((step) => step.frames) ?? [];
+    const liveDelivery = liveFrames.filter(
+      (frame) => frame.kind === 'text' && (frame as { frameId: string }).frameId === 'prompt-open',
+    );
+    const coldDelivery = coldFrames.filter(
+      (frame) => frame.kind === 'text' && (frame as { frameId: string }).frameId === 'prompt-open',
+    );
+    expect(liveDelivery).toHaveLength(1);
+    expect(liveDelivery).toEqual(coldDelivery);
+    expect(liveDelivery[0]).toMatchObject({
+      kind: 'text',
+      role: 'user',
+      text: 'opening prompt',
+      delivery: {
+        deliveryId: 'delivery-open',
+        messageId: 'prompt-open',
+        turnId: 't0',
+        stepId: 'step-1',
+        step: 1,
+        deliveredAt: new Date(1_500).toISOString(),
+        origin: 'user',
+      },
+    });
+    expect(live.getTurn('t0')?.steps).toHaveLength(1);
+    binding.dispose();
+  });
+
+  it('fills the managed opening header prompt and delivery from its canonical echo without a same-id user frame', () => {
+    const records = [
+      {
+        type: 'turn.prompt',
+        time: 900,
+        turnId: 0,
+        promptId: 'prompt-open',
+        managed: true,
+        input: [{ type: 'text', text: 'opening prompt' }],
+        origin: { kind: 'user' },
+      },
+      { type: 'turn.started', time: 1_000, turnId: 0, origin: { kind: 'user' } },
+      {
+        type: 'context.append_message',
+        time: 1_500,
+        delivery: {
+          deliveryId: 'delivery-open', messageId: 'prompt-open', turnId: 0, stepId: 'step-1', step: 1,
+          deliveredAt: new Date(1_500).toISOString(), origin: 'user',
+        },
+        message: {
+          id: 'prompt-open',
+          role: 'user',
+          content: [{ type: 'text', text: 'opening prompt' }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+      },
+      { type: 'turn.ended', time: 2_000, turnId: 0, reason: 'completed' },
+    ] as const;
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldAdapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => cold.getTurn(turnId),
+    });
+    for (const record of records) coldReducer.apply(coldAdapter.add(record));
+    coldReducer.apply(coldAdapter.finish());
+
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    for (const record of records) main.bus.emit(record as unknown as Event2<any>);
+
+    const live = store.getAgent('main')!;
+    expect(live.snapshot()).toEqual(cold.snapshot());
+    const turn = live.getTurn('t0')!;
+    expect(turn.prompt).toBe('opening prompt');
+    expect(turn.delivery).toMatchObject({
+      deliveryId: 'delivery-open',
+      messageId: 'prompt-open',
+      turnId: 't0',
+      stepId: 'step-1',
+      step: 1,
+      deliveredAt: new Date(1_500).toISOString(),
+      origin: 'user',
+    });
+    expect(turn.message).toMatchObject({ messageId: 'prompt-open' });
+    const frames = turn.steps.flatMap((step) => step.frames);
+    const sameIdUserFrames = frames.filter(
+      (frame) => frame.kind === 'text' && (frame as { frameId: string }).frameId === 'prompt-open',
+    );
+    expect(sameIdUserFrames).toHaveLength(0);
     binding.dispose();
   });
 

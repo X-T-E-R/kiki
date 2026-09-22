@@ -1,5 +1,6 @@
 import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
 import { newMessageId } from '#/agent/contextMemory/messageId';
+import type { MessageDeliveryOrigin } from '#/agent/contextMemory/messageDelivery';
 import { StepRequest, type StepRequestOptions, type TurnSeed } from '#/agent/loop/stepRequest';
 import type { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 
@@ -46,8 +47,9 @@ export class PromptStepRequest extends UserMessageStepRequest {
     reminders: IAgentSystemReminderService,
     _providerType: string | undefined,
     private readonly alreadyMaterialized = false,
+    deliveryOrigin?: MessageDeliveryOrigin,
   ) {
-    super(message, captions, reminders, { admission: 'newTurn' });
+    super(message, captions, reminders, { admission: 'newTurn', deliveryOrigin });
   }
 
   override get turnSeed(): TurnSeed {
@@ -78,11 +80,13 @@ export class SteerStepRequest extends UserMessageStepRequest {
     private readonly recordSteer: (message: ContextMessage) => void,
     private readonly forgetSteer: (request: SteerStepRequest) => void,
     admission: 'activeTurnOnly' | 'activeOrNewTurn' = 'activeTurnOnly',
+    deliveryOrigin?: MessageDeliveryOrigin,
   ) {
     super(message, captions, reminders, {
       mergeable: true,
       turnScoped: false,
       admission,
+      deliveryOrigin,
     });
   }
 

@@ -6,6 +6,8 @@ import type {
 } from '@kiki/protocol';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { newDeliveryId } from '#/agent/contextMemory/messageDelivery';
+import { newMessageId } from '#/agent/contextMemory/messageId';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
 import {
   AssistantDelta,
@@ -540,16 +542,23 @@ export class ExternalTurnRecorder {
         promptEchoSuppressed = true;
         continue;
       }
-      this.#context.append({
+      const messageId = segment.messageId ?? newMessageId();
+      this.#context.appendManaged({
         role: 'user',
         content: [{ type: 'text', text: segment.text }],
         toolCalls: [],
-        id: segment.messageId,
+        id: messageId,
         providerMessageId: segment.messageId,
         origin: {
           kind: 'system_trigger',
           name: `external-executor:${this.metadata.executorId}`,
         },
+      }, {
+        deliveryId: newDeliveryId(),
+        messageId,
+        turnId: this.turnId,
+        deliveredAt: new Date().toISOString(),
+        origin: 'user',
       });
     }
   }

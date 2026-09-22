@@ -117,8 +117,19 @@ export const stepRetrySchema = z.object({
 export const turnStateSchema = z.enum(['queued', 'running', 'completed', 'failed', 'cancelled']);
 export const stepStateSchema = z.enum(['running', 'completed', 'interrupted', 'failed']);
 
+export const messageDeliverySchema = z.object({
+  deliveryId: z.string(),
+  messageId: z.string(),
+  turnId: turnIdSchema.optional(),
+  stepId: stepIdSchema.optional(),
+  step: z.number().int().nonnegative().optional(),
+  deliveredAt: z.string().optional(),
+  origin: z.enum(['user', 'queue', 'mailbox', 'recovery', 'injection']),
+});
+
 export const textFrameSchema = z.object({
   kind: z.literal('text'),
+  delivery: messageDeliverySchema.optional(),
   frameId: frameIdSchema,
   part: transcriptPartIdentitySchema.optional(),
   role: z.enum(['assistant', 'user']),
@@ -222,6 +233,7 @@ export const transcriptTurnSchema = z.object({
   state: turnStateSchema,
   origin: turnOriginSchema,
   message: transcriptMessageIdentitySchema.optional(),
+  delivery: messageDeliverySchema.optional(),
   prompt: z.string().optional(),
   attachmentIds: z.array(z.string()).optional(),
   steps: z.array(transcriptStepSchema),

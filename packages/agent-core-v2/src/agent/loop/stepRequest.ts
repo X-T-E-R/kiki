@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { ContentPart } from '#/kosong/contract/message';
+import type { MessageDeliveryOrigin } from '#/agent/contextMemory/messageDelivery';
 import { USER_PROMPT_ORIGIN, type ContextMessage, type PromptOrigin } from '#/agent/contextMemory/types';
 
 export type StepRequestState = 'pending' | 'materialized' | 'aborted';
@@ -21,6 +22,7 @@ export interface StepRequestOptions {
   readonly mergeable?: boolean;
   readonly turnScoped?: boolean;
   readonly admission?: StepRequestAdmission;
+  readonly deliveryOrigin?: MessageDeliveryOrigin;
 }
 
 export abstract class StepRequest {
@@ -29,6 +31,7 @@ export abstract class StepRequest {
   readonly mergeable: boolean;
   readonly turnScoped: boolean;
   readonly admission: StepRequestAdmission;
+  readonly deliveryOrigin?: MessageDeliveryOrigin;
 
   private _state: StepRequestState = 'pending';
 
@@ -36,6 +39,7 @@ export abstract class StepRequest {
     this.mergeable = options.mergeable ?? false;
     this.turnScoped = options.turnScoped ?? true;
     this.admission = options.admission ?? 'activeOrNextTurn';
+    this.deliveryOrigin = options.deliveryOrigin;
   }
 
   get turnSeed(): TurnSeed | undefined {

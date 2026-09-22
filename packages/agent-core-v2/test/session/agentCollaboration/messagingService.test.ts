@@ -1514,6 +1514,7 @@ function agentHandle(
     get: () => messages,
     append: (...added) => { operations.push('append'); messages.push(...added); },
     appendObservable: (message) => { operations.push('appendObservable'); messages.push(message); },
+    appendManaged: (message, _delivery) => { operations.push('appendObservable'); messages.push(message); },
     appendLoopEvent: () => {},
     publishTrailingRemoval: () => false,
     clear: () => {},

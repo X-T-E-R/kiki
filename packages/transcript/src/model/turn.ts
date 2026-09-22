@@ -1,4 +1,4 @@
-import type { TranscriptFrame } from './frame';
+import type { MessageDelivery, TranscriptFrame } from './frame';
 import type { AttachmentId, StepId, TaskId, TurnId } from './ids';
 import type { TranscriptMessageIdentity } from './identity';
 
@@ -79,6 +79,7 @@ export interface TranscriptTurn {
   readonly state: TurnState;
   readonly origin: TurnOrigin;
   readonly message?: TranscriptMessageIdentity;
+  readonly delivery?: MessageDelivery;
   /** The raw prompt that opened the turn (user text, cron prompt, …). */
   readonly prompt?: string;
   /** Attachments carried by the turn-opening input (entities in `attachments`). */

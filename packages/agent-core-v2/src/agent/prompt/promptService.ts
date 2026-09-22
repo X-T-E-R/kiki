@@ -11,6 +11,7 @@ import { abortable, abortError, userCancellationReason } from '#/_base/utils/abo
 import { toErrorPayload } from '#/_base/errors/serialize';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { newMessageId } from '#/agent/contextMemory/messageId';
+import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
 import { USER_PROMPT_ORIGIN, type BundledSkillActivation, type ContextMessage, type PromptOrigin } from '#/agent/contextMemory/types';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService, type EnqueueReceipt, type Turn, type TurnResult } from '#/agent/loop/loop';
@@ -531,6 +532,7 @@ export class AgentPromptService implements IAgentPromptService {
   } | undefined;
   private readonly promptIds = new KeyReservationRegistry<string>();
   private readonly steeringPromptIds = new Set<string>();
+  private readonly recoveryPendingIds = new Set<string>();
   private steering = 0;
   private waitingForLoop = false;
   private recoveryHold = false;
@@ -916,6 +918,7 @@ export class AgentPromptService implements IAgentPromptService {
       } as Record;
       record.handle = this.createHandle(record);
       this.pending.push(record);
+      this.recoveryPendingIds.add(record.id);
     }
     this.recoveryHold = this.pending.length > 0;
     if (this.recoveryHold) this.publishQueueHoldChanged();
@@ -1049,9 +1052,10 @@ export class AgentPromptService implements IAgentPromptService {
             lineage: undefined,
             input: materialized.content,
             origin: materialized.origin ?? USER_PROMPT_ORIGIN,
+            managed: true,
           }),
         );
-      }, () => {});
+      }, () => {}, 'activeTurnOnly', 'queue');
       let turn: Turn | undefined;
       try {
         const receipt = this.loop.enqueue(request);
@@ -1182,6 +1186,7 @@ export class AgentPromptService implements IAgentPromptService {
           lineage: undefined,
           input: materialized.content,
           origin: materialized.origin ?? USER_PROMPT_ORIGIN,
+          managed: true,
         }),
       );
     }, () => {}, 'activeOrNewTurn');
@@ -1262,8 +1267,9 @@ export class AgentPromptService implements IAgentPromptService {
         preparePromptRuntimeControls(accessor, item.execution, item.goalId));
       await applyControls();
       controller.signal.throwIfAborted();
+      const recovered = this.recoveryPendingIds.delete(item.id);
       const receipt = this.loop.enqueue(
-        new PromptStepRequest(message, captions, this.reminders, this.providerType(), item.alreadyMaterialized),
+        new PromptStepRequest(message, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined),
         { at: 'head' },
       );
       launching.receipt = receipt;
@@ -1381,7 +1387,14 @@ export class AgentPromptService implements IAgentPromptService {
         ownerPromptId,
       });
     }
-    if (message.content.length > 0) this.context.append({ ...message, id: ownerPromptId });
+    if (message.content.length > 0) {
+      this.context.appendManaged({ ...message, id: ownerPromptId }, {
+        deliveryId: newDeliveryId(),
+        messageId: ownerPromptId,
+        deliveredAt: new Date().toISOString(),
+        origin: deliveryOriginOf(message.origin),
+      });
+    }
   }
   private async deliverToolResult(ctx: ToolDidExecuteContext): Promise<void> {
     const delivery = ctx.result.delivery; if (delivery === undefined) return;

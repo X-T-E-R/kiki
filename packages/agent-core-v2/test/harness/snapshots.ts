@@ -57,6 +57,7 @@ interface SnapshotLabels {
   readonly uuidLabels: Map<string, string>;
   readonly msgLabels: Map<string, string>;
   readonly interactionLabels: Map<string, string>;
+  readonly deliveryIdLabels: Map<string, string>;
 }
 
 export function createEventSnapshotter() {
@@ -64,6 +65,7 @@ export function createEventSnapshotter() {
     uuidLabels: new Map<string, string>(),
     msgLabels: new Map<string, string>(),
     interactionLabels: new Map<string, string>(),
+    deliveryIdLabels: new Map<string, string>(),
   };
 
   return (events: readonly EventSnapshotEntry[]): EventSnapshot => eventSnapshot(events, labels);
@@ -269,6 +271,7 @@ function normalizeValue(value: unknown, labels: SnapshotLabels): unknown {
     }
     if (isUuid(value)) return labelFor(value, labels.uuidLabels, 'uuid');
     if (isMessageId(value)) return labelFor(value, labels.msgLabels, 'msg');
+    if (value.startsWith('dlv_')) return labelFor(value, labels.deliveryIdLabels, 'dlv');
     return value;
   }
 
@@ -294,7 +297,7 @@ function normalizeObjectField(key: string, value: unknown, labels: SnapshotLabel
   ) {
     return '<time>';
   }
-  if ((key === 'finishedAt' || key === 'abortedAt' || key === 'steeredAt' || key === 'createdAt' || key === 'committedAt') && typeof value === 'string') return '<time>';
+  if ((key === 'finishedAt' || key === 'abortedAt' || key === 'steeredAt' || key === 'createdAt' || key === 'committedAt' || key === 'deliveredAt') && typeof value === 'string') return '<time>';
   if (key === 'protocol_version' && value === WIRE_PROTOCOL_VERSION) {
     return '<protocol-version>';
   }

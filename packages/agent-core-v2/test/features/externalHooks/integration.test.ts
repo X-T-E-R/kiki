@@ -120,6 +120,9 @@ function stubContextMemory(): IAgentContextMemoryService & {
     appendObservable: (message) => {
       messages.push(message);
     },
+    appendManaged: (message, _delivery) => {
+      messages.push(message);
+    },
     appendLoopEvent: () => {},
     publishTrailingRemoval: () => false,
     clear: () => {

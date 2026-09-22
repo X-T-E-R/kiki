@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { estimateTokens, estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { IEventBus } from '#/app/event/eventBus';
-import { ContextAppendObservableMessage } from '#/agent/contextMemory/contextEvents';
+import { ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
 import { buildImageCompressionCaption } from '#/agent/media/image-compress';
 import {
   buildContextCompactionShape,
@@ -73,7 +73,7 @@ describe('Agent context', () => {
     expect(ctx.project().some((message) => 'origin' in message)).toBe(false);
   });
 
-  it('publishes only the selectively observable append event', () => {
+  it('publishes the delivery-carrying append event for user-visible appends', () => {
     const events: unknown[] = [];
     const subscription = ctx.get(IEventBus).subscribe((event) => events.push(event));
     const appendEvents = () => events.filter((event) =>
@@ -101,14 +101,47 @@ describe('Agent context', () => {
       },
     });
 
-    expect(ContextAppendObservableMessage.durable).toBe(true);
-    expect(ContextAppendObservableMessage.observable).toBe(true);
-    expect(appendEvents()).toEqual([
-      expect.objectContaining({
-        type: 'context.append_message',
-        message: expect.objectContaining({ id: 'mailbox-message' }),
+    expect(ContextAppendMessage.durable).toBe(true);
+    const observedAll = appendEvents();
+    const [observed] = observedAll.slice(-1);
+    expect(observed).toEqual(expect.objectContaining({
+      type: 'context.append_message',
+      message: expect.objectContaining({ id: 'mailbox-message' }),
+    }));
+    expect((observed as { delivery?: { origin: string; messageId: string; deliveryId: string } }).delivery).toEqual(
+      expect.objectContaining({ origin: 'mailbox', messageId: 'mailbox-message' }),
+    );
+
+    context.appendManaged(
+      {
+        id: 'prompt-message',
+        role: 'user',
+        content: [{ type: 'text', text: 'prompt' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      {
+        deliveryId: 'dlv_prompt',
+        messageId: 'prompt-message',
+        turnId: 3,
+        stepId: 'step-uuid',
+        step: 2,
+        deliveredAt: new Date().toISOString(),
+        origin: 'user',
+      },
+    );
+    const [promptObserved] = appendEvents().slice(-1);
+    expect(promptObserved).toEqual(expect.objectContaining({
+      type: 'context.append_message',
+      delivery: expect.objectContaining({
+        deliveryId: 'dlv_prompt',
+        messageId: 'prompt-message',
+        turnId: 3,
+        stepId: 'step-uuid',
+        step: 2,
+        origin: 'user',
       }),
-    ]);
+    }));
     subscription.dispose();
   });
 

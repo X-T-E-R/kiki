@@ -12,6 +12,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import type { UndoCut } from '#/agent/contextMemory/contextOps';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { MessageDelivery } from '#/agent/contextMemory/messageDelivery';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { AgentContextInjectorService } from '#/agent/contextInjector/contextInjectorService';
@@ -262,6 +263,10 @@ class FakeContextMemory implements IAgentContextMemoryService {
   }
 
   appendObservable(message: ContextMessage): void {
+    this.appended.push(message);
+  }
+
+  appendManaged(message: ContextMessage, _delivery: MessageDelivery): void {
     this.appended.push(message);
   }
 

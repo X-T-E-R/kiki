@@ -99,6 +99,7 @@ export function createAgentLifecycleStub(
             data: () => profileByAgentId.get(agentId) as unknown as ProfileData,
             update: () => {},
             republishStatus: () => {},
+            publishBindingAdvisories: () => {},
             getEffectiveThinkingLevel: () =>
               profileByAgentId.get(agentId)?.thinkingLevel ?? 'off',
             isToolActive: () => false,

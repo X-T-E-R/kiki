@@ -224,7 +224,14 @@ function createAgentTaskService(options: {
   });
 
   const context = ctx.get(IAgentContextMemoryService);
-  const appendHistorySpy = vi.spyOn(context, 'append');
+  const appendSpy = vi.spyOn(context, 'append');
+const contextWithAppend = context as unknown as {
+  append: (m: TestContextMessage) => void;
+  appendManaged: (m: TestContextMessage, d: unknown) => void;
+};
+const originalAppend = contextWithAppend.append.bind(context);
+contextWithAppend.appendManaged = (message: TestContextMessage, _delivery: unknown) => originalAppend(message);
+const appendHistorySpy = vi.spyOn(context, 'append');
 
   const agent: FakeTaskAgent = {
     emittedEvents,

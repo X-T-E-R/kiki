@@ -833,6 +833,171 @@ describe('TranscriptWireAdapter', () => {
     expect(transcript.getAttachment('t0.att3')?.name).toBeUndefined();
   });
 
+  it('keeps legacy mailbox deliveries inside the proven active turn without consuming turn ids', () => {
+    const mailbox = (id: string, time: number): TranscriptWireRecord => ({
+      type: 'context.append_message', time,
+      message: {
+        id, role: 'user', content: [{ type: 'text', text: 'same message' }],
+        origin: { kind: 'agent_message', messageId: id, senderAgentId: 'child', senderTaskName: 'worker' },
+      },
+    });
+    const transcript = replay([
+      ...records.slice(0, 3),
+      mailbox('mail-1', 3_100), mailbox('mail-2', 3_200), mailbox('mail-3', 3_300),
+      { type: 'context.append_loop_event', time: 4_000, event: { type: 'step.end', turnId: 0, uuid: 'step-1', step: 1, finishReason: 'stop' } },
+      { type: 'context.append_loop_event', time: 5_000, event: { type: 'step.begin', turnId: 0, uuid: 'step-2', step: 2 } },
+      { type: 'context.append_loop_event', time: 6_000, event: { type: 'content.part', turnId: 0, stepUuid: 'step-2', uuid: 'after', part: { type: 'text', text: 'after' } } },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 7_000 },
+      { type: 'turn.prompt', turnId: 1, promptId: 'next', input: [{ type: 'text', text: 'next prompt' }], origin: { kind: 'user' }, time: 8_000 },
+      mailbox('mail-1', 3_100),
+    ]);
+    expect(transcript.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t0', 't1']);
+    expect(transcript.getTurn('t0')?.steps.flatMap((step) => step.frames).map((frame) => frame.frameId)).toEqual(['part-a', 'mail-1', 'mail-2', 'mail-3', 'after']);
+    expect(transcript.getTurn('t0')?.steps[0]?.frames[1]).toMatchObject({
+      delivery: { messageId: 'mail-1', turnId: 't0', stepId: 'step-1', deliveredAt: new Date(3_100).toISOString(), origin: 'mailbox' },
+    });
+    expect(transcript.getTurn('t1')?.steps).toEqual([]);
+  });
+
+  it('preserves unanchored legacy deliveries as messages without guessing an ended or missing turn', () => {
+    const message = (id: string): TranscriptWireRecord => ({
+      type: 'context.append_message', time: 4_000,
+      message: { id, role: 'user', content: [{ type: 'text', text: id }], origin: { kind: 'agent_message', messageId: id } },
+    });
+    const transcript = replay([
+      message('before-run'),
+      ...records.slice(0, 3),
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 3_500 },
+      message('idle'),
+      { type: 'turn.prompt', turnId: 1, input: [{ type: 'text', text: 'next' }], origin: { kind: 'user' }, time: 5_000 },
+    ]);
+    expect(transcript.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t0', 't1']);
+    expect(transcript.getItems().filter((item) => item.kind === 'marker').map((item) => ({ marker: item.marker, payload: item.payload }))).toEqual([
+      expect.objectContaining({ marker: 'message.delivery', payload: expect.objectContaining({ messageId: 'before-run', text: 'before-run' }) }),
+      expect.objectContaining({ marker: 'message.delivery', payload: expect.objectContaining({ messageId: 'idle', text: 'idle' }) }),
+    ]);
+    expect(transcript.getTurn('t0')?.steps[0]?.frames).toHaveLength(1);
+  });
+
+  it('projects canonical delivery once at its accepted step and round trips the delivery contract', () => {
+    const delivery = {
+      deliveryId: 'delivery-1', messageId: 'mail', turnId: 0, stepId: 'step-2', step: 2,
+      deliveredAt: new Date(4_000).toISOString(), origin: 'mailbox',
+    };
+    const record = {
+      type: 'context.append_message', time: 4_000, delivery,
+      message: { id: 'mail', role: 'user', content: [{ type: 'text', text: 'delivered' }], origin: { kind: 'agent_message', messageId: 'mail' } },
+    };
+    const transcript = replay([
+      ...records.slice(0, 3), record,
+      { type: 'context.append_loop_event', time: 5_000, event: { type: 'step.begin', turnId: 0, uuid: 'step-2', step: 2 } },
+      record,
+    ]);
+    expect(transcript.getTurn('t1')).toBeUndefined();
+    const frame = transcript.getTurn('t0')?.steps[1]?.frames[0];
+    expect(frame).toMatchObject({ kind: 'text', text: 'delivered', delivery: { ...delivery, turnId: 't0' } });
+    const snapshot = transcript.snapshot();
+    expect(agentTranscriptSnapshotSchema.parse(snapshot).items).toEqual(snapshot.items);
+  });
+
+  it('uses managed turn events only as headers and retains delivery identity across checkpoint replay', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add({ ...records[0]!, managed: true }));
+    expect(transcript.getTurn('t0')?.prompt).toBeUndefined();
+    const delivery: TranscriptWireRecord = {
+      type: 'context.append_message', time: 1_500,
+      delivery: { deliveryId: 'd-open', messageId: 'prompt-1', turnId: 0, stepId: 'step-1', step: 1, deliveredAt: new Date(1_500).toISOString(), origin: 'user' },
+      message: { id: 'prompt-1', role: 'user', content: [{ type: 'text', text: 'run it' }], origin: { kind: 'user' } },
+    };
+    reducer.apply(adapter.add(delivery));
+    expect(adapter.add({ ...records[0]!, managed: true })).toEqual([]);
+    reducer.apply(adapter.add(records[1]!));
+    reducer.apply(adapter.add(records[2]!));
+    const resumed = new AgentTranscript('main');
+    resumed.apply([{ op: 'reset', agentId: 'main', snapshot: transcript.snapshot() }]);
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.restore(reducer.checkpoint());
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(adapter.checkpoint());
+    expect(resumedReducer.apply(resumedAdapter.add(delivery)).acceptedOperations).toEqual([]);
+    resumedReducer.apply(resumedAdapter.add({ type: 'turn.steer', turnId: 0, managed: true, promptId: 'queued', input: [{ type: 'text', text: 'not delivered' }], origin: { kind: 'user' } }));
+    resumedReducer.apply(resumedAdapter.add({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, uuid: 'step-2', step: 2 }, time: 4_000 }));
+    expect(resumed.getTurn('t0')).toMatchObject({ prompt: 'run it', delivery: { deliveryId: 'd-open', messageId: 'prompt-1', deliveredAt: new Date(1_500).toISOString() } });
+    expect(resumed.getTurn('t0')?.steps.flatMap((step) => step.frames).map((frame) => frame.frameId)).toEqual(['part-a']);
+    resumedReducer.apply(resumedAdapter.add({ type: 'context.undo', count: 1, time: 5_000 }));
+    expect(resumed.getItems()).toEqual([]);
+  });
+
+  it('does not let an unmaterialized managed header consume a context undo anchor', () => {
+    const transcript = replay([
+      ...records,
+      { type: 'turn.prompt', turnId: 1, promptId: 'not-materialized', managed: true, input: [{ type: 'text', text: 'not accepted' }], origin: { kind: 'user' } },
+      { type: 'context.undo', count: 1 },
+    ]);
+    expect(transcript.getItems()).toEqual([]);
+  });
+
+  it('waits for canonical acceptance before projecting managed media and bundled skills', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    const origin = { kind: 'user', skillActivations: [{ activationId: 'activation-1', skillName: 'review' }] };
+    const input = [{ type: 'text', text: '<skill>review</skill>' }, { type: 'image_url', imageUrl: { id: 'image-1' } }];
+    reducer.apply(adapter.add({ type: 'turn.prompt', turnId: 0, promptId: 'managed-media', input, origin, managed: true }));
+    expect(transcript.getTurn('t0')?.attachmentIds).toBeUndefined();
+    expect(transcript.getItems().filter((item) => item.kind === 'marker')).toEqual([]);
+    reducer.apply(adapter.add({
+      type: 'context.append_message', time: 1_500,
+      delivery: { deliveryId: 'd-media', messageId: 'managed-media', turnId: 0, stepId: 'step-1', step: 1, deliveredAt: new Date(1_500).toISOString(), origin: 'user' },
+      message: { id: 'managed-media', role: 'user', content: input, origin },
+    }));
+    expect(transcript.getTurn('t0')?.attachmentIds).toEqual(['managed-media.att1']);
+    expect(transcript.getTurn('t0')?.prompt).toBeUndefined();
+    expect(transcript.getItems().filter((item) => item.kind === 'marker').map((item) => item.markerId)).toEqual(['wire:v2:skill:activation-1']);
+  });
+
+  it('undoes an accepted mailbox suffix without deleting the preceding prompt and response', () => {
+    const input: TranscriptWireRecord[] = [
+      ...records.slice(0, 3),
+      { type: 'context.append_message', time: 4_000, message: { id: 'mail-undo', role: 'user', content: [{ type: 'text', text: 'mail' }], origin: { kind: 'agent_message', messageId: 'mail-undo' } } },
+      { type: 'context.append_loop_event', time: 5_000, event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' } },
+      { type: 'context.append_loop_event', time: 6_000, event: { type: 'content.part', turnId: 0, stepUuid: 'step-2', uuid: 'after-mail', part: { type: 'text', text: 'after mail' } } },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 7_000 },
+      { type: 'context.undo', count: 1, time: 8_000 },
+    ];
+    const transcript = replay(input);
+    expect(transcript.getTurn('t0')?.prompt).toBe('run it');
+    expect(transcript.getTurn('t0')?.steps.flatMap((step) => step.frames).map((frame) => frame.frameId)).toEqual(['part-a']);
+    expect(replay([...input, { type: 'context.undo', count: 1, time: 9_000 }]).getItems()).toEqual([]);
+  });
+
+  it('preserves interactions on tools before an undone delivery but removes suffix interactions', () => {
+    const input: TranscriptWireRecord[] = [
+      ...records.slice(0, 5),
+      { type: 'interaction.request', id: 'approval-before', kind: 'approval', toolCallId: 'call-1', request: {} },
+      { type: 'interaction.resolved', id: 'approval-before', response: { approved: true } },
+      { type: 'context.append_message', message: { id: 'mail-undo', role: 'user', content: [{ type: 'text', text: 'mail' }], origin: { kind: 'agent_message', messageId: 'mail-undo' } } },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'suffix-tool', toolCallId: 'call-2', name: 'Bash', args: { command: 'pwd' } } },
+      { type: 'interaction.request', id: 'approval-after', kind: 'approval', toolCallId: 'call-2', request: {} },
+      { type: 'context.undo', count: 1 },
+    ];
+    const transcript = replay(input);
+    expect(transcript.getTurn('t0')?.steps[0]?.frames.map((frame) => frame.frameId)).toEqual(['part-a', 'step-1.call-1']);
+    expect(transcript.getInteraction('approval-before')).toMatchObject({ toolCallId: 'call-1' });
+    expect(transcript.getInteraction('approval-after')).toBeUndefined();
+    expect(replay([...input, { type: 'interaction.resolved', id: 'approval-after', response: {} }]).getInteraction('approval-after')).toBeUndefined();
+  });
+
+  it('clears unanchored deliveries and respects accepted undo of the uncompressed tail', () => {
+    const message = { type: 'context.append_message', time: 1_000, message: { id: 'mail-idle', role: 'user', content: [{ type: 'text', text: 'mail' }], origin: { kind: 'agent_message', messageId: 'mail-idle' } } };
+    const tail = { type: 'context.append_message', time: 1_500, message: { id: 'mail-tail', role: 'user', content: [{ type: 'text', text: 'tail' }], origin: { kind: 'agent_message', messageId: 'mail-tail' } } };
+    expect(replay([message, { type: 'context.clear', time: 2_000 }]).getItems()).toEqual([]);
+    const compacted = replay([message, tail, { type: 'context.apply_compaction', summary: 'summary', compactedCount: 1, time: 2_000 }, { type: 'context.undo', count: 1, time: 3_000 }]);
+    expect(compacted.getItems().flatMap((item) => item.kind === 'marker' && item.marker === 'message.delivery' ? [item.markerId] : [])).toEqual(['message-delivery:mail-idle']);
+  });
+
   it('maps undo and clear records to structural removals', () => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);
@@ -950,9 +1115,9 @@ describe('TranscriptWireAdapter', () => {
     expect(
       transcript.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId),
     ).toEqual(['t0', 't2', 't3', 't4']);
-    expect(transcript.getTurn('t0')?.steps[0]?.frames.at(-1)).toMatchObject({
-      role: 'user',
-      text: 'mode reminder',
+    expect(transcript.getTurn('t0')?.steps[0]?.frames.at(-1)).toMatchObject({ role: 'assistant', text: 'answer' });
+    expect(transcript.getItems().find((item) => item.kind === 'marker' && item.marker === 'message.delivery')).toMatchObject({
+      payload: { text: 'mode reminder', delivery: { turnId: undefined, stepId: undefined } },
     });
     expect(transcript.getTurn('t2')).toMatchObject({ prompt: 'continue', origin: { kind: 'other' } });
     expect(transcript.getTurn('t3')?.origin).toMatchObject({ kind: 'cron', taskId: 'job-1' });
@@ -1766,7 +1931,7 @@ describe('TranscriptWireAdapter', () => {
     },
   );
 
-  it('deduplicates a projected task notification from its legacy context message', () => {
+  it.each([false, true])('deduplicates a projected task notification from its context echo (canonical=%s)', (canonical) => {
     const transcript = replay([
       {
         type: 'turn.prompt',
@@ -1798,6 +1963,10 @@ describe('TranscriptWireAdapter', () => {
       },
       {
         type: 'context.append_message',
+        delivery: canonical ? {
+          deliveryId: 'notification-delivery', messageId: 'notification-message', turnId: 0,
+          stepId: 'step-2', step: 2, deliveredAt: new Date(4_100).toISOString(), origin: 'queue',
+        } : undefined,
         message: {
           id: 'notification-message',
           role: 'user',
@@ -2757,8 +2926,10 @@ describe('AgentTranscriptDraft differential replay', () => {
       { kind: 'finish' },
     ]);
 
-    expect(result.snapshot.items.map(idLabel)).toEqual(['t2', 'm3', 'r4', 't4', 't6']);
+    expect(result.snapshot.items.map(idLabel)).toEqual(['t2', 'm3', 'r4', 't4']);
     expect(result.snapshot.items[1]).toMatchObject({ payload: { revision: 2 } });
+    const turn = result.snapshot.items.find((item) => item.kind === 'turn' && item.turnId === 't2');
+    expect(turn?.kind === 'turn' && turn.steps.flatMap((step) => step.frames).some((frame) => frame.kind === 'text' && frame.text === 'visible')).toBe(true);
   });
 
   it('isolates turn.ended cleanup from running steps and tools in other turns', () => {

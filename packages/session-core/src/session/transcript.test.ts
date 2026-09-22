@@ -198,6 +198,29 @@ describe('classifyTranscriptText', () => {
     ]);
   });
 
+  it('renders unanchored deliveries and uses acceptance times without reordering the timeline', () => {
+    const transcript = new AgentTranscript('main');
+    const origin = { kind: 'agent_message', senderAgentId: 'worker', senderTaskName: 'review' };
+    transcript.apply([
+      { op: 'marker.upsert', item: { kind: 'marker', markerId: 'message-delivery:idle', marker: 'message.delivery', at: FIXED_AT, payload: { messageId: 'idle', text: 'idle mailbox', origin } } },
+      { op: 'turn.upsert', turn: {
+        kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'opening', startedAt: FIXED_AT,
+        delivery: { deliveryId: 'open-delivery', messageId: 'opening', deliveredAt: FIXED_AT_2, origin: 'user' },
+      } },
+      { op: 'step.upsert', turnId: 't0', step: { kind: 'step', turnId: 't0', stepId: 'step-1', ordinal: 1, state: 'completed', startedAt: FIXED_AT } },
+      { op: 'frame.upsert', turnId: 't0', stepId: 'step-1', frame: {
+        kind: 'text', frameId: 'during', role: 'user', text: 'during mailbox', origin,
+        delivery: { deliveryId: 'during-delivery', messageId: 'during', deliveredAt: FIXED_AT_1, origin: 'mailbox' },
+      } },
+    ]);
+    const users = agentTranscriptToBlocks({ agent_id: 'main', ...transcript.snapshot() }).filter((block) => block.kind === 'user');
+    expect(users.map((block) => [block.text, block.createdAt])).toEqual([
+      ['idle mailbox', FIXED_AT], ['opening', FIXED_AT_2], ['during mailbox', FIXED_AT_1],
+    ]);
+    expect(users[0]).toMatchObject({ agentMessage: { senderAgentId: 'worker', senderTaskName: 'review' } });
+    expect(users[0]?.turnId).toBeUndefined();
+  });
+
   it('keeps historical shell commands separate from their output', () => {
     const classified = classifyTranscriptText({
       text: '<bash-input>\necho hello\n</bash-input><bash-stdout>hello\n</bash-stdout>',

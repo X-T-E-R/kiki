@@ -2,6 +2,7 @@ import { createDecorator } from "#/_base/di/instantiation";
 
 import type { UndoCut } from './contextOps';
 import type { LoopRecordedEvent } from './loopEventFold';
+import type { MessageDelivery } from './messageDelivery';
 import type { ContextMessage } from './types';
 
 export interface ContextCompactionInput {
@@ -43,6 +44,8 @@ export interface IAgentContextMemoryService {
   append(...messages: readonly ContextMessage[]): void;
 
   appendObservable(message: ContextMessage): void;
+
+  appendManaged(message: ContextMessage, delivery: MessageDelivery): void;
 
   appendLoopEvent(event: LoopRecordedEvent): void;
 

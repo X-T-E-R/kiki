@@ -12,6 +12,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { BugIndicatingError } from '#/_base/errors/errors';
 import { ErrorCodes, Error2 } from '#/errors';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
@@ -32,6 +33,9 @@ import {
   ContextUndo,
   type ContextSplicedPayload,
 } from './contextEvents';
+import { deliveryOriginOf, newDeliveryId } from './messageDelivery';
+import type { MessageDelivery } from './messageDelivery';
+import { newMessageId } from './messageId';
 import {
   assertContextImportFits,
   computeUndoCut,
@@ -76,9 +80,27 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
   }
 
   appendObservable(message: ContextMessage): void {
+    this.appendManaged(message, {
+      deliveryId: newDeliveryId(),
+      messageId: message.id ?? newMessageId(),
+      deliveredAt: new Date().toISOString(),
+      origin: deliveryOriginOf(message.origin),
+    });
+  }
+
+  appendManaged(message: ContextMessage, delivery: MessageDelivery): void {
     const start = this.get().length;
-    void this.dispatcher.dispatch(new ContextAppendObservableMessage({ message }));
-    this.publishSplice({ start, deleteCount: 0, messages: [message] });
+    const messageId = message.id ?? delivery.messageId;
+    const normalized: ContextMessage = messageId === message.id
+      ? message
+      : { ...message, id: messageId };
+    if (messageId !== delivery.messageId) {
+      throw new BugIndicatingError(
+        'Message delivery identity mismatch: delivery.messageId must equal the stored message id',
+      );
+    }
+    void this.dispatcher.dispatch(new ContextAppendObservableMessage({ message: normalized, delivery }));
+    this.publishSplice({ start, deleteCount: 0, messages: [normalized] });
   }
 
   appendLoopEvent(event: LoopRecordedEvent): void {

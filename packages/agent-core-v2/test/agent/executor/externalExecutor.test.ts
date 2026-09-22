@@ -194,6 +194,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     _serviceBrand: undefined,
     get: () => options.history ?? [],
     append: (...messages: readonly ContextMessage[]) => appendedMessages.push(...messages),
+    appendManaged: (message: ContextMessage, _delivery: unknown) => appendedMessages.push(message),
     appendObservable: (message: ContextMessage) => appendedMessages.push(message),
     appendLoopEvent: (event: unknown) => loopEvents.push(event),
   } as unknown as IAgentContextMemoryService;
@@ -550,6 +551,7 @@ describe('ACP external executor', () => {
       _serviceBrand: undefined,
       get: () => [],
       append: () => {},
+      appendManaged: () => {},
       appendLoopEvent: (event: unknown) => loopEvents.push(event),
     } as unknown as IAgentContextMemoryService;
     const usage = {

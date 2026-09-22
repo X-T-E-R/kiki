@@ -9,7 +9,20 @@ import type { ContextMessage } from './types';
 const contextMessageSchema = z.custom<ContextMessage>();
 const loopRecordedEventSchema = z.custom<LoopRecordedEvent>();
 
-const contextAppendMessageSchema = z.object({ message: contextMessageSchema });
+const messageDeliverySchema = z.object({
+  deliveryId: z.string().min(1),
+  messageId: z.string().min(1),
+  turnId: z.number().int().nonnegative().optional(),
+  stepId: z.string().min(1).optional(),
+  step: z.number().int().nonnegative().optional(),
+  deliveredAt: z.string().min(1),
+  origin: z.enum(['user', 'queue', 'mailbox', 'recovery', 'injection']),
+});
+
+const contextAppendMessageSchema = z.object({
+  message: contextMessageSchema,
+  delivery: messageDeliverySchema.optional(),
+});
 
 export class ContextAppendMessage extends Event2<z.infer<typeof contextAppendMessageSchema>> {
   static override readonly type = 'context.append_message';
@@ -21,6 +34,9 @@ export interface ContextAppendMessage extends z.infer<typeof contextAppendMessag
 export class ContextAppendObservableMessage extends ContextAppendMessage {
   static override readonly observable = true;
 }
+
+export interface MessageDelivery extends z.infer<typeof messageDeliverySchema> {}
+export { messageDeliverySchema };
 
 const contextAppendLoopEventSchema = z.object({ event: loopRecordedEventSchema });
 

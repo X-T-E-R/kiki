@@ -1675,6 +1675,42 @@ describe('TranscriptService live integration', () => {
       }
     });
 
+    it('rebuilds pre-delivery projection checkpoints instead of reviving their phantom turns', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) => JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
+      const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
+      const starts: (number | undefined)[] = [];
+      const createService = () => new TranscriptService({
+        homeDir: home, core,
+        wireRecordReader: async (path, options) => {
+          starts.push(options.startByteOffset);
+          return streamWireRecords(path, options);
+        },
+      });
+      const first = createService();
+      let second: TranscriptService | undefined;
+      try {
+        const expected = await first.readColdSnapshot('s1', 'main');
+        first.dispose();
+        const query = core.accessor.get(IQueryStore);
+        const key = 'ws\0s1\0main';
+        const checkpoint = await query.get<{ format: number; snapshot: AgentTranscriptSnapshot }>('__transcript_projection_checkpoint__', key);
+        expect(checkpoint?.format).toBe(2);
+        await query.put('__transcript_projection_checkpoint__', key, {
+          ...checkpoint, format: 1,
+          snapshot: { ...checkpoint!.snapshot, items: [{ kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] }] },
+        });
+        second = createService();
+        expect(await second.readColdSnapshot('s1', 'main')).toEqual(expected);
+        expect(starts).toEqual([undefined, undefined]);
+      } finally {
+        first.dispose();
+        second?.dispose();
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
     it('cancels the shared scan once the last reader leaves and rescans for the next one', async () => {
       const home = await seedWireHomeWithTool();
       let enteredScan!: () => void;

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+
 import { deferred } from '../../deferred';
 
 import { createDecorator } from '#/_base/di/instantiation';

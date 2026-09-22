@@ -32,7 +32,10 @@ import { BugIndicatingError, ErrorCodes, Error2, isError2, toKimiErrorPayload } 
 import { OrderedHookSlot } from '#/hooks';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
+import { newMessageId } from '#/agent/contextMemory/messageId';
 import { isVacuousContentPart } from '#/agent/contextMemory/vacuousContent';
+import { isDeliveryVisibleMessage } from '#/agent/contextMemory/messageDelivery';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import type {
@@ -484,6 +487,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         lineage: undefined,
         input: job.seed.input,
         origin,
+        managed: true,
       }),
     );
     job.turn.state = 'running';
@@ -720,7 +724,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         : AbortSignal.any([runtime.turnSignal, mutableStep.controller.signal]),
     };
     EventEmitter.setMaxListeners(MAX_STEP_SIGNAL_LISTENERS, step.signal);
-    this.materializeBatch(batch);
+    this.materializeBatch(batch, { turnId: runtime.turnId, stepId: step.uuid, step: step.number });
     return { step };
   }
 
@@ -829,20 +833,36 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return { type: 'return', result: { type: 'failed', error, steps: runtime.steps } };
   }
 
-  private materializeBatch(batch: StepRequestBatch): void {
+  private materializeBatch(batch: StepRequestBatch, anchor: MaterializeAnchor): void {
     const delivery = {};
-    this.materializeRequest(batch.driver, delivery);
+    this.materializeRequest(batch.driver, delivery, anchor);
     for (const request of batch.merged) {
-      this.materializeRequest(request, delivery);
+      this.materializeRequest(request, delivery, anchor);
     }
   }
 
-  private materializeRequest(request: StepRequest, delivery: object): void {
+  private materializeRequest(request: StepRequest, delivery: object, anchor: MaterializeAnchor): void {
     if (request.state !== 'pending') return;
     request.onWillMaterialize();
     const messages = request.resolveContextMessages(delivery);
-    if (messages.length > 0) {
-      this.context.append(...messages);
+    for (const message of messages) {
+      if (!isDeliveryVisibleMessage(message)) {
+        this.context.append(message);
+        continue;
+      }
+      const messageId = message.id ?? newMessageId();
+      this.context.appendManaged(
+        message.id === messageId ? message : { ...message, id: messageId },
+        {
+          deliveryId: newDeliveryId(),
+          messageId,
+          turnId: anchor.turnId,
+          stepId: anchor.stepId,
+          step: anchor.step,
+          deliveredAt: new Date().toISOString(),
+          origin: request.deliveryOrigin ?? deliveryOriginOf(message.origin),
+        },
+      );
     }
     request.markMaterialized();
   }
@@ -1369,6 +1389,12 @@ interface StepRuntime {
 }
 
 type BeginStepResult = { readonly step: StepRuntime } | { readonly result: LoopRunResult };
+
+interface MaterializeAnchor {
+  readonly turnId: number;
+  readonly stepId: string;
+  readonly step: number;
+}
 
 interface StreamPartCollector {
   readonly handle: (part: StreamedMessagePart) => void;

@@ -508,22 +508,24 @@ export class AgentTranscriptLiveAdapter {
     }
     const prev =
       this.currentTurn?.turnId === turnId ? this.currentTurn : this.lookups?.turn?.(turnId);
+    const persisted = this.lookups?.turn?.(turnId);
     const state = mapTurnEndState(event.reason);
     this.currentTurn = {
       kind: 'turn',
       turnId,
       ordinal: event.turnId,
       state,
-      origin: prev?.origin ?? { kind: 'other' },
-      message: prev?.message,
-      prompt: prev?.prompt,
-      attachmentIds: prev?.attachmentIds,
-      startedAt: prev?.startedAt,
+      origin: prev?.origin ?? persisted?.origin ?? { kind: 'other' },
+      message: prev?.message ?? persisted?.message,
+      delivery: prev?.delivery ?? persisted?.delivery,
+      prompt: prev?.prompt ?? persisted?.prompt,
+      attachmentIds: prev?.attachmentIds ?? persisted?.attachmentIds,
+      startedAt: prev?.startedAt ?? persisted?.startedAt,
       endedAt,
       durationMs: event.durationMs,
       error: event.error?.message,
       usage: this.takeTurnUsage(turnId),
-      execution: prev?.execution,
+      execution: prev?.execution ?? persisted?.execution,
     };
     ops.push({ op: 'turn.upsert', turn: this.currentTurn });
     this.currentStep = undefined;
@@ -612,6 +614,7 @@ export class AgentTranscriptLiveAdapter {
     const turnId = `t${event.turnId}`;
     const stepId = event.stepId ?? `${turnId}.${event.step}`;
     const prev = this.currentStep?.stepId === stepId ? this.currentStep : undefined;
+    const persisted = this.lookups?.turnDetails?.(turnId)?.steps.find((step) => step.stepId === stepId);
     if (event.usage !== undefined) {
       const usages = this.stepUsageByTurn.get(turnId) ?? [];
       usages.push(event.usage);
@@ -623,8 +626,8 @@ export class AgentTranscriptLiveAdapter {
       turnId,
       ordinal: event.step,
       state: 'completed',
-      startedAt: prev?.startedAt,
-      endedAt: nowIso(),
+      startedAt: persisted?.startedAt ?? prev?.startedAt,
+      endedAt: persisted?.endedAt ?? nowIso(),
       usage: event.usage,
       finishReason: event.finishReason ?? event.rawFinishReason ?? event.providerFinishReason,
       timing: {

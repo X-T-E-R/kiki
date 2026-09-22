@@ -19,8 +19,25 @@ export interface TranscriptUserOrigin {
   readonly skillActivations?: readonly TranscriptSkillActivation[];
 }
 
+/**
+ * Actual context acceptance, shared by live projection and wire replay.
+ * Origin identifies the delivery channel; TextFrame.origin retains sender provenance.
+ * Missing anchors or time in old journals remain unknown, never inferred from an ended turn.
+ * Timeline order remains turn → step → frame; deliveredAt is not a global sort key.
+ */
+export interface MessageDelivery {
+  readonly deliveryId: string;
+  readonly messageId: string;
+  readonly turnId?: string;
+  readonly stepId?: string;
+  readonly step?: number;
+  readonly deliveredAt?: string;
+  readonly origin: 'user' | 'queue' | 'mailbox' | 'recovery' | 'injection';
+}
+
 /** Assistant / user visible text. L1 always holds the full text so far. */
 export interface TextFrame {
+  readonly delivery?: MessageDelivery;
   readonly kind: 'text';
   readonly frameId: FrameId;
   readonly part?: TranscriptPartIdentity;

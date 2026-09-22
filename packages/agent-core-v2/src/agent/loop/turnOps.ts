@@ -40,6 +40,7 @@ const turnInputShape = {
   lineage: turnLineageSchema.optional(),
   input: z.custom<readonly ContentPart[]>(),
   origin: z.custom<PromptOrigin>(),
+  managed: z.boolean().optional(),
 };
 
 const turnPromptSchema = z.object(turnInputShape);
