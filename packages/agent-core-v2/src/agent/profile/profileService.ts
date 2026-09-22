@@ -1943,7 +1943,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       drivesThinkingThroughTraits(model?.providerType),
     );
     if (forced === undefined || modelAlias === undefined) return forced;
-    if (model !== undefined) this.assertThinkingEffortSupported(forced, model, modelAlias);
     return forced;
   }
 
