@@ -279,7 +279,7 @@ export const en = {
   'agentPanel.capabilitiesTitle': 'Capabilities and dispatch',
   'agentPanel.generalCategory': 'General',
   'agentPanel.registeredTools': 'Registered tools',
-  'agentPanel.availableCount': '{count} available',
+  'agentPanel.enabledOfTotal': '{enabled}/{total}',
   'agentPanel.noRegisteredTools': 'This agent has no registered tools',
   'agentPanel.capability.enabled': 'Enabled',
   'agentPanel.capability.approvalRequired': 'Approval required',

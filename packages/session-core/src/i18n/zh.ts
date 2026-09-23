@@ -279,7 +279,7 @@ export const zh: Record<I18nKey, string> = {
   'agentPanel.capabilitiesTitle': '能力分类与分派',
   'agentPanel.generalCategory': '通用',
   'agentPanel.registeredTools': '已注册工具',
-  'agentPanel.availableCount': '{count} 个可用',
+  'agentPanel.enabledOfTotal': '{enabled}/{total}',
   'agentPanel.noRegisteredTools': '该 Agent 未注册工具',
   'agentPanel.capability.enabled': '启用',
   'agentPanel.capability.approvalRequired': '需人工审批',

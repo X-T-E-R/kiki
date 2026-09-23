@@ -41,6 +41,11 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
     return groups;
   }, [t, tools]);
 
+  const enabledToolCount = useMemo(
+    () => tools.filter((tool) => tool.state === 'enabled').length,
+    [tools],
+  );
+
   // Skills divided into Workspace-specific vs Global
   const workspaceSkills = skills.filter((s) => s.scope === 'workspace');
   const globalSkills = skills.filter((s) => s.scope === 'global');
@@ -74,7 +79,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
             <span>{t('agentPanel.registeredTools')}</span>
           </span>
           <span className="font-mono text-[10px] text-ink-faint">
-            {t('agentPanel.availableCount', { count: tools.length })}
+            {t('agentPanel.enabledOfTotal', { enabled: enabledToolCount, total: tools.length })}
           </span>
         </button>
 
