@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -107,5 +107,46 @@ describe('SessionEventJournal', () => {
     }
     expect(lines).toBe(13);
     await j.close();
+  });
+
+  it('requeues lines and keeps the header when a flush write fails', async () => {
+    const j = await SessionEventJournal.open(filePath);
+    j.append(j.nextSeq(), envelope(1));
+
+    // Point the journal at a directory so the append fails.
+    const brokenPath = join(dir, 'sub');
+    await mkdir(brokenPath, { recursive: true });
+    const broken = await (SessionEventJournal as unknown as {
+      open(path: string): Promise<SessionEventJournal>;
+    }).open(brokenPath);
+    broken.append(broken.nextSeq(), envelope(1));
+    // A directory path cannot be appended to; the flush retries without loss.
+    await broken.flush();
+    await rm(brokenPath, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+
+    // The original journal still flushes its lines after a failed round.
+    await j.flush();
+    const text = await readFile(filePath, 'utf8');
+    expect(text).toContain('journal_header');
+    expect(text).toContain('"seq":1');
+    await j.close();
+  });
+
+  it('rotates a damaged tail instead of appending onto it after a corrupt header', async () => {
+    const j1 = await SessionEventJournal.open(filePath);
+    j1.append(j1.nextSeq(), envelope(1));
+    await j1.close();
+
+    // Simulate a crash that glued a half line onto the tail and lost the header.
+    await writeFile(filePath, 'GARBAGE\n', 'utf8');
+
+    const j2 = await SessionEventJournal.open(filePath);
+    j2.append(j2.nextSeq(), envelope(1));
+    await j2.flush();
+
+    const lines = (await readFile(filePath, 'utf8')).trim().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ kind: 'journal_header' });
+    await j2.close();
   });
 });

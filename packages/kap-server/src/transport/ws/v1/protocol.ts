@@ -49,7 +49,8 @@ export type ResyncReason =
   | 'buffer_overflow'
   | 'session_recreated'
   | 'epoch_changed'
-  | 'history_rewritten';
+  | 'history_rewritten'
+  | 'journal_gap';
 
 export interface ResyncRequiredFrame {
   type: 'resync_required';

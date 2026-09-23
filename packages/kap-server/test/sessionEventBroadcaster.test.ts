@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -949,6 +949,52 @@ describe('SessionEventBroadcaster', () => {
     const result = await bc.getBufferedSince('s1', { seq: 0 });
     expect(result.resyncRequired).toBe('buffer_overflow');
     expect(result.currentSeq).toBe(6);
+  });
+
+  it('resyncs when the journal tail has a hole between the cursor and the watermark', async () => {
+    const lc = new FakeLifecycle();
+    const main = lc.addAgent('main');
+    sessions.set('s1', lc);
+    const { target } = collectingTarget();
+    await bc.subscribe('s1', target);
+
+    main.bus.emit(agentEvent('turn.started', { turnId: 0 }));
+    await bc.getCursor('s1');
+    main.bus.emit(agentEvent('turn.started', { turnId: 1 }));
+    await bc.getCursor('s1');
+
+    // Corrupt the on-disk tail: splice out the middle event line so the seq
+    // watermark promises an event the journal cannot replay.
+    const journalPath = join(dir, 's1.jsonl');
+    let lines: string[] = [];
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      try {
+        lines = (await readFile(journalPath, 'utf8')).trim().split('\n');
+      } catch {
+        lines = [];
+      }
+      if (lines.length >= 3) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    await writeFile(journalPath, [lines[0], lines[2]].join('\n') + '\n', 'utf8');
+
+    // Evict the live state so the replay reads from the corrupted journal tail.
+    sessions.delete('s1');
+    lifecycleEvents.close('s1');
+    const states = (bc as unknown as {
+      sessions: Map<string, unknown>;
+    }).sessions;
+    await vi.waitFor(() => expect(states.has('s1')).toBe(false));
+
+    const resumed = new FakeLifecycle();
+    resumed.addAgent('main');
+    sessions.set('s1', resumed);
+
+    const result = await bc.getBufferedSince('s1', { seq: 0 });
+    expect(result.resyncRequired).toBe('journal_gap');
+    expect(result.events).toEqual([]);
   });
 
   const TURN_STARTED_WIRE_KEYS = ['agentId', 'origin', 'prompt', 'sessionId', 'turnId', 'type'];

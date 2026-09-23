@@ -131,7 +131,12 @@ export interface SessionEventFrame {
 /** `resync_required` system frame payload. */
 export interface ResyncRequiredPayload {
   readonly session_id: string;
-  readonly reason: 'buffer_overflow' | 'session_recreated' | 'epoch_changed' | 'history_rewritten';
+  readonly reason:
+    | 'buffer_overflow'
+    | 'session_recreated'
+    | 'epoch_changed'
+    | 'history_rewritten'
+    | 'journal_gap';
   readonly current_seq: number;
   readonly epoch?: string;
 }

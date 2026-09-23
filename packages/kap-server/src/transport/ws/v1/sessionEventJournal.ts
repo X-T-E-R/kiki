@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { appendFile, mkdir } from 'node:fs/promises';
+import { mkdir, open, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { ulid } from 'ulid';
 
@@ -52,6 +52,7 @@ export class SessionEventJournal {
   private pendingLines: string[] = [];
   private flushPromise: Promise<void> | undefined;
   private headerPending: boolean;
+  private writeFailed = false;
 
   private constructor(
     private readonly filePath: string,
@@ -104,6 +105,13 @@ export class SessionEventJournal {
       if (sawAnyLine) {
         logger.warn({ filePath }, 'event journal missing header; rotating to a fresh epoch');
       }
+      // The stale file is truncated before the fresh header is written so
+      // `appendFile` never glues new events onto a damaged tail.
+      try {
+        await writeFile(filePath, '', 'utf8');
+      } catch {
+        /* the first flush recreates the file if truncation fails */
+      }
       return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, true);
     }
     return new SessionEventJournal(filePath, logger, epoch, lastSeq, false);
@@ -149,6 +157,9 @@ export class SessionEventJournal {
         });
       }
       await this.flushPromise;
+      // A failed write keeps its lines queued but does not spin the explicit
+      // flush: the next append retries them.
+      if (this.writeFailed) return;
     }
   }
 
@@ -160,7 +171,9 @@ export class SessionEventJournal {
     if (this.flushPromise !== undefined) return;
     this.flushPromise = this.flushOnce().finally(() => {
       this.flushPromise = undefined;
-      if (this.pendingLines.length > 0) this.scheduleFlush();
+      // A failed write keeps its lines queued but does not spin an automatic
+      // retry loop; the next append or explicit flush retries them.
+      if (!this.writeFailed && this.pendingLines.length > 0) this.scheduleFlush();
     });
   }
 
@@ -181,13 +194,30 @@ export class SessionEventJournal {
     if (lines.length === 0) return;
     try {
       await mkdir(dirname(this.filePath), { recursive: true });
-      await appendFile(this.filePath, lines.join('\n') + '\n', 'utf8');
+      const file = await open(this.filePath, 'a');
+      try {
+        await file.appendFile(lines.join('\n') + '\n', 'utf8');
+        // `appendFile` alone does not fsync; a crash would silently drop the
+        // durable events the seq watermark already promised.
+        await file.sync();
+      } finally {
+        await file.close();
+      }
     } catch (error) {
+      // Put the lines back so the next flush retries them instead of leaving
+      // the events live-only behind a promised seq. A failed write does not
+      // spin an automatic retry loop; the next append or explicit flush
+      // retries them.
+      this.pendingLines = lines.concat(this.pendingLines);
+      this.headerPending ||= lines.length === this.pendingLines.length;
+      this.writeFailed = true;
       this.logger.warn(
         { filePath: this.filePath, err: String(error) },
-        'event journal write failed; events remain live-only this round',
+        'event journal write failed; lines requeued for the next flush',
       );
+      return;
     }
+    this.writeFailed = false;
   }
 }
 
