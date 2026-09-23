@@ -2217,6 +2217,19 @@ export function Transcript({
   const initialScrollFrameRef = useRef<number | null>(null);
   const measuredResetRef = useRef(state.transcriptResetVersion);
   const pendingResetRestoreRef = useRef<PendingResetRestore | null>(null);
+  // Restore end anchoring when the estimate→actual delta breaks it. During a
+  // streaming turn a row grows from TRANSCRIPT_ESTIMATED_ROW_HEIGHT (120px)
+  // to its real height (a streamed answer reaches 500px+); the fork's
+  // #1218-style re-measure rule skips the scrollTop compensation for a row
+  // that spans the fold, and its `wasAtEnd` gate reads the VIRTUAL distance —
+  // already polluted by the stale estimate — so the end anchor is lost the
+  // first time the viewport rests below a growing block. Re-assert "truly at
+  // end" from the ACTUAL DOM distance (scrollHeight − clientHeight −
+  // scrollTop): when the viewport is still anchored (the real distance after
+  // the growth stays within the follow threshold), the compensation runs and
+  // follow survives. Returning true only there leaves the fork's default
+  // backward-scroll and above-fold rules untouched.
+  const virtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: virtualNodes.length,
     getScrollElement: () => scrollRef.current,
@@ -2240,6 +2253,19 @@ export function Transcript({
       viewportAnchorRef.current = captureTranscriptAnchor(instance);
     },
   });
+  // The instance field (not an option) — assign once, after mount.
+  virtualizerRef.current = virtualizer;
+  useEffect(() => {
+    const instance = virtualizerRef.current;
+    if (instance === null) return;
+    instance.shouldAdjustScrollPositionOnItemSizeChange = (_item, delta) => {
+      if (delta <= 0) return false;
+      const el = instance.scrollElement;
+      if (!(el instanceof HTMLElement)) return false;
+      const realDistanceFromEnd = el.scrollHeight - el.clientHeight - el.scrollTop;
+      return realDistanceFromEnd - delta <= TRANSCRIPT_END_THRESHOLD;
+    };
+  }, [virtualizer]);
 
   useLayoutEffect(() => {
     if (!loaded || loadError !== undefined) return;

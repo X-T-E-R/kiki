@@ -1765,6 +1765,49 @@ describe('virtualized transcript scrolling', () => {
     });
   });
 
+  it('keeps an end-anchored viewport pinned when the streaming last row grows past the estimate', async () => {
+    // The regression behind the user-bubble overlap: during a streaming turn
+    // the last row grows from the 120px estimate to its real height. The
+    // fork's re-measure rule skips the compensation for a row that spans the
+    // fold, and its virtual wasAtEnd gate reads the stale estimate — so the
+    // end anchor was lost the first time the viewport rested below a growing
+    // block, and every later append (the next user bubble included) drew
+    // below the fold. The DOM-distance predicate re-asserts the anchor.
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([
+      userBlock({ id: 'stream-user', text: 'the prompt' }),
+      assistantBlock('stream-reply', 'the growing answer'),
+    ])));
+    await settleVirtualizer();
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    // Anchor at the end, as the initial scrollToEnd leaves it.
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(80);
+
+    // The streaming row grows past the estimate (120 → 515) while the turn
+    // runs; the viewport must stay pinned at the end.
+    const replyItem = container.querySelector<HTMLElement>(
+      '[data-block-id="stream-reply"]',
+    )!.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    act(() => {
+      resizeElement(replyItem, 515);
+    });
+    await settleVirtualizer();
+    expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(80);
+
+    // A later append (the turn's next user bubble) follows the growth.
+    const appended = userBlock({ id: 'stream-user-2', text: 'the steer' });
+    await renderSettled(root, virtualTranscript(transcriptState([
+      userBlock({ id: 'stream-user', text: 'the prompt' }),
+      assistantBlock('stream-reply', 'the growing answer'),
+      appended,
+    ])));
+    await settleVirtualizer();
+    expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(80);
+    expect(container.querySelector('[data-block-id="stream-user-2"]')).not.toBeNull();
+  });
+
   it('remeasures a returning row before positioning its successor', async () => {
     const first = assistantBlock('returning-first', 'first');
     const second = assistantBlock('returning-second', 'second');
