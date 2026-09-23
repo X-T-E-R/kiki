@@ -4,6 +4,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { BUILTIN_SKILLS, visibleBuiltinSkills } from '#/app/skillCatalog/builtin/builtin';
+import { EXAMPLE_AGENT_PROFILE_TEMPLATES } from '#/app/shippedAgentProfiles/examples/exampleAgentProfiles';
 import { BuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
 import { BUILTIN_PRODUCT_SKILLS_SECTION } from '#/app/skillCatalog/configSection';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
@@ -71,6 +72,19 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(profile?.description.toLowerCase()).toContain('create, modify, or repair');
     expect(profile?.description.toLowerCase()).toContain('do not use merely to select');
     expect(profile?.content).toContain('by default the body is the complete system prompt');
+  });
+
+  it('embeds both complete example files for installed skill invocation', () => {
+    const profile = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-profile');
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops');
+    for (const { fileName, text } of EXAMPLE_AGENT_PROFILE_TEMPLATES) {
+      expect(profile?.content).toContain(`### ${fileName}\n\n\`\`\`markdown\n${text}\`\`\``);
+    }
+    expect(profile?.content).toContain('Both templates set `model_alias: inherit`');
+    expect(profile?.content).toContain('leave `thinking_effort` unset');
+    expect(ops?.content).toContain('Ask whether to create `implementer`');
+    expect(ops?.content).toContain('ask separately about `reviewer`');
+    expect(ops?.content).toContain('Copy the template with its `model_alias: inherit` frontmatter unchanged');
   });
 
   it('keeps the primary kiki-ops triggers visible in the rendered model listing', () => {

@@ -5,7 +5,7 @@ description: Create, modify, or repair Kiki agent profile files and SYSTEM.md. U
 
 # Kiki profile authoring (kiki-profile)
 
-Author and repair Kiki agent profile files. An agent profile is one Markdown file: a YAML frontmatter block declares the role's name, description, model, and tool access, and the Markdown body is the role's system prompt. This skill gives the loading rules, the file format, and the prompt-replacement semantics you must get right; the complete field-by-field reference lives in the installed docs at `<KIKI_HOME>/docs/<locale>/customization/agents.md`.
+Author and repair Kiki agent profile files. An agent profile is one Markdown file: a YAML frontmatter block declares the role's name and description and can select its model and tool access, and the Markdown body is the role's system prompt. This skill gives the loading rules, the file format, and the prompt-replacement semantics you must get right; the complete field-by-field reference lives in the installed docs at `<KIKI_HOME>/docs/<locale>/customization/agents.md`.
 
 ## Where profiles live
 
@@ -74,7 +74,7 @@ The body is rendered as a template on every prompt build. Useful variables: `${s
 | `override` | Allow replacing a same-name built-in (default `false`) |
 | `main` | `true` marks a main-agent candidate (GUI selector); hidden from the `AgentRun` default role list |
 | `private` | Hidden from public role listings; still resolvable by explicit name or as a scoped source |
-| `model_alias` | Exact alias from `[models]`; the profile's model pin |
+| `model_alias` | Exact alias from `[models]` for a fixed model, or `inherit` to follow the dispatch caller's model |
 | `allowed_models` / `deny_models` | Narrowing lists matched by canonical identity; a single-item `allowed_models` is the hard pin |
 | `thinking_effort` / `allowed_efforts` | Effort pin and its allowlist |
 | `model_profiles` | Per-alias recipes: `alias` + optional `when`, `thinking_effort`, `prompt_mode` (`prepend`/`append`/`wrap`), `prompt`, `prompt_overrides`, budgets. `when` is shown to the dispatcher |
@@ -111,6 +111,20 @@ prompt_overrides:
 - **Prefer the smallest tool surface that can do the job.** `tools` + `disallowedTools` are both a model-facing declaration and an execution-time gate.
 - **Editing surfaces share one parser.** Settings → Agents in the GUI and direct file edits validate with the same rules, and files hot-reload; pick whichever surface is convenient.
 - **Treat project-level profiles as code from the repo.** A project file with `override: true` can replace a built-in agent's whole prompt — review `.kiki/agents/` in unfamiliar repositories before running Kiki there.
+
+## Optional example subagent profiles
+
+This installed skill includes the complete, version-matched `implementer.md` and `reviewer.md` example files below. They are **examples, not installed roles**. `implementer` owns a bounded engineering objective through verification and handoff; `reviewer` independently judges a candidate or decision as a read-only leaf. On first-run setup, offer each separately. After the user opts in to a specific role, resolve the real Kiki data home on the server host and check whether that role's destination exists; never overwrite without explicit consent. Use the embedded Markdown template as the source, not a repository path or a paraphrase.
+
+Both templates set `model_alias: inherit` and leave `thinking_effort` unset. Copy the approved template unchanged: `inherit` follows the parent agent's model at dispatch time rather than fixing a provider in the example. Tell the user this model choice follows the caller and can later be changed to a fixed model in Settings. Check that the written file loads. To fix a role to one configured model instead, replace `inherit` with its alias and optionally set an effort and allowlist, for example:
+
+```yaml
+model_alias: your-configured-model
+thinking_effort: high
+allowed_models: [your-configured-model]
+```
+
+The following complete example files are embedded by the built-in skill from the versioned templates shipped in the application. They are available even when the source repository is absent.
 
 ## Verify before reporting done
 

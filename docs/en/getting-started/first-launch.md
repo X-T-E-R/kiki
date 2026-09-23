@@ -42,6 +42,8 @@ To sign out, enter `/logout` to clear the current credentials.
 If you want to connect Anthropic, OpenAI, Google, or other providers, edit `~/.kiki/config.toml` directly to configure the API key. See [Providers and models](../configuration/providers.md) for details. For the full reference of all config options, see [Configuration files](../configuration/config-files.md), [Environment variables](../configuration/env-vars.md), and [Configuration overrides](../configuration/overrides.md).
 :::
 
+In the GUI, the optional first-run wizard covers provider, preferences, and search setup. Finishing it opens a new-session draft for `/kiki-ops`; it does not send the message for you. The guided conversation then asks separately whether to create the `implementer` and `reviewer` example subagent profiles. They are not installed unless you agree to each one; see [Agents and Sub-Agents](../customization/agents.md#built-in-sub-agents) for what they do and how their model is selected.
+
 ## Your first conversation
 
 Once logged in, describe a task in natural language. A good starting point is to let Kiki familiarize itself with the project:

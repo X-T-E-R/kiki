@@ -24,6 +24,7 @@ import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProf
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { IShippedAgentProfileSource } from '#/app/shippedAgentProfiles/shippedAgentProfileSource';
 import { ShippedAgentProfileSourceService } from '#/app/shippedAgentProfiles/shippedAgentProfileSourceService';
+import { EXAMPLE_AGENT_PROFILE_TEMPLATES } from '#/app/shippedAgentProfiles/examples/exampleAgentProfiles';
 import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { BuiltinAgentProfileLoaderService } from '#/app/agentProfileCatalog/builtinAgentProfileLoaderService';
 import { AGENT_PROFILE_SOURCE_PRIORITY } from '#/app/agentProfileCatalog/agentProfileContribution';
@@ -803,6 +804,28 @@ describe('agent profile loaders + session catalog', () => {
         expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
         expect(() => stack.catalog.getDefault()).toThrow(/not available/);
         expect(stack.catalog.list()).toEqual([]);
+      });
+    });
+  });
+
+  it('recognizes the unchanged optional examples copied into a temporary user home', async () => {
+    await withFixture(async (fixture) => {
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        for (const { id } of EXAMPLE_AGENT_PROFILE_TEMPLATES) {
+          expect(stack.catalog.get(id), id).toBeUndefined();
+        }
+        for (const { fileName, text } of EXAMPLE_AGENT_PROFILE_TEMPLATES) {
+          await writeAgent(join(fixture.homeDir, 'agents'), fileName, text);
+        }
+        await stack.userLoader.reload();
+        for (const { id } of EXAMPLE_AGENT_PROFILE_TEMPLATES) {
+          expect(stack.catalog.get(id)?.name, id).toBe(id);
+          expect(stack.catalog.inspect(id)?.sourceId, id).toBe('user');
+          expect(stack.catalog.get(id)?.modelAlias, id).toBe('inherit');
+          expect(stack.catalog.get(id)?.thinkingEffort, id).toBeUndefined();
+        }
+        expect(stack.warnings).toEqual([]);
       });
     });
   });

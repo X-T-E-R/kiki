@@ -36,6 +36,7 @@ import { Dialog } from './Dialog';
 import { needsProviderSetup } from './NewSessionDraft';
 import { NewProviderWizard } from './ProviderFields';
 import { OAuthDeviceCard } from './OAuthDeviceCard';
+import { onboardingWelcomeDraft } from './onboardingProfileInvite';
 import { FeedbackLine, type Feedback } from './controls';
 import { useGuardedNavigate } from './dirtyGuard';
 import { mergeConfigEcho } from './settings/configEcho';
@@ -286,7 +287,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     if (finishing) return;
     setFinishing(true);
     markOnboardingCompleted();
-    const welcomeDraft = t('onboarding.welcomeDraft');
+    const welcomeDraft = onboardingWelcomeDraft(locale, t('onboarding.welcomeDraft'));
     const prefillNewDraft = () => {
       if (readDraft(NEW_SESSION_DRAFT_KEY) === '') {
         writeDraft(NEW_SESSION_DRAFT_KEY, welcomeDraft);

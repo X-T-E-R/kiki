@@ -42,6 +42,8 @@ kiki -c
 如果想连接 Anthropic、OpenAI、Google 等平台，直接编辑 `~/.kiki/config.toml` 配置 API 密钥。详见[平台与模型](../configuration/providers.md)。全部配置项的完整参考见[配置文件](../configuration/config-files.md)、[环境变量](../configuration/env-vars.md)和[配置覆盖](../configuration/overrides.md)。
 :::
 
+在 GUI 中，可选的首次启动引导会协助配置供应商、偏好设置和搜索。完成后，Kiki 会打开预填 `/kiki-ops` 的新会话草稿，不会代你发送。引导对话会分别询问是否创建 `implementer` 和 `reviewer` 两个示例 subagent profile；每个都只有在你同意后才会安装。用途与模型选择方式见 [Agent 与 subagent](../customization/agents.md#内置-subagent)。
+
 ## 你的第一次对话
 
 登录后，用自然语言描述任务。一个不错的起点是让 Kiki 先熟悉项目：

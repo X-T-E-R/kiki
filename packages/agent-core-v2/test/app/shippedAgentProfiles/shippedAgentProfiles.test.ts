@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import type { IConfigService } from '#/app/config/config';
+import { EXAMPLE_AGENT_PROFILE_TEMPLATES } from '#/app/shippedAgentProfiles/examples/exampleAgentProfiles';
 import { ILogService } from '#/_base/log/log';
 import { SKIP_BUILTIN_PROFILE_INSTALLATION_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import {
@@ -125,6 +127,9 @@ describe('ShippedAgentProfileManagerService', () => {
     }
     expect(await activeExists('coder')).toBe(false);
     expect(await activeExists('plan')).toBe(false);
+    for (const { id } of EXAMPLE_AGENT_PROFILE_TEMPLATES) {
+      expect(await activeExists(id), id).toBe(false);
+    }
 
     const entries = await service.status();
     for (const id of ['agent', 'explore', 'general']) {
@@ -132,6 +137,23 @@ describe('ShippedAgentProfileManagerService', () => {
       expect(entry.status, id).toBe('clean');
       expect(entry.managed, id).toBe(true);
       expect(entry.baselineHash, id).toBeDefined();
+    }
+  });
+
+  it('parses both optional examples with a provider-neutral inherited model', () => {
+    expect(SHIPPED_AGENT_PROFILE_TEMPLATES.map(({ id }) => id)).toEqual(['agent', 'explore', 'general']);
+    expect(EXAMPLE_AGENT_PROFILE_TEMPLATES.map(({ id }) => id)).toEqual(['implementer', 'reviewer']);
+    for (const { id, fileName, text } of EXAMPLE_AGENT_PROFILE_TEMPLATES) {
+      const parsed = parseAgentFileText({ path: `examples/${fileName}`, source: 'user', text });
+      expect(parsed.name).toBe(id);
+      expect(parsed.description).toBeTruthy();
+      expect(parsed.whenToUse).toBeTruthy();
+      expect(parsed.prompt).toBeTruthy();
+      expect(parsed.modelAlias).toBe('inherit');
+      expect(parsed.thinkingEffort).toBeUndefined();
+      expect(parsed.modelProfiles).toBeUndefined();
+      expect(parsed.allowedModels).toBeUndefined();
+      expect(parsed.override).toBe(false);
     }
   });
 
