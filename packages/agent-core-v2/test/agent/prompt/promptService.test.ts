@@ -1719,4 +1719,77 @@ describe('AgentPromptService', () => {
     expect(prompt.list().active?.id).toBe('a');
     expect(prompt.list().pending.map((item) => item.id)).toEqual(['b']);
   });
+
+  it('cancels a restored pending prompt by its durable id and releases the recovery hold', async () => {
+    const { prompt, dispatcher, states, eventBus, loop } = harness();
+    const aborted: Array<{ promptId: string; beforeStart?: boolean }> = [];
+    eventBus.subscribe(PromptAborted, (event) => {
+      aborted.push({ promptId: event.promptId, beforeStart: event.beforeStart });
+    });
+    await dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'recovered',
+      userMessageId: 'recovered',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      message: message('recovered'),
+      goalId: null,
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 0,
+    }));
+    await dispatcher.hooks.onDidRestore.run({});
+    expect(prompt.list()).toMatchObject({
+      pending: [{ id: 'recovered' }],
+      hold: { reason: 'recovery', count: 1 },
+    });
+    expect(states.get(promptQueueKey).entries.has('recovered')).toBe(true);
+
+    expect(prompt.abort('recovered')).toBe(true);
+
+    expect(prompt.list().pending).toEqual([]);
+    expect(prompt.list().hold).toBeUndefined();
+    expect(states.get(promptQueueKey).entries.has('recovered')).toBe(false);
+    expect(states.get(promptQueueKey).order).not.toContain('recovered');
+    await vi.waitFor(() => {
+      expect(aborted).toEqual([{ promptId: 'recovered', beforeStart: true }]);
+    });
+
+    const fresh = await prompt.enqueue({ id: 'fresh', message: message('fresh') });
+    expect(fresh.state).toBe('running');
+    expect(loop.launches).toEqual([0]);
+    expect(prompt.list()).toMatchObject({ active: { id: 'fresh' }, pending: [], hold: undefined });
+  });
+
+  it.each([
+    ['no id', message('recovered')],
+    ['a stale message id', { ...message('recovered'), id: 'stale-message' }],
+  ])('resumes a restored pending prompt under its durable id when its message carries %s', async (_label, queuedMessage) => {
+    const { prompt, dispatcher, loop } = harness({ manualTurnResult: true });
+    const seeds: Array<string | undefined> = [];
+    const original = loop.enqueue.bind(loop);
+    vi.spyOn(loop, 'enqueue').mockImplementation((request, options) => {
+      if (request instanceof PromptStepRequest) seeds.push(request.turnSeed?.promptId);
+      return original(request, options);
+    });
+    await dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'recovered',
+      userMessageId: 'recovered',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      message: queuedMessage,
+      goalId: null,
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 0,
+    }));
+    await dispatcher.hooks.onDidRestore.run({});
+
+    prompt.resumeRecoveredQueue();
+
+    await vi.waitFor(() => expect(loop.launches).toEqual([0]));
+    expect(seeds).toEqual(['recovered']);
+    expect(prompt.list().active?.id).toBe('recovered');
+  });
 });

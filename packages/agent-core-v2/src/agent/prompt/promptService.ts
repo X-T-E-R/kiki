@@ -906,7 +906,7 @@ export class AgentPromptService implements IAgentPromptService {
         userMessageId: entry.userMessageId,
         createdAt: entry.createdAt,
         state: 'pending' as const,
-        message: entry.message,
+        message: { ...entry.message, id: entry.promptId },
         execution: entry.execution,
         goalId: entry.goalId,
         deferredDisabledTools: entry.deferredDisabledTools,
@@ -1084,6 +1084,7 @@ export class AgentPromptService implements IAgentPromptService {
           if (this.steeringFlights.get(item.id)?.reason !== undefined) this.cancelUnlaunched(item, true);
           else this.pending.splice(index, 0, item);
         }
+        this.syncRecoveryHold();
         if (this.active === undefined) void this.startNext();
         throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active turn to steer into');
       }
@@ -1110,7 +1111,7 @@ export class AgentPromptService implements IAgentPromptService {
       void this.dispatcher.dispatch(
         new PromptSteered({ activePromptId: activeAtEntry?.id ?? selected[0]!.id, promptIds: selected.map((x) => x.id), content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString() }),
       );
-      if (this.recoveryHold) this.publishQueueHoldChanged();
+      this.syncRecoveryHold();
       return selected.map((item) => item.handle);
     } finally {
       for (const item of selected) {
@@ -1153,12 +1154,19 @@ export class AgentPromptService implements IAgentPromptService {
     if (index < 0) return undefined;
     const [item] = this.pending.splice(index, 1) as [Record];
     this.cancelUnlaunched(item, true);
-    if (this.recoveryHold) this.publishQueueHoldChanged();
+    this.syncRecoveryHold();
     return true;
+  }
+
+  private syncRecoveryHold(): void {
+    if (!this.recoveryHold) return;
+    if (this.pending.length === 0) this.recoveryHold = false;
+    this.publishQueueHoldChanged();
   }
 
   private cancelUnlaunched(item: Record, beforeStart: boolean): void {
     this.immediatePromptIds.delete(item.id);
+    this.recoveryPendingIds.delete(item.id);
     item.state = 'cancelled';
     item.launchedDeferred.resolve(undefined);
     item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'cancelled' });
@@ -1225,10 +1233,7 @@ export class AgentPromptService implements IAgentPromptService {
     }
     const [item] = this.pending.splice(candidateIndex, 1) as [Record];
     const immediate = this.immediatePromptIds.delete(item.id);
-    if (this.recoveryHold) {
-      if (this.pending.length === 0) this.recoveryHold = false;
-      this.publishQueueHoldChanged();
-    }
+    this.syncRecoveryHold();
     const controller = new AbortController();
     const launching: NonNullable<AgentPromptService['launchingPrompt']> = { record: item, controller };
     this.launchingPrompt = launching;

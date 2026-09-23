@@ -6,6 +6,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
   IAgentActivityView,
   IAgentLifecycleService,
+  IAgentPromptService,
   IConfigService,
   IFlagService,
   IQueryStore,
@@ -355,6 +356,7 @@ export class TranscriptService {
         binding.seedRunningTasks(MAIN_AGENT_ID);
         binding.seedPendingInteractions(MAIN_AGENT_ID);
         binding.seedPrompts(MAIN_AGENT_ID);
+        this.reconcileQueuedPrompts(sessionId, store, MAIN_AGENT_ID);
       }
     })();
     return store;
@@ -422,7 +424,35 @@ export class TranscriptService {
       entry.binding.seedRunningTasks(agentId);
       entry.binding.seedPendingInteractions(agentId);
       entry.binding.seedPrompts(agentId);
+      this.reconcileQueuedPrompts(sessionId, entry.store, agentId);
     }
+  }
+
+  private reconcileQueuedPrompts(sessionId: string, store: TranscriptStore, agentId: string): void {
+    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
+    const agent = session?.accessor.get(IAgentLifecycleService).get(agentId);
+    const prompts = agent?.accessor.get(IAgentPromptService);
+    if (prompts === undefined) return;
+    const transcript = store.getAgent(agentId);
+    if (transcript === undefined) return;
+    let snapshot: ReturnType<IAgentPromptService['list']>;
+    try {
+      snapshot = prompts.list();
+    } catch {
+      return;
+    }
+    const owned = new Set<string>();
+    if (snapshot.active !== undefined) owned.add(snapshot.active.id);
+    if (snapshot.launching !== undefined) owned.add(snapshot.launching.id);
+    for (const pending of snapshot.pending) owned.add(pending.id);
+    const ops: TranscriptOperation[] = [];
+    for (const prompt of transcript.snapshot().prompts) {
+      if (prompt.status !== 'queued' || owned.has(prompt.promptId)) continue;
+      ops.push({ op: 'prompt.upsert', prompt: { ...prompt, status: 'aborted', abortedBeforeStart: true } });
+    }
+    if (ops.length === 0) return;
+    const result = transcript.apply(ops);
+    if (result.accepted.length > 0) this.dispatchOps(sessionId, { agentId, ops: result.accepted });
   }
 
   /** Initial backfill: main-agent history + the full roster from session metadata. */

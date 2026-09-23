@@ -2374,4 +2374,142 @@ describe('TranscriptService live integration', () => {
       service.dropSession('s1');
     });
   });
+
+  describe('prompt queue reconciliation', () => {
+    async function seedPromptReplayWire(): Promise<string> {
+      const home = await mkdtemp(join(tmpdir(), 'transcript-prompts-'));
+      const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+      await mkdir(wireDir, { recursive: true });
+      const records: Record<string, unknown>[] = [
+        {
+          type: 'prompt.enqueued',
+          promptId: 'agent-msg-1',
+          userMessageId: 'agent-msg-1',
+          queueIndex: 0,
+          revision: 0,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          message: {
+            id: 'agent-msg-1',
+            role: 'user',
+            content: [{ type: 'text', text: 'from subagent' }],
+            origin: { kind: 'agent_message', messageId: 'agent-msg-1', senderAgentId: 'agent-9' },
+          },
+          time: 1_000,
+        },
+        {
+          type: 'prompt.enqueued',
+          promptId: 'msg_steered',
+          userMessageId: 'msg_steered',
+          queueIndex: 0,
+          revision: 0,
+          createdAt: '2026-01-01T00:00:01.000Z',
+          message: {
+            id: 'msg_steered',
+            role: 'user',
+            content: [{ type: 'text', text: 'steer me' }],
+            origin: { kind: 'user' },
+          },
+          time: 1_001,
+        },
+        {
+          type: 'prompt.enqueued',
+          promptId: 'msg_orphan',
+          userMessageId: 'msg_orphan',
+          queueIndex: 1,
+          revision: 0,
+          createdAt: '2026-01-01T00:00:02.000Z',
+          message: {
+            id: 'msg_orphan',
+            role: 'user',
+            content: [{ type: 'text', text: 'orphan' }],
+            origin: { kind: 'user' },
+          },
+          time: 1_002,
+        },
+        {
+          type: 'prompt.steered',
+          activePromptId: 'agent-msg-1',
+          promptIds: ['msg_steered'],
+          content: [{ type: 'text', text: 'steer me' }],
+          steeredAt: '2026-01-01T00:00:03.000Z',
+          time: 1_003,
+        },
+      ];
+      await writeFile(
+        join(wireDir, 'wire.jsonl'),
+        `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      );
+      return home;
+    }
+
+    it('settles cold-replayed queued prompts the engine no longer owns', async () => {
+      const home = await seedPromptReplayWire();
+      try {
+        const agents = new FakeAgents();
+        agents.add('main', { loopStatus: { state: 'idle' }, prompts: { pending: [] } });
+        const service = new TranscriptService({
+          homeDir: home,
+          core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+        });
+        const store = service.forSessionLive('s1');
+        await service.whenReady('s1');
+
+        const transcript = store?.getAgent('main');
+        expect(transcript?.getPrompt('msg_steered')).toMatchObject({
+          status: 'completed',
+          steeredAt: '2026-01-01T00:00:03.000Z',
+        });
+        expect(transcript?.getPrompt('msg_orphan')).toMatchObject({
+          status: 'aborted',
+          abortedBeforeStart: true,
+        });
+        expect(transcript?.getPrompt('agent-msg-1')).toBeUndefined();
+        service.dropSession('s1');
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('keeps a recovered engine-pending queue while settling stale replay prompts', async () => {
+      const home = await seedPromptReplayWire();
+      try {
+        const agents = new FakeAgents();
+        agents.add('main', {
+          loopStatus: { state: 'idle' },
+          prompts: {
+            pending: [
+              {
+                id: 'msg_recovered',
+                userMessageId: 'msg_recovered',
+                createdAt: '2026-01-01T00:00:04.000Z',
+                state: 'pending',
+                message: { role: 'user', content: [{ type: 'text', text: 'recovered' }] },
+                revision: 1,
+              },
+            ],
+          },
+        });
+        const service = new TranscriptService({
+          homeDir: home,
+          core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+        });
+        const store = service.forSessionLive('s1');
+        await service.whenReady('s1');
+
+        const transcript = store?.getAgent('main');
+        expect(transcript?.getPrompt('msg_recovered')).toMatchObject({ status: 'queued' });
+        expect(transcript?.getPrompt('msg_steered')).toMatchObject({
+          status: 'completed',
+          steeredAt: '2026-01-01T00:00:03.000Z',
+        });
+        expect(transcript?.getPrompt('msg_orphan')).toMatchObject({
+          status: 'aborted',
+          abortedBeforeStart: true,
+        });
+        service.dropSession('s1');
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+  });
 });
