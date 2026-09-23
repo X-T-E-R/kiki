@@ -22,7 +22,7 @@ export const ANNOTATION_MARK_CLASS =
  */
 export const ANNOTATION_BUBBLE_GLYPH = '💬';
 export const ANNOTATION_BUBBLE_CLASS =
-  'ml-0.5 inline-block select-none align-baseline text-[11px] leading-none opacity-70 transition-opacity hover:opacity-100';
+  "ml-0.5 inline-block select-none align-baseline text-[11px] leading-none opacity-70 transition-opacity hover:opacity-100 before:content-['💬']";
 
 export interface MarkRange {
   readonly start: number;
@@ -97,9 +97,7 @@ export function projectTextWithAnnotationMarks(
         data-annotation-ref={range.annotationId}
         aria-hidden
         className={ANNOTATION_BUBBLE_CLASS}
-      >
-        {ANNOTATION_BUBBLE_GLYPH}
-      </span>,
+      />,
     );
     cursor = range.end;
   });
@@ -215,7 +213,7 @@ export function rehypeAnnotationMarks(targets: readonly TimelineAnnotation[]) {
               type: 'element',
               tagName: 'span',
               properties: bubbleProperties(target.id),
-              children: [{ type: 'text', value: ANNOTATION_BUBBLE_GLYPH }],
+              children: [],
             });
           }
           if (after !== '') replacement.push({ type: 'text', value: after });

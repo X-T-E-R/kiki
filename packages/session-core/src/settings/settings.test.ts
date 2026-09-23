@@ -1069,6 +1069,14 @@ describe('settings search breadcrumbs and synonyms', () => {
     expect(searchSettings(index, term).some((hit) => hit.cardId === cardId)).toBe(true);
   });
 
+  it('finds dispatch-policy defaults and opens the subagent settings card in both locales', () => {
+    for (const [translateKey, query] of [[t, 'dispatch policy'], [tZh, '派遣策略']] as const) {
+      const index = buildSettingsSearchIndex({}, translateKey);
+      expect(searchSettings(index, query).find((hit) => hit.cardId === 'st-card-subagent-dispatch-policies'))
+        .toMatchObject({ section: 'subagents', cardId: 'st-card-subagent-dispatch-policies' });
+    }
+  });
+
   it('points the catalog-refresh hit at the models tab so the card is mounted on arrival', () => {
     const index = buildSettingsSearchIndex({}, t);
     const hit = searchSettings(index, 'Get models')

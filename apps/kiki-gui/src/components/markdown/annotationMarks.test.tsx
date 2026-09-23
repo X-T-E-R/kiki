@@ -103,7 +103,8 @@ describe('plain-text annotation bubble', () => {
     const marks = mount.querySelectorAll('mark[data-annotation-ref]');
     expect(marks).toHaveLength(1);
     const bubble = mount.querySelector('[data-annotation-ref="ta-plain"]:not(mark)');
-    expect(bubble?.textContent).toBe(ANNOTATION_BUBBLE_GLYPH);
+    expect(bubble?.textContent).toBe('');
+    expect(bubble?.className).toContain(`before:content-['${ANNOTATION_BUBBLE_GLYPH}']`);
     expect(bubble?.getAttribute('aria-hidden')).toBe('true');
     // The bubble is decorative: no focusable button role beside the mark.
     expect(bubble?.getAttribute('tabindex')).toBeNull();
@@ -120,7 +121,8 @@ describe('markdown annotation bubble', () => {
       />,
     );
     const bubble = container.querySelector<HTMLElement>('span[data-annotation-ref="ta-prose"]');
-    expect(bubble?.textContent).toBe(ANNOTATION_BUBBLE_GLYPH);
+    expect(bubble?.textContent).toBe('');
+    expect(bubble?.className).toContain(`before:content-['${ANNOTATION_BUBBLE_GLYPH}']`);
     expect(bubble?.getAttribute('aria-hidden')).toBe('true');
   });
 

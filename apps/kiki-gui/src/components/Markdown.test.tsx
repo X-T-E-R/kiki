@@ -242,6 +242,9 @@ describe('Markdown annotation marks', () => {
 
     const marks = [...probe.container.querySelectorAll<HTMLElement>('[data-annotation-ref="ta-marked"]')];
     expect(marks.map((mark) => mark.textContent).join('')).toBe('marked words');
+    expect(probe.container.querySelector('mark[data-annotation-ref="ta-marked"]')?.contains(
+      probe.container.querySelector('span[data-annotation-ref="ta-marked"]'),
+    )).toBe(false);
     expect(marks.filter((mark) => mark.tabIndex === 0)).toHaveLength(1);
     expect(probe.container.querySelector('[data-streamdown="strong"]')?.textContent).toBe('marked');
   });
