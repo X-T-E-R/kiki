@@ -148,6 +148,14 @@ export const setModelResultSchema = z.object({
   providerName: z.string().optional(),
 });
 
+export const setEffortPayloadSchema = z.object({
+  effort: z.string().min(1),
+});
+
+export const setEffortResultSchema = z.object({
+  effort: z.string(),
+});
+
 export const contextRebuildResultSchema = z.object({
   rebuilt: z.array(z.enum(['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'injections'])),
   changed: z.boolean(),

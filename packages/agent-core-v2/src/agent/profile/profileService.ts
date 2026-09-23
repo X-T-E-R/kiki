@@ -143,6 +143,7 @@ import type {
   ProfileData,
   ProfileModelContext,
   ProfileServiceOptions,
+  ProfileSetEffortResult,
   ProfileSetModelResult,
   ProfileUpdateData,
 } from './profile';
@@ -1001,6 +1002,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       model: canonicalAlias,
       providerName: model.providerName,
     };
+  }
+
+  setEffort(level: string): ProfileSetEffortResult {
+    this.setThinking(level);
+    return { effort: this.getEffectiveThinkingLevel() };
   }
 
   setThinking(level: string): void {

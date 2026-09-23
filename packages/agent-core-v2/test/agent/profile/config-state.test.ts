@@ -435,11 +435,18 @@ describe('ConfigState thinking clamp for always-thinking models', () => {
     expect(profile.data().thinkingLevel).toBe('on');
   });
 
+  it('returns the effective effort from the runtime effort setter', () => {
+    profile.update({ modelAlias: 'kimi-code/custom' });
+
+    expect(profile.setEffort('low')).toEqual({ effort: 'low' });
+    expect(profile.data().thinkingLevel).toBe('low');
+  });
+
   it('rejects an unsupported effort explicitly set on the current Kimi model', () => {
     profile.update({ modelAlias: 'kimi-code/custom' });
 
     expect(() => {
-      profile.setThinking('ultra');
+      profile.setEffort('ultra');
     }).toThrow(
       'Thinking effort "ultra" is not supported by model "kimi-code/custom"',
     );

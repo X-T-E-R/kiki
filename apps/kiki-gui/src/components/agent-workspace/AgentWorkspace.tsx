@@ -16,6 +16,7 @@
 
 import { useCallback, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PermissionMode } from '@kiki/protocol';
 import { buildPromptContent, type ComposerAttachment } from '@kiki/session-core/composer';
@@ -31,6 +32,7 @@ import {
   type SessionViewState,
   type SubagentBlock,
 } from '@kiki/session-core/session';
+import { resolveCatalogModel } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import { pushToast } from '../../lib/toasts';
@@ -262,11 +264,21 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps) {
   const { t } = useI18n();
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
   const contextSlots = useOptionalConversationShell()?.slots;
   const slots = slotsOverride ?? contextSlots ?? EMPTY_SLOTS;
   const { sessionId, agentId } = target;
+
+  // The model catalog backing the composer's effort ladder. Same query key as
+  // the main session and the composer itself, so one `/models` fetch feeds
+  // every surface instead of one per workspace.
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: () => client.listModels(),
+    staleTime: 60_000,
+  });
 
   // Live per-agent channel: child-agent frames land in their own sub-store, so
   // this workspace re-renders from here without the main transcript
@@ -426,6 +438,40 @@ export function AgentWorkspace({
   };
   const displayEffort =
     agentLiveState.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
+  // The effort ladder comes from the DISPLAY model's catalog row: a bare alias
+  // on the node (`k3-256k`) resolves to the provider row that owns
+  // `support_efforts`. A terminal subagent keeps the pick disabled.
+  const resolvedDisplayModel =
+    displayModel !== undefined
+      ? resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)
+      : undefined;
+  const selectedStatus = selectedNode?.status ?? selectedSubagent?.status;
+  const agentTerminal =
+    selectedStatus === 'completed' || selectedStatus === 'cancelled' || selectedStatus === 'failed';
+  const supportedEfforts =
+    agentKnown && !agentTerminal ? resolvedDisplayModel?.support_efforts : undefined;
+  const handleChangeAgentEffort = async (effort: string | undefined) => {
+    if (!agentKnown || agentTerminal || effort === undefined || effort === displayEffort) return;
+    try {
+      await client.setAgentEffort(sessionId, agentId, effort);
+      // The rail's per-agent capability read is what echoes this agent's
+      // effective effort; refetch it so the pick reads as applied rather than
+      // as a stale default.
+      await queryClient.invalidateQueries({
+        queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
+      });
+    } catch (error) {
+      // Same shape as the model rebind: the switch is a server-side write that
+      // can fail, so report it instead of leaving the live value silently
+      // disagreeing with the pick.
+      pushToast({
+        tone: 'error',
+        text: t('subagent.effortChangeFailed', {
+          detail: error instanceof Error ? error.message : String(error),
+        }),
+      });
+    }
+  };
   const displayContextTokens = agentLiveState.contextTokens ?? selectedNode?.contextTokens;
   const displayMaxContextTokens = agentLiveState.maxContextTokens ?? selectedNode?.maxContextTokens;
   const displayUsage = agentLiveState.usage ?? selectedNode?.usage;
@@ -510,7 +556,7 @@ export function AgentWorkspace({
                 permissionMode={agentLiveState.permissionMode ?? ('manual' as PermissionMode)}
                 planMode={false}
                 swarmMode={false}
-                efforts={undefined}
+                efforts={supportedEfforts}
                 effort={displayEffort}
                 contextUsage={
                   displayContextTokens !== undefined && displayMaxContextTokens !== undefined
@@ -526,7 +572,7 @@ export function AgentWorkspace({
                 onChangePermissionMode={() => {}}
                 onChangePlanMode={() => {}}
                 onChangeSwarmMode={() => {}}
-                onChangeEffort={() => {}}
+                onChangeEffort={handleChangeAgentEffort}
                 onSend={handleComposerSend}
                 onAbort={runningAgentTask !== undefined ? handleTerminateAgent : undefined}
                 abortPending={stoppingTaskId !== null}

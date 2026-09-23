@@ -779,7 +779,7 @@ export function defineKlientConformance(
       }
     });
 
-    it('restores known cold agents before setModel and rejects missing agents', async () => {
+    it('restores known cold agents before changing model or effort and rejects missing agents', async () => {
       const initialModel = '__klient_restore_initial__';
       const targetModel = '__klient_restore_target__';
       const kosong = target.klient.global.kosong;
@@ -812,12 +812,19 @@ export function defineKlientConformance(
       try {
         expect(lifecycle.get(child.id)).toBeUndefined();
         expect((await session.agents())[child.id]).toBeDefined();
+        await expect(session.agent(child.id).setEffort('off')).resolves.toEqual({ effort: 'off' });
+        expect(lifecycle.get(child.id)).toBeDefined();
+        await lifecycle.remove(child.id);
         await expect(session.agent(child.id).setModel(targetModel)).resolves.toMatchObject({
           model: targetModel,
         });
         expect(lifecycle.get(child.id)).toBeDefined();
         await expect(session.agent(child.id).getModel()).resolves.toBe(targetModel);
         await expect(session.agent('missing-set-model').setModel(targetModel)).rejects.toMatchObject({
+          name: 'RPCError',
+          code: 40404,
+        });
+        await expect(session.agent('missing-set-effort').setEffort('off')).rejects.toMatchObject({
           name: 'RPCError',
           code: 40404,
         });

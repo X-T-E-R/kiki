@@ -562,10 +562,10 @@ describe('AgentProfileService.bind', () => {
     await expect(svc.setModel(`${modelAlias}-next`)).resolves.toEqual({
       model: `${modelAlias}-next`,
     });
-    svc.setThinking('xhigh');
+    expect(svc.setEffort('high')).toEqual({ effort: 'high' });
     expect(svc.data()).toMatchObject({
       modelAlias: `${modelAlias}-next`,
-      thinkingLevel: 'xhigh',
+      thinkingLevel: 'high',
     });
   });
 
@@ -1228,6 +1228,19 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
+  it('records a runtime effort outside the role allowlist as advisory', async () => {
+    const profile = await bindNativeResumeProfile(resumeProfile({ allowedEfforts: ['low'] }));
+
+    expect(profile.setEffort('high')).toEqual({ effort: 'high' });
+    expect(profile.data()).toMatchObject({
+      thinkingLevel: 'high',
+      bindingAdvisories: [expect.objectContaining({
+        code: 'effort_not_allowed',
+        valueSource: 'runtime-explicit',
+      })],
+    });
+  });
+
   it('binds a forced effort outside the target profile allowlist with an advisory', async () => {
     const configured = resumeProfile({ thinkingEffort: 'low', allowedEfforts: ['low', 'high'] });
     const options = nativeResumeOptions();
@@ -1253,8 +1266,10 @@ describe('AgentProfileService.bind', () => {
     await expect(
       profile.bind({ profile: configured.name, delegationPosition: 'sub' }),
     ).resolves.toBeUndefined();
+    expect(profile.setEffort('high')).toEqual({ effort: 'max' });
     expect(profile.data()).toMatchObject({
       profileName: configured.name,
+      thinkingLevel: 'high',
       effectiveThinkingLevel: 'max',
       bindingAdvisories: [expect.objectContaining({
         code: 'effort_not_allowed',

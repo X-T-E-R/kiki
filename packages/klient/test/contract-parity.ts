@@ -217,6 +217,8 @@ import {
   runCommandPayloadSchema,
   runShellCommandPayloadSchema,
   runtimeBindingSchema,
+  setEffortPayloadSchema,
+  setEffortResultSchema,
   setModelPayloadSchema,
   setModelResultSchema,
   setPermissionPayloadSchema,
@@ -721,6 +723,7 @@ type RuntimeBinding = ReturnType<IAgentRuntimeBindingService['get']>;
 type RunShellCommandPayload = Parameters<IAgentShellCommandService['run']>[0];
 type ShellCommandResult = Awaited<ReturnType<IAgentShellCommandService['run']>>;
 type SetModelResult = Awaited<ReturnType<IAgentProfileService['setModel']>>;
+type SetEffortResult = ReturnType<IAgentProfileService['setEffort']>;
 type ContextRebuildResult = Awaited<ReturnType<IAgentContextRebuildService['rebuild']>>;
 type TokenUsage = NonNullable<UsageStatus['total']>;
 type PromptPart = Extract<ContentPart, { type: 'text' | 'image_url' | 'video_url' }>;
@@ -731,6 +734,7 @@ type SetPermissionPayload = { mode: PermissionMode };
 type RunCommandPayload = Parameters<AgentFacade['runCommand']>[0];
 type CancelShellCommandPayload = Parameters<AgentFacade['cancelShellCommand']>[0];
 type SetModelPayload = { model: string };
+type SetEffortPayload = { effort: string };
 type CancelPlanPayload = NonNullable<Parameters<AgentFacade['cancelPlan']>[0]>;
 type GetTasksPayload = NonNullable<Parameters<AgentFacade['getTasks']>[0]>;
 type StopTaskPayload = Parameters<AgentFacade['stopTask']>[0];
@@ -775,6 +779,8 @@ const _cancelShellCommandPayload: AssertWire<
 > = true;
 const _setModelPayload: AssertWire<typeof setModelPayloadSchema, SetModelPayload> = true;
 const _setModelResult: AssertWire<typeof setModelResultSchema, SetModelResult> = true;
+const _setEffortPayload: AssertWire<typeof setEffortPayloadSchema, SetEffortPayload> = true;
+const _setEffortResult: AssertWire<typeof setEffortResultSchema, SetEffortResult> = true;
 const _contextRebuildResult: AssertWire<typeof contextRebuildResultSchema, ContextRebuildResult> = true;
 const _setPermissionPayload: AssertWire<typeof setPermissionPayloadSchema, SetPermissionPayload> =
   true;

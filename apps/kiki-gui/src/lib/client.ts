@@ -999,6 +999,11 @@ export class KikiClient {
     return this.run(this.klient.session(sessionId).agent(agentId).setModel(model));
   }
 
+  /** Rebind a live agent's thinking effort (agent-scoped profile call). */
+  setAgentEffort(sessionId: string, agentId: string, effort: string) {
+    return this.run(this.klient.session(sessionId).agent(agentId).setEffort(effort));
+  }
+
   /** Loopback-only PTY lifecycle, owned by the shared Klient HTTP capability. */
   listTerminals(sessionId: string): Promise<ListTerminalsResponse> {
     return this.klient.terminal.listTerminals(sessionId);

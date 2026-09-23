@@ -2601,8 +2601,9 @@ export const zh: Record<I18nKey, string> = {
   'subagent.changeModel': '切换模型',
   'subagent.modelChanged': '模型已切换为 {model}。',
   'subagent.modelChangeFailed': '切换模型失败：{detail}',
+  'subagent.effortChangeFailed': '切换思考强度失败：{detail}',
   'subagent.composerUnavailable': '找不到该子代理。',
-  'sv.agentActionsNote': '可直接给该子代理发消息、切换模型或终止；排队与技能操作仍在会话页进行。',
+  'sv.agentActionsNote': '可直接给该子代理发消息、切换模型与思考强度或终止；排队与技能操作仍在会话页进行。',
 
   // ---- 智能体通信设置 ----
   'st.section.communication': '智能体通信',

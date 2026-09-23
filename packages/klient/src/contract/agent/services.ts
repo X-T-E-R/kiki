@@ -28,6 +28,7 @@ import {
   promptWithSkillsResultSchema,
   runShellCommandPayloadSchema,
   runtimeBindingSchema,
+  setEffortResultSchema,
   setModelResultSchema,
   shellCommandResultSchema,
   steerPayloadSchema,
@@ -176,6 +177,7 @@ export const agentShellCommandContract = {
 export const agentProfileContract = {
   getModel: { input: z.tuple([]), output: z.string() },
   setModel: { input: z.tuple([z.string()]), output: setModelResultSchema },
+  setEffort: { input: z.tuple([z.string()]), output: setEffortResultSchema },
   setThinking: { input: z.tuple([z.string()]), output: noResult },
   getEffectiveThinkingLevel: { input: z.tuple([]), output: z.string() },
   getModelCapabilities: { input: z.tuple([]), output: modelCapabilitySchema },

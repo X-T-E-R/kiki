@@ -2667,9 +2667,10 @@ export const en = {
   'subagent.changeModel': 'Change model',
   'subagent.modelChanged': 'Model switched to {model}.',
   'subagent.modelChangeFailed': 'Could not change the model: {detail}',
+  'subagent.effortChangeFailed': 'Could not change the thinking effort: {detail}',
   'subagent.composerUnavailable': 'Subagent not found in this session.',
   'sv.agentActionsNote':
-    'Message, model, and terminate act on this subagent directly; queue and skill actions stay on the session page.',
+    'Messages, model and thinking effort changes, and termination act on this subagent directly; queue and skill actions stay on the session page.',
 
   // ---- Agent communication settings ----
   'st.section.communication': 'Agent communication',

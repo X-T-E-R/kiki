@@ -170,6 +170,10 @@ export interface ProfileSetModelResult {
   readonly providerName?: string | undefined;
 }
 
+export interface ProfileSetEffortResult {
+  readonly effort: string;
+}
+
 export interface BindingSelectionValue {
   readonly source: BindingValueSource;
   readonly requestedValue?: string;
@@ -211,6 +215,7 @@ export interface IAgentProfileService {
   applyBindingSnapshot(snapshot: ProfileBindingSnapshot): void;
   bind(input: BindAgentInput): Promise<void>;
   setModel(model: string): Promise<ProfileSetModelResult>;
+  setEffort(level: string): ProfileSetEffortResult;
   setThinking(level: string): void;
   validateBinding(binding: ExecutorBinding): ExecutorValidationResult;
   prepareResumeBinding(input: {

@@ -42,6 +42,7 @@ export type PromptWithSkillsInput = Parameters<IAgentSkillService['promptWithSki
 export type PromptWithSkillsResult = Awaited<ReturnType<IAgentSkillService['promptWithSkills']>>;
 export type ShellCommandResult = Awaited<ReturnType<IAgentShellCommandService['run']>>;
 export type SetModelResult = Awaited<ReturnType<IAgentProfileService['setModel']>>;
+export type SetEffortResult = ReturnType<IAgentProfileService['setEffort']>;
 export type ThinkingLevel = ReturnType<IAgentProfileService['getEffectiveThinkingLevel']>;
 export type AgentLoopStatus = ReturnType<IAgentLoopService['status']>;
 export type UsageStatus = Awaited<ReturnType<IAgentUsageService['status']>>;
@@ -92,6 +93,7 @@ export interface AgentFacade {
   cancelShellCommand(input: { commandId: string }): Promise<void>;
   getModel(): Promise<string>;
   setModel(model: string): Promise<SetModelResult>;
+  setEffort(effort: string): Promise<SetEffortResult>;
   getThinking(): Promise<ThinkingLevel>;
   setThinking(level: string): Promise<void>;
   getModelCapabilities(): Promise<ModelCapability>;
@@ -186,6 +188,8 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     getModel: () => call(scope, 'agentProfileService', 'getModel', []) as Promise<string>,
     setModel: (model) =>
       call(scope, 'agentProfileService', 'setModel', [model]) as Promise<SetModelResult>,
+    setEffort: (effort) =>
+      call(scope, 'agentProfileService', 'setEffort', [effort]) as Promise<SetEffortResult>,
     getThinking: () =>
       call(scope, 'agentProfileService', 'getEffectiveThinkingLevel', []) as Promise<ThinkingLevel>,
     setThinking: (level) =>

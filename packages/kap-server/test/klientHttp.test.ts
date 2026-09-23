@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  IAgentLifecycleService,
   IAgentLoopService,
+  IModelService,
   ensureMainAgent,
   resumeSessionById,
   type Scope,
@@ -162,6 +164,43 @@ describe('klient HTTP host', () => {
         quiescence.dispose();
       }
     } finally {
+      await klient.close();
+    }
+  });
+
+  it('sets a subagent effort through the authenticated klient route and rejects unsupported values', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const modelId = 'effort-route-model';
+    try {
+      await klient.global.kosong.addProvider({
+        id: modelId,
+        model: modelId,
+        protocol: 'openai',
+        baseUrl: 'http://127.0.0.1:1',
+        maxContextSize: 1000,
+        auth: { method: 'api-key', apiKey: 'test-key' },
+      });
+      const models = server.core.accessor.get(IModelService);
+      await models.set(modelId, {
+        ...models.get(modelId),
+        capabilities: ['thinking'],
+        supportEfforts: ['low', 'high'],
+      });
+      const created = await klient.global.sessions.create({ workDir: homeDir });
+      const session = await resumeSessionById(server.core.accessor, created.id);
+      if (session === undefined) throw new Error('session must be live');
+      const child = await session.accessor.get(IAgentLifecycleService).create({
+        agentId: 'effort-route-child',
+        binding: { profile: 'agent', model: modelId, thinking: 'low' },
+      });
+      const agent = klient.session(created.id).agent(child.id);
+
+      await expect(agent.setEffort('high')).resolves.toEqual({ effort: 'high' });
+      await expect(agent.getThinking()).resolves.toBe('high');
+      await expect(agent.setEffort('unsupported')).rejects.toThrow(/not supported/);
+      await expect(agent.getThinking()).resolves.toBe('high');
+    } finally {
+      await klient.global.kosong.removeProvider(modelId);
       await klient.close();
     }
   });

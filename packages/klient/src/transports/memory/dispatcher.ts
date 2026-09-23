@@ -122,7 +122,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
     return { kind: 'agent', like: agent };
   }
 
-  async function restoreKnownAgentForSetModel(
+  async function restoreKnownAgentForProfileChange(
     scope: ScopeRef,
     options?: CallOptions,
   ): Promise<void> {
@@ -239,9 +239,9 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
   return {
     async call(scope, service, method, args, options) {
       options?.signal?.throwIfAborted();
-      if (service === 'agentProfileService' && method === 'setModel') {
+      if (service === 'agentProfileService' && (method === 'setModel' || method === 'setEffort')) {
         try {
-          await restoreKnownAgentForSetModel(scope, options);
+          await restoreKnownAgentForProfileChange(scope, options);
         } catch (error) {
           throw toRPCError(error);
         }

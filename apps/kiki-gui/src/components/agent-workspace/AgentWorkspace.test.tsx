@@ -26,6 +26,7 @@ const harness = vi.hoisted(() => ({
   sendAgentMessage: vi.fn(),
   stopAgentTask: vi.fn(),
   setAgentModel: vi.fn(),
+  setAgentEffort: vi.fn(),
   readCapabilities: vi.fn(),
   listSessionSkills: vi.fn(),
   pushToast: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock('../../state/connection', () => ({
       sendAgentMessage: harness.sendAgentMessage,
       stopAgentTask: harness.stopAgentTask,
       setAgentModel: harness.setAgentModel,
+      setAgentEffort: harness.setAgentEffort,
     },
     klient: {
       global: {
@@ -357,6 +359,82 @@ it('toasts a failed model change and leaves the live model selected', async () =
   expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')!.textContent).toBe(before);
 });
 
+/** The effort ladder of the fixture model, used by the effort-pick tests. */
+const EFFORT_CATALOG = {
+  items: [
+    {
+      id: 'fixture/kiki-pro',
+      provider_id: 'fixture',
+      remote_id: 'kiki-pro',
+      support_efforts: ['low', 'medium', 'high'],
+      default_effort: 'medium',
+    },
+  ],
+};
+
+it('applies a picked thinking effort through the agent facade and refreshes the agent read', async () => {
+  harness.listModels.mockResolvedValue(EFFORT_CATALOG);
+  harness.setAgentEffort.mockResolvedValue(undefined);
+  const invalidate = vi.spyOn(queries, 'invalidateQueries');
+  // The node carries a bare alias; the ladder must come from the catalog row it
+  // resolves to (`fixture/kiki-pro`), not from a name match on the raw value.
+  await renderWorkspace({
+    forest: testForest('running', true, { model: 'kiki-pro', thinkingEffort: 'medium' }),
+  });
+  await settle();
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>('#composer-model-select')!.click();
+  });
+  const high = dock.querySelector<HTMLButtonElement>('[data-effort="high"]');
+  expect(high).not.toBeNull();
+  await act(async () => { high?.click(); });
+  await settle();
+  expect(harness.setAgentEffort).toHaveBeenCalledWith('session', 'child', 'high');
+  expect(invalidate).toHaveBeenCalledWith({
+    queryKey: ['agentCapabilities', { session_id: 'session', agent_id: 'child' }],
+  });
+});
+
+it('keeps the effort pick disabled for a terminal subagent', async () => {
+  harness.listModels.mockResolvedValue(EFFORT_CATALOG);
+  await renderWorkspace({
+    forest: testForest('completed', false, { model: 'kiki-pro', thinkingEffort: 'medium' }),
+  });
+  await settle();
+  const modelSelect = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
+  // A finished child stays wakeable, so the model rebind and the panel are
+  // still offered; only the effort ladder is withheld.
+  expect(modelSelect.disabled).toBe(false);
+  await act(async () => { modelSelect.click(); });
+  expect(dock.querySelector('[role="option"][title="fixture/kiki-pro"]')).not.toBeNull();
+  expect(dock.querySelector('[data-effort]')).toBeNull();
+  expect(harness.setAgentEffort).not.toHaveBeenCalled();
+});
+
+it('toasts a failed effort change and leaves the live effort selected', async () => {
+  harness.listModels.mockResolvedValue(EFFORT_CATALOG);
+  harness.setAgentEffort.mockRejectedValue(new Error('agent restore failed'));
+  await renderWorkspace({
+    forest: testForest('running', true, { model: 'kiki-pro', thinkingEffort: 'medium' }),
+  });
+  await settle();
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>('#composer-model-select')!.click();
+  });
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>('[data-effort="high"]')?.click();
+  });
+  await settle();
+  expect(harness.setAgentEffort).toHaveBeenCalledWith('session', 'child', 'high');
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'error',
+    text: translate('en', 'subagent.effortChangeFailed', { detail: 'agent restore failed' }),
+  });
+  // The ladder reads the live agent, so a rejected pick must not read as applied.
+  expect(dock.querySelector<HTMLButtonElement>('[data-effort="medium"]')?.getAttribute('aria-checked')).toBe('true');
+  expect(dock.querySelector<HTMLButtonElement>('[data-effort="high"]')?.getAttribute('aria-checked')).toBe('false');
+});
+
 it('toasts a rejected stop and stays retryable; a pending stop double-click fires once and recovers', async () => {
   let rejectStop: (error: Error) => void = () => undefined;
   harness.stopAgentTask.mockImplementation(
@@ -474,6 +552,10 @@ it('disables composer, model, and attach when the forest does not know the agent
   expect(dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled).toBe(true);
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   expect(harness.setAgentModel).not.toHaveBeenCalled();
+  // The effort ladder rides the same gate: an unreachable agent offers no pick
+  // and never reaches the effort switch.
+  expect(dock.querySelector('[data-effort]')).toBeNull();
+  expect(harness.setAgentEffort).not.toHaveBeenCalled();
 });
 
 it('drops picker results that resolve after the agent leaves the forest', async () => {
@@ -570,17 +652,22 @@ function forestWithoutChild(): AgentForest {
   return { roots: [main], byId: { main } };
 }
 
-function testForest(status: AgentTreeNode['status'] = 'completed', busy = false): AgentForest {
+function testForest(
+  status: AgentTreeNode['status'] = 'completed',
+  busy = false,
+  child: Partial<AgentTreeNode> = {},
+): AgentForest {
   const main: AgentTreeNode = {
     agentId: 'main', name: 'main', label: 'Main', status: 'completed', busy: false,
     toolCallCount: 0, childIds: ['child'],
   };
-  const child: AgentTreeNode = {
+  const childNode: AgentTreeNode = {
     agentId: 'child', parentAgentId: 'main', name: 'general', label: 'General',
     model: 'fixture/kiki-pro',
     status, busy, toolCallCount: 0, childIds: [],
+    ...child,
   };
-  return { roots: [main], byId: { main, child } };
+  return { roots: [main], byId: { main, child: childNode } };
 }
 
 function renderWorkspace(overrides: Partial<ComponentProps<typeof AgentWorkspace>> = {}) {

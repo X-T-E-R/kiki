@@ -322,6 +322,21 @@ describe('thread facade routing', () => {
 });
 
 describe('agent profile routing', () => {
+  it('effort calls route to agentProfileService with the agent scope', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('subagent');
+
+    channel.result = { effort: 'high' };
+    await expect(agent.setEffort('high')).resolves.toEqual({ effort: 'high' });
+    expect(channel.calls[0]).toEqual({
+      scope: { sessionId: 's1', agentId: 'subagent' },
+      service: 'agentProfileService',
+      method: 'setEffort',
+      args: ['high'],
+    });
+  });
+
   it('thinking calls route to agentProfileService with the agent scope', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
