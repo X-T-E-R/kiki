@@ -28,6 +28,7 @@ import {
   stubLoopWithHooks,
   stubWire,
 } from '../loop/stubs';
+import { createTestAgent, type TestAgentContext } from '../../harness';
 
 function injector(ix: TestInstantiationService): IAgentContextInjectorService {
   return ix.get(IAgentContextInjectorService);
@@ -454,5 +455,116 @@ describe('AgentContextInjectorService', () => {
 
     expect(context.get()).toHaveLength(1);
     expect(lastText(context)).toContain('surviving reminder');
+  });
+});
+
+interface DeliveryAppendRecord {
+  readonly type: string;
+  readonly message?: { readonly id?: string; readonly role?: string };
+  readonly delivery?: {
+    readonly deliveryId: string;
+    readonly messageId: string;
+    readonly origin: string;
+    readonly deliveredAt: string;
+  };
+}
+
+describe('AgentContextInjectorService delivery routing', () => {
+  let ctx: TestAgentContext;
+  let context: IAgentContextMemoryService;
+  let injectorService: IAgentContextInjectorService;
+  const subscriptions: Array<{ dispose(): void }> = [];
+
+  beforeEach(() => {
+    ctx = createTestAgent();
+    context = ctx.get(IAgentContextMemoryService);
+    injectorService = ctx.get(IAgentContextInjectorService);
+  });
+
+  afterEach(async () => {
+    subscriptions.splice(0).forEach((subscription) => subscription.dispose());
+    try {
+      await ctx.expectResumeMatches();
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  function recordObservableAppends(): DeliveryAppendRecord[] {
+    const events: DeliveryAppendRecord[] = [];
+    subscriptions.push(
+      ctx.get(IEventBus).subscribe((event) => {
+        const record = event as DeliveryAppendRecord;
+        if (record.type === 'context.append_message') events.push(record);
+      }),
+    );
+    return events;
+  }
+
+  it('delivers an injected system reminder as an observable message with delivery metadata', async () => {
+    const events = recordObservableAppends();
+    injectorService.register('delivery_probe', () => 'injected reminder');
+
+    await injectorService.reconcileAtSafeBoundary('delivery_probe');
+
+    const stored = context.get().at(-1);
+    expect(stored?.role).toBe('user');
+    expect(stored?.origin).toEqual({ kind: 'injection', variant: 'delivery_probe' });
+    expect(typeof stored?.id).toBe('string');
+    expect(events).toHaveLength(1);
+    expect(events[0]?.message?.id).toBe(stored?.id);
+    expect(events[0]?.delivery).toEqual(
+      expect.objectContaining({
+        origin: 'injection',
+        messageId: stored?.id,
+        deliveryId: expect.stringMatching(/^dlv_/),
+        deliveredAt: expect.any(String),
+      }),
+    );
+  });
+
+  it('delivers raw content-part injections through the observable channel', async () => {
+    const events = recordObservableAppends();
+    injectorService.register('parts_probe', () => [{ type: 'text', text: 'caption' }]);
+
+    await injectorService.reconcileAtSafeBoundary('parts_probe');
+
+    const stored = context.get().at(-1);
+    expect(stored?.content).toEqual([{ type: 'text', text: 'caption' }]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.delivery?.origin).toBe('injection');
+    expect(events[0]?.delivery?.messageId).toBe(stored?.id);
+  });
+
+  it('delivers tagged raw user-message injections through the observable channel', async () => {
+    const events = recordObservableAppends();
+    injectorService.register('raw_user_probe', () => ({
+      message: { role: 'user', content: [{ type: 'text', text: 'raw user payload' }] },
+    }));
+
+    await injectorService.reconcileAtSafeBoundary('raw_user_probe');
+
+    const stored = context.get().at(-1);
+    expect(stored?.role).toBe('user');
+    expect(events).toHaveLength(1);
+    expect(events[0]?.delivery?.origin).toBe('injection');
+    expect(events[0]?.delivery?.messageId).toBe(stored?.id);
+  });
+
+  it('keeps tagged raw system injections off the user delivery channel', async () => {
+    const events = recordObservableAppends();
+    injectorService.register('raw_system_probe', () => ({
+      message: {
+        role: 'system',
+        content: [],
+        tools: [{ name: 'ProbeTool', description: 'probe tool', parameters: { type: 'object' } }],
+      },
+    }));
+
+    await injectorService.reconcileAtSafeBoundary('raw_system_probe');
+
+    const stored = context.get().at(-1);
+    expect(stored?.role).toBe('system');
+    expect(events).toEqual([]);
   });
 });

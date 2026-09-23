@@ -2230,6 +2230,13 @@ export function appendLocalUserMessage(
     appendTiming?: DeferredAppendTiming;
   },
 ): SessionViewState {
+  // A transcript delivery can outrun the REST submit response. Once a real
+  // turn owns this message, a late queued/running echo must not put it back in
+  // the composer queue or replace its settled text with an old preview.
+  if (state.blocks.some((block) => block.kind === 'user' && block.turnId !== undefined &&
+    (block.userMessageId === input.userMessageId || block.promptId === input.promptId))) {
+    return state;
+  }
   const item: PromptItem = {
     prompt_id: input.promptId,
     user_message_id: input.userMessageId,
@@ -2386,7 +2393,19 @@ export function projectAgentTranscriptView(
       ? projected
       : retainPendingPromptBlocks(previous.blocks, projected);
   const withoutRemovedQueuedPrompts = dropAbortedBeforeStartPromptBlocks(retained, prompts);
-  const blocks = settleCompletedPrompts(withoutRemovedQueuedPrompts, prompts);
+  // A steer receipt acknowledges queue removal, not context delivery. If the
+  // running turn ends before its next step, no user frame is ever accepted;
+  // retiring the queued preview as a settled bubble would strand it at the
+  // bottom of the timeline. Only the turn-owned frame establishes its place.
+  const completedSteerIds = new Set(prompts
+    .filter((prompt) => prompt.status === 'completed' && prompt.steeredAt !== undefined)
+    .map((prompt) => prompt.promptId));
+  const deliveredOnly = completedSteerIds.size === 0
+    ? withoutRemovedQueuedPrompts
+    : withoutRemovedQueuedPrompts.filter((block) =>
+      block.kind !== 'user' || block.turnId !== undefined ||
+      block.promptId === undefined || !completedSteerIds.has(block.promptId));
+  const blocks = settleCompletedPrompts(deliveredOnly, prompts);
   const withSnapshotFields = overlaySnapshotSubagentFields(blocks, previous.snapshotSubagents);
   const stableBlocks = stabilizeProjectedBlocks(previous.blocks, withSnapshotFields);
   let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;

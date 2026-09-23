@@ -246,7 +246,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
         const reason = await this.runStop(ctx);
         if (reason !== undefined) {
           this.stopHookContinuationUsed = true;
-          this.context.append({
+          this.context.appendObservable({
             role: 'user',
             content: [{ type: 'text', text: reason }],
             toolCalls: [],
@@ -374,7 +374,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
 
     const append = renderUserPromptHookResult(results);
     if (append !== undefined) {
-      this.context.append({
+      this.context.appendObservable({
         role: 'user',
         content: [{ type: 'text', text: append.text }],
         toolCalls: [],

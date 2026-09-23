@@ -40,6 +40,7 @@ import {
   assistantMessageIdFromBlockId,
   buildAgentForest,
   createViewState,
+  projectAgentTranscriptView,
   type AgentForest,
   type Block,
   type SessionViewState,
@@ -1295,6 +1296,27 @@ describe('message row actions', () => {
     expect(blockedContainer.querySelector('[data-block-id="user-blocked"]')).not.toBeNull();
     expect(blockedContainer.textContent).toContain('blocked prompt');
     expect(blockedContainer.textContent).toContain('Blocked');
+  });
+
+  it('does not paint an acknowledged but undelivered steer as a bottom-of-timeline bubble', async () => {
+    const opening = userTurnSnapshot({ streaming: true });
+    const prompt = {
+      promptId: 'queued-steer', status: 'queued' as const, userMessageId: 'queued-message',
+      content: [{ type: 'text' as const, text: 'deliver me later' }],
+      createdAt: '2026-01-01T00:00:03.000Z',
+    };
+    const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      ...opening, prompts: [...opening.prompts, prompt],
+    });
+    const acknowledged = projectAgentTranscriptView(pending, 'main', {
+      ...opening, prompts: [...opening.prompts, {
+        ...prompt, status: 'completed', steeredAt: '2026-01-01T00:00:04.000Z',
+      }],
+    });
+    expect(acknowledged.queuedPromptIds).toEqual([]);
+    const container = await renderTranscript([...acknowledged.blocks]);
+    expect(container.textContent).not.toContain('deliver me later');
+    expect(container.querySelector('[data-block-id="user-queued-message"]')).toBeNull();
   });
 
   it('keeps fork on a settled journal user even if a later regenerate prompt is still running', async () => {

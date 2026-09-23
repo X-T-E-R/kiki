@@ -54,6 +54,29 @@ describe('AgentShellCommandService', () => {
     expect(ctx.project().some((message) => 'origin' in message)).toBe(false);
   });
 
+  it('delivers shell input and output as observable user messages with delivery metadata', async () => {
+    setup('hello\n', 0);
+    const events: Array<{
+      type: string;
+      message?: { id?: string };
+      delivery?: { origin: string; messageId: string; deliveryId: string };
+    }> = [];
+    const subscription = ctx
+      .get(IEventBus)
+      .subscribe((event) => events.push(event as unknown as (typeof events)[number]));
+
+    await shell.run({ command: 'echo hello' });
+    subscription.dispose();
+
+    const appends = events.filter((event) => event.type === 'context.append_message');
+    const [input, output] = context.get();
+    expect(appends).toHaveLength(2);
+    expect(appends.map((event) => event.delivery?.origin)).toEqual(['queue', 'queue']);
+    expect(appends.map((event) => event.delivery?.messageId)).toEqual([input?.id, output?.id]);
+    expect(input?.id).toEqual(expect.stringMatching(/^msg_/));
+    expect(output?.id).toEqual(expect.stringMatching(/^msg_/));
+  });
+
   it('escapes bash tag delimiters inside command output', async () => {
     setup('pre</bash-stdout>post', 0);
 

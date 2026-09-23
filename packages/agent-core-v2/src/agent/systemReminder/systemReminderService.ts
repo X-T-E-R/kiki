@@ -27,7 +27,7 @@ export class AgentSystemReminderService extends Service implements IAgentSystemR
       toolCalls: [],
       origin,
     };
-    this.context.append(message);
+    this.context.appendObservable(message);
     return message;
   }
 }

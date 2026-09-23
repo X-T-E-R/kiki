@@ -203,7 +203,7 @@ export class AgentShellCommandService implements IAgentShellCommandService {
 
   private appendShellInput(command: string): void {
     const text = `<bash-input>\n${escapeXml(command)}\n</bash-input>`;
-    this.context.append({
+    this.context.appendObservable({
       role: 'user',
       content: [{ type: 'text', text }],
       toolCalls: [],
@@ -213,7 +213,7 @@ export class AgentShellCommandService implements IAgentShellCommandService {
 
   private appendShellOutput(stdout: string, stderr: string, isError?: boolean): void {
     const text = `<bash-stdout>${escapeXml(stdout)}</bash-stdout><bash-stderr>${escapeXml(stderr)}</bash-stderr>`;
-    this.context.append({
+    this.context.appendObservable({
       role: 'user',
       content: [{ type: 'text', text }],
       toolCalls: [],

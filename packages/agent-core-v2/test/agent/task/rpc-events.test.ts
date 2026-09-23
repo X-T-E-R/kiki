@@ -166,6 +166,7 @@ interface FakeTaskAgent {
   emittedEvents: Array<{ type: string; info?: unknown }>;
   kimiConfig?: { task?: { maxRunningTasks?: number } };
   context: { appendUserMessage: ReturnType<typeof vi.fn> };
+  observableDeliveries: Array<{ message: TestContextMessage; delivery: unknown }>;
   hooks?: { fireAndForgetTrigger: FireAndForgetTrigger };
 }
 
@@ -230,7 +231,11 @@ const contextWithAppend = context as unknown as {
   appendManaged: (m: TestContextMessage, d: unknown) => void;
 };
 const originalAppend = contextWithAppend.append.bind(context);
-contextWithAppend.appendManaged = (message: TestContextMessage, _delivery: unknown) => originalAppend(message);
+const observableDeliveries: Array<{ message: TestContextMessage; delivery: unknown }> = [];
+contextWithAppend.appendManaged = (message: TestContextMessage, delivery: unknown) => {
+  observableDeliveries.push({ message, delivery });
+  originalAppend(message);
+};
 const appendHistorySpy = vi.spyOn(context, 'append');
 
   const agent: FakeTaskAgent = {
@@ -243,6 +248,7 @@ const appendHistorySpy = vi.spyOn(context, 'append');
         ? undefined
         : { task: { maxRunningTasks: options.maxRunningTasks } },
     context: { appendUserMessage: appendHistorySpy },
+    observableDeliveries,
     hooks: options.hooks,
   };
 
@@ -1382,5 +1388,41 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     expect(text).not.toContain('agent_id=');
     expect(text).not.toMatch(/AgentRun\(resume=/);
     expect(text).toContain(`source_id="${taskId}"`);
+  });
+
+  it('delivers a restored terminal task notification through the observable user channel', async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-delivery-'));
+    let fixture: TaskServiceFixture | undefined;
+    try {
+      const persistence = createAgentTaskPersistence(sessionDir);
+      await persistence.writeTask(persistedAgent());
+      await persistence.appendTaskOutput('agent-done0000', 'restored delivery summary');
+      fixture = createAgentTaskService({ sessionDir });
+      const { agent, manager } = fixture;
+
+      await manager.loadFromDisk();
+      await manager.reconcile();
+
+      await vi.waitFor(() => {
+        expect(agent.context.appendUserMessage).toHaveBeenCalledTimes(1);
+        expect(agent.observableDeliveries).toHaveLength(1);
+      });
+      const record = agent.observableDeliveries[0]!;
+      expect(record.message.origin).toEqual({
+        kind: 'task',
+        taskId: 'agent-done0000',
+        status: 'completed',
+        notificationId: 'task:agent-done0000:completed',
+      });
+      expect(record.delivery).toEqual(
+        expect.objectContaining({
+          origin: 'queue',
+          messageId: expect.stringMatching(/^msg_/),
+          deliveryId: expect.stringMatching(/^dlv_/),
+        }),
+      );
+    } finally {
+      await cleanupSessionDir(sessionDir, fixture);
+    }
   });
 });

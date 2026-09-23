@@ -34,7 +34,7 @@ import { IAgentLoopService, type AfterStepContext } from '#/agent/loop/loop';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentPromptService, type PromptSubmitContext } from '#/agent/prompt/prompt';
 import { PromptQueued } from '#/agent/prompt/promptService';
 import { IAgentTaskService } from '#/agent/task/task';
 import { TaskStarted } from '#/agent/task/taskOps';
@@ -109,8 +109,10 @@ function makeAfterStep(signal: AbortSignal): AfterStepContext {
 
 function stubContextMemory(): IAgentContextMemoryService & {
   readonly messages: readonly ContextMessage[];
+  readonly observableMessages: readonly ContextMessage[];
 } {
   const messages: ContextMessage[] = [];
+  const observableMessages: ContextMessage[] = [];
   return {
     _serviceBrand: undefined,
     get: () => [...messages],
@@ -118,6 +120,7 @@ function stubContextMemory(): IAgentContextMemoryService & {
       messages.push(...inserted);
     },
     appendObservable: (message) => {
+      observableMessages.push(message);
       messages.push(message);
     },
     appendManaged: (message, _delivery) => {
@@ -143,6 +146,7 @@ function stubContextMemory(): IAgentContextMemoryService & {
       return result;
     },
     messages,
+    observableMessages,
   };
 }
 
@@ -383,6 +387,7 @@ describe('IExternalHooksRunnerService integration', () => {
       expect(loop.hasPendingRequests()).toBe(false);
       expect(stopInputs).toEqual([]);
       expect(context.messages).toEqual([]);
+      expect(context.observableMessages).toEqual([]);
 
       const first = makeAfterStep(signal);
       await loop.hooks.onDidFinishStep.run(first);
@@ -394,6 +399,7 @@ describe('IExternalHooksRunnerService integration', () => {
           origin: { kind: 'system_trigger', name: 'stop_hook' },
         }),
       );
+      expect(context.observableMessages).toEqual([context.messages.at(-1)]);
       expect(loop.drainNextBatch(context)).toBeDefined();
 
       const second = makeAfterStep(signal);
@@ -420,6 +426,11 @@ describe('IExternalHooksRunnerService integration', () => {
         }),
       );
       expect(loop.drainNextBatch(context)).toBeDefined();
+      expect(context.observableMessages).toHaveLength(2);
+      expect(context.observableMessages.map((message) => message.origin)).toEqual([
+        { kind: 'system_trigger', name: 'stop_hook' },
+        { kind: 'system_trigger', name: 'stop_hook' },
+      ]);
       expect(stopInputs).toEqual([{ stopHookActive: false }, { stopHookActive: false }]);
     } finally {
       ix?.dispose();
@@ -1434,6 +1445,67 @@ describe('IExternalHooksRunnerService integration', () => {
       ix?.dispose();
       disposables.dispose();
       vi.useRealTimers();
+    }
+  });
+
+  it('delivers a UserPromptSubmit hook result through the observable user channel', async () => {
+    const disposables = new DisposableStore();
+    let ix: TestInstantiationService | undefined;
+    try {
+      const context = stubContextMemory();
+      const promptHooks = createHooks<
+        { onBeforeSubmitPrompt: PromptSubmitContext },
+        'onBeforeSubmitPrompt'
+      >(['onBeforeSubmitPrompt']);
+      const hookEngine = {
+        trigger: async () => [{ action: 'allow', stdout: 'remember the lint rule' }],
+        triggerBlock: async () => undefined,
+        fireAndForgetTrigger: async () => [],
+      };
+
+      ix = createServices(disposables, {
+        strict: true,
+        additionalServices: (reg) => {
+          registerStateServices(reg);
+          registerTestAgentWireServices(reg, 'wire/external-hooks');
+          reg.defineInstance(IBootstrapService, stubBootstrap());
+          reg.defineInstance(ISessionContext, stubSessionContext());
+          reg.defineInstance(ISessionMetadata, stubSessionMetadata());
+          reg.definePartialInstance(IConfigService, {});
+          reg.definePartialInstance(IPluginService, {});
+          reg.defineInstance(IAgentContextMemoryService, context);
+          reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
+          reg.define(IEventBus, EventBusService);
+          reg.definePartialInstance(IAgentPromptService, { hooks: promptHooks });
+          reg.defineInstance(IAgentToolExecutorService, stubToolExecutor());
+          reg.definePartialInstance(IAgentPermissionGate, {});
+          reg.definePartialInstance(IAgentFullCompactionService, {
+            hooks: createHooks(['onWillCompact']),
+          });
+          reg.definePartialInstance(IAgentTaskService, {});
+        },
+      });
+      ix.set(IExternalHooksRunnerService, stubHookRunner(hookEngine));
+      ix.set(IAgentExternalHooksService, new SyncDescriptor(AgentExternalHooksService));
+      ix.get(IAgentExternalHooksService);
+
+      const promptMessage: ContextMessage = {
+        role: 'user',
+        content: [{ type: 'text', text: 'fix the lint error' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      };
+      await promptHooks.onBeforeSubmitPrompt.run({ promptMessage, isSteer: false, block: false });
+
+      expect(context.messages).toHaveLength(1);
+      expect(context.messages[0]?.origin).toEqual({
+        kind: 'hook_result',
+        event: 'UserPromptSubmit',
+      });
+      expect(context.observableMessages).toEqual([context.messages[0]]);
+    } finally {
+      ix?.dispose();
+      disposables.dispose();
     }
   });
 });

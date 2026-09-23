@@ -1823,6 +1823,28 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  it('does not resurrect a queued strip after a transcript delivery outruns the submit response', async () => {
+    const { controller, client } = await openTranscriptController();
+    let resolveSubmit!: (value: {
+      prompt_id: string; user_message_id: string; status: 'queued';
+      content: { type: 'text'; text: string }[]; created_at: string;
+    }) => void;
+    client.submitPrompt = vi.fn(() => new Promise((resolve) => { resolveSubmit = resolve; }));
+    const submitted = controller.sendPrompt({ text: 'canonical user prompt', permissionMode: 'manual' });
+    controller.handleTranscript(resetEvent('main', userTurnSnapshot(), 1));
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    resolveSubmit({
+      prompt_id: 'p-canonical-1', user_message_id: 'um-canonical-1', status: 'queued',
+      content: [{ type: 'text', text: 'canonical user prompt' }], created_at: '2026-01-01T00:00:00.000Z',
+    });
+    await submitted;
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    expect(controller.getState().blocks.filter((block) => block.kind === 'user')).toEqual([
+      expect.objectContaining({ turnId: 't1', promptStatus: undefined }),
+    ]);
+    controller.close();
+  });
+
   it('keeps local prompt echo until the matching prompt op lands and updates replaced content', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     client.submitPrompt = vi.fn(async () => ({

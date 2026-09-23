@@ -7,6 +7,7 @@ import { ILogService } from '#/_base/log/log';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import { isCompactionSummaryMessage } from '#/agent/contextMemory/compactionHandoff';
+import { isDeliveryVisibleMessage } from '#/agent/contextMemory/messageDelivery';
 import { IAgentLoopService, type BeforeStepContext } from '#/agent/loop/loop';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { IEventBus } from '#/app/event/eventBus';
@@ -171,7 +172,7 @@ export class AgentContextInjectorService extends Service implements IAgentContex
       ) {
         return;
       }
-      this.context.append({
+      this.appendContext({
         role: message.role,
         content: [...message.content],
         toolCalls: [],
@@ -181,12 +182,20 @@ export class AgentContextInjectorService extends Service implements IAgentContex
       return;
     }
     if (resolved.length === 0) return;
-    this.context.append({
+    this.appendContext({
       role: 'user',
       content: [...resolved],
       toolCalls: [],
       origin,
     });
+  }
+
+  private appendContext(message: ContextMessage): void {
+    if (isDeliveryVisibleMessage(message)) {
+      this.context.appendObservable(message);
+      return;
+    }
+    this.context.append(message);
   }
 }
 

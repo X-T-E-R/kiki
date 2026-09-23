@@ -3694,7 +3694,45 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.queuedPromptIds).toEqual(['p2', 'p3', 'p1']);
   });
 
-  it('drops a steered prompt from the queue and keeps it as a settled user bubble', () => {
+  it('does not settle a queued bubble at the bottom before a steer is actually delivered', () => {
+    const opening = userTurnSnapshot({ streaming: true });
+    const queued = applyOpsToSnapshot(opening, [{
+      op: 'prompt.upsert',
+      prompt: {
+        promptId: 'p-late-steer', status: 'queued', userMessageId: 'um-late-steer',
+        content: [{ type: 'text', text: 'Steer awaiting the next step' }],
+        createdAt: '2026-01-01T00:00:03.000Z',
+      },
+    }]);
+    const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', queued);
+    const steered = applyOpsToSnapshot(queued, [{
+      op: 'prompt.upsert',
+      prompt: {
+        promptId: 'p-late-steer', status: 'completed', userMessageId: 'um-late-steer',
+        content: [{ type: 'text', text: 'Steer awaiting the next step' }],
+        createdAt: '2026-01-01T00:00:03.000Z',
+        finishedAt: '2026-01-01T00:00:04.000Z', steeredAt: '2026-01-01T00:00:04.000Z',
+      },
+    }]);
+    const beforeDelivery = projectAgentTranscriptView(pending, 'main', steered);
+    expect(beforeDelivery.queuedPromptIds).toEqual([]);
+    expect(beforeDelivery.blocks.filter((block) => block.kind === 'user' && block.text === 'Steer awaiting the next step')).toEqual([]);
+
+    const delivered = applyOpsToSnapshot(steered, [{
+      op: 'frame.upsert', turnId: 't1', stepId: 't1.1',
+      frame: {
+        kind: 'text', frameId: 'um-late-steer', role: 'user', text: 'Steer awaiting the next step',
+        origin: { kind: 'user' },
+        part: { partId: 'um-late-steer', messageId: 'um-late-steer', revision: 0, provenance: { source: 'engine' } },
+      },
+    }]);
+    const afterDelivery = projectAgentTranscriptView(beforeDelivery, 'main', delivered);
+    expect(afterDelivery.blocks.filter((block) => block.kind === 'user' && block.text === 'Steer awaiting the next step')).toEqual([
+      expect.objectContaining({ turnId: 't1', promptStatus: undefined }),
+    ]);
+  });
+
+  it('removes a steered prompt from the queue without inventing a delivered bubble', () => {
     const previous = projectAgentTranscriptView(
       createViewState('session_test'),
       'main',
@@ -3730,10 +3768,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
     const projected = projectAgentTranscriptView(withQueued, 'main', steered);
     expect(projected.queuedPromptIds).toEqual([]);
-    expect(projected.blocks.find((block) => block.kind === 'user' && block.promptId === 'p-queued')).toMatchObject({
-      text: 'B: steer me in.',
-      promptStatus: undefined,
-    });
+    expect(projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued')).toBe(false);
   });
 
   it('does not rewrite the original user bubble when the active prompt is steered', () => {

@@ -1416,7 +1416,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async restoreAgentTaskNotification(info: AgentTaskInfo, delivery: object): Promise<void> {
     const context = await this.buildAgentTaskNotificationContext(info);
     if (context === undefined) return;
-    this.context.append({
+    this.context.appendObservable({
       role: 'user',
       content: [...context.renderContent(delivery)],
       toolCalls: [],
