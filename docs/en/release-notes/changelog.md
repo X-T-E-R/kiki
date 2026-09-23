@@ -171,7 +171,7 @@ Early entries on this page originate from the upstream Kimi Code project and use
 
 ### Refactors
 
-- Run the CLI surfaces (interactive TUI, `kimi -p`, `kimi acp`, `kimi export`, `kimi provider`) on the agent-core-v2 engine by default. Set `KIMI_CODE_LEGACY_FLAG=1` to fall back to the legacy engine.
+- Run the CLI surfaces (interactive TUI, `kimi -p`, `kimi acp`, `kimi export`, `kimi provider`) on the agent-core-v2 engine. Later releases removed the legacy engine entirely: `KIMI_CODE_LEGACY_FLAG` no longer exists, and setting it has no effect.
 
 ## 0.32.0 (2026-08-04)
 

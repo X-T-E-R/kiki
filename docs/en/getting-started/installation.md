@@ -32,7 +32,7 @@ The release binaries are not code-signed, so Windows SmartScreen may flag the pu
 kiki --version
 ```
 
-> On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch. Kiki uses the bundled Git Bash as its shell environment; if Git Bash is installed in a custom location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
+> On Windows, [Git for Windows](https://gitforwindows.org/) is a required dependency, not an optional one. Without Git Bash on the `PATH` (and without `KIKI_SHELL_PATH` set), the first workspace fails to create with a shell-probe error, the terminal panel gets no session, and the desktop shows a terminal-creation failure — the failure is raised as an error, not a blank window. Install Git for Windows before first launch; if Git Bash is installed in a custom location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
 
 The CLI is not published to npm; use the release artifacts, or run from source while developing.
 

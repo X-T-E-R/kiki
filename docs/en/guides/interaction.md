@@ -39,7 +39,7 @@ Type `@` to trigger file-path completion. Selecting a path inserts its relative 
 
 ## Approval flow
 
-When the agent calls a tool that has side effects — modifying files, running commands — the TUI displays an approval panel for your confirmation. Approvals are not triggered for regular tool calls in YOLO mode, nor for writes to plan files in Plan mode.
+When the agent calls a tool with side effects — running commands, modifying files outside the workspace trust boundary — the TUI displays an approval panel for your confirmation. In a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval; shell commands, workspace-external writes, and sensitive-file access still prompt. Approvals are not triggered for regular tool calls in YOLO mode, nor for writes to plan files in Plan mode.
 
 Use the arrow keys to select an option and press `Enter` to confirm, or press `1` / `2` / `3` to select by number directly. `Esc`, `Ctrl-C`, and `Ctrl-D` are all equivalent to rejecting.
 

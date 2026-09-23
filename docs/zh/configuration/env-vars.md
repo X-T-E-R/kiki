@@ -16,7 +16,7 @@ Kiki 自有运行时开关统一使用 `KIKI_*` 前缀。`KIMI_API_KEY` 和 `KIM
 
 ### `KIKI_HOME`
 
-覆盖数据根目录，默认 `~/.kiki`。设置后，配置与凭证文件、会话、日志、OAuth 凭据等全部数据都落到新路径下：
+覆盖数据根目录，默认 `~/.kiki`。设置后，配置与凭证文件、会话、日志、OAuth 凭据等全部数据都落到新路径下。桌面应用的 OAuth 凭据也跟随 `KIKI_HOME`：未设置时默认在兼容家目录 `~/.kimi-code/`（见[数据路径](./data-locations.md)）。
 
 ```sh
 export KIKI_HOME="/path/to/custom/kiki"

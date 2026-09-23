@@ -50,7 +50,9 @@ kiki -c
 Take a look at this project's directory structure and briefly describe what each directory is for.
 ```
 
-Kiki 会自动调用文件读取、搜索等工具（工具是 Agent 可以调用的内置能力，例如读文件、搜索代码、运行命令）浏览相关内容，然后再回答。默认情况下，只读操作自动执行、无需确认；修改文件或运行 Shell 命令的操作会先请求你的确认。
+Kiki 会自动调用文件读取、搜索等工具（工具是 Agent 可以调用的内置能力，例如读文件、搜索代码、运行命令）浏览相关内容，然后再回答。默认情况下，只读操作自动执行、无需确认。
+
+文件写入遵循工作区信任模型，而不是逐次弹窗：在已信任的工作目录内，落在该目录下的 `Write` / `Edit` 不再逐项询问；工作区外的写入，以及 `.env` 文件、私钥这类敏感文件的访问，会被拦截或需要确认。Shell 命令始终会先请求你的确认。
 
 也可以直接描述一个更具体的任务：
 
@@ -92,7 +94,7 @@ Kiki 会规划步骤、修改代码、运行测试，并在每一步告诉你它
 
 ## 数据存储在哪里
 
-Kiki 默认将本地数据存放在 `~/.kiki/` —— 配置文件、会话记录、日志和更新缓存。要移到别处，通过 `KIKI_HOME` 环境变量指定新路径。完整目录布局见[数据路径](../configuration/data-locations.md)和[环境变量](../configuration/env-vars.md)。
+Kiki 默认将本地数据存放在 `~/.kiki/` —— 配置文件、会话记录、日志和更新缓存。要移到别处，通过 `KIKI_HOME` 环境变量指定新路径。注意未设置 `KIKI_HOME` 时，桌面应用的 OAuth 凭据默认在兼容家目录 `~/.kimi-code/`；完整说明见[数据路径](../configuration/data-locations.md)。
 
 ## 下一步
 

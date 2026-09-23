@@ -2,7 +2,7 @@
 
 Built-in tools are the tool set provided by Kiki alongside its core engine — no MCP server installation required. The Agent automatically selects and calls these tools based on the task at hand during each conversation; users can inspect the details of each tool call through the approval interface.
 
-Compared to MCP tools, built-in tools are managed directly by the runtime, their lifecycle is bound to the session, and no external process is required. Both follow the same unified approval mechanism: **read-only tools** (such as `Read`, `Grep`, `Glob`) are automatically allowed by default, while **write and execution tools** (such as `Write`, `Edit`, `Bash`) require user approval by default. In YOLO mode, approval for regular tool calls is skipped; Plan mode exit approval is not affected.
+Compared to MCP tools, built-in tools are managed directly by the runtime, their lifecycle is bound to the session, and no external process is required. Both follow the same unified approval mechanism: **read-only tools** (such as `Read`, `Grep`, `Glob`) are automatically allowed by default, while **execution tools** (such as `Bash`) require user approval by default. File writes follow the workspace trust model: in a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval; workspace-external writes and sensitive-file access are blocked or require approval. In YOLO mode, approval for regular tool calls is skipped; Plan mode exit approval is not affected.
 
 ## File Tools
 
@@ -11,8 +11,8 @@ File tools handle reading, writing, and searching the local filesystem — the f
 | Tool | Default Approval | Description |
 | --- | --- | --- |
 | `Read` | Auto-allow | Read a text file's contents |
-| `Write` | Requires approval | Create or overwrite a file |
-| `Edit` | Requires approval | Precise string replacement |
+| `Write` | Auto-allow inside a trusted workspace; blocked or approval outside | Create or overwrite a file |
+| `Edit` | Auto-allow inside a trusted workspace; blocked or approval outside | Precise string replacement |
 | `Grep` | Auto-allow | Full-text search powered by ripgrep |
 | `Glob` | Auto-allow | Find files by glob pattern |
 | `ReadMediaFile` | Auto-allow | Read an image or video file |

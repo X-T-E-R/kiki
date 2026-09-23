@@ -171,7 +171,7 @@ outline: 2
 
 ### 重构
 
-- CLI 各界面（交互式 TUI、`kimi -p`、`kimi acp` 等）默认运行在 agent-core-v2 引擎上；设置 `KIMI_CODE_LEGACY_FLAG=1` 可回退旧引擎。
+- CLI 各界面（交互式 TUI、`kimi -p`、`kimi acp` 等）运行在 agent-core-v2 引擎上。后续版本已彻底移除旧引擎：`KIMI_CODE_LEGACY_FLAG` 已不存在，设置它没有任何效果。
 
 ## 0.32.0（2026-08-04）
 

@@ -1,6 +1,12 @@
 # Data locations
 
-Kiki stores all runtime data — the config files, session history, login credentials, and diagnostic logs — under `~/.kiki/`. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
+Kiki stores its runtime data — the config files, session history, login credentials, and diagnostic logs — under `~/.kiki/` by default. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
+
+::: warning Desktop OAuth credentials have a separate default
+When `KIKI_HOME` is unset, the desktop app keeps its runtime data (config, sessions, `server.token`) in `~/.kiki/`, but its OAuth credentials default to the compatibility home `~/.kimi-code/` (`~/.kimi-code/credentials/`). If you already have a Moonshot `~/.kimi-code/credentials/kimi-code.json`, the desktop app uses that token instead of starting logged out — and deleting `~/.kiki/` does **not** clear it. Running `kiki login` writes the token to `~/.kiki/credentials/`, so a daemon started outside the desktop environment does not see the desktop's credentials.
+
+Setting `KIKI_HOME` moves both the runtime data and the desktop OAuth credentials to that path. The desktop app also lets you pick the compatibility home in its settings. The kimi-cli-era `~/.kimi` directory is never read and is not imported.
+:::
 
 ## Data root directory
 
@@ -103,7 +109,7 @@ Terminal input history is saved separately per working directory, at `user-histo
 
 ## Clearing data
 
-Deleting the data root directory (`~/.kiki/` or the path set by `KIKI_HOME`) removes all runtime data. To clear only part of the data:
+Deleting the data root directory (`~/.kiki/` or the path set by `KIKI_HOME`) removes all runtime data. With `KIKI_HOME` unset and the desktop compatibility home left at its default, the desktop OAuth credentials live under `~/.kimi-code/credentials/` (see the note at the top of this page) and are **not** removed by deleting `~/.kiki/`. To clear only part of the data:
 
 | Goal | Action |
 | --- | --- |

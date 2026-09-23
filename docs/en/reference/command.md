@@ -268,7 +268,8 @@ Multiple instances can run concurrently under the same home: each registers itse
 | Option | Description |
 | --- | --- |
 | `--port <port>` | Port to bind; default `58627`; increments automatically if occupied |
-| `--host [host]` | Address to bind; default `127.0.0.1` (local only), bare `--host` binds `0.0.0.0` (all interfaces) |
+| `--host [host]` | Address to bind; default `127.0.0.1` (local only). Binding a non-loopback address (including bare `--host`, which targets `0.0.0.0`) requires either a TLS-terminating reverse proxy or `--insecure-no-tls`; without one of those the server refuses to start |
+| `--insecure-no-tls` | Allow a non-loopback bind without a TLS-terminating reverse proxy; the bind is then reachable unencrypted on that address |
 | `--allowed-host <host...>` | Additional Host header allowed by DNS rebinding checks, repeatable or comma-separated |
 | `--log-level <level>` | Log level for the server; default off |
 | `--debug-endpoints` | Mount `/api/debug/*` debug routes (default off) |

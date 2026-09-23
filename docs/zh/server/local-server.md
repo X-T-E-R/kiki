@@ -58,7 +58,7 @@ token 泄露时运行 `kiki web rotate-token` 轮换：新 token 立即写入 `s
 这条警告针对彼此独立预配、互不信任的运行时（例如分属不同 host 身份、各自拥有权限域的两个服务）：不要让这样的两个运行时共享同一个可写 home 目录，不要在它们的 home 之间复制会话目录，也不要复制 `device_id` 让两个 home 冒充同一台 host——会话索引、thread 归属与权限边界都依赖 home 身份的唯一性。同一 home 下的共享 daemon、TUI、桌面 GUI 与并存的服务实例是受支持的协作方式，不在此列。
 :::
 
-如果把服务绑定到非本机地址（`--host`），建议额外设置 `KIKI_PASSWORD` 环境变量作为并列凭证；此时服务端会对鉴权失败自动限流。
+绑定非本机地址（`--host`，包括裸 `--host`，即 `0.0.0.0`）需要服务前面有终结 TLS 的反向代理，或加 `--insecure-no-tls`；两者都没有时服务拒绝启动。服务在非本机地址上运行之后，再设置 `KIKI_PASSWORD` 环境变量作为并列凭证；此时服务端会对鉴权失败自动限流。
 
 ::: danger 警告
 `--dangerous-bypass-auth` 会彻底关闭鉴权，任何能访问该端口的人都能控制你的会话、文件系统和 shell。仅在可信网络或自有鉴权代理之后使用，详见 [kiki 命令参考](../reference/command.md#kiki-web)。

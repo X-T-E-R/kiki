@@ -791,7 +791,7 @@ Changes apply on the next start, or immediately with `/reload-tui` (which reload
 
 In addition to the user-level files under `~/.kiki`, Kiki reads a project-local configuration file at `<project-root>/.kiki/local.toml`. It holds settings that are specific to one project checkout and typically should not be shared with teammates. The legacy `.kimi-code/local.toml` path is not read.
 
-The file is created automatically when you add an extra workspace directory with [`/add-dir`](../reference/slash-commands.md) and choose to remember it for the project. You rarely need to edit it by hand.
+The file is created automatically when you add an extra workspace directory with [`/add-dir`](../reference/slash-commands.md) and choose to remember it for the project. You rarely need to edit it by hand. The directories recorded here only load when the workspace is trusted: an untrusted checkout does not read `additional_dir` at startup, and persisting a new directory requires trusting the workspace first.
 
 ### `[workspace]`
 
@@ -799,7 +799,7 @@ The `[workspace]` table groups project-level workspace settings:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `additional_dir` | `array<string>` | No | Additional workspace directories, stored as absolute paths. Written automatically when you confirm "remember this directory" in `/add-dir`; read back on startup so the directories are available in every session of this project |
+| `additional_dir` | `array<string>` | No | Additional workspace directories, stored as absolute paths. Written automatically when you confirm "remember this directory" in `/add-dir`; read back on startup so the directories are available in every session of this project. Only loaded for a trusted workspace |
 
 ```toml
 [workspace]

@@ -58,7 +58,7 @@ The desktop GUI uses this same home token. On launch it looks for a running serv
 This warning targets independently provisioned, mutually untrusted runtimes (for example, two services with distinct host identities and separate authority domains): do not point such runtimes at the same writable home, do not copy session directories between their homes, and do not copy `device_id` to make two homes impersonate the same host — session indexes, thread attribution, and permission boundaries all rely on the uniqueness of a home identity. The shared daemon, TUI, desktop GUI, and coexisting server instances within one home are supported ways of collaborating and are unaffected.
 :::
 
-If you bind the server to a non-loopback address (`--host`), also set the `KIKI_PASSWORD` environment variable as a parallel credential; the server then rate-limits authentication failures automatically.
+Binding a non-loopback address (`--host`, including bare `--host`, which targets `0.0.0.0`) requires either a TLS-terminating reverse proxy in front of the server or `--insecure-no-tls`; without one of those the server refuses to start. Once it is running on a non-loopback address, also set the `KIKI_PASSWORD` environment variable as a parallel credential; the server then rate-limits authentication failures automatically.
 
 ::: danger
 `--dangerous-bypass-auth` disables authentication entirely — anyone who can reach the port can control your sessions, file system, and shell. Only use it on trusted networks or behind your own authenticating proxy. See the [kiki command reference](../reference/command.md#kiki-web).

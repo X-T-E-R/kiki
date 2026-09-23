@@ -50,7 +50,9 @@ Once logged in, describe a task in natural language. A good starting point is to
 Take a look at this project's directory structure and briefly describe what each directory is for.
 ```
 
-Kiki automatically calls file-reading, search, and other tools (tools are built-in capabilities the agent can invoke — reading files, searching code, running commands) to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation. For operations that modify files or run shell commands, it asks for your confirmation before proceeding.
+Kiki automatically calls file-reading, search, and other tools (tools are built-in capabilities the agent can invoke — reading files, searching code, running commands) to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation.
+
+File writes follow the workspace trust model rather than prompting on every call: in a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval; writes outside the workspace, and access to sensitive files such as `.env` files and private keys, are blocked or require approval. Shell commands always ask for your confirmation first.
 
 You can also describe a more concrete task directly:
 
@@ -92,7 +94,7 @@ For the full list, type `/help` or visit [Slash commands](../reference/slash-com
 
 ## Where data is stored
 
-Kiki stores its local data under `~/.kiki/` by default — config files, session records, logs, and the update cache. To move it elsewhere, point to a new path via the `KIKI_HOME` environment variable. For the full directory layout, see [Data locations](../configuration/data-locations.md) and [Environment variables](../configuration/env-vars.md).
+Kiki stores its local data under `~/.kiki/` by default — config files, session records, logs, and the update cache. To move it elsewhere, point to a new path via the `KIKI_HOME` environment variable. Note that the desktop app's OAuth credentials default to the compatibility home `~/.kimi-code/` when `KIKI_HOME` is unset; see [Data locations](../configuration/data-locations.md) for the full picture.
 
 ## Next steps
 

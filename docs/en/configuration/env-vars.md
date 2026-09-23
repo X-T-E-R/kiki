@@ -16,7 +16,7 @@ For background, see [Config overrides: provider credentials](./overrides.md#prov
 
 ### `KIKI_HOME`
 
-Overrides the data root directory; the default is `~/.kiki`. Once set, the config and credentials files, sessions, logs, OAuth credentials, and all other data land under the new path:
+Overrides the data root directory; the default is `~/.kiki`. Once set, the config and credentials files, sessions, logs, OAuth credentials, and all other data land under the new path. The desktop app's OAuth credentials follow `KIKI_HOME` too: unset, they default to the compatibility home `~/.kimi-code/` (see [Data locations](./data-locations.md)).
 
 ```sh
 export KIKI_HOME="/path/to/custom/kiki"
