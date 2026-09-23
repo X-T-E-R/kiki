@@ -52,6 +52,13 @@ export interface HostConnectionAdapter {
 interface HostCapabilities {
   readonly connection: HostConnectionAdapter;
   notify?: (options: HostNotification) => Promise<void>;
+  /**
+   * Open an http(s) URL in the system browser. Present where `window.open`
+   * cannot be trusted (desktop webviews reject pop-ups, VS Code webviews have
+   * no real browser window); browsers fall back to `window.open` with its
+   * return value checked so a blocked pop-up surfaces as a rejection.
+   */
+  openUrl?: (url: string) => Promise<void>;
   isWindowVisibleAndFocused?: () => Promise<boolean>;
   saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
   pickFiles?: () => Promise<HostSelectedFile[] | null>;

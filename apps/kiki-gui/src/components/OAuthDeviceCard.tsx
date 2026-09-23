@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 
 import type { OAuthFlowSnapshot } from '@kiki/protocol';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { SECONDARY_BUTTON } from './ui';
 
@@ -29,7 +30,9 @@ export function OAuthDeviceCard({
   onDismiss,
 }: OAuthDeviceCardProps) {
   const { t, time } = useI18n();
+  const { openUrl } = useHost();
   const [copied, setCopied] = useState<'idle' | 'ok' | 'failed'>('idle');
+  const [openFailed, setOpenFailed] = useState(false);
   // 1s tick drives the countdown text and the polling animation.
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -44,6 +47,24 @@ export function OAuthDeviceCard({
       setCopied('ok');
     } catch {
       setCopied('failed');
+    }
+  };
+
+  // Host-aware opener: desktop webviews reject `window.open`, so the flow
+  // routes through the shell bridge when one is available. A failure (blocked
+  // pop-up, command error) surfaces as a visible inline line instead of being
+  // swallowed — the user still has the device code and can open the URL
+  // manually.
+  const openVerificationPage = async () => {
+    setOpenFailed(false);
+    try {
+      if (typeof openUrl === 'function') {
+        await openUrl(snapshot.verification_uri_complete);
+      } else if (window.open(snapshot.verification_uri_complete, '_blank', 'noopener,noreferrer') === null) {
+        setOpenFailed(true);
+      }
+    } catch {
+      setOpenFailed(true);
     }
   };
 
@@ -87,11 +108,14 @@ export function OAuthDeviceCard({
         <button
           type="button"
           className={SECONDARY_BUTTON}
-          onClick={() => { window.open(snapshot.verification_uri_complete, '_blank', 'noopener,noreferrer'); }}
+          onClick={() => void openVerificationPage()}
         >
           {t('st.oauth.openPage')}
         </button>
       </div>
+      {openFailed ? (
+        <p role="alert" className="mt-1 text-[11px] text-danger">{t('common.popupBlocked')}</p>
+      ) : null}
       {copied === 'failed' ? <p className="mt-1 text-[11px] text-danger">{t('st.oauth.copyFailed')}</p> : null}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <p className="flex items-center gap-2 text-[11.5px] text-ink-soft">

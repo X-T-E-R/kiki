@@ -21,6 +21,7 @@
     "allow-write-host-file-text",
     "allow-reveal-host-path",
     "allow-open-host-path",
+    "allow-open-external-url",
     "allow-read-desktop-prefs",
     "allow-write-desktop-prefs",
     "allow-supports-desktop-updates",

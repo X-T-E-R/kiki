@@ -166,6 +166,9 @@ export const tauriHost: TauriHostAdapter = {
   async revealPath(path) {
     await invoke('reveal_host_path', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path });
   },
+  async openUrl(url) {
+    await invoke('open_external_url', { url });
+  },
   async openPath(path) {
     await invoke('open_host_path', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path });
   },

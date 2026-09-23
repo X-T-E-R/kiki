@@ -7,6 +7,7 @@ macro_rules! app_commands {
             write_host_file_text,
             reveal_host_path,
             open_host_path,
+            open_external_url,
             read_desktop_prefs,
             write_desktop_prefs,
             supports_desktop_updates,

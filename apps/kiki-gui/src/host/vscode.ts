@@ -95,6 +95,7 @@ export const vscodeHost: VscodeHostAdapter = {
   openTerminal: (cwd) => requestVscodeHost<void>('terminal.open', { cwd }),
   writeClipboard: (text) => requestVscodeHost<void>('clipboard.write', { text }),
   openExternal: (url) => requestVscodeHost<void>('external.open', { url }),
+  openUrl: (url) => requestVscodeHost<void>('external.open', { url }),
 };
 
 function getApi(): VscodeApi {
