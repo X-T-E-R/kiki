@@ -776,7 +776,13 @@ function frameError(frame: KlientFrame): RPCError {
 }
 
 function toWebSocketUrl(endpoint: string): string {
-  const url = new URL(endpoint);
+  // Same-origin endpoint ('' — the Vite dev proxy / hash-token deep link):
+  // resolve against the page origin the way the REST facade does, so
+  // `new URL('')` cannot throw inside the client constructor.
+  const base = endpoint === ''
+    ? ((globalThis as { readonly location?: { readonly origin?: string } }).location?.origin ?? 'http://localhost')
+    : endpoint;
+  const url = new URL(base);
   if (url.protocol === 'http:') url.protocol = 'ws:';
   else if (url.protocol === 'https:') url.protocol = 'wss:';
   if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
