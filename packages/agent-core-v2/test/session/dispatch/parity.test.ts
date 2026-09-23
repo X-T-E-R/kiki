@@ -367,6 +367,7 @@ function labelDifferenceKeys(internal: ProbeTuple, external: ProbeTuple): {
 
 class ParityProbe {
   readonly profileBinds: ProbeTuple[] = [];
+  readonly resumeBindings: Parameters<IAgentProfileService['prepareResumeBinding']>[0][] = [];
   readonly permissions: ProbeTuple[] = [];
   readonly names: ProbeTuple[] = [];
   readonly labels: ProbeTuple[] = [];
@@ -555,7 +556,7 @@ function createLane(
           return {
             _serviceBrand: undefined,
             data: () => data,
-            getEffectiveThinkingLevel: () => data.thinkingLevel,
+            getEffectiveThinkingLevel: () => data.effectiveThinkingLevel ?? data.thinkingLevel,
             validateBinding: (binding: ExecutorBinding) => {
               const complete = {
                 modelAlias: binding.modelAlias ?? data.modelAlias,
@@ -576,6 +577,7 @@ function createLane(
               };
             },
             prepareResumeBinding: async (input: Parameters<IAgentProfileService['prepareResumeBinding']>[0]) => () => {
+              probe.resumeBindings.push(input);
               if (input.allowParentNotify !== undefined) {
                 (data as { allowParentNotify?: boolean }).allowParentNotify = input.allowParentNotify;
               }
@@ -1230,6 +1232,84 @@ describe('AgentRun and dispatch parity golden', () => {
 
   afterEach(() => {
     disposables.dispose();
+  });
+
+  it('binds an inherit profile to the caller model and current effective effort', async () => {
+    const profile = normalizeAgentProfile({ ...parityProfile, modelAlias: 'inherit', thinkingEffort: undefined });
+    const lane = createLane(disposables, 'internal', { profile, mainModel: 'main-model' });
+    Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), {
+      thinkingLevel: 'low', effectiveThinkingLevel: 'high',
+    });
+
+    const result = await lane.runInternal({ profile: 'coder', prompt: 'work', description: 'Inherit profile', background: true });
+
+    expect(result.isError).not.toBe(true);
+    expect(lane.lifecycleCreate.mock.calls[0]?.[0]?.binding).toMatchObject({
+      model: 'main-model', thinking: 'high', resolvedProfile: { modelAlias: 'main-model' },
+    });
+    expect(lane.metadataAgents['agent_child_1']).toMatchObject({ model: 'main-model', thinkingEffort: 'high' });
+  });
+
+  it('resolves tool, route, and caller-lease inherit pins without persisting the sentinel', async () => {
+    const profile = normalizeAgentProfile({ ...parityProfile, modelAlias: 'other-model', thinkingEffort: 'low' });
+    const lane = createLane(disposables, 'internal', { profile, mainModel: 'main-model' });
+    const caller = lane.handles.get('main')!.accessor.get(IAgentProfileService).data();
+    Object.assign(caller, { thinkingLevel: 'high' });
+
+    const toolResult = await lane.runInternal({ profile: 'coder', model_alias: 'inherit', prompt: 'work', description: 'Inherit tool', background: true });
+    expect(toolResult.isError).not.toBe(true);
+    expect(lane.lifecycleCreate.mock.calls[0]?.[0]?.binding).toMatchObject({ model: 'main-model', thinking: 'low' });
+
+    const route: ResolvedAgentProfileRoute = {
+      id: 'coder.follow', profile: 'coder', description: '', modelAlias: 'inherit',
+      thinkingEffort: 'low', lockedModelAlias: 'inherit', lockedThinkingEffort: 'low',
+      overriddenFields: ['model_alias', 'thinking_effort'],
+      effectiveProfile: { ...profile, modelAlias: 'inherit', thinkingEffort: 'low' },
+    };
+    Object.assign(lane.ix.get(ISessionAgentProfileCatalog), {
+      resolveSelection: () => ({ profile: route.effectiveProfile, baseProfile: profile, route }),
+      listRoutes: () => [route],
+    });
+    const routed = await lane.runInternal({ route: route.id, prompt: 'work', description: 'Inherit route', background: true });
+    expect(routed.isError).not.toBe(true);
+    expect(lane.lifecycleCreate.mock.calls[1]?.[0]?.binding).toMatchObject({
+      model: 'main-model', thinking: 'low', resolvedRoute: { lockedModelAlias: 'main-model' },
+    });
+
+    Object.assign(caller, { subagentLeases: { coder: { name: 'coder', modelAlias: 'inherit' } } });
+    const leased = await lane.runInternal({ profile: 'coder', prompt: 'work', description: 'Inherit lease', background: true });
+    expect(leased.isError).not.toBe(true);
+    expect(lane.lifecycleCreate.mock.calls[2]?.[0]?.binding).toMatchObject({
+      model: 'main-model', thinking: 'high', lease: { modelAlias: 'main-model' },
+    });
+    Object.assign(caller, { subagentLeases: { coder: { name: 'coder', modelAlias: 'inherit', thinkingEffort: 'low' } } });
+    const pinnedLease = await lane.runInternal({ profile: 'coder', prompt: 'work', description: 'Pinned lease effort', background: true });
+    expect(pinnedLease.isError).not.toBe(true);
+    expect(lane.lifecycleCreate.mock.calls[3]?.[0]?.binding).toMatchObject({
+      model: 'main-model', thinking: 'low', lease: { modelAlias: 'main-model', thinkingEffort: 'low' },
+    });
+  });
+
+  it('resolves inherit against the current caller when resuming a saved child', async () => {
+    const lane = createLane(disposables, 'internal', {
+      profile: normalizeAgentProfile({ ...parityProfile, modelAlias: 'inherit', thinkingEffort: undefined }),
+      mainModel: 'main-model',
+    });
+    const initial = await lane.runInternal({ profile: 'coder', name: 'saved_child', prompt: 'work',
+      description: 'Spawn saved child', background: true });
+    expect(initial.isError).not.toBe(true);
+    await complete(lane, 0);
+    Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), {
+      modelAlias: 'next-model', thinkingLevel: 'low', effectiveThinkingLevel: 'high',
+    });
+
+    const resumed = await lane.runInternal({ resume: 'saved_child', model_alias: 'inherit',
+      allow_model_change: true, prompt: 'continue', description: 'Continue saved child', background: true });
+
+    expect(resumed.isError).not.toBe(true);
+    expect(lane.probe.resumeBindings.at(-1)).toMatchObject({
+      modelAlias: 'next-model', thinkingEffort: 'high', allowModelChange: true,
+    });
   });
 
   it('MP-01 uses route effort by default and permits an explicit detached override', async () => {

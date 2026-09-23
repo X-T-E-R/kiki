@@ -145,6 +145,49 @@ describe('a subagent model comes only from a profile pin or the dispatch', () =>
   });
 });
 
+describe('explicit caller-model inheritance', () => {
+  const caller = { modelAlias: 'provider/k3', thinkingEffort: 'high' };
+
+  it('binds a profile inherit pin to the caller model and effective effort', () => {
+    expect(resolveSubagentBinding(config(), {}, { modelAlias: 'inherit' }, catalog, undefined,
+      { profileName: 'reviewer' }, caller)).toMatchObject({
+      model: 'provider/k3', thinking: 'high', displayModel: 'inherit',
+    });
+  });
+
+  it('lets an explicit profile effort pin win when the tool selects inherit', () => {
+    expect(resolveSubagentBinding(config(), { modelAlias: 'inherit' }, {
+      modelAlias: 'fast-model', thinkingEffort: 'low',
+    }, catalog, undefined, { profileName: 'reviewer' }, caller)).toMatchObject({
+      model: 'provider/k3', thinking: 'low',
+    });
+    expect(resolveSubagentBinding(config(), { modelAlias: 'inherit' }, {
+      thinkingEffort: 'medium',
+    }, catalog, undefined, { profileName: 'reviewer' }, caller).thinking).toBe('medium');
+  });
+
+  it('prefers an explicit profile or tool effort pin to the inherited effort', () => {
+    const profile = { modelAlias: 'inherit', thinkingEffort: 'low' };
+    expect(resolveSubagentBinding(config(), {}, profile, catalog, undefined,
+      { profileName: 'reviewer' }, caller).thinking).toBe('low');
+    expect(resolveSubagentBinding(config(), { modelAlias: 'inherit', thinkingEffort: 'medium' },
+      profile, catalog, undefined, { profileName: 'reviewer' }, caller).thinking).toBe('medium');
+  });
+
+  it('applies machine model denials to the resolved caller model', () => {
+    const error = configError(() => resolveSubagentBinding(config(['provider/blocked']), {},
+      { modelAlias: 'inherit' }, catalog, undefined, { profileName: 'reviewer' },
+      { modelAlias: 'blocked', thinkingEffort: 'high' }));
+    expect(error.message).toContain('[subagent].deny_models');
+  });
+
+  it('rejects inherit without a bound caller rather than interpreting it as a configured alias', () => {
+    const error = configError(() => resolveSubagentBinding(config(), {}, { modelAlias: 'inherit' },
+      catalog, undefined, { profileName: 'reviewer' }));
+    expect(error.message).toContain('requires a caller agent');
+  });
+});
+
 describe('role model constraints are advisory while machine deny stays authoritative', () => {
   const evaluate = (
     model: string,

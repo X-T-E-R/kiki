@@ -327,12 +327,9 @@ Router: classify this task (build or fix) now, then adopt the matching style —
 ## 子 Agent 的模型绑定
 
 子 Agent 的模型只有两个来源：通过 `AgentRun` 派发时传入的 `model_alias`，或所选 profile、route、caller lease 上的 pin。
-没有第三个来源——子 Agent 不会跑在调用方的模型上，也没有可回退的配置默认值。
-既没有传 `model_alias`、所选 profile 又没有 pin 的派发会以 `model.not_configured`
-失败，子 Agent 不会被创建。
+调用方模型与 `default_model` 都不是静默回退来源；既没有传参数又没有生效 pin 时，派发会以 `model.not_configured` 失败，不会创建子 Agent。在 subagent profile、route 或 caller lease 中写 `model_alias: inherit`，或向 `AgentRun` 显式传 `model_alias: "inherit"`，才会绑定调用方当前已解析的模型。main agent 没有调用方，其 profile 不可使用 `inherit`。
 
-thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析，但允许留空：
-留空时使用全局 [`[thinking]`](#thinking) 配置与所绑定模型自身的默认档位。
+thinking effort 可以留空。使用 `model_alias: inherit` 时，它会跟随调用方的有效思考强度；工具显式 `effort`，或 profile、route、caller lease、匹配的 `model_profiles` 条目上适用的 effort pin 优先。其他情况下按工具 `effort` → 匹配的 `model_profiles` 档位 → 所选模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身在全局 [`[thinking]`](#thinking) 配置下的默认档位解析。
 
 ## `thinking`
 

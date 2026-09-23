@@ -791,6 +791,25 @@ describe('AgentProfileService.bind', () => {
     expect(svc.getSystemPrompt()).toBe('disabled default binding');
   });
 
+  it('rejects inherit on a main-agent profile even when the caller supplies an explicit model', async () => {
+    const main = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      modelAlias: 'inherit',
+      systemPrompt: () => 'main profile',
+    });
+    ctx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(main)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    await expect(ctx.get(IAgentProfileService).bind({
+      profile: DEFAULT_AGENT_PROFILE_NAME,
+      model: MOCK_MODEL,
+    })).rejects.toMatchObject({
+      code: ProfileErrors.codes.MODEL_CONFIG_INVALID,
+      message: expect.stringContaining('has no caller agent'),
+    });
+  });
+
   it('resolves a bare default_model through the canonical model entry', async () => {
     const { profile: svc } = buildContext();
     const canonicalId = `test-provider/${MOCK_MODEL}`;

@@ -11,9 +11,9 @@ Kiki 的模型选择把三件事分开：配置文件里的模型键、派发 su
 ## 当前词汇
 
 - **已配置模型键**：`config.toml` 的 `[models]` 中某个条目的 key。解析结果以它作为规范运行时标识。
-- **`model_alias`**：`AgentRun` 调用、Agent 文件、profile route 使用的模型选择器，取值就是某个已配置模型键。
+- **`model_alias`**：`AgentRun` 调用、Agent 文件、profile route 使用的模型选择器，取值是已配置模型键，或仅供 subagent 使用的保留字 `inherit`。
 - **Wire 模型标识**：实际发送给供应商接口的 `model` 值；它不必与已配置模型键相同，比如同一个供应商模型可以在配置里登记成多个不同用途的键。
-- **Thinking effort**：思考强度。派发参数 `effort`，或 profile / route 的 `thinking_effort`，与 `model_alias` 独立解析。
+- **Thinking effort**：思考强度。派发参数 `effort`，或 profile / route 的 `thinking_effort`，通常与 `model_alias` 独立解析；显式继承模型时也跟随调用方有效思考强度，除非有适用的 effort pin。
 
 ## 绑定规则
 
@@ -22,13 +22,13 @@ Kiki 的模型选择把三件事分开：配置文件里的模型键、派发 su
 1. 派发时传入的 `model_alias`。
 2. 生效 profile、route 或调用方 lease（caller lease，外部委派方为调用方预设的约束）上的 `model_alias` pin。
 
-两者都存在时以派发值为准。两者都没有时，派生以 `model.not_configured` 失败；subagent 不会继承调用方模型，也不会回退到某个默认模型。未知 alias 与被机器级策略禁止的模型会在子 Agent 启动前失败。若模型只是不符合 role 指引，或偏离 route / caller lease pin，只要实际可执行就会继续，并产生结构化绑定 advisory。
+两者都存在时以派发值为准。两者都没有时，派生以 `model.not_configured` 失败；调用方模型与 `default_model` 都不是静默回退来源。在 profile、route 或 caller lease 上显式写 `model_alias: inherit`，或给 `AgentRun` 传 `model_alias: "inherit"`，才会绑定调用方当前已解析的模型与有效思考强度；工具显式 `effort`，或 profile、route、lease、匹配的 `model_profiles` 条目上适用的 effort pin 优先。未知的具体 alias 与被机器级策略禁止的模型会在子 Agent 启动前失败。若模型只是不符合 role 指引，或偏离 route / caller lease pin，只要实际可执行就会继续，并产生结构化绑定 advisory。
 
-恢复或重试的 subagent 会保持已持久化的绑定，除非 `AgentRun` 的 `resume` 显式请求修改。省略 `effort` 会保留当前值；显式传入的 effort 应用于下一次空闲运行。显式传入的 `model_alias` 只有在 `allow_model_change: true` 确认时才能切换模型；如果解析到同一规范模型，则不产生变化。
+恢复或重试的 subagent 会保持已持久化的绑定，除非 `AgentRun` 的 `resume` 显式请求修改。同时省略 `model_alias` 与 `effort` 会保留已有绑定；显式传入的 effort 应用于下一次空闲运行。显式传入 `model_alias: "inherit"` 会按调用方当前模型及有效思考强度重新解析，适用的已保存或显式 effort pin 优先。切换到不同规范模型需要传 `allow_model_change: true`；如果解析到同一规范模型，则不产生模型变化。
 
 ## Agent 文件与 routes
 
-Agent 文件与 profile route sidecar 使用 `model_alias` 固定模型。旧字段 `model_preference` 会被显式拒绝，并给出迁移诊断；其他工具写入的未知 `model` 元数据会被忽略。
+Agent 文件与 profile route sidecar 使用 `model_alias` 固定模型；main agent 没有调用方，其 profile 不可使用 `inherit`。旧字段 `model_preference` 会被显式拒绝，并给出迁移诊断；其他工具写入的未知 `model` 元数据会被忽略。
 
 Route 声明的 `model_alias` 是 route 默认值。派发方可以用另一个可执行模型覆盖它；绑定仍保留 route 身份，同时标记为 detached 并携带 advisory。Role 级 `allowed_models` / `deny_models` 与 effort 列表属于推荐策略；机器级 `[subagent].deny_models` 才是硬模型边界。
 

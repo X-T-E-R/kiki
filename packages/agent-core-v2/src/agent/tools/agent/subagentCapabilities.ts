@@ -13,13 +13,17 @@ import type { IModelCatalog } from '#/kosong/model/catalog';
 import type { IModelService } from '#/kosong/model/model';
 import { requiresStrictThinkingValidation, resolveThinkingEffortForModel, type ThinkingConfig } from '#/kosong/model/thinking';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
-import { assertSubagentModelNotDenied, canonicalizeSubagentBinding, resolveSubagentBinding } from '#/session/subagent/configSection';
+import { assertSubagentModelNotDenied, canonicalizeSubagentBinding, resolveInheritedModelAlias, resolveSubagentBinding } from '#/session/subagent/configSection';
 import { pinBindingAdvisory, resolveRoleThinkingDefault, roleBindingAdvisories, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import { assertProfileRouteModelAvailable } from '#/session/subagent/profileRouteBinding';
 
 export interface SubagentCapabilityCatalog {
   readonly catalog: SubagentDispatchCatalog;
-  readonly caller: SubagentDispatchCaller & CallerLeaseOwner;
+  readonly caller: SubagentDispatchCaller & CallerLeaseOwner & {
+    readonly modelAlias?: string;
+    readonly thinkingLevel?: string;
+    readonly effectiveThinkingLevel?: string;
+  };
   readonly profiles: readonly AgentProfile[];
   readonly routes: readonly AgentProfileRouteCatalogEntry[];
   readonly snapshot?: AgentProfileCatalogSnapshot;
@@ -110,12 +114,18 @@ export function projectSubagentCapabilities(
       const native = (profile.executor ?? 'native') === 'native';
       const resolver = modelAliasResolverForExecutor(profile.executor, services.models);
       const filled = fillLeasePins<{ modelAlias?: string; thinkingEffort?: string }>({}, target.lease, route);
-      if (native) assertProfileRouteModelAvailable(route, services.modelCatalog, resolver);
+      const routeLock = resolveInheritedModelAlias(route?.lockedModelAlias, input.caller.modelAlias);
+      if (native && route !== undefined) {
+        assertProfileRouteModelAvailable({ ...route, lockedModelAlias: routeLock }, services.modelCatalog, resolver);
+      }
       const constraints = roleConstraintsFromProfile(profile, spawnConstraintOrigin(target.lease, target.spawnPolicy));
       const binding = resolveSubagentBinding(services.config, { ...filled, thinkingEffort: filled.thinkingEffort ?? route?.lockedThinkingEffort }, {
         modelAlias: route?.lockedModelAlias ?? profile.modelAlias,
         thinkingEffort: route?.lockedThinkingEffort ?? profile.thinkingEffort,
-      }, native ? services.models : undefined, constraints, { profileName, routeId });
+      }, native ? services.models : undefined, constraints, { profileName, routeId }, {
+        modelAlias: input.caller.modelAlias,
+        thinkingEffort: input.caller.effectiveThinkingLevel ?? input.caller.thinkingLevel,
+      });
       const resolved = native ? canonicalizeSubagentBinding(binding, services.models) : binding;
       const requestedModel = resolved.displayModel;
       const requestedThinking = resolved.thinking;
@@ -124,7 +134,7 @@ export function projectSubagentCapabilities(
       let modelValueSource: BindingValueSource =
         modelSource === 'caller-lease' ? 'caller-lease-default'
           : modelSource === 'route' ? 'route-default' : 'profile-default';
-      let modelAlias = resolved.displayModel;
+      let modelAlias = resolved.model;
       let effectiveModel = resolved.model;
       let thinking = resolved.thinking;
       let effortSource: SubagentCapabilityTarget['effortSource'] =
@@ -160,7 +170,7 @@ export function projectSubagentCapabilities(
         if (modelAlias !== resolved.model) modelValueSource = 'executor-normalized';
         if (route !== undefined) {
           const locked = services.executors.validateBinding(executor.descriptor.id, executor.options, {
-            modelAlias: route.lockedModelAlias ?? modelAlias,
+            modelAlias: routeLock ?? modelAlias,
             thinkingEffort: route.lockedThinkingEffort ?? thinking,
           });
           if (!locked.ok) return {
@@ -189,7 +199,7 @@ export function projectSubagentCapabilities(
         pinBindingAdvisory({
           dimension: 'model',
           ruleSource: `route:${route?.id ?? routeId ?? profileName}`,
-          pinnedValue: route?.lockedModelAlias ?? effectiveModel,
+          pinnedValue: routeLock ?? effectiveModel,
           requestedValue: requestedModel,
           effectiveValue: effectiveModel,
           valueSource: modelValueSource,
@@ -208,7 +218,7 @@ export function projectSubagentCapabilities(
         route?.lockedModelAlias === undefined && target.lease?.modelAlias !== undefined
           ? pinBindingAdvisory({
               dimension: 'model', ruleSource: `caller-lease:${profileName}`,
-              pinnedValue: target.lease.modelAlias, requestedValue: requestedModel,
+              pinnedValue: resolveInheritedModelAlias(target.lease.modelAlias, input.caller.modelAlias)!, requestedValue: requestedModel,
               effectiveValue: effectiveModel, valueSource: modelValueSource,
               model: effectiveModel, models: native ? services.models : undefined,
             })

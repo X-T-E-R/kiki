@@ -8,13 +8,17 @@ import { listAvailableSubagentTargets, resolveSubagentTarget, type SubagentDispa
 import type { IConfigService } from '#/app/config/config';
 import type { IModelService } from '#/kosong/model/model';
 
-import { assertSubagentModelNotDenied } from './configSection';
+import { assertSubagentModelNotDenied, INHERIT_MODEL_ALIAS, resolveInheritedModelAlias } from './configSection';
 import { roleConstraintsFromProfile, roleModelRecommended } from './modelConstraints';
 import { profileRouteBindingRecommended } from './profileRouteBinding';
 
 export function projectSubagentModelCatalog(
   catalog: SubagentDispatchCatalog,
-  caller: SubagentDispatchCaller & CallerLeaseOwner,
+  caller: SubagentDispatchCaller & CallerLeaseOwner & {
+    readonly modelAlias?: string;
+    readonly thinkingLevel?: string;
+    readonly effectiveThinkingLevel?: string;
+  },
   input: {
     readonly profiles: readonly AgentProfile[];
     readonly routes: readonly AgentProfileRouteCatalogEntry[];
@@ -57,16 +61,26 @@ export function projectSubagentModelCatalog(
     const resolver = modelAliasResolverForExecutor(profile.executor, models);
     const pins = fillLeasePins<{ modelAlias?: string; thinkingEffort?: string }>({}, target.lease, route);
     const modelAlias = pins.modelAlias ?? route?.lockedModelAlias ?? profile.modelAlias;
+    const resolvedAlias = modelAlias === INHERIT_MODEL_ALIAS
+      ? caller.modelAlias === undefined ? undefined : resolveInheritedModelAlias(modelAlias, caller.modelAlias)
+      : modelAlias;
     const thinkingEffort = pins.thinkingEffort ?? route?.lockedThinkingEffort ??
-      (modelAlias === undefined ? undefined : resolveProfileThinkingDefault(profile, modelAlias, (id) => resolver.resolveId(id)));
+      (resolvedAlias === undefined ? undefined : resolveProfileThinkingDefault({
+        ...profile,
+        modelAlias: profile.modelAlias === INHERIT_MODEL_ALIAS ? resolvedAlias : profile.modelAlias,
+      }, resolvedAlias, (id) => resolver.resolveId(id))) ??
+      (modelAlias === INHERIT_MODEL_ALIAS ? caller.effectiveThinkingLevel ?? caller.thinkingLevel : undefined);
     const candidates = native ? Object.keys(models.list()) : [
-      modelAlias,
+      resolvedAlias,
       ...(profile.allowedModels ?? []),
       ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
     ].filter((alias): alias is string => alias !== undefined);
     const constraints = roleConstraintsFromProfile(profile);
+    const routeBinding = route?.lockedModelAlias === INHERIT_MODEL_ALIAS && resolvedAlias !== undefined
+      ? { ...route, lockedModelAlias: resolvedAlias }
+      : route;
     const allowedModels = [...new Set(candidates)].filter((alias) => {
-      if (!profileRouteBindingRecommended(route, { modelAlias: alias }, resolver)) return false;
+      if (!profileRouteBindingRecommended(routeBinding, { modelAlias: alias }, resolver)) return false;
       if (!roleModelRecommended(alias, constraints, native ? models : undefined)) return false;
       try {
         assertSubagentModelNotDenied(config, alias, native ? models : undefined);

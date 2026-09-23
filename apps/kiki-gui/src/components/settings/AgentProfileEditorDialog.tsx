@@ -182,8 +182,10 @@ export function AgentProfileEditorDialog({
     || changedRoutes.length > 0;
   useDirtyReporter(`agent-profile-editor:${profile.source}:${profile.name}`, dirty);
 
+  const mainCannotFollowCaller = profile.main === true && modelAlias.trim() === 'inherit';
   const canSave = dirty
     && description.trim() !== ''
+    && !mainCannotFollowCaller
     && !toolFieldUnnamed(tools)
     && !toolFieldUnnamed(disallowedTools)
     && profile.workspace_id !== undefined;
@@ -234,12 +236,17 @@ export function AgentProfileEditorDialog({
   const modelOptions = useMemo<readonly SearchableSelectOption[]>(() => {
     const defaultOption: SearchableSelectOption = {
       value: '',
-      label: t('st.namedAgents.inherit'),
-      description: t('st.namedAgents.inherit'),
+      label: t('st.namedAgents.unsetModelPin'),
+      description: t('st.namedAgents.unsetModelPin'),
+    };
+    const followCallerOption: SearchableSelectOption = {
+      value: 'inherit',
+      label: t('st.namedAgents.followCallerModel'),
+      description: t('st.namedAgents.followCallerModelHint'),
     };
     const catalogOptions = buildCatalogModelOptions(modelsQuery.data?.items ?? [], t);
-    return [defaultOption, ...catalogOptions];
-  }, [modelsQuery.data?.items, t]);
+    return [defaultOption, ...(profile.main === true ? [] : [followCallerOption]), ...catalogOptions];
+  }, [modelsQuery.data?.items, profile.main, t]);
 
   return (
     <Dialog
@@ -271,7 +278,7 @@ export function AgentProfileEditorDialog({
             allowCustomValue
             searchPlaceholder="provider/model"
             ariaLabel={t('st.namedAgents.modelPin')}
-            emptyText={t('st.namedAgents.inherit')}
+            emptyText={t('st.namedAgents.unsetModelPin')}
             buttonClassName="mt-1 flex w-full items-center justify-between gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 py-2 font-mono text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
             onChange={(next) => {
               if (next.trim() !== modelAlias.trim()) setThinkingEffort('');
@@ -291,6 +298,9 @@ export function AgentProfileEditorDialog({
               setModelAlias(next);
             }}
           />
+          {mainCannotFollowCaller ? (
+            <p role="alert" className="text-[10.5px] text-danger">{t('st.namedAgents.mainCannotFollowCaller')}</p>
+          ) : null}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-[11px] font-medium text-ink-soft">

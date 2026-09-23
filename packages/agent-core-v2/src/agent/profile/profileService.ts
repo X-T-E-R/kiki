@@ -125,7 +125,7 @@ import {
   roleBindingAdvisories,
   roleConstraintsFromProfile,
 } from '#/session/subagent/modelConstraints';
-import { assertSubagentModelNotDenied } from '#/session/subagent/configSection';
+import { assertSubagentModelNotDenied, INHERIT_MODEL_ALIAS } from '#/session/subagent/configSection';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -474,6 +474,25 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
               return { profile: base, baseProfile: base, route: undefined };
             })()
           : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
+    const inheritedAlias = [
+      selection.baseProfile.modelAlias,
+      selection.profile.modelAlias,
+      selection.route?.lockedModelAlias,
+      input.lease?.modelAlias,
+      input.model,
+    ].some((alias) => alias === INHERIT_MODEL_ALIAS);
+    if (inheritedAlias) {
+      if (this.agentScope.agentId === MAIN_AGENT_ID || input.delegationPosition === 'main') {
+        throw new ProfileError(
+          ProfileErrors.codes.MODEL_CONFIG_INVALID,
+          `Main agent profile "${selection.baseProfile.name}" cannot use model_alias: inherit because it has no caller agent. Choose a configured model alias instead.`,
+        );
+      }
+      throw new ProfileError(
+        ProfileErrors.codes.MODEL_CONFIG_INVALID,
+        `Subagent profile "${selection.baseProfile.name}" requires a caller binding to resolve model_alias: inherit; dispatch it through AgentRun.`,
+      );
+    }
     const executionRestriction = this.profileState.executionRestriction ?? input.executionRestriction;
     const allowParentNotify = input.allowParentNotify ?? this.profileState.allowParentNotify ??
       (this.profileState.profileName === undefined ? selection.profile.allowParentNotify : undefined);

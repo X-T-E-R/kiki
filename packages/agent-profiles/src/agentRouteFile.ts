@@ -189,7 +189,7 @@ function rejectModelPreference(value: unknown, path: string): void {
   if (value === undefined || value === null) return;
   throw invalid(
     path,
-    'Frontmatter field "model_preference" has been removed: subagents no longer inherit the caller\'s model. Set "model_alias" to an exact [models] alias instead.',
+    'Frontmatter field "model_preference" has been removed. Use "model_alias: inherit" to explicitly follow the caller, or set "model_alias" to an exact [models] alias.',
   );
 }
 

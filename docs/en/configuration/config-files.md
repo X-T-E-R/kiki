@@ -328,15 +328,19 @@ Treat that wording as a starting point rather than a setting. Which phrasing act
 
 A subagent's model comes from exactly two places: the `model_alias` passed
 with the `AgentRun` dispatch, or the pin on the profile, route, or caller lease
-that the dispatch selects. Nothing else
-supplies one — a subagent never runs on its caller's model, and there is no
-configured default to fall back on. A dispatch that names no model and
-selects no pinned profile fails with `model.not_configured` and the child is
-never created.
+that the dispatch selects. The caller's model and `default_model` are not silent
+fallbacks: without a parameter or effective pin, dispatch fails with
+`model.not_configured` before creating a child. Set `model_alias: inherit` on a
+subagent profile, route, or caller lease, or pass `model_alias: "inherit"` to
+`AgentRun`, to explicitly bind the caller's current resolved model. A main-agent
+profile cannot use `inherit` because it has no caller.
 
-Thinking effort resolves the same way, but it is allowed to stay unset: tool
-`effort` → profile `thinking_effort` → the bound model's own default under
-the global [`[thinking]`](#thinking) config.
+Thinking effort may stay unset. With `model_alias: inherit`, it follows the
+caller's effective thinking effort unless an explicit tool `effort` or an
+applicable profile, route, caller-lease, or matching `model_profiles` effort pin
+wins. Otherwise, effort resolves as tool `effort` → matching `model_profiles`
+effort → profile `thinking_effort` when the selected model matches its pin →
+the bound model's own default under the global [`[thinking]`](#thinking) config.
 
 ## `thinking`
 

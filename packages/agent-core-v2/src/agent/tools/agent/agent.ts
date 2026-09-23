@@ -66,14 +66,14 @@ export const SubagentToolInputSchema = z.preprocess(
       .min(1)
       .optional()
       .describe(
-        'Omit to use the target default model. An explicit configured alias must be allowed for the selected profile, caller lease, and route. Required only when the target has no default; never copy the caller\'s model.',
+        'Omit to use the target default model. Set model_alias to "inherit" to explicitly bind the caller\'s current model and effective thinking effort (unless effort or profile thinking_effort is pinned). Other aliases must resolve to a configured model; no silent caller-model fallback.',
       ),
     effort: z
       .string()
       .trim()
       .min(1)
       .optional()
-      .describe('Omit to use the target default thinking effort. Override only with an effort allowed by the target; never copy the caller\'s effort.'),
+      .describe('Omit to use the target default thinking effort; with model_alias: inherit, it follows the caller unless the target pins thinking_effort. An explicit effort overrides that default and must be supported by the target.'),
   }).superRefine((args, ctx) => {
     if (args.profile_file !== undefined && (args.profile !== undefined || args.route !== undefined)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profile_file is mutually exclusive with profile and route' });

@@ -12,7 +12,7 @@ import { Error2, ErrorCodes } from '#/errors';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
-import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IConfigService } from '#/app/config/config';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
@@ -40,7 +40,9 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import {
   canonicalizeSubagentBinding,
+  INHERIT_MODEL_ALIAS,
   resolveDispatchCapacityLimits,
+  resolveInheritedModelAlias,
   resolveSubagentBinding,
   withDispatchPolicyDefaults,
 } from '#/session/subagent/configSection';
@@ -165,7 +167,23 @@ export class SessionDispatchService implements ISessionDispatchService {
         'Harness executors are unsupported for this dispatch seat.',
       );
     }
-    const binding = this.resolveBinding(input, target);
+    const callerBinding = requester.accessor.get(IAgentProfileService).data();
+    const binding = this.resolveBinding(input, target, callerBinding);
+    const inheritAlias = (alias: string | undefined) => resolveInheritedModelAlias(alias, callerBinding.modelAlias);
+    const resolvedProfile = selection.baseProfile.modelAlias === INHERIT_MODEL_ALIAS
+      ? { ...selection.baseProfile, modelAlias: inheritAlias(selection.baseProfile.modelAlias) }
+      : selection.baseProfile;
+    const resolvedRoute = selection.route === undefined ? undefined : {
+      ...selection.route,
+      lockedModelAlias: inheritAlias(selection.route.lockedModelAlias),
+      modelAlias: inheritAlias(selection.route.modelAlias),
+      effectiveProfile: selection.route.effectiveProfile.modelAlias === INHERIT_MODEL_ALIAS
+        ? { ...selection.route.effectiveProfile, modelAlias: inheritAlias(selection.route.effectiveProfile.modelAlias) }
+        : selection.route.effectiveProfile,
+    };
+    const lease = target.lease?.modelAlias === INHERIT_MODEL_ALIAS
+      ? { ...target.lease, modelAlias: inheritAlias(target.lease.modelAlias) }
+      : target.lease;
     const name = input.name?.trim();
     if (name !== undefined && !(await this.names.reserve(name, input.delegator))) {
       throw new Error2(
@@ -199,8 +217,8 @@ export class SessionDispatchService implements ISessionDispatchService {
           allowParentNotify: input.allowParentNotify ?? profile.allowParentNotify,
           profile: selection.baseProfile.name,
           route: selection.route?.id,
-          resolvedProfile: selection.baseProfile,
-          resolvedRoute: selection.route,
+          resolvedProfile,
+          resolvedRoute,
           model: binding.model,
           thinking: binding.thinking,
           bindingSelection: binding.selection,
@@ -210,7 +228,7 @@ export class SessionDispatchService implements ISessionDispatchService {
               ? input.thinkingEffort !== undefined || profile.thinkingEffort !== undefined
               : undefined),
           inheritedUserToolNames: researchReadonly ? undefined : requesterUserTools.list().map((tool) => tool.name),
-          lease: target.lease,
+          lease,
           spawnPolicy: target.spawnPolicy,
           dispatchDecision: target.decision,
         },
@@ -414,8 +432,28 @@ export class SessionDispatchService implements ISessionDispatchService {
     this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
     const callerConstraints = readCallerConstraints();
     const callerConstraintKey = JSON.stringify(callerConstraints);
+    const wantsInheritance = options.bindingOverride?.modelAlias === INHERIT_MODEL_ALIAS;
+    const callerProfile = wantsInheritance && options.requesterAgentId !== undefined
+      ? this.requireHandle(options.requesterAgentId, 'Requester agent').accessor.get(IAgentProfileService)
+      : undefined;
+    const callerData = callerProfile?.data();
+    const inheritedModel = wantsInheritance
+      ? resolveInheritedModelAlias(INHERIT_MODEL_ALIAS, callerData?.modelAlias)
+      : undefined;
+    const childData = childProfile.data();
+    const modelProfileThinking = childData.boundProfile === undefined || inheritedModel === undefined
+      ? undefined
+      : resolveRoleThinkingDefault(roleConstraintsFromProfile(childData.boundProfile), inheritedModel,
+          childData.executorId === 'native' ? this.models : undefined);
+    const pinnedThinking = childData.lockedThinkingEffort ?? childData.appliedLease?.thinkingEffort ??
+      modelProfileThinking ?? childData.boundProfile?.thinkingEffort;
+    const inheritedThinking = wantsInheritance
+      ? options.bindingOverride?.thinkingEffort ?? pinnedThinking ?? callerData?.effectiveThinkingLevel ?? callerData?.thinkingLevel
+      : options.bindingOverride?.thinkingEffort;
     const applyBinding = await childProfile.prepareResumeBinding({
       ...options.bindingOverride,
+      modelAlias: inheritedModel ?? options.bindingOverride?.modelAlias,
+      thinkingEffort: inheritedThinking,
       allowParentNotify: options.allowParentNotify,
       callerConstraints,
     });
@@ -424,6 +462,10 @@ export class SessionDispatchService implements ISessionDispatchService {
     options.signal.throwIfAborted();
     if (callerConstraintKey !== JSON.stringify(readCallerConstraints())) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller constraints changed during resume admission. Retry against the current caller policy.');
+    }
+    if (wantsInheritance && (callerProfile?.data().modelAlias !== callerData?.modelAlias ||
+      callerProfile?.getEffectiveThinkingLevel() !== (callerData?.effectiveThinkingLevel ?? callerData?.thinkingLevel))) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller model or thinking effort changed during resume admission. Retry against its current binding.');
     }
     applyBinding();
     const request: AgentRunRequest =
@@ -528,6 +570,7 @@ export class SessionDispatchService implements ISessionDispatchService {
   private resolveBinding(
     input: DispatchLaunchInput,
     target: ReturnType<typeof resolveSubagentTarget>,
+    caller: ProfileData,
   ): DispatchResolvedBinding {
     const selection = target.selection;
     const profile = target.effectiveProfile;
@@ -567,6 +610,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       native ? this.models : undefined,
       roleConstraints,
       { profileName: profile.name, routeId: selection.route?.id },
+      { modelAlias: caller.modelAlias, thinkingEffort: caller.effectiveThinkingLevel ?? caller.thinkingLevel },
     );
     const binding = native ? canonicalizeSubagentBinding(resolved, this.models) : resolved;
     if (native) this.modelCatalog.get(binding.model);

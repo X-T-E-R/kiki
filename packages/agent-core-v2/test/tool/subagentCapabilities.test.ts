@@ -204,6 +204,20 @@ describe('subagent capability final bindings', () => {
     });
   });
 
+  it('projects an inherited model as the caller binding instead of an unavailable literal alias', () => {
+    services.models.list = () => ({ example: {} });
+    const profile = helper({ modelAlias: 'inherit', thinkingEffort: undefined });
+    const catalog = { get: () => profile, list: () => [profile], getDefault: () => profile,
+      resolveSelection: () => ({ profile, baseProfile: profile }) };
+    const input = { catalog, caller: { profileName: 'lead', modelAlias: 'example',
+      effectiveThinkingLevel: 'high', subagents: ['helper'] }, profiles: [profile], routes: [] };
+    expect(projectSubagentCapabilities(input, services)[0]).toMatchObject({
+      modelAlias: 'example', thinkingEffort: 'high', defaultsAvailable: true,
+    });
+    expect(projectSubagentModelCatalog(catalog, input.caller, input, services.models, services.config)
+      .profiles[0]).toMatchObject({ modelAlias: 'inherit', thinkingEffort: 'high' });
+  });
+
   it('keeps machine [subagent].deny_models as a hard capability failure', () => {
     vi.spyOn(services.config, 'get').mockImplementation((section: string) =>
       section === 'subagent' ? { denyModels: ['example'] } : undefined);

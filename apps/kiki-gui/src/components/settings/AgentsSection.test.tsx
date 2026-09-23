@@ -74,8 +74,8 @@ beforeEach(() => {
   root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); queries.clear(); container.remove(); });
-async function render() {
-  await act(async () => root.render(<QueryClientProvider client={queries}><I18nProvider><NamedAgentProfilesCard bucket="main" /></I18nProvider></QueryClientProvider>));
+async function render(bucket: 'main' | 'sub' = 'main') {
+  await act(async () => root.render(<QueryClientProvider client={queries}><I18nProvider><NamedAgentProfilesCard bucket={bucket} /></I18nProvider></QueryClientProvider>));
   await settle();
 }
 async function setInputValue(input: HTMLInputElement, value: string) {
@@ -289,6 +289,45 @@ describe('default main profile settings', () => {
     expect(effort.value).toBe('medium');
     await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'fixture/model-b');
     expect(effort.value).toBe('');
+  });
+
+  it('offers a separate follow-caller model pin for subagents and saves the literal inherit alias', async () => {
+    const helper: NamedAgentProfile = {
+      ...profile, name: 'helper', main: false, source_file: '/fixture/agents/helper.md',
+      description: 'Helper',
+    };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile, helper] });
+    client.updateNamedAgentProfile.mockResolvedValue({ ...helper, pinned_model_alias: 'inherit', thinking_effort: undefined });
+    await render('sub');
+    const row = container.querySelector('[data-agent-profile="helper"]')!;
+    await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('#agent-model-alias')!.click(); });
+    const options = [...dialog.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    expect(options.some((option) => option.textContent?.includes('No model pin (unset)'))).toBe(true);
+    const follow = options.find((option) => option.textContent?.includes('Follow caller (inherit)'))!;
+    expect(follow).toBeDefined();
+    await act(async () => { follow.click(); });
+    expect(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')?.value).toBe('inherit');
+    expect(dialog.querySelector<HTMLSelectElement>('[data-agent-thinking-effort]')?.value).toBe('');
+    await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    await settle();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('helper', expect.objectContaining({
+      pinned_model_alias: 'inherit', thinking_effort: null,
+    }));
+  });
+
+  it('does not offer caller inheritance for a main agent and explains an invalid manual value', async () => {
+    await render();
+    const row = container.querySelector('[data-default-agent="true"]')!;
+    await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('#agent-model-alias')!.click(); });
+    expect([...dialog.querySelectorAll('[role="option"]')].some((option) =>
+      option.textContent?.includes('Follow caller (inherit)'))).toBe(false);
+    await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'inherit');
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('A main agent has no caller');
+    expect([...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save')?.disabled).toBe(true);
   });
 
   it('opens the editor at the shared md width and reports unsaved edits to the dirty guard', async () => {

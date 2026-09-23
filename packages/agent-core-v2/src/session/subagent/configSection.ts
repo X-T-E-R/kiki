@@ -214,8 +214,24 @@ export function assertSubagentModelNotDenied(
   );
 }
 
+export const INHERIT_MODEL_ALIAS = 'inherit';
+
+export function resolveInheritedModelAlias(
+  alias: string | undefined,
+  callerModel: string | undefined,
+): string | undefined {
+  if (alias !== INHERIT_MODEL_ALIAS) return alias;
+  if (callerModel === undefined || callerModel === INHERIT_MODEL_ALIAS) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      'model_alias: inherit requires a caller agent with a bound model; it cannot be used for a main agent.',
+    );
+  }
+  return callerModel;
+}
+
 export const SUBAGENT_MODEL_UNBOUND_HINT =
-  'Pin model_alias on the agent profile (or its route or the caller lease), or pass model_alias with the dispatch. Subagents never take the caller\'s model.';
+  'Pin model_alias on the agent profile (or its route or the caller lease), or pass model_alias with the dispatch. Subagents do not inherit the caller\'s model unless model_alias is explicitly set to inherit.';
 
 export function subagentModelUnboundMessage(target?: SubagentBindingTarget): string {
   const named =
@@ -239,11 +255,12 @@ export function resolveSubagentBinding(
   models?: IModelService,
   roleConstraints?: SubagentRoleModelConstraints,
   target?: SubagentBindingTarget,
+  callerBinding?: SubagentBindingRequest,
 ): SubagentModelBinding {
   const toolModel = normalized(requested.modelAlias);
   const profileModel = normalized(profileRequest.modelAlias);
-  const model = toolModel ?? profileModel;
-  if (model === undefined) {
+  const selectedModel = toolModel ?? profileModel;
+  if (selectedModel === undefined) {
     throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, subagentModelUnboundMessage(target), {
       details: {
         profile: target?.profileName,
@@ -251,15 +268,20 @@ export function resolveSubagentBinding(
       },
     });
   }
+  const callerModel = normalized(callerBinding?.modelAlias);
+  const model = resolveInheritedModelAlias(selectedModel, callerModel)!;
+  const profileAlias = resolveInheritedModelAlias(profileModel, callerModel);
   const source: SubagentModelSource = toolModel !== undefined ? 'tool' : 'profile';
   const thinking =
     normalized(requested.thinkingEffort) ??
     resolveRoleThinkingDefault(roleConstraints, model, models) ??
-    (profileModel !== undefined && resolveModelIdentity(profileModel, models) === resolveModelIdentity(model, models)
+    (selectedModel === INHERIT_MODEL_ALIAS ||
+      profileAlias !== undefined && resolveModelIdentity(profileAlias, models) === resolveModelIdentity(model, models)
       ? normalized(profileRequest.thinkingEffort)
-      : undefined);
+      : undefined) ??
+    (selectedModel === INHERIT_MODEL_ALIAS ? normalized(callerBinding?.thinkingEffort) : undefined);
   assertSubagentModelNotDenied(config, model, models);
-  return recordBindingMetadata({ model, thinking, displayModel: model }, { source });
+  return recordBindingMetadata({ model, thinking, displayModel: selectedModel }, { source });
 }
 
 function normalized(value: string | undefined): string | undefined {
@@ -275,7 +297,7 @@ export function buildSubagentModelDescriptions(aliases: readonly string[]): stri
     );
   }
   lines.push(
-    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; never copy your own model or effort. Executable explicit overrides are accepted; deviations from role model/effort guidance, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, pass model_alias explicitly.',
+    'Model alias and Thinking effort under each profile are defaults. Omit model_alias and effort to use the target defaults; do not assume they copy your model or effort. Set model_alias to inherit explicitly (in a profile, route, caller lease, or AgentRun) to use your current bound model and effective thinking effort; an explicit effort or profile thinking_effort pin takes priority. Executable explicit overrides are accepted; deviations from role model/effort guidance, caller lease pins, or route pins produce binding advisories. Machine deny rules, missing models, unsupported efforts, and executor restrictions remain errors. A model listed for another target is only a recommendation for that target. If no model is bound, pass model_alias explicitly.',
   );
   return lines.join('\n');
 }

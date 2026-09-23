@@ -142,8 +142,8 @@ disallowedTools:
 | `override` | 否 | 遗留覆盖元数据，默认 `false`。胜出者由文件优先级决定；同名用户文件替换已安装的内置副本无需设置此字段 |
 | `main` | 否 | 策展标记。为 `true` 时该 profile 可作为 main agent 候选，默认不出现在 `AgentRun` 工具的角色列表里。这不是授权门：`--agent`、`--agent-file`、MCP 和 SDK 仍可按名绑定目录中的任意 profile |
 | `delegation_notice` | 否 | `auto`（默认）在该 profile 作为 subagent 或独立宿主 Agent 运行时注入按位置区分的委派说明；`off` 关闭。main agent 绑定从不注入 |
-| `model_alias` | 否 | `[models]` 中区分大小写的精确 alias。它就是该 profile 的模型 pin：派发未指定模型时绑定它；没有它的 profile 只能由显式 `model_alias` 的派发使用 |
-| `thinking_effort` | 否 | 该 profile 作为新子 Agent 启动时请求的 thinking effort，与模型选择器独立解析 |
+| `model_alias` | 否 | `[models]` 中区分大小写的精确 alias，或显式写 `inherit`，让 subagent 绑定调用方当前模型。未固定模型的 profile 需要派发时显式提供 `model_alias`；省略不会继承。main agent 没有调用方，不可使用 `inherit` |
+| `thinking_effort` | 否 | 该 profile 作为新 subagent 启动时请求的思考强度。使用 `model_alias: inherit` 时，适用的显式档位 pin 优先于调用方的有效思考强度 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
 | `allowed_models` | 否 | 该 role 推荐使用的模型 alias，支持 YAML 列表或逗号分隔字符串。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。只要模型存在且 executor 支持，列表外的模型仍可执行；子 Agent 会记录结构化 advisory，而不是拒绝派发。只写一项表示强推荐，不是权限边界。省略字段或写 `"*"` 表示不提供推荐；`[]` 表示没有推荐模型，但不会阻止显式、可执行的绑定。Caller lease 与 `spawn_constraints` 采用同样的软建议语义。机器级 `[subagent].deny_models` 仍然具有最终否决权 |
 | `deny_models` | 否 | 该 role 建议避免的模型 alias 名单，写法与 `allowed_models` 相同。选中其中模型时会继续执行并产生醒目的结构化 advisory。需要在所有路径硬拒绝某个模型时，应使用机器级 `[subagent].deny_models` |
@@ -247,9 +247,9 @@ Route 若声明 `tools`、`disallowedTools` 或 `subagents`，该字段整体替
 
 恢复时不会重新选择或切换 route。Journal 会保存规范基础 role、route ID、渲染后的提示词、分层工具策略、denylist、子 Agent 限制、模型 / effort 锁、service tier 与请求参数。因此，即使后来关闭 flag，或 sidecar 被修改、删除、写坏，已有 routed Agent 仍从快照恢复；这些变化只影响新派发。旧 journal 继续兼容。
 
-新派生子 Agent 的模型只有两个来源：工具参数 `model_alias`，或生效 profile / route / caller lease 上的 `model_alias` pin；两者都在时以派发参数为准。两者都没有时派发以 `model.not_configured` 失败，子 Agent 不会被创建——子 Agent 不会跑在调用方的模型上，也没有可回退的配置默认值。effort 独立解析且允许留空：工具显式 `effort` → profile `thinking_effort`，但仅当所绑定 alias 与 profile pin 的 `model_alias` 命中同一规范模型时生效 → 所绑定模型自身的默认档位。未知 alias 无论来自派发参数还是 profile pin 都会报错。
+新派生 subagent 的模型仍只有两个来源：工具参数 `model_alias`，或生效 profile / route / caller lease 上的 `model_alias` pin；两者都在时以派发参数为准。两者都没有时派发以 `model.not_configured` 失败，不会创建子 Agent；调用方模型和 `default_model` 都不是静默回退来源。在 profile、route、caller lease 中写 `model_alias: inherit`，或给 `AgentRun` 显式传 `model_alias: "inherit"`，才会绑定调用方当前已解析的模型。此时也会跟随调用方的有效思考强度，但工具显式 `effort`，或 profile、route、caller lease、匹配的 `model_profiles` 条目上适用的 `thinking_effort` pin 优先。选择其他模型时，effort 仍按原有顺序解析：工具显式 `effort` → 匹配的 `model_profiles` 档位 → 绑定模型与 profile pin 的 `model_alias` 为同一规范模型时的 profile `thinking_effort` → 绑定模型自身默认档位。未知的具体 alias 无论来自派发参数还是 profile pin 都会报错。
 
-使用 `AgentRun` 恢复时，`model_alias` 与 `effort` 同时省略则保留已保存绑定。`model_alias` 解析到同一规范模型时不产生变化。仅切换 `effort` 时，新值在下次空闲运行生效，已保存模型不变。切换到不同规范模型必须传 `allow_model_change: true`，且 `effort` 同时省略时重新解析目标模型的默认档位，不沿用旧 effort。Role 指引与已保存的 route / caller lease pin 只产生 advisory，不会阻止可运行的恢复。Provider 无法执行的显式 effort、机器级模型禁止、executor thread 绑定限制和准入一致性检查仍是硬错误。
+使用 `AgentRun` 恢复时，`model_alias` 与 `effort` 同时省略则保留已保存绑定。`model_alias` 解析到同一规范模型时不产生变化。仅切换 `effort` 时，新值在下次空闲运行生效，已保存模型不变。切换到不同规范模型必须传 `allow_model_change: true`，且 `effort` 同时省略时重新解析目标模型的默认档位，不沿用旧 effort。显式传 `model_alias: "inherit"` 是例外：恢复时也根据调用方*当前*绑定解析模型；若没有适用的已保存 effort pin 或显式 `effort`，则跟随调用方有效思考强度。Role 指引与已保存的 route / caller lease pin 只产生 advisory，不会阻止可运行的恢复。Provider 无法执行的显式 effort、机器级模型禁止、executor thread 绑定限制和准入一致性检查仍是硬错误。
 
 新建子 Agent 时，省略 `model_alias` 和 `effort` 即可使用目标的默认值。`AgentRun` 按每个目标的有效 profile、lease、route 和模型指引列出推荐模型。某个 alias 出现在另一目标下，不代表它也是当前目标的推荐值，但显式、可执行的覆盖会被接受并记录诊断。把 `allowed_models` 与默认 `model_alias` 一起声明，可以发布推荐模型池；`model_profiles` 提供逐模型建议。Route 的档位覆盖（包括 `service_tier: null`）不会清除模型级档位配置。
 
@@ -272,7 +272,7 @@ subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比
 
 两个 flag 都仅在新建会话时有效——都不能与 `--session`/`--continue` 组合。Agent 在会话创建时绑定，恢复会话时会自动还原已绑定的 Agent，因此恢复时不需要（也不允许）携带这些 flag。
 
-在 print 模式下，显式 `--model` 优先于所选 profile 的 `model_alias`。省略 `--model` 时，引擎先使用 profile 的模型 pin，仅在 profile 未指定模型时使用 `default_model`。因此，钉死模型的 profile 无需全局默认模型也能运行；与 main agent 不同，subagent 从不回退到 `default_model`。
+在 print 模式下，显式 `--model` 优先于所选 profile 的 `model_alias`。省略 `--model` 时，引擎先使用 profile 的模型 pin，仅在 profile 未指定模型时使用 `default_model`。因此，钉死模型的 profile 无需全局默认模型也能运行；与 main agent 不同，subagent 从不回退到 `default_model`。main agent 没有调用方，即使设置了 `default_model` 或 `--model`，其 profile 也不能固定 `model_alias: inherit`。
 
 例如：
 

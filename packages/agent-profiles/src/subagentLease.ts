@@ -499,7 +499,7 @@ function parseTokenBudget(value: unknown, field: string, filePath: string): numb
 function rejectModelPreference(value: unknown, field: string, filePath: string): void {
   if (value === undefined || value === null) return;
   throw new SubagentLeaseParseError(
-    `Frontmatter field "${field}" in ${filePath} has been removed: subagents no longer inherit the caller's model. Set "model_alias" to an exact [models] alias instead.`,
+    `Frontmatter field "${field}" in ${filePath} has been removed. Use "model_alias: inherit" to explicitly follow the caller, or set "model_alias" to an exact [models] alias.`,
   );
 }
 
