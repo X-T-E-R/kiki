@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
+import { AgentCapabilitiesPanel } from '../AgentCapabilitiesPanel';
 import { NamedAgentProfilesCard, SubagentDispatchPoliciesCard } from './AgentsSection';
 import { AgentTaskSettings } from './AgentTaskSettings';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
@@ -800,5 +801,40 @@ describe('dispatch policy defaults card', () => {
     });
     expect(card.textContent).toContain('Dispatch policy defaults saved and echoed by the server.');
     expect(card.querySelector<HTMLSelectElement>('select[name="subagentDispatchPolicy"]')!.value).toBe('strict');
+  });
+
+  it('refreshes an already open capability badge when the dispatch default changes', async () => {
+    let config = { subagent: { mainDispatchPolicy: 'advisory', subagentDispatchPolicy: 'strict' } };
+    client.getConfig.mockImplementation(async () => config);
+    client.patchConfig.mockImplementation(async (patch: { subagent: { main_dispatch_policy: string } }) => {
+      config = { subagent: { ...config.subagent, mainDispatchPolicy: patch.subagent.main_dispatch_policy } };
+      return config;
+    });
+    client.getAgentCapabilities.mockImplementation(async () => ({
+      context: 'draft', owner: { profile: 'agent' }, available: true,
+      targets: [{ profile: 'reviewer', executor: 'native', defaults_available: true,
+        recommendation_status: config.subagent.mainDispatchPolicy === 'strict' ? 'blocked' : 'allowed_nonpreferred' }],
+    }));
+    await act(async () => root.render(
+      <QueryClientProvider client={queries}><I18nProvider>
+        <SubagentDispatchPoliciesCard />
+        <AgentCapabilitiesPanel query={{ workspace_id: 'ws-one', profile: 'agent' }} />
+      </I18nProvider></QueryClientProvider>,
+    ));
+    await settle();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-agent-capabilities] button')!.click());
+    await settle();
+    const badge = () => container.querySelector('[data-capability-target="reviewer"] [data-recommendation-status]');
+    expect(badge()?.getAttribute('data-recommendation-status')).toBe('allowed_nonpreferred');
+    expect(client.getAgentCapabilities).toHaveBeenCalledTimes(1);
+
+    const mainSelect = container.querySelector<HTMLSelectElement>('select[name="mainDispatchPolicy"]')!;
+    await setSelect(mainSelect, 'strict');
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledWith({
+      subagent: { main_dispatch_policy: 'strict', subagent_dispatch_policy: undefined },
+    });
+    expect(client.getAgentCapabilities).toHaveBeenCalledTimes(2);
+    expect(badge()?.getAttribute('data-recommendation-status')).toBe('blocked');
   });
 });

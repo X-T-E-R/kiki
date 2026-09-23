@@ -353,6 +353,36 @@ describe('resolved subagent targets', () => {
     },
   };
 
+  it('prevents a caller lease from opening an implicitly strict leaf to grandchildren', () => {
+    const leaf = normalizeAgentProfile({
+      name: 'worker', subagents: [], systemPrompt: () => 'LEAF',
+    });
+    const withLeaf = {
+      ...catalog,
+      get: (name: string) => [main, leaf, reviewer].find((profile) => profile.name === name),
+      resolveSelection: ({ profile }: { readonly profile?: string }) => {
+        const selected = [main, leaf, reviewer].find((candidate) => candidate.name === profile);
+        if (selected === undefined) throw new Error('unknown test profile');
+        return { profile: selected, baseProfile: selected };
+      },
+    };
+    const target = resolveSubagentTarget(withLeaf, {
+      profileName: 'parent', subagents: ['worker'],
+      subagentLeases: { worker: { name: 'worker', subagents: null } },
+    }, { profileName: 'worker' }, models);
+    expect(target.effectiveProfile.subagents).toEqual([]);
+    expect(() => resolveSubagentDispatch(withLeaf, {
+      ...target.effectiveProfile, profileName: 'worker', defaultPolicy: 'strict',
+    }, { profileName: 'reviewer' })).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }),
+    );
+    expect(resolveSubagentDispatch(withLeaf, {
+      ...target.effectiveProfile, profileName: 'worker', defaultPolicy: 'advisory',
+    }, { profileName: 'reviewer' }).decision).toMatchObject({
+      policyMode: 'advisory', recommendationStatus: 'allowed_nonpreferred', allowed: true,
+    });
+  });
+
   it('returns the effective profile after caller lease and spawn constraints', () => {
     const lease = {
       name: 'worker',

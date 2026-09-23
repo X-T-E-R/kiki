@@ -127,14 +127,20 @@ describe('applyLease', () => {
     expect(routePermittedByProfile({ modelAlias: 'example' }, applied)).toBe(false);
   });
 
-  it('makes a * subagents overlay unrestricted', () => {
-    const applied = applyLease(child(), { name: 'explore', subagents: null });
-    expect(applied.subagents).toBeUndefined();
+  it('keeps a * subagents overlay unrestricted when no strict set ceiling exists', () => {
+    const open = applyLease(child({ subagents: undefined }), { name: 'explore', subagents: null });
+    expect(open.subagents).toBeUndefined();
+    const advisory = applyLease(child({ subagentPolicy: 'advisory' }), { name: 'explore', subagents: null });
+    expect(advisory.subagents).toBeUndefined();
   });
 
-  it('keeps unmarked replacement while preventing explicit strict policy widening', () => {
-    expect(applyLease(child({ subagents: [] }), { name: 'explore', subagents: null }).subagents)
-      .toBeUndefined();
+  it('caps declared sets for implicit and explicit strict policies without forcing advisory admission', () => {
+    expect(applyLease(child({ subagents: [] }), { name: 'explore', subagents: null })).toMatchObject({
+      subagentDeclaration: { kind: 'set', names: [] }, subagents: [],
+    });
+    expect(applyLease(child({ subagentDeclaration: { kind: 'set', names: ['reviewer'] }, subagents: ['reviewer'] }), {
+      name: 'explore', subagents: ['explore'],
+    })).toMatchObject({ subagentDeclaration: { kind: 'set', names: [] }, subagents: [] });
     expect(applyLease(child({ subagentPolicy: 'strict', subagents: [] }), {
       name: 'explore', subagents: null,
     })).toMatchObject({ subagentPolicy: 'strict', subagents: [] });

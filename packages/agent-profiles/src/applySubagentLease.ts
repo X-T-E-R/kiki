@@ -55,10 +55,15 @@ export function applyLease(
       : lease.subagents !== undefined
         ? lease.subagents
         : profile.subagents;
-  const subagents = profile.subagentPolicy === 'strict' && subagentsDeclared
-    ? intersectAllowlists(profile.subagents, overlaidSubagents)
+  const declaredSubagents = profile.subagentDeclaration?.kind === 'set'
+    ? profile.subagentDeclaration.names
+    : profile.subagentDeclaration === undefined ? profile.subagents : undefined;
+  const strictCeiling = profile.subagentPolicy === 'strict'
+    || (profile.subagentPolicy === undefined && declaredSubagents !== undefined);
+  const subagents = strictCeiling && subagentsDeclared
+    ? intersectAllowlists(declaredSubagents ?? profile.subagents, overlaidSubagents)
     : overlaidSubagents;
-  const subagentDeclaration = profile.subagentPolicy === undefined || !subagentsDeclared
+  const subagentDeclaration = !subagentsDeclared || (profile.subagentPolicy === undefined && !strictCeiling)
     ? profile.subagentDeclaration
     : subagents === undefined
       ? { kind: 'all' as const }

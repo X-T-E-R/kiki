@@ -99,8 +99,6 @@ export function projectSubagentCapabilities(
       dispatchAllowed: decision.allowed,
     };
     try {
-      // Binding validity is independent of dispatch admission. Inspect a blocked
-      // target's binding without relaxing the displayed/executable strict policy.
       const bindingCaller = decision.allowed ? input.caller : { ...input.caller, subagentPolicy: 'advisory' as const };
       const target = resolveSubagentTarget(input.catalog, bindingCaller, {
         profileName,

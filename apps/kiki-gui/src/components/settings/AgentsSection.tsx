@@ -76,6 +76,7 @@ export function SubagentDispatchPoliciesCard() {
     try {
       const echoed = await client.patchConfig(subagentDispatchPoliciesPatch(next, saved));
       queryClient.setQueryData(['config'], echoed);
+      await queryClient.invalidateQueries({ queryKey: ['agentCapabilities'] });
       setFeedback({ tone: 'success', text: t('st.dispatchPolicies.saved') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
