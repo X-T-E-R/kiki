@@ -92,4 +92,23 @@ describe('OAuthManager refresh lock failure', () => {
     await expect(mgr.ensureFresh()).rejects.toThrow(/oauth lock/i);
     expect(refreshImpl).not.toHaveBeenCalled();
   });
+
+  it('passes a stale window longer than the refresh timeout to proper-lockfile', async () => {
+    const storage = new InMemoryStorage();
+    storage.token = makeToken();
+    lockMock.lock.mockResolvedValue(() => Promise.resolve());
+
+    const mgr = new OAuthManager({
+      config,
+      storage,
+      configDir: dir,
+      now: () => 1_000_000_000,
+      refreshTokenImpl: vi.fn().mockResolvedValue(makeToken({ accessToken: 'at-new' })),
+    });
+
+    await expect(mgr.ensureFresh()).resolves.toBe('at-new');
+
+    const lockCall = lockMock.lock.mock.calls[0]?.[1] as { stale?: number } | undefined;
+    expect(lockCall?.stale).toBe(60_000);
+  });
 });

@@ -196,7 +196,10 @@ export class OAuthManager {
     try {
       const release = await lockfile.lock(target, {
         retries: { retries: 120, factor: 1, minTimeout: 500, maxTimeout: 1_000 },
-        stale: 5_000,
+        // `proper-lockfile` refreshes mtime at `stale/2`. The default HTTP
+        // timeout is 30s; a stale window shorter than the refresh can let a
+        // peer steal the lock mid-flight and rotate the token twice.
+        stale: 60_000,
         realpath: false,
       });
       return async () => {

@@ -372,8 +372,10 @@ describe('OAuthManager cross-process refresh lock', () => {
 
   it('stale lock (held by a killed worker) is reclaimed after stale timeout', async () => {
     // Scenario: worker A takes the lock and crashes without releasing
-    // (SIGKILL). Worker B arrives 6+ seconds later and must reclaim
-    // the stale lock via `proper-lockfile`'s `stale: 5_000ms` policy.
+    // (SIGKILL). Worker B arrives 61+ seconds later and must reclaim
+    // the stale lock via `proper-lockfile`'s `stale: 60_000ms` policy.
+    // (The stale window was raised from 5s to 60s so a normal 30s refresh
+    // cannot be stolen mid-flight by a peer.)
     //
     // BLK-2 fix: proper-lockfile represents the lock as a DIRECTORY
     // at `{target}.lock/`. The staleness probe is `stat().mtimeMs`
@@ -389,9 +391,9 @@ describe('OAuthManager cross-process refresh lock', () => {
     const { utimes } = await import('node:fs/promises');
     const lockDir = join(dir.path, 'oauth', 'test-provider.lock');
     await mkdir(lockDir, { recursive: true });
-    // 10 seconds ago — past the 5 s stale threshold.
-    const tenSecondsAgo = (Date.now() - 10_000) / 1000;
-    await utimes(lockDir, tenSecondsAgo, tenSecondsAgo);
+    // 61 seconds ago — past the 60 s stale threshold.
+    const sixtyOneSecondsAgo = (Date.now() - 61_000) / 1000;
+    await utimes(lockDir, sixtyOneSecondsAgo, sixtyOneSecondsAgo);
 
     const workers = await spawnInlineWorkers({
       count: 1,
