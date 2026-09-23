@@ -17,6 +17,15 @@ describe('config REST protocol', () => {
     }
   });
 
+  it('preserves independent dispatch policy settings through request and response schemas', () => {
+    const patch = { subagent: { main_dispatch_policy: 'strict', subagent_dispatch_policy: 'advisory' } };
+    expect(patchConfigRequestSchema.parse(patch)).toEqual(patch);
+    expect(configResponseSchema.parse({ subagent: {
+      mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory',
+    } }).subagent).toEqual({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' });
+    expect(patchConfigRequestSchema.safeParse({ subagent: { subagent_dispatch_policy: 'off' } }).success).toBe(false);
+  });
+
   it('omits the retired telemetry patch field', () => {
     expect(patchConfigRequestSchema.parse({ telemetry: false })).toEqual({});
   });

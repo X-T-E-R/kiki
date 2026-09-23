@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
-import { NamedAgentProfilesCard } from './AgentsSection';
+import { NamedAgentProfilesCard, SubagentDispatchPoliciesCard } from './AgentsSection';
 import { AgentTaskSettings } from './AgentTaskSettings';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 
@@ -750,5 +750,55 @@ describe('shipped (built-in) profile management', () => {
     await settle();
     expect(client.restoreShippedAgentProfile).toHaveBeenCalledWith('agent');
     expect(container.querySelector('#st-card-main-agents')?.textContent).toContain('Original restored and agent profiles reloaded.');
+  });
+});
+
+describe('dispatch policy defaults card', () => {
+  async function renderPolicies() {
+    await act(async () => root.render(
+      <QueryClientProvider client={queries}><I18nProvider><SubagentDispatchPoliciesCard /></I18nProvider></QueryClientProvider>,
+    ));
+    await settle();
+  }
+  async function setSelect(select: HTMLSelectElement, value: string) {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+      setter.call(select, value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  it('defaults to advisory for main and strict for subagent profiles when the keys are unset', async () => {
+    client.getConfig.mockResolvedValue({});
+    await renderPolicies();
+    const card = container.querySelector('#st-card-subagent-dispatch-policies')!;
+    expect(card.querySelector<HTMLSelectElement>('select[name="mainDispatchPolicy"]')!.value).toBe('advisory');
+    expect(card.querySelector<HTMLSelectElement>('select[name="subagentDispatchPolicy"]')!.value).toBe('strict');
+    expect(client.patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('reads the camel projection keys and saves only the changed snake_case key', async () => {
+    let config = { subagent: { mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'strict' } };
+    client.getConfig.mockImplementation(async () => config);
+    client.patchConfig.mockImplementation(async (patch: { subagent?: { main_dispatch_policy?: string; subagent_dispatch_policy?: string } }) => {
+      config = {
+        subagent: {
+          mainDispatchPolicy: patch.subagent?.main_dispatch_policy ?? config.subagent.mainDispatchPolicy,
+          subagentDispatchPolicy: patch.subagent?.subagent_dispatch_policy ?? config.subagent.subagentDispatchPolicy,
+        },
+      };
+      return config;
+    });
+    await renderPolicies();
+    const card = container.querySelector('#st-card-subagent-dispatch-policies')!;
+    const mainSelect = card.querySelector<HTMLSelectElement>('select[name="mainDispatchPolicy"]')!;
+    expect(mainSelect.value).toBe('strict');
+    await setSelect(mainSelect, 'advisory');
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledWith({
+      subagent: { main_dispatch_policy: 'advisory', subagent_dispatch_policy: undefined },
+    });
+    expect(card.textContent).toContain('Dispatch policy defaults saved and echoed by the server.');
+    expect(card.querySelector<HTMLSelectElement>('select[name="subagentDispatchPolicy"]')!.value).toBe('strict');
   });
 });

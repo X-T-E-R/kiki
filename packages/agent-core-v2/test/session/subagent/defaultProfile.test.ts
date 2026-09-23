@@ -11,8 +11,10 @@ import { SubagentToolInputSchema } from '#/agent/tools/agent/agent';
 import {
   DEFAULT_SUBAGENT_PROFILE,
   SUBAGENT_SECTION,
+  SubagentConfigSchema,
   resolveDefaultSubagentProfileName,
   resolveDefaultSubagentTarget,
+  withDispatchPolicyDefaults,
   type SubagentConfig,
 } from '#/session/subagent/configSection';
 import { GENERIC_SUBAGENT_PROFILE } from '#/session/subagent/genericProfile';
@@ -100,6 +102,32 @@ describe('resolveDefaultSubagentTarget', () => {
   });
 });
 
+describe('dispatch policy defaults', () => {
+  const main = { profileName: 'agent', subagents: ['explore'] };
+  const child = { profileName: 'worker', subagents: ['explore'] };
+
+  it('uses independent defaults and leaves an undeclared subagent advisory', () => {
+    const config = configWithSubagent();
+    expect(withDispatchPolicyDefaults(config, main, 'main').defaultPolicy).toBe('advisory');
+    expect(withDispatchPolicyDefaults(config, child, 'sub').defaultPolicy).toBe('strict');
+    expect(withDispatchPolicyDefaults(config, { profileName: 'worker' }, 'sub').defaultPolicy).toBe('advisory');
+    expect(withDispatchPolicyDefaults(config, { profileName: 'worker', subagents: [] }, 'sub').defaultPolicy).toBe('strict');
+  });
+
+  it('validates both independently configurable policy values', () => {
+    expect(SubagentConfigSchema.parse({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' }))
+      .toMatchObject({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' });
+    expect(SubagentConfigSchema.safeParse({ subagentDispatchPolicy: 'none' }).success).toBe(false);
+  });
+
+  it('applies separately configured defaults only to their respective callers', () => {
+    const config = configWithSubagent({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' });
+    expect(withDispatchPolicyDefaults(config, main, 'main').defaultPolicy).toBe('strict');
+    expect(withDispatchPolicyDefaults(config, child, 'sub').defaultPolicy).toBe('advisory');
+    expect(withDispatchPolicyDefaults(config, { profileName: 'worker' }, 'sub').defaultPolicy).toBe('advisory');
+  });
+});
+
 describe('SubagentTool default-target resolution', () => {
   type Selection = {
     readonly profileName: string;
@@ -175,7 +203,8 @@ describe('materialized default target resolves through the file catalog', () => 
 
     const agent = projection.resolvableProfiles.get('agent');
     expect(agent?.main).toBe(true);
-    expect(agent?.subagentPolicy).toBe('advisory');
+    expect(agent?.subagentPolicy).toBeUndefined();
+    expect(withDispatchPolicyDefaults(configWithSubagent(), agent!, 'main').defaultPolicy).toBe('advisory');
     expect(agent?.subagents).toBeUndefined();
     expect(agent?.tools).toContain('AgentRun');
 

@@ -264,48 +264,43 @@ describe('resolveSubagentDispatch', () => {
     }
   });
 
-  it('defaults an unmarked named profile to advisory and records deviations', () => {
-    const resolved = resolveSubagentDispatch(
-      catalog,
-      {
-        profileName: 'parent',
-        subagentDeclaration: { kind: 'set', names: ['explore'] },
-        subagents: ['explore'],
-      },
-      { profileName: 'writer' },
-    );
-    expect(resolved.decision).toEqual({
-      version: 1,
-      policyMode: 'advisory',
-      policySource: 'default',
-      declaration: { kind: 'set', names: ['explore'] },
-      selectionKind: 'profile',
-      selectionOrigin: 'explicit',
-      requestedProfile: 'writer',
-      recommendationStatus: 'allowed_nonpreferred',
-      advisoryDeviation: true,
-      allowed: true,
-      fallback: undefined,
+  it('defaults an unmarked named subagent with a declared set to strict', () => {
+    expect(() => resolveSubagentDispatch(catalog, {
+      profileName: 'parent',
+      subagentDeclaration: { kind: 'set', names: ['explore'] },
+      subagents: ['explore'],
+    }, { profileName: 'writer' })).toThrowError(expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }));
+    expect(resolveSubagentDispatch(catalog, {
+      profileName: 'parent', subagents: ['writer'],
+    }, { profileName: 'writer' }).decision).toMatchObject({
+      policyMode: 'strict', policySource: 'default', recommendationStatus: 'preferred', allowed: true,
     });
   });
 
-  it('allows any legal target when an unmarked profile recommends no targets', () => {
-    const resolved = resolveSubagentDispatch(
-      catalog,
-      { profileName: 'parent', subagents: [] },
-      { profileName: 'writer' },
-    );
-    expect(resolved.decision).toMatchObject({
-      policyMode: 'advisory',
-      policySource: 'default',
-      declaration: { kind: 'set', names: [] },
-      recommendationStatus: 'allowed_nonpreferred',
-      advisoryDeviation: true,
-      allowed: true,
+  it('treats an explicitly empty set as a strict deny-all, but keeps an undeclared list advisory', () => {
+    expect(() => resolveSubagentDispatch(
+      catalog, { profileName: 'parent', subagents: [] }, { profileName: 'writer' },
+    )).toThrowError(expect.objectContaining({ code: ErrorCodes.AGENT_TYPE_NOT_ALLOWED }));
+    expect(resolveSubagentDispatch(
+      catalog, { profileName: 'parent' }, { profileName: 'writer' },
+    ).decision).toMatchObject({
+      policyMode: 'advisory', declaration: { kind: 'all' }, recommendationStatus: 'unconfigured', allowed: true,
     });
   });
 
-  it('blocks named-profile deviations only under explicit strict policy', () => {
+  it('uses a configured caller default unless the profile explicitly overrides it', () => {
+    const advisory = resolveSubagentDispatch(catalog, {
+      profileName: 'parent', defaultPolicy: 'advisory', subagents: ['explore'],
+    }, { profileName: 'writer' }).decision;
+    expect(advisory).toMatchObject({ policyMode: 'advisory', policySource: 'default',
+      recommendationStatus: 'allowed_nonpreferred', advisoryDeviation: true, allowed: true });
+    const explicit = resolveSubagentDispatch(catalog, {
+      profileName: 'parent', defaultPolicy: 'strict', subagentPolicy: 'advisory', subagents: [],
+    }, { profileName: 'writer' }).decision;
+    expect(explicit).toMatchObject({ policyMode: 'advisory', policySource: 'profile', allowed: true });
+  });
+
+  it('blocks named-profile deviations under explicit strict policy', () => {
     const caller = {
       profileName: 'parent',
       subagentPolicy: 'strict' as const,

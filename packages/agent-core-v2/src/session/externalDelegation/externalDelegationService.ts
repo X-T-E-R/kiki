@@ -21,6 +21,8 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IConfigService } from '#/app/config/config';
+import { withDispatchPolicyDefaults } from '#/session/subagent/configSection';
 import { AgentActivityUpdated, IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { listAvailableSubagentTargets } from '#/app/agentProfileCatalog/subagentDispatch';
@@ -212,6 +214,7 @@ export class SessionExternalDelegationService
     @ILogService private readonly log: ILogService,
     @ISessionManager lifecycle: ISessionManager,
     @IModelService private readonly models: IModelService,
+    @IConfigService private readonly config: IConfigService,
     @IBootstrapService bootstrap: IBootstrapService,
   ) {
     super();
@@ -268,7 +271,7 @@ export class SessionExternalDelegationService
     const snapshot = this.profiles.snapshot?.();
     const available = listAvailableSubagentTargets(
       this.profiles,
-      own,
+      withDispatchPolicyDefaults(this.config, own, 'main'),
       {
         profiles: this.profiles.list(),
         routes: this.profiles.listRoutes?.() ?? [],
@@ -774,7 +777,7 @@ export class SessionExternalDelegationService
     const main = this.requireMain();
     const available = listAvailableSubagentTargets(
       this.profiles,
-      main.accessor.get(IAgentProfileService).data(),
+      withDispatchPolicyDefaults(this.config, main.accessor.get(IAgentProfileService).data(), 'main'),
       {
         profiles: this.profiles.list(),
         routes: this.profiles.listRoutes?.() ?? [],

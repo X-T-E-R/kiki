@@ -42,6 +42,7 @@ import {
   canonicalizeSubagentBinding,
   resolveDispatchCapacityLimits,
   resolveSubagentBinding,
+  withDispatchPolicyDefaults,
 } from '#/session/subagent/configSection';
 import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagent/subagent';
@@ -139,9 +140,11 @@ export class SessionDispatchService implements ISessionDispatchService {
     checkLaunchPolicy();
     const requesterData =
       input.requesterProfileData ?? requester.accessor.get(IAgentProfileService).data();
+    const caller = withDispatchPolicyDefaults(this.config, requesterData,
+      input.requesterAgentId === 'main' ? 'main' : 'sub');
     const target = resolveSubagentTarget(
       this.profiles,
-      requesterData,
+      caller,
       {
         resolvedProfile: input.resolvedProfile,
         profileName: input.profileName,

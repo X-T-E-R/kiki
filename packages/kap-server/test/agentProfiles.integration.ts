@@ -93,8 +93,27 @@ describe('GET /api/agents', () => {
     expect(capabilityBody.code).toBe(0);
     const data = agentCapabilitiesResponseSchema.parse(capabilityBody.data);
     expect(data.available).toBe(true);
-    expect(data.targets.some((target) => target.profile === 'explore')).toBe(true);
+    expect(data.targets.find((target) => target.profile === 'explore')).toMatchObject({
+      recommendation_status: 'preferred', dispatch_policy: 'advisory',
+    });
+    expect(data.targets.find((target) => target.profile === 'general')).toMatchObject({
+      recommendation_status: 'allowed_nonpreferred',
+    });
     expect(data.targets.some((target) => target.profile === 'agent')).toBe(false);
+    const configured = await authedFetch(server, base, '/api/config', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ subagent: { main_dispatch_policy: 'strict', subagent_dispatch_policy: 'advisory' } }),
+    });
+    const configBody = await configured.json() as Envelope<{ subagent: { mainDispatchPolicy?: string; subagentDispatchPolicy?: string } }>;
+    expect(configBody.code).toBe(0);
+    expect(configBody.data.subagent).toMatchObject({ mainDispatchPolicy: 'strict', subagentDispatchPolicy: 'advisory' });
+    const strictResponse = await authedFetch(server, base, `/api/agents/capabilities?${query}&profile=agent`);
+    const strict = agentCapabilitiesResponseSchema.parse((await strictResponse.json() as Envelope<unknown>).data);
+    expect(strict.profile?.subagent_policy).toBe('strict');
+    expect(strict.targets.find((target) => target.profile === 'general')).toMatchObject({
+      recommendation_status: 'blocked', dispatch_policy: 'strict', launch_allowed: false,
+      launch_unavailable_reason_code: 'strict_subagent_policy_blocked',
+    });
     const createdResponse = await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'agent', model: 'stub' } }),

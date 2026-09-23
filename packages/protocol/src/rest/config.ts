@@ -31,6 +31,8 @@ export const subagentConfigResponseSchema = z.object({
   maxDirectChildren: z.number().int().nonnegative().optional(),
   maxTotalSubagents: z.number().int().nonnegative().optional(),
   defaultProfile: z.string().optional(),
+  mainDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
+  subagentDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
   allowedTools: z.array(z.string()).optional(),
 });
 
@@ -118,6 +120,8 @@ export const patchConfigRequestSchema = z.object({
     max_direct_children: z.number().int().nonnegative().optional(),
     max_total_subagents: z.number().int().nonnegative().optional(),
     default_profile: z.string().optional(),
+    main_dispatch_policy: z.enum(['advisory', 'strict']).optional(),
+    subagent_dispatch_policy: z.enum(['advisory', 'strict']).optional(),
     allowed_tools: z.array(z.string()).optional(),
   }).optional(),
   agents: z.object({

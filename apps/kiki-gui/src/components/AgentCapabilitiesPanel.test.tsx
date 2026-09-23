@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
+
+/**
+ * Panel capability rendering plus the three-state target badges: the panel
+ * renders the server's own `recommendation_status` — preferred /
+ * allowed_nonpreferred / blocked — and never invents a state a missing field
+ * (an older server) does not report.
+ */
+
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createKlientFromChannel, type KlientChannel } from '@kiki/klient';
-import { ErrorCode, type AgentCapabilitiesQuery, type AgentCapabilitiesResponse } from '@kiki/protocol';
+import { ErrorCode, type AgentCapabilitiesQuery, type AgentCapabilitiesResponse, type AgentCapabilityTarget } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import { ApiError } from '../lib/client';
 import { AgentCapabilitiesPanel } from './AgentCapabilitiesPanel';
@@ -124,5 +132,37 @@ describe('AgentCapabilitiesPanel', () => {
     await settle();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('无法加载 Agent 能力：找不到工作区。');
     expect(container.querySelector('[role="alert"]')?.textContent).not.toContain('workspace missing from server');
+  });
+});
+
+const badgeTarget = (overrides: Partial<AgentCapabilityTarget>): AgentCapabilityTarget => ({
+  profile: 'explore',
+  executor: 'native',
+  defaults_available: true,
+  ...overrides,
+});
+
+describe('three-state target recommendation badges', () => {
+  it.each([
+    ['preferred', '推荐目标'],
+    ['allowed_nonpreferred', '允许偏离推荐名单'],
+    ['blocked', '当前禁止启动'],
+    ['unconfigured', '未配置推荐'],
+  ] as const)('renders %s from the server projection', async (status, label) => {
+    getAgentCapabilities.mockResolvedValue({ context: 'draft', owner: {}, available: true, targets: [badgeTarget({ recommendation_status: status })] });
+    await render({ workspace_id: 'ws-one', profile: 'agent' });
+    await settle();
+    const badge = container.querySelector('[data-recommendation-status]');
+    expect(badge?.textContent).toBe(label);
+    expect(badge?.getAttribute('data-recommendation-status')).toBe(status);
+  });
+
+  it('keeps a missing projection field as 未报告 instead of claiming a state', async () => {
+    getAgentCapabilities.mockResolvedValue({ context: 'draft', owner: {}, available: true, targets: [badgeTarget({})] });
+    await render({ workspace_id: 'ws-one', profile: 'agent' });
+    await settle();
+    const badge = container.querySelector('[data-recommendation-status]');
+    expect(badge?.textContent).toBe('未报告');
+    expect(badge?.getAttribute('data-recommendation-status')).toBe('unknown');
   });
 });

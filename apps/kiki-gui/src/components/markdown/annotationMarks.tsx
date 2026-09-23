@@ -13,6 +13,17 @@ import { findQuoteRange, type TimelineAnnotation } from '@kiki/session-core/comp
 export const ANNOTATION_MARK_CLASS =
   'box-decoration-clone cursor-pointer rounded-[2px] bg-accent-soft/80 px-px [color:inherit] underline decoration-accent/45 decoration-1 underline-offset-[3px] outline-none transition-colors hover:bg-accent-soft hover:decoration-accent/75 focus-visible:bg-accent-soft focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1';
 
+/**
+ * Speech-bubble glyph shown right after an annotated passage. Purely visual
+ * discovery aid: the span carries the same `data-annotation-ref` as the mark
+ * (the transcript's delegated click opens the same popover), but is
+ * `aria-hidden` and not focusable — the mark itself stays the single keyboard
+ * / screen-reader entry point for the annotation.
+ */
+export const ANNOTATION_BUBBLE_GLYPH = '💬';
+export const ANNOTATION_BUBBLE_CLASS =
+  'ml-0.5 inline-block select-none align-baseline text-[11px] leading-none opacity-70 transition-opacity hover:opacity-100';
+
 export interface MarkRange {
   readonly start: number;
   readonly end: number;
@@ -40,9 +51,20 @@ export function resolveMarkRanges(
   return accepted;
 }
 
+/** The small speech-bubble element shape (hast + plain-text variant). */
+function bubbleProperties(annotationId: string): Record<string, unknown> {
+  return {
+    className: ANNOTATION_BUBBLE_CLASS.split(' '),
+    dataAnnotationRef: annotationId,
+    ariaHidden: true,
+  };
+}
+
 /**
  * Plain-text projection: marked ranges with the surrounding text passed
  * through `projectSegment` (the user bubble's `@chip` decorator rides along).
+ * Each mark is followed by a small speech-bubble glyph carrying the same
+ * `data-annotation-ref`, so the popover stays one click away from the bubble.
  */
 export function projectTextWithAnnotationMarks(
   text: string,
@@ -70,6 +92,14 @@ export function projectTextWithAnnotationMarks(
       >
         {projectSegment(text.slice(range.start, range.end))}
       </mark>,
+      <span
+        key={`b-${index}`}
+        data-annotation-ref={range.annotationId}
+        aria-hidden
+        className={ANNOTATION_BUBBLE_CLASS}
+      >
+        {ANNOTATION_BUBBLE_GLYPH}
+      </span>,
     );
     cursor = range.end;
   });
@@ -149,7 +179,9 @@ function markElement(
 /**
  * Rehype plugin pre-bound with a block's targets. Every intersected text node
  * is split around the match. When inline formatting splits one annotation into
- * several marks, only the first mark enters the keyboard tab order.
+ * several marks, only the first mark enters the keyboard tab order; the
+ * speech-bubble glyph rides the last split node (the visual end of the
+ * annotated passage).
  */
 export function rehypeAnnotationMarks(targets: readonly TimelineAnnotation[]) {
   return function annotationMarksAttacher() {
@@ -165,6 +197,7 @@ export function rehypeAnnotationMarks(targets: readonly TimelineAnnotation[]) {
             entry.offset < range.end && entry.offset + entry.node.value.length > range.start,
         );
         const first = intersected[0];
+        const last = intersected[intersected.length - 1];
         for (const entry of intersected.toReversed()) {
           const localStart = Math.max(0, range.start - entry.offset);
           const localEnd = Math.min(entry.node.value.length, range.end - entry.offset);
@@ -175,6 +208,16 @@ export function rehypeAnnotationMarks(targets: readonly TimelineAnnotation[]) {
           const replacement: HastNodeLike[] = [];
           if (before !== '') replacement.push({ type: 'text', value: before });
           replacement.push(markElement(target.id, middle, entry === first));
+          // The bubble follows the LAST marked fragment, before any unmarked
+          // trailing text in that node. The keyboard entry stays on the first.
+          if (entry === last) {
+            replacement.push({
+              type: 'element',
+              tagName: 'span',
+              properties: bubbleProperties(target.id),
+              children: [{ type: 'text', value: ANNOTATION_BUBBLE_GLYPH }],
+            });
+          }
           if (after !== '') replacement.push({ type: 'text', value: after });
           entry.parent.children?.splice(entry.childIndex, 1, ...replacement);
         }

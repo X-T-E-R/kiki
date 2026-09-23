@@ -24,6 +24,8 @@ export interface SubagentDispatchCaller {
   readonly subagentPolicy?: AgentSubagentPolicy;
   readonly subagentDeclaration?: SubagentDeclaration;
   readonly subagents?: readonly string[];
+  /** The caller's configured default, resolved by the host for this dispatch. */
+  readonly defaultPolicy?: AgentSubagentPolicy;
 }
 
 export type SubagentSelectionKind = 'profile' | 'route' | 'scoped' | 'profile_file';
@@ -105,12 +107,16 @@ export function evaluateSubagentDispatchDecision(
   } = {},
 ): CurrentSubagentDispatchDecision {
   const configured = caller.profileName === undefined ? catalog.getDefault() : caller;
-  const policyMode: AgentSubagentPolicy = configured.subagentPolicy ?? 'advisory';
   const declaration = configured.subagentDeclaration ?? (
     configured.subagents === undefined
       ? { kind: 'all' as const }
       : { kind: 'set' as const, names: configured.subagents }
   );
+  // The profile wins over host defaults. An empty declared set deliberately
+  // admits no targets under strict policy; an undeclared list stays advisory.
+  const policyMode: AgentSubagentPolicy = configured.subagentPolicy
+    ?? caller.defaultPolicy
+    ?? (declaration.kind === 'set' ? 'strict' : 'advisory');
   const recommended = declaration.kind === 'set' && declaration.names.includes(profileName);
   const constrained = declaration.kind === 'set';
   const allowed = policyMode === 'advisory' || !constrained || recommended;

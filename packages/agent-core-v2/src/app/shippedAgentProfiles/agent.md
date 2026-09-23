@@ -2,7 +2,6 @@
 name: agent
 description: Default agent
 main: true
-subagent_policy: advisory
 tools:
   - Read
   - Write

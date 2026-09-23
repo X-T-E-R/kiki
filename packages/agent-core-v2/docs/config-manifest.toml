@@ -591,6 +591,8 @@ timeout_ms = 7200000
 max_direct_children = 16
 max_total_subagents = 0
 default_profile = "general"
+# main_dispatch_policy: "advisory" | "strict"
+# subagent_dispatch_policy: "advisory" | "strict"
 allowed_tools = []
 
 # ##########################################################################

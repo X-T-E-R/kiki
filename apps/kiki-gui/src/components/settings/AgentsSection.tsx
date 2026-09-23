@@ -16,6 +16,12 @@ import {
   type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
 } from '@kiki/session-core/settings';
+import {
+  subagentDispatchPoliciesDraftFromConfig,
+  subagentDispatchPoliciesPatch,
+  type SubagentDispatchPolicy,
+  type SubagentDispatchPoliciesDraft,
+} from '@kiki/session-core/settings/subagentToolsSettings';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
@@ -46,6 +52,75 @@ const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
 export function SubagentGovernanceCard() {
   return <><SubagentLimitsSettings /><SubagentModelGovernanceCard /></>;
+}
+
+/**
+ * The two server-wide dispatch-policy defaults (redesign agents leaf): the
+ * main-agent and subagent-profile fallbacks for profiles that declare no
+ * `subagent_policy`. Each select saves on change, like the other single-choice
+ * server settings.
+ */
+export function SubagentDispatchPoliciesCard() {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const draft = subagentDispatchPoliciesDraftFromConfig(configQuery.data);
+  const saved = useMemo(() => subagentDispatchPoliciesDraftFromConfig(configQuery.data), [configQuery.data]);
+
+  const apply = async (next: SubagentDispatchPoliciesDraft) => {
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.patchConfig(subagentDispatchPoliciesPatch(next, saved));
+      queryClient.setQueryData(['config'], echoed);
+      setFeedback({ tone: 'success', text: t('st.dispatchPolicies.saved') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const select = (
+    name: 'mainDispatchPolicy' | 'subagentDispatchPolicy',
+    labelKey: I18nKey,
+    value: SubagentDispatchPolicy,
+  ) => (
+    <label className="block max-w-sm text-[11px] font-medium text-ink-soft">
+      {t(labelKey)}
+      <select
+        className={`${SMALL_INPUT} mt-1`}
+        name={name}
+        value={value}
+        aria-label={t(labelKey)}
+        onChange={(event) => {
+          const policy = event.target.value as SubagentDispatchPolicy;
+          void apply({ ...draft, [name]: policy });
+        }}
+      >
+        {(['advisory', 'strict'] as SubagentDispatchPolicy[]).map((policy) => (
+          <option key={policy} value={policy}>{t(`agentPanel.subagentPolicy.${policy}` as I18nKey)}</option>
+        ))}
+      </select>
+    </label>
+  );
+
+  return (
+    <SectionCard id="st-card-subagent-dispatch-policies" title={t('st.dispatchPolicies.title')}>
+      <div className="space-y-3">
+        <Hint>{t('st.dispatchPolicies.hint')}</Hint>
+        <fieldset disabled={saving || configQuery.isPending} className="space-y-3 disabled:opacity-60">
+          {select('mainDispatchPolicy', 'st.dispatchPolicies.mainLabel', draft.mainDispatchPolicy)}
+          {select('subagentDispatchPolicy', 'st.dispatchPolicies.subLabel', draft.subagentDispatchPolicy)}
+        </fieldset>
+        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
 }
 
 function SubagentModelGovernanceCard() {
@@ -648,6 +723,7 @@ export function AgentsSection() {
   return (
     <div className="space-y-4">
       <NamedAgentProfilesCard bucket="main" />
+      <SubagentDispatchPoliciesCard />
       <AgentRuntimeCard />
       <PromptConfigCard />
       <ExperimentalSection

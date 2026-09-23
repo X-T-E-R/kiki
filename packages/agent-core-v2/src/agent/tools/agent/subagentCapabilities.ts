@@ -5,7 +5,7 @@ import type { AgentCapabilityReasonCode } from '@kiki/protocol';
 import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import { fillLeasePins, spawnConstraintOrigin, type CallerLeaseOwner } from '#/app/agentProfileCatalog/applySubagentLease';
-import { evaluateSubagentDispatchDecision, listAvailableSubagentTargets, resolveSubagentTarget, type SubagentDispatchCaller, type SubagentDispatchCatalog, type SubagentRecommendationStatus } from '#/app/agentProfileCatalog/subagentDispatch';
+import { evaluateSubagentDispatchDecision, resolveSubagentTarget, type SubagentDispatchCaller, type SubagentDispatchCatalog, type SubagentRecommendationStatus } from '#/app/agentProfileCatalog/subagentDispatch';
 import type { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import type { IConfigService } from '#/app/config/config';
 import { ErrorCodes, isError2 } from '#/errors';
@@ -56,8 +56,14 @@ export function projectSubagentCapabilities(
   input: SubagentCapabilityCatalog,
   services: SubagentCapabilityServices,
 ): readonly SubagentCapabilityTarget[] {
-  const targets = listAvailableSubagentTargets(input.catalog, input.caller, input, services.models);
   const snapshot = input.snapshot ?? input.catalog.snapshot?.();
+  const scoped = snapshot?.scopedBindings.get(input.caller.profileDefinitionId ?? '') ?? new Map();
+  const profiles = [
+    ...input.profiles.filter((profile) => profile.main !== true && !scoped.has(profile.name)),
+    ...[...scoped.values()].flatMap((binding) =>
+      binding.status === 'ready' && binding.profile !== undefined && binding.profile.main !== true
+        ? [{ ...binding.profile, name: binding.alias }] : []),
+  ];
   const bindingSnapshot = snapshot === undefined ? undefined : {
     ...snapshot,
     publicProfiles: new Map([
@@ -65,10 +71,17 @@ export function projectSubagentCapabilities(
       ...input.profiles.map((profile) => [profile.name, profile] as const),
     ]),
   };
+  const rank = (profile: string) => {
+    const status = evaluateSubagentDispatchDecision(input.catalog, input.caller, profile).recommendationStatus;
+    return status === 'preferred' ? 0 : status === 'unconfigured' ? 1 : status === 'allowed_nonpreferred' ? 2 : 3;
+  };
   return [
-    ...targets.profiles.map((profile) => projectTarget(profile.name, undefined, profile.description, profile.executor)),
-    ...targets.routes.map((route) => projectTarget(route.profile, route.id, route.description,
-      (bindingSnapshot?.publicProfiles.get(route.profile) ?? input.catalog.get(route.profile))?.executor)),
+    ...profiles.toSorted((a, b) => rank(a.name) - rank(b.name))
+      .map((profile) => projectTarget(profile.name, undefined, profile.description, profile.executor)),
+    ...input.routes.filter((route) => profiles.some((profile) => profile.name === route.profile))
+      .toSorted((a, b) => rank(a.profile) - rank(b.profile))
+      .map((route) => projectTarget(route.profile, route.id, route.description,
+        (bindingSnapshot?.publicProfiles.get(route.profile) ?? input.catalog.get(route.profile))?.executor)),
   ];
 
   function projectTarget(profileName: string, routeId?: string, description?: string, executorId?: string): SubagentCapabilityTarget {
@@ -86,7 +99,10 @@ export function projectSubagentCapabilities(
       dispatchAllowed: decision.allowed,
     };
     try {
-      const target = resolveSubagentTarget(input.catalog, input.caller, {
+      // Binding validity is independent of dispatch admission. Inspect a blocked
+      // target's binding without relaxing the displayed/executable strict policy.
+      const bindingCaller = decision.allowed ? input.caller : { ...input.caller, subagentPolicy: 'advisory' as const };
+      const target = resolveSubagentTarget(input.catalog, bindingCaller, {
         profileName,
         routeId,
         snapshot: bindingSnapshot,

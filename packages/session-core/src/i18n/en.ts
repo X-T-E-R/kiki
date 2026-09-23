@@ -2131,6 +2131,12 @@ export const en = {
   'st.subagents.denyPlaceholder': 'provider/blocked-model',
   'st.subagents.save': 'Save subagent settings',
   'st.subagents.saved': 'Subagent model governance saved and echoed by the server.',
+  'st.dispatchPolicies.title': 'Dispatch policy defaults',
+  'st.dispatchPolicies.hint':
+    'Fallbacks for profiles without their own subagent_policy. Advisory permits targets outside the declared list with a deviation; strict blocks them. The subagent default applies only when a child profile declares a list (even an empty one); without one, the default is advisory. An explicit profile policy always wins.',
+  'st.dispatchPolicies.mainLabel': 'Main agents default ([subagent].main_dispatch_policy)',
+  'st.dispatchPolicies.subLabel': 'Subagent profiles default ([subagent].subagent_dispatch_policy)',
+  'st.dispatchPolicies.saved': 'Dispatch policy defaults saved and echoed by the server.',
   'st.mainAgents.title': 'Main agents',
   'st.mainAgents.defaultTitle': 'Default main agent',
   'st.mainAgents.defaultHint': 'This is the default main profile for the selected workspace. Inspect its source and available subagents below.',

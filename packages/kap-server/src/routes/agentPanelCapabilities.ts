@@ -30,7 +30,7 @@ import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interact
 import { ISessionSkillCatalog } from '@kiki/agent-core-v2/session/sessionSkillCatalog/skillCatalog';
 import { ISessionToolPolicyGate } from '@kiki/agent-core-v2/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '@kiki/agent-core-v2/session/subagent/modelConstraints';
-import { SUBAGENT_SECTION, type SubagentConfig } from '@kiki/agent-core-v2/session/subagent/configSection';
+import { SUBAGENT_SECTION, withDispatchPolicyDefaults, type SubagentConfig } from '@kiki/agent-core-v2/session/subagent/configSection';
 import {
   resolveBoundPanelProfile,
   type PanelProfileDefinition,
@@ -47,7 +47,8 @@ type PanelBindingData = Partial<Pick<ProfileData,
   'effectiveThinkingLevel' | 'thinkingEffortSource' | 'routeDetached' |
   'profileSource' | 'bindingAdvisories' | 'executorId' | 'serviceTier' | 'activeToolNames' |
   'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
-  'subagentPolicy' | 'executionRestriction' | 'allowParentNotify' | 'spawnPolicy' | 'appliedLease' |
+  'subagentPolicy' | 'subagentDeclaration' | 'subagents' | 'executionRestriction' |
+  'allowParentNotify' | 'spawnPolicy' | 'appliedLease' |
   'boundProfile'>> & { readonly thinkingEffortAdjusted?: boolean };
 
 export function panelSkills(
@@ -114,6 +115,8 @@ export async function snapshotPanelCapabilities(
     disabledToolGroups: persisted ? snapshot.disabledToolGroups : snapshot.disabledToolGroups ?? definition.disabledToolGroups,
     allowParentNotify: persisted ? snapshot.allowParentNotify : snapshot.allowParentNotify ?? definition.allowParentNotify,
     subagentPolicy: snapshot.subagentPolicy ?? definition.subagentPolicy,
+    subagentDeclaration: snapshot.subagentDeclaration ?? definition.subagentDeclaration,
+    subagents: snapshot.subagents ?? definition.subagents,
     serviceTier: snapshot.serviceTier ?? definition.serviceTier,
     profileSource: snapshot.boundProfile?.fileSources === undefined ? 'registered' : 'profile-file',
   };
@@ -170,7 +173,7 @@ export async function snapshotPanelCapabilities(
     };
   });
   return {
-    profile: panelProfile(session, binding, resolution),
+    profile: panelProfile(session, binding, resolution, hasParent ? 'sub' : 'main'),
     tools: tools.toSorted((a, b) => a.name.localeCompare(b.name)),
     skills: panelSkills(skills.catalog.listSkills(), isToolActiveComposed(policy, 'Skill')).map((skill) => ({
       ...skill,
@@ -236,7 +239,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   const skills = agent.accessor.get(ISessionSkillCatalog);
   await skills.ready;
   return {
-    profile: panelProfile(agent, data, resolution),
+    profile: panelProfile(agent, data, resolution, agent.id === 'main' ? 'main' : 'sub'),
     tools: [...tools.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
     skills: panelSkills(skills.catalog.listSkills(), policy.isToolActive('Skill')),
   };
@@ -246,8 +249,14 @@ function panelProfile(
   scope: Pick<Scope, 'accessor'>,
   data: PanelBindingData,
   resolution: PanelProfileResolution,
+  position: 'main' | 'sub',
 ): AgentPanelProfile {
   const definition = resolution.profile ?? data.boundProfile;
+  const caller = withDispatchPolicyDefaults(scope.accessor.get(IConfigService), {
+    subagentPolicy: data.subagentPolicy ?? definition?.subagentPolicy,
+    subagentDeclaration: data.subagentDeclaration ?? definition?.subagentDeclaration,
+    subagents: data.subagents ?? definition?.subagents,
+  }, position);
   const routeDetached = data.routeDetached === true || inferRouteDetached(scope, data) ? true : undefined;
   const thinkingEffort = data.effectiveThinkingLevel ?? data.thinkingLevel;
   return {
@@ -272,7 +281,7 @@ function panelProfile(
     tools: data.activeToolNames === undefined ? undefined : [...data.activeToolNames],
     disallowed_tools: data.disallowedTools === undefined ? undefined : [...data.disallowedTools],
     disabled_tool_groups: data.disabledToolGroups === undefined ? undefined : [...data.disabledToolGroups],
-    subagent_policy: data.subagentPolicy ?? definition?.subagentPolicy ?? 'advisory',
+    subagent_policy: caller.subagentPolicy ?? caller.defaultPolicy,
     execution_restriction: data.executionRestriction,
     locked_model: data.lockedModelAlias,
     locked_effort: data.lockedThinkingEffort,

@@ -92,7 +92,7 @@ describe('subagent capability final bindings', () => {
     expect(unrestricted.aliases).toContain('expensive');
   });
 
-  it('projects advisory deviations while strict mode retains legacy target visibility', () => {
+  it('projects recommended, allowed nonpreferred and blocked targets distinctly', () => {
     const preferred = helper({ name: 'preferred' });
     const alternate = helper({ name: 'alternate' });
     const catalog = {
@@ -135,7 +135,10 @@ describe('subagent capability final bindings', () => {
       dispatchPolicy: 'strict', recommendationStatus: 'preferred', dispatchAllowed: true,
       defaultsAvailable: true,
     });
-    expect(strict.find((target) => target.profile === 'alternate')).toBeUndefined();
+    expect(strict.find((target) => target.profile === 'alternate')).toMatchObject({
+      dispatchPolicy: 'strict', recommendationStatus: 'blocked', dispatchAllowed: false,
+      defaultsAvailable: true,
+    });
   });
 
   it('CAP-R1 keeps a normalized default outside the effort allowlist runnable with an advisory', () => {

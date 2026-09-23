@@ -158,7 +158,10 @@ disallowedTools:
 | `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省或单独的 `*` 表示不增加 profile 白名单限制；空列表（`tools: []`）表示禁用全部工具。[subagent 默认限制](../configuration/config-files.md#subagent)及其他策略仍然生效；看板工具需要精确点名或服务端显式允许 |
 | `disallowedTools` | 否 | 禁止列表，写法与匹配规则相同，在 `tools` 之后应用 |
 | `disabled-tool-groups` | 否 | 内置工具组的禁止列表，YAML 列表或逗号分隔字符串，如 `disabled-tool-groups: [shell, web]`。组内每个内置工具都会被收回，除非该工具在 `tools` 中被显式点名；未知的组名会在加载时报错。同一 profile 内的优先级，从最具体开始：`disallowedTools`（被点名的工具保持禁用）> `tools`（显式列出的工具不受组禁用影响）> `disabled-tool-groups`。只有内置工具属于工具组，MCP 工具与用户工具永远不匹配。各组归属：`agent`（`AgentRun`、`AgentList`、`AgentSend`、`AgentNotify`）、`board`（`BoardRead`、`BoardWrite`）、`cron`（`CronCreate`、`CronList`、`CronDelete`）、`fsRead`（`Read`、`ReadMediaFile`、`Glob`、`Grep`）、`fsWrite`（`Write`、`Edit`）、`goal`（`CreateGoal`、`GetGoal`、`UpdateGoal`、`SetGoalBudget`）、`plan`（`EnterPlanMode`、`ExitPlanMode`、`TodoList`）、`question`（`AskUserQuestion`）、`shell`（`Bash`）、`skill`（`Skill`）、`task`（`TaskList`、`TaskOutput`、`TaskStop`、`TaskWait`）、`thread`（`ThreadList`、`ThreadRead`、`ThreadSend`、`ThreadWait`）、`toolSelect`（`SelectTools`）、`web`（`WebSearch`、`FetchURL`） |
-| `subagents` | 否 | 允许委派的子 Agent 名称列表，写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。省略字段或单独写 `*` 表示不限制；空列表（`subagents: []`）表示禁止派发任何子 Agent；其他显式名称构成白名单 |
+| `subagents` | 否 | 可委派的子 Agent 名称列表，写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。子 Agent 一旦声明该列表，默认严格执行：`subagents: []` 禁止所有新子 Agent 派遣，其他显式名称构成白名单；省略或单独写 `*` 表示不限制 |
+| `subagent_policy` | 否 | `strict` 强制执行声明的 `subagents` 列表；`advisory` 允许派往列表外的目标，但会记录推荐偏离。profile 的显式值优先于设置默认值 |
+
+派遣策略有两个独立默认值：`[subagent] main_dispatch_policy = "advisory"` 适用于主 Agent；`[subagent] subagent_dispatch_policy = "strict"` 适用于声明了 `subagents` 列表的子 Agent。两者均可取 `advisory` 或 `strict`，可在「设置 → Agents」修改。未声明列表的子 Agent 仍默认 advisory，不受后一个默认值影响。能力面板将目标区分为「推荐」「允许但不推荐」「明确禁止」；`AgentRun` 仅列出允许目标，并突出推荐目标。模型与思考强度的建议独立于派遣策略，仍是软约束。
 
 `model_profiles` 是一个 YAML mapping 列表。顶层写成字符串、标量或单个 mapping 都是非法的，因为每个条目都需要 `alias`；`when` 与其他字段全部可选。示例：
 

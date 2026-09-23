@@ -36,6 +36,7 @@ export interface SubagentDispatchCaller {
   readonly subagentPolicy?: AgentProfile['subagentPolicy'];
   readonly subagentDeclaration?: AgentProfile['subagentDeclaration'];
   readonly subagents?: readonly string[];
+  readonly defaultPolicy?: AgentProfile['subagentPolicy'];
 }
 
 export interface SubagentDispatchSelection {

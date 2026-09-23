@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { SubagentDispatchCaller } from '@kiki/agent-profiles/subagentDispatch';
 
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { isPlainObject } from '#/app/config/toml';
@@ -32,6 +33,8 @@ export const SubagentConfigSchema = z.object({
   maxDirectChildren: z.number().int().min(0).optional(),
   maxTotalSubagents: z.number().int().min(0).optional(),
   defaultProfile: z.string().optional(),
+  mainDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
+  subagentDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
   allowedTools: z.array(z.string()).optional(),
 });
 
@@ -71,6 +74,23 @@ export function resolveDispatchCapacityLimits(config: IConfigService): {
 }
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
+
+/** Resolve the caller's policy default without overriding explicit profile policy. */
+export function withDispatchPolicyDefaults<T extends SubagentDispatchCaller>(
+  config: IConfigService,
+  caller: T,
+  position: 'main' | 'sub',
+): T & { readonly defaultPolicy: 'advisory' | 'strict' } {
+  const section = config.get<SubagentConfig | undefined>(SUBAGENT_SECTION);
+  const declared = caller.subagentDeclaration?.kind === 'set'
+    || (caller.subagentDeclaration === undefined && caller.subagents !== undefined);
+  return {
+    ...caller,
+    defaultPolicy: position === 'main'
+      ? section?.mainDispatchPolicy ?? 'advisory'
+      : declared ? section?.subagentDispatchPolicy ?? 'strict' : 'advisory',
+  };
+}
 
 export const DEFAULT_SUBAGENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 export const SUBAGENT_TIMEOUT_ENV = 'KIKI_SUBAGENT_TIMEOUT_MS';

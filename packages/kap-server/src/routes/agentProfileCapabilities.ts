@@ -25,6 +25,7 @@ import {
 import { projectSubagentCapabilities, type SubagentCapabilityCatalog } from '@kiki/agent-core-v2/agent/tools/agent/subagentCapabilities';
 import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v2/agent/toolPolicy/evaluate';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
+import { withDispatchPolicyDefaults } from '@kiki/agent-core-v2/session/subagent/configSection';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
 import { subagentParentAgentId } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import type { AgentCapabilitiesQuery, AgentCapabilitiesProducerResponse, AgentPanelMetrics } from '@kiki/protocol';
@@ -169,7 +170,7 @@ export async function agentCapabilities(
         live: false,
         owner: { profile: snapshot.profileName ?? resolution.profile.name, agent_id: query.agent_id },
         available: true,
-        targets: project(session, input).map((target) => ({
+        targets: project(session, input, query.agent_id === 'main' ? 'main' : 'sub').map((target) => ({
           ...target,
           launch_allowed: false,
           launch_unavailable_reason: 'Agent is not live; snapshot capabilities cannot launch subagents',
@@ -189,7 +190,7 @@ export async function agentCapabilities(
     const unavailable_reason_code = available ? undefined
       : baseAdmission.reasonCode ?? 'agent_run_inactive';
     const input = agent.accessor.get(ISubagentTool).dispatchCatalog();
-    const targets = project(agent, input).map((target) => {
+    const targets = project(agent, input, agent.id === 'main' ? 'main' : 'sub').map((target) => {
       const admission = evaluateDispatchAdmission(policy, 'spawn', target.executor);
       const launchUnavailableReason = target.launch_unavailable_reason ?? unavailable_reason ?? admission.reason;
       const launchUnavailableReasonCode = target.launch_unavailable_reason_code
@@ -237,7 +238,7 @@ export async function agentCapabilities(
     };
     return {
       context: 'draft', owner: { profile: profile.name }, available, unavailable_reason, unavailable_reason_code,
-      targets: project(core, input).map((target) => ({ ...target,
+      targets: project(core, input, 'main').map((target) => ({ ...target,
         launch_allowed: target.launch_allowed === false || !available ? false : undefined,
         launch_unavailable_reason: target.launch_unavailable_reason ?? unavailable_reason,
         launch_unavailable_reason_code: target.launch_unavailable_reason_code
@@ -253,7 +254,8 @@ export async function agentCapabilities(
         tools: profile.tools === undefined ? undefined : [...profile.tools],
         disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
         disabled_tool_groups: profile.disabledToolGroups === undefined ? undefined : [...profile.disabledToolGroups],
-        subagent_policy: profile.subagentPolicy ?? 'advisory',
+        subagent_policy: profile.subagentPolicy ?? withDispatchPolicyDefaults(
+          core.accessor.get(IConfigService), profile, 'main').defaultPolicy,
       },
       tools: getAgentToolContributions().map(({ options }) => {
         const active = isToolActiveComposed(policy, options.name, options.source);
@@ -293,8 +295,12 @@ function mergeAgentPanelMetrics(
   };
 }
 
-function project(core: Pick<Scope, 'accessor'>, input: SubagentCapabilityCatalog): AgentCapabilitiesProducerResponse['targets'] {
-  return projectSubagentCapabilities(input, {
+function project(core: Pick<Scope, 'accessor'>, input: SubagentCapabilityCatalog,
+  position: 'main' | 'sub'): AgentCapabilitiesProducerResponse['targets'] {
+  const config = core.accessor.get(IConfigService);
+  return projectSubagentCapabilities({ ...input,
+    caller: withDispatchPolicyDefaults(config, input.caller, position),
+  }, {
     models: core.accessor.get(IModelService), modelCatalog: core.accessor.get(IModelCatalog),
     config: core.accessor.get(IConfigService), executors: core.accessor.get(IAgentExecutorRegistry),
     protocols: core.accessor.get(IProtocolAdapterRegistry),

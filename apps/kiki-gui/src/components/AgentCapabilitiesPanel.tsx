@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { AgentCapabilitiesQuery } from '@kiki/protocol';
+import type { AgentCapabilitiesQuery, AgentCapabilityTarget } from '@kiki/protocol';
 import { agentProfileValueOrigin } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
@@ -34,6 +34,30 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
     t(agentProfileValueOrigin({ reported: value, locked: false }).labelKey);
   const reasonText = (code: string | undefined, rawReason: string | undefined) =>
     capabilityReasonText(t, code, rawReason);
+  // Three-state target badge: preferred / allowed_nonpreferred / blocked, as
+  // the server's own `recommendation_status` reports. An unconfigured target
+  // (no recommendation list) shows its muted state; a missing field on an
+  // older server stays "Not reported" instead of claiming a state.
+  const recommendationBadge = (status: AgentCapabilityTarget['recommendation_status']) => {
+    const label = status === undefined ? t('diagnostics.unknown')
+      : status === 'unconfigured' ? t('diagnostics.unconfigured')
+      : status === 'preferred' ? t('diagnostics.preferred')
+      : status === 'allowed_nonpreferred' ? t('diagnostics.allowedNonpreferred')
+      : t('diagnostics.blocked');
+    const className = status === 'preferred'
+      ? 'border-success/30 bg-success/10 text-success'
+      : status === 'allowed_nonpreferred'
+        ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
+        : status === 'blocked'
+          ? 'border-danger/30 bg-danger/10 text-danger'
+          : 'border-hairline bg-paper text-ink-faint';
+    return (
+      <span data-recommendation-status={status ?? 'unknown'}
+        className={`rounded-full border px-1.5 py-px font-mono text-[9.5px] ${className}`}>
+        {label}
+      </span>
+    );
+  };
 
   return (
     <section data-agent-capabilities className="min-w-0 text-left text-[11.5px]">
@@ -107,6 +131,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
             const launchUnavailableReason = reasonText(target.launch_unavailable_reason_code, target.launch_unavailable_reason);
             return <article key={`${target.profile}:${target.route ?? ''}:${index}`} className="space-y-1 rounded-md border border-hairline bg-panel p-2" data-capability-target={target.profile}>
               <p className="break-all font-mono font-medium text-ink">{target.profile}{target.route === undefined ? '' : ` / ${target.route}`}</p>
+              {recommendationBadge(target.recommendation_status)}
               {target.description !== undefined ? <p className="break-words text-ink-soft">{target.description}</p> : null}
               <p className="break-all text-ink-soft">{t('diagnostics.executor')} · {target.executor}</p>
               <p className="break-all text-ink">{t('diagnostics.model')} · {target.model_alias ?? t('diagnostics.unknown')}</p>

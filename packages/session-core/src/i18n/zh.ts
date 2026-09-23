@@ -2098,6 +2098,12 @@ export const zh: Record<I18nKey, string> = {
   'st.subagents.denyPlaceholder': 'provider/blocked-model',
   'st.subagents.save': '保存子代理设置',
   'st.subagents.saved': '服务器已保存并回显子代理模型治理设置。',
+  'st.dispatchPolicies.title': '派遣策略默认值',
+  'st.dispatchPolicies.hint':
+    '适用于未显式声明 subagent_policy 的档案。建议模式允许派往名单外目标并记录偏离；严格模式会禁止。子 Agent 仅在声明了 subagents 列表（包括空列表）时采用子 Agent 默认值，未声明时默认建议模式；档案显式策略始终优先。',
+  'st.dispatchPolicies.mainLabel': '主 Agent 默认（[subagent].main_dispatch_policy）',
+  'st.dispatchPolicies.subLabel': '子代理档案默认（[subagent].subagent_dispatch_policy）',
+  'st.dispatchPolicies.saved': '派遣策略默认值已保存并由服务器回显。',
   'st.mainAgents.title': '主 Agent',
   'st.mainAgents.defaultTitle': '默认主 Agent',
   'st.mainAgents.defaultHint': '这是所选工作区的默认主档。可在下方查看真实来源与实际可用的子代理。',

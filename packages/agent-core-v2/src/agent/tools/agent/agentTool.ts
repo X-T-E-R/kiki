@@ -37,7 +37,7 @@ import type {
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
-import type { SubagentSelectionOrigin } from '#/app/agentProfileCatalog/subagentDispatch';
+import { evaluateSubagentDispatchDecision, type SubagentSelectionOrigin } from '#/app/agentProfileCatalog/subagentDispatch';
 import { projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProjection';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
@@ -70,6 +70,7 @@ import {
   resolveDefaultSubagentProfileName,
   resolveDefaultSubagentTarget,
   resolveSubagentTimeoutMs,
+  withDispatchPolicyDefaults,
 } from '#/session/subagent/configSection';
 import {
   GENERIC_SUBAGENT_PROFILE,
@@ -155,7 +156,8 @@ export class SubagentTool implements ISubagentTool {
       ? AGENT_DESCRIPTION_BASE
       : AGENT_DESCRIPTION_BASE.replace(`\n\n${PARENT_NOTIFY_DESCRIPTION}`, '');
     let description = `${agentDescription}\n\nSubagent timeout: ${timeoutDescription}.\n\n${backgroundDescription}`;
-    const own = this.profile.data();
+    const own = withDispatchPolicyDefaults(this.config, this.profile.data(),
+      this.callerAgentId === 'main' ? 'main' : 'sub');
     const snapshot =
       own.profileDefinitionId === undefined ? undefined : this.catalogSnapshot();
     const targets = projectSubagentModelCatalog(
@@ -177,6 +179,11 @@ export class SubagentTool implements ISubagentTool {
       undefined,
       (alias: string) => this.isRecommendedModelAliasAvailable(alias),
     );
+    const preferred = targets.profiles.filter((profile) =>
+      evaluateSubagentDispatchDecision(this.catalog, own, profile.name).recommendationStatus === 'preferred');
+    if (preferred.length > 0) {
+      description += `\n\nPreferred agent profiles: ${preferred.map((profile) => profile.name).join(', ')}. Choose these when the task fits; other listed profiles are allowed but not recommended.`;
+    }
     if (typeLines) {
       description += `\n\nAvailable agent profiles (pass via profile):\n${typeLines}`;
     }
@@ -208,7 +215,8 @@ export class SubagentTool implements ISubagentTool {
   }
 
   dispatchCatalog(): import('./subagentCapabilities').SubagentCapabilityCatalog {
-    const caller = this.profile.data();
+    const caller = withDispatchPolicyDefaults(this.config, this.profile.data(),
+      this.callerAgentId === 'main' ? 'main' : 'sub');
     return {
       catalog: this.catalog,
       caller,
@@ -388,8 +396,11 @@ export class SubagentTool implements ISubagentTool {
       );
     }
     const resumeRef = args.resume?.trim();
+    const caller = withDispatchPolicyDefaults(this.config, this.profile.data(),
+      this.callerAgentId === 'main' ? 'main' : 'sub');
     const fileTarget = args.profile_file === undefined ? undefined
-      : await loadDispatchProfileFile(args.profile_file, runtime, this.workspace, this.catalog, this.profile.data(), snapshot);
+      : await loadDispatchProfileFile(args.profile_file, runtime, this.workspace, this.catalog,
+          { ...caller, subagentPolicy: caller.subagentPolicy ?? caller.defaultPolicy }, snapshot);
     const defaultTarget = resumeRef !== undefined && resumeRef.length > 0
       || fileTarget !== undefined
       || (args.profile?.length ?? 0) > 0

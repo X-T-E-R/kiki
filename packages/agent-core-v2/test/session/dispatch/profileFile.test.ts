@@ -46,7 +46,7 @@ it('freezes a scoped profile source graph through JSON and resolves it without r
 });
 
 describe('profile file runtime isolation', () => {
-  it('retains tool ceilings without promoting unmarked subagent recommendations to a hard ceiling', async () => {
+  it('retains tool ceilings without promoting explicit advisory recommendations to a hard ceiling', async () => {
     const ctx = createTestAgent();
     try {
       const catalog = ctx.get(ISessionAgentProfileCatalog);
@@ -57,7 +57,8 @@ describe('profile file runtime isolation', () => {
       } as unknown as IHostFileSystem });
       const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
         thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
-        activeToolNames: ['Read'], disallowedTools: ['Bash'], subagents: ['explore'],
+        activeToolNames: ['Read'], disallowedTools: ['Bash'],
+        subagentPolicy: 'advisory', subagents: ['explore'],
       });
       const svc = ctx.get(IAgentProfileService);
       await svc.bind({
