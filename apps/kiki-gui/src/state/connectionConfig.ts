@@ -96,10 +96,28 @@ export function selectInitialConnection(options: {
     return { config: options.desktop, persist: false, source: 'desktop' };
   }
   if (options.deepLink !== undefined && options.deepLink !== null) {
-    return { config: options.deepLink, persist: true, source: 'deep-link' };
+    // A deep link arrives from one click in a browser tab. Only a loopback
+    // (or same-origin, empty `url`) server may be persisted; persisting a
+    // remote `?server=` would let a single link retarget the Web UI
+    // permanently via localStorage.
+    return { config: options.deepLink, persist: isPersistableDeepLink(options.deepLink.url), source: 'deep-link' };
   }
   if (options.stored !== undefined && options.stored !== null) {
     return { config: options.stored, persist: true, source: 'stored' };
   }
   return null;
+}
+
+function isPersistableDeepLink(url: string): boolean {
+  if (url === '') return true;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'localhost' || host.endsWith('.localhost')) return true;
+    if (host === '[::1]' || host === '::1') return true;
+    return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+  } catch {
+    return false;
+  }
 }

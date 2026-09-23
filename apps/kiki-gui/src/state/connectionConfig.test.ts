@@ -28,6 +28,35 @@ describe('connection config selection', () => {
     expect(selectInitialConnection({ deepLink, stored })?.config).toEqual(deepLink);
     expect(selectInitialConnection({ stored })?.config).toEqual(stored);
   });
+
+  it('persists a deep link only when its server is loopback or same-origin', () => {
+    for (const url of [
+      'http://127.0.0.1:58627',
+      'http://localhost:1234',
+      'https://sub.localhost:1234',
+      'http://[::1]:58627',
+      '',
+    ]) {
+      const selection = selectInitialConnection({ deepLink: { url, token: 't' } });
+      expect(selection?.persist, url).toBe(true);
+      expect(selection?.source, url).toBe('deep-link');
+    }
+    for (const url of [
+      'https://attacker.example',
+      'http://metadata.google.internal',
+      'http://0.0.0.0',
+      'file:///C:/Windows',
+      'javascript:alert(1)',
+      'http://127.0.0.1.attacker.example',
+      'not a url',
+    ]) {
+      const selection = selectInitialConnection({ deepLink: { url, token: 't' } });
+      expect(selection?.persist, url).toBe(false);
+      // The config itself is still offered; the /meta check still runs and the
+      // address stays out of localStorage.
+      expect(selection?.config?.url, url).toBe(url);
+    }
+  });
 });
 describe('connection config readers', () => {
   it('reads query and fragment handoffs', () => {
