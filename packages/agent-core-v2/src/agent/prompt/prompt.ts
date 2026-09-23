@@ -6,6 +6,8 @@ import type { ContentPart } from '#/kosong/contract/message';
 import type { Hooks } from '#/hooks';
 import type { SessionHistoryMutationLease } from '#/session/historyMutation/historyMutation';
 import type { GoalFollowUpTiming } from '#/agent/goal/types';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
+import type { PlanGate } from '#/features/plan/configSection';
 
 export interface PromptSubmitContext {
   readonly promptMessage: ContextMessage;
@@ -33,6 +35,8 @@ export interface PromptExecutionBinding {
   readonly profile?: string;
   readonly model?: string;
   readonly thinking?: string;
+  readonly permissionMode?: PermissionMode;
+  readonly planGate?: PlanGate;
   /** Applied at prompt launch, after media intake and submit hooks; never while queued. */
   readonly planMode?: boolean;
   readonly swarmMode?: boolean;
@@ -173,8 +177,8 @@ export interface IAgentPromptService {
   list(): PromptQueueSnapshot;
   hasReadyPending(): boolean;
   resumeRecoveredQueue(): void;
-  /** Replaces caller-visible content in place; text-only edits retain existing non-text attachments. */
-  replace(promptId: string, content: readonly ContentPart[]): PromptHandle;
+  /** Replaces caller-visible content in place; text-only edits retain attachments unless replaceAttachments is true. */
+  replace(promptId: string, content: readonly ContentPart[], replaceAttachments?: boolean): PromptHandle;
   changeTiming(
     promptId: string,
     appendTiming: DeferredAppendTiming,

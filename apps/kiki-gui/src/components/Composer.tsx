@@ -1009,7 +1009,7 @@ export function Composer({
   // Late async arrivals (native picker resolving after the composer turned
   // disabled, a queued file-input change) must not add attachments.
   const disabledRef = useRef(disabled);
-  disabledRef.current = disabled;
+  disabledRef.current = disabled || queueEditing;
 
   /** Paste/attach-picker entry point: whitelisted images stay image parts; everything else uploads. */
   const addFiles = (files: readonly SelectedAttachmentFile[]) => {
@@ -1033,7 +1033,7 @@ export function Composer({
    */
   const fileInputRef = useRef<HTMLInputElement>(null);
   const openAttachPicker = () => {
-    if (disabled) return;
+    if (disabled || queueEditing) return;
     if (host.pickFiles === undefined) {
       fileInputRef.current?.click();
       return;
@@ -1831,7 +1831,7 @@ export function Composer({
                 type="file"
                 multiple
                 className="hidden"
-                disabled={disabled}
+                disabled={disabled || queueEditing}
                 onChange={(event) => {
                   const files = [...(event.target.files ?? [])];
                   // Reset so re-picking the same file fires change again.
@@ -1843,7 +1843,7 @@ export function Composer({
                 type="button"
                 data-attach-button
                 onClick={openAttachPicker}
-                disabled={disabled}
+                disabled={disabled || queueEditing}
                 aria-label={t('composer.attachAria')}
                 title={t('composer.attachTitle')}
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-hairline bg-panel text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"

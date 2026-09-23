@@ -3,6 +3,7 @@ import type {
   ApprovalRequest,
   DeferredAppendTiming,
   GoalSnapshot,
+  Message,
   PermissionMode,
   PromptStatus,
   QuestionRequest,
@@ -24,6 +25,7 @@ export interface UserBlock {
   readonly id: string;
   readonly text: string;
   readonly media?: readonly MediaRef[];
+  readonly queuedContent?: Message['content'];
   readonly createdAt: string;
   readonly turnId?: string;
   readonly promptId?: string;
@@ -457,6 +459,8 @@ export interface QueuedPromptMeta {
 export interface QueuedPromptPreview {
   readonly promptId: string;
   readonly text: string;
+  readonly media?: readonly MediaRef[];
+  readonly content?: Message['content'];
   /** Effective append timing; absent on older servers, displays as agent_idle. */
   readonly appendTiming?: DeferredAppendTiming;
   readonly revision?: number;

@@ -61,6 +61,7 @@ export function QueueStrip({
   items,
   onSendNow,
   onRemove,
+  onRemoveAttachment,
   onClearAll,
   onEdit,
   editingPromptId,
@@ -71,6 +72,7 @@ export function QueueStrip({
   readonly items: readonly QueuedPromptPreview[];
   readonly onSendNow: (promptId: string) => Promise<void> | void;
   readonly onRemove: (promptId: string) => Promise<void> | void;
+  readonly onRemoveAttachment?: (promptId: string, index: number) => Promise<void> | void;
   readonly onClearAll: () => void;
   /**
    * Start the composer round-trip edit for this row. Optional: the row edit
@@ -260,6 +262,26 @@ export function QueueStrip({
         >
           {item.text === '' ? t('sv.queueNoText') : item.text}
         </span>
+        {item.media?.map((media, mediaIndex) => {
+          const label = media.name ?? media.mime ?? t('media.attachment');
+          return (
+            <span key={`${item.promptId}-media-${mediaIndex}`} className="inline-flex max-w-28 shrink-0 items-center gap-1 rounded border border-amber-rule/50 bg-panel px-1.5 py-0.5 text-[10px] text-amber-ink" title={label}>
+              {media.kind === 'image' && media.url !== undefined ? (
+                <img src={media.url} alt="" className="h-4 w-4 rounded object-cover" />
+              ) : null}
+              <span className="truncate">{label}</span>
+              {onRemoveAttachment !== undefined && item.content !== undefined && !isEditing ? (
+                <button
+                  type="button"
+                  aria-label={`${t('sv.queueRemove')} ${label}`}
+                  disabled={pending || editLocked || (item.text.trim() === '' && item.media?.length === 1)}
+                  onClick={() => { run(item.promptId, (id) => onRemoveAttachment(id, mediaIndex)); }}
+                  className="rounded px-0.5 hover:bg-amber-rule/20 disabled:opacity-40"
+                >×</button>
+              ) : null}
+            </span>
+          );
+        })}
         {isEditing ? (
           <span className="shrink-0 rounded-full border border-amber-rule/60 bg-amber-card px-2 py-0.5 text-[10.5px] font-medium text-amber-ink">
             {t('queue.editingBadge')}
@@ -287,7 +309,7 @@ export function QueueStrip({
                 ))}
               </select>
             ) : null}
-            {onEdit !== undefined && item.text !== '' ? (
+            {onEdit !== undefined && (item.text !== '' || (item.media?.length ?? 0) > 0) ? (
               <button
                 type="button"
                 disabled={pending || editLocked}

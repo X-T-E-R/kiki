@@ -141,6 +141,7 @@ export type PromptSubmitResult = z.infer<typeof promptSubmitResultSchema>;
 
 export const promptReplaceRequestSchema = z.object({
   content: z.array(messageContentSchema).min(1),
+  replace_attachments: z.boolean().optional(),
 });
 export type PromptReplaceRequest = z.infer<typeof promptReplaceRequestSchema>;
 

@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
-import type { DeferredAppendTiming, PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
+import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
 
 import { AgentWorkspace, PanelIcon, ResyncStatusBanner, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -109,6 +109,14 @@ export async function replaceQueuedPrompt(
   replace: (id: string, replacement: string) => Promise<void>,
 ): Promise<void> {
   await replace(promptId, text);
+}
+
+export function withoutQueuedAttachment(content: readonly MessageContent[], attachmentIndex: number): MessageContent[] {
+  let index = 0;
+  return content.filter((part) => {
+    if (part.type !== 'image' && part.type !== 'video' && part.type !== 'file') return part.type !== 'text';
+    return index++ !== attachmentIndex;
+  });
 }
 
 /** VS Code's terminal binding, and the only keyboard path to the panel now
@@ -2160,6 +2168,17 @@ export function SessionView({
     setConfirmClearQueue(true);
   }, [actions]);
   const queuedItems = useMemo(() => queuedPromptPreviews(state), [state]);
+  const handleRemoveQueuedAttachment = useCallback((promptId: string, attachmentIndex: number) => {
+    const item = queuedItems.find((entry) => entry.promptId === promptId);
+    if (controller === null || item?.content === undefined) return Promise.resolve();
+    return controller.replaceQueued(promptId, item.text, withoutQueuedAttachment(item.content, attachmentIndex))
+      .catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }),
+        });
+      });
+  }, [controller, queuedItems, t]);
   // Queue edit round-trip: "edit" parks the queued text in the composer
   // (remembering the in-progress draft); confirm replaces it in place via
   // actions.editQueued, cancel/remove hand the saved draft back.
@@ -2167,7 +2186,7 @@ export function SessionView({
     (promptId: string) => {
       if (queueEdit !== null) return;
       const item = queuedItems.find((entry) => entry.promptId === promptId);
-      if (item === undefined || item.text === '') return;
+      if (item === undefined || (item.text === '' && (item.media?.length ?? 0) === 0)) return;
       setQueueEdit({ promptId, savedDraft: draftRef.current });
       updateDraft(item.text);
     },
@@ -2451,11 +2470,11 @@ export function SessionView({
             workspaceId={profileWorkspaceId}
             agentProfileCatalogMode={agentProfileCatalogMode}
             fsSearch={handleFsSearch}
-            attachments={attachments}
+            attachments={queueEdit === null ? attachments : []}
             onChangeAttachments={updateAttachments}
-            quote={quote}
+            quote={queueEdit === null ? quote : null}
             onRemoveQuote={handleRemoveQuote}
-            annotations={annotations}
+            annotations={queueEdit === null ? annotations : []}
             onRemoveAnnotation={handleRemoveAnnotation}
             onActivateSkill={handleActivateSkill}
             onSessionAction={runSessionAction}
@@ -2696,6 +2715,7 @@ export function SessionView({
                   items={queuedItems}
                   onSendNow={handleSendNowQueued}
                   onRemove={handleCancelQueued}
+                  onRemoveAttachment={handleRemoveQueuedAttachment}
                   onEdit={handleStartQueueEdit}
                   onMove={handleMoveQueued}
                   onChangeTiming={handleQueuedTiming}

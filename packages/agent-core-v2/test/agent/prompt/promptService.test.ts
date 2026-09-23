@@ -17,6 +17,7 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService, reservePrompt } from '#/agent/prompt/prompt';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentPlanService } from '#/features/plan/plan';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import {
   AgentPromptService,
@@ -200,9 +201,15 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     setSessionDisabledTools: vi.fn(async (_disabledTools: readonly string[]) => {}),
   };
   const plan = {
+    planGate: 'free' as 'free' | 'gated',
+    setGate: vi.fn((gate: 'free' | 'gated') => { plan.planGate = gate; }),
     status: vi.fn<IAgentPlanService['status']>().mockResolvedValue(null),
     enter: vi.fn<IAgentPlanService['enter']>().mockResolvedValue(undefined),
     exit: vi.fn(),
+  };
+  const permissionMode = {
+    mode: 'manual' as 'manual' | 'auto' | 'yolo',
+    setMode: vi.fn((mode: 'manual' | 'auto' | 'yolo') => { permissionMode.mode = mode; }),
   };
   const swarm = { isActive: false, enter: vi.fn(), exit: vi.fn() };
   const goal = {
@@ -235,6 +242,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       reg.defineInstance(IAgentLoopService, loop);
       reg.definePartialInstance(IAgentTaskService, taskService);
       reg.definePartialInstance(IAgentProfileService, profile);
+      reg.definePartialInstance(IAgentPermissionModeService, permissionMode);
       reg.definePartialInstance(IAgentPlanService, plan);
       reg.definePartialInstance(IAgentSwarmService, swarm);
       reg.definePartialInstance(IAgentGoalService, goal);
@@ -261,6 +269,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     target: { id: 'main', accessor: ix },
     prompt: ix.get(IAgentPromptService),
     plan,
+    permissionMode,
     swarm,
     goal,
     profile,
@@ -561,6 +570,59 @@ describe('AgentPromptService', () => {
     expect(swarm.exit).not.toHaveBeenCalled();
   });
 
+  it('keeps queued permission and plan gate off the active turn, then applies them on launch', async () => {
+    const { prompt, permissionMode, plan, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({ message: message('later'), execution: {
+      permissionMode: 'yolo', planGate: 'gated',
+    } });
+    expect(queued.state).toBe('pending');
+    expect(permissionMode.mode).toBe('manual');
+    expect(plan.planGate).toBe('free');
+    expect(permissionMode.setMode).not.toHaveBeenCalled();
+    expect(plan.setGate).not.toHaveBeenCalled();
+    loop.settleActive();
+    await queued.launched;
+    expect(permissionMode.mode).toBe('yolo');
+    expect(plan.planGate).toBe('gated');
+  });
+
+  it.each([
+    { model: 'next-model' },
+    { profile: 'next-profile' },
+    { thinking: 'next-thinking' },
+    { permissionMode: 'yolo' as const },
+    { planGate: 'gated' as const },
+  ])('keeps a queued prompt and the active settings when Send now changes $model$profile$thinking$permissionMode$planGate', async (execution) => {
+    const { prompt, profile, permissionMode, plan } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ message: message('active') });
+    const queued = await prompt.enqueue({ message: message('later'), execution });
+    await expect(prompt.steer([queued.id])).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    expect(queued.state).toBe('pending');
+    expect(prompt.list().pending.map((item) => item.id)).toContain(queued.id);
+    expect(profile.bind).not.toHaveBeenCalled();
+    expect(profile.setModel).not.toHaveBeenCalled();
+    expect(profile.setThinking).not.toHaveBeenCalled();
+    expect(permissionMode.mode).toBe('manual');
+    expect(plan.planGate).toBe('free');
+  });
+
+  it('steers a queued prompt whose model, profile, thinking and policy already match the active turn', async () => {
+    const { prompt, profile, permissionMode, plan } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ message: message('active') });
+    const queued = await prompt.enqueue({ message: message('same settings'), execution: {
+      model: 'initial-model', profile: 'initial', thinking: 'initial-thinking',
+      permissionMode: 'manual', planGate: 'free',
+    } });
+    await expect(prompt.steer([queued.id])).resolves.toHaveLength(1);
+    expect(queued.state).toBe('steered');
+    expect(profile.bind).not.toHaveBeenCalled();
+    expect(profile.setModel).not.toHaveBeenCalled();
+    expect(permissionMode.setMode).not.toHaveBeenCalled();
+    expect(plan.setGate).not.toHaveBeenCalled();
+  });
+
   it('fails a queued prompt whose goal becomes invalid without applying other controls', async () => {
     const { prompt, loop, plan, swarm, goal } = harness({ manualTurnResult: true });
     await prompt.enqueue({ message: message('active') });
@@ -795,6 +857,30 @@ describe('AgentPromptService', () => {
       { type: 'text', text: '<skill>review</skill>' },
       { type: 'text', text: 'new text' },
       attachment,
+    ]);
+  });
+
+  it('can explicitly remove every queued attachment while retaining bundled skill blocks', async () => {
+    const { prompt, loop, context } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({
+      id: 'queued', message: bundledMessage('review', 'old text', [
+        { type: 'image_url', imageUrl: { url: 'https://example.test/queued.png' } },
+      ]),
+    });
+    prompt.replace('queued', [{ type: 'text', text: 'updated without image' }], true);
+    expect(prompt.list().pending[0]?.message.content).toEqual([
+      { type: 'text', text: '<skill>review</skill>' },
+      { type: 'text', text: 'updated without image' },
+    ]);
+    loop.settleActive();
+    await queued.launched;
+    loop.drainNextBatch(context);
+    loop.drainNextBatch(context);
+    expect(context.get().find((entry) => entry.id === 'queued')?.content).toEqual([
+      { type: 'text', text: '<skill>review</skill>' },
+      { type: 'text', text: 'updated without image' },
     ]);
   });
 
@@ -1280,7 +1366,7 @@ describe('AgentPromptService', () => {
     expect(prompt.list().pending.map((item) => item.id)).toEqual([queued.id]);
   });
 
-  it('steers bound and ordinary prompts without rebinding the active turn', async () => {
+  it('keeps a bound prompt queued while steering an ordinary prompt without rebinding the active turn', async () => {
     const { prompt, profile, toolPolicy, loop } = harness({ manualTurnResult: true });
     const active = await prompt.enqueue({ id: 'active', message: message('active') });
     await active.launched;
@@ -1307,16 +1393,19 @@ describe('AgentPromptService', () => {
     });
     const activeBinding = structuredClone(profile.data());
 
-    const handles = await prompt.steer([ordinary.id, bound.id]);
+    await expect(prompt.steer([ordinary.id, bound.id])).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['bound', 'ordinary', 'later']);
+    const handles = await prompt.steer([ordinary.id]);
 
-    expect(handles).toEqual([bound, ordinary]);
-    expect(prompt.list().pending.map((item) => item.id)).toEqual(['later']);
+    expect(handles).toEqual([ordinary]);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['bound', 'later']);
     expect(profile.bind).not.toHaveBeenCalled();
     expect(profile.setModel).not.toHaveBeenCalled();
     expect(profile.setThinking).not.toHaveBeenCalled();
     expect(profile.data()).toEqual(activeBinding);
     expect(toolPolicy.setSessionDisabledTools).not.toHaveBeenCalled();
 
+    prompt.abort(bound.id);
     loop.settleActive();
     await later.launched;
     expect(profile.bind).toHaveBeenCalledWith({

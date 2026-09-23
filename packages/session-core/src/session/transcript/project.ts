@@ -1379,6 +1379,7 @@ function upsertPromptItemBlocks(
   const text = projection.text;
   const media = mediaOverride ?? projection.media;
   const nextMedia = media.length === 0 ? undefined : media;
+  const queuedContent = item.status === 'queued' ? item.content : undefined;
   const stableIndex = blocks.findIndex(
     (block): block is UserBlock =>
       block.kind === 'user' &&
@@ -1396,12 +1397,13 @@ function upsertPromptItemBlocks(
     if (
       existing.promptStatus === nextStatus &&
       existing.text === text &&
-      sameMedia(existing.media, nextMedia)
+      sameMedia(existing.media, nextMedia) &&
+      transcriptValueEquals(existing.queuedContent, queuedContent)
     ) {
       return blocks;
     }
     const next = blocks.slice();
-    next[stableIndex] = { ...existing, text, promptStatus: nextStatus, media: nextMedia };
+    next[stableIndex] = { ...existing, text, promptStatus: nextStatus, media: nextMedia, queuedContent };
     return next;
   }
   const split = splitSystemReminders(text);
@@ -1423,7 +1425,7 @@ function upsertPromptItemBlocks(
     promptId: item.prompt_id,
     userMessageId: item.user_message_id,
     promptStatus: item.status,
-  });
+  }).map((block): Block => block.kind === 'user' ? { ...block, queuedContent } : block);
   if (placeholderIndex >= 0 && additions[0]?.kind === 'user') {
     const next = blocks.slice();
     next.splice(placeholderIndex, 1, ...additions);
@@ -1443,7 +1445,7 @@ function stampPromptIdentity(
     const existing = next[matchIndex]!;
     if (existing.kind !== 'user') return next;
     const userMessageId = existing.userMessageId ?? prompt.userMessageId;
-    if (existing.userMessageId === userMessageId && existing.promptStatus === promptStatus) return next;
+    if (existing.userMessageId === userMessageId && existing.promptStatus === promptStatus && existing.queuedContent === undefined) return next;
     const identity = userMessageId ?? existing.id.replace(/^user-/, '');
     next[matchIndex] = {
       ...existing,
@@ -1451,6 +1453,7 @@ function stampPromptIdentity(
       promptId: existing.promptId ?? prompt.promptId,
       userMessageId,
       promptStatus,
+      queuedContent: undefined,
     };
     return next;
   }
@@ -1513,7 +1516,7 @@ function settleCompletedPrompt(blocks: readonly Block[], prompt: TranscriptPromp
   }
   return next.map((block) =>
     block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId)
-      ? { ...block, promptStatus: undefined }
+      ? { ...block, promptStatus: undefined, queuedContent: undefined }
       : block,
   );
 }
@@ -1551,7 +1554,7 @@ function mergeTranscriptPromptBlocks(
       }
       next = next.map((block) =>
         block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId)
-          ? { ...block, promptStatus: undefined }
+          ? { ...block, promptStatus: undefined, queuedContent: undefined }
           : block,
       );
       const isFailed = prompt.status === 'failed';
@@ -1639,7 +1642,7 @@ export function retainPendingPromptBlocks(previous: readonly Block[], next: Bloc
     const aborted = abortedPromptId !== undefined && abortedPromptIds.has(abortedPromptId);
     if (aborted) {
       if (!next.some((candidate) => candidate.kind === 'user' && isPromptIdentity(candidate, abortedPromptId, block.userMessageId))) {
-        extras.push({ ...block, promptStatus: undefined });
+        extras.push({ ...block, promptStatus: undefined, queuedContent: undefined });
       }
       continue;
     }
@@ -2226,6 +2229,7 @@ export function appendLocalUserMessage(
     createdAt: string;
     status: PromptStatus;
     media?: readonly MediaRef[];
+    content?: PromptItem['content'];
     clientRequestId?: string;
     appendTiming?: DeferredAppendTiming;
   },
@@ -2241,7 +2245,7 @@ export function appendLocalUserMessage(
     prompt_id: input.promptId,
     user_message_id: input.userMessageId,
     status: input.status,
-    content: [{ type: 'text', text: input.text }],
+    content: input.content ?? [{ type: 'text', text: input.text }],
     created_at: input.createdAt,
   };
   const queuedPromptIds =

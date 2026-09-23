@@ -1207,6 +1207,7 @@ export class SessionController {
         createdAt: result.created_at,
         status: result.status,
         media: projection.media,
+        content: result.content,
         appendTiming: result.append_timing ?? input.appendTiming,
       }),
     );
@@ -1310,10 +1311,11 @@ export class SessionController {
     await this.refreshPrompts();
   }
 
-  async replaceQueued(promptId: string, text: string): Promise<void> {
+  async replaceQueued(promptId: string, text: string, retainedAttachments?: readonly MessageContent[]): Promise<void> {
     assertSessionWritable(this.state);
     const result = await this.client.replacePrompt(this.sessionId, promptId, {
-      content: [{ type: 'text', text }],
+      content: [{ type: 'text', text }, ...(retainedAttachments ?? [])],
+      replace_attachments: retainedAttachments === undefined ? undefined : true,
     });
     const projection = projectMessageContent(result.content);
     this.setState(
@@ -1324,6 +1326,7 @@ export class SessionController {
         createdAt: result.created_at,
         status: result.status,
         media: projection.media,
+        content: result.content,
       }),
     );
   }

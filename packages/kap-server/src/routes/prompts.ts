@@ -4,9 +4,7 @@ import {
   DEFAULT_AGENT_PROFILE_NAME,
   IBootstrapService,
   IAgentLifecycleService,
-  IAgentPermissionModeService,
   IAgentTaskService,
-  IAgentPlanService,
   IAgentProfileService,
   IAgentToolPolicyService,
   IAgentPromptService,
@@ -182,8 +180,6 @@ async function resolvePromptFromSession(
     events: agent.accessor.get(IEventBus),
     profile: agent.accessor.get(IAgentProfileService),
     toolPolicy: agent.accessor.get(IAgentToolPolicyService),
-    permissionMode: agent.accessor.get(IAgentPermissionModeService),
-    plan: agent.accessor.get(IAgentPlanService),
   };
 }
 
@@ -460,6 +456,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           req.body.profile === undefined &&
             req.body.model === undefined &&
             req.body.thinking === undefined &&
+            req.body.permission_mode === undefined &&
+            req.body.plan_gate === undefined &&
             req.body.plan_mode === undefined &&
             req.body.swarm_mode === undefined &&
             req.body.goal_objective === undefined &&
@@ -471,6 +469,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
                 profile: req.body.profile,
                 model: req.body.model,
                 thinking: req.body.thinking,
+                permissionMode: req.body.permission_mode,
+                planGate: req.body.plan_gate,
                 planMode: req.body.plan_mode,
                 swarmMode: req.body.swarm_mode,
                 goalObjective: req.body.goal_objective,
@@ -479,8 +479,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
                 goalControl: req.body.goal_control,
               };
         validatePromptRuntimeControls(resolved.accessor, execution);
-        if (req.body.permission_mode !== undefined) resolved.permissionMode.setMode(req.body.permission_mode);
-        if (req.body.plan_gate !== undefined) resolved.plan.setGate(req.body.plan_gate);
         let deferredDisabledTools: readonly string[] | undefined;
         if (req.body.disabled_tools !== undefined) {
           if (execution !== undefined && !resolved.profile.isRunnable()) {
@@ -671,6 +669,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           const handle = resolved.prompt.replace(
             parsed.id,
             contentToCoreParts(preparedMedia.content),
+            replacement.data.replace_attachments,
           );
           replaced = true;
           const staging = preparedMedia;

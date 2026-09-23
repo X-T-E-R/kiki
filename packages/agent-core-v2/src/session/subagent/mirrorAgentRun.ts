@@ -208,26 +208,26 @@ export async function mirrorAgentRun(
       new SubagentStarted({ subagentId: run.agentId, taskId: await options.resolveTaskId?.() }),
     );
   }
-  if (options.prompt !== undefined) {
-    const cancelAndRethrow = (reason: unknown): never => {
-      options.cancel?.(reason);
-      void run.completion.catch(() => {});
-      throw reason;
-    };
-    try {
-      await subagents?.hooks.onWillStartAgentTask.run({
-        agentName: options.profileName,
-        prompt: options.prompt,
-        signal: options.signal,
-      });
-    } catch (error) {
-      cancelAndRethrow(error);
-    }
-    if (options.signal.aborted) {
-      cancelAndRethrow(options.signal.reason ?? userCancellationReason());
-    }
-  }
+  let hookFailed = false;
   try {
+    if (options.prompt !== undefined) {
+      try {
+        await subagents?.hooks.onWillStartAgentTask.run({
+          agentName: options.profileName,
+          prompt: options.prompt,
+          signal: options.signal,
+        });
+      } catch (error) {
+        hookFailed = true;
+        options.cancel?.(error);
+        void run.completion.catch(() => {});
+        throw error;
+      }
+      if (options.signal.aborted) {
+        void run.completion.catch(() => {});
+        throw options.signal.reason ?? userCancellationReason();
+      }
+    }
     const result = await run.completion;
     const contextTokens = childContextTokens(agentLifecycle, run.agentId);
     void dispatcher?.dispatch(
@@ -245,12 +245,14 @@ export async function mirrorAgentRun(
     });
     return result;
   } catch (error) {
-    if (!isAbortError(error) && !shouldSuppressFailure(options, error)) {
-      void dispatcher?.dispatch(
+    const cancelled = isAbortError(error) || (!hookFailed && options.signal.aborted && error === options.signal.reason);
+    const taskId = await options.resolveTaskId?.();
+    if ((options.deferStarted !== true || taskId !== undefined) && (cancelled || !shouldSuppressFailure(options, error))) {
+      await dispatcher?.dispatch(
         new SubagentFailed({
           subagentId: run.agentId,
-          error: errorMessage(error),
-          taskId: await options.resolveTaskId?.(),
+          error: cancelled ? 'terminated' : errorMessage(error),
+          taskId,
         }),
       );
     }
@@ -259,9 +261,7 @@ export async function mirrorAgentRun(
 }
 
 function shouldSuppressFailure(options: MirrorAgentRunOptions, error: unknown): boolean {
-  if (options.suppressRateLimitFailureEvent !== true) return false;
-  if (isProviderRateLimitError(error)) return true;
-  return isAbortError(error) || options.signal.aborted;
+  return options.suppressRateLimitFailureEvent === true && isProviderRateLimitError(error);
 }
 
 function errorMessage(error: unknown): string {

@@ -11,7 +11,14 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
       (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
     );
     const meta = state.queuedPromptMeta[promptId];
-    return { promptId, text: block?.text ?? '', appendTiming: meta?.appendTiming ?? 'agent_idle', revision: meta?.revision };
+    return {
+      promptId,
+      text: block?.text ?? '',
+      media: block?.media,
+      content: block?.queuedContent,
+      appendTiming: meta?.appendTiming ?? 'agent_idle',
+      revision: meta?.revision,
+    };
   });
 }
 

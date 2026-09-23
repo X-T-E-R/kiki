@@ -271,6 +271,9 @@ describe('promptReplaceSchema', () => {
       promptReplaceRequestSchema.parse({ content: [{ type: 'text', text: 'replacement' }] }),
     ).toEqual({ content: [{ type: 'text', text: 'replacement' }] });
     expect(promptReplaceRequestSchema.safeParse({ content: [] }).success).toBe(false);
+    expect(promptReplaceRequestSchema.parse({
+      content: [{ type: 'text', text: 'replacement' }], replace_attachments: true,
+    }).replace_attachments).toBe(true);
     expect(
       promptReplaceResultSchema.parse({
         prompt_id: 'prompt_queued',

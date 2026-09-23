@@ -1892,6 +1892,29 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  it('keeps an attachment-only queued echo visible and explicitly removes its media in place', async () => {
+    const { controller, client } = await openTranscriptController();
+    const image = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/a.png' } };
+    client.submitPrompt = vi.fn(async () => ({
+      prompt_id: 'p-media', user_message_id: 'um-media', status: 'queued' as const,
+      content: [image], created_at: '2026-01-01T00:00:00.000Z',
+    }));
+    client.replacePrompt = vi.fn(async () => ({
+      prompt_id: 'p-media', user_message_id: 'um-media', status: 'queued' as const,
+      content: [{ type: 'text' as const, text: 'keep text' }], created_at: '2026-01-01T00:00:00.000Z',
+    }));
+    await controller.sendPrompt({ text: '', content: [image], permissionMode: 'manual' });
+    expect(controller.getState().blocks.find((block): block is UserBlock => block.kind === 'user'))
+      .toMatchObject({ queuedContent: [image], media: [{ url: 'https://example.test/a.png' }] });
+    await controller.replaceQueued('p-media', 'keep text', []);
+    expect(client.replacePrompt).toHaveBeenCalledWith('session_test', 'p-media', {
+      content: [{ type: 'text', text: 'keep text' }], replace_attachments: true,
+    });
+    expect(controller.getState().blocks.find((block): block is UserBlock => block.kind === 'user'))
+      .toMatchObject({ text: 'keep text', queuedContent: [{ type: 'text', text: 'keep text' }] });
+    controller.close();
+  });
+
   it('moves a queued prompt through the transport and applies the returned order immediately', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({

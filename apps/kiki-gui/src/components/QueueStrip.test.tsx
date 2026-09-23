@@ -178,6 +178,45 @@ describe('QueueStrip edit round-trip', () => {
     expect(onEdit).toHaveBeenCalledExactlyOnceWith('p1');
   });
 
+  it('shows queued images, permits editing attachment-only prompts and removes visible attachments', async () => {
+    const onEdit = vi.fn();
+    const onRemoveAttachment = vi.fn();
+    const { container } = await renderStrip({
+      items: [{
+        promptId: 'p-media', text: '',
+        media: [
+          { kind: 'image', url: 'https://example.test/first.png', name: 'first.png' },
+          { kind: 'image', url: 'https://example.test/second.png', name: 'second.png' },
+        ],
+        content: [
+          { type: 'image', source: { kind: 'url', url: 'https://example.test/first.png' } },
+          { type: 'image', source: { kind: 'url', url: 'https://example.test/second.png' } },
+        ],
+      }],
+      onEdit,
+      onRemoveAttachment,
+    });
+    expect(container.querySelectorAll('img')).toHaveLength(2);
+    expect(container.textContent).toContain('first.png');
+    expect(container.textContent).toContain('second.png');
+    await click(container.querySelector('button[aria-label="Edit queued prompt"]')!);
+    expect(onEdit).toHaveBeenCalledExactlyOnceWith('p-media');
+    await click(container.querySelector('button[aria-label="Remove first.png"]')!);
+    expect(onRemoveAttachment).toHaveBeenCalledExactlyOnceWith('p-media', 0);
+  });
+
+  it('keeps the last attachment of an attachment-only prompt until its text is edited or the row is removed', async () => {
+    const { container } = await renderStrip({
+      items: [{
+        promptId: 'p-only', text: '', media: [{ kind: 'image', name: 'only.png' }],
+        content: [{ type: 'image', source: { kind: 'url', url: 'https://example.test/only.png' } }],
+      }],
+      onRemoveAttachment: vi.fn(),
+    });
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Remove only.png"]')?.disabled).toBe(true);
+    expect(container.querySelector('button[aria-label="Remove"]')).not.toBeNull();
+  });
+
   it('badges the row being edited, force-expands the list and locks the other rows', async () => {
     const { container } = await renderStrip({ onEdit: vi.fn(), editingPromptId: 'p2' });
     const list = rows(container);

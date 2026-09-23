@@ -4444,6 +4444,50 @@ describe('queued prompt scheduling projection', () => {
     expect(previews[1]?.appendTiming).toBe('agent_idle');
   });
 
+  it('shows the media and exact content of an attachment-only queued prompt', () => {
+    const content = [{ type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/photo.png' } }];
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({ prompts: [{
+        promptId: 'p-photo', userMessageId: 'um-photo', status: 'queued',
+        createdAt: FIXED_AT, queuePosition: 0, content,
+      }] }),
+    );
+    expect(queuedPromptPreviews(projected)).toEqual([expect.objectContaining({
+      promptId: 'p-photo', text: '', content,
+      media: [{ kind: 'image', url: 'https://example.test/photo.png', mime: undefined }],
+    })]);
+  });
+
+  it('updates exact queued parts even when their projected text and media match, then clears them on launch', () => {
+    const image = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/photo.png' } };
+    const initialContent = [{ type: 'text' as const, text: 'review' }, image];
+    const replacementContent = [image, { type: 'text' as const, text: 'review' }];
+    const echo = (status: 'queued' | 'running', content: typeof initialContent | typeof replacementContent) => ({
+      promptId: 'p-photo', userMessageId: 'um-photo', text: 'review', status,
+      createdAt: FIXED_AT, content,
+    });
+    const queued = appendLocalUserMessage(createViewState('session_test'), echo('queued', initialContent));
+    const replaced = appendLocalUserMessage(queued, echo('queued', replacementContent));
+    expect(queuedPromptPreviews(replaced)[0]?.content).toEqual(replacementContent);
+    const running = appendLocalUserMessage(replaced, echo('running', replacementContent));
+    expect(running.blocks.find((block): block is UserBlock => block.kind === 'user')?.queuedContent).toBeUndefined();
+  });
+
+  it('clears queued attachment parts when a prompt settles without a transcript turn', () => {
+    const queued = appendLocalUserMessage(createViewState('session_test'), {
+      promptId: 'p-photo', userMessageId: 'um-photo', text: '', status: 'queued', createdAt: FIXED_AT,
+      content: [{ type: 'image', source: { kind: 'url', url: 'https://example.test/photo.png' } }],
+    });
+    const finished = projectAgentTranscriptView(queued, 'main', emptySnapshot({ prompts: [{
+      promptId: 'p-photo', userMessageId: 'um-photo', status: 'completed', createdAt: FIXED_AT,
+    }] }));
+    const user = finished.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(user).toBeDefined();
+    expect(user?.queuedContent).toBeUndefined();
+  });
+
   it('projects and clears the recovery queue hold from transcript meta', () => {
     const held = projectAgentTranscriptView(
       createViewState('session_test'),

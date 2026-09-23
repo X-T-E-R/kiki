@@ -25,6 +25,8 @@ import type { ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentPlanService } from '#/features/plan/plan';
 import { IFileService } from '#/app/file/fileService';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IEventService } from '#/app/event/event';
@@ -457,10 +459,11 @@ function stripBundledSkillBlocks(message: ContextMessage): ContentPart[] {
 function replacePromptContent(
   message: ContextMessage,
   replacement: readonly ContentPart[],
+  replaceAttachments: boolean,
 ): ContentPart[] {
   const skillBlockCount = bundledSkillBlockCount(message);
   const skillBlocks = message.content.slice(0, skillBlockCount);
-  if (replacement.some((part) => part.type !== 'text')) return [...skillBlocks, ...replacement];
+  if (replaceAttachments || replacement.some((part) => part.type !== 'text')) return [...skillBlocks, ...replacement];
   const content: ContentPart[] = [];
   let replacedText = false;
   for (const part of message.content.slice(skillBlockCount)) {
@@ -546,6 +549,8 @@ export class AgentPromptService implements IAgentPromptService {
     @IAgentLoopService private readonly loop: IAgentLoopService,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IAgentPermissionModeService private readonly permissionMode: IAgentPermissionModeService,
+    @IAgentPlanService private readonly plan: IAgentPlanService,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -924,7 +929,7 @@ export class AgentPromptService implements IAgentPromptService {
     if (this.recoveryHold) this.publishQueueHoldChanged();
   }
 
-  replace(promptId: string, content: readonly ContentPart[]): PromptHandle {
+  replace(promptId: string, content: readonly ContentPart[], replaceAttachments = false): PromptHandle {
     const item = this.pending.find((candidate) => candidate.id === promptId);
     if (item === undefined || this.steeringPromptIds.has(promptId)) {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${promptId} is not replaceable`);
@@ -932,7 +937,7 @@ export class AgentPromptService implements IAgentPromptService {
     item.message = {
       ...item.message,
       id: item.id,
-      content: replacePromptContent(item.message, content),
+      content: replacePromptContent(item.message, content, replaceAttachments),
     };
     item.revision += 1;
     const execution = this.syncGoalCreationObjective(item, content);
@@ -1024,6 +1029,9 @@ export class AgentPromptService implements IAgentPromptService {
     try {
       const activeAtEntry = this.active;
       for (const item of selected) {
+        if (this.hasExecutionBindingChange(item.execution)) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with a different profile, model, thinking, permission or plan gate must run as their own turn');
+        }
         if (!hasPromptRuntimeControls(item.execution)) continue;
         const changed = this.instantiation.invokeFunction((accessor) => readPromptRuntimeControlChanges(accessor, item.execution));
         if (await changed()) {
@@ -1035,6 +1043,9 @@ export class AgentPromptService implements IAgentPromptService {
       if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry ||
           this.loop.status().activeTurnId !== targetTurnId) {
         throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
+      }
+      if (selected.some((item) => this.hasExecutionBindingChange(item.execution))) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompt execution settings changed during steering; run it as its own turn');
       }
       this.steering++;
       const removed: { readonly item: Record; readonly index: number }[] = [];
@@ -1272,6 +1283,8 @@ export class AgentPromptService implements IAgentPromptService {
         preparePromptRuntimeControls(accessor, item.execution, item.goalId));
       await applyControls();
       controller.signal.throwIfAborted();
+      if (item.execution?.permissionMode !== undefined) this.permissionMode.setMode(item.execution.permissionMode);
+      if (item.execution?.planGate !== undefined) this.plan.setGate(item.execution.planGate);
       const recovered = this.recoveryPendingIds.delete(item.id);
       const receipt = this.loop.enqueue(
         new PromptStepRequest(message, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined),
@@ -1317,6 +1330,16 @@ export class AgentPromptService implements IAgentPromptService {
     this.steered.delete(item.id);
     if (state === 'cancelled') this.publishAborted(item, false); else this.publishCompleted(item, state);
     void this.startNext();
+  }
+
+  private hasExecutionBindingChange(execution: PromptExecutionBinding | undefined): boolean {
+    if (execution === undefined) return false;
+    const profile = this.profile.data();
+    return (execution.profile !== undefined && execution.profile !== profile.profileName) ||
+      (execution.model !== undefined && execution.model !== profile.modelAlias) ||
+      (execution.thinking !== undefined && execution.thinking !== profile.thinkingLevel) ||
+      (execution.permissionMode !== undefined && execution.permissionMode !== this.permissionMode.mode) ||
+      (execution.planGate !== undefined && execution.planGate !== this.plan.planGate);
   }
 
   private async applyExecutionBinding(execution: PromptExecutionBinding | undefined): Promise<void> {

@@ -619,6 +619,39 @@ describe('server-v2 /api prompts', () => {
     expect(main!.accessor.get(IAgentPlanService).planGate).toBe('gated');
   });
 
+  it('defers a busy session’s submitted permission and plan gate until that prompt starts', async () => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const prompt = main.accessor.get(IAgentPromptService);
+    const mode = main.accessor.get(IAgentPermissionModeService);
+    const plan = main.accessor.get(IAgentPlanService);
+    const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'current turn' }], permission_mode: 'manual', plan_gate: 'free',
+    });
+    expect(active.body.data.status).toBe('running');
+    const cancelled = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'cancelled' }], permission_mode: 'yolo', plan_gate: 'gated',
+    });
+    expect(cancelled.body.data.status).toBe('queued');
+    expect(mode.mode).toBe('manual');
+    expect(plan.planGate).toBe('free');
+    prompt.abort(cancelled.body.data.prompt_id);
+    expect(mode.mode).toBe('manual');
+    expect(plan.planGate).toBe('free');
+    const later = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'next turn' }], permission_mode: 'yolo', plan_gate: 'gated',
+    });
+    expect(later.body.data.status).toBe('queued');
+    expect(mode.mode).toBe('manual');
+    expect(plan.planGate).toBe('free');
+    prompt.abort(active.body.data.prompt_id);
+    await vi.waitFor(() => expect(prompt.list().active?.id).toBe(later.body.data.prompt_id));
+    expect(mode.mode).toBe('yolo');
+    expect(plan.planGate).toBe('gated');
+    prompt.abort(later.body.data.prompt_id);
+  });
+
   it('moves a queued prompt to an exact final index', async () => {
     const id = await createSession(home as string);
     await createHeldMainAgent(id);
@@ -667,9 +700,9 @@ describe('server-v2 /api prompts', () => {
       .drain();
   });
 
-  it('steers a queued prompt with model and thinking bindings without rebinding the active turn', async () => {
+  it('rejects Send now when a queued model or thinking selection differs from the active turn', async () => {
     const id = await createSession(home as string);
-    await createMainAgent(id);
+    await createHeldMainAgent(id);
 
     const active = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'active' }],
@@ -685,7 +718,7 @@ describe('server-v2 /api prompts', () => {
     const profile = main!.accessor.get(IAgentProfileService);
     const activeBinding = profile.data();
     const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
-      content: [{ type: 'text', text: 'append now' }],
+      content: [{ type: 'text', text: 'append later' }],
       model: 'stub-alt',
       thinking: 'high',
     });
@@ -693,18 +726,11 @@ describe('server-v2 /api prompts', () => {
     expect(queued.body.data.status).toBe('queued');
     expect(profile.data()).toEqual(activeBinding);
 
-    const steered = await call<{ steered: true; prompt_ids: string[] }>(
-      'POST',
-      `/api/sessions/${id}/prompts/${queued.body.data.prompt_id}:steer`,
-    );
-
-    expect(steered.body.code, JSON.stringify(steered.body)).toBe(0);
-    expect(steered.body.data).toEqual({
-      steered: true,
-      prompt_ids: [queued.body.data.prompt_id],
-    });
+    const steered = await call('POST', `/api/sessions/${id}/prompts/${queued.body.data.prompt_id}:steer`);
+    expect(steered.body.code).toBe(40001);
     expect(profile.data()).toEqual(activeBinding);
-    expect(prompt.list().pending.map((item) => item.id)).not.toContain(queued.body.data.prompt_id);
+    expect(prompt.list().pending.map((item) => item.id)).toContain(queued.body.data.prompt_id);
+    prompt.abort(queued.body.data.prompt_id);
     prompt.abort(active.body.data.prompt_id);
   });
 
@@ -1758,12 +1784,11 @@ describe('server-v2 /api prompts', () => {
       },
     };
     vi.spyOn(prompt, 'list').mockImplementation(() => ({ active: undefined, pending: [first, second] }));
-    const replace = vi.spyOn(prompt, 'replace').mockImplementation((promptId, content) => {
+    const replace = vi.spyOn(prompt, 'replace').mockImplementation((promptId, content, replaceAttachments) => {
       expect(promptId).toBe(first.id);
-      expect(content).toEqual([{ type: 'text', text: 'new text' }]);
       first.message.content = [
         ...content,
-        { type: 'image_url', imageUrl: { url: 'https://example.com/queued.png' } },
+        ...(replaceAttachments ? [] : [{ type: 'image_url', imageUrl: { url: 'https://example.com/queued.png' } }]),
       ] as never;
       return first;
     });
@@ -1794,6 +1819,16 @@ describe('server-v2 /api prompts', () => {
       `/api/sessions/${id}/prompts`,
     );
     expect(list.body.data.queued[0]).toEqual(replaced.body.data);
+    const withoutImage = await call<PromptItemWire>(
+      'POST',
+      `/api/sessions/${id}/prompts/${first.id}:replace`,
+      { content: [{ type: 'text', text: 'new text' }], replace_attachments: true },
+    );
+    expect(withoutImage.body.code).toBe(0);
+    expect(withoutImage.body.data.content).toEqual([{ type: 'text', text: 'new text' }]);
+    expect(replace).toHaveBeenLastCalledWith(first.id, [{ type: 'text', text: 'new text' }], true);
+    expect(abort).not.toHaveBeenCalled();
+    expect(prompt.list().pending.map((item) => item.id)).toEqual([first.id, second.id]);
   });
 
   it('rejects replacement of a non-queued prompt without aborting or changing it', async () => {

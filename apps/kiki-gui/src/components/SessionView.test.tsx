@@ -61,6 +61,7 @@ import {
   parseSessionCreateHandoff,
   promptGoalObjective,
   replaceQueuedPrompt,
+  withoutQueuedAttachment,
   resolveSessionCreateSubmission,
   resolveSessionSeatPhase,
   sessionAgentProfileWorkspaceId,
@@ -284,6 +285,15 @@ describe('queued prompt editing', () => {
     const replace = vi.fn(async () => undefined);
     await replaceQueuedPrompt('p1', 'replacement', replace);
     expect(replace).toHaveBeenCalledExactlyOnceWith('p1', 'replacement');
+  });
+
+  it('removes only the selected attachment from the exact queued message parts', () => {
+    const first = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/first.png' } };
+    const second = { type: 'file' as const, file_id: 'file_2', name: 'notes.txt', media_type: 'text/plain', size: 12 };
+    const content = [{ type: 'text' as const, text: 'review' }, first, second];
+    expect(withoutQueuedAttachment(content, 0)).toEqual([second]);
+    expect(withoutQueuedAttachment(content, 1)).toEqual([first]);
+    expect(withoutQueuedAttachment([first], 0)).toEqual([]);
   });
 
   it('surfaces replace failure without falling back to abort or resend', async () => {
