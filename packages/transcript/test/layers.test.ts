@@ -879,6 +879,34 @@ describe('TranscriptWireAdapter', () => {
     expect(transcript.getTurn('t0')?.steps[0]?.frames).toHaveLength(1);
   });
 
+  it('anchors an observable mailbox arrival to a proven running turn rather than the bottom', () => {
+    const mailbox = (id: string, time: number): TranscriptWireRecord => ({
+      type: 'context.append_message', time,
+      delivery: {
+        deliveryId: `delivery-${id}`, messageId: id,
+        deliveredAt: new Date(time).toISOString(), origin: 'mailbox',
+      },
+      message: {
+        id, role: 'user', content: [{ type: 'text', text: `from ${id}` }],
+        origin: { kind: 'agent_message', senderAgentId: 'child' },
+      },
+    });
+    const transcript = replay([
+      mailbox('before', 500),
+      ...records.slice(0, 3),
+      mailbox('during', 3_500),
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 4_000 },
+      mailbox('after', 4_500),
+    ]);
+    expect(transcript.getItems().map((item) => item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId)).toEqual([
+      'message-delivery:before', 't0', 'message-delivery:after',
+    ]);
+    expect(transcript.getTurn('t0')?.steps[0]?.frames.map((frame) => frame.frameId)).toEqual(['part-a', 'during']);
+    expect(transcript.getTurn('t0')?.steps[0]?.frames[1]).toMatchObject({
+      delivery: { messageId: 'during', turnId: 't0', stepId: 'step-1', origin: 'mailbox' },
+    });
+  });
+
   it('projects canonical delivery once at its accepted step and round trips the delivery contract', () => {
     const delivery = {
       deliveryId: 'delivery-1', messageId: 'mail', turnId: 0, stepId: 'step-2', step: 2,
@@ -2004,6 +2032,26 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('does not duplicate a restored task message when its notification follows the context append', () => {
+    const transcript = replay([
+      { type: 'turn.prompt', turnId: 0, promptId: 'opening', input: [{ type: 'text', text: 'start' }], origin: { kind: 'user' }, time: 1_000 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' }, time: 2_000 },
+      {
+        type: 'context.append_message', time: 3_000,
+        delivery: { deliveryId: 'restored-delivery', messageId: 'restored-message', deliveredAt: new Date(3_000).toISOString(), origin: 'queue' },
+        message: {
+          id: 'restored-message', role: 'user', content: [{ type: 'text', text: 'task result' }],
+          origin: { kind: 'task', taskId: 'task-1', status: 'completed', notificationId: 'task:task-1:completed' },
+        },
+      },
+      {
+        type: 'task.notified', time: 3_100, notificationType: 'task.completed',
+        title: 'Task completed', body: 'task result', sourceId: 'task-1', sourceKind: 'background_task',
+      },
+    ]);
+    expect(transcript.getTurn('t0')?.steps[0]?.frames.map((frame) => frame.frameId)).toEqual(['restored-message']);
+  });
+
   it('deduplicates an inline question answer from its task notification summary', () => {
     const transcript = replay([
       {
@@ -2785,6 +2833,85 @@ describe('TranscriptWireAdapter', () => {
     );
     const resumedPrompts = new Map(resumed.snapshot().prompts.map((entry) => [entry.promptId, entry]));
     expect(resumedPrompts.has('cron1')).toBe(false);
+  });
+
+  it('settles visible steered prompts while the active non-user prompt stays hidden', () => {
+    const prefix: TranscriptWireRecord[] = [
+      {
+        type: 'prompt.enqueued',
+        schemaVersion: 1,
+        promptId: 'agent-call',
+        userMessageId: 'agent-message',
+        createdAt: '2026-06-09T00:00:00.000Z',
+        message: {
+          id: 'agent-message',
+          origin: { kind: 'agent_message', senderAgentId: 'child' },
+          content: [{ type: 'text', text: 'internal child report' }],
+        },
+        alreadyMaterialized: false,
+        appendTiming: 'agent_idle',
+        revision: 1,
+        queueIndex: 0,
+        time: 1_000,
+      },
+      {
+        type: 'prompt.enqueued',
+        schemaVersion: 1,
+        promptId: 'user-steered',
+        userMessageId: 'user-message',
+        createdAt: '2026-06-09T00:00:01.000Z',
+        message: { id: 'user-message', content: [{ type: 'text', text: 'queued by the user' }] },
+        alreadyMaterialized: false,
+        appendTiming: 'agent_idle',
+        revision: 1,
+        queueIndex: 1,
+        time: 1_001,
+      },
+      {
+        type: 'prompt.launch_committed',
+        launchId: 'launch-agent-call',
+        promptId: 'agent-call',
+        revision: 2,
+        committedAt: '2026-06-09T00:00:02.000Z',
+        time: 1_002,
+      },
+    ];
+    const tail: TranscriptWireRecord[] = [
+      {
+        type: 'prompt.steered',
+        activePromptId: 'agent-call',
+        promptIds: ['user-steered'],
+        content: [{ type: 'text', text: 'internal child reportqueued by the user' }],
+        steeredAt: '2026-06-09T00:00:03.000Z',
+        time: 1_003,
+      },
+    ];
+
+    const transcript = replay([...prefix, ...tail]);
+    const prompts = new Map(transcript.snapshot().prompts.map((entry) => [entry.promptId, entry]));
+    expect(prompts.has('agent-call')).toBe(false);
+    expect(prompts.get('user-steered')).toMatchObject({
+      status: 'completed',
+      steeredAt: '2026-06-09T00:00:03.000Z',
+      finishedAt: '2026-06-09T00:00:03.000Z',
+    });
+    expect(prompts.get('user-steered')?.content).toEqual([
+      { type: 'text', text: 'queued by the user' },
+    ]);
+
+    const source = new AgentTranscriptDraft('main');
+    const sourceReducer = new TranscriptFactReducer(source);
+    const sourceAdapter = new TranscriptWireAdapter('main');
+    for (const record of prefix) sourceReducer.apply(sourceAdapter.add(record));
+
+    const resumed = new AgentTranscriptDraft('main');
+    resumed.seed(source.snapshot());
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(sourceAdapter.checkpoint());
+    for (const record of tail) resumedReducer.apply(resumedAdapter.add(record));
+
+    expect(resumed.snapshot().prompts).toEqual(transcript.snapshot().prompts);
   });
 });
 

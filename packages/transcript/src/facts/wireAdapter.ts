@@ -90,6 +90,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly pendingSteers: readonly [string, readonly PendingSteer[]][];
   readonly pendingTaskNotifications: readonly [string, readonly TranscriptWireRecord[]][];
   readonly projectedTaskNotificationIds: readonly string[];
+  readonly deliveredTaskNotifications?: readonly [string, string][];
   readonly unpairedSteerCredits: readonly [string, readonly [string, number][]][];
   readonly executions: readonly [string, TranscriptTurnExecution][];
   readonly goal?: GoalMeta;
@@ -129,6 +130,7 @@ export class TranscriptWireAdapter {
   readonly #pendingSteers = new Map<string, PendingSteer[]>();
   readonly #pendingTaskNotifications = new Map<string, TranscriptWireRecord[]>();
   readonly #projectedTaskNotificationIds = new Set<string>();
+  readonly #deliveredTaskNotifications = new Map<string, string>();
   readonly #unpairedSteerCredits = new Map<string, Map<string, number>>();
   readonly #executions = new Map<string, TranscriptTurnExecution>();
   readonly #prompts = new Map<string, TranscriptPrompt>();
@@ -178,6 +180,7 @@ export class TranscriptWireAdapter {
       pendingSteers: [...this.#pendingSteers],
       pendingTaskNotifications: [...this.#pendingTaskNotifications],
       projectedTaskNotificationIds: [...this.#projectedTaskNotificationIds],
+      deliveredTaskNotifications: [...this.#deliveredTaskNotifications],
       unpairedSteerCredits: [...this.#unpairedSteerCredits].map(([key, value]) => [key, [...value]]),
       executions: [...this.#executions],
       goal: this.#goal,
@@ -227,6 +230,7 @@ export class TranscriptWireAdapter {
       checkpoint.pendingTaskNotifications.map(([key, value]) => [key, [...value]]),
     );
     replaceSet(this.#projectedTaskNotificationIds, checkpoint.projectedTaskNotificationIds);
+    replaceMap(this.#deliveredTaskNotifications, checkpoint.deliveredTaskNotifications ?? []);
     replaceMap(
       this.#unpairedSteerCredits,
       checkpoint.unpairedSteerCredits.map(([key, value]) => [key, new Map(value)]),
@@ -366,7 +370,7 @@ export class TranscriptWireAdapter {
       };
       return [this.storePrompt(prompt)];
     }
-    if (this.#hiddenPromptIds.has(promptId)) return [];
+    if (this.#hiddenPromptIds.has(promptId) && record.type !== 'prompt.steered') return [];
     const previous = this.#prompts.get(promptId);
     if (record.type === 'prompt.replaced') {
       const content = projectPromptContent(record['content']);
@@ -441,16 +445,19 @@ export class TranscriptWireAdapter {
     if (record.type === 'prompt.steered') {
       const activePromptId = stringOf(record['activePromptId']) ?? promptId;
       const steeredAt = promptRecordTime(record, ['steeredAt']) ?? isoOf(record.time) ?? new Date(0).toISOString();
-      const content = projectPromptContent(record['content']);
-      const activePrior =
-        this.#prompts.get(activePromptId) ?? minimalPrompt(activePromptId, record);
-      const active: TranscriptPrompt = {
-        ...activePrior,
-        status: isTerminalPromptStatus(activePrior.status) ? activePrior.status : 'running',
-        content: content.length > 0 ? content : activePrior.content,
-        steeredAt,
-      };
-      const operations: TranscriptOperation[] = [this.storePrompt(active)];
+      const operations: TranscriptOperation[] = [];
+      if (!this.#hiddenPromptIds.has(activePromptId)) {
+        const content = projectPromptContent(record['content']);
+        const activePrior =
+          this.#prompts.get(activePromptId) ?? minimalPrompt(activePromptId, record);
+        const active: TranscriptPrompt = {
+          ...activePrior,
+          status: isTerminalPromptStatus(activePrior.status) ? activePrior.status : 'running',
+          content: content.length > 0 ? content : activePrior.content,
+          steeredAt,
+        };
+        operations.push(this.storePrompt(active));
+      }
       for (const id of stringArrayOf(record['promptIds'])) {
         if (id === activePromptId || this.#hiddenPromptIds.has(id)) continue;
         const prior = this.#prompts.get(id) ?? minimalPrompt(id, record);
@@ -673,6 +680,7 @@ export class TranscriptWireAdapter {
         return [];
       }
       const notificationId = taskNotificationIdOfRecord(record);
+      if (notificationId !== undefined && this.#deliveredTaskNotifications.has(notificationId)) return [];
       if (notificationId !== undefined) this.#projectedTaskNotificationIds.add(notificationId);
       const stepRef = this.#steps.get(turnId);
       const step = stepRef === undefined ? undefined : this.#stepHeaders.get(stepRef.stepId);
@@ -1127,6 +1135,7 @@ export class TranscriptWireAdapter {
     if (role === 'user') {
       const notificationId = taskNotificationIdOfMessage(message);
       if (notificationId !== undefined && this.#projectedTaskNotificationIds.has(notificationId)) return [];
+      if (notificationId !== undefined) this.#deliveredTaskNotifications.set(notificationId, messageId);
       const canonicalDelivery = objectOf(record['delivery']);
       if (canonicalDelivery !== undefined) return this.deliveredMessage(record, message, ordinal, canonicalDelivery);
       if (messageId === this.#currentPromptId || this.#deliveries.has(messageId)) return [];
@@ -1232,12 +1241,17 @@ export class TranscriptWireAdapter {
     if (this.#deliveries.has(messageId)) return [];
     const origin = objectOf(message['origin']);
     const current = this.#currentTurnId === undefined ? undefined : this.#turnHeaders.get(this.#currentTurnId);
+    // Direct observable injections and mailbox arrivals carry a durable
+    // delivery receipt but no loop anchor. Only an actually running turn can
+    // claim them; an ended turn must leave them as standalone timeline items.
+    const inferredTurn = current?.state === 'running' ? current.turnId : undefined;
     const turnId = canonical === undefined
-      ? current?.state === 'running' ? current.turnId : undefined
-      : turnIdOf(canonical['turnId'], undefined);
+      ? inferredTurn
+      : turnIdOf(canonical['turnId'], undefined) ?? inferredTurn;
     const priorStep = turnId === undefined ? undefined : this.#steps.get(turnId);
-    const acceptedStepId = canonical === undefined ? priorStep?.stepId : stringOf(canonical['stepId']);
-    const acceptedStep = canonical === undefined ? priorStep?.ordinal : numberOf(canonical['step']);
+    const inferredStep = canonical === undefined || canonical['turnId'] === undefined;
+    const acceptedStepId = inferredStep ? priorStep?.stepId : stringOf(canonical?.['stepId']);
+    const acceptedStep = inferredStep ? priorStep?.ordinal : numberOf(canonical?.['step']);
     const stepId = turnId === undefined ? undefined : acceptedStepId ?? priorStep?.stepId ?? `${turnId}.delivery`;
     const stepOrdinal = acceptedStep ?? priorStep?.ordinal ?? 0;
     const delivery: MessageDelivery = {
@@ -1903,6 +1917,9 @@ export class TranscriptWireAdapter {
       if (this.#deliveries.get(messageId)?.turnId === undefined) ids.push(`message-delivery:${messageId}`);
       this.#deliveries.delete(messageId);
       this.#deliveryUndoRecords.delete(messageId);
+      for (const [notificationId, deliveredMessageId] of this.#deliveredTaskNotifications) {
+        if (deliveredMessageId === messageId) this.#deliveredTaskNotifications.delete(notificationId);
+      }
     }
     return ids.length === 0 ? [] : [{ op: 'items.remove', ids }];
   }
