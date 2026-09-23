@@ -37,7 +37,7 @@ export class FetchURLTool implements IFetchURLTool {
 
   async resolveExecution(args: FetchURLInput): Promise<ToolExecution> {
     try {
-      const input = parseNativeFetchInput(args);
+      const input = this.normalizeTrailingRootDot(parseNativeFetchInput(args));
       const file = input.action === 'run' && input.source.kind === 'file' ? await this.nbSearch.resolveFetchFile(input) : undefined;
       const inspected = file === undefined ? undefined : inspectAgentRuntime(this.runtime);
       const guard = (path: string): string => {
@@ -69,6 +69,38 @@ export class FetchURLTool implements IFetchURLTool {
     } catch (error) {
       return { isError: true, output: `Fetch input rejected: ${error instanceof Error ? error.message : String(error)}` };
     }
+  }
+
+  /**
+   * Donor `parsePublicUrl` only lowercases the hostname, so a trailing root
+   * dot (`metadata.google.internal.`) escapes both the exact metadata list and
+   * the `.local` / `.localhost` suffix rules, and the URL then falls through
+   * to the Jina lane. The URL spec treats `example.com.` as `example.com`, so
+   * strip the root dot before admission (and before the approval subject) —
+   * the fetch itself keeps the canonical, stripped spelling.
+   */
+  private normalizeTrailingRootDot<T>(input: T): T {
+    if (
+      typeof input !== 'object' || input === null ||
+      !('source' in input) || typeof (input as { source: unknown }).source !== 'object'
+    ) return input;
+    const source = (input as { source: { kind?: unknown; url?: unknown } }).source;
+    if (source.kind !== 'url' || typeof source.url !== 'string') return input;
+    const url = source.url;
+    const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/?#]*)([^]*)$/s.exec(url);
+    if (schemeMatch === null) return input;
+    const scheme = schemeMatch[1] ?? '';
+    const authority = schemeMatch[2] ?? '';
+    const rest = schemeMatch[3] ?? '';
+    const authorityMatch = /^([^@]*@)?(\[[^\]]*\]|[^/:]*)(.*)$/.exec(authority);
+    if (authorityMatch === null) return input;
+    const userinfo = authorityMatch[1] ?? '';
+    const host = authorityMatch[2] ?? '';
+    const hostRest = authorityMatch[3] ?? '';
+    if (host.endsWith('.') && !host.endsWith('].') && host !== '.') {
+      return { ...input, source: { ...source, url: `${scheme}${userinfo}${host.slice(0, -1)}${hostRest}${rest}` } };
+    }
+    return input;
   }
 
   private async execution(

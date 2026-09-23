@@ -167,4 +167,22 @@ describe('native FetchURL donor boundaries', () => {
     expect(Buffer.concat(read.chunks.map((chunk) => Buffer.from(chunk.data_base64, 'base64'))).toString('utf8')).toContain('Async local fixture.');
     expect(envelope(await execute({ action: 'cancel', job_id }))).toMatchObject({ action: 'cancel', job_id, state: 'succeeded', cancel_requested: false });
   }, 30_000);
+
+  it('strips a trailing root dot from the URL host before admission and approval', async () => {
+    const fetch = vi.spyOn(ix.get(INbSearchService), 'fetch');
+    const execution = await ix.get(IFetchURLTool).resolveExecution({ action: 'run', source: { kind: 'url', url: 'http://metadata.google.internal./' } });
+    if (execution.isError) throw new Error(String(execution.output));
+    expect(execution.approvalRule).not.toContain('metadata.google.internal.');
+    await execution.execute({ turnId: 0, toolCallId: 'fixture', signal: new AbortController().signal });
+    const passed = fetch.mock.calls
+      .map((call) => (call[0] as { source?: { kind?: string; url?: string } }))
+      .filter((input) => input.source?.kind === 'url')
+      .map((input) => input.source?.url);
+    expect(passed.length).toBeGreaterThan(0);
+    // The host reaches the donor without the trailing root dot, so the
+    // metadata allowlist and the `.local`/`.localhost` suffix rules see the
+    // same spelling the URL spec resolves to.
+    expect(passed).toContain('http://metadata.google.internal/');
+    fetch.mockRestore();
+  });
 });
