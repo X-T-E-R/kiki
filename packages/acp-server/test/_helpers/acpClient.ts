@@ -44,6 +44,7 @@ export interface TestClient {
 export async function createTestClient(opts: {
   homeDir: string;
   disableAuth?: boolean;
+  allowClientStdioMcpServers?: boolean;
   extraSeeds?: RunAcpServerOptions['extraSeeds'];
   slashCommands?: RunAcpServerOptions['slashCommands'];
 }): Promise<TestClient> {
@@ -53,6 +54,7 @@ export async function createTestClient(opts: {
   const server = await runAcpServerWithStream(stream, {
     homeDir: opts.homeDir,
     disableAuth: opts.disableAuth ?? true,
+    allowClientStdioMcpServers: opts.allowClientStdioMcpServers,
     extraSeeds: opts.extraSeeds,
     slashCommands: opts.slashCommands,
   });

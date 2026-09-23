@@ -68,12 +68,14 @@ All methods not listed above return `methodNotFound`.
 
 ## MCP Forwarding
 
-When an ACP client provides `mcpServers` in `session/new` or `session/load`, the adapter layer performs the following conversions:
+When an ACP client provides `mcpServers` in `session/new`, `session/load`, or `session/resume`, Kiki handles them as follows:
 
-- `http` → kiki's `transport: 'http'` configuration
-- `stdio` → kiki's `transport: 'stdio'` configuration
-- `sse` → kiki's `transport: 'sse'` configuration
+- `http` → Kiki's `transport: 'http'` configuration
+- `sse` → Kiki's `transport: 'sse'` configuration
+- `stdio` (entries without a `type`) → rejected by default with `invalid_params`; no session is created or restored
 - `acp` → discarded with a warn log entry
+
+To use an IDE that sends stdio MCP servers, explicitly start Kiki with `kiki acp --allow-client-stdio-mcp` in that IDE's ACP agent configuration. This trusts the IDE to choose local executables and arguments: its stdio MCP servers run inside Kiki's process tree with Kiki's environment, without a separate Bash approval request. Use this option only for an IDE and MCP configuration you trust. HTTP and SSE MCP servers do not require this option.
 
 ## Next steps
 

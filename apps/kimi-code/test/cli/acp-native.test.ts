@@ -79,7 +79,22 @@ describe('kimi acp', () => {
       expect.objectContaining({
         homeDir: getDataDir(),
         agentInfo: { name: 'Kiki CLI', version: expect.any(String) },
+        allowClientStdioMcpServers: false,
       }),
+    );
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it('passes explicit --allow-client-stdio-mcp to the ACP server', async () => {
+    const program = new Command('kimi').exitOverride();
+    registerNativeAcpCommand(program);
+
+    await expect(
+      program.parseAsync(['node', 'kimi', 'acp', '--allow-client-stdio-mcp']),
+    ).rejects.toThrow(ExitCalled);
+
+    expect(runAcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({ allowClientStdioMcpServers: true }),
     );
     expect(exitSpy).toHaveBeenCalledWith(0);
   });

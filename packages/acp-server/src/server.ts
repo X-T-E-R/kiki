@@ -12,8 +12,8 @@
  * agent('main')`). Slash commands, skills, approval / question bridging
  * (`session/request_permission`), and `session/load` history replay live in
  * `./session` / `./interaction-bridge`. ACP `mcpServers` on `session/new` /
- * `/load` / `/resume` are converted to the engine's name-keyed record (see
- * `./convert`) and injected as ephemeral per-session MCP servers. When the
+ * `/load` / `/resume` are converted to ephemeral per-session servers (see
+ * `./convert`); stdio entries require the host's startup opt-in. When the
  * client advertises `clientCapabilities.terminal`, Bash executions reverse-RPC
  * through the client terminal (`./acp-terminal`).
  */
@@ -42,6 +42,7 @@ import {
   type LoadSessionResponse,
   type LogoutRequest,
   type LogoutResponse,
+  type McpServer,
   methods,
   type NewSessionRequest,
   type NewSessionResponse,
@@ -116,6 +117,11 @@ export interface AcpServerOptions {
    */
   readonly disableAuth?: boolean;
   /**
+   * Permit ACP clients to supply stdio MCP servers that spawn local processes.
+   * Disabled by default; only the embedding host can enable it at startup.
+   */
+  readonly allowClientStdioMcpServers?: boolean;
+  /**
    * Env vars to advertise in `authMethods[0].env` so the `kimi login`
    * subprocess the client spawns (via terminal-auth) lands its token under the
    * same data root the server uses (e.g. `{ KIKI_HOME: '/tmp/...' }` for
@@ -146,6 +152,7 @@ export class AcpServer {
   private clientCapabilities: ClientCapabilities | undefined;
   private readonly agentInfo: Implementation | undefined;
   private readonly disableAuth: boolean;
+  private readonly allowClientStdioMcpServers: boolean;
   private readonly terminalAuthEnv: Readonly<Record<string, string>> | undefined;
   private readonly terminalAuthLegacyCommand: string | undefined;
   private readonly resolveOriginalsDir: ((sessionId: string) => string | undefined) | undefined;
@@ -169,6 +176,7 @@ export class AcpServer {
   ) {
     this.agentInfo = opts.agentInfo;
     this.disableAuth = opts.disableAuth ?? false;
+    this.allowClientStdioMcpServers = opts.allowClientStdioMcpServers === true;
     this.terminalAuthEnv = opts.terminalAuthEnv;
     this.terminalAuthLegacyCommand = opts.terminalAuthLegacyCommand;
     this.resolveOriginalsDir = opts.resolveOriginalsDir;
@@ -257,7 +265,7 @@ export class AcpServer {
     const meta = await this.klient.global.sessions.create({
       workDir: params.cwd,
       additionalDirs: params.additionalDirectories,
-      mcpServers: acpMcpServersToConfigRecord(params.mcpServers),
+      mcpServers: this.convertMcpServers(params.mcpServers),
     });
     return { sessionId: meta.id, ...(await this.activateSession(meta.id)) };
   }
@@ -301,7 +309,7 @@ export class AcpServer {
     this.warnIgnoredAdditionalDirs('session/load', params.additionalDirectories);
     const acpSession = await this.resumeAcpSession(
       params.sessionId,
-      acpMcpServersToConfigRecord(params.mcpServers),
+      this.convertMcpServers(params.mcpServers),
     );
     // Replay the persisted history as an ordered batch of `session/update`
     // notifications BEFORE settling, so the client re-renders prior turns
@@ -317,7 +325,7 @@ export class AcpServer {
     this.warnIgnoredAdditionalDirs('session/resume', params.additionalDirectories);
     const acpSession = await this.resumeAcpSession(
       params.sessionId,
-      acpMcpServersToConfigRecord(params.mcpServers),
+      this.convertMcpServers(params.mcpServers),
     );
     this.scheduleAvailableCommandsUpdate(acpSession);
     return { configOptions: await acpSession.configOptions(), modes: acpSession.modeState() };
@@ -624,6 +632,18 @@ export class AcpServer {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private convertMcpServers(
+    servers: readonly McpServer[] | undefined,
+  ): ReturnType<typeof acpMcpServersToConfigRecord> {
+    if (!this.allowClientStdioMcpServers && servers?.some((server) => !('type' in server))) {
+      throw RequestError.invalidParams(
+        undefined,
+        'Client-provided stdio MCP servers are disabled. Restart kiki acp with --allow-client-stdio-mcp to trust the ACP client to spawn local MCP processes.',
+      );
+    }
+    return acpMcpServersToConfigRecord(servers);
   }
 
   /** Auth gate: throws `auth_required` unless authed (or `disableAuth`). */

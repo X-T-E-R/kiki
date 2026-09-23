@@ -9,11 +9,13 @@ import {
   ISessionMcpHandle,
   IWorkspaceInstanceManager,
 } from '@kiki/agent-core-v2';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { SessionSummary } from '@kiki/klient';
+import type { Klient, SessionSummary } from '@kiki/klient';
 
-import { filterSessionSummariesByCwd } from '../src/server';
+import type { AcpClient } from '../src/acp-client';
+import type { IAcpConnection } from '../src/acp-fs';
+import { AcpServer, filterSessionSummariesByCwd } from '../src/server';
 import { createTestClient, type TestClient } from './_helpers/acpClient';
 import { writeFakeModelConfig } from './_helpers/fakeModelConfig';
 import { createScriptedProvider } from './_helpers/scriptedProvider';
@@ -77,9 +79,9 @@ describe('acp-server session lifecycle', () => {
     }
   });
 
-  async function boot(): Promise<TestClient> {
+  async function boot(allowClientStdioMcpServers = false): Promise<TestClient> {
     homeDir = await mkdtemp(join(tmpdir(), 'acp-lifecycle-'));
-    client = await createTestClient({ homeDir });
+    client = await createTestClient({ homeDir, allowClientStdioMcpServers });
     await client.send('initialize', { protocolVersion: 1, clientCapabilities: {} });
     return client;
   }
@@ -291,9 +293,98 @@ describe('acp-server session lifecycle', () => {
   );
 
   it(
-    'session/new connects ACP mcpServers as ephemeral session servers',
+    'session/new rejects unapproved stdio mcpServers before creating a session',
     async () => {
       const c = await boot();
+      await expect(c.send('session/new', {
+        cwd: homeDir,
+        mcpServers: [
+          { type: 'http', name: 'remote', url: 'http://127.0.0.1:1/mcp', headers: [] },
+          { name: 'mock', command: process.execPath, args: [STDIO_MCP_FIXTURE], env: [] },
+        ],
+      })).rejects.toThrow(/-32602.*Client-provided stdio MCP servers are disabled/);
+      const listed = (await c.send('session/list', {})) as { sessions: unknown[] };
+      expect(listed.sessions).toEqual([]);
+    },
+    30_000,
+  );
+
+  it(
+    'session/load and session/resume reject unapproved stdio mcpServers before restoring',
+    async () => {
+      const c = await boot();
+      for (const method of ['session/load', 'session/resume']) {
+        await expect(c.send(method, {
+          sessionId: 'not-a-live-session',
+          cwd: homeDir,
+          mcpServers: [
+            { name: 'mock', command: process.execPath, args: [STDIO_MCP_FIXTURE], env: [] },
+          ],
+        })).rejects.toThrow(/-32602.*Client-provided stdio MCP servers are disabled/);
+      }
+      const listed = (await c.send('session/list', {})) as { sessions: unknown[] };
+      expect(listed.sessions).toEqual([]);
+    },
+    30_000,
+  );
+
+  it('passes explicitly allowed stdio MCP commands to session creation', async () => {
+    const create = vi.fn(async () => { throw new Error('create reached'); });
+    const server = new AcpServer(
+      {} as AcpClient,
+      { global: { sessions: { create } } } as unknown as Klient,
+      {} as IAcpConnection,
+      { disableAuth: true, allowClientStdioMcpServers: true },
+    );
+    await expect(server.newSession({
+      cwd: '/workspace',
+      mcpServers: [
+        { name: 'mock', command: process.execPath, args: [STDIO_MCP_FIXTURE], env: [] },
+      ],
+    })).rejects.toThrow('create reached');
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith({
+      workDir: '/workspace',
+      additionalDirs: undefined,
+      mcpServers: {
+        mock: {
+          transport: 'stdio',
+          command: process.execPath,
+          args: [STDIO_MCP_FIXTURE],
+          env: undefined,
+          runtime_id: 'local',
+        },
+      },
+    });
+  });
+
+  it('still forwards HTTP and SSE MCP servers without stdio opt-in', async () => {
+    const create = vi.fn(async () => { throw new Error('create reached'); });
+    const server = new AcpServer(
+      {} as AcpClient,
+      { global: { sessions: { create } } } as unknown as Klient,
+      {} as IAcpConnection,
+      { disableAuth: true },
+    );
+    await expect(server.newSession({
+      cwd: '/workspace',
+      mcpServers: [
+        { type: 'http', name: 'web', url: 'https://example.test/mcp', headers: [] },
+        { type: 'sse', name: 'events', url: 'https://example.test/sse', headers: [] },
+      ],
+    })).rejects.toThrow('create reached');
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      mcpServers: {
+        web: { transport: 'http', url: 'https://example.test/mcp', headers: undefined },
+        events: { transport: 'sse', url: 'https://example.test/sse', headers: undefined },
+      },
+    }));
+  });
+
+  it(
+    'session/new connects explicitly allowed ACP stdio mcpServers',
+    async () => {
+      const c = await boot(true);
       const created = (await c.send('session/new', {
         cwd: homeDir,
         mcpServers: [
@@ -314,9 +405,9 @@ describe('acp-server session lifecycle', () => {
   );
 
   it(
-    'session/load forwards mcpServers to the re-materialized session',
+    'session/load connects explicitly allowed stdio mcpServers on a restored session',
     async () => {
-      const c = await boot();
+      const c = await boot(true);
       const created = (await c.send('session/new', { cwd: homeDir, mcpServers: [] })) as {
         sessionId: string;
       };

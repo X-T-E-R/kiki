@@ -173,6 +173,7 @@ export async function runAcpServerWithStream(
   server = new AcpServer(client, klient, acpConnection, {
     agentInfo: opts.agentInfo,
     disableAuth: opts.disableAuth,
+    allowClientStdioMcpServers: opts.allowClientStdioMcpServers,
     terminalAuthEnv: opts.terminalAuthEnv,
     terminalAuthLegacyCommand: opts.terminalAuthLegacyCommand,
     slashCommands: opts.slashCommands,

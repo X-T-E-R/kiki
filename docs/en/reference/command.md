@@ -249,6 +249,8 @@ Switch Kiki to ACP (Agent Client Protocol) mode, communicating with an IDE via J
 kiki acp
 ```
 
+Client-provided stdio MCP servers are disabled by default. To trust an IDE to start local MCP processes under Kiki's account without separate Bash approvals, configure that IDE to run `kiki acp --allow-client-stdio-mcp`. See [MCP forwarding](../server/acp.md#mcp-forwarding) for details.
+
 ### `kiki web`
 
 Run the local Kiki server in the foreground of the current terminal — a single process that exposes the REST + WebSocket API and serves the Kiki GUI from the same origin — and open the Kiki GUI in the default browser once it is ready. The command stays attached to the terminal and shuts down cleanly on `SIGINT` / `SIGTERM` (e.g. `Ctrl-C`).

@@ -37,7 +37,12 @@ export function registerNativeAcpCommand(parent: Command): void {
       false,
     )
     .option('--region <region>', 'Login region used together with --login: "mainland-cn" (kimi.com) or "global" (kimi.ai).')
-    .action(async (opts: { login?: boolean; region?: string }) => {
+    .option(
+      '--allow-client-stdio-mcp',
+      'Trust the ACP client to start local stdio MCP processes with Kiki\'s environment.',
+      false,
+    )
+    .action(async (opts: { login?: boolean; region?: string; allowClientStdioMcp?: boolean }) => {
       if (opts.login === true) {
         await runLoginFlow({
           region: opts.region === undefined ? undefined : parseRegionFlag(opts.region),
@@ -61,6 +66,7 @@ export function registerNativeAcpCommand(parent: Command): void {
         await runAcpServer({
           homeDir: getDataDir(),
           agentInfo: { name: 'Kiki CLI', version: getVersion() },
+          allowClientStdioMcpServers: opts.allowClientStdioMcp === true,
           ...(terminalAuthEnv ? { terminalAuthEnv } : {}),
           ...(legacyCommand !== undefined && legacyCommand.length > 0
             ? { terminalAuthLegacyCommand: legacyCommand }

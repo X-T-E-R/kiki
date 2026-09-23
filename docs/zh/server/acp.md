@@ -68,12 +68,14 @@ kiki acp
 
 ## MCP 转发
 
-ACP 客户端在 `session/new` 或 `session/load` 中提供 `mcpServers` 时，适配层做如下转换：
+ACP 客户端在 `session/new`、`session/load` 或 `session/resume` 中提供 `mcpServers` 时，Kiki 按以下方式处理：
 
-- `http` → kiki 的 `transport: 'http'` 配置
-- `stdio` → kiki 的 `transport: 'stdio'` 配置
-- `sse` → kiki 的 `transport: 'sse'` 配置
+- `http` → Kiki 的 `transport: 'http'` 配置
+- `sse` → Kiki 的 `transport: 'sse'` 配置
+- `stdio`（没有 `type` 的条目）→ 默认以 `invalid_params` 拒绝；不会创建或恢复会话
 - `acp` → 丢弃并写一条 warn 日志
+
+如果 IDE 需要提交 stdio MCP 服务器，请在 IDE 的 ACP agent 配置中显式使用 `kiki acp --allow-client-stdio-mcp` 启动 Kiki。这表示信任 IDE 选择本地可执行文件和参数：这些 MCP 服务器会作为 Kiki 的子进程启动、继承 Kiki 的环境，不再单独触发 `Bash` 审批。只对可信的 IDE 及其 MCP 配置启用此选项。HTTP 和 SSE MCP 服务器不需要此选项。
 
 ## 下一步
 

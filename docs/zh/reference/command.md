@@ -249,6 +249,8 @@ kiki login
 kiki acp
 ```
 
+默认不允许客户端提交 stdio MCP 服务器。若要信任 IDE 在 Kiki 用户账户下启动本地 MCP 进程、且不再单独触发 `Bash` 审批，请将 IDE 配置为使用 `kiki acp --allow-client-stdio-mcp`。详见 [MCP 转发](../server/acp.md#mcp-转发)。
+
 ### `kiki web`
 
 在当前终端前台运行本地 Kiki 服务 —— 同一个进程同时挂载 REST + WebSocket API 与 Kiki GUI —— 并在服务就绪后用默认浏览器打开 Kiki GUI。命令会一直挂在终端，直到收到 `SIGINT` / `SIGTERM`（如 `Ctrl-C`）时干净退出。
