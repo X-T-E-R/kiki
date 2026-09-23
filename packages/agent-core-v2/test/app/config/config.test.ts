@@ -83,7 +83,12 @@ import {
   resolvePrintBackgroundMode,
   type AgentTaskConfig,
 } from '#/agent/task/configSection';
-import { applyPrintModeConfigDefaults } from '#/agent/task/printDefaults';
+import {
+  PRINT_BASH_TASK_TIMEOUT_S_DEFAULT,
+  PRINT_MAX_STEPS_PER_TURN_DEFAULT,
+  PRINT_SUBAGENT_TIMEOUT_MS_DEFAULT,
+  applyPrintModeConfigDefaults,
+} from '#/agent/task/printDefaults';
 import '#/session/subagent/configSection';
 import {
   canonicalizeSubagentBinding,
@@ -1932,19 +1937,31 @@ describe('applyPrintModeConfigDefaults', () => {
     return { config, disposables };
   }
 
-  it('fills unset keys into the memory layer with effectively unbounded values', async () => {
+  it('fills unset keys into the memory layer with finite bounded values', async () => {
     const { config, disposables } = await createConfig({});
 
     await applyPrintModeConfigDefaults(config);
 
-    expect(resolveAgentTaskConfig(config)?.bashTaskTimeoutS).toBe(0);
-    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxStepsPerTurn).toBe(0);
-    expect(resolveSubagentTimeoutMs(config)).toBe(0);
-    expect(config.inspect('task').memoryValue).toMatchObject({ bashTaskTimeoutS: 0 });
-    expect(config.inspect(LOOP_CONTROL_SECTION).memoryValue).toMatchObject({
-      maxStepsPerTurn: 0,
+    expect(resolveAgentTaskConfig(config)?.bashTaskTimeoutS).toBe(
+      PRINT_BASH_TASK_TIMEOUT_S_DEFAULT,
+    );
+    expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxStepsPerTurn).toBe(
+      PRINT_MAX_STEPS_PER_TURN_DEFAULT,
+    );
+    expect(resolveSubagentTimeoutMs(config)).toBe(PRINT_SUBAGENT_TIMEOUT_MS_DEFAULT);
+    expect(config.inspect('task').memoryValue).toMatchObject({
+      bashTaskTimeoutS: PRINT_BASH_TASK_TIMEOUT_S_DEFAULT,
     });
-    expect(config.inspect('subagent').memoryValue).toMatchObject({ timeoutMs: 0 });
+    expect(config.inspect(LOOP_CONTROL_SECTION).memoryValue).toMatchObject({
+      maxStepsPerTurn: PRINT_MAX_STEPS_PER_TURN_DEFAULT,
+    });
+    expect(config.inspect('subagent').memoryValue).toMatchObject({
+      timeoutMs: PRINT_SUBAGENT_TIMEOUT_MS_DEFAULT,
+    });
+    // Every print default is a finite number: no unset key becomes unbounded.
+    expect(PRINT_BASH_TASK_TIMEOUT_S_DEFAULT).toBeGreaterThan(0);
+    expect(PRINT_MAX_STEPS_PER_TURN_DEFAULT).toBeGreaterThan(0);
+    expect(PRINT_SUBAGENT_TIMEOUT_MS_DEFAULT).toBeGreaterThan(0);
 
     disposables.dispose();
   });
@@ -1991,10 +2008,12 @@ describe('applyPrintModeConfigDefaults', () => {
     await applyPrintModeConfigDefaults(config);
 
     expect(resolvePrintBackgroundMode(config)).toBe('drain');
-    expect(resolveAgentTaskConfig(config)?.bashTaskTimeoutS).toBe(0);
+    expect(resolveAgentTaskConfig(config)?.bashTaskTimeoutS).toBe(
+      PRINT_BASH_TASK_TIMEOUT_S_DEFAULT,
+    );
     expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toMatchObject({
       maxAttemptsPerStep: 5,
-      maxStepsPerTurn: 0,
+      maxStepsPerTurn: PRINT_MAX_STEPS_PER_TURN_DEFAULT,
     });
 
     disposables.dispose();

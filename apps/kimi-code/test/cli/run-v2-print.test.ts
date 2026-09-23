@@ -414,6 +414,32 @@ describe('applyPrintBackgroundPolicy', () => {
     expect(warn.mock.calls[0]?.[0]).toContain('cron');
   });
 
+  it('warns and returns when a recurring cron keeps the run past the ceiling', async () => {
+    const warn = vi.fn();
+    let now = 0;
+    await applyPrintBackgroundPolicy({
+      mode: 'exit',
+      ceilingS: 60,
+      maxTurns: 50,
+      countPending: () => 0,
+      drain: async () => {},
+      // A recurring task keeps producing fire times; each grace wait pushes the
+      // clock past the ceiling before the schedule is re-read.
+      turnEndings: {
+        next: async () => {
+          now = 120_000;
+          return null;
+        },
+      },
+      skipTurnId: 1,
+      warn,
+      now: () => now,
+      cronNextFireAt: () => now - 5_000,
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('cron wait ceiling');
+  });
+
   it('finishes goal waiting before consulting the cron schedule', async () => {
     let active = true;
     let consumed = 0;

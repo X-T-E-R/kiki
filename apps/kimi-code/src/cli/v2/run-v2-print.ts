@@ -521,10 +521,15 @@ export async function applyPrintBackgroundPolicy(
 
     // (b) cron: keep the process alive until the pending fire steered a turn
     // (one-shot tasks vanish after firing; recurring ones advance their next
-    // fire), then re-evaluate from the top.
+    // fire), then re-evaluate from the top. A recurring task never stops
+    // producing fire times, so the ceiling deadline still ends the wait.
     if (!cronWedged && input.cronNextFireAt !== undefined) {
       const fireAt = await input.cronNextFireAt();
       if (fireAt !== null) {
+        if (input.now() >= deadline) {
+          input.warn(`print cron wait ceiling reached (${input.ceilingS}s), finishing`);
+          return;
+        }
         if (fireAt <= input.now() && lastPastFireAt === fireAt) {
           cronWedged = true;
           input.warn(

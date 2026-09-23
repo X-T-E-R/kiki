@@ -1,7 +1,8 @@
 import { MAX_TIMER_DELAY_MS } from '#/_base/utils/timer';
 import { ConfigTarget, type ConfigInspectValue, type IConfigService } from '#/app/config/config';
+import { DEFAULT_BACKGROUND_TIMEOUT_S } from '#/agent/tools/os/bash/bash';
 import { LOOP_CONTROL_SECTION } from '#/agent/loop/configSection';
-import { SUBAGENT_SECTION } from '#/session/subagent/configSection';
+import { DEFAULT_SUBAGENT_TIMEOUT_MS, SUBAGENT_SECTION } from '#/session/subagent/configSection';
 
 import { LEGACY_BACKGROUND_SECTION, TASK_SECTION } from './configSection';
 
@@ -9,9 +10,16 @@ export const PRINT_WAIT_CEILING_S_DEFAULT = Math.floor(MAX_TIMER_DELAY_MS / 1000
 
 export const PRINT_MAX_TURNS_DEFAULT = 100_000;
 
-export const PRINT_BASH_TASK_TIMEOUT_S_DEFAULT = 0;
+/**
+ * `kimi -p` fills unset keys with finite values so a headless run cannot turn
+ * an unlimited loop into an unbounded one. The interaction defaults are the
+ * same numbers, so print is never more permissive than interactive mode.
+ */
+export const PRINT_BASH_TASK_TIMEOUT_S_DEFAULT = DEFAULT_BACKGROUND_TIMEOUT_S;
 
-export const PRINT_SUBAGENT_TIMEOUT_MS_DEFAULT = 0;
+export const PRINT_MAX_STEPS_PER_TURN_DEFAULT = 200;
+
+export const PRINT_SUBAGENT_TIMEOUT_MS_DEFAULT = DEFAULT_SUBAGENT_TIMEOUT_MS;
 
 type SectionValue = Record<string, unknown>;
 
@@ -44,7 +52,7 @@ export async function applyPrintModeConfigDefaults(config: IConfigService): Prom
     PRINT_BASH_TASK_TIMEOUT_S_DEFAULT,
     config.inspect<SectionValue>(LEGACY_BACKGROUND_SECTION).userValue,
   );
-  await fillSectionDefault(config, LOOP_CONTROL_SECTION, 'maxStepsPerTurn', 0);
+  await fillSectionDefault(config, LOOP_CONTROL_SECTION, 'maxStepsPerTurn', PRINT_MAX_STEPS_PER_TURN_DEFAULT);
   await fillSectionDefault(
     config,
     SUBAGENT_SECTION,
