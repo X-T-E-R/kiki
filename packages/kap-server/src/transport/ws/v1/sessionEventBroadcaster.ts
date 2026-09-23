@@ -761,9 +761,6 @@ export class SessionEventBroadcaster {
     }
     const fromDisk = await journal.readSince(cursor.seq, this.maxBufferSize);
     if (!diskReplayIsContiguous(cursor.seq, fromDisk)) {
-      // The journal tail has a hole (a write that was promised a seq but never
-      // landed). Replaying it silently would let the client advance its cursor
-      // past events it never saw; require a snapshot resync instead.
       return { events: [], resyncRequired: 'journal_gap', currentSeq, epoch };
     }
     return { events: applyFilter(fromDisk), resyncRequired: false, currentSeq, epoch };
@@ -1941,11 +1938,6 @@ function configWarningPayload(payload: unknown): { warnings: ConfigWarningItem[]
   return { warnings: items };
 }
 
-/**
- * A disk replay is contiguous when it starts at `fromSeqExclusive + 1` and
- * every entry advances the seq by exactly one. Gaps mean the durable tail
- * silently lost events despite their seq watermark.
- */
 function diskReplayIsContiguous(
   fromSeqExclusive: number,
   entries: Array<{ seq: number }>,

@@ -460,9 +460,6 @@ export class McpConnectionManager implements McpConnectionView {
     await client.connect();
     const capabilities = client.getServerCapabilities();
     if (capabilities !== undefined && capabilities.tools === undefined) {
-      // A server that declares its capabilities without `tools` is a valid
-      // MCP server (prompts/resources only); report it as connected with
-      // zero tools instead of failing discovery.
       this.log.debug?.('mcp server connected without a tools capability', {
         server: name,
       });

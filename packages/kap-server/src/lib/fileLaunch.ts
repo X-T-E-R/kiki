@@ -31,15 +31,14 @@ export function openFileCommandFor(
     case 'darwin':
       return { command: 'open', args: [absolutePath] };
     case 'win32':
-      // The quoted target keeps `&` and friends inside one `start` argument;
-      // an unquoted target without whitespace would reach `cmd.exe /c`
-      // verbatim and the part after `&` would execute as a second command.
-      // `start` treats the first quoted argument as the window title, so the
-      // empty title stays first.
-      return { command: 'cmd', args: ['/c', 'start', '""', quoteCmdStartArg(absolutePath)] };
+      return windowsCmdStartArg(absolutePath);
     default:
       return { command: 'xdg-open', args: [absolutePath] };
   }
+}
+
+function windowsCmdStartArg(absolutePath: string): LaunchCommand {
+  return { command: 'cmd', args: ['/c', 'start', '""', quoteCmdStartArg(absolutePath)] };
 }
 
 export function revealFileCommandFor(

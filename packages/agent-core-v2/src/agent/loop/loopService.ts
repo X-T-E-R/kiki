@@ -580,16 +580,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         trace_id: traceId,
       };
       turnTelemetry.track2('turn_ended', ended);
-      // Best-effort wire flush before the turn fully exits. The durable
-      // `TurnEnded` record and the step's `content.part` / `step.end` records
-      // were appended via the write-behind queue; without this await a process
-      // killed between the user seeing the streamed text and the microtask
-      // flush loses the entire step from `wire.jsonl`.
-      try {
-        await this.dispatcher.flush();
-      } catch (flushError) {
-        onUnexpectedError(flushError);
-      }
+      const flushQueuedWireRecordsBeforeTurnExit = async (): Promise<void> => {
+        try {
+          await this.dispatcher.flush();
+        } catch (flushError) {
+          onUnexpectedError(flushError);
+        }
+      };
+      await flushQueuedWireRecordsBeforeTurnExit();
       this.activeRequestTrace = undefined;
       this.lastRequestTraceId = undefined;
       this.pumpTurns();

@@ -4,6 +4,8 @@ import * as nodeFs from 'node:fs';
 import { chmod, open, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'pathe';
 
+import { BugIndicatingError } from '#/_base/errors/errors';
+
 export async function syncDir(dirPath: string): Promise<void> {
   if (process.platform === 'win32') return;
   const dirFh = await open(dirPath, 'r');
@@ -92,18 +94,14 @@ export async function atomicWrite(
     } finally {
       await fh.close();
     }
-    // Windows `fs.rename` maps to MoveFileEx and fails with EPERM if the
-    // target is held by another handle; unlinking the target first turns this
-    // into the POSIX-style "replace" case. Rename is tried first so the
-    // no-target window (crash between unlink and rename) only opens in the
-    // rare contended case, not on every write.
     if (process.platform === 'win32') {
       try {
         await rename(tmpPath, filePath);
         renamed = true;
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'EPERM') throw error;
+        const isWindowsRenameContention =
+          (error as NodeJS.ErrnoException).code === 'EPERM';
+        if (!isWindowsRenameContention) throw error;
       }
     }
     if (!renamed) {
@@ -119,14 +117,13 @@ export async function atomicWrite(
       await rename(tmpPath, filePath);
       renamed = true;
     }
-    // Re-apply the requested mode after replacement: `rename` over an existing
-    // target keeps the old file's mode on POSIX, so a rewrite of a file that
-    // was created with a different (looser) mode would silently widen it.
     if (mode !== undefined) {
       try {
         await chmod(filePath, mode);
       } catch {
-        // Best-effort: platforms without POSIX modes (Windows) keep the file.
+        if (process.platform !== 'win32') throw new BugIndicatingError(
+          `chmod(${filePath}, ${mode.toString(8)}) failed after atomic write`,
+        );
       }
     }
   } finally {
@@ -171,18 +168,14 @@ export async function atomicWriteStream(
     } finally {
       await fh.close();
     }
-    // Windows `fs.rename` maps to MoveFileEx and fails with EPERM if the
-    // target is held by another handle; unlinking the target first turns this
-    // into the POSIX-style "replace" case. Rename is tried first so the
-    // no-target window (crash between unlink and rename) only opens in the
-    // rare contended case, not on every write.
     if (process.platform === 'win32') {
       try {
         await rename(tmpPath, filePath);
         renamed = true;
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'EPERM') throw error;
+        const isWindowsRenameContention =
+          (error as NodeJS.ErrnoException).code === 'EPERM';
+        if (!isWindowsRenameContention) throw error;
       }
     }
     if (!renamed) {
@@ -202,7 +195,9 @@ export async function atomicWriteStream(
       try {
         await chmod(filePath, mode);
       } catch {
-        // Best-effort: platforms without POSIX modes (Windows) keep the file.
+        if (process.platform !== 'win32') throw new BugIndicatingError(
+          `chmod(${filePath}, ${mode.toString(8)}) failed after atomic write`,
+        );
       }
     }
   } finally {

@@ -113,18 +113,15 @@ describe('SessionEventJournal', () => {
     const j = await SessionEventJournal.open(filePath);
     j.append(j.nextSeq(), envelope(1));
 
-    // Point the journal at a directory so the append fails.
     const brokenPath = join(dir, 'sub');
     await mkdir(brokenPath, { recursive: true });
     const broken = await (SessionEventJournal as unknown as {
       open(path: string): Promise<SessionEventJournal>;
     }).open(brokenPath);
     broken.append(broken.nextSeq(), envelope(1));
-    // A directory path cannot be appended to; the flush retries without loss.
     await broken.flush();
     await rm(brokenPath, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 
-    // The original journal still flushes its lines after a failed round.
     await j.flush();
     const text = await readFile(filePath, 'utf8');
     expect(text).toContain('journal_header');
@@ -137,7 +134,6 @@ describe('SessionEventJournal', () => {
     j1.append(j1.nextSeq(), envelope(1));
     await j1.close();
 
-    // Simulate a crash that glued a half line onto the tail and lost the header.
     await writeFile(filePath, 'GARBAGE\n', 'utf8');
 
     const j2 = await SessionEventJournal.open(filePath);

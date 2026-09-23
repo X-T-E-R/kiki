@@ -282,12 +282,8 @@ function hostUserAgent(headers: Readonly<Record<string, string>> | undefined): s
   return undefined;
 }
 
-/**
- * Donor-shaped Codex User-Agent (`codex-rs/login/src/auth/default_client.rs#get_codex_user_agent`):
- * `{originator}/{version} ({os_type} {os_version}; {arch})`. The donor's trailing terminal token
- * has no Kiki analog, so it is omitted. The os version degrades to the kernel release when no
- * distro-style discovery exists.
- */
+const codexUserAgentTemplate = '{originator}/{version} ({os_type} {os_version}; {arch})';
+
 function codexUserAgent(
   input: Parameters<typeof projectRequestIdentity>[0],
 ): string {

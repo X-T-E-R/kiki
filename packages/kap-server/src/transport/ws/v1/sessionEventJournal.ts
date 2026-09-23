@@ -105,13 +105,14 @@ export class SessionEventJournal {
       if (sawAnyLine) {
         logger.warn({ filePath }, 'event journal missing header; rotating to a fresh epoch');
       }
-      // The stale file is truncated before the fresh header is written so
-      // `appendFile` never glues new events onto a damaged tail.
-      try {
-        await writeFile(filePath, '', 'utf8');
-      } catch {
-        /* the first flush recreates the file if truncation fails */
-      }
+      const truncateStaleTailBeforeFreshHeader = async (): Promise<void> => {
+        try {
+          await writeFile(filePath, '', 'utf8');
+        } catch {
+          return;
+        }
+      };
+      await truncateStaleTailBeforeFreshHeader();
       return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, true);
     }
     return new SessionEventJournal(filePath, logger, epoch, lastSeq, false);
@@ -157,9 +158,8 @@ export class SessionEventJournal {
         });
       }
       await this.flushPromise;
-      // A failed write keeps its lines queued but does not spin the explicit
-      // flush: the next append retries them.
-      if (this.writeFailed) return;
+      const retainedLinesRetryOnNextAppend = this.writeFailed;
+      if (retainedLinesRetryOnNextAppend) return;
     }
   }
 
@@ -171,9 +171,8 @@ export class SessionEventJournal {
     if (this.flushPromise !== undefined) return;
     this.flushPromise = this.flushOnce().finally(() => {
       this.flushPromise = undefined;
-      // A failed write keeps its lines queued but does not spin an automatic
-      // retry loop; the next append or explicit flush retries them.
-      if (!this.writeFailed && this.pendingLines.length > 0) this.scheduleFlush();
+      const noAutomaticRetryAfterWriteFailure = !this.writeFailed;
+      if (noAutomaticRetryAfterWriteFailure && this.pendingLines.length > 0) this.scheduleFlush();
     });
   }
 
@@ -196,18 +195,12 @@ export class SessionEventJournal {
       await mkdir(dirname(this.filePath), { recursive: true });
       const file = await open(this.filePath, 'a');
       try {
-        await file.appendFile(lines.join('\n') + '\n', 'utf8');
-        // `appendFile` alone does not fsync; a crash would silently drop the
-        // durable events the seq watermark already promised.
+          await file.appendFile(lines.join('\n') + '\n', 'utf8');
         await file.sync();
       } finally {
         await file.close();
       }
     } catch (error) {
-      // Put the lines back so the next flush retries them instead of leaving
-      // the events live-only behind a promised seq. A failed write does not
-      // spin an automatic retry loop; the next append or explicit flush
-      // retries them.
       this.pendingLines = lines.concat(this.pendingLines);
       this.headerPending ||= lines.length === this.pendingLines.length;
       this.writeFailed = true;

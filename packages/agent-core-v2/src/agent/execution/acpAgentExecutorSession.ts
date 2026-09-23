@@ -517,8 +517,6 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         'thought level',
       );
       if (thought === undefined) {
-        // The harness exposes no thought/reasoning config surface at all;
-        // run without configuring it rather than failing the whole turn.
         losses.add('thought_level_unconfigured');
       } else {
         configured = await this.#client.configureSession({
@@ -685,14 +683,7 @@ function usageFromAcp(
     cachedReadTokens: numberOrUndefined(usage.cachedReadTokens),
     cachedWriteTokens: numberOrUndefined(usage.cachedWriteTokens),
   };
-  // ACP usage counters are cumulative across the remote session. Attribute
-  // this turn as a delta against the last persisted snapshot; when no
-  // trustworthy baseline exists (or counters moved backwards), report the
-  // usage as unknown instead of charging historical tokens to this turn.
-  if (sameSession && priorCumulative === undefined) {
-    return { usage: undefined, cumulative };
-  }
-  if (sameSession && !cumulativeUsageMonotonic(cumulative, priorCumulative!)) {
+  if (!hasTrustworthyCumulativeBaseline(sameSession, cumulative, priorCumulative)) {
     return { usage: undefined, cumulative };
   }
   const baseline = sameSession ? priorCumulative! : undefined;
@@ -709,6 +700,16 @@ function usageFromAcp(
 
 function numberOrUndefined(value: number | null | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function hasTrustworthyCumulativeBaseline(
+  sameSession: boolean,
+  cumulative: ExecutorCumulativeUsage,
+  priorCumulative: ExecutorCumulativeUsage | undefined,
+): boolean {
+  if (!sameSession) return true;
+  if (priorCumulative === undefined) return false;
+  return cumulativeUsageMonotonic(cumulative, priorCumulative);
 }
 
 function cumulativeUsageMonotonic(
@@ -782,12 +783,7 @@ function resolveSelectConfig(
     if (categorized.length > 0) {
       candidates = categorized;
     } else {
-      // ACP session config categories are UX hints and MUST NOT be required
-      // for correctness. When the category is missing or unknown, fall back
-      // to the harness's uncategorized select options: a single unambiguous
-      // candidate is usable, while several still require an explicit config
-      // id in the descriptor so we never pick a config blindly.
-      candidates = selects.filter((option) => option.category == null);
+      candidates = selects.filter(uncategorizedSelectOptions);
     }
   }
   if (candidates.length === 0) return undefined;
@@ -806,6 +802,10 @@ function resolveSelectConfig(
     );
   }
   return { option, selection: { configId: option.id, value } };
+}
+
+function uncategorizedSelectOptions(option: AcpSessionConfigOption): boolean {
+  return option.category == null;
 }
 
 function selectValues(option: AcpSessionConfigOption): string[] {

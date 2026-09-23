@@ -30,11 +30,6 @@ function isEnoent(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-/**
- * Promote a surviving `*.tmp.<pid>.<hex>` sibling to `filePath` after a writer
- * crashed between unlinking the target and its rename. Returns whether a
- * candidate was found and renamed.
- */
 async function recoverOrphanedTempFile(filePath: string): Promise<boolean> {
   const dir = dirname(filePath);
   let entries: string[];
@@ -44,16 +39,12 @@ async function recoverOrphanedTempFile(filePath: string): Promise<boolean> {
     return false;
   }
   const prefix = `${basename(filePath)}.tmp.`;
-  let candidate: string | undefined;
-  let candidateMtimeMs = -Infinity;
+  let newestOrphanedTemp: string | undefined;
+  let newestOrphanedTempMtimeMs = -Infinity;
   for (const entry of entries) {
     if (!entry.startsWith(prefix)) continue;
-    // Parse the embedded pid: only temps from dead processes can be orphans.
-    const pid = Number.parseInt(
-      entry.slice(prefix.length, entry.indexOf('.', prefix.length)),
-      10,
-    );
-    if (Number.isInteger(pid) && isPidAlive(pid)) return false;
+    const pid = parseTempPid(entry, prefix);
+    if (pid !== undefined && isPidAlive(pid)) return false;
     const path = join(dir, entry);
     let mtimeMs: number;
     try {
@@ -61,18 +52,23 @@ async function recoverOrphanedTempFile(filePath: string): Promise<boolean> {
     } catch {
       continue;
     }
-    if (mtimeMs > candidateMtimeMs) {
-      candidate = path;
-      candidateMtimeMs = mtimeMs;
+    if (mtimeMs > newestOrphanedTempMtimeMs) {
+      newestOrphanedTemp = path;
+      newestOrphanedTempMtimeMs = mtimeMs;
     }
   }
-  if (candidate === undefined) return false;
+  if (newestOrphanedTemp === undefined) return false;
   try {
-    await rename(candidate, filePath);
+    await rename(newestOrphanedTemp, filePath);
     return true;
   } catch {
     return false;
   }
+}
+
+function parseTempPid(entry: string, prefix: string): number | undefined {
+  const pid = Number.parseInt(entry.slice(prefix.length, entry.indexOf('.', prefix.length)), 10);
+  return Number.isInteger(pid) ? pid : undefined;
 }
 
 function isPidAlive(pid: number): boolean {
@@ -80,8 +76,8 @@ function isPidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    // EPERM: the pid exists but belongs to another user — treat as alive.
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+    const isForeignProcessPid = (error as NodeJS.ErrnoException).code === 'EPERM';
+    return isForeignProcessPid;
   }
 }
 
@@ -106,10 +102,6 @@ export class FileStorageService implements IFileSystemStorageService {
         if (!isEnoent(error)) {
           throw toStorageIoError(error, { path: filePath, op: 'read' });
         }
-        // A previous writer may have been killed between unlinking the target
-        // and its final rename on Windows; the uniquely-named temp file is the
-        // only surviving copy. Promote the newest one instead of losing the
-        // document entirely.
         const recovered = await recoverOrphanedTempFile(filePath);
         if (!recovered) return undefined;
         continue;

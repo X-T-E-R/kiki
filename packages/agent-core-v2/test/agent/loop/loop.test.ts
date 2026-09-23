@@ -183,8 +183,6 @@ describe('Agent loop', () => {
   it('awaits the wire flush before the turn exits so the streamed step is durable', async () => {
     profile.update({ activeToolNames: [] });
 
-    // Hold the wire flush; the turn-exit flush must not land until we release
-    // it, proving the turn awaited it.
     const wire = ctx.wire;
     const originalFlush = wire.flush.bind(wire);
     let releaseFlush!: () => void;
@@ -201,8 +199,6 @@ describe('Agent loop', () => {
     ctx.mockNextResponse({ type: 'think', think: '<think-1>' }, { type: 'text', text: '<text-1>' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
     await ctx.untilTurnEnd();
-    // The durable turn records were appended while the flush gate was held; the
-    // turn-exit flush has not landed yet.
     expect(flushObserved).toBe(false);
     releaseFlush();
     await ctx.wire.flush();

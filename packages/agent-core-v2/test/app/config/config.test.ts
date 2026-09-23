@@ -1958,7 +1958,6 @@ describe('applyPrintModeConfigDefaults', () => {
     expect(config.inspect('subagent').memoryValue).toMatchObject({
       timeoutMs: PRINT_SUBAGENT_TIMEOUT_MS_DEFAULT,
     });
-    // Every print default is a finite number: no unset key becomes unbounded.
     expect(PRINT_BASH_TASK_TIMEOUT_S_DEFAULT).toBeGreaterThan(0);
     expect(PRINT_MAX_STEPS_PER_TURN_DEFAULT).toBeGreaterThan(0);
     expect(PRINT_SUBAGENT_TIMEOUT_MS_DEFAULT).toBeGreaterThan(0);

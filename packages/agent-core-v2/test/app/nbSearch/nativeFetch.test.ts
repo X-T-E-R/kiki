@@ -179,9 +179,6 @@ describe('native FetchURL donor boundaries', () => {
       .filter((input) => input.source?.kind === 'url')
       .map((input) => input.source?.url);
     expect(passed.length).toBeGreaterThan(0);
-    // The host reaches the donor without the trailing root dot, so the
-    // metadata allowlist and the `.local`/`.localhost` suffix rules see the
-    // same spelling the URL spec resolves to.
     expect(passed).toContain('http://metadata.google.internal/');
     fetch.mockRestore();
   });

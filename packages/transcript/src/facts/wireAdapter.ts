@@ -1242,9 +1242,6 @@ export class TranscriptWireAdapter {
     if (this.#deliveries.has(messageId)) return [];
     const origin = objectOf(message['origin']);
     const current = this.#currentTurnId === undefined ? undefined : this.#turnHeaders.get(this.#currentTurnId);
-    // Direct observable injections and mailbox arrivals carry a durable
-    // delivery receipt but no loop anchor. Only an actually running turn can
-    // claim them; an ended turn must leave them as standalone timeline items.
     const inferredTurn = current?.state === 'running' ? current.turnId : undefined;
     const turnId = canonical === undefined
       ? inferredTurn

@@ -27,7 +27,6 @@ interface LogState {
   flushPromise: Promise<void> | undefined;
   flushScheduled: boolean;
   storageFailure: { readonly error: unknown } | undefined;
-  /** The current sticky failure came from a failed `drain` append and may be retried. */
   storageFailureRetriable: boolean;
   cutoverEpoch: number;
   refCount: number;
@@ -60,9 +59,6 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       state.flushPromise === undefined &&
       !state.flushScheduled
     ) {
-      // A prior drain append failed (e.g. disk full). Retry the failed drain so
-      // subsequent turns persist instead of living only in memory. A retry that
-      // fails again re-arms the sticky failure; a success clears it below.
       state.flushScheduled = true;
       queueMicrotask(() => {
         state.flushScheduled = false;
@@ -298,10 +294,9 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       }
     }
     if (failure !== undefined) {
-      // W1B-02: a failed drain append may be retried once so queued turns are
-      // not stranded in memory until the next append arrives. A retry that
-      // fails again keeps the sticky failure; further appends re-arm retries.
-      if (state.storageFailureRetriable && state.pending.length > 0) {
+      const mayRetryQueuedTurns =
+        state.storageFailureRetriable && state.pending.length > 0;
+      if (mayRetryQueuedTurns) {
         state.storageFailureRetriable = false;
         queueMicrotask(() => {
           state.storageFailure = undefined;
@@ -332,9 +327,8 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
         if (wroteBox !== undefined) wroteBox.value = true;
       } catch (error) {
         state.storageFailure ??= { error };
-        // A retry that fails again keeps the sticky failure; only the first
-        // failure of a fresh drain re-arms the automatic retry.
-        state.storageFailureRetriable = !isRetry;
+        const retriableStickyFailure = !isRetry;
+        state.storageFailureRetriable = retriableStickyFailure;
         throw state.storageFailure.error;
       }
       if (state.cutoverEpoch !== cutoverEpoch) return wrote;

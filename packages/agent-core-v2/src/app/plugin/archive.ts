@@ -30,16 +30,13 @@ export async function downloadZip(url: string, signal?: AbortSignal): Promise<Bu
         { details: { url, status: resp.status } },
       );
     }
-    // Reject on Content-Length first so an oversized download fails before the
-    // body is buffered; then enforce the same ceiling on the buffered size,
-    // since the header is absent on chunked responses and untrusted anyway.
     const declared = resp.headers.get('content-length');
     const declaredBytes = declared === null ? undefined : Number(declared);
-    if (
+    const declaredBytesExceedsLimit =
       declaredBytes !== undefined &&
       Number.isFinite(declaredBytes) &&
-      declaredBytes > MAX_ZIP_DOWNLOAD_BYTES
-    ) {
+      declaredBytes > MAX_ZIP_DOWNLOAD_BYTES;
+    if (declaredBytesExceedsLimit) {
       throw new Error2(
         ErrorCodes.PLUGIN_LOAD_FAILED,
         `Plugin zip exceeds the ${MAX_ZIP_DOWNLOAD_BYTES}-byte download limit`,
