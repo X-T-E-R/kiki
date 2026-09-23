@@ -44,10 +44,29 @@ const OPTIONS: readonly TrustPromptOption[] = [
 export class TrustPromptComponent implements Component, Focusable {
   focused = false;
   private selectedIndex = 0;
+  private gatedMcpServers: readonly WorkspaceTrustMcpServerInfo[];
 
-  constructor(private readonly opts: TrustPromptOptions) {}
+  constructor(private readonly opts: TrustPromptOptions) {
+    this.gatedMcpServers = opts.gatedMcpServers;
+  }
 
-  invalidate(): void {}
+  /**
+   * Replaces the gated-server list after the gate resolves it asynchronously;
+   * the prompt renders immediately with an empty list so the gate never
+   * blocks on config IO, then re-renders once the project targets are known.
+   */
+  setGatedMcpServers(servers: readonly WorkspaceTrustMcpServerInfo[]): void {
+    this.gatedMcpServers = servers;
+  }
+
+  /** Re-render hook the gate calls after `setGatedMcpServers`. */
+  invalidateRender(): void {
+    this.invalidate();
+  }
+
+  invalidate(): void {
+    /* No cached rendering state: every render() call reads the current opts. */
+  }
 
   handleInput(data: string): void {
     if (matchesKey(data, Key.escape)) {
@@ -85,9 +104,9 @@ export class TrustPromptComponent implements Component, Focusable {
     for (const line of wrapTextWithAnsi(notice, Math.max(20, width - 2))) {
       lines.push(` ${currentTheme.fg('textMuted', line)}`);
     }
-    if (this.opts.gatedMcpServers.length > 0) {
+    if (this.gatedMcpServers.length > 0) {
       lines.push(` ${currentTheme.fg('warning', 'Project MCP targets:')}`);
-      for (const server of this.opts.gatedMcpServers) {
+      for (const server of this.gatedMcpServers) {
         const details = formatMcpTarget(server);
         for (const line of wrapTextWithAnsi(details, Math.max(20, width - 4))) {
           lines.push(`   ${currentTheme.fg('warning', line)}`);

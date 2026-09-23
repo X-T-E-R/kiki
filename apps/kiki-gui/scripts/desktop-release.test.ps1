@@ -67,11 +67,15 @@ try {
     $manifestPath = Join-Path $runtimeRoot 'current.json'
     Assert-True (Test-Path -LiteralPath $manifestPath -PathType Leaf) 'Initial promotion did not create current.json.'
     $firstManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    Assert-True ($null -ne $firstManifest.gitSha -and $firstManifest.gitSha -match '^[0-9a-f]{40}$|^unknown$') 'current.json does not carry a git sha.'
     $firstRelease = Join-Path (Join-Path $runtimeRoot 'releases') $firstManifest.releaseId
     Assert-True (Test-Path -LiteralPath (Join-Path $firstRelease 'kiki.exe') -PathType Leaf) 'Initial promotion did not copy kiki.exe.'
     Assert-True (Test-Path -LiteralPath (Join-Path $firstRelease 'kiki-server.exe') -PathType Leaf) 'Initial promotion did not copy kiki-server.exe.'
     Assert-Equal 'main-build-a' ([IO.File]::ReadAllText((Join-Path $firstRelease 'kiki.exe'))) 'Promoted GUI bytes differ from the candidate.'
     Assert-Equal 'sidecar-build-a' ([IO.File]::ReadAllText((Join-Path $firstRelease 'kiki-server.exe'))) 'Promoted backend bytes differ from the candidate.'
+    Assert-True (Test-Path -LiteralPath (Join-Path $firstRelease 'build-info.txt') -PathType Leaf) 'Initial promotion did not write build-info.txt.'
+    $buildInfoText = [IO.File]::ReadAllText((Join-Path $firstRelease 'build-info.txt'))
+    Assert-True ($buildInfoText -match 'gitSha: [0-9a-f]{40}|gitSha: unknown') 'build-info.txt does not carry a git sha.'
 
     $manifestBytesBeforeRepeat = [IO.File]::ReadAllBytes($manifestPath)
     Invoke-Controller $common | Out-Null

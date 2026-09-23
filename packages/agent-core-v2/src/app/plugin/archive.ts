@@ -7,6 +7,15 @@ import { type Entry, fromBuffer as yauzlFromBuffer } from 'yauzl';
 
 import { Error2, ErrorCodes } from '#/errors';
 
+/**
+ * Hard ceilings for plugin archives: download and extraction both happen
+ * before the user has said anything about this plugin, so an oversized or
+ * decompression-bomb zip must fail closed rather than fill memory or disk.
+ */
+export const MAX_ZIP_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+export const MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024;
+export const MAX_ZIP_ENTRIES = 20_000;
+
 export async function downloadZip(url: string, signal?: AbortSignal): Promise<Buffer> {
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => {
@@ -21,16 +30,68 @@ export async function downloadZip(url: string, signal?: AbortSignal): Promise<Bu
         { details: { url, status: resp.status } },
       );
     }
-    return Buffer.from(await resp.arrayBuffer());
+    // Reject on Content-Length first so an oversized download fails before the
+    // body is buffered; then enforce the same ceiling on the buffered size,
+    // since the header is absent on chunked responses and untrusted anyway.
+    const declared = resp.headers.get('content-length');
+    const declaredBytes = declared === null ? undefined : Number(declared);
+    if (
+      declaredBytes !== undefined &&
+      Number.isFinite(declaredBytes) &&
+      declaredBytes > MAX_ZIP_DOWNLOAD_BYTES
+    ) {
+      throw new Error2(
+        ErrorCodes.PLUGIN_LOAD_FAILED,
+        `Plugin zip exceeds the ${MAX_ZIP_DOWNLOAD_BYTES}-byte download limit`,
+        { details: { url, contentLength: declaredBytes } },
+      );
+    }
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    if (buffer.byteLength > MAX_ZIP_DOWNLOAD_BYTES) {
+      throw new Error2(
+        ErrorCodes.PLUGIN_LOAD_FAILED,
+        `Plugin zip exceeds the ${MAX_ZIP_DOWNLOAD_BYTES}-byte download limit`,
+        { details: { url, bytes: buffer.byteLength } },
+      );
+    }
+    return buffer;
   } finally {
     clearTimeout(timeoutHandle);
   }
 }
 
 export async function extractZip(buffer: Buffer, destDir: string): Promise<string> {
+  if (buffer.byteLength > MAX_ZIP_DOWNLOAD_BYTES) {
+    throw new Error2(
+      ErrorCodes.PLUGIN_LOAD_FAILED,
+      `Plugin zip exceeds the ${MAX_ZIP_DOWNLOAD_BYTES}-byte download limit`,
+      { details: { bytes: buffer.byteLength } },
+    );
+  }
   await mkdir(destDir, { recursive: true });
   const destDirResolved = path.resolve(destDir);
   let settled = false;
+  let totalUncompressed = 0;
+  let entryCount = 0;
+
+  const enforceCeilings = (entry: Entry): void => {
+    entryCount += 1;
+    totalUncompressed += entry.uncompressedSize;
+    if (entryCount > MAX_ZIP_ENTRIES) {
+      throw new Error2(
+        ErrorCodes.PLUGIN_LOAD_FAILED,
+        `Plugin zip exceeds the ${MAX_ZIP_ENTRIES}-entry limit`,
+        { details: { entries: entryCount } },
+      );
+    }
+    if (totalUncompressed > MAX_ZIP_UNCOMPRESSED_BYTES) {
+      throw new Error2(
+        ErrorCodes.PLUGIN_LOAD_FAILED,
+        `Plugin zip exceeds the ${MAX_ZIP_UNCOMPRESSED_BYTES}-byte uncompressed limit`,
+        { details: { uncompressedBytes: totalUncompressed } },
+      );
+    }
+  };
 
   await new Promise<void>((resolve, reject) => {
     yauzlFromBuffer(buffer, { lazyEntries: true }, (openErr, zipfile) => {
@@ -48,6 +109,17 @@ export async function extractZip(buffer: Buffer, destDir: string): Promise<strin
       const onEntry = (entry: Entry): void => {
         const fileName = entry.fileName;
         const destPath = path.resolve(destDir, fileName);
+
+        if (!settled) {
+          try {
+            enforceCeilings(entry);
+          } catch (error) {
+            settled = true;
+            reject(error);
+            zipfile.close();
+            return;
+          }
+        }
 
         if (destPath !== destDirResolved && !destPath.startsWith(destDirResolved + path.sep)) {
           if (!settled) {

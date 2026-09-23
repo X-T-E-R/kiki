@@ -110,6 +110,22 @@ function Get-ReleasePath([string]$Root, [string]$ReleaseId) {
     return Join-Path (Join-Path $Root 'releases') $ReleaseId
 }
 
+function Get-GitSha([string]$Candidate) {
+    # The candidate directory sits inside the kiki repository; resolve the
+    # current commit from it so the promoted release can be traced back to
+    # source. Best-effort: a detached build directory outside the repo, a
+    # missing git, or a dirty worktree still promotes, with the sha recorded
+    # as 'unknown'.
+    try {
+        $sha = & git -C $Candidate rev-parse HEAD 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sha)) { return 'unknown' }
+        return $sha.Trim()
+    }
+    catch {
+        return 'unknown'
+    }
+}
+
 function Invoke-Promotion([string]$Root, [string]$Candidate) {
     $rootPath = Get-FullPath $Root
     $candidatePath = Get-FullPath $Candidate
@@ -119,10 +135,12 @@ function Invoke-Promotion([string]$Root, [string]$Candidate) {
 
     $mainSource = Get-ArtifactInfo (Join-Path $candidatePath 'kiki.exe') 'Kiki GUI build artifact'
     $sidecarSource = Get-ArtifactInfo (Join-Path $candidatePath 'kiki-server.exe') 'Kiki backend build artifact'
+    $gitSha = Get-GitSha $candidatePath
     $releaseId = '{0}-{1}' -f $mainSource.Hash.Substring(0, 24), $sidecarSource.Hash.Substring(0, 24)
     $releasePath = Get-ReleasePath $rootPath $releaseId
     $mainDestination = Join-Path $releasePath 'kiki.exe'
     $sidecarDestination = Join-Path $releasePath 'kiki-server.exe'
+    $buildInfoDestination = Join-Path $releasePath 'build-info.txt'
 
     if (Test-Path -LiteralPath $releasePath) {
         if (-not (Test-Path -LiteralPath $releasePath -PathType Container)) {
@@ -145,6 +163,7 @@ function Invoke-Promotion([string]$Root, [string]$Candidate) {
             # A build that changes while it is being copied is not a successful candidate.
             Assert-ArtifactMatches $mainSource $mainSource.Path 'Kiki GUI source artifact'
             Assert-ArtifactMatches $sidecarSource $sidecarSource.Path 'Kiki backend source artifact'
+            Write-BuildInfo (Join-Path $stagingPath 'build-info.txt') $gitSha
             [IO.Directory]::Move($stagingPath, $releasePath)
         }
         finally {
@@ -163,6 +182,7 @@ function Invoke-Promotion([string]$Root, [string]$Candidate) {
     $manifest = [ordered]@{
         schemaVersion = 1
         releaseId = $releaseId
+        gitSha = $gitSha
         promotedAtUtc = [DateTime]::UtcNow.ToString('o')
         files = [ordered]@{
             'kiki.exe' = [ordered]@{ sha256 = $mainSource.Hash; bytes = $mainSource.Length }
@@ -171,6 +191,11 @@ function Invoke-Promotion([string]$Root, [string]$Candidate) {
     }
     Write-AtomicUtf8Json (Join-Path $rootPath 'current.json') $manifest
     Write-Output "Promoted Kiki release: $releasePath"
+}
+
+function Write-BuildInfo([string]$Path, [string]$GitSha) {
+    $text = 'gitSha: {0}' -f $GitSha
+    [IO.File]::WriteAllText($Path, $text, (New-Object Text.UTF8Encoding($false)))
 }
 
 function Invoke-Launch([string]$Root) {
