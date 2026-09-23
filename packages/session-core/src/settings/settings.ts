@@ -1303,9 +1303,19 @@ export function providerTemplateFor(type: ProviderWireType): ProviderTemplate {
   };
 }
 
-/** Known enum chips; the chip editor also accepts free-form custom values. */
-export const KNOWN_CAPABILITIES = ['chat', 'reasoning', 'vision', 'tools'] as const;
-export const KNOWN_EFFORTS = ['low', 'medium', 'high', 'max'] as const;
+/** Known enum chips; the chip editor also accepts free-form custom values.
+ *  Capability names mirror the engine vocabulary (kosong model inspection):
+ *  offering names the runtime never reads only produces dead metadata. */
+export const KNOWN_CAPABILITIES = [
+  'thinking',
+  'always_thinking',
+  'tool_use',
+  'image_in',
+  'video_in',
+  'audio_in',
+  'dynamically_loaded_tools',
+] as const;
+export const KNOWN_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 /** Trim, drop empties, dedupe — the chip editor's canonical output. */
 export function normalizeTags(values: readonly string[]): string[] {
