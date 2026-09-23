@@ -9,6 +9,7 @@ import type {
   PatchConfigRequest,
   PermissionMode,
   PromptAbortResponse,
+  TurnAbortResponse,
   PromptMoveRequest,
   PromptMoveResult,
   PromptPlanGate,
@@ -450,6 +451,7 @@ export interface SessionTransport {
   regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session>;
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse>;
+  abortTurn(sessionId: string, turnId: number): Promise<TurnAbortResponse>;
   movePrompt(sessionId: string, promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
   replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
   timingPrompt(sessionId: string, promptId: string, body: PromptTimingRequest): Promise<PromptTimingResult>;

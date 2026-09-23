@@ -8,11 +8,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '@kiki/session-core/composer';
 import { translate } from '@kiki/session-core/i18n';
+import { createViewState, projectAgentTranscriptView } from '@kiki/session-core/session';
+import { emptySnapshot, userTurnSnapshot } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import type { HostFileDrop } from '../host';
 import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { Composer } from './Composer';
+import { canAbortActiveTurn } from './SessionView';
 
 const { selectFilesNative, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   selectFilesNative: vi.fn(),
@@ -211,6 +214,40 @@ async function openPlanPanel(container: HTMLDivElement): Promise<HTMLButtonEleme
   await click(trigger);
   return trigger;
 }
+
+describe('continuation stop control', () => {
+  it.each([
+    { origin: { kind: 'cron' as const }, promptId: 'p-cron' },
+    { origin: { kind: 'other' as const, payload: { kind: 'agent_message', senderAgentId: 'peer' } }, promptId: 'p-mailbox' },
+    { origin: { kind: 'other' as const, payload: { kind: 'task_notification' } }, promptId: undefined },
+  ])('shows an actionable stop for a running $origin.kind turn with no prompt row', async ({ origin, promptId }) => {
+    const running = projectAgentTranscriptView(createViewState('session-1'), 'main', emptySnapshot({
+      items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin, promptId, steps: [] }],
+      prompts: [],
+    }));
+    expect(running.activePromptId).toBeUndefined();
+    const onAbort = vi.fn();
+    const { container, rerender } = await renderComposer({ busy: canAbortActiveTurn(running), onAbort });
+    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Abort the running prompt"]');
+    expect(stop?.disabled).toBe(false);
+    await click(stop!);
+    expect(onAbort).toHaveBeenCalledTimes(1);
+
+    const idle = projectAgentTranscriptView(running, 'main', emptySnapshot());
+    await rerender({ busy: canAbortActiveTurn(idle), onAbort });
+    expect(container.querySelector('button[aria-label="Abort the running prompt"]')).toBeNull();
+  });
+
+  it('keeps the stop control for visible user prompts', async () => {
+    const running = projectAgentTranscriptView(createViewState('session-1'), 'main', userTurnSnapshot({ streaming: true }));
+    const onAbort = vi.fn();
+    const { container } = await renderComposer({ busy: canAbortActiveTurn(running), onAbort });
+    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Abort the running prompt"]');
+    expect(stop).not.toBeNull();
+    await click(stop!);
+    expect(onAbort).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('Composer host compatibility', () => {
   it('renders a new-session composer without Web Crypto randomUUID', async () => {

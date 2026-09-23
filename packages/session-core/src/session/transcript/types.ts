@@ -342,6 +342,10 @@ export interface SessionViewState {
   readonly turnRetry: TurnRetryInfo | undefined;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly activePromptId: string | undefined;
+  /** Running engine prompt, independent of whether its origin has a visible prompt row. */
+  readonly abortablePromptId: string | undefined;
+  /** Running main-agent turn, including steps admitted without a prompt record. */
+  readonly abortableTurnId: number | undefined;
   readonly queuedPromptIds: readonly string[];
   readonly promptQueueHold: { readonly reason: 'recovery'; readonly count: number } | undefined;
   /**
@@ -413,6 +417,8 @@ export function createViewState(sessionId: string): SessionViewState {
     turnRetry: undefined,
     pendingInteraction: 'none',
     activePromptId: undefined,
+    abortablePromptId: undefined,
+    abortableTurnId: undefined,
     queuedPromptIds: [],
     promptQueueHold: undefined,
     queuedPromptMeta: {},

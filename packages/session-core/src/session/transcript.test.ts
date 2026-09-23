@@ -343,6 +343,60 @@ describe('floor navigation model', () => {
 });
 
 describe('transcript authority projection', () => {
+  it.each([
+    { origin: { kind: 'cron' as const }, promptId: 'p-cron' },
+    { origin: { kind: 'other' as const, payload: { kind: 'agent_message', senderAgentId: 'peer' } }, promptId: 'p-mailbox' },
+  ])('keeps a running $origin.kind prompt abortable without a visible prompt row', ({ origin, promptId }) => {
+    const running = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin, promptId, steps: [] }],
+      prompts: [],
+    }));
+    expect(running.busy).toBe(true);
+    expect(running.activePromptId).toBeUndefined();
+    expect(running.queuedPromptIds).toEqual([]);
+    expect(running.abortablePromptId).toBe(promptId);
+    expect(running.abortableTurnId).toBe(1);
+
+    const idle = projectAgentTranscriptView(running, 'main', emptySnapshot());
+    expect(idle.busy).toBe(false);
+    expect(idle.abortablePromptId).toBeUndefined();
+    expect(idle.abortableTurnId).toBeUndefined();
+  });
+
+  it('projects the active turn id when a task notification has no prompt id', () => {
+    const running = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{ kind: 'turn', turnId: 't7', ordinal: 7, state: 'running', origin: { kind: 'other', payload: { kind: 'task_notification' } }, steps: [] }],
+      prompts: [],
+    }));
+    expect(running).toMatchObject({ busy: true, activePromptId: undefined, abortablePromptId: undefined, abortableTurnId: 7 });
+    const idle = projectAgentTranscriptView(running, 'main', emptySnapshot());
+    expect(idle.abortableTurnId).toBeUndefined();
+  });
+
+  it('prefers a running task turn over a newer prompt row or optimistic submit echo', () => {
+    const current = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{ kind: 'turn', turnId: 't7', ordinal: 7, state: 'running', origin: { kind: 'other', payload: { kind: 'task_notification' } }, steps: [] }],
+      prompts: userTurnSnapshot({ streaming: true }).prompts,
+      meta: { activity: 'turn' },
+    }));
+    expect(current.abortableTurnId).toBe(7);
+    expect(current.abortablePromptId).toBeUndefined();
+    const optimistic = appendLocalUserMessage(current, {
+      promptId: 'p-next', userMessageId: 'um-next', text: 'follow up', createdAt: FIXED_AT, status: 'running',
+    });
+    expect(optimistic.abortableTurnId).toBe(7);
+    expect(optimistic.abortablePromptId).toBeUndefined();
+  });
+
+  it('keeps visible user prompts abortable and clears their id at completion', () => {
+    const running = projectAgentTranscriptView(createViewState('session_test'), 'main', userTurnSnapshot({ streaming: true }));
+    expect(running.activePromptId).toBe(PROMPT_ID);
+    expect(running.abortablePromptId).toBe(PROMPT_ID);
+    const completed = projectAgentTranscriptView(running, 'main', userTurnSnapshot());
+    expect(completed.activePromptId).toBeUndefined();
+    expect(completed.abortablePromptId).toBeUndefined();
+  });
+
   it('does not invent a binding for an unbound main or child with sparse transcript metadata', () => {
     for (const agentId of ['main', CHILD_AGENT_ID]) {
       const state = projectAgentTranscriptView(createViewState('session_test'), agentId, emptySnapshot());
@@ -448,6 +502,52 @@ describe('transcript authority projection', () => {
 
     expect(idle.busy).toBe(false);
     expect(active.busy).toBe(true);
+  });
+
+  it('restores an in-flight continuation id on attach and clears it on idle resync', () => {
+    const base = {
+      as_of_seq: 4,
+      epoch: 'e1',
+      session: { ...session, main_turn_active: true },
+      messages: { items: [], has_more: false },
+      pending_approvals: [],
+      pending_questions: [],
+    };
+    const running = applyTranscriptShell('session_test', {
+      ...base,
+      in_flight_turn: {
+        turn_id: 1,
+        assistant_text: '',
+        thinking_text: '',
+        running_tools: [],
+        current_prompt_id: 'p-cron',
+      },
+    });
+    expect(running.busy).toBe(true);
+    expect(running.activePromptId).toBeUndefined();
+    expect(running.abortablePromptId).toBe('p-cron');
+    expect(running.abortableTurnId).toBe(1);
+
+    const promptless = applyTranscriptShell('session_test', {
+      ...base,
+      in_flight_turn: {
+        turn_id: 2,
+        assistant_text: '',
+        thinking_text: '',
+        running_tools: [],
+      },
+    }, running);
+    expect(promptless.abortablePromptId).toBeUndefined();
+    expect(promptless.abortableTurnId).toBe(2);
+
+    const idle = applyTranscriptShell('session_test', {
+      ...base,
+      session: { ...session, main_turn_active: false },
+      in_flight_turn: null,
+    }, promptless);
+    expect(idle.abortablePromptId).toBeUndefined();
+    expect(idle.abortableTurnId).toBeUndefined();
+    expect(idle.busy).toBe(false);
   });
 
   it('keeps compact snapshot.subagents on the transcript shell', () => {

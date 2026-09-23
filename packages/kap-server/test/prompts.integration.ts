@@ -32,6 +32,8 @@ import {
 } from '@kiki/agent-core-v2';
 import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
 import { createKlient as createHttpKlient } from '@kiki/klient/http';
+import { TaskNotificationStepRequest } from '@kiki/agent-core-v2/agent/task/taskService';
+import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -1869,12 +1871,16 @@ describe('server-v2 /api prompts', () => {
 
   it('returns 40402 when aborting a prompt that already settled', async () => {
     const id = await createSession(home as string);
-    await createMainAgent(id);
+    await createHeldMainAgent(id);
 
     const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
     });
     const promptId = submitted.body.data.prompt_id;
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const prompt = main.accessor.get(IAgentPromptService);
+    expect(prompt.abort(promptId)).toBe(true);
+    await vi.waitFor(() => expect(prompt.list().active).toBeUndefined(), { timeout: 10000 });
 
     const aborted = await call<{ aborted: boolean }>(
       'POST',
@@ -1892,6 +1898,40 @@ describe('server-v2 /api prompts', () => {
       `/api/sessions/${id}/prompts/prompt_does_not_exist:abort`,
     );
     expect(body.code).toBe(40402);
+  });
+
+  it('cancels only the active main turn started by a background task notification', async () => {
+    const id = await createSession(home as string);
+    const otherId = await createSession(home as string);
+    await createHeldMainAgent(id);
+    await createMainAgent(otherId);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const loop = main.accessor.get(IAgentLoopService);
+    const receipt = loop.enqueue(new TaskNotificationStepRequest({
+      role: 'user',
+      content: [{ type: 'text', text: 'Background task finished' }],
+      toolCalls: [],
+      origin: { kind: 'task', taskId: 'test-task', status: 'completed', notificationId: 'test-notice' },
+    }));
+    const { turn } = await receipt.assigned;
+    expect(loop.status().activeTurnId).toBe(turn.id);
+    expect(main.accessor.get(IAgentPromptService).list().active).toBeUndefined();
+    expect(turn.signal.aborted).toBe(false);
+
+    const client = new KikiClient({ baseUrl: base, token: server!.authTokenService.getToken() });
+    try {
+      expect(await client.abortTurn(otherId, turn.id)).toEqual({ aborted: false });
+      expect(await client.abortTurn(id, turn.id + 1)).toEqual({ aborted: false });
+      expect(turn.signal.aborted).toBe(false);
+      expect((await call<null>('POST', `/api/sessions/${id}/turns/not-a-number:abort`)).body.code).toBe(40001);
+      expect((await call<null>('POST', '/api/sessions/unknown/turns/1:abort')).body.code).toBe(40401);
+      expect(await client.abortTurn(id, turn.id)).toEqual({ aborted: true });
+      expect(turn.signal.aborted).toBe(true);
+      expect((await turn.result).type).toBe('cancelled');
+      expect(await client.abortTurn(id, turn.id)).toEqual({ aborted: false });
+    } finally {
+      await client.klient.close();
+    }
   });
 
   it('returns 40401 for an unknown session', async () => {

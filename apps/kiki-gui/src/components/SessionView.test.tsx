@@ -44,6 +44,7 @@ import {
   agentDetailPath,
   agentOlderErrorText,
   agentTranscriptPoll,
+  canAbortActiveTurn,
   beginAgentOlderFetch,
   finishAgentOlderFetch,
   INITIAL_AGENT_OLDER_FETCH_GATE,
@@ -822,6 +823,16 @@ describe('shouldHandleGlobalAbortOnEscape', () => {
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, terminalOpen: true })).toBe(false);
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, inFormField: true })).toBe(false);
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, key: 'Enter' })).toBe(false);
+  });
+
+  it('uses an in-flight engine id rather than requiring a visible user prompt', () => {
+    const idle = createViewState('session-test');
+    expect(canAbortActiveTurn(idle)).toBe(false);
+    expect(canAbortActiveTurn({ ...idle, busy: true, abortablePromptId: 'p-cron' })).toBe(true);
+    expect(canAbortActiveTurn({ ...idle, busy: true, abortableTurnId: 4 })).toBe(true);
+    expect(canAbortActiveTurn({ ...idle, busy: false, abortablePromptId: 'p-cron' })).toBe(false);
+    expect(canAbortActiveTurn({ ...idle, busy: false, abortableTurnId: 4 })).toBe(false);
+    expect(canAbortActiveTurn({ ...idle, busy: true, abortablePromptId: undefined })).toBe(false);
   });
 });
 

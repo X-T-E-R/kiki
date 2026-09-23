@@ -1004,6 +1004,7 @@ export class TranscriptWireAdapter {
       ordinal: turnOrdinal,
       state: 'running',
       origin: mapOrigin(record['origin']),
+      promptId: stringOf(record['promptId']),
       message: {
         messageId: promptId ?? `legacy:v1:r${ordinal}:message`,
         role: 'user',
@@ -1704,6 +1705,7 @@ export class TranscriptWireAdapter {
       ordinal: n,
       state: turnState(reason),
       origin: previous?.origin ?? { kind: 'other' },
+      promptId: previous?.promptId,
       message: previous?.message,
       delivery: previous?.delivery,
       prompt: previous?.prompt,

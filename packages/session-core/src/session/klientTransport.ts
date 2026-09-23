@@ -25,6 +25,7 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
     regenerateMessage: (id, target, body) => run(() => commands(id).regenerate(target, regenerateMessageRequestSchema.parse(body))),
     forkSession: (id, body) => run(() => commands(id).fork(forkSessionRequestSchema.parse(body))),
     abortPrompt: (id, target) => run(() => commands(id).abort(target)),
+    abortTurn: (id, target) => run(() => commands(id).abortTurn(target)),
     movePrompt: (id, target, body) => run(() => commands(id).move(target, body)),
     replacePrompt: (id, target, body) => run(() => commands(id).replace(target, body)),
     timingPrompt: (id, target, body) => run(() => commands(id).timing(target, body)),

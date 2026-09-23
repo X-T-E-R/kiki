@@ -4,6 +4,7 @@ import {
   DEFAULT_AGENT_PROFILE_NAME,
   IBootstrapService,
   IAgentLifecycleService,
+  IAgentLoopService,
   IAgentTaskService,
   IAgentProfileService,
   IAgentToolPolicyService,
@@ -47,6 +48,7 @@ import {
   type ISessionScopeHandle,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { turnAbortResponseSchema } from '@kiki/protocol';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
@@ -723,6 +725,40 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     { ...actionRoute.options, bodyLimit: PROMPT_BODY_LIMIT_BYTES },
     actionRoute.handler as Parameters<PromptRouteHost['post']>[2],
   );
+
+  const abortTurnRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/sessions/{session_id}/turns/{tail}',
+      params: sessionIdParamSchema.extend({ tail: z.string().min(1) }),
+      success: { data: turnAbortResponseSchema },
+      errors: {
+        [ErrorCode.VALIDATION_FAILED]: {},
+        [ErrorCode.SESSION_NOT_FOUND]: {},
+      },
+      description: 'Abort the active main-agent turn by its turn ID',
+      tags: ['prompts'],
+      operationId: 'abortTurn',
+    },
+    async (req, reply) => {
+      try {
+        const { session_id, tail } = req.params;
+        const parsed = parseActionSuffix({ tail, allowedActions: ['abort'] as const, resourceLabel: 'turn' });
+        if (parsed.kind !== 'action' || !/^(0|[1-9]\d*)$/.test(parsed.id) || !Number.isSafeInteger(Number(parsed.id))) {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, `invalid turn action: ${tail}`, req.id));
+          return;
+        }
+        const turnId = Number(parsed.id);
+        const resolved = await resolvePrompt(core, session_id);
+        const loop = resolved.accessor.get(IAgentLoopService);
+        const aborted = loop.status().activeTurnId === turnId && loop.cancel(turnId);
+        reply.send(okEnvelope({ aborted }, req.id));
+      } catch (error) {
+        sendMappedError(reply, req, error);
+      }
+    },
+  );
+  app.post(abortTurnRoute.path, abortTurnRoute.options, abortTurnRoute.handler as Parameters<PromptRouteHost['post']>[2]);
 }
 
 function projectPromptList(snapshot: PromptQueueSnapshot) {

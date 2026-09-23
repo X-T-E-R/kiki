@@ -13,7 +13,7 @@ import type { TranscriptEvent } from '@kiki/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
 import type { SubagentBlock, ToolBlock, UserBlock } from './transcript';
-import { ASSISTANT_FRAME_ID, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
+import { ASSISTANT_FRAME_ID, emptySnapshot, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
 import type { SessionViewFacade } from '@kiki/klient/session-view';
 
@@ -918,6 +918,8 @@ describe('SessionController transcript authority', () => {
       })),
       submitPrompt: vi.fn(),
       replacePrompt: vi.fn(),
+      abortPrompt: vi.fn(async () => ({ aborted: true, at_seq: 1 })),
+      abortTurn: vi.fn(async () => ({ aborted: true })),
       movePrompt: vi.fn(),
       timingPrompt: vi.fn(),
       getTranscriptOps: vi.fn(async () => ({
@@ -949,6 +951,59 @@ describe('SessionController transcript authority', () => {
     await controller.open();
     return { controller, client, socket, flushAll };
   }
+
+  it.each([
+    { origin: { kind: 'cron' as const }, promptId: 'p-cron' },
+    { origin: { kind: 'other' as const, payload: { kind: 'agent_message', senderAgentId: 'peer' } }, promptId: 'p-mailbox' },
+  ])('aborts an in-flight $origin.kind turn with no visible prompt', async ({ origin, promptId }) => {
+    const { controller, client } = await openTranscriptController();
+    await controller.abortActive();
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+
+    controller.handleTranscript(resetEvent('main', emptySnapshot({
+      items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin, promptId, steps: [] }],
+      prompts: [],
+    }), 1));
+    expect(controller.getState()).toMatchObject({
+      busy: true,
+      activePromptId: undefined,
+      abortablePromptId: promptId,
+    });
+    await controller.abortActive();
+    expect(client.abortPrompt).toHaveBeenCalledExactlyOnceWith('session_test', promptId);
+    expect(client.listPrompts).not.toHaveBeenCalled();
+
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 2));
+    expect(controller.getState().abortablePromptId).toBeUndefined();
+    await controller.abortActive();
+    expect(client.abortPrompt).toHaveBeenCalledTimes(1);
+    controller.close();
+  });
+
+  it('aborts a task-notification turn without a prompt through its exact turn id', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({
+      items: [{ kind: 'turn', turnId: 't7', ordinal: 7, state: 'running', origin: { kind: 'other', payload: { kind: 'task_notification' } }, steps: [] }],
+      prompts: [],
+    }), 1));
+    expect(controller.getState()).toMatchObject({ busy: true, activePromptId: undefined, abortablePromptId: undefined, abortableTurnId: 7 });
+    await controller.abortActive();
+    expect(client.abortTurn).toHaveBeenCalledExactlyOnceWith('session_test', 7);
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 2));
+    expect(controller.getState().abortableTurnId).toBeUndefined();
+    await controller.abortActive();
+    expect(client.abortTurn).toHaveBeenCalledTimes(1);
+    controller.close();
+  });
+
+  it('still aborts a visible user prompt through the same endpoint', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    await controller.abortActive();
+    expect(client.abortPrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'p-canonical-1');
+    controller.close();
+  });
 
   it('retains independent delta views alongside the unchanged legacy focus baseline', async () => {
     const { controller, socket } = await openTranscriptController();

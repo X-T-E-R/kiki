@@ -1302,8 +1302,14 @@ export class SessionController {
   }
 
   async abortActive(): Promise<void> {
-    const promptId = this.state.activePromptId;
-    if (promptId !== undefined) await this.abortPrompt(promptId);
+    if (!this.state.busy) return;
+    const promptId = this.state.abortablePromptId;
+    if (promptId !== undefined) {
+      await this.abortPrompt(promptId);
+      return;
+    }
+    const turnId = this.state.abortableTurnId;
+    if (turnId !== undefined) await this.client.abortTurn(this.sessionId, turnId);
   }
 
   async abortPrompt(promptId: string): Promise<void> {

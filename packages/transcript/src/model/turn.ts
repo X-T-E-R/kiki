@@ -78,6 +78,8 @@ export interface TranscriptTurn {
   readonly ordinal: number;
   readonly state: TurnState;
   readonly origin: TurnOrigin;
+  /** Engine prompt id for this turn, including non-user-origin prompts. */
+  readonly promptId?: string;
   readonly message?: TranscriptMessageIdentity;
   readonly delivery?: MessageDelivery;
   /** The raw prompt that opened the turn (user text, cron prompt, …). */

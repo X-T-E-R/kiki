@@ -187,6 +187,9 @@ export const promptAbortResponseSchema = z.object({
 });
 export type PromptAbortResponse = z.infer<typeof promptAbortResponseSchema>;
 
+export const turnAbortResponseSchema = z.object({ aborted: z.boolean() });
+export type TurnAbortResponse = z.infer<typeof turnAbortResponseSchema>;
+
 export interface PromptCompletedEventPayload {
   readonly type: 'prompt.completed';
   readonly agentId: string;

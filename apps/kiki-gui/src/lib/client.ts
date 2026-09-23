@@ -67,6 +67,7 @@ import type {
   PatchConfigRequest,
   PermissionMode,
   PromptAbortResponse,
+  TurnAbortResponse,
   PromptPlanGate,
   RequestIdentityPolicyWire,
   PromptListResponse,
@@ -902,6 +903,10 @@ export class KikiClient {
 
   abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse> {
     return this.sessions.abortPrompt(sessionId, promptId);
+  }
+
+  abortTurn(sessionId: string, turnId: number): Promise<TurnAbortResponse> {
+    return this.sessions.abortTurn(sessionId, turnId);
   }
 
   /**

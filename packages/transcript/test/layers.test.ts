@@ -2913,6 +2913,34 @@ describe('TranscriptWireAdapter', () => {
 
     expect(resumed.snapshot().prompts).toEqual(transcript.snapshot().prompts);
   });
+
+  it.each([
+    { origin: { kind: 'cron_job', jobId: 'j1' }, promptId: 'p-cron' },
+    { origin: { kind: 'agent_message', senderAgentId: 'peer' }, promptId: 'p-mailbox' },
+  ])('retains the $origin.kind turn id for abort without revealing a hidden prompt', ({ origin, promptId }) => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main', { turn: (turnId) => transcript.getTurn(turnId) });
+    reducer.apply(adapter.add({
+      type: 'prompt.enqueued', schemaVersion: 1, promptId, userMessageId: `m-${promptId}`,
+      createdAt: '2026-06-09T00:00:00.000Z',
+      message: { id: `m-${promptId}`, origin, content: [{ type: 'text', text: 'internal trigger' }] },
+      alreadyMaterialized: false, appendTiming: 'agent_idle', revision: 1, queueIndex: 0,
+      time: 1_000,
+    }));
+    reducer.apply(adapter.add({
+      type: 'turn.prompt', turnId: 0, promptId, managed: true, origin,
+      input: [{ type: 'text', text: 'internal trigger' }], time: 2_000,
+    }));
+    const running = agentTranscriptSnapshotSchema.parse(transcript.snapshot());
+    expect(running.prompts).toEqual([]);
+    expect(transcript.getTurn('t0')).toMatchObject({ state: 'running', promptId });
+    expect(transcript.getTurn('t0')?.prompt).toBeUndefined();
+
+    reducer.apply(adapter.add({ type: 'turn.ended', turnId: 0, reason: 'cancelled', time: 3_000 }));
+    expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', promptId });
+    expect(transcript.snapshot().prompts).toEqual([]);
+  });
 });
 
 type DifferentialCommand =

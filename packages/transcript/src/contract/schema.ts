@@ -232,6 +232,7 @@ export const transcriptTurnSchema = z.object({
   ordinal: z.number().int(),
   state: turnStateSchema,
   origin: turnOriginSchema,
+  promptId: z.string().min(1).optional(),
   message: transcriptMessageIdentitySchema.optional(),
   delivery: messageDeliverySchema.optional(),
   prompt: z.string().optional(),

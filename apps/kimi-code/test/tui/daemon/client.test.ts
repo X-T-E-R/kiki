@@ -55,6 +55,25 @@ describe('DaemonClient', () => {
     expect(fake.agent.runShellCommand).toHaveBeenCalledWith({ command: 'pwd' });
   });
 
+  it('aborts an exact turn through the authenticated session command transport', async () => {
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({
+      json: async () => ({ code: 0, msg: 'ok', data: { aborted: true } }),
+    }) as Response);
+    const klient = createKlient({ endpoint: 'http://127.0.0.1:57580', token: 'secret', fetch: fetch as typeof globalThis.fetch });
+    const client = new DaemonClient({ url: 'http://127.0.0.1:57580', token: 'secret', klient });
+    try {
+      await expect(client.abortTurn('session 1', 0)).resolves.toEqual({ aborted: true });
+      expect(requestUrl(fetch.mock.calls[0]![0])).toBe('http://127.0.0.1:57580/api/sessions/session%201/turns/0:abort');
+      expect(fetch.mock.calls[0]?.[1]).toMatchObject({
+        method: 'POST',
+        headers: { authorization: 'Bearer secret' },
+        body: '{}',
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   it('delegates queued prompt timing changes through the session command transport', async () => {
     const fake = fakeKlient();
     fake.commands.timing.mockResolvedValue({

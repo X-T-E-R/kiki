@@ -2275,6 +2275,9 @@ export function appendLocalUserMessage(
   return bump(state, {
     busy: input.status === 'running' ? true : state.busy,
     activePromptId: input.status === 'running' ? input.promptId : state.activePromptId,
+    abortablePromptId: input.status === 'running' && state.abortableTurnId === undefined
+      ? input.promptId
+      : state.abortablePromptId,
     queuedPromptIds,
     queuedPromptMeta,
     blocks: [...blocks],
@@ -2493,6 +2496,10 @@ export function projectAgentTranscriptView(
     promptQueueHold: snapshot.meta.promptQueueHold,
     queuedPromptMeta,
     activePromptId: running?.promptId,
+    abortablePromptId: runningTurn === undefined
+      ? running?.promptId
+      : runningTurn.promptId ?? (runningTurn.origin.kind === 'user' ? running?.promptId : undefined),
+    abortableTurnId: runningTurn?.ordinal,
     pendingInteraction,
     todos: todos.at(-1)?.items ?? [],
     tasks: tasks.map(transcriptTaskToSessionTask),
@@ -2533,6 +2540,8 @@ export function applyTranscriptShell(
     session: snapshot.session,
     cursor: sessionCursorFromSnapshot(snapshot, previous),
     busy: snapshot.session.main_turn_active ?? (snapshot.in_flight_turn !== null),
+    abortablePromptId: snapshot.in_flight_turn?.current_prompt_id,
+    abortableTurnId: snapshot.in_flight_turn?.turn_id,
     model: snapshot.session.agent_config.model !== '' ? snapshot.session.agent_config.model : base.model,
     profile: snapshot.session.agent_config.profile ?? base.profile,
     permissionMode: snapshot.session.agent_config.permission_mode ?? base.permissionMode,

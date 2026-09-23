@@ -926,6 +926,12 @@ export function shouldHandleGlobalAbortOnEscape(input: {
     !input.terminalOpen && !input.inFormField;
 }
 
+export function canAbortActiveTurn(
+  state: Pick<ReturnType<SessionController['getState']>, 'busy' | 'abortablePromptId' | 'abortableTurnId'>,
+): boolean {
+  return state.busy && (state.abortablePromptId !== undefined || state.abortableTurnId !== undefined);
+}
+
 export function promptGoalObjective(
   options?: { readonly goalObjective?: string },
 ): string | undefined {
@@ -1558,7 +1564,7 @@ export function SessionView({
           inFormField,
         })) return;
         const current = controller.getState();
-        if (current.busy && current.activePromptId !== undefined) {
+        if (canAbortActiveTurn(current)) {
           event.preventDefault();
           void controller
             .abortActive()
@@ -2423,7 +2429,7 @@ export function SessionView({
       });
   }, [client, sessionId, t]);
 
-  const composerBusy = state.busy && state.activePromptId !== undefined;
+  const composerBusy = canAbortActiveTurn(state);
   // The subagent page is read-only chrome over the same session: active
   // geometry, no composer (as before this change).
   const seat = useMemo<ConversationSeat>(() => ({
