@@ -1143,6 +1143,68 @@ async fn open_host_path(
         .map_err(|error| format!("Kiki host-path task failed: {error}"))?
 }
 
+/// Open an http(s) URL in the system browser. Renderer `window.open` is
+/// unreliable in the desktop webview (wry rejects unhandled new-window
+/// requests), so device-code sign-in routes through this command instead.
+/// Only plain `http:`/`https:` URLs pass — every other scheme stays closed.
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url).map_err(|_| "Invalid URL".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Only http(s) URLs can be opened".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || open_url_in_browser(&url))
+        .await
+        .map_err(|error| format!("Kiki open-url task failed: {error}"))?
+}
+
+/// The same shell launch `open_with_default_app` uses, but for a URL: the
+/// opener resolves the default browser and returns after spawn, without
+/// waiting for the browser process to exit.
+#[cfg(target_os = "windows")]
+fn open_url_in_browser(url: &str) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let verb = wide_null(std::ffi::OsStr::new("open"));
+    let file = wide_null(std::ffi::OsStr::new(url));
+    // SAFETY: both pointers are NUL-terminated UTF-16 buffers that outlive the
+    // call; the rest are null. ShellExecuteW with the "open" verb is callable
+    // from any thread.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Per MSDN, a return value of 32 or less is an error code, not a handle.
+    if (result as usize) <= 32 {
+        return Err(format!("Cannot open {url}: shell error {}", result as usize));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_in_browser(url: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map_err(|error| format!("Cannot open {url}: {error}"))?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_url_in_browser(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map_err(|error| format!("Cannot open {url}: {error}"))?;
+    Ok(())
+}
+
 /// What the caller intends to do with a host path: writes tolerate a missing
 /// final component, and `open` additionally refuses executable files.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1204,19 +1266,29 @@ fn write_host_file_text_authorized(path: &Path, text: &str) -> Result<(), String
 /// content would be code execution, so `open` refuses them outright —
 /// reveal-in-folder stays allowed since selecting a file executes nothing.
 /// `.js` is listed because stock Windows associates "open" with wscript.
+/// The single-document `.url`, `.chm`, `.application` and `.SettingContent-ms`
+/// handlers launch external content or installers, so they are refused too.
 const EXECUTABLE_HOST_EXTENSIONS: &[&str] = &[
     "exe", "com", "pif", "scr", "cpl", "msi", "msp", "msc", "bat", "cmd", "ps1", "vbs", "vbe",
-    "js", "jse", "wsf", "wsh", "hta", "lnk", "reg",
+    "js", "jse", "wsf", "wsh", "hta", "lnk", "reg", "url", "chm", "application",
+    "settingcontent-ms",
 ];
 
 fn is_executable_host_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            EXECUTABLE_HOST_EXTENSIONS
-                .iter()
-                .any(|denied| extension.eq_ignore_ascii_case(denied))
-        })
+    // Windows' `ShellExecuteW` strips trailing dots and spaces from the final
+    // path component before resolving the file association, so `runme.exe.`
+    // and `runme.exe ` would open as `runme.exe`. Trim that tail before
+    // reading the extension so the denial matches what the shell opens.
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let trimmed = file_name.trim_matches(|c| c == '.' || c == ' ');
+    let Some(extension) = trimmed.rsplit_once('.').map(|(_, extension)| extension) else {
+        return false;
+    };
+    EXECUTABLE_HOST_EXTENSIONS
+        .iter()
+        .any(|denied| extension.eq_ignore_ascii_case(denied))
 }
 
 /// UNC (`\\server\share`), device-namespace (`\\.\…`), and verbatim (`\\?\…`)
@@ -2899,6 +2971,10 @@ mod tests {
             "C:/work/x.msi",
             "C:/work/x.lnk",
             "C:/work/x.js",
+            "C:/work/shortcut.url",
+            "C:/work/manual.chm",
+            "C:/work/setup.application",
+            "C:/work/spec.SettingContent-ms",
         ] {
             assert!(
                 check_host_path(Path::new(raw), HostPathOp::Open).is_err(),
@@ -2908,11 +2984,51 @@ mod tests {
     }
 
     #[test]
+    fn open_refuses_trailing_dots_and_spaces_the_shell_would_strip() {
+        for raw in [
+            "C:/work/runme.exe.",
+            "C:/work/runme.exe ",
+            "C:/work/runme.exe. .",
+            "C:/work/evil.ps1.",
+        ] {
+            assert!(
+                check_host_path(Path::new(raw), HostPathOp::Open).is_err(),
+                "{raw} must be refused"
+            );
+        }
+        // A dotfile with no extension after the tail is not an executable.
+        assert!(!is_executable_host_path(Path::new("C:/work/notes.txt.")));
+    }
+
+    #[test]
     fn executable_extension_detection_is_case_insensitive() {
         assert!(is_executable_host_path(Path::new("C:/work/Evil.EXE")));
         assert!(is_executable_host_path(Path::new("C:/work/run.Ps1")));
+        assert!(is_executable_host_path(Path::new("C:/work/shortcut.URL")));
+        assert!(is_executable_host_path(Path::new("C:/work/spec.SETTINGCONTENT-MS")));
         assert!(!is_executable_host_path(Path::new("C:/work/notes.txt")));
         assert!(!is_executable_host_path(Path::new("C:/work/no-extension")));
+    }
+
+    #[test]
+    fn open_external_url_accepts_http_and_https_only() {
+        // The happy paths parse and pass the scheme gate; the spawn itself is
+        // not exercised here (it would launch a real browser).
+        assert!(Url::parse("https://example.com/device").is_ok());
+        assert!(Url::parse("http://example.com/device").is_ok());
+        for raw in [
+            "file:///C:/Windows/System32/calc.exe",
+            "ms-msdt:test",
+            "search-ms:query=x",
+            "javascript:alert(1)",
+            "not a url",
+        ] {
+            let parsed = Url::parse(raw);
+            assert!(
+                parsed.is_err() || !matches!(parsed.unwrap().scheme(), "http" | "https"),
+                "{raw} must not pass the scheme gate"
+            );
+        }
     }
 
     #[cfg(target_os = "windows")]
