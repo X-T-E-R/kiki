@@ -325,27 +325,27 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
   core.accessor.get(IModelPricingService);
 
-  let postListenWarmup: Promise<void> | undefined;
   const runPostListenWarmup = async (): Promise<void> => {
     try {
       await core.accessor.get(ISessionIndex).prepare();
     } catch (error) {
+      if (shutdownController.signal.aborted) return;
       logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
         'session index prepare failed; list requests remain unavailable until recovery',
       );
     }
+    if (shutdownController.signal.aborted) return;
 
     try {
       await core.accessor.get(IWorkspaceService).list();
     } catch (error) {
+      if (shutdownController.signal.aborted) return;
       logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
         'workspace catalog startup sync failed',
       );
     }
-
-    core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
   };
 
   const app = Fastify({
@@ -457,7 +457,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     authFailureLimiter?.dispose();
     transcriptService.dispose();
     try {
-      await postListenWarmup;
       await drainSessionMetadataWrites();
       await core.accessor.get(ISessionIndexMirror).drain();
       await core.accessor.get(IMcpOAuthService).shutdown();
@@ -818,10 +817,22 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
 
-  postListenWarmup = runPostListenWarmup();
-
   await registration.update({ port: boundPort });
-  await postListenWarmup;
+  try {
+    core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
+  } catch (error) {
+    logger.warn(
+      { err: error instanceof Error ? error.message : String(error) },
+      'global search startup failed; server remains available',
+    );
+  }
+  void runPostListenWarmup().catch((error: unknown) => {
+    if (shutdownController.signal.aborted) return;
+    logger.warn(
+      { err: error instanceof Error ? error.message : String(error) },
+      'post-listen warmup failed; server remains available',
+    );
+  });
 
   if (opts.idleExitMs !== undefined) {
     const idleExitMs = opts.idleExitMs;

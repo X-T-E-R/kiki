@@ -198,8 +198,17 @@ let configTomlSeq = 0;
 async function writeConfigToml(dir: string, content: string): Promise<void> {
   configTomlSeq += 1;
   const tmpPath = join(dir, `config.toml.${process.pid}.${configTomlSeq}.tmp`);
+  const configPath = join(dir, 'config.toml');
   await writeFile(tmpPath, content, 'utf-8');
-  await rename(tmpPath, join(dir, 'config.toml'));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(tmpPath, configPath);
+      return;
+    } catch (error) {
+      if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'EPERM' || attempt >= 40) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+  }
 }
 
 describe('server-v2 /api prompts', () => {

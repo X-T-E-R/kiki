@@ -5,11 +5,15 @@ import { join } from 'node:path';
 import {
   IAgentContextMemoryService,
   IAgentLifecycleService,
+  ISessionIndex,
+  IWorkspaceService,
   IWireService,
   getLiveSessionById,
   type ContextMessage,
+  type SessionIndexStatus,
 } from '@kiki/agent-core-v2';
-import { afterEach, describe, expect, it } from 'vitest';
+import { Event } from '@kiki/agent-core-v2/_base/event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
 import { authHeaders, authedFetch } from './helpers/auth';
@@ -86,6 +90,125 @@ describe('kap-server cold start', () => {
     if (home !== undefined) {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
+    }
+  });
+
+  it('returns a listening server while the session index is still preparing', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kap-server-index-warmup-'));
+    const status: SessionIndexStatus = {
+      source: 'authoritative',
+      state: 'uninitialized',
+      degradedCount: 0,
+    };
+    let releasePrepare!: (value: SessionIndexStatus) => void;
+    const preparing = new Promise<SessionIndexStatus>((resolve) => {
+      releasePrepare = resolve;
+    });
+    const prepare = vi.fn(() => preparing);
+    const sessionIndex: ISessionIndex = {
+      _serviceBrand: undefined,
+      prepare,
+      onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
+      status: () => status,
+      get: async () => undefined,
+      listRecent: async () => ({ items: [], nextCursor: undefined }),
+      count: async () => 0,
+      remove: async () => {},
+    };
+    const starting = startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [[ISessionIndex, sessionIndex]],
+    }).then((running) => {
+      server = running;
+      base = `http://127.0.0.1:${running.port}`;
+      return running;
+    });
+
+    let closing: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalled(), { timeout: 5_000 });
+      await vi.waitFor(() => expect(server).toBeDefined(), { timeout: 5_000 });
+      const healthResponse = await fetch(`${base}/api/healthz`);
+      expect(healthResponse.status).toBe(200);
+      const models = await getJson<{ items: unknown[] }>(server!, '/api/models');
+      expect(models.status).toBe(200);
+      expect(models.body.code).toBe(0);
+
+      const createdResponse = await fetch(`${base}/api/sessions`, {
+        method: 'POST',
+        headers: authHeaders(server!, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ metadata: { cwd: home } }),
+      });
+      const created = (await createdResponse.json()) as Envelope<SessionContract>;
+      expect(created.code).toBe(0);
+      const searchResponse = await authedFetch(server!, base, '/api/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'unmatched', container: { session_id: created.data.id } }),
+      });
+      const search = (await searchResponse.json()) as Envelope<{ source: string }>;
+      expect(search.code).toBe(0);
+      expect(search.data.source).toBe('live');
+
+      let closed = false;
+      closing = server!.close().then(() => { closed = true; });
+      await vi.waitFor(() => expect(closed).toBe(true), { timeout: 5_000 });
+      server = undefined;
+    } finally {
+      releasePrepare(status);
+      await starting;
+      await closing;
+    }
+  });
+
+  it('can close while the optional workspace warmup is still pending', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kap-server-workspace-warmup-'));
+    let releaseList!: (value: readonly never[]) => void;
+    const pendingList = new Promise<readonly never[]>((resolve) => {
+      releaseList = resolve;
+    });
+    const list = vi.fn(() => pendingList);
+    const workspaceService: IWorkspaceService = {
+      _serviceBrand: undefined,
+      list,
+      get: async () => undefined,
+      createOrTouch: async () => { throw new Error('unexpected workspace write'); },
+      update: async () => undefined,
+      delete: async () => {},
+    };
+    const starting = startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [[IWorkspaceService, workspaceService]],
+    }).then((running) => {
+      server = running;
+      return running;
+    });
+
+    try {
+      await vi.waitFor(() => expect(list).toHaveBeenCalled(), { timeout: 5_000 });
+      await vi.waitFor(() => expect(server).toBeDefined(), { timeout: 5_000 });
+      let closed = false;
+      const closing = server!.close().then(() => {
+        closed = true;
+      });
+      try {
+        await vi.waitFor(() => expect(closed).toBe(true), { timeout: 5_000 });
+      } finally {
+        releaseList([]);
+        await closing;
+        server = undefined;
+      }
+    } finally {
+      releaseList([]);
+      await starting;
     }
   });
 

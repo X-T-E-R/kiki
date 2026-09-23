@@ -302,6 +302,10 @@ export class GlobalSearchService implements IGlobalSearchService {
   private summaries = new Map<string, SessionSummary>();
   private sessionSourceMtimes = new Map<string, number>();
   private disposed = false;
+  private resolveSyncStop!: () => void;
+  private readonly syncStop = new Promise<void>((resolve) => {
+    this.resolveSyncStop = resolve;
+  });
   /** Set while `reindex()` swaps the db — syncs started meanwhile are no-ops. */
   private reindexing = false;
   /** Live-transcript source for the in-memory route; null until start.ts wires it. */
@@ -354,6 +358,7 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   dispose(): void {
     this.disposed = true;
+    this.resolveSyncStop();
     this.clearSessionIndexStatusWaiter();
     if (this.syncTimer !== null) {
       clearTimeout(this.syncTimer);
@@ -445,8 +450,8 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   private async runSync(): Promise<void> {
     if (this.disposed || this.reindexing) return;
-    const indexStatus = await this.sessionIndex.prepare();
-    if (this.disposed || this.reindexing) return;
+    const indexStatus = await Promise.race([this.sessionIndex.prepare(), this.syncStop]);
+    if (indexStatus === undefined || this.disposed || this.reindexing) return;
     if (!this.sessionIndexUsable(indexStatus)) {
       this.syncSkippedForReadiness = true;
       this.waitForSessionIndexReady();
