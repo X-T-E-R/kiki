@@ -10,6 +10,20 @@ import {
   seedSnapshotEntities,
 } from './fixture-transcript.mjs';
 
+/** Every user-role text frame in the canonical main turn, in step order. */
+function userFrames(snapshot) {
+  return (snapshot.items.find((item) => item.kind === 'turn')?.steps ?? []).flatMap((step) =>
+    step.frames
+      .filter((frame) => frame.kind === 'text' && frame.role === 'user')
+      .map((frame) => ({
+        stepId: step.stepId,
+        frameId: frame.frameId,
+        text: frame.text,
+        deliveredAt: frame.delivery?.deliveredAt,
+      })),
+  );
+}
+
 test('projects a basic stream of session_event frames into reset/ops', () => {
   const projector = new TranscriptProjector('session_fixture_basic');
   const started = projector.ingestFrame({
@@ -306,6 +320,113 @@ test('prompt.steered completes parked promptIds and does not rewrite the running
   assert.equal(parked?.userMessageId, 'um-b');
   assert.equal(running?.status, 'running');
   assert.equal(running?.steeredAt, undefined);
+});
+
+test('a steer receipt stays strip-only until the canonical delivery lands', () => {
+  const projector = new TranscriptProjector('session_fixture_queue');
+  projector.ingestFrame({
+    type: 'turn.started',
+    payload: { turnId: 1, origin: { kind: 'user' }, prompt: 'A: hold the floor.' },
+  }, { promptId: 'p-a', userMessageId: 'um-a', content: [{ type: 'text', text: 'A: hold the floor.' }] });
+  projector.ingestFrame({
+    type: 'prompt.queued',
+    payload: {
+      promptId: 'p-b',
+      userMessageId: 'um-b',
+      content: [{ type: 'text', text: 'B: steer me in.' }],
+      createdAt: '2026-01-01T00:00:02.000Z',
+    },
+  });
+  // The receipt clears the queue row and settles the parked prompt. It is not a
+  // delivery, so no user frame may exist yet — even though the prompt now reads
+  // as completed + steered.
+  projector.ingestFrame({
+    type: 'prompt.steered',
+    payload: {
+      activePromptId: 'p-a',
+      promptIds: ['p-b'],
+      content: [{ type: 'text', text: 'B: steer me in.' }],
+      steeredAt: '2026-01-01T00:00:03.000Z',
+    },
+  }, { promptId: 'p-a', userMessageId: 'um-a' });
+  assert.deepEqual(userFrames(projector.snapshot('main')), []);
+
+  // The running turn's next step is the delivery point: the step boundary opens
+  // first, then the accepted message is appended to that step's context.
+  projector.ingestFrame({ type: 'turn.step.completed', payload: { turnId: 1, step: 1 } });
+  projector.ingestFrame({ type: 'turn.step.started', payload: { turnId: 1, step: 2 } });
+  projector.ingestFrame({
+    type: 'context.append_message',
+    payload: {
+      message: {
+        id: 'um-b',
+        role: 'user',
+        content: [{ type: 'text', text: 'B: steer me in.' }],
+        origin: { kind: 'user' },
+      },
+      delivery: {
+        deliveryId: 'dlv-1',
+        messageId: 'um-b',
+        turnId: 1,
+        step: 2,
+        deliveredAt: '2026-01-01T00:00:04.000Z',
+        origin: 'queue',
+      },
+    },
+  });
+
+  const snapshot = projector.snapshot('main');
+  const turn = snapshot.items.find((item) => item.kind === 'turn');
+  assert.deepEqual(userFrames(snapshot), [
+    { stepId: 't1.2', frameId: 'um-b', text: 'B: steer me in.', deliveredAt: '2026-01-01T00:00:04.000Z' },
+  ]);
+  // Anchored on the boundary step, not the step the turn was parked in.
+  assert.equal(turn.steps.find((step) => step.stepId === 't1.1').frames.length, 0);
+
+  // Replaying the same delivery re-upserts the one frame instead of stacking a
+  // duplicate user message.
+  projector.ingestFrame({
+    type: 'context.append_message',
+    payload: {
+      message: {
+        id: 'um-b',
+        role: 'user',
+        content: [{ type: 'text', text: 'B: steer me in.' }],
+        origin: { kind: 'user' },
+      },
+      delivery: {
+        deliveryId: 'dlv-1',
+        messageId: 'um-b',
+        turnId: 1,
+        step: 2,
+        deliveredAt: '2026-01-01T00:00:04.000Z',
+        origin: 'queue',
+      },
+    },
+  });
+  assert.equal(userFrames(projector.snapshot('main')).length, 1);
+});
+
+test('a delivery without a step boundary is dropped, not invented', () => {
+  const projector = new TranscriptProjector('session_fixture_queue');
+  projector.ingestFrame({
+    type: 'turn.started',
+    payload: { turnId: 1, origin: { kind: 'user' }, prompt: 'A: hold the floor.' },
+  }, { promptId: 'p-a', userMessageId: 'um-a' });
+  // Step 2 never opened: the message has nowhere to become durable context.
+  projector.ingestFrame({
+    type: 'context.append_message',
+    payload: {
+      message: {
+        id: 'um-b',
+        role: 'user',
+        content: [{ type: 'text', text: 'B: steer me in.' }],
+        origin: { kind: 'user' },
+      },
+      delivery: { deliveryId: 'dlv-1', messageId: 'um-b', turnId: 1, step: 2, origin: 'queue' },
+    },
+  });
+  assert.deepEqual(userFrames(projector.snapshot('main')), []);
 });
 
 test('seeds legacy snapshot tasks and approvals into the canonical main transcript', () => {

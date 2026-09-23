@@ -292,6 +292,11 @@ class FixtureSession {
     this.abortRequested = false;
     this.waiters = []; // [{kind, resolve, payload?}]
     this.releaseArmed = false; // one-shot gate for { waitFor: 'release' }
+    // Prompts whose `:steer` was accepted while a turn ran. The receipt only
+    // clears the queue row; the message becomes durable context at the running
+    // turn's next step boundary (see deliverPendingSteers).
+    this.pendingSteers = []; // [{promptId, userMessageId, content, origin, turnId}]
+    this.activeTurnId = undefined; // turn the running script currently owns
     // Prompt queue mirroring kap-server's {active, queued} scheduler surface.
     // Scenarios may seed a running/queued backlog for list-prompts consumers:
     // snapshot entries `active_prompt` / `queued_prompts` carry the PromptItem
@@ -643,6 +648,8 @@ class FixtureServer {
     if (partial.type !== 'event.session.history_rewritten') {
       this.emitTranscriptFromFrame(session, frame);
     }
+    // A step beginning is where an accepted steer becomes durable context.
+    if (partial.type === 'turn.step.started') this.deliverPendingSteers(session, frame);
     // keep the session record honest for the polling sidebar
     if (partial.type === 'event.session.work_changed') {
       Object.assign(session.record, {
@@ -670,6 +677,49 @@ class FixtureServer {
         op.interaction = structuredClone(interactions.find((entry) => entry.interactionId === op.interaction.interactionId));
       }
       this.fanoutTranscriptOps(session, batch.agentId, batch);
+    }
+  }
+
+  /**
+   * Flush the steers the running turn accepted into the step boundary that just
+   * opened. The engine parks an accepted steer and lets the next step's context
+   * append deliver it (a managed `turn.steer` is only the header), so the
+   * fixture emits the canonical `context.append_message` delivery here, as a
+   * transcript fact rather than a session event.
+   */
+  deliverPendingSteers(session, boundary) {
+    if (session.pendingSteers.length === 0) return;
+    const pending = session.pendingSteers;
+    session.pendingSteers = [];
+    const turnId = boundary.payload?.turnId;
+    const step = boundary.payload?.step ?? 1;
+    for (const steer of pending) {
+      // Another turn's boundary is not this steer's delivery point.
+      if (steer.turnId !== undefined && turnId !== undefined && steer.turnId !== turnId) {
+        session.pendingSteers.push(steer);
+        continue;
+      }
+      this.emitTranscriptFromFrame(session, {
+        type: 'context.append_message',
+        payload: {
+          message: {
+            id: steer.userMessageId,
+            role: 'user',
+            content: steer.content,
+            origin: steer.origin,
+          },
+          delivery: {
+            deliveryId: nextId('dlv'),
+            messageId: steer.userMessageId,
+            turnId,
+            step,
+            deliveredAt: now(),
+            // The queue→steer path hands its step request the `queue` delivery
+            // origin (promptService), which the context append then records.
+            origin: 'queue',
+          },
+        },
+      });
     }
   }
 
@@ -875,11 +925,17 @@ class FixtureServer {
         break;
       case 'turn.started':
         session.record.busy = true;
+        session.activeTurnId = payload.turnId;
         break;
       case 'turn.ended':
         if ((frame.agentId ?? payload.agentId ?? 'main') === 'main') {
           session.record.busy = false;
           session.record.pending_interaction = 'none';
+          // A turn that ends before its next step never accepts its steers: the
+          // engine drops unlaunched steer requests, so a stale prompt must not
+          // land in an unrelated later turn.
+          session.pendingSteers = [];
+          session.activeTurnId = undefined;
         }
         break;
       case 'goal.updated':
@@ -2257,9 +2313,12 @@ class FixtureServer {
     const steerMatch = /^\/prompts\/([^/]+):steer$/.exec(tail);
     if (steerMatch !== null) {
       // Mirrors kap-server: the queued prompt leaves the queue and its content
-      // merges into the RUNNING turn (prompt.steered); the turn keeps running
-      // and the steered prompt settles with it. Without an active prompt the
-      // real route answers PROMPT_NOT_FOUND (40402).
+      // merges into the RUNNING turn (prompt.steered). The receipt is queue
+      // bookkeeping only — the content is not context yet; the running turn's
+      // next step boundary delivers it (deliverPendingSteers), so the transcript
+      // gains its user frame there and not one frame earlier. The turn keeps
+      // running and the steered prompt settles with it. Without an active
+      // prompt the real route answers PROMPT_NOT_FOUND (40402).
       const promptId = steerMatch[1];
       const queuedIndex = session.queuedPrompts.findIndex((item) => item.prompt_id === promptId);
       if (queuedIndex < 0 || session.activePrompt === null) {
@@ -2275,6 +2334,15 @@ class FixtureServer {
           steeredAt: now(),
         },
       });
+      session.pendingSteers.push({
+        promptId,
+        userMessageId: item.user_message_id,
+        content: item.content,
+        origin: { kind: 'user' },
+        turnId: session.activeTurnId,
+      });
+      // An accepted steer is what opens the running turn's next step.
+      this.resolveWaiters(session, 'advance');
       return this.envelope(res, { steered: true, prompt_ids: [promptId] });
     }
     const replaceMatch = /^\/prompts\/([^/]+):replace$/.exec(tail);
@@ -2518,6 +2586,9 @@ class FixtureServer {
         const parked = session.waiters.filter((w) => w.kind === 'release').length;
         if (parked > 0) this.resolveWaiters(session, 'release');
         else session.releaseArmed = true;
+        // A release also lets a turn parked on its next step move on, so a
+        // scenario's hold gate never outlives the operator's release.
+        this.resolveWaiters(session, 'advance');
         return this.envelope(res, { released: parked, armed: parked === 0 });
       }
       case 'burst': {

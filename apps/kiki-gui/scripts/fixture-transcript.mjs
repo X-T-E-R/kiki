@@ -956,6 +956,47 @@ export class TranscriptProjector {
         projected = { agentId, ops };
         break;
       }
+      case 'context.append_message': {
+        // Canonical durable delivery. The engine appends an accepted message to
+        // the running turn's context at a step boundary, so the record carries
+        // the message *and* the `delivery` anchor naming that turn + step. Only
+        // this establishes the user frame: `prompt.steered` is queue
+        // bookkeeping (the row leaves the strip) and must never synthesize a
+        // bubble on its own, because a turn can end before the message lands.
+        const message = payload.message;
+        const delivery = payload.delivery;
+        if (message?.role !== 'user' || delivery === undefined) break;
+        const messageId = delivery.messageId ?? message.id;
+        if (typeof messageId !== 'string' || messageId === '') break;
+        const turnId =
+          delivery.turnId === undefined ? agent.live.turnId : turnIdOf({ turnId: delivery.turnId });
+        if (turnId === undefined) break;
+        const stepOrdinal = delivery.step ?? 1;
+        const stepId = delivery.stepId ?? stepIdOf(turnId, stepOrdinal);
+        // A delivery lands in a step the turn already opened: the boundary is
+        // what makes the message durable, so a delivery with no step is not one.
+        if (findStep(findTurn(agent.snapshot, turnId), stepId) === undefined) break;
+        projected = {
+          agentId,
+          ops: [
+            {
+              op: 'frame.upsert',
+              turnId,
+              stepId,
+              frame: {
+                kind: 'text',
+                frameId: messageId,
+                part: { partId: messageId, messageId, revision: 0, provenance: { source: 'engine' } },
+                role: 'user',
+                text: textOfMessage(message),
+                origin: message.origin ?? { kind: 'user' },
+                delivery: { ...delivery, messageId, turnId, stepId, step: stepOrdinal },
+              },
+            },
+          ],
+        };
+        break;
+      }
       case 'prompt.replaced': {
         // In-place content swap: the prompt keeps its queue slot, so carry the
         // previous record forward (prompt.upsert replaces, it does not merge).

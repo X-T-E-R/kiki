@@ -13,6 +13,10 @@ const done = (turnId) => [
  * while A runs must surface immediately with a Queued marker, promote to
  * running when A finishes, and support cancellation while parked.
  *
+ * A's turn holds its first step open until an accepted steer (or a release)
+ * opens the next one, which is where a steered message becomes durable context
+ * — mirroring the engine, where a managed steer is only a header.
+ *
  * Turn ids come from a module counter so repeated prompts never reuse one —
  * matches the server's per-session monotonic turn numbering.
  */
@@ -31,8 +35,15 @@ export default {
         { frame: { type: 'turn.started', payload: { turnId, origin: { kind: 'user' }, prompt: text } } },
         { frame: { type: 'event.session.work_changed', payload: { busy: true, pending_interaction: 'none' } } },
         { frame: { type: 'assistant.delta', offset: 0, payload: { turnId, delta: 'A holds the floor.' } } },
-        { waitFor: 'release' },
         { frame: { type: 'assistant.delta', offset: 18, payload: { turnId, delta: ' A is done.' } } },
+        // A holds step 1 open until its next step is warranted: either the
+        // operator releases the turn or an accepted steer opens the step the
+        // steered message belongs in. That boundary is the only place a queued
+        // prompt can turn into durable context — its receipt never paints.
+        { waitFor: 'advance' },
+        { frame: { type: 'turn.step.completed', payload: { turnId, step: 1 } } },
+        { frame: { type: 'turn.step.started', payload: { turnId, step: 2 } } },
+        { waitFor: 'release' },
         ...done(turnId),
       ];
     }
