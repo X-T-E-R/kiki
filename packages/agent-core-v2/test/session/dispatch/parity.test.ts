@@ -52,6 +52,7 @@ import {
   type AgentProfile,
   type ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { applyLease } from '#/app/agentProfileCatalog/applySubagentLease';
 import type {
   SpawnConstraints,
   SubagentLease,
@@ -736,6 +737,7 @@ function createLane(
       return restoredHandle;
     }
     const resolved = binding?.resolvedProfile ?? profile;
+    const leased = applyLease(resolved, binding?.lease);
     const requestedBinding = {
       modelAlias: binding?.model ?? resolved.modelAlias,
       thinkingEffort: binding?.thinking ?? resolved.thinkingEffort ?? 'off',
@@ -765,9 +767,9 @@ function createLane(
       activeToolNames: resolved.tools,
       disallowedTools: resolved.disallowedTools,
       executorId: resolved.executor,
-      subagentPolicy: resolved.subagentPolicy,
-      subagentDeclaration: resolved.subagentDeclaration,
-      subagents: resolved.subagents,
+      subagentPolicy: leased.subagentPolicy,
+      subagentDeclaration: leased.subagentDeclaration,
+      subagents: leased.subagents,
       dispatchDecision: binding?.dispatchDecision,
       spawnPolicy: binding?.spawnPolicy,
       appliedLease: binding?.lease,
@@ -1348,6 +1350,47 @@ describe('AgentRun and dispatch parity golden', () => {
     await (await grandchild.started).completion;
     await dispatch.launch({ ...input('main'), signal: new AbortController().signal });
     expect(lane.lifecycleCreate).toHaveBeenCalledTimes(4);
+  });
+
+  it('rejects a grandchild outside an implicitly strict child list after a widening caller lease', async () => {
+    const lane = createLane(disposables, 'internal');
+    const reviewer = normalizeAgentProfile({
+      name: 'reviewer', modelAlias: 'parity-model', systemPrompt: () => 'reviewer',
+    });
+    const catalog = lane.ix.get(ISessionAgentProfileCatalog);
+    Object.assign(catalog, {
+      get: (name: string) => [parityProfile, reviewer].find((item) => item.name === name),
+      list: () => [parityProfile, reviewer],
+    });
+    Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), {
+      subagentLeases: { coder: { ...parityLease, subagents: ['reviewer'] } },
+    });
+    const dispatch = lane.ix.get(ISessionDispatchService);
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    const child = await dispatch.launch({
+      requesterAgentId: 'main', delegator: { kind: 'agent', agentId: 'main' },
+      profileName: 'coder', message: 'work', parentTurnId: 1, workDir: '/workspace',
+      runtime, signal: new AbortController().signal,
+    });
+    const started = await child.started;
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    expect(child.child.agent.accessor.get(IAgentProfileService).data()).toMatchObject({
+      subagentDeclaration: { kind: 'set', names: [] }, subagents: [],
+    });
+
+    await expect(dispatch.launch({
+      requesterAgentId: child.child.agentId,
+      delegator: { kind: 'agent', agentId: child.child.agentId },
+      profileName: 'reviewer', message: 'work', parentTurnId: 1, workDir: '/workspace',
+      runtime, signal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      code: 'agent.type_not_allowed',
+      details: { profileName: 'reviewer', allowlist: [] },
+    });
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    expect(lane.subagentRun).toHaveBeenCalledTimes(1);
+    lane.completions[0]!.resolve({ summary: 'child done' });
+    await started.completion;
   });
 
   it('loads profile_file through AgentRun without registering its name or hardening unmarked recommendations', async () => {
