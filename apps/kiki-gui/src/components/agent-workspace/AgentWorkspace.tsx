@@ -119,6 +119,13 @@ export interface AgentWorkspaceProps {
   readonly inheritMediaPreview?: boolean;
   /** Header preview-panel toggle; suppressed where the workspace IS the panel. */
   readonly showPreviewToggle?: boolean;
+  /**
+   * Header rail open/close toggle (the shared rail's own affordance, the same
+   * control the main session header renders). Off where the toggle's railOpen
+   * state is a local no-op — the embedded panel tab, whose rail lives in the
+   * main session header.
+   */
+  readonly showRailToggle?: boolean;
   /** Header breadcrumb; suppressed in narrow containers (the relations row stays). */
   readonly showBreadcrumb?: boolean;
 }
@@ -154,8 +161,11 @@ function AgentWorkspaceHeader({
   effort,
   crumbs,
   forest,
+  railOpen,
+  onToggleRail,
   navigation,
   showPreviewToggle,
+  showRailToggle,
   showBreadcrumb,
 }: {
   target: AgentWorkspaceTarget;
@@ -164,8 +174,12 @@ function AgentWorkspaceHeader({
   effort: string | undefined;
   crumbs: readonly AgentTreeNode[];
   forest: AgentForest;
+  railOpen: boolean;
+  onToggleRail: () => void;
   navigation: AgentWorkspaceNavigation;
   showPreviewToggle: boolean;
+  /** Off in the embedded panel tab: the toggle's railOpen state is a local no-op. */
+  showRailToggle: boolean;
   /** Off in narrow containers (tabs): the relations row below keeps the navigation. */
   showBreadcrumb: boolean;
 }) {
@@ -205,6 +219,26 @@ function AgentWorkspaceHeader({
         ) : null}
 
         {showPreviewToggle ? <PreviewToggleButton /> : null}
+        {/* The shared rail's own open/close affordance — the same toggle the
+            main session header renders (data-agent-rail-toggle). This is the
+            rail's collapsible control, not a view-level hide button. */}
+        {showRailToggle ? (
+          <button
+            type="button"
+            onClick={onToggleRail}
+            title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
+            aria-label={t('sv.togglePanelAria')}
+            aria-expanded={railOpen}
+            data-agent-rail-toggle
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
+              railOpen
+                ? 'bg-accent-soft text-accent'
+                : 'text-ink-faint hover:bg-paper hover:text-ink'
+            }`}
+          >
+            <PanelIcon className="h-[13px] w-[13px]" />
+          </button>
+        ) : null}
       </header>
       <div className="shrink-0 border-b border-hairline px-4 py-2 text-[11px]">
         <AgentRelations
@@ -234,6 +268,7 @@ export function AgentWorkspace({
   slots: slotsOverride,
   inheritMediaPreview = false,
   showPreviewToggle = true,
+  showRailToggle = true,
   showBreadcrumb = true,
 }: AgentWorkspaceProps) {
   const { t } = useI18n();
@@ -495,8 +530,11 @@ export function AgentWorkspace({
               effort={displayEffort}
               crumbs={crumbs}
               forest={forest}
+              railOpen={railOpen}
+              onToggleRail={onToggleRail}
               navigation={navigation}
               showPreviewToggle={showPreviewToggle}
+              showRailToggle={showRailToggle}
               showBreadcrumb={showBreadcrumb}
             />,
             slots.header,

@@ -53,7 +53,19 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderRail({ subagent, empty = false }: { subagent?: SubagentRailContext; empty?: boolean } = {}) {
+async function renderRail({
+  subagent,
+  empty = false,
+  stateTasks,
+  ownerAgentId,
+}: {
+  subagent?: SubagentRailContext;
+  empty?: boolean;
+  /** Main-session tasks; the child-only set arrives via `subagent`'s tasks. */
+  stateTasks?: readonly Task[];
+  /** Rail cancel/detail owner scope (the focused agent's task service). */
+  ownerAgentId?: string;
+} = {}) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -63,10 +75,11 @@ async function renderRail({ subagent, empty = false }: { subagent?: SubagentRail
       <MemoryRouter>
         <I18nProvider>
           <RightRail
-            state={{ ...createViewState('sess-1'), tasks: empty ? [] : tasks }}
+            state={{ ...createViewState('sess-1'), tasks: (empty ? [] : stateTasks) ?? tasks }}
             forest={empty ? buildAgentForest([], [{ agentId: 'main', name: 'Main' }]) : forest}
             selectedAgentId={subagent?.agentId}
             subagent={subagent}
+            taskOwnerAgentId={ownerAgentId}
             onCancelTask={() => {}}
             onStopAgentTask={async () => {}}
             onOpenSubagent={() => {}}
@@ -106,8 +119,42 @@ describe('RightRail shared chapters', () => {
     }
   });
 
-  it('renders the same tree, background tasks, bulk subagent stop and session chapters in both modes', async () => {
-    const main = await renderRail();
+  it('keeps the focused subagent task set and owner scope consistent with the routed page', async () => {
+    // The focused agent's own tasks lead, the main-session set fills in
+    // deduped by id (SessionView's merge), and the cancel/detail owner scope
+    // is the focused agent — exactly what the routed page shows.
+    const childTasks: Task[] = [
+      {
+        id: 'child-bash-1', session_id: 'sess-1', kind: 'bash',
+        description: 'Focused agent dev server',
+        status: 'running', created_at: '2026-01-02T00:00:00.000Z',
+      },
+    ];
+    const mainTasks: Task[] = [
+      {
+        id: 'background-1', session_id: 'sess-1', kind: 'bash', description: 'Dev server',
+        status: 'running', created_at: '2026-01-01T00:00:00.000Z',
+      },
+      // A subagent-kind row in either set stays out of the task list.
+      {
+        id: 'subagent-1', session_id: 'sess-1', kind: 'subagent', agent_id: 'agent-1',
+        description: 'Researcher', status: 'running', created_at: '2026-01-03T00:00:00.000Z',
+      },
+    ];
+    const rail = await renderRail({
+      subagent: context,
+      stateTasks: [...childTasks, ...mainTasks],
+      ownerAgentId: context.agentId,
+    });
+
+    // Both task sets listed; the focused agent's own task never deduped away.
+    expect(rail.querySelector('[data-task-open="child-bash-1"]')).not.toBeNull();
+    expect(rail.querySelector('[data-task-open="background-1"]')).not.toBeNull();
+    // Subagent-kind rows stay out of the background-task list in either set.
+    expect(rail.querySelector('[data-task-open="subagent-1"]')).toBeNull();
+  });
+
+  it('renders the same tree, background tasks, bulk subagent stop and session chapters in both modes', async () => {    const main = await renderRail();
     const child = await renderRail({ subagent: context });
 
     expect(sharedChapters(main)).toEqual(sharedChapters(child));

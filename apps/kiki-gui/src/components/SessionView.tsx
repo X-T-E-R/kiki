@@ -2218,6 +2218,23 @@ export function SessionView({
           pendingInteractionCount: panelFocusPendingCount,
           onJumpToSpawn: handlePanelFocusJumpToSpawn,
         };
+  // Panel-focus rail state: the background-task set and the cancel/detail
+  // owner scope must match what the routed agent page shows for the same
+  // focus. The focused agent's own tasks (registered on its parent's task
+  // service) lead; main-session tasks fill in, deduped by id so a task the
+  // focused agent owns is never listed twice.
+  const focusTaskOwner = panelFocusAgent;
+  const focusState = useMemo(() => {
+    if (panelFocusAgent === undefined) return state;
+    const seen = new Set(panelAgentState.tasks.map((task) => task.id));
+    return {
+      ...state,
+      tasks: [
+        ...panelAgentState.tasks,
+        ...state.tasks.filter((task) => !seen.has(task.id)),
+      ],
+    };
+  }, [panelFocusAgent, panelAgentState.tasks, state]);
 
   const handleResolveApproval = useCallback(
     (
@@ -2836,10 +2853,11 @@ export function SessionView({
         ? createPortal(
             <RightRail
               className={`app-rail ${railOpen ? 'open' : ''}`}
-              state={state}
+              state={focusState}
               forest={forest}
               selectedAgentId={panelFocusAgent}
               subagent={focusSubagent}
+              taskOwnerAgentId={focusTaskOwner}
               onCancelTask={handleCancelTask}
               onStopAgentTask={stopAgentTask}
               onOpenSubagent={openAgent}

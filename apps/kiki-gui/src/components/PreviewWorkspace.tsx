@@ -455,6 +455,7 @@ function AgentTabWorkspace({
           slots={slots}
           inheritMediaPreview
           showPreviewToggle={false}
+          showRailToggle={false}
           showBreadcrumb={false}
         />
       </div>

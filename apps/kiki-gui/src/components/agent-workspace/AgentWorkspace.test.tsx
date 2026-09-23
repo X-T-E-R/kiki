@@ -699,19 +699,44 @@ function renderWorkspace(overrides: Partial<ComponentProps<typeof AgentWorkspace
 
 it('mounts the owned media preview provider with the shared api ref by default', async () => {
   const previewRef = createRef<MediaPreviewApi>();
-  await renderWorkspace({ previewApiRef: previewRef });
+  const onToggleRail = vi.fn();
+  await renderWorkspace({ previewApiRef: previewRef, onToggleRail });
   await settle();
 
   expect(harness.mediaProviderProps.length).toBeGreaterThan(0);
   expect(harness.mediaProviderProps[0]?.apiRef).toBe(previewRef);
   expect(header.querySelector('[data-preview-toggle-probe]')).not.toBeNull();
-  // No view-level rail toggle: the shared rail owns its own show/hide in the
-  // main session header, and the workspace renders no second one.
-  expect(header.querySelector('[data-agent-rail-toggle]')).toBeNull();
+  // The shared rail's open/close affordance rides the workspace header — the
+  // same toggle the main session header renders (not a view-level hide
+  // button), so a closed rail is reopenable from the agent page too.
+  const toggle = header.querySelector<HTMLButtonElement>('[data-agent-rail-toggle]');
+  expect(toggle).not.toBeNull();
+  expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+  await act(async () => { toggle?.click(); });
+  expect(onToggleRail).toHaveBeenCalledTimes(1);
 });
 
-it('embeds into caller-provided slots: no shell, no owned preview provider, no panel toggle', async () => {
-  harness.shellEnabled = false;
+it('keeps the rail reopenable on the agent page after a closed rail (wide-screen route state)', async () => {
+  // Main page closes the rail, then the user enters the same session's
+  // subagent route: railOpen=false survives, the agent header replaces the
+  // main header, and the shared rail's own toggle must still be reachable.
+  const onToggleRail = vi.fn();
+  await renderWorkspace({ railOpen: false, onToggleRail });
+  await settle();
+
+  const toggle = header.querySelector<HTMLButtonElement>('[data-agent-rail-toggle]');
+  expect(toggle).not.toBeNull();
+  expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+  expect(toggle?.getAttribute('title')).toBe('Show panel');
+  // The toggle acts on the shared rail (the caller's state), not a local one.
+  await act(async () => { toggle?.click(); });
+  expect(onToggleRail).toHaveBeenCalledTimes(1);
+  // No back-to-session button and no view-level hide button: navigation lives
+  // in the breadcrumb/relations row, and the toggle is the rail's own control.
+  expect(header.textContent).not.toContain('← Back to session');
+});
+
+it('embeds into caller-provided slots: no shell, no owned preview provider, no panel toggle', async () => {  harness.shellEnabled = false;
   const localHeader = document.createElement('div');
   document.body.append(localHeader);
   try {
@@ -731,7 +756,10 @@ it('embeds into caller-provided slots: no shell, no owned preview provider, no p
     await settle();
 
     // The header chrome portals into the provided slot even with no ambient shell.
-    expect(localHeader.querySelector('[data-agent-rail-toggle]')).toBeNull();
+    // The rail toggle defaults on; an embedding shell that passes
+    // showRailToggle={false} (the preview tab, whose railOpen is a local
+    // no-op) suppresses it.
+    expect(localHeader.querySelector('[data-agent-rail-toggle]')).not.toBeNull();
     expect(header.querySelector('[data-agent-rail-toggle]')).toBeNull();
     // Ambient preview provider inherited: no owned provider, no apiRef seat.
     expect(harness.mediaProviderProps).toHaveLength(0);
