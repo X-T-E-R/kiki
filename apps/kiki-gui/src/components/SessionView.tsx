@@ -28,7 +28,7 @@ import { RightRail } from './RightRail';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
 import { Transcript, useStableForest, type TranscriptRowActions } from './Transcript';
-import { MediaPreviewProvider, PreviewToggleButton } from './mediaPreview';
+import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import {
   SESSION_REWRITTEN_EVENT,
@@ -67,6 +67,7 @@ import {
   type ApprovalBlock,
   type AssistantBlock,
   type Block,
+  type SubagentBlock,
   type UserBlock,
 } from '@kiki/session-core/session';
 import { shortCwd } from '@kiki/session-core/sessions';
@@ -94,6 +95,7 @@ import {
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage, type UpdateAgentGoalInput } from '../lib/client';
+import { revealSubagentCard } from './ActivityHistory';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { useConnection, useControllerRegistry } from '../state/connection';
@@ -1046,6 +1048,21 @@ export function agentDetailPath(sessionId: string, agentId: string): string {
   return `/s/${sessionId}/agent/${encodeURIComponent(agentId)}`;
 }
 
+/**
+ * Focus bridge — one `useMediaPreview()` consumer rendered inside
+ * MediaPreviewProvider, reporting the active agent panel tab up to this view.
+ * The provider owns tab state, and the shared right rail renders above it,
+ * so the focus travels through a callback instead of context re-entry.
+ */
+export function PreviewFocusBridge({ onFocusedAgent }: { onFocusedAgent: (agentId: string | undefined) => void }) {
+  const preview = useMediaPreview();
+  const focused = preview?.activeAgentPanelId;
+  useEffect(() => {
+    onFocusedAgent(focused);
+  }, [focused, onFocusedAgent]);
+  return null;
+}
+
 export function SessionView({
   onToggleSidebar,
   sessions,
@@ -1115,6 +1132,11 @@ export function SessionView({
   const [railOpen, setRailOpen] = useState(
     () => typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 1024px)').matches,
   );
+  // Focused panel-tab agent: the active agent panel tab in the preview
+  // workspace, reported up by the bridge below. This is the shared right
+  // rail's owner when the user is looking at an embedded subagent view — the
+  // routed agent page (selectedAgentId) owns the rail through AgentWorkspace.
+  const [panelFocusAgent, setPanelFocusAgent] = useState<string | undefined>(undefined);
   // Permission/plan/swarm are store-controlled (see resolveControlledValue):
   // local state is only the optimistic echo of an uncommitted pill click.
   const [permissionOverride, setPermissionOverride] = useState<PermissionMode | undefined>(
@@ -2135,6 +2157,68 @@ export function SessionView({
   );
   const toggleRail = useCallback(() => { setRailOpen((value) => !value); }, []);
   const closeRail = useCallback(() => { setRailOpen(false); }, []);
+
+  // ---- shared-rail focus (panel-tab subagent) ----
+  // The routed agent page owns the rail through AgentWorkspace; when the user
+  // is instead looking at an embedded agent panel tab, the main view's shared
+  // rail retargets at that agent: same rail, this subagent's task/nav chapters
+  // and identity badge. Data comes from the same channel AgentWorkspace reads
+  // — the parent transcript's spawning card, plus the agent's own live view
+  // for the pending-interaction count.
+  const panelFocusBlock = useMemo(
+    () =>
+      panelFocusAgent === undefined
+        ? undefined
+        : state.blocks.find(
+            (block): block is SubagentBlock =>
+              block.kind === 'subagent' && block.subagentId === panelFocusAgent,
+          ),
+    [state.blocks, panelFocusAgent],
+  );
+  const subscribePanelAgent = useCallback(
+    (listener: () => void) =>
+      controller === null || panelFocusAgent === undefined
+        ? () => {}
+        : controller.subscribeAgent(panelFocusAgent, listener),
+    [controller, panelFocusAgent],
+  );
+  const panelAgentState = useSyncExternalStore(
+    subscribePanelAgent,
+    () => (controller !== null && panelFocusAgent !== undefined ? controller.getAgentState(panelFocusAgent) : emptyView),
+  );
+  const panelFocusPendingCount = useMemo(
+    () =>
+      panelAgentState.blocks.filter(
+        (block) =>
+          (block.kind === 'approval' && block.resolution === undefined) ||
+          (block.kind === 'question' && block.outcome === undefined),
+      ).length,
+    [panelAgentState.blocks],
+  );
+  const handlePanelFocusJumpToSpawn = useCallback(() => {
+    if (panelFocusAgent === undefined) return;
+    const parentId = forest.byId[panelFocusAgent]?.parentAgentId ?? panelFocusBlock?.parentAgentId;
+    if (parentId === undefined || parentId === MAIN_AGENT_ID) {
+      // Already on the main timeline: locate the spawning card in place.
+      const scrollToCard = (attemptsLeft: number): void => {
+        if (revealSubagentCard(panelFocusAgent)) return;
+        if (attemptsLeft > 0) window.setTimeout(() => { scrollToCard(attemptsLeft - 1); }, 150);
+      };
+      window.setTimeout(() => { scrollToCard(12); }, 150);
+      return;
+    }
+    openAgent(parentId);
+  }, [panelFocusAgent, panelFocusBlock, forest, openAgent]);
+  const focusSubagent =
+    panelFocusAgent === undefined
+      ? undefined
+      : {
+          agentId: panelFocusAgent,
+          block: panelFocusBlock,
+          pendingInteractionCount: panelFocusPendingCount,
+          onJumpToSpawn: handlePanelFocusJumpToSpawn,
+        };
+
   const handleResolveApproval = useCallback(
     (
       approvalId: string,
@@ -2648,6 +2732,7 @@ export function SessionView({
       onCancelTask={handleCancelTask}
       onStopAgentTask={stopAgentTask}
     >
+      <PreviewFocusBridge onFocusedAgent={setPanelFocusAgent} />
       {slots.header !== null
         ? createPortal(
             <Header
@@ -2753,7 +2838,8 @@ export function SessionView({
               className={`app-rail ${railOpen ? 'open' : ''}`}
               state={state}
               forest={forest}
-              selectedAgentId={selectedAgentId}
+              selectedAgentId={panelFocusAgent}
+              subagent={focusSubagent}
               onCancelTask={handleCancelTask}
               onStopAgentTask={stopAgentTask}
               onOpenSubagent={openAgent}

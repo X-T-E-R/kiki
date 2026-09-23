@@ -29,6 +29,13 @@ export interface MediaPreviewApi {
   readonly previewPanelOpen: boolean;
   /** Collapse/expand the preview workspace (tabs are preserved). */
   readonly togglePreviewPanel: () => void;
+  /**
+   * Agent id of the panel tab the user is looking at right now (active tab in
+   * an expanded workspace); `undefined` when the focused surface is a file
+   * tab, a collapsed panel, or no tabs — the shared right rail then belongs
+   * to the main session.
+   */
+  readonly activeAgentPanelId: string | undefined;
 }
 
 export const MediaPreviewContext = createContext<MediaPreviewApi | null>(null);

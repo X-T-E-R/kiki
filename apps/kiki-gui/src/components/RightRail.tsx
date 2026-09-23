@@ -478,6 +478,84 @@ function MetaRow({ label, value, mono = false }: { label: string; value: string;
   );
 }
 
+/**
+ * Owner badge — the first item of the shared rail. States whose panel the rail
+ * shows right now: the focused subagent (label, model, own status dot) or the
+ * main agent. Switching focus re-renders this in place, so the rail always
+ * names its owner before any section content.
+ */
+function RailOwnerBadge({
+  subagent,
+  forest,
+  session,
+}: {
+  subagent: SubagentRailContext | undefined;
+  forest: AgentForest;
+  session: SessionViewState['session'];
+}) {
+  const { t } = useI18n();
+  const node = subagent === undefined ? undefined : forest.byId[subagent.agentId];
+  if (subagent !== undefined) {
+    const status = node?.status ?? subagent.block?.status ?? 'unknown';
+    const name = node?.label ?? subagent.block?.name ?? subagent.agentId;
+    const model = node?.model ?? subagent.block?.model;
+    return (
+      <div
+        data-rail-owner
+        data-rail-owner-name={name}
+        className="flex items-center gap-2 rounded-xl border border-accent/40 bg-accent-soft/30 px-3 py-2"
+      >
+        <span
+          aria-hidden
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${subagentStatusDotClass(status)}`}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[10px] tracking-[0.06em] text-ink-faint uppercase">
+            {t('rail.panelOf', { name })}
+          </p>
+          <p className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[12px] font-semibold text-ink">{name}</span>
+            {model !== undefined ? (
+              <span className="shrink-0 truncate font-mono text-[10px] text-ink-faint">{model}</span>
+            ) : null}
+          </p>
+        </div>
+      </div>
+    );
+  }
+  const title = session?.title !== undefined && session.title !== ''
+    ? session.title
+    : t('sidebar.untitled');
+  return (
+    <div data-rail-owner className="flex items-center gap-2 rounded-xl border border-hairline bg-panel px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[10px] tracking-[0.06em] text-ink-faint uppercase">
+          {t('rail.ownerMain')}
+        </p>
+        <p className="truncate text-[12px] font-semibold text-ink">{title}</p>
+      </div>
+    </div>
+  );
+}
+
+/** Dot tone for the owner badge's status (mirror of the chip tones above). */
+function subagentStatusDotClass(status: string): string {
+  switch (status) {
+    case 'running':
+    case 'background':
+      return 'bg-accent';
+    case 'suspended':
+      return 'bg-amber-card';
+    case 'completed':
+      return 'bg-success';
+    case 'failed':
+      return 'bg-danger';
+    default:
+      return 'bg-ink-faint/60';
+  }
+}
+
+
 export function RightRail({
   state,
   forest,
@@ -618,6 +696,7 @@ export function RightRail({
         data-session-rail
       >
       <div data-agent-panel-scroll className="min-h-0 flex-1 space-y-5 overflow-y-auto pb-4">
+      <RailOwnerBadge subagent={subagent} forest={forest} session={session} />
       {showSubagents ? (
         <RailSection
           title={t('rail.subagents')}

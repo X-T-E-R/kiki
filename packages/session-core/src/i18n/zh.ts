@@ -1238,6 +1238,8 @@ export const zh: Record<I18nKey, string> = {
   'rail.turns': '轮次',
   'rail.agentTask': '子代理任务',
   'rail.agentNav': '导航',
+  'rail.panelOf': '{name} 的面板',
+  'rail.ownerMain': '主代理',
   'rail.needsInput': '需要处理',
   'rail.result': '结果',
   'rail.elapsed': '耗时',

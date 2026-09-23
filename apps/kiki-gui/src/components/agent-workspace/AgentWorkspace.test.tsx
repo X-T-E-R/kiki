@@ -705,7 +705,9 @@ it('mounts the owned media preview provider with the shared api ref by default',
   expect(harness.mediaProviderProps.length).toBeGreaterThan(0);
   expect(harness.mediaProviderProps[0]?.apiRef).toBe(previewRef);
   expect(header.querySelector('[data-preview-toggle-probe]')).not.toBeNull();
-  expect(header.querySelector('[data-agent-rail-toggle]')).not.toBeNull();
+  // No view-level rail toggle: the shared rail owns its own show/hide in the
+  // main session header, and the workspace renders no second one.
+  expect(header.querySelector('[data-agent-rail-toggle]')).toBeNull();
 });
 
 it('embeds into caller-provided slots: no shell, no owned preview provider, no panel toggle', async () => {
@@ -729,7 +731,7 @@ it('embeds into caller-provided slots: no shell, no owned preview provider, no p
     await settle();
 
     // The header chrome portals into the provided slot even with no ambient shell.
-    expect(localHeader.querySelector('[data-agent-rail-toggle]')).not.toBeNull();
+    expect(localHeader.querySelector('[data-agent-rail-toggle]')).toBeNull();
     expect(header.querySelector('[data-agent-rail-toggle]')).toBeNull();
     // Ambient preview provider inherited: no owned provider, no apiRef seat.
     expect(harness.mediaProviderProps).toHaveLength(0);

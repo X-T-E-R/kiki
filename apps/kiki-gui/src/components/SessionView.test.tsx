@@ -1,3 +1,5 @@
+
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -40,6 +42,7 @@ import { toolErrorFullText, toolErrorSummary } from './ToolCard';
 import { projectUserText } from './Transcript';
 import {
   NOT_FOUND_FALLBACK_MS,
+
   activateSkillWithConditionalClear,
   agentDetailPath,
   agentOlderErrorText,
@@ -1440,6 +1443,9 @@ describe('agent tree chrome', () => {
     // Context remains additive to the full shared tree.
     expect(html).toContain('data-subagent-context');
     expect(html).toContain('data-subagent-scroll');
+    // Focus ownership is explicit: the badge names the focused subagent.
+    expect(html).toContain('data-rail-owner');
+    expect(html).toContain('Researcher');
   });
 
   it('omits the needs-input badge when nothing is pending on the subagent', () => {

@@ -770,7 +770,9 @@ describe('PreviewWorkspace agent tabs', () => {
     expect(call?.agentId).toBe('sub-123');
     expect(call?.inheritMediaPreview).toBe(true);
     expect(call?.showPreviewToggle).toBe(false);
-    expect(call?.railIsOverlay).toBe(true);
+    // No tab-local rail: the app keeps one shared rail, retargeted at this
+    // tab's agent by SessionView's focus bridge.
+    expect(call?.railIsOverlay).toBe(false);
     expect(call?.slotsProvided).toBe(true);
   });
 

@@ -233,6 +233,16 @@ export function MediaPreviewProvider({
     return () => { window.removeEventListener('beforeunload', onBeforeUnload); };
   }, [dirtyPaths.size]);
 
+  // Focus seam: the agent panel tab the user is looking at right now. The
+  // shared right rail retargets at this agent while it is active (and the
+  // panel shown); a file tab, a collapsed panel, or no tabs hand the rail
+  // back to the main session.
+  const activeAgentPanelId =
+    panelOpen && tabsState.active !== null
+      ? (tabsState.tabs.find(
+          (tab) => previewTabKey(tab) === tabsState.active && tab.kind === 'panel',
+        ) as { agentId: string } | undefined)?.agentId
+      : undefined;
   const api = useMemo<MediaPreviewApi>(
     () => ({
       cwd,
@@ -244,8 +254,9 @@ export function MediaPreviewProvider({
       previewTabCount: tabsState.tabs.length,
       previewPanelOpen: panelOpen,
       togglePreviewPanel: togglePanel,
+      activeAgentPanelId,
     }),
-    [cwd, sessionId, openFile, openAgentPanel, tabsState.tabs.length, panelOpen, togglePanel],
+    [cwd, sessionId, openFile, openAgentPanel, tabsState.tabs, tabsState.active, panelOpen, togglePanel, activeAgentPanelId],
   );
 
   useEffect(() => {

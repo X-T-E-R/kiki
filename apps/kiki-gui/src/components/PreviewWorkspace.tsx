@@ -18,7 +18,9 @@
  * each visible agent tab retains its own transcript view on the shared
  * controller; the lease drops to the summary baseline when the tab or the
  * whole panel hides, and is released when the tab closes. The tab context
- * menu's agent entry opens the same agent on its fullscreen route.
+ * menu's agent entry opens the same agent on its fullscreen route. The tab
+ * renders no rail of its own: the app keeps ONE right rail, and SessionView
+ * retargets the shared rail at the active panel tab's agent.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -366,12 +368,11 @@ export function PreviewWorkspace({
 
 /**
  * AgentTabWorkspace — one panel tab's embedded AgentWorkspace. The tab shell
- * owns the container concerns: local chrome slots (header/dock/rail portal
- * targets inside the tabpanel), a per-tab rail that opens as a tab-local
- * drawer, and the transcript view lease. The lease follows actual visibility:
- * 'delta' while the tab is active in a shown panel, 'off' once the tab or the
- * whole panel is hidden (the wildcard 'turn' summary baseline keeps flowing
- * for background tabs), released when the tab unmounts.
+ * owns the container concerns: local chrome slots (header/dock portal targets
+ * inside the tabpanel) and the transcript view lease. The lease follows
+ * actual visibility: 'delta' while the tab is active in a shown panel, 'off'
+ * once the tab or the whole panel is hidden (the wildcard 'turn' summary
+ * baseline keeps flowing for background tabs), released when the tab unmounts.
  */
 function AgentTabWorkspace({
   viewId,
@@ -396,21 +397,18 @@ function AgentTabWorkspace({
   readonly onCancelTask: ((taskId: string, ownerAgentId?: string) => void) | undefined;
   readonly onStopAgentTask: ((ownerAgentId: string, taskId: string) => Promise<void>) | undefined;
 }) {
-  const { t } = useI18n();
-  const [railOpen, setRailOpen] = useState(false);
   const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
   const [dockSlot, setDockSlot] = useState<HTMLElement | null>(null);
-  const [railSlot, setRailSlot] = useState<HTMLElement | null>(null);
   const slots = useMemo<ConversationShellSlots>(
     () => ({
       header: headerSlot,
       dock: dockSlot,
-      rail: railSlot,
+      rail: null,
       heroFooter: null,
       footer: null,
       preview: null,
     }),
-    [headerSlot, dockSlot, railSlot],
+    [headerSlot, dockSlot],
   );
 
   // Transcript view lease: one per tab, keyed by the stable tab key. Retain
@@ -427,13 +425,17 @@ function AgentTabWorkspace({
     controller.updateAgentView(viewId, visible ? 'delta' : 'off');
   }, [controller, viewId, visible]);
 
-  const closeRail = useCallback(() => { setRailOpen(false); }, []);
-
   // An agent tab is the same conversation page the routed agent view renders,
   // only docked inside a panel: it carries the page ground (paper) so the
   // timeline keeps the main session's colour relationships. Without it the
   // panel's own surface (panel) becomes the ground and every `bg-panel` tool
   // card flattens into it while `bg-bubble-user` darkens.
+  // Tab-local rail: removed. The app has ONE right rail (the shell's rail
+  // slot); when this tab is the focused surface, SessionView retargets that
+  // shared rail at this tab's agent through the preview focus bridge, so an
+  // embedded second rail here would fork the panel the user asked to keep
+  // single. The tab-local header keeps identity + status; navigation lives in
+  // the relations row and the tab strip.
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-paper" data-agent-tab-workspace={agentId}>
       <div ref={setHeaderSlot} className="shrink-0" />
@@ -444,10 +446,10 @@ function AgentTabWorkspace({
           sessionState={sessionState}
           forest={forest}
           navigation={navigation}
-          railOpen={railOpen}
-          railIsOverlay
-          onToggleRail={() => { setRailOpen((value) => !value); }}
-          onCloseRail={closeRail}
+          railOpen={false}
+          railIsOverlay={false}
+          onToggleRail={() => {}}
+          onCloseRail={() => {}}
           onCancelTask={onCancelTask ?? (() => {})}
           onStopAgentTask={onStopAgentTask ?? (() => Promise.resolve())}
           slots={slots}
@@ -455,21 +457,6 @@ function AgentTabWorkspace({
           showPreviewToggle={false}
           showBreadcrumb={false}
         />
-        {railOpen ? (
-          <div
-            role="button"
-            tabIndex={-1}
-            aria-label={t('sv.closePanel')}
-            className="absolute inset-0 z-10 hidden bg-shell/40 lg:block"
-            onClick={closeRail}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') closeRail();
-            }}
-          />
-        ) : null}
-        {/* The rail drawer overlays the timeline only: the header (with its
-            toggle) and the dock stay clickable above it. */}
-        <div ref={setRailSlot} className="absolute inset-y-0 right-0 z-20" />
       </div>
       <div ref={setDockSlot} className="shrink-0" />
     </div>

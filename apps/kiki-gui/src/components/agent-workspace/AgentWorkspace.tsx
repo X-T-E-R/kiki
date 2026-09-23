@@ -154,8 +154,6 @@ function AgentWorkspaceHeader({
   effort,
   crumbs,
   forest,
-  railOpen,
-  onToggleRail,
   navigation,
   showPreviewToggle,
   showBreadcrumb,
@@ -166,8 +164,6 @@ function AgentWorkspaceHeader({
   effort: string | undefined;
   crumbs: readonly AgentTreeNode[];
   forest: AgentForest;
-  railOpen: boolean;
-  onToggleRail: () => void;
   navigation: AgentWorkspaceNavigation;
   showPreviewToggle: boolean;
   /** Off in narrow containers (tabs): the relations row below keeps the navigation. */
@@ -177,13 +173,6 @@ function AgentWorkspaceHeader({
   return (
     <>
       <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-hairline bg-panel px-4 py-2">
-        <button
-          type="button"
-          onClick={() => { navigation.openSession(); }}
-          className="rounded-lg border border-hairline px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
-        >
-          {t('sv.backToSession')}
-        </button>
         <div className="min-w-24 flex-1">
           {showBreadcrumb ? (
             <AgentBreadcrumb
@@ -216,21 +205,6 @@ function AgentWorkspaceHeader({
         ) : null}
 
         {showPreviewToggle ? <PreviewToggleButton /> : null}
-        <button
-          type="button"
-          onClick={onToggleRail}
-          title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
-          aria-label={t('sv.togglePanelAria')}
-          aria-expanded={railOpen}
-          data-agent-rail-toggle
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
-            railOpen
-              ? 'bg-accent-soft text-accent'
-              : 'text-ink-faint hover:bg-paper hover:text-ink'
-          }`}
-        >
-          <PanelIcon className="h-[13px] w-[13px]" />
-        </button>
       </header>
       <div className="shrink-0 border-b border-hairline px-4 py-2 text-[11px]">
         <AgentRelations
@@ -521,8 +495,6 @@ export function AgentWorkspace({
               effort={displayEffort}
               crumbs={crumbs}
               forest={forest}
-              railOpen={railOpen}
-              onToggleRail={onToggleRail}
               navigation={navigation}
               showPreviewToggle={showPreviewToggle}
               showBreadcrumb={showBreadcrumb}

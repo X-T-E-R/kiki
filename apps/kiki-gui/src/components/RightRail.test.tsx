@@ -9,6 +9,7 @@ import type { Task } from '@kiki/protocol';
 import { buildAgentForest, createViewState } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { RightRail, type SubagentRailContext } from './RightRail';
+import { PreviewFocusBridge } from './SessionView';
 
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: () => <div data-panel-props />,
@@ -86,6 +87,25 @@ function sharedChapters(container: Element) {
 }
 
 describe('RightRail shared chapters', () => {
+  it('names the rail owner in both focus states: main agent or the focused subagent', async () => {
+    const main = await renderRail();
+    const child = await renderRail({ subagent: context });
+
+    const mainOwner = main.querySelector('[data-rail-owner]');
+    expect(mainOwner).not.toBeNull();
+    expect(mainOwner?.textContent).toContain('Main agent');
+    const childOwner = child.querySelector('[data-rail-owner]');
+    expect(childOwner).not.toBeNull();
+    // Focused subagent identity: label, model, and status — not the session title.
+    expect(childOwner?.getAttribute('data-rail-owner-name')).toBe('Researcher');
+    expect(childOwner?.textContent).toContain('Researcher');
+    expect(mainOwner?.getAttribute('data-rail-owner-name')).not.toBe('Researcher');
+    // The badge leads the scroll content in both focus states.
+    for (const rail of [main, child]) {
+      expect(rail.querySelector('[data-agent-panel-scroll]')?.firstElementChild?.hasAttribute('data-rail-owner')).toBe(true);
+    }
+  });
+
   it('renders the same tree, background tasks, bulk subagent stop and session chapters in both modes', async () => {
     const main = await renderRail();
     const child = await renderRail({ subagent: context });
@@ -129,5 +149,52 @@ describe('RightRail shared chapters', () => {
       await act(async () => { toggle?.click(); });
       expect(section?.querySelector('[data-agent-tree]')).not.toBeNull();
     }
+  });
+});
+
+describe('preview focus bridge', () => {
+  it('reports the active agent panel tab and hands the rail back on file focus', async () => {
+    const seen: Array<string | undefined> = [];
+    const onFocusedAgent = (agentId: string | undefined) => { seen.push(agentId); };
+    const { MediaPreviewContext } = await import('./mediaPreviewContext');
+
+    // No provider above: the rail stays with the main session.
+    const bare = document.createElement('div');
+    document.body.append(bare);
+    const bareRoot = createRoot(bare);
+    await act(async () => { bareRoot.render(<PreviewFocusBridge onFocusedAgent={onFocusedAgent} />); });
+    expect(seen).toEqual([undefined]);
+    await act(async () => { bareRoot.unmount(); });
+    bare.remove();
+
+    // An active agent panel tab retargets the focus at that agent.
+    const probe = document.createElement('div');
+    document.body.append(probe);
+    const probeRoot = createRoot(probe);
+    await act(async () => {
+      probeRoot.render(
+        <MediaPreviewContext.Provider value={{ activeAgentPanelId: 'sub-9' } as never}>
+          <PreviewFocusBridge onFocusedAgent={onFocusedAgent} />
+        </MediaPreviewContext.Provider>,
+      );
+    });
+    expect(seen.at(-1)).toBe('sub-9');
+    await act(async () => { probeRoot.unmount(); });
+    probe.remove();
+
+    // A file tab / collapsed panel hands the rail back to main.
+    const back = document.createElement('div');
+    document.body.append(back);
+    const backRoot = createRoot(back);
+    await act(async () => {
+      backRoot.render(
+        <MediaPreviewContext.Provider value={{ activeAgentPanelId: undefined } as never}>
+          <PreviewFocusBridge onFocusedAgent={onFocusedAgent} />
+        </MediaPreviewContext.Provider>,
+      );
+    });
+    expect(seen.at(-1)).toBeUndefined();
+    await act(async () => { backRoot.unmount(); });
+    back.remove();
   });
 });

@@ -1254,6 +1254,8 @@ export const en = {
   'rail.turns': 'Turns',
   'rail.agentTask': 'Subagent task',
   'rail.agentNav': 'Navigate',
+  'rail.panelOf': 'Panel of {name}',
+  'rail.ownerMain': 'Main agent',
   'rail.needsInput': 'Needs input',
   'rail.result': 'Result',
   'rail.elapsed': 'Elapsed',
