@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, open } from 'node:fs/promises';
+import { chmod, mkdir, open } from 'node:fs/promises';
 import { dirname } from 'pathe';
 
 import { ErrorCodes, KimiError } from '../errors';
+import { credentialsPathFor, mergeConfigCredentials, splitConfigCredentials } from './credentials';
 import { applyEnvModelConfig, stripEnvModelConfig } from './env-model';
 import {
   KimiConfigSchema,
@@ -50,12 +51,27 @@ const DEFAULT_CONFIG_FILE_TEXT = `# ~/.kiki/config.toml
 # Login will populate managed Kimi provider and model entries.
 `;
 
+const DEFAULT_CREDENTIALS_FILE_TEXT = `# ~/.kiki/credentials.toml
+# Provider credentials for Kiki, keyed by provider name.
+# Kept out of config.toml; a value here overrides config.toml.
+`;
+
+/**
+ * Create `config.toml` and its companion `credentials.toml` when missing. Both
+ * are owner-only (`0600`); the credentials file is scaffolded empty so the
+ * write path never has to create it with the process umask.
+ */
 export async function ensureConfigFile(filePath: string): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
+  await createFileIfMissing(filePath, DEFAULT_CONFIG_FILE_TEXT);
+  await createFileIfMissing(credentialsPathFor(filePath), DEFAULT_CREDENTIALS_FILE_TEXT);
+}
+
+async function createFileIfMissing(filePath: string, text: string): Promise<void> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     handle = await open(filePath, 'wx', 0o600);
-    await handle.writeFile(DEFAULT_CONFIG_FILE_TEXT, 'utf-8');
+    await handle.writeFile(text, 'utf-8');
   } catch (error) {
     if (isFileExistsError(error)) return;
     throw error;
@@ -64,12 +80,49 @@ export async function ensureConfigFile(filePath: string): Promise<void> {
   }
 }
 
+/**
+ * Read the effective config: `config.toml` overlaid with `credentials.toml`
+ * (the credentials file wins on a shared TOML path). Secrets are never taken
+ * from `config.toml` over a value already in `credentials.toml`.
+ */
 export function readConfigFile(filePath: string): KimiConfig {
-  if (!existsSync(filePath)) {
+  const merged = readMergedConfigData(filePath);
+  if (merged === undefined || Object.keys(merged).length === 0) {
     return getDefaultConfig();
   }
-  const text = readFileSync(filePath, 'utf-8');
-  return parseConfigString(text, filePath);
+  return parseConfigData(merged, filePath);
+}
+
+function readMergedConfigData(filePath: string): Record<string, unknown> | undefined {
+  const configData = readTomlData(filePath);
+  const credentialsData = readTomlData(credentialsPathFor(filePath));
+  if (configData === undefined && credentialsData === undefined) return undefined;
+  return mergeConfigCredentials(configData ?? {}, credentialsData ?? {});
+}
+
+/** Parse one TOML file to its snake_case document; `undefined` when absent. */
+function readTomlData(filePath: string): Record<string, unknown> | undefined {
+  let text: string;
+  try {
+    if (!existsSync(filePath)) return undefined;
+    text = readFileSync(filePath, 'utf-8');
+  } catch (error) {
+    throw new KimiError(
+      ErrorCodes.CONFIG_INVALID,
+      `Failed to read ${filePath}: ${describeUnknownError(error)}`,
+      { cause: error },
+    );
+  }
+  if (text.trim().length === 0) return {};
+  try {
+    return parseToml(text) as Record<string, unknown>;
+  } catch (error) {
+    throw new KimiError(
+      ErrorCodes.CONFIG_INVALID,
+      `Invalid TOML in ${filePath}: ${describeUnknownError(error)}`,
+      { cause: error },
+    );
+  }
 }
 
 /**
@@ -108,16 +161,18 @@ export function loadRuntimeConfig(
 
 export interface RuntimeConfigLoadResult {
   readonly config: KimiConfig;
-  /** Problems in config.toml itself; non-empty means parts (or all) of the file were ignored. */
+  /**
+   * Problems in `config.toml` or `credentials.toml`; non-empty means parts
+   * (or all) of a file were ignored. Missing credentials are optional, but a
+   * malformed credentials file sets `fileError` to prevent lost keys.
+   */
   readonly fileWarnings: readonly string[];
   /** Problems applying KIKI_MODEL_* env overrides; the overlay was skipped. */
   readonly envWarnings: readonly string[];
   /**
-   * Set when the file is entirely unusable (unreadable, TOML syntax error, or
-   * nothing salvageable) and `config` is pure defaults. Startup fails fast on
-   * this — defaults-only means the user looks logged out, which is worse than
-   * an actionable parse error. Mid-run reloads ignore it and keep the last
-   * good config instead.
+   * Set when `config.toml` is entirely unusable or `credentials.toml` is
+   * unreadable or malformed. Startup fails fast rather than silently dropping
+   * credentials; mid-run reloads keep the last good config.
    */
   readonly fileError?: KimiError;
 }
@@ -126,9 +181,9 @@ export interface RuntimeConfigLoadResult {
  * Lenient variant of `loadRuntimeConfig` that never throws: schema errors
  * drop only the offending sections (whole entry for `providers`/`models`,
  * whole top-level section otherwise) and a bad KIKI_MODEL_* env overlay is
- * skipped, each reported as a warning. A file that cannot be used at all
- * additionally sets `fileError` so startup can fail fast while mid-run
- * reloads degrade. Runtime read paths use this; write paths must keep using
+ * skipped, each reported as a warning. An unusable `config.toml` or malformed
+ * `credentials.toml` sets `fileError` so startup fails fast while mid-run
+ * reloads retain the last good config. Write paths must keep using
  * the strict readers so a broken file is never silently rewritten.
  */
 export function loadRuntimeConfigSafe(
@@ -139,9 +194,9 @@ export function loadRuntimeConfigSafe(
   let fileError: KimiError | undefined;
   let config = getDefaultConfig();
 
-  let text: string | undefined;
+  let configText: string | undefined;
   try {
-    text = existsSync(filePath) ? readFileSync(filePath, 'utf-8') : undefined;
+    configText = existsSync(filePath) ? readFileSync(filePath, 'utf-8') : undefined;
   } catch (error) {
     fileError = new KimiError(
       ErrorCodes.CONFIG_INVALID,
@@ -151,10 +206,23 @@ export function loadRuntimeConfigSafe(
     fileWarnings.push(`Failed to read ${filePath}: ${describeUnknownError(error)}.`);
   }
 
-  if (text !== undefined && text.trim().length > 0) {
-    let data: Record<string, unknown> | undefined;
+  const credentialsPath = credentialsPathFor(filePath);
+  let credentialsText: string | undefined;
+  try {
+    credentialsText = existsSync(credentialsPath) ? readFileSync(credentialsPath, 'utf-8') : undefined;
+  } catch (error) {
+    fileError ??= new KimiError(
+      ErrorCodes.CONFIG_INVALID,
+      `Failed to read ${credentialsPath}: ${describeUnknownError(error)}`,
+      { cause: error },
+    );
+    fileWarnings.push(`Failed to read ${credentialsPath}: ${describeUnknownError(error)}.`);
+  }
+
+  let data: Record<string, unknown> | undefined;
+  if (configText !== undefined && configText.trim().length > 0) {
     try {
-      data = parseToml(text) as Record<string, unknown>;
+      data = parseToml(configText) as Record<string, unknown>;
     } catch (error) {
       // Same message as the strict parser, code frame included, so failing
       // startup points straight at the offending line.
@@ -165,27 +233,45 @@ export function loadRuntimeConfigSafe(
       );
       fileWarnings.push(`Invalid TOML in ${filePath}: ${describeTomlSyntaxError(error)}.`);
     }
-    if (data !== undefined) {
-      const raw = cloneRecord(data);
-      const transformed = transformTomlData(data);
-      transformed['raw'] = raw;
-      const salvaged = salvageConfigData(transformed);
-      if (salvaged.config === undefined) {
-        fileError = new KimiError(
-          ErrorCodes.CONFIG_INVALID,
-          `Invalid configuration in ${filePath}: ${formatConfigValidationError(salvaged.error)}`,
-          { cause: salvaged.error },
-        );
+  }
+
+  let credentialsData: Record<string, unknown> | undefined;
+  if (credentialsText !== undefined && credentialsText.trim().length > 0) {
+    try {
+      credentialsData = parseToml(credentialsText) as Record<string, unknown>;
+    } catch (error) {
+      fileError ??= new KimiError(
+        ErrorCodes.CONFIG_INVALID,
+        `Invalid TOML in ${credentialsPath}: ${describeUnknownError(error)}`,
+        { cause: error },
+      );
+      fileWarnings.push(`Invalid TOML in ${credentialsPath}: ${describeTomlSyntaxError(error)}.`);
+    }
+  }
+
+  const merged = data === undefined && credentialsData === undefined
+    ? undefined
+    : mergeConfigCredentials(data ?? {}, credentialsData ?? {});
+  if (merged !== undefined) {
+    const raw = cloneRecord(merged);
+    const transformed = transformTomlData(merged);
+    transformed['raw'] = raw;
+    const salvaged = salvageConfigData(transformed);
+    if (salvaged.config === undefined) {
+      fileError = new KimiError(
+        ErrorCodes.CONFIG_INVALID,
+        `Invalid configuration in ${filePath}: ${formatConfigValidationError(salvaged.error)}`,
+        { cause: salvaged.error },
+      );
+      fileWarnings.push(
+        `Invalid configuration in ${filePath}: ${formatConfigValidationError(salvaged.error)}.`,
+      );
+    } else {
+      config = salvaged.config;
+      if (salvaged.dropped.length > 0) {
         fileWarnings.push(
-          `Invalid configuration in ${filePath}: ${formatConfigValidationError(salvaged.error)}.`,
+          `Ignored invalid config in ${filePath}: ${salvaged.dropped.join(', ')}. Run \`kimi doctor\` for details.`,
         );
-      } else {
-        config = salvaged.config;
-        if (salvaged.dropped.length > 0) {
-          fileWarnings.push(
-            `Ignored invalid config in ${filePath}: ${salvaged.dropped.join(', ')}. Run \`kimi doctor\` for details.`,
-          );
-        }
       }
     }
   }
@@ -452,8 +538,41 @@ export async function writeConfigFile(filePath: string, config: KimiConfig): Pro
   // even if a caller passes back the runtime config as a patch (see
   // stripEnvModelConfig / the getConfig -> setConfig round-trip).
   const validated = validateConfig(stripEnvModelConfig(config));
+  await writeConfigData(filePath, configToTomlData(validated));
+}
+
+/**
+ * Persist one TOML document across the two files: secrets go to
+ * `credentials.toml` (owner-only), everything else to `config.toml`, which
+ * therefore never carries a credential. `config.toml` remains the full-state
+ * document — a secret absent from `data` is removed from `credentials.toml`
+ * too, mirroring a normal config rewrite.
+ *
+ * The credentials file is written first: a crash between the two writes can
+ * then only leave a secret duplicated in `config.toml`, never dropped.
+ */
+async function writeConfigData(filePath: string, data: Record<string, unknown>): Promise<void> {
+  const separated = splitConfigCredentials(data);
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
-  await atomicWrite(filePath, `${stringifyToml(configToTomlData(validated))}\n`);
+  await writeCredentialsData(filePath, separated.credentials);
+  await atomicWrite(filePath, `${stringifyToml(separated.config)}\n`);
+}
+
+async function writeCredentialsData(
+  configPath: string,
+  credentials: Record<string, unknown>,
+): Promise<void> {
+  const credentialsPath = credentialsPathFor(configPath);
+  // Nothing to store and no file to clear: skip rather than create an empty
+  // companion for a secret-free config.
+  if (Object.keys(credentials).length === 0 && !existsSync(credentialsPath)) return;
+  await atomicWrite(credentialsPath, `${stringifyToml(credentials)}\n`, undefined, 0o600);
+  // Re-apply the mode after replacement on platforms that support it.
+  try {
+    await chmod(credentialsPath, 0o600);
+  } catch {
+    // Best-effort: platforms without POSIX modes (Windows) keep the write.
+  }
 }
 
 export function configToTomlData(config: KimiConfig): Record<string, unknown> {

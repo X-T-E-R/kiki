@@ -5,7 +5,7 @@ Kiki uses environment variables to control a small number of runtime behaviors �
 Kiki-owned runtime controls use the `KIKI_*` prefix. Provider credential key names such as `KIMI_API_KEY` and `KIMI_BASE_URL` remain upstream-facing and are documented separately. Treat the exact names listed on this page as authoritative.
 
 ::: warning Important: API keys are not configured here
-Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in `config.toml` under `[providers.<name>]` or the `[providers.<name>.env]` sub-table.
+Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in the config files under `[providers.<name>]` or its `[providers.<name>.env]` sub-table. API keys live in the companion `credentials.toml`; `config.toml` never carries a plaintext credential.
 
 The only exception is the `KIKI_MODEL_*` family, which is an explicit channel that *does* read credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-kiki-model).
 
@@ -16,7 +16,7 @@ For background, see [Config overrides: provider credentials](./overrides.md#prov
 
 ### `KIKI_HOME`
 
-Overrides the data root directory; the default is `~/.kiki`. Once set, the config file, sessions, logs, OAuth credentials, and all other data land under the new path:
+Overrides the data root directory; the default is `~/.kiki`. Once set, the config and credentials files, sessions, logs, OAuth credentials, and all other data land under the new path:
 
 ```sh
 export KIKI_HOME="/path/to/custom/kiki"
@@ -30,15 +30,21 @@ For the complete data directory structure, see [Data locations](./data-locations
 
 Switch models temporarily without modifying `config.toml` — when `KIKI_MODEL_NAME` is set, the CLI synthesizes a temporary provider in memory; the change does not persist after restart. See [Define a model from environment variables](#define-a-model-from-environment-variables-kiki-model).
 
-## Provider credential key names (written in config.toml)
+## Provider credential key names
 
-The key names below are not read directly from the shell — they are key names written inside the `[providers.<name>.env]` sub-table of `config.toml`, serving as fallback values for `api_key` / `base_url`. The CLI reads only from the config file, not from `process.env`.
+The key names below are not read directly from the shell — they are key names written inside the `[providers.<name>.env]` sub-table, serving as fallback values for `api_key` / `base_url`. The CLI reads only from the config files, not from `process.env`.
 
-This design lets you keep familiar key name conventions while centralizing secret management in the config file:
+This design lets you keep familiar key name conventions while keeping secrets out of `config.toml`: the secret keys go to the companion `credentials.toml`, and the non-secret `*_BASE_URL` keys stay in `config.toml`.
 
 ```toml
+# credentials.toml
 [providers.kimi.env]
 KIMI_API_KEY = "sk-xxx"
+```
+
+```toml
+# config.toml
+[providers.kimi.env]
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
@@ -60,7 +66,7 @@ Key names per provider:
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI | None |
 
 ::: warning
-`GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is the only exception that goes through the system environment variable mechanism — it is read by the Google SDK directly via the standard ADC flow, and the CLI does not participate. All other key names must be placed in the `[providers.<name>.env]` sub-table to take effect.
+`GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is the only exception that goes through the system environment variable mechanism — it is read by the Google SDK directly via the standard ADC flow, and the CLI does not participate. All other key names must be placed in the `[providers.<name>.env]` sub-table to take effect — the secret ones in `credentials.toml`, the `*_BASE_URL` ones in `config.toml`.
 :::
 
 For the full provider type and field reference, see [Providers and models](./providers.md).

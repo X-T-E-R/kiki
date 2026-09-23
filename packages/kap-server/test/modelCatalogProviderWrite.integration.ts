@@ -241,6 +241,11 @@ describe('server-v2 /api provider write endpoints', () => {
     return parseToml(text) as Record<string, unknown>;
   }
 
+  async function readCredentialsToml(): Promise<Record<string, unknown>> {
+    const text = await readFile(join(home as string, 'credentials.toml'), 'utf-8').catch(() => '');
+    return text.trim().length === 0 ? {} : (parseToml(text) as Record<string, unknown>);
+  }
+
   it('creates a provider with model aliases and persists them to config.toml', async () => {
     await boot();
     const { status, body } = await postJson<unknown>('/api/providers', CREATE_BODY);
@@ -261,10 +266,12 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(onDisk['providers']).toEqual({
       'my-openai': {
         type: 'openai',
-        api_key: 'sk-test-openai',
         base_url: 'https://api.openai.example/v1',
         default_model: 'my-openai/gpt-4.1',
       },
+    });
+    expect((await readCredentialsToml())['providers']).toEqual({
+      'my-openai': { api_key: 'sk-test-openai' },
     });
     expect(onDisk['models']).toEqual({
       'my-openai/gpt-4.1': {
@@ -606,7 +613,10 @@ describe('server-v2 /api provider write endpoints', () => {
 
     const onDisk = await readConfigToml();
     expect(onDisk['providers']).toEqual({
-      edge: { type: 'openai', api_key: 'sk-edge', base_url: 'https://edge.example.test/v1' },
+      edge: { type: 'openai', base_url: 'https://edge.example.test/v1' },
+    });
+    expect((await readCredentialsToml())['providers']).toEqual({
+      edge: { api_key: 'sk-edge' },
     });
     expect(onDisk['models']).toEqual({
       'my-openai/gpt-4.1': {
@@ -716,11 +726,14 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(text).toBe('');
 
     const onDisk = await readConfigToml();
-    expect(onDisk['providers']).toEqual({ kimi: { type: 'kimi', api_key: 'sk-test' } });
+    expect(onDisk['providers']).toEqual({ kimi: { type: 'kimi' } });
     expect(onDisk['models']).toEqual({
       k2: { provider: 'kimi', model: 'kimi-k2', max_context_size: 131072 },
     });
     expect(onDisk['default_model']).toBe('k2');
+    expect((await readCredentialsToml())['providers']).toEqual({
+      kimi: { api_key: 'sk-test' },
+    });
 
     const providers = await getJson<{ items: Array<{ id: string }> }>('/api/providers');
     expect(providers.body.data.items.map((p) => p.id)).toEqual(['kimi']);
@@ -737,9 +750,12 @@ describe('server-v2 /api provider write endpoints', () => {
     const onDisk = await readConfigToml();
     expect(onDisk['default_provider']).toBe('openai');
     expect(onDisk['default_model']).toBe('gpt4o');
-    expect(onDisk['providers']).toEqual({ kimi: { type: 'kimi', api_key: 'sk-test' } });
+    expect(onDisk['providers']).toEqual({ kimi: { type: 'kimi' } });
     expect(onDisk['models']).toEqual({
       k2: { provider: 'kimi', model: 'kimi-k2', max_context_size: 131072 },
+    });
+    expect((await readCredentialsToml())['providers']).toEqual({
+      kimi: { api_key: 'sk-test' },
     });
   });
 
@@ -754,6 +770,7 @@ describe('server-v2 /api provider write endpoints', () => {
     const onDisk = await readConfigToml();
     expect(onDisk['providers']).toBeUndefined();
     expect(onDisk['models']).toBeUndefined();
+    expect((await readCredentialsToml())['providers']).toBeUndefined();
     expect(onDisk['default_model']).toBe('my-openai/gpt-4.1');
 
     const providers = await getJson<{ items: unknown[] }>('/api/providers');
@@ -802,13 +819,16 @@ describe('server-v2 /api provider write endpoints', () => {
 
     const onDisk = await readConfigToml();
     expect(onDisk['providers']).toEqual({
-      kimi: { type: 'kimi', api_key: 'sk-test' },
+      kimi: { type: 'kimi' },
       openai: {
         type: 'openai',
-        api_key: 'sk-openai',
         base_url: 'https://api.openai.example/v2',
         default_model: 'gpt4o',
       },
+    });
+    expect((await readCredentialsToml())['providers']).toEqual({
+      kimi: { api_key: 'sk-test' },
+      openai: { api_key: 'sk-openai' },
     });
     expect(onDisk['models']).toEqual({
       k2: { provider: 'kimi', model: 'kimi-k2', max_context_size: 131072 },
@@ -827,8 +847,13 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(body.data.provider.has_api_key).toBe(true);
 
     const onDisk = await readConfigToml();
-    expect(onDisk['providers']).toMatchObject({
-      openai: { type: 'openai', api_key: 'sk-new-openai' },
+    expect(onDisk['providers']).toMatchObject({ openai: { type: 'openai' } });
+    expect(
+      (onDisk['providers'] as Record<string, Record<string, unknown>>)['openai'],
+    ).not.toHaveProperty('api_key');
+    expect((await readCredentialsToml())['providers']).toEqual({
+      kimi: { api_key: 'sk-test' },
+      openai: { api_key: 'sk-new-openai' },
     });
   });
 
@@ -845,6 +870,9 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(onDisk['providers']).toMatchObject({ openai: { type: 'openai' } });
     const stored = (onDisk['providers'] as Record<string, Record<string, unknown>>)['openai'];
     expect(stored).not.toHaveProperty('api_key');
+    expect((await readCredentialsToml())['providers']).toEqual({
+      kimi: { api_key: 'sk-test' },
+    });
   });
 
   it('preserves hidden and hand-added model fields on a display-name-only patch', async () => {
@@ -914,11 +942,12 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(onDisk['default_model']).toBe('gpt4o');
     expect(onDisk['default_provider']).toBe('openai');
     expect(onDisk['providers']).toEqual({
-      kimi: { type: 'kimi', api_key: 'sk-test' },
-      openai: {
-        type: 'openai_responses',
-        api_key: 'sk-openai',
-      },
+      kimi: { type: 'kimi' },
+      openai: { type: 'openai_responses' },
+    });
+    expect((await readCredentialsToml())['providers']).toEqual({
+      kimi: { api_key: 'sk-test' },
+      openai: { api_key: 'sk-openai' },
     });
     expect(onDisk['models']).toEqual({
       k2: { provider: 'kimi', model: 'kimi-k2', max_context_size: 131072 },
@@ -995,12 +1024,16 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(onDisk['providers']).toEqual({
       'managed:kimi-code': {
         type: 'kimi',
-        api_key: '',
         base_url: 'https://api.changed.example.test/v1',
         oauth: { storage: 'file', key: 'oauth/kimi-code' },
         default_model: 'managed:kimi-code/kimi-k2',
         request_identity: requestIdentity,
       },
+    });
+    expect((onDisk['providers'] as Record<string, Record<string, unknown>>)['managed:kimi-code'])
+      .not.toHaveProperty('api_key');
+    expect((await readCredentialsToml())['providers']).toEqual({
+      'managed:kimi-code': { api_key: '' },
     });
     expect(onDisk['models']).toEqual({
       'managed:kimi-code/kimi-k2': {
@@ -1041,9 +1074,11 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(onDisk['providers']).toEqual({
       'edge:gateway': {
         type: 'openai',
-        api_key: 'sk-edge',
         base_url: 'https://edge.example.test/v2',
       },
+    });
+    expect((await readCredentialsToml())['providers']).toEqual({
+      'edge:gateway': { api_key: 'sk-edge' },
     });
   });
 
@@ -1104,9 +1139,11 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(onDisk['providers']).toEqual({
       openai: {
         type: 'openai',
-        api_key: 'sk-openai',
         custom_headers: { 'X-Org': 'acme' },
       },
+    });
+    expect((await readCredentialsToml())['providers']).toEqual({
+      openai: { api_key: 'sk-openai' },
     });
     expect(onDisk['models']).toEqual({
       'openai/gpt-4.1': {

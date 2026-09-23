@@ -5,7 +5,7 @@ Kiki 通过环境变量控制少数运行时行为——迁移数据目录，以
 Kiki 自有运行时开关统一使用 `KIKI_*` 前缀。`KIMI_API_KEY` 和 `KIMI_BASE_URL` 等供应商凭证键属于上游生态，单独在下文说明。以本页列出的确切变量名为准。
 
 ::: warning 重要：API 密钥不在这里配置
-`KIMI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不会**从 shell 环境变量自动读取。在终端里 `export KIMI_API_KEY=xxx` 不会让任何供应商获得密钥——必须写在 `config.toml` 的 `[providers.<name>]` 段或 `[providers.<name>.env]` 子表里。
+`KIMI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不会**从 shell 环境变量自动读取。在终端里 `export KIMI_API_KEY=xxx` 不会让任何供应商获得密钥——必须写在配置文件的 `[providers.<name>]` 段或其 `[providers.<name>.env]` 子表里。API 密钥放在配套的 `credentials.toml` 里，`config.toml` 不会存明文凭证。
 
 唯一的例外是 `KIKI_MODEL_*` 系列，它是一个显式通道，*确实*会从 shell 读取凭证——详见[用环境变量定义模型](#用环境变量定义模型-kiki-model)。
 
@@ -16,7 +16,7 @@ Kiki 自有运行时开关统一使用 `KIKI_*` 前缀。`KIMI_API_KEY` 和 `KIM
 
 ### `KIKI_HOME`
 
-覆盖数据根目录，默认 `~/.kiki`。设置后，配置文件、会话、日志、OAuth 凭据等全部数据都落到新路径下：
+覆盖数据根目录，默认 `~/.kiki`。设置后，配置与凭证文件、会话、日志、OAuth 凭据等全部数据都落到新路径下：
 
 ```sh
 export KIKI_HOME="/path/to/custom/kiki"
@@ -30,15 +30,21 @@ export KIKI_HOME="/path/to/custom/kiki"
 
 不修改 `config.toml` 临时切换模型——设置 `KIKI_MODEL_NAME` 后，CLI 在内存里合成一个临时供应商，重启后失效。详见[用环境变量定义模型](#用环境变量定义模型-kiki-model)。
 
-## 供应商凭证键（写在 config.toml 里）
+## 供应商凭证键
 
-下面这些键名不是直接从 shell 读取的——它们是写在 `config.toml` 的 `[providers.<name>.env]` 子表里、作为 `api_key` / `base_url` 备用来源的键名。CLI 只从配置文件读取，不从 `process.env` 读取。
+下面这些键名不是直接从 shell 读取的——它们是写在 `[providers.<name>.env]` 子表里、作为 `api_key` / `base_url` 备用来源的键名。CLI 只从配置文件读取，不从 `process.env` 读取。
 
-这样设计是为了让你保留熟悉的键名写法，同时把密钥放在配置文件里统一管理：
+这样设计是为了让你保留熟悉的键名写法，同时把密钥挡在 `config.toml` 之外：密钥键放进配套的 `credentials.toml`，非密钥的 `*_BASE_URL` 键留在 `config.toml`。
 
 ```toml
+# credentials.toml
 [providers.kimi.env]
 KIMI_API_KEY = "sk-xxx"
+```
+
+```toml
+# config.toml
+[providers.kimi.env]
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
@@ -60,7 +66,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI | 无 |
 
 ::: warning
-`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）是唯一走系统环境变量的例外——它由 Google SDK 自身通过 ADC 流程读取，CLI 不参与。其他所有键名都必须写在 `[providers.<name>.env]` 子表里。
+`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）是唯一走系统环境变量的例外——它由 Google SDK 自身通过 ADC 流程读取，CLI 不参与。其他所有键名都必须写在 `[providers.<name>.env]` 子表里——密钥键在 `credentials.toml`，`*_BASE_URL` 键在 `config.toml`。
 :::
 
 供应商类型与字段的完整说明见[平台与模型](./providers.md)。

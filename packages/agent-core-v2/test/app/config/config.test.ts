@@ -1477,7 +1477,7 @@ describe('entry-keyed section salvage', () => {
   });
 
   it('still rejects writes that carry an invalid entry', async () => {
-    const { config, disposables, readText } = await createConfig(
+    const { config, disposables, storage, readText } = await createConfig(
       '[providers.acme]\ntype = "openai"\napi_key = "sk-acme"\n',
     );
 
@@ -1487,7 +1487,9 @@ describe('entry-keyed section salvage', () => {
       config.replaceSections({ [PROVIDERS_SECTION]: { bad: { type: 123 } } }),
     ).rejects.toThrow();
 
-    expect(await readText()).toBe('[providers.acme]\ntype = "openai"\napi_key = "sk-acme"\n');
+    expect(await readText()).toBe('[providers.acme]\ntype = "openai"\n');
+    const bytes = await storage.read('', 'credentials.toml');
+    expect(new TextDecoder().decode(bytes)).toContain('api_key = "sk-acme"');
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
       acme: { type: 'openai', apiKey: 'sk-acme' },
     });
@@ -2799,7 +2801,7 @@ describe('ConfigService replaceSections', () => {
     return { config, disposables, store, storage };
   }
 
-  it('applies every domain in one transition with a single disk write, clearing undefined domains', async () => {
+  it('applies every domain in one transition and writes each changed file once, clearing undefined domains', async () => {
     const { config, disposables, store } = await createSectionsConfig();
     const setSpy = vi.spyOn(store, 'set');
     const setTextSpy = vi.spyOn(store, 'setText');
@@ -2811,7 +2813,7 @@ describe('ConfigService replaceSections', () => {
       [THINKING_SECTION]: undefined,
     });
 
-    expect(setSpy.mock.calls.length + setTextSpy.mock.calls.length).toBe(1);
+    expect([...setSpy.mock.calls, ...setTextSpy.mock.calls].map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials.toml']);
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
       acme: { type: 'openai', apiKey: 'sk-acme-2' },
     });
@@ -2836,7 +2838,7 @@ describe('ConfigService replaceSections', () => {
       [PROVIDERS_SECTION]: { acme: { type: 'openai', apiKey: 'sk-acme-2' } },
     });
 
-    expect(setSpy.mock.calls.length + setTextSpy.mock.calls.length).toBe(1);
+    expect([...setSpy.mock.calls, ...setTextSpy.mock.calls].map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials.toml']);
     expect(config.get(DEFAULT_MODEL_SECTION)).toBeUndefined();
     expect(config.inspect(DEFAULT_MODEL_SECTION).userValue).toBeUndefined();
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
@@ -3007,6 +3009,7 @@ describe('ConfigService persistence guards', () => {
     await expectPersistBlocked(config.set(THINKING_SECTION, { enabled: true }));
     expect(await stored(storage)).toBe('= broken =');
 
+    await storage.delete('', 'credentials.toml');
     await overwrite(storage, '[providers.beta]\ntype = "openai"\napi_key = "sk-beta"\n');
     await config.reload();
 
@@ -3026,17 +3029,23 @@ describe('ConfigService persistence guards', () => {
 
     await overwrite(
       storage,
-      'default_model = "acme/m1"\n\n[providers.acme]\ntype = "openai"\napi_key = "sk-acme-2"\n\n[providers.beta]\ntype = "openai"\napi_key = "sk-beta"\n',
+      'default_model = "acme/m1"\n\n[providers.acme]\ntype = "openai"\n\n[providers.beta]\ntype = "openai"\n',
     );
+    await storage.write('', 'credentials.toml', new TextEncoder().encode(
+      '[providers.acme]\napi_key = "sk-acme-2"\n\n[providers.beta]\napi_key = "sk-beta"\n',
+    ));
 
     const changed: string[] = [];
     config.onDidSectionChange((e) => changed.push(e.domain));
     await config.set(THINKING_SECTION, { enabled: true });
 
     const doc = await stored(storage);
-    expect(doc).toContain('sk-acme-2');
+    expect(doc).not.toContain('sk-acme-2');
     expect(doc).toContain('[providers.beta]');
     expect(doc).toContain('[thinking]');
+    const secrets = new TextDecoder().decode(await storage.read('', 'credentials.toml'));
+    expect(secrets).toContain('sk-acme-2');
+    expect(secrets).toContain('sk-beta');
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
       acme: { type: 'openai', apiKey: 'sk-acme-2' },
       beta: { type: 'openai', apiKey: 'sk-beta' },
@@ -3048,12 +3057,13 @@ describe('ConfigService persistence guards', () => {
     disposables.dispose();
   });
 
-  it('honors an external delete instead of resurrecting the in-memory copy', async () => {
+  it('honors external deletion of both config and credentials instead of resurrecting the in-memory copy', async () => {
     const { config, disposables, storage } = await createGuardedConfig(
       '[providers.acme]\ntype = "openai"\napi_key = "sk-acme"\n',
     );
 
     await storage.delete('', 'config.toml');
+    await storage.delete('', 'credentials.toml');
     await config.set(THINKING_SECTION, { enabled: true });
 
     const doc = await stored(storage);

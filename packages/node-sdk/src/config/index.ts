@@ -1,5 +1,6 @@
 export * from './merge';
 export * from './model';
+export * from './credentials';
 export * from './migrations';
 export * from './path';
 export * from './print-defaults';

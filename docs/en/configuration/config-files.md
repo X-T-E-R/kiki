@@ -1,8 +1,8 @@
 # Configuration files
 
-Kiki writes all long-term preferences — which model to use, which API key to fill in, how many steps an Agent can run per turn — into TOML (a plain-text configuration format with a clear structure) files. Change them once and they take effect on every startup. Agent and runtime settings live in `config.toml`; terminal-UI and client preferences (theme, editor, notifications, auto-update) live in a companion `tui.toml`.
+Kiki writes all long-term preferences — which model to use, which API key to fill in, how many steps an Agent can run per turn — into TOML (a plain-text configuration format with a clear structure) files. Change them once and they take effect on every startup. Ordinary agent and runtime settings live in `config.toml`; provider credentials live in a separate `credentials.toml`; terminal-UI and client preferences (theme, editor, notifications, auto-update) live in a companion `tui.toml`.
 
-Default location: `~/.kiki/config.toml`, created automatically on first run.
+Default location: `~/.kiki/config.toml`, created automatically on first run. Provider credentials live beside it in `~/.kiki/credentials.toml`; see [Provider credentials](#provider-credentials).
 
 ## Config file location
 
@@ -13,6 +13,8 @@ export KIKI_HOME=/path/to/kiki-home
 ```
 
 The config file path then becomes `$KIKI_HOME/config.toml`. Regardless of where the directory lives, the file name is always `config.toml`.
+
+`credentials.toml` follows the same rule: it always sits in the same directory as `config.toml`, so its path becomes `$KIKI_HOME/credentials.toml` when you override the data directory. Its file name is always `credentials.toml`.
 
 ::: tip
 TOML field names always use snake_case, for example `default_model` and `max_context_size`. If a key contains `.`, you must quote it — for example `[models."gpt-4.1"]` — otherwise TOML treats `.` as a nested table separator.
@@ -31,7 +33,6 @@ merge_all_available_skills = true
 [providers."managed:kimi-code"]
 type = "kimi"
 base_url = "https://api.kimi.com/coding/v1"
-api_key = ""
 
 [models."kimi-code/k3"]
 provider = "managed:kimi-code"
@@ -89,6 +90,32 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## Provider credentials
+
+Provider credentials — the API keys Kiki uses to call each provider — are stored in `~/.kiki/credentials.toml`, a companion file in the same directory as `config.toml` (`$KIKI_HOME/credentials.toml` when you override the data directory). Ordinary configuration stays in `config.toml`; credential values keep the TOML paths they had there, so a provider's `api_key` simply moves out of its `[providers."<name>"]` table in `config.toml` and into the same table here.
+
+```toml
+# ~/.kiki/credentials.toml
+[providers."managed:kimi-code"]
+api_key = "YOUR_API_KEY"
+```
+
+The file is optional. When it is missing, Kiki treats it as empty and falls back to any credential still present in `config.toml`. When both files carry a value for the same provider credential, the value in `credentials.toml` wins.
+
+The field-level priority between `api_key` and the `[providers.<name>.env]` fallback is covered in [Config overrides](./overrides.md#provider-credentials).
+
+### Migrating existing keys
+
+If an older `config.toml` still holds provider credentials, the first load after upgrading moves them into `credentials.toml` and rewrites `config.toml` without them. The previous `config.toml` is kept as a backup named `config.toml.bak-<date>` — the migration date, for example `config.toml.bak-2026-09-30` — so you can review or restore it. The backup still contains the original plaintext keys; remove it after checking the migration if you no longer need it. Repeated loads do not create another backup or change already-moved credentials.
+
+### File permissions
+
+Kiki creates and rewrites `credentials.toml` with owner-only permissions (`0600`) wherever the platform supports it, so other users on the same machine cannot read your keys.
+
+### Secret handling
+
+Configuration and provider read APIs report credential presence (for example, `has_api_key`) without returning the stored key. Keep `credentials.toml` and any migration backup private.
+
 ## Top-level fields
 
 Fields in the config file fall into two categories: **top-level scalars** that directly control default behavior, and **nested tables** (`providers`, `models`, `thinking`, etc.) that each have their own structure, described individually in the sections below.
@@ -130,12 +157,12 @@ The following sections cover each of the nested tables in turn: `providers`, `mo
 
 ## `providers`
 
-Each entry in the `providers` table defines an API provider, keyed by a unique name. The CLI reads credentials only from here — it does **not** fall back to shell environment variables automatically. Running `export KIMI_API_KEY` in the terminal does not give any provider its key; you must write it explicitly in the config file (see [Config overrides](./overrides.md#provider-credentials)).
+Each entry in the `providers` table defines an API provider, keyed by a unique name. The provider's `api_key` lives in [`credentials.toml`](#provider-credentials), and the CLI does **not** fall back to shell environment variables automatically. Running `export KIMI_API_KEY` in the terminal does not give any provider its key — write it in `credentials.toml` instead.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `type` | `string` | Yes | Provider type: `kimi`, `anthropic`, `openai`, `openai_responses`, `google-genai`, `vertexai` |
-| `api_key` | `string` | No | API key, written in plain text in the config file |
+| `api_key` | `string` | No | API key. Stored in `credentials.toml`; a value in `config.toml` is used only when `credentials.toml` has none for that provider |
 | `base_url` | `string` | No | API base URL |
 | `oauth` | `table` | No | OAuth credential reference (`storage` and `key` fields); injected automatically by the login flow — normally no need to write this by hand |
 | `env` | `table<string, string>` | No | Fallback source for provider credentials; see below |
@@ -237,7 +264,7 @@ display_name = "Kimi for Coding (custom)"
 
 `[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_input_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, `default_effort`, `off_effort`, `service_tier`, `request_params`, `context_budget`, and `max_completion_tokens`. It does not accept identity / routing fields: `provider`, `model`, `protocol`, `beta_api`, and `base_url`. For these added fields, resolve the model alias configuration, including its `overrides`, first; then apply model alias → top-level profile → matching `model_profiles` entry. Merge `request_params` by key and use the last explicit `service_tier`; `context_budget` and `max_completion_tokens` are limits, so take the smallest declared value across layers within the model's capacity and output cap. Omitting a limit adds no restriction.
 
-You can also switch models temporarily without touching the config file — by setting `KIKI_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi-model).
+You can also switch models temporarily without touching the config file — by setting `KIKI_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kiki-model).
 
 ### Model cognition
 

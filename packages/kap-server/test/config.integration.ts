@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -74,6 +74,10 @@ describe('server-v2 /api/config', () => {
     const body = (await res.json()) as Envelope<ConfigResponse>;
     expect(body.code).toBe(0);
     return configResponseSchema.parse(body.data);
+  }
+
+  async function readCredentialsFile(): Promise<string> {
+    return readFile(join(home as string, 'credentials.toml'), 'utf-8').catch(() => '');
   }
 
   it('round trips prompt variable names, merges references, validates saves and removes replaced entries', async () => {
@@ -324,9 +328,10 @@ describe('server-v2 /api/config', () => {
     expect(cfg.image?.maxEdgePx).toBe(2048);
 
     const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
-    expect(persisted).toContain('api_key = "secret-kept"');
+    expect(persisted).not.toContain('api_key');
     expect(persisted).toContain('timeout_ms = 60000');
     expect(persisted).toContain('max_edge_px = 2048');
+    expect(await readCredentialsFile()).toContain('api_key = "secret-kept"');
   });
 
   it('round-trips the subagent default_profile, including the strict empty string', async () => {
@@ -711,5 +716,89 @@ describe('server-v2 /api/config', () => {
       base_url: 'https://example.test',
       has_api_key: true,
     });
+  });
+
+  it('migrates a legacy config.toml api_key into credentials.toml and backs up the original', async () => {
+    const legacy = [
+      '[providers.example]',
+      'type = "openai"',
+      'api_key = "legacy-secret"',
+      '',
+    ].join('\n');
+    await boot(legacy);
+
+    const configText = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(configText).toContain('[providers.example]');
+    expect(configText).not.toContain('api_key');
+    expect(configText).not.toContain('legacy-secret');
+    expect(await readCredentialsFile()).toContain('api_key = "legacy-secret"');
+
+    const backups = (await readdir(home as string)).filter((name) =>
+      name.startsWith('config.toml.bak-'),
+    );
+    expect(backups).toHaveLength(1);
+    expect(await readFile(join(home as string, backups[0] as string), 'utf-8')).toBe(legacy);
+  });
+
+  it('reports provider credentials as has_api_key without echoing or persisting api_key in config.toml', async () => {
+    await boot([
+      '[providers.example]',
+      'type = "openai"',
+      'api_key = "legacy-secret"',
+      '',
+    ].join('\n'));
+
+    const migrated = await getConfig();
+    expect(migrated.providers['example']).toMatchObject({ type: 'openai', has_api_key: true });
+    expect(migrated.providers['example']).not.toHaveProperty('api_key');
+
+    const patched = await patchConfig({
+      providers: {
+        example: {
+          type: 'openai',
+          base_url: 'https://api.example.test/v1',
+          api_key: 'patched-secret',
+        },
+      },
+    });
+    const patchedProvider = patched.providers['example'];
+    expect(patchedProvider).toMatchObject({
+      type: 'openai',
+      base_url: 'https://api.example.test/v1',
+      has_api_key: true,
+    });
+    expect(patchedProvider).not.toHaveProperty('api_key');
+
+    const raw = await (await authedFetch(server as RunningServer, base, '/api/config')).text();
+    expect(raw).not.toContain('legacy-secret');
+    expect(raw).not.toContain('patched-secret');
+
+    const configText = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(configText).not.toContain('api_key');
+    expect(configText).not.toContain('patched-secret');
+    const credentialsText = await readCredentialsFile();
+    expect(credentialsText).toContain('patched-secret');
+    expect(credentialsText).not.toContain('legacy-secret');
+  });
+
+  it('never echoes a model-level api_key through the config read projection', async () => {
+    await boot([
+      '[providers.example]',
+      'type = "openai"',
+      '',
+      '[models.example-model]',
+      'provider = "example"',
+      'model = "example-model"',
+      'api_key = "model-private-key"',
+      '',
+    ].join('\n'));
+
+    const response = await (await authedFetch(server as RunningServer, base, '/api/config')).text();
+    expect(response).toContain('example-model');
+    expect(response).not.toContain('model-private-key');
+    const body = JSON.parse(response) as { data: { models: Record<string, Record<string, unknown>> } };
+    expect(body.data.models['example-model']).toEqual({ provider: 'example', model: 'example-model' });
+    expect(await readCredentialsFile()).toContain('model-private-key');
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('model-private-key');
   });
 });

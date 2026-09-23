@@ -10,6 +10,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'pathe';
 import { stringify as stringifyToml } from 'smol-toml';
 
+import { credentialsPathFor, splitConfigCredentials } from './credentials';
 import { ensureKikiHome } from './path';
 import { configToTomlData, readConfigFileForUpdate } from './toml';
 import { validateConfig } from './schema';
@@ -48,6 +49,11 @@ function writeMigrationMarker(homeDir: string, key: string): void {
  * Skipped when the marker exists; a config that cannot be parsed is left
  * untouched AND unmarked so the next start retries. All other values — and a
  * `max` the user writes by hand after the migration — are honored as-is.
+ *
+ * The rewrite uses the same secret split as `writeConfigFile`: provider
+ * credentials go to the companion `credentials.toml`, never back into
+ * `config.toml`. Credentials are written first, and only when the merged
+ * document actually carries a secret, so an empty scaffold is left untouched.
  */
 export function migrateThinkingEffortMaxToHigh(configPath: string, homeDir: string): void {
   try {
@@ -67,12 +73,21 @@ export function migrateThinkingEffortMaxToHigh(configPath: string, homeDir: stri
         ...config,
         thinking: { ...config.thinking, effort: 'high' },
       });
-      const tmp = `${configPath}.migrate-${process.pid}-${Date.now()}`;
-      writeFileSync(tmp, `${stringifyToml(configToTomlData(validated))}\n`, { mode: 0o600 });
-      renameSync(tmp, configPath);
+      const separated = splitConfigCredentials(configToTomlData(validated));
+      if (Object.keys(separated.credentials).length > 0) {
+        writeFileReplacing(credentialsPathFor(configPath), `${stringifyToml(separated.credentials)}\n`);
+      }
+      writeFileReplacing(configPath, `${stringifyToml(separated.config)}\n`);
     }
     writeMigrationMarker(homeDir, THINKING_EFFORT_MAX_TO_HIGH);
   } catch {
     // Best-effort: never block startup on a migration.
   }
+}
+
+/** Owner-only atomic replace, matching the migration's original `0600` write. */
+function writeFileReplacing(filePath: string, text: string): void {
+  const tmp = `${filePath}.migrate-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, text, { mode: 0o600 });
+  renameSync(tmp, filePath);
 }

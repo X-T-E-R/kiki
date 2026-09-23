@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,7 +8,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiConfigRpc, createKimiHarness, ErrorCodes, KimiError } from '#/index';
 
-import { parseConfigString, readConfigFile, resolveModelAlias, writeConfigFile } from '#/config';
+import {
+  ensureConfigFile,
+  loadRuntimeConfigSafe,
+  migrateThinkingEffortMaxToHigh,
+  parseConfigString,
+  readConfigFile,
+  resolveModelAlias,
+  writeConfigFile,
+} from '#/config';
 import { TEST_IDENTITY } from './test-identity';
 
 // node-sdk/agent-core normalize paths to forward slashes (pathe). Mirror that
@@ -775,5 +783,256 @@ describe('KimiHarness config API', () => {
     await harness.reloadSession({ id: session.id, forcePluginSessionStartReminder: true });
 
     expect(reloadSpy).toHaveBeenCalledWith({ forcePluginSessionStartReminder: true });
+  });
+});
+
+const CREDENTIALS_TOML = `
+default_model = "alpha-model"
+theme = "dark"
+
+[providers.alpha]
+type = "openai"
+base_url = "https://api.example.test/v1"
+api_key = "sk-alpha-secret"
+custom_headers = { "X-Trace" = "trace-1", "Authorization" = "Bearer header-secret" }
+env = { PUBLIC_FLAG = "1" }
+
+[models.alpha-model]
+provider = "alpha"
+model = "alpha-model"
+max_context_size = 128000
+
+[ui_state]
+empty_table = {}
+`;
+
+describe('SDK provider credentials', () => {
+  it('keeps provider secrets out of config.toml and loads them from credentials.toml', async () => {
+    const dir = await makeTempDir();
+    const configPath = join(dir, 'config.toml');
+    const credentialsPath = join(dir, 'credentials.toml');
+    await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
+
+    const configText = await readFile(configPath, 'utf-8');
+    expect(configText).not.toContain('sk-alpha-secret');
+    expect(configText).not.toContain('header-secret');
+    expect(configText).not.toContain('api_key');
+    expect(configText).not.toContain('Authorization');
+    // Non-secret provider fields, including a secret-free header, stay put.
+    expect(configText).toContain('base_url = "https://api.example.test/v1"');
+    expect(configText).toContain('X-Trace = "trace-1"');
+
+    const credentialsText = await readFile(credentialsPath, 'utf-8');
+    expect(credentialsText).toContain('sk-alpha-secret');
+    expect(credentialsText).toContain('header-secret');
+
+    const reloaded = readConfigFile(configPath);
+    expect(reloaded.providers['alpha']).toMatchObject({
+      type: 'openai',
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: 'sk-alpha-secret',
+      customHeaders: { 'X-Trace': 'trace-1', Authorization: 'Bearer header-secret' },
+      env: { PUBLIC_FLAG: '1' },
+    });
+    // A secret-free empty table survives the split (round-trip regression).
+    expect(reloaded.raw?.['ui_state']).toEqual({ empty_table: {} });
+  });
+
+  it('lets credentials.toml override config.toml on a shared TOML path', async () => {
+    const dir = await makeTempDir();
+    const configPath = join(dir, 'config.toml');
+    await writeFile(
+      configPath,
+      `
+[providers.alpha]
+type = "openai"
+base_url = "https://api.example.test/v1"
+api_key = "sk-from-config"
+`,
+      'utf-8',
+    );
+    await writeFile(
+      join(dir, 'credentials.toml'),
+      `
+[providers.alpha]
+api_key = "sk-from-credentials"
+`,
+      'utf-8',
+    );
+
+    const config = readConfigFile(configPath);
+    expect(config.providers['alpha']?.apiKey).toBe('sk-from-credentials');
+    expect(config.providers['alpha']?.baseUrl).toBe('https://api.example.test/v1');
+  });
+
+  it('scaffolds credentials.toml with owner-only permissions', async () => {
+    const dir = await makeTempDir();
+    const configPath = join(dir, 'config.toml');
+    const credentialsPath = join(dir, 'credentials.toml');
+    await ensureConfigFile(configPath);
+
+    expect(await readFile(credentialsPath, 'utf-8')).toContain('credentials.toml');
+    expect(await readFile(configPath, 'utf-8')).toContain('Runtime settings for Kiki.');
+    if (process.platform !== 'win32') {
+      expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+      expect((await stat(credentialsPath)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it('rewrites credentials.toml owner-only (atomicWrite temp files use the umask)', async () => {
+    const dir = await makeTempDir();
+    const configPath = join(dir, 'config.toml');
+    await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
+
+    if (process.platform !== 'win32') {
+      expect((await stat(join(dir, 'credentials.toml'))).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it('loads the merged runtime config and reports a broken credentials.toml as a file error', async () => {
+    const dir = await makeTempDir();
+    const configPath = join(dir, 'config.toml');
+    await writeFile(
+      configPath,
+      `
+[providers.alpha]
+type = "openai"
+base_url = "https://api.example.test/v1"
+`,
+      'utf-8',
+    );
+    await writeFile(join(dir, 'credentials.toml'), `[providers.alpha]\napi_key = "sk-runtime"\n`, 'utf-8');
+
+    const loaded = loadRuntimeConfigSafe(configPath, {});
+    expect(loaded.config.providers['alpha']?.apiKey).toBe('sk-runtime');
+    expect(loaded.fileError).toBeUndefined();
+
+    await writeFile(join(dir, 'credentials.toml'), 'not = valid = toml', 'utf-8');
+    const degraded = loadRuntimeConfigSafe(configPath, {});
+    expect(degraded.fileError?.code).toBe(ErrorCodes.CONFIG_INVALID);
+    expect(degraded.config.providers['alpha']?.baseUrl).toBe('https://api.example.test/v1');
+    expect(degraded.config.providers['alpha']?.apiKey).toBeUndefined();
+    expect(degraded.fileWarnings.join('\n')).toContain('credentials.toml');
+  });
+
+  it('drops a secret from credentials.toml when the written config no longer has it', async () => {
+    const dir = await makeTempDir();
+    const configPath = join(dir, 'config.toml');
+    const credentialsPath = join(dir, 'credentials.toml');
+    await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
+    expect(await readFile(credentialsPath, 'utf-8')).toContain('sk-alpha-secret');
+
+    const withoutSecret = parseConfigString(
+      `
+[providers.alpha]
+type = "openai"
+base_url = "https://api.example.test/v1"
+`,
+      configPath,
+    );
+    await writeConfigFile(configPath, withoutSecret);
+
+    expect(await readFile(credentialsPath, 'utf-8')).not.toContain('sk-alpha-secret');
+    expect(readConfigFile(configPath).providers['alpha']?.apiKey).toBeUndefined();
+  });
+});
+
+describe('SDK config migrations', () => {
+  it('rewrites thinking max to high without persisting secrets back into config.toml', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(
+      configPath,
+      `
+[providers.alpha]
+type = "openai"
+base_url = "https://api.example.test/v1"
+api_key = "sk-migrate-secret"
+
+[thinking]
+effort = "max"
+`,
+      'utf-8',
+    );
+
+    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+
+    const configText = await readFile(configPath, 'utf-8');
+    expect(configText).toContain('effort = "high"');
+    expect(configText).not.toContain('api_key');
+    expect(configText).not.toContain('sk-migrate-secret');
+    expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toContain('sk-migrate-secret');
+
+    const reloaded = readConfigFile(configPath);
+    expect(reloaded.thinking?.effort).toBe('high');
+    expect(reloaded.providers['alpha']?.apiKey).toBe('sk-migrate-secret');
+  });
+
+  it('leaves an empty credentials.toml scaffold untouched when the config has no secret', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    await ensureConfigFile(configPath);
+    const scaffold = await readFile(join(homeDir, 'credentials.toml'), 'utf-8');
+    await writeFile(
+      configPath,
+      `
+[providers.alpha]
+type = "openai"
+base_url = "https://api.example.test/v1"
+
+[thinking]
+effort = "max"
+`,
+      'utf-8',
+    );
+
+    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+
+    expect(await readFile(configPath, 'utf-8')).toContain('effort = "high"');
+    expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toBe(scaffold);
+  });
+
+  it('keeps a credential already in credentials.toml when config.toml carries none', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(
+      configPath,
+      `
+[providers.alpha]
+type = "openai"
+base_url = "https://api.example.test/v1"
+
+[thinking]
+effort = "max"
+`,
+      'utf-8',
+    );
+    await writeFile(
+      join(homeDir, 'credentials.toml'),
+      `[providers.alpha]\napi_key = "sk-existing-cred"\n`,
+      'utf-8',
+    );
+
+    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+
+    expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toContain('sk-existing-cred');
+    expect(await readFile(configPath, 'utf-8')).not.toContain('api_key');
+    const reloaded = readConfigFile(configPath);
+    expect(reloaded.thinking?.effort).toBe('high');
+    expect(reloaded.providers['alpha']?.apiKey).toBe('sk-existing-cred');
+  });
+
+  it('runs once: the marker suppresses a later rewrite', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(configPath, `[thinking]\neffort = "max"\n`, 'utf-8');
+
+    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+    expect(await readFile(configPath, 'utf-8')).toContain('effort = "high"');
+
+    // A hand-written max afterwards is honored as-is.
+    await writeFile(configPath, `[thinking]\neffort = "max"\n`, 'utf-8');
+    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+    expect(await readFile(configPath, 'utf-8')).toContain('effort = "max"');
   });
 });

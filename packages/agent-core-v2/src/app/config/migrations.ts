@@ -2,13 +2,50 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'pathe';
 
 import { type IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { type ILogService } from '#/_base/log/log';
 
-import { isPlainObject } from './configPure';
+import { writeConfigDocument } from './configDocument';
+import { mergeConfigCredentials, splitConfigCredentials } from './credentials';
+import { deepEqual, isPlainObject } from './configPure';
 import { replaceThinkingEffortMax } from './tomlWriteback';
 
 const MIGRATIONS_FILE = 'migrations-effort.json';
 const THINKING_EFFORT_MAX_TO_HIGH = 'thinking-effort-max-to-high';
 const CONFIG_SCOPE = '';
+export const CREDENTIALS_KEY = 'credentials.toml';
+
+export async function migrateConfigCredentials(
+  documentStore: IAtomicTomlDocumentStore,
+  configKey: string,
+  log: ILogService,
+): Promise<void> {
+  let config: Record<string, unknown>;
+  let credentials: Record<string, unknown>;
+  let configText: string | undefined;
+  let credentialsText: string | undefined;
+  try {
+    const configData = await documentStore.get<Record<string, unknown>>(CONFIG_SCOPE, configKey);
+    config = isPlainObject(configData) ? configData : {};
+    const credentialsData = await documentStore.get<Record<string, unknown>>(CONFIG_SCOPE, CREDENTIALS_KEY);
+    credentials = isPlainObject(credentialsData) ? credentialsData : {};
+    configText = await documentStore.getText(CONFIG_SCOPE, configKey);
+    credentialsText = await documentStore.getText(CONFIG_SCOPE, CREDENTIALS_KEY);
+  } catch {
+    return;
+  }
+  const separated = splitConfigCredentials(config);
+  if (deepEqual(separated.config, config)) return;
+  if (configText === undefined) return;
+  const merged = mergeConfigCredentials(config, credentials);
+  const nextCredentials = splitConfigCredentials(merged).credentials;
+  const backupKey = `${configKey}.bak-${new Date().toISOString().slice(0, 10)}`;
+  if (await documentStore.getText(CONFIG_SCOPE, backupKey) === undefined) {
+    await documentStore.setText(CONFIG_SCOPE, backupKey, configText);
+  }
+  await writeConfigDocument(documentStore, CREDENTIALS_KEY, credentials, credentialsText, nextCredentials);
+  await writeConfigDocument(documentStore, configKey, config, configText, separated.config);
+  log.info('Moved config credentials into credentials.toml', { backup: backupKey });
+}
 
 function readMigrationMarkers(homeDir: string): Record<string, string> {
   try {

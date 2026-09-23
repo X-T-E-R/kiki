@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { parse as parseToml } from 'smol-toml';
@@ -12,7 +12,8 @@ import { IMAGE_SECTION, type ImageConfig } from '#/agent/media/configSection';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigRegistry, IConfigService } from '#/app/config/config';
 import { ConfigRegistry, ConfigService } from '#/app/config/configService';
-import { THINKING_SECTION } from '#/app/kosongConfig/configSection';
+import { MODELS_SECTION, PROVIDERS_SECTION, THINKING_SECTION } from '#/app/kosongConfig/configSection';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { type ThinkingConfig } from '#/kosong/model/thinking';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -33,11 +34,18 @@ describe('config.toml writeback preservation', () => {
     rmSync(homeDir, { recursive: true, force: true });
   });
 
-  async function setup(toml: string, env: Record<string, string> = {}) {
+  async function setup(
+    toml: string,
+    env: Record<string, string> = {},
+    credentials?: string,
+    storage: InMemoryStorageService | FileStorageService = new InMemoryStorageService(),
+  ) {
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
-    const storage = new InMemoryStorageService();
     await storage.write('', 'config.toml', new TextEncoder().encode(toml));
+    if (credentials !== undefined) {
+      await storage.write('', 'credentials.toml', new TextEncoder().encode(credentials));
+    }
     ix.stub(ILogService, stubLog());
     ix.stub(IBootstrapService, stubBootstrap(homeDir, env));
     ix.stub(IFileSystemStorageService, storage);
@@ -46,9 +54,9 @@ describe('config.toml writeback preservation', () => {
     ix.set(IConfigService, new SyncDescriptor(ConfigService));
     const config = ix.get(IConfigService);
     await config.ready;
-    const readText = async (): Promise<string> => {
-      const bytes = await storage.read('', 'config.toml');
-      if (bytes === undefined) throw new Error('config.toml missing');
+    const readText = async (key = 'config.toml'): Promise<string> => {
+      const bytes = await storage.read('', key);
+      if (bytes === undefined) throw new Error(`${key} missing`);
       return new TextDecoder().decode(bytes);
     };
     return { config, disposables, storage, readText };
@@ -188,6 +196,84 @@ describe('config.toml writeback preservation', () => {
     expect(text.includes('effort = "max"')).toBe(false);
     expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ effort: 'high' });
 
+    disposables.dispose();
+  });
+
+  it('loads credentials with precedence, migrates old keys once, and keeps a byte-exact backup', async () => {
+    const seed = '# original config\n[providers.acme]\nbase_url = "https://example.test"\napi_key   = "legacy" # private\n[providers.acme.oauth]\nstorage = "file"\nkey = "account-ref"\n';
+    const credentials = '# existing secret\n[providers.acme]\napi_key = "new-key" # preserve\n';
+    const { config, disposables, storage, readText } = await setup(seed, {}, credentials);
+
+    expect(config.get<Record<string, { apiKey: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).toBe('new-key');
+    expect(await readText('config.toml.bak-' + new Date().toISOString().slice(0, 10))).toBe(seed);
+    const publicText = await readText();
+    expect(publicText).toContain('# original config');
+    expect(publicText).toContain('key = "account-ref"');
+    expect(publicText).not.toContain('api_key');
+    expect(await readText('credentials.toml')).toBe(credentials);
+
+    const writeSpy = vi.spyOn(storage, 'write');
+    await config.reload();
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(await readText('config.toml.bak-' + new Date().toISOString().slice(0, 10))).toBe(seed);
+    disposables.dispose();
+  });
+
+  it('routes provider, model, registry and header secrets separately while preserving both files', async () => {
+    const configText = '# config\n[image]\nmax_edge_px = 1500\n';
+    const credentialsText = '# secret header\n[providers.acme]\napi_key   = "original" # keep comment\n';
+    const { config, disposables, readText } = await setup(configText, {}, credentialsText);
+    await config.replace(PROVIDERS_SECTION, {
+      acme: {
+        type: 'openai', apiKey: 'replaced', baseUrl: 'https://example.test',
+        customHeaders: { Authorization: 'Bearer another-secret' },
+        env: { KIMI_API_KEY: 'third-secret' },
+        source: { url: 'https://registry.example.test', apiKey: 'registry-secret' },
+      },
+    });
+    await config.set(MODELS_SECTION, { 'acme/model': { apiKey: 'model-secret', providerId: 'acme' } });
+    const publicText = await readText();
+    const privateText = await readText('credentials.toml');
+    for (const secret of ['replaced', 'another-secret', 'third-secret', 'registry-secret', 'model-secret']) {
+      expect(publicText).not.toContain(secret);
+      expect(privateText).toContain(secret);
+    }
+    expect(publicText).toContain('base_url = "https://example.test"');
+    expect(publicText).toContain('# config');
+    expect(privateText).toContain('# secret header');
+    expect(privateText).toContain('api_key   = "replaced" # keep comment');
+    expect(section(parseToml(privateText) as Record<string, unknown>, 'models')['acme/model']).toEqual({ api_key: 'model-secret' });
+    await config.replace(PROVIDERS_SECTION, { acme: { type: 'openai', baseUrl: 'https://example.test' } });
+    expect(await readText('credentials.toml')).not.toContain('replaced');
+    expect(await readText('credentials.toml')).toContain('model-secret');
+    disposables.dispose();
+  });
+
+  it('creates credential files with restricted mode through the real atomic storage', async () => {
+    const { config, disposables, readText } = await setup('', {}, undefined, new FileStorageService(homeDir, 0o700, 0o600));
+    await config.set(PROVIDERS_SECTION, { acme: { apiKey: 'private-key' } });
+    const path = join(homeDir, 'credentials.toml');
+    expect(readFileSync(path, 'utf8')).toContain('private-key');
+    expect(await readText()).not.toContain('private-key');
+    if (process.platform !== 'win32') {
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
+    disposables.dispose();
+  });
+
+  it('keeps the last good values and blocks writes when credentials.toml is invalid', async () => {
+    const { config, storage, disposables, readText } = await setup(
+      '[providers.acme]\ntype = "openai"\n', {}, '[providers.acme]\napi_key = "working-key"\n',
+    );
+    await storage.write('', 'credentials.toml', new TextEncoder().encode('[providers.acme\napi_key = "broken"'));
+    await config.reload();
+    expect(config.get<Record<string, { apiKey: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).toBe('working-key');
+    await expect(config.set(IMAGE_SECTION, { maxEdgePx: 1800 })).rejects.toThrow();
+    expect(await readText('credentials.toml')).toContain('broken');
+    await storage.write('', 'credentials.toml', new TextEncoder().encode('[providers.acme]\napi_key = "fixed-key"\n'));
+    await config.reload();
+    expect(config.get<Record<string, { apiKey: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).toBe('fixed-key');
+    await config.set(IMAGE_SECTION, { maxEdgePx: 1800 });
     disposables.dispose();
   });
 });

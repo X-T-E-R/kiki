@@ -1,8 +1,8 @@
 # 配置文件
 
-Kiki 把所有长期偏好写进 `~/.kiki/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。改一次，每次启动都生效。Agent 与运行时设置放在 `config.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
+Kiki 把所有长期偏好写进 `~/.kiki/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。改一次，每次启动都生效。Agent 与运行时设置放在 `config.toml`，供应商凭证放在独立的 `credentials.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
 
-默认位置：`~/.kiki/config.toml`，首次运行时自动创建。
+默认位置：`~/.kiki/config.toml`，首次运行时自动创建。供应商凭证放在同目录的 `~/.kiki/credentials.toml`，详见 [供应商凭证](#供应商凭证)。
 
 ## 配置文件位置
 
@@ -13,6 +13,8 @@ export KIKI_HOME=/path/to/kiki-home
 ```
 
 此时配置文件路径变为 `$KIKI_HOME/config.toml`。无论目录在哪里，文件名固定是 `config.toml`。
+
+`credentials.toml` 遵循同样的规则：始终与 `config.toml` 位于同一目录，覆盖数据目录后路径变为 `$KIKI_HOME/credentials.toml`。文件名固定是 `credentials.toml`。
 
 ::: tip
 TOML 字段名一律用下划线（snake_case），如 `default_model`、`max_context_size`。字段名里若含 `.`，需用引号包住，例如 `[models."gpt-4.1"]`——否则 TOML 会把 `.` 解释为嵌套表分隔符。
@@ -31,7 +33,6 @@ merge_all_available_skills = true
 [providers."managed:kimi-code"]
 type = "kimi"
 base_url = "https://api.kimi.com/coding/v1"
-api_key = ""
 
 [models."kimi-code/k3"]
 provider = "managed:kimi-code"
@@ -89,6 +90,32 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## 供应商凭证
+
+供应商凭证——Kiki 调用各供应商时使用的 API 密钥——存放在 `~/.kiki/credentials.toml`，它与 `config.toml` 位于同一目录（覆盖数据目录时为 `$KIKI_HOME/credentials.toml`）。普通配置仍留在 `config.toml`；凭证值保持原来的 TOML 路径，供应商的 `api_key` 只是从 `config.toml` 的 `[providers."<name>"]` 表移到这里的同名表下。
+
+```toml
+# ~/.kiki/credentials.toml
+[providers."managed:kimi-code"]
+api_key = "YOUR_API_KEY"
+```
+
+该文件是可选的。文件不存在时按空处理，回退到 `config.toml` 里仍然存在的凭证；两个文件为同一个供应商凭证都写了值时，`credentials.toml` 中的值优先。
+
+`api_key` 与 `[providers.<name>.env]` 备用来源之间的字段级优先级见[配置覆盖](./overrides.md#供应商凭证)。
+
+### 迁移已有密钥
+
+如果旧版 `config.toml` 里仍留有供应商凭证，升级后的首次加载会把它们迁入 `credentials.toml`，并重写 `config.toml`（不再包含这些凭证）。原 `config.toml` 会保留为备份，文件名为 `config.toml.bak-<date>`（迁移当天的日期，例如 `config.toml.bak-2026-09-30`），便于查看或恢复。备份仍含原来的明文密钥；确认迁移成功后，若不再需要备份，请将其删除。重复加载不会另建备份，也不会改动已迁出的凭证。
+
+### 文件权限
+
+在平台支持的前提下，Kiki 会以仅属主可读写的权限（`0600`）创建和改写 `credentials.toml`，同一台机器上的其他用户读不到你的密钥。
+
+### 密钥处理
+
+配置与供应商读取 API 只报告是否存在凭证（例如 `has_api_key`），不返回存储的密钥。请妥善保护 `credentials.toml` 和迁移备份。
+
 ## 顶层字段
 
 配置文件里的字段分两类：**顶层标量**直接控制默认行为，**嵌套表**（`providers`、`models`、`thinking` 等）各有独立结构，在下文各节单独说明。
@@ -130,12 +157,12 @@ timeout = 5
 
 ## `providers`
 
-`providers` 表的每一项定义一个 API 供应商，以唯一名称为 key。CLI 只从这里读取凭证，**不会**从 shell 环境变量自动取后备值——在终端里 `export KIMI_API_KEY` 不会让供应商自动获得密钥，必须显式写在配置文件里（详见[配置覆盖](./overrides.md#供应商凭证)）。
+`providers` 表的每一项定义一个 API 供应商，以唯一名称为 key。供应商的 `api_key` 放在 [`credentials.toml`](#供应商凭证)，CLI **不会**从 shell 环境变量自动取后备值——在终端里 `export KIMI_API_KEY` 不会让供应商自动获得密钥，请写在 `credentials.toml` 里。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `type` | `string` | 是 | 供应商类型：`kimi`、`anthropic`、`openai`、`openai_responses`、`google-genai`、`vertexai` |
-| `api_key` | `string` | 否 | API 密钥，明文写在配置文件里 |
+| `api_key` | `string` | 否 | API 密钥。存放在 `credentials.toml`；仅当 `credentials.toml` 中没有该供应商的值时，才使用 `config.toml` 里的值 |
 | `base_url` | `string` | 否 | API 基础 URL |
 | `oauth` | `table` | 否 | OAuth 凭据引用（`storage`、`key` 两个字段），由登录流程自动注入，通常无需手写 |
 | `env` | `table<string, string>` | 否 | 供应商凭证的备用来源，详见下文 |
@@ -237,7 +264,7 @@ display_name = "Kimi for Coding (custom)"
 
 `[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
 
-无需修改配置文件也可以临时切换模型——通过 `KIKI_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kimi-model)。
+无需修改配置文件也可以临时切换模型——通过 `KIKI_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kiki-model)。
 
 ### 模型认知
 

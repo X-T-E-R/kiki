@@ -1,6 +1,6 @@
 # 平台与模型
 
-Kiki 支持同时接入多家 LLM 平台——用 Kimi Code 托管服务一键登录、用 Anthropic API key 接 Claude、用 OpenAI 兼容协议连接第三方推理服务。每个供应商对应一种 API 协议，模型在供应商之上声明自己的名称、上下文长度和能力。本页介绍如何在 `config.toml` 里配置各种供应商。
+Kiki 支持同时接入多家 LLM 平台——用 Kimi Code 托管服务一键登录、用 Anthropic API key 接 Claude、用 OpenAI 兼容协议连接第三方推理服务。每个供应商对应一种 API 协议，模型在供应商之上声明自己的名称、上下文长度和能力。本页介绍如何在 `config.toml` 里配置各种供应商，其 API 密钥存放在配套的 [`credentials.toml`](./config-files.md#供应商凭证) 里。
 
 ## 支持的供应商类型
 
@@ -17,7 +17,7 @@ Kiki 支持同时接入多家 LLM 平台——用 Kimi Code 托管服务一键�
 
 所有供应商默认以流式方式与模型交互。thinking、视觉、工具调用等能力按模型名前缀自动匹配，通常不需要手动声明。
 
-**凭证优先级**：`api_key` 直接字段 > `[providers.<name>.env]` 子表键 > 两者都缺时启动报错。CLI 不会从 shell 环境变量自动取凭证——详见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
+**凭证优先级**：`api_key` 直接字段 > `[providers.<name>.env]` 子表键 > 两者都缺时启动报错。两者都从配置文件读取——`credentials.toml` 覆盖 `config.toml`——CLI 不会从 shell 环境变量自动取凭证。详见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
 
 ## `/provider` — 交互式供应商管理
 
@@ -53,7 +53,7 @@ Kimi Code **OAuth** 账号保留原有的托管账号目录同步。手动填写
 用于对接 Moonshot AI 的 OpenAI 兼容接口，包括 Kimi Code 托管服务和 Kimi Platform API 密钥。
 
 - 默认 `base_url`：`https://api.moonshot.ai/v1`
-- 凭证键名：`KIMI_API_KEY`、`KIMI_BASE_URL` ——这些键名写在 `config.toml` 的 `[providers.<name>.env]` 子表里，不是 shell 环境变量
+- 凭证键名：`KIMI_API_KEY`、`KIMI_BASE_URL` ——这些键名写在 `[providers.<name>.env]` 子表里，不是 shell 环境变量
 - 额外能力：支持视频上传
 
 Kimi Code 订阅密钥配合托管 base URL `https://api.kimi.com/coding/v1` 使用（`/login` 登录后自动配置）。开放平台密钥按签发门户选择端点：[platform.kimi.com](https://platform.kimi.com) 签发的密钥配 `https://api.moonshot.cn/v1`，[platform.kimi.ai](https://platform.kimi.ai) 签发的密钥配默认的 `https://api.moonshot.ai/v1`。
@@ -62,6 +62,11 @@ Kimi Code 订阅密钥配合托管 base URL `https://api.kimi.com/coding/v1` 使
 [providers.kimi]
 type = "kimi"
 base_url = "https://api.moonshot.ai/v1"
+```
+
+```toml
+# credentials.toml
+[providers.kimi]
 api_key = "sk-xxxxx"
 ```
 
@@ -78,13 +83,18 @@ api_key = "sk-xxxxx"
 ```toml
 [providers.anthropic]
 type = "anthropic"
-api_key = "sk-ant-xxxxx"
 
 [models."claude-opus-4-7"]
 provider = "anthropic"
 model = "claude-opus-4-7"
 max_context_size = 200000
 # max_output_size = 32000  # 可选，省略时使用模型推断的默认值
+```
+
+```toml
+# credentials.toml
+[providers.anthropic]
+api_key = "sk-ant-xxxxx"
 ```
 
 ## `openai`
@@ -100,6 +110,11 @@ max_context_size = 200000
 [providers.openai]
 type = "openai"
 base_url = "https://api.openai.com/v1"
+```
+
+```toml
+# credentials.toml
+[providers.openai]
 api_key = "sk-xxxxx"
 ```
 
@@ -114,6 +129,11 @@ api_key = "sk-xxxxx"
 [providers.openai_responses]
 type = "openai_responses"
 base_url = "https://api.openai.com/v1"
+```
+
+```toml
+# credentials.toml
+[providers.openai_responses]
 api_key = "sk-xxxxx"
 ```
 
@@ -126,6 +146,11 @@ api_key = "sk-xxxxx"
 ```toml
 [providers.gemini]
 type = "google-genai"
+```
+
+```toml
+# credentials.toml
+[providers.gemini]
 api_key = "xxxxx"
 ```
 
@@ -136,15 +161,20 @@ api_key = "xxxxx"
 ```toml
 [providers.gemini]
 type = "google-genai"
-api_key = "xxxxx"
 base_url = "https://your-gateway.example"
+```
+
+```toml
+# credentials.toml
+[providers.gemini]
+api_key = "xxxxx"
 ```
 
 ## `vertexai`
 
 与 `google-genai` 共用实现，`type = "vertexai"` 时切换到 Vertex AI 访问路径。
 
-- 凭证键名：`VERTEXAI_API_KEY` ——写在 `[providers.vertexai.env]` 子表里，是不走下文 ADC 流程时的 API 密钥来源
+- 凭证键名：`VERTEXAI_API_KEY` ——写在 `[providers.vertexai.env]` 子表里，并与其他供应商 API 密钥一样存放在 `credentials.toml`；是不走下文 ADC 流程时的 API 密钥来源
 
 认证走 Google Cloud 标准 ADC 流程（`gcloud auth application-default login` 或 `GOOGLE_APPLICATION_CREDENTIALS` 服务账号 JSON），这部分与 Kimi Code 无关。**项目 ID 和区域必须写在 `[providers.vertexai.env]` 子表里**——直接在 shell 里 `export GOOGLE_CLOUD_PROJECT` 不会被 CLI 读取。
 
@@ -166,7 +196,7 @@ kiki
 
 ## OAuth 与凭证注入
 
-Kimi Code 托管服务使用 OAuth 而非静态 API 密钥。运行 `/login` 后，内置的认证工具链会自动写入并刷新凭证，`config.toml` 里无需手动配置这部分内容。
+Kimi Code 托管服务使用 OAuth 而非静态 API 密钥。运行 `/login` 后，内置的认证工具链会自动写入并刷新凭证，无需手动配置。OAuth 凭据存在 `credentials/` 目录下（见[数据路径](./data-locations.md)），与 `credentials.toml` 里的供应商 API 密钥分开管理。
 
 ## 下一步
 

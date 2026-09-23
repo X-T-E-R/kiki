@@ -30,6 +30,8 @@ import {
   IConfigService,
 } from './config';
 import { deepEqual, deepMerge, describeUnknownError, isPlainObject } from './configPure';
+import { writeConfigDocument } from './configDocument';
+import { mergeConfigCredentials, splitConfigCredentials } from './credentials';
 import {
   ConfigSectionContribution,
   getConfigSectionContributions,
@@ -40,7 +42,7 @@ import {
 } from './configWriteValidation';
 import { getConfigOverlayContributions } from './configOverlayContributions';
 import { collectRemovedSectionDiagnostics } from './deprecations';
-import { migrateThinkingEffortMaxToHigh } from './migrations';
+import { CREDENTIALS_KEY, migrateConfigCredentials, migrateThinkingEffortMaxToHigh } from './migrations';
 import {
   applySectionToToml,
   camelToSnake,
@@ -49,7 +51,6 @@ import {
   TomlError,
   transformTomlData,
 } from './toml';
-import { planConfigWriteback } from './tomlWriteback';
 
 const CONFIG_SCOPE = '';
 
@@ -323,15 +324,16 @@ export class ConfigService extends Disposable implements IConfigService {
     const { homeDir } = this.bootstrap;
     this.ready = (async () => {
       if (!this.bootstrap.configReadOnly) {
+        await migrateConfigCredentials(this.documentStore, configKey, this.log);
         await migrateThinkingEffortMaxToHigh(this.documentStore, configKey, homeDir);
       }
       await this.load('load');
     })();
-    this._register(
-      this.documentStore.watch(CONFIG_SCOPE, this.configKey)(() => {
+    for (const key of [this.configKey, CREDENTIALS_KEY]) {
+      this._register(this.documentStore.watch(CONFIG_SCOPE, key)(() => {
         void this.reload();
-      }),
-    );
+      }));
+    }
   }
 
   get<T = unknown>(domain: string): T {
@@ -467,7 +469,7 @@ export class ConfigService extends Disposable implements IConfigService {
           this.validateWrite(domain, this.registry.validate(domain, stripped));
           stagedRaw[domain] = stripped;
         }
-      });
+      }, true);
       this.rebuildEffective('set', [domain]);
     });
   }
@@ -506,10 +508,10 @@ export class ConfigService extends Disposable implements IConfigService {
             delete stagedRaw[domain];
           } else {
             this.validateWrite(domain, this.registry.validate(domain, stripped));
-          stagedRaw[domain] = stripped;
+            stagedRaw[domain] = stripped;
           }
         }
-      });
+      }, true);
       this.rebuildEffective('set', domains);
     });
   }
@@ -561,13 +563,20 @@ export class ConfigService extends Disposable implements IConfigService {
     let fileData: ResolvedConfig = {};
     let failed = false;
     try {
+      if (source === 'reload' && !this.bootstrap.configReadOnly) {
+        await migrateConfigCredentials(this.documentStore, this.configKey, this.log);
+      }
       const data = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, this.configKey);
-      fileData = data !== undefined && isPlainObject(data) ? data : {};
+      const credentials = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, CREDENTIALS_KEY);
+      fileData = mergeConfigCredentials(
+        data !== undefined && isPlainObject(data) ? data : {},
+        credentials !== undefined && isPlainObject(credentials) ? credentials : {},
+      );
     } catch (error) {
       failed = true;
       const message =
         error instanceof TomlError
-          ? `Failed to parse ${this.bootstrap.configPath}: ${describeTomlSyntaxError(error)}`
+          ? `Failed to parse ${this.bootstrap.configPath} or credentials.toml: ${describeTomlSyntaxError(error)}`
           : describeUnknownError(error);
       this.pushDiagnostic({ severity: 'error', message });
       this.log.warn('config load failed', { error: describeUnknownError(error) });
@@ -840,23 +849,32 @@ export class ConfigService extends Disposable implements IConfigService {
   private async persist(
     domain: string,
     rebase: (stagedRaw: ResolvedConfig, stagedRawSnake: ResolvedConfig) => void,
+    replaceSecrets = false,
   ): Promise<void> {
-    await this.persistDomains([domain], rebase);
+    await this.persistDomains([domain], rebase, replaceSecrets);
   }
 
   private async persistDomains(
     domains: readonly string[],
     rebase: (stagedRaw: ResolvedConfig, stagedRawSnake: ResolvedConfig) => void,
+    replaceSecrets = false,
   ): Promise<void> {
     this.assertPersistable();
-    let onDisk: ResolvedConfig = {};
+    let config: ResolvedConfig = {};
+    let credentials: ResolvedConfig = {};
+    let configText: string | undefined;
+    let credentialsText: string | undefined;
     try {
-      const data = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, this.configKey);
-      onDisk = data !== undefined && isPlainObject(data) ? data : {};
+      const configData = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, this.configKey);
+      const credentialsData = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, CREDENTIALS_KEY);
+      config = configData !== undefined && isPlainObject(configData) ? configData : {};
+      credentials = credentialsData !== undefined && isPlainObject(credentialsData) ? credentialsData : {};
+      configText = await this.documentStore.getText(CONFIG_SCOPE, this.configKey);
+      credentialsText = await this.documentStore.getText(CONFIG_SCOPE, CREDENTIALS_KEY);
     } catch (error) {
       const message =
         error instanceof TomlError
-          ? `Failed to parse ${this.bootstrap.configPath}: ${describeTomlSyntaxError(error)}`
+          ? `Failed to parse ${this.bootstrap.configPath} or credentials.toml: ${describeTomlSyntaxError(error)}`
           : describeUnknownError(error);
       this.pushDiagnostic({ severity: 'error', message });
       this.emitDiagnosticsIfChanged();
@@ -866,47 +884,28 @@ export class ConfigService extends Disposable implements IConfigService {
       this.tainted = true;
       throw new Error2(
         ErrorCodes.CONFIG_PERSIST_BLOCKED,
-        `Refusing to persist config: ${this.bootstrap.configPath} could not be read; fix the file and reload before writing.`,
+        `Refusing to persist config: ${this.bootstrap.configPath} or credentials.toml could not be read; fix the file and reload before writing.`,
         { cause: error },
       );
     }
-    let onDiskText: string | undefined;
-    try {
-      onDiskText = await this.documentStore.getText(CONFIG_SCOPE, this.configKey);
-    } catch {
-      onDiskText = undefined;
-    }
-    const stagedRawSnake = cloneRecord(onDisk);
-    const stagedRaw = transformTomlData(onDisk, this.registry);
-    const previousSnake: ResolvedConfig = {};
-    for (const domain of domains) {
-      const snakeKey = camelToSnake(domain);
-      previousSnake[snakeKey] = stagedRawSnake[snakeKey];
-    }
+    const stagedRawSnake = cloneRecord(mergeConfigCredentials(config, credentials));
+    const stagedRaw = transformTomlData(stagedRawSnake, this.registry);
     rebase(stagedRaw, stagedRawSnake);
     for (const domain of domains) {
+      if (replaceSecrets) {
+        const snakeKey = camelToSnake(domain);
+        const withoutSecrets = splitConfigCredentials({ [snakeKey]: stagedRawSnake[snakeKey] }).config;
+        if (withoutSecrets[snakeKey] === undefined) {
+          delete stagedRawSnake[snakeKey];
+        } else {
+          stagedRawSnake[snakeKey] = withoutSecrets[snakeKey];
+        }
+      }
       applySectionToToml(stagedRawSnake, domain, stagedRaw[domain], this.registry);
     }
-    const plannedText =
-      onDiskText === undefined
-        ? undefined
-        : planConfigWriteback(
-            onDiskText,
-            domains.map((domain) => {
-              const snakeKey = camelToSnake(domain);
-              return {
-                snakeKey,
-                previousValue: previousSnake[snakeKey],
-                nextValue: stagedRawSnake[snakeKey],
-              };
-            }),
-            stagedRawSnake,
-          );
-    if (plannedText === undefined) {
-      await this.documentStore.set(CONFIG_SCOPE, this.configKey, stagedRawSnake);
-    } else if (plannedText !== onDiskText) {
-      await this.documentStore.setText(CONFIG_SCOPE, this.configKey, plannedText);
-    }
+    const separated = splitConfigCredentials(stagedRawSnake);
+    await writeConfigDocument(this.documentStore, CREDENTIALS_KEY, credentials, credentialsText, separated.credentials);
+    await writeConfigDocument(this.documentStore, this.configKey, config, configText, separated.config);
     this.rawSnake = stagedRawSnake;
     this.raw = stagedRaw;
   }

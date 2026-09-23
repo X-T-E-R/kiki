@@ -183,6 +183,11 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
     return parseToml(text) as Record<string, unknown>;
   }
 
+  async function readCredentialsToml(): Promise<Record<string, unknown>> {
+    const text = await readFile(join(home as string, 'credentials.toml'), 'utf-8').catch(() => '');
+    return text.trim().length === 0 ? {} : (parseToml(text) as Record<string, unknown>);
+  }
+
   async function waitForServerState(check: () => Promise<boolean>, timeoutMs = 3000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -308,7 +313,10 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
     expect(providers['openai']).toMatchObject({
       type: 'openai',
       base_url: 'https://api.openai.com/v1',
-      api_key: 'sk-imported',
+    });
+    expect(providers['openai']).not.toHaveProperty('api_key');
+    expect((await readCredentialsToml())['providers']).toEqual({
+      openai: { api_key: 'sk-imported' },
     });
     const models = config['models'] as Record<string, Record<string, unknown>>;
     expect(models['openai/gpt-4.1']).toMatchObject({
@@ -372,7 +380,12 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
 
     const after = await readConfigToml();
     const providers = after['providers'] as Record<string, Record<string, unknown>>;
-    expect(providers['openai']?.['api_key']).toBe('sk-two');
+    expect(providers['openai']).not.toHaveProperty('api_key');
+    const credentialed = (await readCredentialsToml())['providers'] as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(credentialed['openai']?.['api_key']).toBe('sk-two');
     const afterModels = after['models'] as Record<string, unknown>;
     expect(afterModels['openai/retired']).toBeUndefined();
     expect(afterModels['openai/gpt-4.1']).toBeDefined();
@@ -396,7 +409,12 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
 
     const after = await readConfigToml();
     const providers = after['providers'] as Record<string, Record<string, unknown>>;
-    expect(providers['openai']?.['api_key']).toBe('sk-one');
+    expect(providers['openai']).not.toHaveProperty('api_key');
+    const credentialed = (await readCredentialsToml())['providers'] as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(credentialed['openai']?.['api_key']).toBe('sk-one');
   });
 
   it('clears stale on-disk alias fields the upstream no longer lists (two-pass swap)', async () => {
@@ -592,8 +610,17 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
     expect(providers['acme-claude']).toMatchObject({
       type: 'anthropic',
       base_url: 'https://acme.example/anthropic',
+      source: { kind: 'apiJson', url: REGISTRY_URL },
+    });
+    expect(providers['acme-claude']).not.toHaveProperty('api_key');
+    expect((providers['acme-claude']?.['source'] as Record<string, unknown>)['apiKey']).toBeUndefined();
+    const registryCredentials = (await readCredentialsToml())['providers'] as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(registryCredentials['acme-claude']).toEqual({
       api_key: 'tok-1',
-      source: { kind: 'apiJson', url: REGISTRY_URL, apiKey: 'tok-1' },
+      source: { apiKey: 'tok-1' },
     });
     const models = config['models'] as Record<string, Record<string, unknown>>;
     expect(models['acme-claude/claude-opus']).toMatchObject({
@@ -670,7 +697,12 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
     const after = await readConfigToml();
     const providers = after['providers'] as Record<string, Record<string, unknown>>;
     expect(providers['acme-claude']).toBeUndefined();
-    expect(providers['acme-gpt']?.['api_key']).toBe('tok-2');
+    expect(providers['acme-gpt']).not.toHaveProperty('api_key');
+    const credentialed = (await readCredentialsToml())['providers'] as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(credentialed['acme-gpt']?.['api_key']).toBe('tok-2');
     const models = after['models'] as Record<string, Record<string, unknown>>;
     expect(models['acme-claude/claude-opus']).toBeUndefined();
     expect(models['acme-gpt/gpt-x']).toEqual({

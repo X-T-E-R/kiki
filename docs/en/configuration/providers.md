@@ -1,6 +1,6 @@
 # Providers and models
 
-Kiki supports connecting to multiple LLM platforms simultaneously — one-click login via the Kimi Code managed service, connecting Claude with an Anthropic API key, or connecting third-party inference services via the OpenAI-compatible protocol. Each provider corresponds to a specific API protocol; models are declared on top of providers with their own name, context length, and capabilities. This page explains how to configure each type of provider in `config.toml`.
+Kiki supports connecting to multiple LLM platforms simultaneously — one-click login via the Kimi Code managed service, connecting Claude with an Anthropic API key, or connecting third-party inference services via the OpenAI-compatible protocol. Each provider corresponds to a specific API protocol; models are declared on top of providers with their own name, context length, and capabilities. This page explains how to configure each type of provider in `config.toml`, with its API key stored in the companion [`credentials.toml`](./config-files.md#provider-credentials).
 
 ## Supported provider types
 
@@ -17,7 +17,7 @@ The `type` field in the `providers` table determines which protocol implementati
 
 All providers communicate with models in streaming mode by default. Capabilities such as thinking, vision, and tool use are matched automatically by model name prefix — you typically do not need to declare them manually.
 
-**Credential priority**: `api_key` direct field > `[providers.<name>.env]` sub-table key > if both are absent, startup fails with an error. The CLI does not fall back to shell environment variables for credentials — see [Config overrides: provider credentials](./overrides.md#provider-credentials).
+**Credential priority**: `api_key` direct field > `[providers.<name>.env]` sub-table key > if both are absent, startup fails with an error. Both are read from the config files — `credentials.toml` overlays `config.toml` — and the CLI does not fall back to shell environment variables for credentials. See [Config overrides: provider credentials](./overrides.md#provider-credentials).
 
 ## `/provider` — interactive provider management
 
@@ -53,7 +53,7 @@ The same operations are also available in non-interactive environments via the s
 For connecting to Moonshot AI's OpenAI-compatible interface, including the Kimi Code managed service and Kimi Platform API keys.
 
 - Default `base_url`: `https://api.moonshot.ai/v1`
-- Credential key names: `KIMI_API_KEY`, `KIMI_BASE_URL` — these are entries of the `[providers.<name>.env]` sub-table in `config.toml`, not shell environment variables
+- Credential key names: `KIMI_API_KEY`, `KIMI_BASE_URL` — these are entries of the `[providers.<name>.env]` sub-table, not shell environment variables
 - Additional capability: supports video upload
 
 Kimi Code subscription keys pair with the managed base URL `https://api.kimi.com/coding/v1` (configured automatically by `/login`). Open-platform keys pair with the endpoint of the portal that issued the key: `https://api.moonshot.cn/v1` for keys from [platform.kimi.com](https://platform.kimi.com), or the default `https://api.moonshot.ai/v1` for keys from [platform.kimi.ai](https://platform.kimi.ai).
@@ -62,6 +62,11 @@ Kimi Code subscription keys pair with the managed base URL `https://api.kimi.com
 [providers.kimi]
 type = "kimi"
 base_url = "https://api.moonshot.ai/v1"
+```
+
+```toml
+# credentials.toml
+[providers.kimi]
 api_key = "sk-xxxxx"
 ```
 
@@ -78,13 +83,18 @@ For connecting to the Claude API. Standard Claude models automatically enable vi
 ```toml
 [providers.anthropic]
 type = "anthropic"
-api_key = "sk-ant-xxxxx"
 
 [models."claude-opus-4-7"]
 provider = "anthropic"
 model = "claude-opus-4-7"
 max_context_size = 200000
 # max_output_size = 32000  # optional; omit to use the model-inferred default
+```
+
+```toml
+# credentials.toml
+[providers.anthropic]
+api_key = "sk-ant-xxxxx"
 ```
 
 ## `openai`
@@ -100,6 +110,11 @@ Third-party reasoning models (DeepSeek, Qwen, One API, etc.) work out of the box
 [providers.openai]
 type = "openai"
 base_url = "https://api.openai.com/v1"
+```
+
+```toml
+# credentials.toml
+[providers.openai]
 api_key = "sk-xxxxx"
 ```
 
@@ -114,6 +129,11 @@ Corresponds to OpenAI's newer Responses API, always operating in streaming mode.
 [providers.openai_responses]
 type = "openai_responses"
 base_url = "https://api.openai.com/v1"
+```
+
+```toml
+# credentials.toml
+[providers.openai_responses]
 api_key = "sk-xxxxx"
 ```
 
@@ -126,6 +146,11 @@ For connecting directly to the Google Gemini API. Thinking, vision, and multimod
 ```toml
 [providers.gemini]
 type = "google-genai"
+```
+
+```toml
+# credentials.toml
+[providers.gemini]
 api_key = "xxxxx"
 ```
 
@@ -136,15 +161,20 @@ To route through a Gemini-compatible proxy or gateway, set `base_url` (or the `G
 ```toml
 [providers.gemini]
 type = "google-genai"
-api_key = "xxxxx"
 base_url = "https://your-gateway.example"
+```
+
+```toml
+# credentials.toml
+[providers.gemini]
+api_key = "xxxxx"
 ```
 
 ## `vertexai`
 
 Shares the same implementation as `google-genai`; setting `type = "vertexai"` switches to the Vertex AI access path.
 
-- Credential key name: `VERTEXAI_API_KEY` — written in the `[providers.vertexai.env]` sub-table; the API-key alternative to the ADC flow below
+- Credential key name: `VERTEXAI_API_KEY` — written in the `[providers.vertexai.env]` sub-table, and stored in `credentials.toml` like every other provider API key; the API-key alternative to the ADC flow below
 
 Authentication follows the standard Google Cloud ADC flow (`gcloud auth application-default login` or a `GOOGLE_APPLICATION_CREDENTIALS` service account JSON) — this part is unrelated to Kimi Code. **The project ID and region must be written in the `[providers.vertexai.env]` sub-table** — simply `export GOOGLE_CLOUD_PROJECT` in the shell will not be read by the CLI.
 
@@ -166,7 +196,7 @@ To route Vertex requests through a custom (e.g. proxied) endpoint, set `base_url
 
 ## OAuth and credential injection
 
-The Kimi Code managed service uses OAuth rather than static API keys. After running `/login`, the built-in authentication toolchain automatically writes and refreshes credentials — no manual configuration is needed in `config.toml` for this.
+The Kimi Code managed service uses OAuth rather than static API keys. After running `/login`, the built-in authentication toolchain automatically writes and refreshes credentials — no manual configuration is needed. OAuth credentials live under `credentials/` (see [Data locations](./data-locations.md)), separate from the provider API keys stored in `credentials.toml`.
 
 ## Next steps
 

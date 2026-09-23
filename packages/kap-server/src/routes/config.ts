@@ -5,6 +5,7 @@ import {
   IEventService,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
@@ -172,7 +173,8 @@ function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
     } else if (domain === REQUEST_IDENTITY_SECTION) {
       wire['request_identity'] = requestIdentityToWire(value as RequestIdentityPolicy);
     } else {
-      wire[camelToSnake(domain)] = value;
+      const publicValue = splitConfigCredentials({ [domain]: value }).config[domain];
+      if (publicValue !== undefined) wire[camelToSnake(domain)] = publicValue;
     }
   }
   const defaultPermissionMode = resolved['defaultPermissionMode'];
