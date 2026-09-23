@@ -244,6 +244,12 @@ export const Markdown = memo(function Markdown({
         : [...Object.values(defaultRehypePlugins), rehypeAnnotationMarks(annotationTargets)],
     [annotationTargets],
   );
+  // Streamdown's own memo does not compare rehypePlugins, so an annotation
+  // arriving after this message already rendered would never reach the mark
+  // plugin. Keying by the target ids remounts exactly when this block's
+  // annotation set changes; the transcript keeps the array identity stable
+  // otherwise (useStableAnnotationTargets), so unrelated renders never thrash.
+  const annotationKey = annotationTargets?.map((target) => target.id).join('\n') ?? '';
   if (plain) {
     return (
       <div className={className}>
@@ -258,6 +264,7 @@ export const Markdown = memo(function Markdown({
   return (
     <div className={className}>
       <Streamdown
+        key={annotationKey}
         mode="streaming"
         plugins={plugins}
         // The bare remarkPlugins prop REPLACES Streamdown's defaults, so
