@@ -51,7 +51,7 @@ function fileStat(): HostFileStat {
 function createTestFs(opts: { stat?: ReturnType<typeof vi.fn>; readdir?: ReturnType<typeof vi.fn> } = {}) {
   const stat = opts.stat ?? vi.fn(async (): Promise<HostFileStat> => dirStat());
   const readdir = opts.readdir ?? vi.fn(async (): Promise<readonly string[]> => []);
-  const fs = { stat, readdir } as unknown as IHostFileSystem;
+  const fs = { stat, readdir, realpath: async (filePath: string) => filePath } as unknown as IHostFileSystem;
   return { fs, stat, readdir };
 }
 

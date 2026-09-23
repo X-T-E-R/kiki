@@ -34,7 +34,6 @@ import {
   ToolAccesses,
   type ExecutableToolContext,
   type ExecutableToolResult,
-  type ToolExecution,
 } from '#/tool/toolContract';
 import { EventBusService } from '#/app/event/eventBusService';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
@@ -141,6 +140,7 @@ interface FakeFile {
 function createTestFs(files: Record<string, FakeFile>): IHostFileSystem {
   const lookup = (path: string): FakeFile | undefined => files[path];
   return {
+    realpath: async (path: string) => path,
     readBytes: vi.fn(async (path: string, n?: number) => {
       const data = lookup(path)?.data ?? Buffer.alloc(0);
       return n === undefined ? data : data.subarray(0, n);
@@ -216,7 +216,7 @@ async function execute(
   tool: ReadMediaFileTool,
   args: ReadMediaFileInput,
 ): Promise<ExecutableToolResult> {
-  const execution = tool.resolveExecution(args);
+  const execution = await tool.resolveExecution(args);
   if (!('execute' in execution)) {
     return execution;
   }
@@ -240,7 +240,7 @@ function noteText(result: ExecutableToolResult): string {
 }
 
 describe('ReadMediaFileTool', () => {
-  it('has name, parameters, and a path-scoped read access', () => {
+  it('has name, parameters, and a path-scoped read access', async () => {
     const tool = makeTool({ '/workspace/sample.png': { data: pngBuffer() } });
 
     expect(tool.name).toBe('ReadMediaFile');
@@ -274,10 +274,8 @@ describe('ReadMediaFileTool', () => {
       properties: { path: { type: 'string' } },
     });
 
-    const execution = tool.resolveExecution({ path: '/workspace/sample.png' }) as Extract<
-      ToolExecution,
-      { execute: unknown }
-    >;
+    const execution = await tool.resolveExecution({ path: '/workspace/sample.png' });
+    if (execution.isError === true) throw new Error('Expected runnable media tool');
     expect(execution.accesses).toEqual(ToolAccesses.readFile('/workspace/sample.png'));
     expect(execution.approvalRule).toBe('ReadMediaFile(/workspace/sample.png)');
   });

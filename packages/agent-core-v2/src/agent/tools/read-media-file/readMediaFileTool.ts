@@ -15,7 +15,7 @@ import {
   type ExecutableToolResult,
   type ToolExecution,
 } from '#/tool/toolContract';
-import { resolvePathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
+import { resolveRealPathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
 import {
   MEDIA_SNIFF_BYTES,
   detectFileType,
@@ -221,7 +221,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     return inlineVideoPart(data, mimeType);
   }
 
-  resolveExecution(args: ReadMediaFileInput): ToolExecution {
+  async resolveExecution(args: ReadMediaFileInput): Promise<ToolExecution> {
     if (!args.path) {
       return { isError: true, output: 'File path cannot be empty.' };
     }
@@ -232,11 +232,17 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       additionalDirs: this.workspace.additionalDirs,
     });
     const workspace = { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
-    const path = resolvePathAccessPath(args.path, {
-      env,
-      workspace,
-      operation: 'read',
-    });
+    const pathOptions = { env, workspace, operation: 'read' as const };
+    const preparation = this.runtime.acquire(['fs']);
+    let path: string;
+    try {
+      if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+        return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+      }
+      path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+    } finally {
+      preparation.dispose();
+    }
     return {
       accesses: ToolAccesses.readFile(path),
       description: `Reading media: ${args.path}`,
@@ -253,6 +259,14 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         try {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+          }
+          try {
+            const currentPath = await resolveRealPathAccessPath(args.path, pathOptions, lease.runtime.fs!);
+            if (currentPath !== path) {
+              return { isError: true, output: 'File target changed after path admission. Retry the tool call.' };
+            }
+          } catch (error) {
+            return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
           return await this.execution(args, path, lease.runtime.fs!, env);
         } finally {

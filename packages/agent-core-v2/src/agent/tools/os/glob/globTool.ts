@@ -25,7 +25,7 @@ import {
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import {
   isWithinDirectory,
-  resolvePathAccessPath,
+  resolveRealPathAccessPath,
   type PathClass,
   isSensitiveFile,
   SENSITIVE_DOT_VARIANT_SUFFIXES,
@@ -79,7 +79,7 @@ export class GlobTool implements IGlobTool {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
-  resolveExecution(args: GlobInput): ToolExecution {
+  async resolveExecution(args: GlobInput): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
@@ -90,14 +90,18 @@ export class GlobTool implements IGlobTool {
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspaceConfig(view);
+    const pathOptions = { env, workspace, operation: 'search' as const };
     let path: string | undefined;
     if (args.path !== undefined) {
-      path = resolvePathAccessPath(args.path, {
-        env,
-        workspace,
-        operation: 'search',
-        policy: { guardMode: 'absolute-outside-allowed', checkSensitive: false },
-      });
+      const preparation = this.runtime.acquire(['fs']);
+      try {
+        if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+          return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+        }
+        path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+      } finally {
+        preparation.dispose();
+      }
     }
     const searchRoots = [path ?? workspace.workspaceDir];
 
@@ -125,6 +129,16 @@ export class GlobTool implements IGlobTool {
         try {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+          }
+          if (args.path !== undefined) {
+            try {
+              const currentPath = await resolveRealPathAccessPath(args.path, pathOptions, lease.runtime.fs!);
+              if (currentPath !== path) {
+                return { isError: true, output: 'Search target changed after path admission. Retry the tool call.' };
+              }
+            } catch (error) {
+              return { isError: true, output: error instanceof Error ? error.message : String(error) };
+            }
           }
           return await this.execution(
             lease.runtime.fs!,

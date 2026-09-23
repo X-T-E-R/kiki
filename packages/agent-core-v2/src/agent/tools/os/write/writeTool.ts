@@ -13,7 +13,7 @@ import {
 } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import {
-  resolvePathAccessPath,
+  resolveRealPathAccessPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
 import { toInputJsonSchema } from '#/tool/input-schema';
@@ -37,7 +37,7 @@ export class WriteTool implements IWriteTool {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
-  resolveExecution(args: WriteInput): ToolExecution {
+  async resolveExecution(args: WriteInput): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
@@ -48,11 +48,17 @@ export class WriteTool implements IWriteTool {
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspaceConfig(view);
-    const path = resolvePathAccessPath(args.path, {
-      env,
-      workspace,
-      operation: 'write',
-    });
+    const pathOptions = { env, workspace, operation: 'write' as const };
+    const preparation = this.runtime.acquire(['fs']);
+    let path: string;
+    try {
+      if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+        return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+      }
+      path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+    } finally {
+      preparation.dispose();
+    }
     return {
       accesses: ToolAccesses.writeFile(path),
       description: `Writing ${args.path}`,
@@ -69,6 +75,14 @@ export class WriteTool implements IWriteTool {
         try {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+          }
+          try {
+            const currentPath = await resolveRealPathAccessPath(args.path, pathOptions, lease.runtime.fs!);
+            if (currentPath !== path) {
+              return { isError: true, output: 'File target changed after path admission. Retry the tool call.' };
+            }
+          } catch (error) {
+            return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
           return await this.execution(lease.runtime.fs!, args, path);
         } finally {

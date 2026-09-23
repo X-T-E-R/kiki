@@ -17,7 +17,7 @@ import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
-  resolvePathAccessPath,
+  resolveRealPathAccessPath,
   type PathClass,
   isSensitiveFile,
   SENSITIVE_DOT_VARIANT_SUFFIXES,
@@ -78,7 +78,7 @@ export class GrepTool implements IGrepTool {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
-  resolveExecution(args: GrepInput): ToolExecution {
+  async resolveExecution(args: GrepInput): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
@@ -89,14 +89,18 @@ export class GrepTool implements IGrepTool {
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspace(view);
+    const pathOptions = { env, workspace, operation: 'search' as const };
     let path: string | undefined;
     if (args.path !== undefined) {
-      path = resolvePathAccessPath(args.path, {
-        env,
-        workspace,
-        operation: 'search',
-        policy: { guardMode: 'absolute-outside-allowed', checkSensitive: false },
-      });
+      const preparation = this.runtime.acquire(['fs']);
+      try {
+        if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+          return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+        }
+        path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+      } finally {
+        preparation.dispose();
+      }
     }
     const searchPaths = [path ?? workspace.workspaceDir];
     const searchPath = args.path ?? workspace.workspaceDir;
@@ -111,6 +115,16 @@ export class GrepTool implements IGrepTool {
         try {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+          }
+          if (args.path !== undefined) {
+            try {
+              const currentPath = await resolveRealPathAccessPath(args.path, pathOptions, lease.runtime.fs!);
+              if (currentPath !== path) {
+                return { isError: true, output: 'Search target changed after path admission. Retry the tool call.' };
+              }
+            } catch (error) {
+              return { isError: true, output: error instanceof Error ? error.message : String(error) };
+            }
           }
           return await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchPaths);
         } finally {

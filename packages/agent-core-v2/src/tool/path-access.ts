@@ -1,5 +1,8 @@
 import * as pathe from 'pathe';
 
+import { unwrapErrorCause } from '#/_base/errors/errors';
+import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
+
 import {
   getShellPathBridge,
   translateShellDrivePath,
@@ -300,6 +303,56 @@ export function resolvePathAccessPath(
     homeDir: expandHome ? env.homeDir : undefined,
     shellPathBridge: env.pathClass === 'win32' ? getShellPathBridge(env) : undefined,
   }).path;
+}
+
+function isMissingPath(error: unknown): boolean {
+  const cause = unwrapErrorCause(error);
+  if (typeof cause !== 'object' || cause === null || !('code' in cause)) return false;
+  return cause.code === 'ENOENT' || cause.code === 'ENOTDIR';
+}
+
+async function realPathOrMissingChild(fs: IHostFileSystem, path: string): Promise<string> {
+  try {
+    return await fs.realpath(path);
+  } catch (error) {
+    if (!isMissingPath(error)) throw error;
+    try {
+      await fs.lstat(path);
+      throw new PathSecurityError('PATH_INVALID', path, path, `Cannot resolve target of "${path}".`);
+    } catch (lstatError) {
+      if (!isMissingPath(lstatError)) throw lstatError;
+    }
+    const parent = pathe.dirname(path);
+    if (parent === path) throw error;
+    return pathe.join(await realPathOrMissingChild(fs, parent), pathe.basename(path));
+  }
+}
+
+export async function resolveRealPathAccessPath(
+  path: string,
+  options: ResolvePathAccessPathOptions,
+  fs: IHostFileSystem,
+): Promise<string> {
+  const lexicalPath = resolvePathAccessPath(path, options);
+  const [target, workspaceDir, ...additionalDirs] = await Promise.all([
+    realPathOrMissingChild(fs, lexicalPath),
+    fs.realpath(options.workspace.workspaceDir),
+    ...options.workspace.additionalDirs.map((dir) => fs.realpath(dir)),
+  ]);
+  const realWorkspace = { workspaceDir, additionalDirs };
+  const realPath = resolvePathAccessPath(target, { ...options, workspace: realWorkspace });
+  if (
+    isWithinWorkspace(lexicalPath, options.workspace, options.env.pathClass) &&
+    !isWithinWorkspace(realPath, realWorkspace, options.env.pathClass)
+  ) {
+    throw new PathSecurityError(
+      'PATH_OUTSIDE_WORKSPACE',
+      path,
+      realPath,
+      `"${path}" resolves outside the working directory. Use an explicit path to access external files.`,
+    );
+  }
+  return realPath;
 }
 
 export function assertPathAllowed(

@@ -161,7 +161,7 @@ function createTestFs(kaos: FakeKaos): IHostFileSystem {
     readdir: () => notImplemented('readdir'),
     mkdir: () => notImplemented('mkdir'),
     remove: () => notImplemented('remove'),
-    realpath: () => notImplemented('realpath'),
+    realpath: async (path) => path,
   };
 }
 
@@ -1662,7 +1662,9 @@ describe('GrepTool', () => {
     });
     const tool = new GrepTool(createFakeKaos({ exec }), workspace);
 
-    const resultPromise = executeTool(tool, context({ pattern: 'hit' }, controller.signal));
+    const execution = await tool.resolveExecution({ pattern: 'hit' });
+    if (execution.isError === true) throw new Error('Expected runnable Grep tool');
+    const resultPromise = execution.execute(context({ pattern: 'hit' }, controller.signal));
     controller.abort();
     const result = await Promise.race([
       resultPromise,

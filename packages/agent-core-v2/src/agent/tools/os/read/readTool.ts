@@ -11,7 +11,7 @@ import {
 } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import {
-  resolvePathAccessPath,
+  resolveRealPathAccessPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
 import { MEDIA_SNIFF_BYTES, detectFileType } from '#/agent/media/file-type';
@@ -218,7 +218,7 @@ export class ReadTool implements IReadTool {
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
-  resolveExecution(args: ReadInput): ToolExecution {
+  async resolveExecution(args: ReadInput): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
@@ -226,11 +226,17 @@ export class ReadTool implements IReadTool {
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspaceConfig(view);
-    const path = resolvePathAccessPath(args.path, {
-      env,
-      workspace,
-      operation: 'read',
-    });
+    const pathOptions = { env, workspace, operation: 'read' as const };
+    const preparation = this.runtime.acquire(['fs']);
+    let path: string;
+    try {
+      if (preparation.runtime.identity.generation !== inspected.identity.generation) {
+        return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+      }
+      path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+    } finally {
+      preparation.dispose();
+    }
     return {
       accesses: ToolAccesses.readFile(path),
       description: `Reading ${args.path}`,
@@ -247,6 +253,14 @@ export class ReadTool implements IReadTool {
         try {
           if (lease.runtime.identity.generation !== inspected.identity.generation) {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
+          }
+          try {
+            const currentPath = await resolveRealPathAccessPath(args.path, pathOptions, lease.runtime.fs!);
+            if (currentPath !== path) {
+              return { isError: true, output: 'File target changed after path admission. Retry the tool call.' };
+            }
+          } catch (error) {
+            return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
           const result = await this.execution(lease.runtime.fs!, args, path);
           return this.resultTruncation.isSpillFilePath(path)

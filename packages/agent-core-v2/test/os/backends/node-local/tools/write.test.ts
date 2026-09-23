@@ -56,7 +56,7 @@ function createWriteFs(options: WriteFsOptions = {}) {
     options.stat ?? (async () => ({ isFile: false, isDirectory: true, size: 0 })),
   );
   const mkdir = vi.fn(options.mkdir ?? (async () => {}));
-  const fs = { cwd: '/', readText, writeText, appendText, stat, mkdir } as unknown as IHostFileSystem;
+  const fs = { cwd: '/', readText, writeText, appendText, stat, mkdir, realpath: async (path: string) => path } as unknown as IHostFileSystem;
   return { fs, readText, writeText, appendText, stat, mkdir };
 }
 
@@ -134,9 +134,9 @@ describe('WriteTool', () => {
     expect(WriteInputSchema.safeParse({ path: '/tmp/out.txt' }).success).toBe(false);
   });
 
-  it('exposes the content on the file_io display so the approval panel can preview it', () => {
+  it('exposes the content on the file_io display so the approval panel can preview it', async () => {
     const { tool } = makeTool();
-    const execution = tool.resolveExecution({
+    const execution = await tool.resolveExecution({
       path: '/tmp/new.txt',
       content: 'hello\nworld',
     });
@@ -151,10 +151,10 @@ describe('WriteTool', () => {
     });
   });
 
-  it('matches permission args with negated glob path semantics', () => {
+  it('matches permission args with negated glob path semantics', async () => {
     const { tool } = makeTool({}, stubWorkspaceContext('/workspace'));
-    const insideSrc = tool.resolveExecution({ path: './src/a.ts', content: 'x' });
-    const outsideSrc = tool.resolveExecution({ path: './README.md', content: 'x' });
+    const insideSrc = await tool.resolveExecution({ path: './src/a.ts', content: 'x' });
+    const outsideSrc = await tool.resolveExecution({ path: './README.md', content: 'x' });
     if (insideSrc.isError === true || outsideSrc.isError === true) {
       throw new TypeError('expected runnable execution');
     }
@@ -320,6 +320,30 @@ describe('WriteTool', () => {
 
     expect(result.isError).toBeUndefined();
     expect(writeText).toHaveBeenCalledWith('/tmp/pwned.txt', 'x');
+  });
+
+  it('does not auto-admit a symlinked write outside the workspace', async () => {
+    const { tool, fs, writeText } = makeTool({}, stubWorkspaceContext('/workspace'));
+    fs.realpath = vi.fn(async (path: string) =>
+      path === '/workspace/alias.txt' ? '/outside/notes.txt' : path,
+    );
+    const result = await execute(tool, { path: 'alias.txt', content: 'x' });
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('resolves outside');
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('refuses a write when a symlink is retargeted after admission', async () => {
+    const { tool, fs, writeText } = makeTool({}, stubWorkspaceContext('/workspace'));
+    let target = '/workspace/inside.txt';
+    fs.realpath = vi.fn(async (path: string) => path === '/workspace/alias.txt' ? target : path);
+    const execution = await tool.resolveExecution({ path: 'alias.txt', content: 'x' });
+    if (execution.isError === true) throw new Error('Expected runnable Write tool');
+    expect(execution.accesses).toEqual([{ kind: 'file', operation: 'write', path: target }]);
+    target = '/outside/notes.txt';
+    const result = await execution.execute({ turnId: 0, toolCallId: 'call_write', signal });
+    expect(result).toMatchObject({ isError: true });
+    expect(writeText).not.toHaveBeenCalled();
   });
 
   it('rejects relative traversal writes before fs I/O', async () => {

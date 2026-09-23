@@ -50,7 +50,7 @@ function createSpiedEditFs(
   const readText = options.readText ?? vi.fn(async () => '');
   const writeText = options.writeText ?? vi.fn(async () => undefined);
   const stat = vi.fn(async () => ({ isFile: true, isDirectory: false, size: 0 }));
-  const fs = { readText, writeText, stat } as unknown as IHostFileSystem;
+  const fs = { readText, writeText, stat, realpath: async (path: string) => path } as unknown as IHostFileSystem;
   return { fs, readText, writeText };
 }
 
@@ -130,9 +130,9 @@ describe('EditTool', () => {
     disposables.dispose();
   });
 
-  it('exposes before/after on the file_io display so the approval panel can render a diff', () => {
+  it('exposes before/after on the file_io display so the approval panel can render a diff', async () => {
     const tool = buildTool(createSpiedEditFs().fs, createTestEnv(), PERMISSIVE_WORKSPACE);
-    const execution = tool.resolveExecution({
+    const execution = await tool.resolveExecution({
       path: '/tmp/foo.ts',
       old_string: 'a\nb\nc',
       new_string: 'a\nB\nc',
@@ -149,9 +149,9 @@ describe('EditTool', () => {
     });
   });
 
-  it('declares readWriteFile access for the edited path', () => {
+  it('declares readWriteFile access for the edited path', async () => {
     const tool = buildTool(createSpiedEditFs().fs, createTestEnv(), PERMISSIVE_WORKSPACE);
-    const execution = tool.resolveExecution({
+    const execution = await tool.resolveExecution({
       path: '/tmp/foo.ts',
       old_string: 'a',
       new_string: 'b',
@@ -435,6 +435,22 @@ describe('EditTool', () => {
     expect(result.output).toContain('not unique');
     expect(result.output).toContain('set replace_all=true');
     expect(result.output).toContain('include more surrounding context');
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('rejects edits through an external directory symlink before reading', async () => {
+    const readText = vi.fn().mockResolvedValue('outside');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const { fs } = createSpiedEditFs({ readText, writeText });
+    fs.realpath = vi.fn(async (path: string) =>
+      path === '/workspace/link/notes.txt' ? '/outside/notes.txt' : path,
+    );
+    const tool = buildTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
+    const result = await execute(tool, {
+      path: 'link/notes.txt', old_string: 'outside', new_string: 'changed',
+    });
+    expect(result).toMatchObject({ isError: true });
+    expect(readText).not.toHaveBeenCalled();
     expect(writeText).not.toHaveBeenCalled();
   });
 

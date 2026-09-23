@@ -98,7 +98,7 @@ function createSpiedFs(content: string) {
   const readLines = vi.fn().mockImplementation(() => generateLines(content));
   const readText = vi.fn(async () => content);
   const stat = vi.fn(async () => ({ isFile: true, isDirectory: false, size: bytes.length }));
-  const fs = { cwd: '/', readBytes, readLines, readText, stat } as unknown as IHostFileSystem;
+  const fs = { cwd: '/', readBytes, readLines, readText, stat, realpath: async (path: string) => path } as unknown as IHostFileSystem;
   return { fs, readBytes, readLines, readText, stat };
 }
 
@@ -140,7 +140,7 @@ function createSpiedMapFs(files: Record<string, FakeFile>) {
       size: file.size ?? file.bytes.length,
     };
   });
-  const fs = { cwd: '/', readBytes, readLines, readText, stat } as unknown as IHostFileSystem;
+  const fs = { cwd: '/', readBytes, readLines, readText, stat, realpath: async (path: string) => path } as unknown as IHostFileSystem;
   return { fs, readBytes, readLines, readText, stat };
 }
 
@@ -198,9 +198,9 @@ describe('ReadTool', () => {
     ).toBe(false);
   });
 
-  it('matches permission args with glob path semantics', () => {
+  it('matches permission args with glob path semantics', async () => {
     const tool = toolWithContent('');
-    const execution = tool.resolveExecution({ path: '/etc/passwd' });
+    const execution = await tool.resolveExecution({ path: '/etc/passwd' });
     if (execution.isError === true) throw new TypeError('expected runnable execution');
 
     expect(execution.matchesRule?.('/etc/**')).toBe(true);
@@ -350,6 +350,21 @@ describe('ReadTool', () => {
     expect(readLines).toHaveBeenCalledWith('/tmp/external.txt', { errors: 'strict' });
   });
 
+  it('rejects a symlink escape before reading any bytes', async () => {
+    const { fs, readBytes, readLines } = createSpiedFs('outside');
+    fs.realpath = vi.fn(async (path: string) =>
+      path === '/workspace/alias.txt' ? '/outside/notes.txt' : path,
+    );
+    const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
+
+    const result = await execute(tool, { path: 'alias.txt' });
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('resolves outside');
+    expect(readBytes).not.toHaveBeenCalled();
+    expect(readLines).not.toHaveBeenCalled();
+  });
+
   it('returns a friendly error for missing files before sniffing bytes', async () => {
     const { fs, readBytes, readLines } = createSpiedMapFs({});
     const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
@@ -375,6 +390,7 @@ describe('ReadTool', () => {
     });
     const fs = {
       cwd: '/',
+      realpath: async (path: string) => path,
       readBytes: vi.fn(async () => Buffer.from('line 1\n')),
       readLines,
       readText: vi.fn(async () => {
@@ -705,7 +721,7 @@ describe('ReadTool', () => {
       n === undefined ? bytes : bytes.subarray(0, n),
     );
     const stat = vi.fn(async () => ({ isFile: true, isDirectory: false, size: bytes.length }));
-    const fs = { cwd: '/', readBytes, readLines, readText, stat } as unknown as IHostFileSystem;
+    const fs = { cwd: '/', readBytes, readLines, readText, stat, realpath: async (path: string) => path } as unknown as IHostFileSystem;
     const tool = createReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
 
     const result = await execute(tool, { path: '/tmp/large.txt' });
@@ -735,6 +751,7 @@ describe('ReadTool', () => {
       }
     });
     const fs = {
+      realpath: async (path: string) => path,
       readBytes: vi.fn(async (_path: string, n?: number) =>
         n === undefined ? bytes : bytes.subarray(0, n),
       ),
@@ -963,7 +980,7 @@ describe('ReadTool', () => {
       { catalog: { getSkillRoots: () => [] } } as unknown as ISessionSkillCatalog,
       stubToolResultTruncationService(),
     );
-    const execution = tool.resolveExecution({ path: '/workspace/a.txt' });
+    const execution = await tool.resolveExecution({ path: '/workspace/a.txt' });
     expect('execute' in execution).toBe(true);
 
     runtimeValue.setStatus('disconnected');
