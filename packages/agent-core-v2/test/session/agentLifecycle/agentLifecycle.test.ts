@@ -37,6 +37,7 @@ import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { IPromptFieldRegistry } from '#/app/promptField/promptFieldRegistry';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
@@ -46,6 +47,8 @@ import { SessionStateService } from '#/session/state/sessionStateService';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleService';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 import { McpOAuthService } from '#/mcpCore/oauth/service';
@@ -801,6 +804,132 @@ describe('AgentLifecycleService', () => {
     expect(lifecycle.list()).toEqual([]);
     expect(willCreate).not.toHaveBeenCalled();
     expect(registerAgent).not.toHaveBeenCalled();
+  });
+
+  function installStoredTerminalChild(status: 'completed' | 'failed') {
+    const prior = {
+      type: 'sub' as const,
+      parentAgentId: 'main',
+      delegator: { kind: 'agent' as const, agentId: 'main' },
+      labels: { parentAgentId: 'main', profileName: 'old-profile', swarmItem: 'example' },
+      model: 'provider/old-model',
+      thinkingEffort: 'low',
+      status,
+      completedAt: 1_700_000_000_000,
+      resultSummary: 'Previous result',
+      error: status === 'failed' ? 'Previous failure' : undefined,
+      usage: { inputOther: 1, output: 2, inputCacheRead: 3, inputCacheCreation: 4 },
+      contextTokens: 23,
+      toolCallCount: 0,
+    };
+    atomicDocs.set('test/state.json', {
+      id: 'sess_test',
+      version: 2,
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+      archived: false,
+      agents: { child: prior },
+      custom: {},
+    });
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+      {
+        type: 'profile.bind',
+        modelAlias: 'provider/child-model',
+        profileName: 'explore',
+        thinkingEffort: 'high',
+        systemPrompt: '',
+        disallowedTools: [],
+        time: 2,
+      },
+    ]).store);
+    ix.stub(ISessionIndexMirror, { record: () => {} });
+    ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+    return { metadata: ix.get(ISessionMetadata), prior };
+  }
+
+  it('preserves persisted terminal metadata while cold-materializing the current binding', async () => {
+    const { metadata, prior } = installStoredTerminalChild('completed');
+    const register = vi.spyOn(metadata, 'registerAgent');
+    const child = await ix.get(IAgentLifecycleService).create({
+      agentId: 'child',
+      delegator: prior.delegator,
+      labels: prior.labels,
+    });
+
+    expect(child.accessor.get(IAgentProfileService).data()).toMatchObject({
+      profileName: 'explore',
+      modelAlias: 'provider/child-model',
+      thinkingLevel: 'high',
+    });
+    const expected = {
+      status: prior.status,
+      completedAt: prior.completedAt,
+      resultSummary: prior.resultSummary,
+      usage: prior.usage,
+      contextTokens: prior.contextTokens,
+      toolCallCount: prior.toolCallCount,
+      model: 'provider/child-model',
+      thinkingEffort: 'high',
+      labels: { parentAgentId: 'main', profileName: 'explore', swarmItem: 'example' },
+    };
+    expect(register).toHaveBeenCalledWith('child', expect.objectContaining(expected));
+    expect((await metadata.read()).agents?.['child']).toMatchObject(expected);
+    expect(atomicDocs.get('test/state.json')).toMatchObject({ agents: { child: expected } });
+  });
+
+  it('preserves a failed run in persisted metadata when cold resume rejects a model change', async () => {
+    const { metadata, prior } = installStoredTerminalChild('failed');
+    ix.stub(IModelCatalog, {
+      get: (id) => ({
+        id,
+        name: id,
+        aliases: [],
+        protocol: 'openai',
+        headers: {},
+        capabilities: { ...UNKNOWN_CAPABILITY, thinking: true },
+        maxContextSize: 1_000,
+        supportEfforts: ['low', 'high'],
+        defaultEffort: 'low',
+        alwaysThinking: false,
+        providerName: 'example',
+        imagePolicy: { acceptedTypes: new Set(['image/png']), convertUnsupported: 'off' },
+        authProvider: { getAuth: async () => undefined },
+      }),
+    });
+    ix.set(IAgentCollaborationRegistry, new SyncDescriptor(AgentCollaborationRegistry));
+    const run = vi.fn();
+    ix.stub(ISessionSubagentService, { run });
+    ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
+    const lifecycle = ix.get(IAgentLifecycleService);
+    await lifecycle.create({ agentId: 'main' });
+    const dispatch = ix.get(ISessionDispatchService);
+    const child = await dispatch.resolveOwnedChild(prior.delegator, 'child');
+    expect(child.modelAlias).toBe('provider/child-model');
+
+    await expect(dispatch.runOnExisting(child, 'Continue', {
+      requesterAgentId: 'main',
+      bindingOverride: { modelAlias: 'provider/other-model' },
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      code: ErrorCodes.REQUEST_INVALID,
+      details: { requiredParameter: 'allow_model_change' },
+    });
+    expect(run).not.toHaveBeenCalled();
+    const expected = {
+      status: prior.status,
+      completedAt: prior.completedAt,
+      resultSummary: prior.resultSummary,
+      error: prior.error,
+      usage: prior.usage,
+      contextTokens: prior.contextTokens,
+      toolCallCount: prior.toolCallCount,
+      model: 'provider/child-model',
+      thinkingEffort: 'high',
+      labels: { parentAgentId: 'main', profileName: 'explore', swarmItem: 'example' },
+    };
+    expect((await metadata.read()).agents?.['child']).toMatchObject(expected);
+    expect(atomicDocs.get('test/state.json')).toMatchObject({ agents: { child: expected } });
   });
 
   it('persists complete agent metadata when creating a child', async () => {

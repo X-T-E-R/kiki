@@ -350,6 +350,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       const delegationPosition = resolveDelegationPosition(agentId, opts.delegator);
       this.assertCreateStillCurrent(agentId, slot, generation);
       await this.sessionMetadata.registerAgent(agentId, {
+        ...priorAgentMeta,
         homedir: agentHomedir,
         type: delegationPosition,
         parentAgentId,
