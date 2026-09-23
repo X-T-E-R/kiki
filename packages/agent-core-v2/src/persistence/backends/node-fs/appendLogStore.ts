@@ -27,6 +27,8 @@ interface LogState {
   flushPromise: Promise<void> | undefined;
   flushScheduled: boolean;
   storageFailure: { readonly error: unknown } | undefined;
+  /** The current sticky failure came from a failed `drain` append and may be retried. */
+  storageFailureRetriable: boolean;
   cutoverEpoch: number;
   refCount: number;
   retired: boolean;
@@ -51,6 +53,24 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     state.pending.push(record);
     if (options?.onError !== undefined && state.onError === undefined) {
       state.onError = options.onError;
+    }
+    if (
+      state.storageFailure !== undefined &&
+      state.storageFailureRetriable &&
+      state.flushPromise === undefined &&
+      !state.flushScheduled
+    ) {
+      // A prior drain append failed (e.g. disk full). Retry the failed drain so
+      // subsequent turns persist instead of living only in memory. A retry that
+      // fails again re-arms the sticky failure; a success clears it below.
+      state.flushScheduled = true;
+      queueMicrotask(() => {
+        state.flushScheduled = false;
+        state.storageFailure = undefined;
+        state.storageFailureRetriable = false;
+        void this.flushState(scope, key, state).catch((error) => state.onError?.(error));
+      });
+      return;
     }
     this.scheduleFlush(scope, key, state);
   }
@@ -128,6 +148,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
         return true;
       } catch (error) {
         state.storageFailure = { error };
+        state.storageFailureRetriable = false;
         throw error;
       }
     });
@@ -178,6 +199,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
         flushPromise: undefined,
         flushScheduled: false,
         storageFailure: undefined,
+        storageFailureRetriable: false,
         cutoverEpoch: 0,
         refCount: 0,
         retired: false,
@@ -203,11 +225,19 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     return this.flushState(scope, key, state);
   }
 
-  private flushState(scope: string, key: string, state: LogState): Promise<void> {
+  private flushState(scope: string, key: string, state: LogState, retryFailure = false): Promise<void> {
     if (state.flushPromise !== undefined) return state.flushPromise;
-    if (state.storageFailure !== undefined) return Promise.reject(state.storageFailure.error);
+    if (!retryFailure && state.storageFailure !== undefined) {
+      return Promise.reject(state.storageFailure.error);
+    }
     const wroteBox = { value: false };
-    return this.ownFlush(scope, key, state, this.drain(scope, key, state, wroteBox), wroteBox);
+    return this.ownFlush(
+      scope,
+      key,
+      state,
+      this.drain(scope, key, state, wroteBox, retryFailure),
+      wroteBox,
+    );
   }
 
   private release(scope: string, key: string, state: LogState): void {
@@ -267,6 +297,18 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
         state.flushPromise = undefined;
       }
     }
+    if (failure !== undefined) {
+      // W1B-02: a failed drain append may be retried once so queued turns are
+      // not stranded in memory until the next append arrives. A retry that
+      // fails again keeps the sticky failure; further appends re-arm retries.
+      if (state.storageFailureRetriable && state.pending.length > 0) {
+        state.storageFailureRetriable = false;
+        queueMicrotask(() => {
+          state.storageFailure = undefined;
+          void this.flushState(scope, key, state, true).catch((error) => state.onError?.(error));
+        });
+      }
+    }
     if (wroteBox.value) this.writeEmitter.fire({ scope, key });
     if (failure !== undefined) throw failure.error;
   }
@@ -276,6 +318,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     key: string,
     state: LogState,
     wroteBox?: { value: boolean },
+    isRetry = false,
   ): Promise<boolean> {
     const cutoverEpoch = state.cutoverEpoch;
     await state.ready;
@@ -288,8 +331,11 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
         wrote = true;
         if (wroteBox !== undefined) wroteBox.value = true;
       } catch (error) {
-        const failure = (state.storageFailure ??= { error });
-        throw failure.error;
+        state.storageFailure ??= { error };
+        // A retry that fails again keeps the sticky failure; only the first
+        // failure of a fresh drain re-arms the automatic retry.
+        state.storageFailureRetriable = !isRetry;
+        throw state.storageFailure.error;
       }
       if (state.cutoverEpoch !== cutoverEpoch) return wrote;
       state.pending.splice(0, batch.length);

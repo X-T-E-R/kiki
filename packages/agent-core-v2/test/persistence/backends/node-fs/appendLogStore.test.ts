@@ -130,7 +130,7 @@ describe('AppendLogStore', () => {
     expect(logs.size).toBe(0);
   });
 
-  it('later flush reports an ambiguous auto-flush failure without retrying the batch', async () => {
+  it('later flush reports an ambiguous auto-flush failure after one retried drain', async () => {
     const failure = new Error('append failed after commit');
     let markAppendStarted!: () => void;
     const appendStarted = new Promise<void>((resolve) => {
@@ -151,6 +151,9 @@ describe('AppendLogStore', () => {
       markAppendStarted();
       await appendGate;
       await originalAppend(...args);
+      // The batch lands in storage every time but the append still reports a
+      // failure; the one automatic retry also fails, so the failure stays
+      // sticky and the batch is never written twice.
       throw failure;
     };
 
@@ -161,10 +164,18 @@ describe('AppendLogStore', () => {
     expect(await reportedFailure).toBe(failure);
 
     await expect(record.flush()).rejects.toBe(failure);
-    expect(appendAttempts).toBe(1);
+    // The first failure plus the single automatic retry. The batch had landed
+    // in storage before the ambiguous failure was reported, so the retried
+    // drain appends it a second time — the price of recovering from a failed
+    // append whose durability is unknown.
+    expect(appendAttempts).toBe(2);
     expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe(
-      '{"n":1}\n{"n":2}\n',
+      '{"n":1}\n{"n":2}\n{"n":1}\n{"n":2}\n',
     );
+    // The retried drain also failed, so the sticky failure remains and no
+    // further retry spins.
+    await expect(record.flush()).rejects.toBe(failure);
+    expect(appendAttempts).toBe(2);
   });
 
   it('reacquire after final release waits for retiring storage before fresh I/O', async () => {
@@ -196,6 +207,12 @@ describe('AppendLogStore', () => {
       appendAttempts++;
       if (appendAttempts === 1) {
         markAppendStarted();
+        await appendGate;
+        throw failure;
+      }
+      // The one automatic retry of the retiring drain also fails, so the
+      // retiring batch is dropped and only the replacement survives.
+      if (appendAttempts === 2) {
         await appendGate;
         throw failure;
       }
@@ -270,6 +287,58 @@ describe('AppendLogStore', () => {
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }]);
   });
 
+  it('retries a failed drain append and persists subsequent turns', async () => {
+    const failure = new Error('disk full');
+    let appendAttempts = 0;
+    const originalAppend = storage.append.bind(storage);
+    storage.append = async (...args) => {
+      appendAttempts++;
+      if (appendAttempts === 1) throw failure;
+      return originalAppend(...args);
+    };
+
+    record.append<Rec>(SCOPE, KEY, { n: 1 });
+    await expect(record.flush()).rejects.toBe(failure);
+    // The failed drain is retried once automatically; the retry persists the
+    // queued turn and clears the sticky failure.
+    expect(appendAttempts).toBe(2);
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }]);
+
+    // The recovered log accepts further appends without a sticky rejection.
+    record.append<Rec>(SCOPE, KEY, { n: 2 });
+    await record.flush();
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+
+  it('retries an in-flight failed drain so queued turns land after recovery', async () => {
+    const failure = new Error('append blocked');
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    let appendAttempts = 0;
+    const originalAppend = storage.append.bind(storage);
+    storage.append = async (...args) => {
+      appendAttempts++;
+      if (appendAttempts === 1) {
+        await appendGate;
+        throw failure;
+      }
+      return originalAppend(...args);
+    };
+
+    record.append<Rec>(SCOPE, KEY, { n: 1 });
+    const firstFlush = record.flush();
+    // A second turn queues while the first drain is still in flight.
+    record.append<Rec>(SCOPE, KEY, { n: 2 });
+    releaseAppend();
+    await expect(firstFlush).rejects.toBe(failure);
+
+    await record.flush();
+    expect(appendAttempts).toBe(2);
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+
   it('keeps a sticky failure until every acquired owner releases it', async () => {
     const failure = new Error('shared append failed');
     let reportFailure!: (error: unknown) => void;
@@ -280,7 +349,9 @@ describe('AppendLogStore', () => {
     const originalAppend = storage.append.bind(storage);
     storage.append = async (...args) => {
       appendAttempts++;
-      if (appendAttempts === 1) throw failure;
+      // The initial append and its one automatic retry both fail, so the
+      // failure stays sticky until every acquired owner releases the log.
+      if (appendAttempts <= 2) throw failure;
       return originalAppend(...args);
     };
 

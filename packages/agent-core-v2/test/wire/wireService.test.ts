@@ -250,7 +250,10 @@ describe('WireService appendRecord', () => {
     let writes = 0;
     storage.append = async () => {
       writes++;
-      throw expected;
+      // The initial append and its one automatic retry both fail, so the
+      // failure stays sticky until the explicit store recovery.
+      if (writes <= 2) throw expected;
+      return append();
     };
     const unexpected: unknown[] = [];
     setUnexpectedErrorHandler((error) => unexpected.push(error));
@@ -259,11 +262,13 @@ describe('WireService appendRecord', () => {
       await expect(wire.flush()).rejects.toBe(expected);
       await new Promise((resolve) => setImmediate(resolve));
       expect(unexpected).toContain(expected);
+      // The single automatic retry already attempted the failed drain.
+      expect(writes).toBe(2);
       storage.append = append;
       wire.appendRecord({ type: 'wire.test.second', time: 2 });
       await expect(wire.flush()).rejects.toBe(expected);
       await expect(wire.flush()).rejects.toBe(expected);
-      expect(writes).toBe(1);
+      expect(writes).toBe(2);
       expect(await storage.read(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY)).toBeUndefined();
 
       await log.rewrite(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY, []);

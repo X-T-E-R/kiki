@@ -180,6 +180,49 @@ describe('Agent loop', () => {
     expect(record?.['time']).toEqual(expect.any(Number));
   });
 
+  it('awaits the wire flush before the turn exits so the streamed step is durable', async () => {
+    profile.update({ activeToolNames: [] });
+
+    // Hold the wire flush; the turn-exit flush must not land until we release
+    // it, proving the turn awaited it.
+    const wire = ctx.wire;
+    const originalFlush = wire.flush.bind(wire);
+    let releaseFlush!: () => void;
+    const flushGate = new Promise<void>((resolve) => {
+      releaseFlush = resolve;
+    });
+    let flushObserved = false;
+    wire.flush = async () => {
+      await flushGate;
+      flushObserved = true;
+      return originalFlush();
+    };
+
+    ctx.mockNextResponse({ type: 'think', think: '<think-1>' }, { type: 'text', text: '<text-1>' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
+    await ctx.untilTurnEnd();
+    // The durable turn records were appended while the flush gate was held; the
+    // turn-exit flush has not landed yet.
+    expect(flushObserved).toBe(false);
+    releaseFlush();
+    await ctx.wire.flush();
+    expect(flushObserved).toBe(true);
+
+    const persisted = await ctx.persistedWireRecords();
+    const contentParts = persisted.filter(
+      (entry) =>
+        entry.type === 'context.append_loop_event' &&
+        (entry as { event?: { type?: string } }).event?.type === 'content.part',
+    );
+    expect(contentParts).toHaveLength(2);
+    expect(
+      contentParts.some((entry) => JSON.stringify(entry).includes('"type":"think"')),
+    ).toBe(true);
+    expect(
+      contentParts.some((entry) => JSON.stringify(entry).includes('"type":"text"')),
+    ).toBe(true);
+  });
+
   it('fails the turn after a filtered step completes', async () => {
     profile.update({ activeToolNames: [] });
     ctx.mockNextProviderResponse({

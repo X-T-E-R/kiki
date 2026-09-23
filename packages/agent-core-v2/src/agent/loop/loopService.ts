@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 
 import { createControlledPromise } from '@antfu/utils';
 
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -579,6 +580,16 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         trace_id: traceId,
       };
       turnTelemetry.track2('turn_ended', ended);
+      // Best-effort wire flush before the turn fully exits. The durable
+      // `TurnEnded` record and the step's `content.part` / `step.end` records
+      // were appended via the write-behind queue; without this await a process
+      // killed between the user seeing the streamed text and the microtask
+      // flush loses the entire step from `wire.jsonl`.
+      try {
+        await this.dispatcher.flush();
+      } catch (flushError) {
+        onUnexpectedError(flushError);
+      }
       this.activeRequestTrace = undefined;
       this.lastRequestTraceId = undefined;
       this.pumpTurns();
