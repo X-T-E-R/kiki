@@ -13,6 +13,8 @@ subagent 接受 main agent 给出的任务描述，在自己的独立上下文�
 - **`general`**：默认 subagent，通用助手，可以读写文件、执行命令和搜索代码，但不能继续派发子 Agent。
 - **`explore`**：只读代码库探索、搜索与总结专用。
 
+另有两个**可选示例**，不是预装角色：`implementer` 负责工程任务，直到完成验证与交付；`reviewer` 作为只读叶子角色，独立审查决策或已完成的工作。GUI 首次启动后的 `/kiki-ops` 对话会分别询问是否创建它们。只有你同意某个角色后，Agent 才会从内置 `kiki-profile` skill 获取完整模板，在 `$KIKI_HOME/agents/<角色>.md`（默认 `~/.kiki/agents/`）创建对应文件；若文件已存在，不会擅自覆盖。两个模板都显式写有 `model_alias: inherit`：创建后的角色会跟随父 Agent 派发时使用的模型，而不固定供应商或具体模型。模板不设置 `thinking_effort`；以后可在设置中改为固定模型。
+
 顶层配置 [`skip_builtin_profile_installation`](../configuration/config-files.md#顶层字段) 会跳过向 `agents/builtin/` 安装指定的内置模板，但不会禁用或删除已有副本。若要从 subagent 发现与派发列表中隐藏已安装的 profile，请使用 `disabled_named_profiles`；默认 main `agent` 绑定仍可使用。
 
 ## 调用方式

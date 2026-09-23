@@ -13,6 +13,8 @@ Fresh installations include the main `agent` profile and two subagent profiles:
 - **`general`**: The default subagent — a general-purpose assistant that can read and write files, execute commands, and search code, without dispatching more children.
 - **`explore`**: Dedicated to read-only codebase exploration, searching, and summarizing.
 
+Two more profiles are available as **optional examples**, not preinstalled roles: `implementer` owns an engineering task through verification and handoff; `reviewer` independently checks a decision or finished work as a read-only leaf. The GUI's first-run `/kiki-ops` conversation asks about each separately. Only if you agree, the built-in `kiki-profile` skill supplies its complete template and the agent creates that role at `$KIKI_HOME/agents/<role>.md` (default `~/.kiki/agents/`). It checks for an existing file rather than overwriting it silently. Both templates explicitly set `model_alias: inherit`, so the created role follows the parent agent's model at dispatch time without fixing a provider or a particular model. They leave `thinking_effort` unset; you can switch either role to a fixed model later in Settings.
+
 The top-level [`skip_builtin_profile_installation`](../configuration/config-files.md#top-level-fields) setting skips installing named built-in templates under `agents/builtin/`. It does not disable or delete existing copies. To hide installed profiles from subagent discovery and dispatch, use `disabled_named_profiles`; the default main `agent` binding remains available.
 
 ## How to Invoke
