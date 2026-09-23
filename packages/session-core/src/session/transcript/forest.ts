@@ -185,6 +185,7 @@ export function rosterFromSnapshotSubagents(
         endedAt: subagent.completed_at,
         description,
         summary: presentSnapshotText(subagent.output_preview),
+        error: presentSnapshotText(subagent.stop_reason),
       } satisfies AgentRosterDescriptor,
     ];
   });
@@ -469,5 +470,6 @@ export function sessionAgentForestFromAgentSnapshots(
     const taskList = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
     tasks.push(...taskItemsFromTranscriptTasks(taskList));
   }
+  roster.push(...rosterFromSnapshotSubagents(snapshotSubagents));
   return overlayForestDisplayFields(buildAgentForest(live, roster, tasks), live);
 }

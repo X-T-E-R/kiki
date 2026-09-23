@@ -117,7 +117,7 @@ export async function assembleSnapshot(
 
   const main = await ensureMainAgent(handle);
   const snapState = await broadcaster.getSnapshotState(sessionId, {
-    captureMessages: !compact,
+    captureMessages: true,
     capture: async () => {
       const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
       const workspace = await core.accessor.get(IWorkspaceService).get(workspaceId);
@@ -141,17 +141,11 @@ export async function assembleSnapshot(
   const { meta, session } = snapState.captured;
   const subagentCandidates = [...snapState.subagents];
   const subagentIds = subagentCandidates.map((subagent) => subagent.id);
-  const subagents = compact
-    ? enrichCompactSnapshotSubagents(
-        subagentCandidates,
-        meta.agents,
-        await broadcaster.getTranscriptToolCallCounts(sessionId, subagentIds),
-      )
-    : enrichSnapshotSubagents(
-        subagentCandidates,
-        meta.agents,
-        await broadcaster.getTranscriptToolCallCounts(sessionId, subagentIds),
-      );
+  const subagents = enrichSnapshotSubagents(
+    subagentCandidates,
+    meta.agents,
+    await broadcaster.getTranscriptToolCallCounts(sessionId, subagentIds),
+  );
   const status = snapState.status;
 
   const messageTail = compact
@@ -173,7 +167,7 @@ export async function assembleSnapshot(
   return {
     as_of_seq: snapState.seq,
     epoch: snapState.epoch,
-    session,
+    session: { ...session, message_count: snapState.contextMessages.length },
     messages: { items: messageTail?.items ?? [], has_more: messageTail?.has_more ?? false },
     in_flight_turn: inFlightTurn,
     subagents,
@@ -196,22 +190,6 @@ function readBoundModel(main: IAgentScopeHandle): string | undefined {
   }
 }
 
-function enrichCompactSnapshotSubagents(
-  subagents: readonly SnapshotSubagent[],
-  agents: Readonly<Record<string, AgentMeta>> | undefined,
-  toolCallCounts: ReadonlyMap<string, number>,
-): SnapshotSubagent[] {
-  return enrichSnapshotSubagents(subagents, agents, toolCallCounts).map((subagent) => {
-    const meta = agents?.[subagent.id];
-    return {
-      ...subagent,
-      model: firstNonEmpty(subagent.model, meta?.model),
-      thinking_effort: firstNonEmpty(subagent.thinking_effort, meta?.thinkingEffort),
-      tool_call_count: toolCallCounts.get(subagent.id),
-    };
-  });
-}
-
 function enrichSnapshotSubagents(
   subagents: readonly SnapshotSubagent[],
   agents: Readonly<Record<string, AgentMeta>> | undefined,
@@ -221,13 +199,28 @@ function enrichSnapshotSubagents(
     const meta = agents?.[subagent.id];
     const userLabel = firstNonEmpty(subagentUserLabel(meta), subagent.label);
     const spawnedName = firstNonEmpty(subagent.profile, meta?.displayName);
+    const terminalAt = meta?.completedAt;
+    const currentOutcome = meta?.status !== undefined && terminalAt !== undefined &&
+      Number.isFinite(terminalAt) &&
+      Date.parse(subagent.started_at ?? subagent.created_at) <= terminalAt &&
+      (subagent.completed_at === undefined || Date.parse(subagent.completed_at) <= terminalAt);
+    const status = currentOutcome ? meta.status : subagent.status;
     return {
       ...subagent,
       description: resolveSubagentDisplayName(userLabel, spawnedName, subagent.id),
       profile: spawnedName,
+      model: firstNonEmpty(subagent.model, meta?.model),
+      thinking_effort: firstNonEmpty(subagent.thinking_effort, meta?.thinkingEffort),
       parent_agent_id: firstNonEmpty(subagent.parent_agent_id, subagentParentAgentId(meta)),
       label: userLabel,
-      tool_call_count: toolCallCounts.get(subagent.id),
+      status,
+      subagent_phase: currentOutcome
+        ? status === 'completed' || status === 'failed' ? status : undefined
+        : subagent.subagent_phase,
+      completed_at: currentOutcome ? new Date(terminalAt).toISOString() : subagent.completed_at,
+      output_preview: firstNonEmpty(subagent.output_preview, currentOutcome ? meta?.resultSummary : undefined),
+      stop_reason: firstNonEmpty(subagent.stop_reason, currentOutcome ? meta?.error : undefined),
+      tool_call_count: toolCallCounts.get(subagent.id) ?? (currentOutcome ? meta?.toolCallCount : undefined),
     };
   });
 }

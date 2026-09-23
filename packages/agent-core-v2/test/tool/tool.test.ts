@@ -1657,6 +1657,49 @@ describe('AgentRun tool execution contract', () => {
     expect(events.some((event) => event.type === 'subagent.completed')).toBe(false);
   });
 
+  it('merges terminal subagent outcomes into metadata without inventing tool counts', async () => {
+    const agents: Record<string, AgentMeta> = {
+      'agent-child': { type: 'sub', model: 'provider/example', labels: { swarmItem: 'example' } },
+    };
+    const registerAgent = vi.fn(async (agentId: string, meta: AgentMeta) => { agents[agentId] = meta; });
+    const dispatch = vi.fn(async (_event: Event2) => {});
+    const requester = {
+      id: 'main', kind: LifecycleScope.Agent,
+      accessor: {
+        get: ((serviceId: unknown) => {
+          if (serviceId === ISessionMetadata) return { read: async () => ({ agents }), registerAgent };
+          if (serviceId === IEventDispatcher) return { dispatch };
+          if (serviceId === IAgentLifecycleService) return {
+            get: () => ({ accessor: { get: () => ({ statusSize: () => 23 }) } }),
+          };
+          return undefined;
+        }) as IAgentScopeHandle['accessor']['get'],
+      },
+      dispose: () => {},
+    } satisfies IAgentScopeHandle;
+    const run = (completion: Promise<{ summary: string; usage?: TokenUsage }>) => mirrorAgentRun(requester, {
+      agentId: 'agent-child', turn: {} as AgentRunHandle['turn'], completion,
+    }, { profileName: 'explore', signal });
+    const usage = { inputOther: 1, output: 2, inputCacheRead: 3, inputCacheCreation: 4 };
+    await run(Promise.resolve({ summary: 'Done', usage }));
+    expect(agents['agent-child']).toMatchObject({
+      type: 'sub', model: 'provider/example', labels: { swarmItem: 'example' },
+      status: 'completed', resultSummary: 'Done', usage, contextTokens: 23,
+      completedAt: expect.any(Number),
+    });
+    expect(agents['agent-child']?.toolCallCount).toBeUndefined();
+    expect(registerAgent).toHaveBeenCalledOnce();
+
+    await expect(run(Promise.reject(new Error('failed')))).rejects.toThrow('failed');
+    expect(agents['agent-child']).toMatchObject({ status: 'failed', error: 'failed' });
+    expect(agents['agent-child']?.resultSummary).toBeUndefined();
+
+    const cancellation = userCancellationReason();
+    await expect(run(Promise.reject(cancellation))).rejects.toBe(cancellation);
+    expect(agents['agent-child']).toMatchObject({ status: 'cancelled', error: 'terminated' });
+    expect(registerAgent).toHaveBeenCalledTimes(3);
+  });
+
   it('inherits parent user tools when spawning a subagent', async () => {
     const lookupTool: UserToolRegistration = {
       name: 'Lookup',

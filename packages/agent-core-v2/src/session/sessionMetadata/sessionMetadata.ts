@@ -17,6 +17,13 @@ export interface AgentMeta {
   readonly thinkingEffort?: string;
   readonly executor?: string;
   readonly executorProtocol?: string;
+  readonly status?: 'completed' | 'failed' | 'cancelled';
+  readonly completedAt?: number;
+  readonly resultSummary?: string;
+  readonly error?: string;
+  readonly usage?: TokenUsage;
+  readonly contextTokens?: number;
+  readonly toolCallCount?: number;
 }
 
 export type DelegatorRef =

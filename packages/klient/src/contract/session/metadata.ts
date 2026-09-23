@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 
+import { tokenUsageSchema } from '../agent/schemas.js';
 import { noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
 
@@ -13,9 +14,26 @@ export const agentMetaSchema = z.object({
   homedir: z.string().optional(),
   type: z.enum(['main', 'sub', 'independent']).optional(),
   parentAgentId: z.union([z.string(), z.null()]).optional(),
+  delegator: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('agent'), agentId: z.string() }),
+    z.object({ kind: z.literal('external'), delegationId: z.string() }),
+  ]).optional(),
   forkedFrom: z.string().optional(),
   labels: z.record(z.string(), z.string()).optional(),
   swarmItem: z.string().optional(),
+  displayName: z.string().optional(),
+  userLabel: z.string().optional(),
+  model: z.string().optional(),
+  thinkingEffort: z.string().optional(),
+  executor: z.string().optional(),
+  executorProtocol: z.string().optional(),
+  status: z.enum(['completed', 'failed', 'cancelled']).optional(),
+  completedAt: z.number().optional(),
+  resultSummary: z.string().optional(),
+  error: z.string().optional(),
+  usage: tokenUsageSchema.optional(),
+  contextTokens: z.number().optional(),
+  toolCallCount: z.number().int().nonnegative().optional(),
 });
 
 export const sessionMetaSchema = z.object({

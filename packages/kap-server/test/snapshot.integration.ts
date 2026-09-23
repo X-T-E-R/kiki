@@ -90,6 +90,18 @@ describe('server-v2 snapshot route enrichment', () => {
       },
       createdAt: now,
     };
+    const persistedAgent = {
+      type: 'sub',
+      parentAgentId: 'main',
+      labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
+      displayName: 'explore',
+      model: 'provider/metadata-model',
+      thinkingEffort: 'high',
+      status: undefined as 'completed' | 'failed' | 'cancelled' | undefined,
+      completedAt: undefined as number | undefined,
+      toolCallCount: undefined as number | undefined,
+      resultSummary: undefined as string | undefined,
+    };
     const session = {
       accessor: fakeAccessor([
         [ISessionContext, { workspaceId }],
@@ -102,16 +114,7 @@ describe('server-v2 snapshot route enrichment', () => {
               createdAt: now,
               updatedAt: now,
               archived: false,
-              agents: {
-                'agent-1': {
-                  type: 'sub',
-                  parentAgentId: 'main',
-                  labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
-                  displayName: 'explore',
-                  model: 'provider/metadata-model',
-                  thinkingEffort: 'high',
-                },
-              },
+              agents: { 'agent-1': persistedAgent },
             }),
           },
         ],
@@ -251,6 +254,7 @@ describe('server-v2 snapshot route enrichment', () => {
 
     const compact = await invoke('transcript');
     expect(compact.messages).toEqual({ items: [], has_more: false });
+    expect(compact.session.message_count).toBe(1);
     expect(compact.in_flight_turn).toMatchObject({
       turn_id: 7,
       assistant_text: 'Hello',
@@ -278,7 +282,7 @@ describe('server-v2 snapshot route enrichment', () => {
         tool_call_count: 3,
       }),
     ]);
-    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: false, capture: expect.any(Function) }));
+    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: true, capture: expect.any(Function) }));
     expect(getMaterializedTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(getTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, ['agent-1']);
     expect(loadParts).not.toHaveBeenCalled();
@@ -315,8 +319,33 @@ describe('server-v2 snapshot route enrichment', () => {
         run_in_background: false,
       }),
     ]);
-    expect(legacy.subagents?.[0]?.model).toBeUndefined();
-    expect(legacy.subagents?.[0]?.thinking_effort).toBeUndefined();
+    expect(legacy.subagents?.[0]).toMatchObject({
+      model: 'provider/metadata-model',
+      thinking_effort: 'high',
+    });
+
+    persistedAgent.status = 'completed';
+    persistedAgent.completedAt = now + 2_000;
+    persistedAgent.resultSummary = 'Stored summary';
+    persistedAgent.toolCallCount = 0;
+    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map());
+    const settled = await invoke();
+    expect(settled.subagents?.[0]).toMatchObject({
+      status: 'completed',
+      subagent_phase: 'completed',
+      completed_at: new Date(now + 2_000).toISOString(),
+      output_preview: 'Stored summary',
+      tool_call_count: 0,
+    });
+    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map([['agent-1', 3]]));
+    const measured = await invoke('transcript');
+    expect(measured.subagents?.[0]?.tool_call_count).toBe(3);
+
+    persistedAgent.completedAt = now - 1_000;
+    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map());
+    const stale = await invoke();
+    expect(stale.subagents?.[0]?.status).toBe('running');
+    expect(stale.subagents?.[0]?.tool_call_count).toBeUndefined();
   });
 });
 
@@ -963,7 +992,11 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
 
     const snap = await snapshot(sid);
     expect(snap.session.id).toBe(sid);
+    expect(snap.session.message_count).toBe(2);
     expect(snap.messages.items).toHaveLength(2);
+    const compact = await snapshot(sid, 'transcript');
+    expect(compact.session.message_count).toBe(2);
+    expect(compact.messages.items).toEqual([]);
     expect((snap.messages.items[0]!.content[0] as { text: string }).text).toBe('hello-from-disk');
     expect((snap.messages.items[1]!.content[0] as { text: string }).text).toBe('hi-from-disk');
     expect(snap.epoch).toMatch(/^ep_/);
@@ -1091,8 +1124,10 @@ describe('legacy snapshot message tail projection', () => {
   async function assembleWithHistory(
     size: number,
     times: readonly (number | undefined)[],
+    mode?: 'transcript',
   ): Promise<{
     messages: { items: Array<{ id: string; created_at: string; content: unknown }>; has_more: boolean };
+    messageCount: number;
     asOfSeq: number;
     epoch: string;
     loadParts: ReturnType<typeof vi.fn>;
@@ -1161,12 +1196,13 @@ describe('legacy snapshot message tail projection', () => {
       getTranscriptToolCallCounts: async () => new Map<string, number>(),
       getMaterializedTranscriptToolCallCounts: () => new Map<string, number>(),
     };
-    const data = await assembleSnapshot(core as never, broadcaster as never, sessionId, undefined);
+    const data = await assembleSnapshot(core as never, broadcaster as never, sessionId, mode);
     return {
       messages: data.messages as {
         items: Array<{ id: string; created_at: string; content: unknown }>;
         has_more: boolean;
       },
+      messageCount: data.session.message_count,
       asOfSeq: data.as_of_seq,
       epoch: data.epoch,
       loadParts,
@@ -1177,9 +1213,10 @@ describe('legacy snapshot message tail projection', () => {
     'projects only the newest 100 messages when the captured history has %i messages',
     async (size) => {
       const times = Array.from({ length: size }, (_, index) => createdAt + index);
-      const { messages, asOfSeq, epoch, loadParts } = await assembleWithHistory(size, times);
+      const { messages, messageCount, asOfSeq, epoch, loadParts } = await assembleWithHistory(size, times);
 
       const expectedCount = Math.min(size, 100);
+      expect(messageCount).toBe(size);
       expect(messages.items).toHaveLength(expectedCount);
       expect(messages.has_more).toBe(size > 100);
       expect(asOfSeq).toBe(7);
@@ -1197,6 +1234,13 @@ describe('legacy snapshot message tail projection', () => {
       }
     },
   );
+
+  it('reports the full history count in transcript mode without hydrating message items', async () => {
+    const { messages, messageCount, loadParts } = await assembleWithHistory(101, [], 'transcript');
+    expect(messageCount).toBe(101);
+    expect(messages).toEqual({ items: [], has_more: false });
+    expect(loadParts).not.toHaveBeenCalled();
+  });
 
   it('keeps absolute ids and the monotonic clamp when prefix times are unordered', async () => {
     const size = 105;

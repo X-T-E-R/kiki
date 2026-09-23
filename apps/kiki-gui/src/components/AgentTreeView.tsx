@@ -133,9 +133,9 @@ const AgentTreeRow = memo(function AgentTreeRow({
                   {node.thinkingEffort !== undefined
                     ? ` · ${t('subagent.effort', { effort: node.thinkingEffort })}`
                     : ''}
-                  {node.toolCallCountKnown === false
-                    ? ` · ${t('diagnostics.unknown')}`
-                    : ` · ${t('subagent.tools', { count: node.toolCallCount })}`}
+                  {node.toolCallCountKnown === true
+                    ? ` · ${t('subagent.tools', { count: node.toolCallCount })}`
+                    : ''}
                   {children.length > 0 ? ` · ${tp('subagent.children', children.length)}` : ''}
                 </span>
               </span>

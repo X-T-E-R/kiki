@@ -522,6 +522,23 @@ describe('buildAgentForest', () => {
     });
   });
 
+  it('maps persisted terminal fields from the snapshot roster into the tree', () => {
+    const forest = sessionAgentForestFromAgentSnapshots(
+      new Map<string, AgentTranscriptSnapshot>(),
+      [compactSnapshot({
+        id: 'agent-1', agent_id: 'agent-1', status: 'failed',
+        model: 'provider/example', thinking_effort: 'high',
+        tool_call_count: 0, stop_reason: 'example failure',
+        completed_at: '2026-01-01T00:00:01.000Z',
+      })],
+    );
+    expect(forest.byId['agent-1']).toMatchObject({
+      status: 'failed', model: 'provider/example', thinkingEffort: 'high',
+      toolCallCount: 0, toolCallCountKnown: true,
+      error: 'example failure', endedAt: '2026-01-01T00:00:01.000Z',
+    });
+  });
+
   it('uses task fallback when roster and live omit identity fields', () => {
     const forest = buildAgentForest(
       [live({ subagentId: 'agent-1', name: '', status: 'running' })],

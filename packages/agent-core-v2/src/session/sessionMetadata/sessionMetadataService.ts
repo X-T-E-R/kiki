@@ -263,6 +263,13 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.thinkingEffort === b.thinkingEffort &&
     a.executor === b.executor &&
     a.executorProtocol === b.executorProtocol &&
+    a.status === b.status &&
+    a.completedAt === b.completedAt &&
+    a.resultSummary === b.resultSummary &&
+    a.error === b.error &&
+    JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
+    a.contextTokens === b.contextTokens &&
+    a.toolCallCount === b.toolCallCount &&
     recordEquals(a.labels, b.labels)
   );
 }

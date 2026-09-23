@@ -2,7 +2,9 @@
 import { z } from 'zod';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
-import { userCancellationReason } from '#/_base/utils/abort';
+import { ILogService } from '#/_base/log/log';
+import { isAbortError, userCancellationReason } from '#/_base/utils/abort';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { isProviderRateLimitError } from '#/kosong/contract/errors';
@@ -10,7 +12,6 @@ import { type TokenUsage } from '#/kosong/contract/usage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { SubagentCreatedEvent } from '#/app/telemetry/events';
 import { Event2, registerEvent2Class } from '#/app/event/event2';
-import { isAbortError } from '#/_base/utils/abort';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
@@ -230,6 +231,14 @@ export async function mirrorAgentRun(
     }
     const result = await run.completion;
     const contextTokens = childContextTokens(agentLifecycle, run.agentId);
+    await recordAgentOutcome(requester, run.agentId, {
+      status: 'completed',
+      completedAt: Date.now(),
+      resultSummary: result.summary,
+      usage: result.usage,
+      contextTokens,
+      error: undefined,
+    });
     void dispatcher?.dispatch(
       new SubagentCompleted({
         subagentId: run.agentId,
@@ -248,15 +257,42 @@ export async function mirrorAgentRun(
     const cancelled = isAbortError(error) || (!hookFailed && options.signal.aborted && error === options.signal.reason);
     const taskId = await options.resolveTaskId?.();
     if ((options.deferStarted !== true || taskId !== undefined) && (cancelled || !shouldSuppressFailure(options, error))) {
+      const reason = cancelled ? 'terminated' : errorMessage(error);
+      await recordAgentOutcome(requester, run.agentId, {
+        status: cancelled ? 'cancelled' : 'failed',
+        completedAt: Date.now(),
+        resultSummary: undefined,
+        usage: undefined,
+        contextTokens: childContextTokens(agentLifecycle, run.agentId),
+        error: reason,
+      });
       await dispatcher?.dispatch(
         new SubagentFailed({
           subagentId: run.agentId,
-          error: cancelled ? 'terminated' : errorMessage(error),
+          error: reason,
           taskId,
         }),
       );
     }
     throw error;
+  }
+}
+
+async function recordAgentOutcome(
+  requester: IAgentScopeHandle,
+  agentId: string,
+  outcome: Pick<AgentMeta, 'status' | 'completedAt' | 'resultSummary' | 'usage' | 'contextTokens' | 'error'>,
+): Promise<void> {
+  try {
+    const metadata = requester.accessor.get(ISessionMetadata);
+    const current = (await metadata.read()).agents?.[agentId];
+    if (current === undefined) return;
+    await metadata.registerAgent(agentId, { ...current, ...outcome });
+  } catch (error) {
+    requester.accessor.get(ILogService)?.warn('subagent outcome metadata write failed', {
+      agentId,
+      error: errorMessage(error),
+    });
   }
 }
 
@@ -269,9 +305,9 @@ function errorMessage(error: unknown): string {
 }
 
 function childContextTokens(
-  agentLifecycle: IAgentLifecycleService,
+  agentLifecycle: IAgentLifecycleService | undefined,
   agentId: string,
 ): number | undefined {
-  const child = agentLifecycle.get(agentId);
+  const child = agentLifecycle?.get(agentId);
   return child?.accessor.get(IAgentTokenCountingService)?.statusSize();
 }

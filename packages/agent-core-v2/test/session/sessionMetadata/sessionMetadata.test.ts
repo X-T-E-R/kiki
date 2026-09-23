@@ -702,6 +702,36 @@ describe('SessionMetadata', () => {
     ]);
   });
 
+  it('persists terminal agent fields across restart and keeps legacy agent records readable', async () => {
+    const meta = ix.get(ISessionMetadata);
+    const legacyAgent = { type: 'sub' as const, displayName: 'explore', labels: { swarmItem: 'example' } };
+    await meta.registerAgent('legacy', legacyAgent);
+    const before = (await meta.read()).updatedAt;
+    await meta.registerAgent('terminal', {
+      ...legacyAgent,
+      status: 'completed',
+      completedAt: 1_700_000_000_000,
+      resultSummary: 'Complete',
+      contextTokens: 21,
+      usage: { inputOther: 2, output: 3, inputCacheRead: 0, inputCacheCreation: 0 },
+      toolCallCount: 0,
+    });
+    const fresh = createFreshMetadata(ix);
+    expect((await fresh.read()).agents?.['legacy']).toEqual(legacyAgent);
+    expect((await fresh.read()).agents?.['terminal']).toMatchObject({
+      labels: legacyAgent.labels,
+      status: 'completed',
+      completedAt: 1_700_000_000_000,
+      resultSummary: 'Complete',
+      contextTokens: 21,
+      toolCallCount: 0,
+    });
+    expect((await fresh.read()).updatedAt).toBe(before);
+
+    await fresh.registerAgent('terminal', { ...(await fresh.read()).agents?.['terminal'], status: 'failed' });
+    expect((await fresh.read()).agents?.['terminal']?.status).toBe('failed');
+  });
+
   it('persists and reloads an agent model binding symmetrically', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.registerAgent('agent-model', {
