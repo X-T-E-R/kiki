@@ -1036,3 +1036,38 @@ effort = "max"
     expect(await readFile(configPath, 'utf-8')).toContain('effort = "max"');
   });
 });
+
+describe('writeConfigFile — mode durability', () => {
+  it('keeps config.toml owner-only when rewriting a file created with a looser mode', async () => {
+    const dir = await makeTempDir();
+    const configPath = join(dir, 'config.toml');
+    // Simulate a file whose mode drifted (e.g. an earlier save relaxed it):
+    // the rewrite must not widen it again.
+    await writeFile(configPath, '', 'utf-8');
+    if (process.platform !== 'win32') {
+      const { chmod } = await import('node:fs/promises');
+      await chmod(configPath, 0o644);
+    }
+    await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
+
+    if (process.platform !== 'win32') {
+      expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+      expect((await stat(join(dir, 'credentials.toml'))).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it('keeps credentials.toml owner-only when rewriting a file created with a looser mode', async () => {
+    const dir = await makeTempDir();
+    const configPath = join(dir, 'config.toml');
+    await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
+    if (process.platform !== 'win32') {
+      const { chmod } = await import('node:fs/promises');
+      await chmod(join(dir, 'credentials.toml'), 0o644);
+    }
+    await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
+
+    if (process.platform !== 'win32') {
+      expect((await stat(join(dir, 'credentials.toml'))).mode & 0o777).toBe(0o600);
+    }
+  });
+});

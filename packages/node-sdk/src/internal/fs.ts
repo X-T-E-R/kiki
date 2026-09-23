@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import * as nodeFs from 'node:fs';
-import { open, rename, unlink } from 'node:fs/promises';
+import { chmod, open, rename, unlink } from 'node:fs/promises';
 
 /**
  * fsync a file descriptor through the module namespace (`nodeFs.fsync`)
@@ -42,18 +42,41 @@ export async function atomicWrite(
       await fh.close();
     }
     // Windows `fs.rename` maps to MoveFileEx and fails with EPERM if the
-    // target is held by another handle; pre-unlinking turns this into the
-    // POSIX-style "replace" case.
+    // target is held by another handle; unlinking the target first turns this
+    // into the POSIX-style "replace" case. Rename is tried first so the
+    // no-target window (crash between unlink and rename) only opens in the
+    // rare contended case, not on every write.
     if (process.platform === 'win32') {
       try {
-        await unlink(filePath);
+        await rename(tmpPath, filePath);
+        renamed = true;
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'ENOENT') throw error;
+        if (code !== 'EPERM') throw error;
       }
     }
-    await rename(tmpPath, filePath);
-    renamed = true;
+    if (!renamed) {
+      if (process.platform === 'win32') {
+        try {
+          await unlink(filePath);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT') throw error;
+        }
+      }
+      await rename(tmpPath, filePath);
+      renamed = true;
+    }
+    // Re-apply the requested mode after replacement: `rename` over an existing
+    // target keeps the old file's mode on POSIX, so a rewrite of a file that
+    // was created with a different (looser) mode would silently widen it.
+    if (mode !== undefined) {
+      try {
+        await chmod(filePath, mode);
+      } catch {
+        // Best-effort: platforms without POSIX modes (Windows) keep the file.
+      }
+    }
   } finally {
     if (!renamed) {
       try {

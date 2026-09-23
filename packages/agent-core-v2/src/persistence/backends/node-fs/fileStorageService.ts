@@ -1,8 +1,8 @@
 import '#/_base/utils/fsWatchGuard';
 import { createReadStream, mkdirSync } from 'node:fs';
-import { mkdir, open, readFile, readdir, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { FSWatcher } from 'chokidar';
-import { dirname, join, normalize } from 'pathe';
+import { basename, dirname, join, normalize } from 'pathe';
 
 import { DisposableStore, combinedDisposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
@@ -30,6 +30,61 @@ function isEnoent(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
+/**
+ * Promote a surviving `*.tmp.<pid>.<hex>` sibling to `filePath` after a writer
+ * crashed between unlinking the target and its rename. Returns whether a
+ * candidate was found and renamed.
+ */
+async function recoverOrphanedTempFile(filePath: string): Promise<boolean> {
+  const dir = dirname(filePath);
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return false;
+  }
+  const prefix = `${basename(filePath)}.tmp.`;
+  let candidate: string | undefined;
+  let candidateMtimeMs = -Infinity;
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) continue;
+    // Parse the embedded pid: only temps from dead processes can be orphans.
+    const pid = Number.parseInt(
+      entry.slice(prefix.length, entry.indexOf('.', prefix.length)),
+      10,
+    );
+    if (Number.isInteger(pid) && isPidAlive(pid)) return false;
+    const path = join(dir, entry);
+    let mtimeMs: number;
+    try {
+      mtimeMs = (await stat(path)).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (mtimeMs > candidateMtimeMs) {
+      candidate = path;
+      candidateMtimeMs = mtimeMs;
+    }
+  }
+  if (candidate === undefined) return false;
+  try {
+    await rename(candidate, filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the pid exists but belongs to another user — treat as alive.
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 export class FileStorageService implements IFileSystemStorageService {
   declare readonly _serviceBrand: undefined;
 
@@ -48,8 +103,16 @@ export class FileStorageService implements IFileSystemStorageService {
       try {
         bytes = await readFile(filePath);
       } catch (error) {
-        if (isEnoent(error)) return undefined;
-        throw toStorageIoError(error, { path: filePath, op: 'read' });
+        if (!isEnoent(error)) {
+          throw toStorageIoError(error, { path: filePath, op: 'read' });
+        }
+        // A previous writer may have been killed between unlinking the target
+        // and its final rename on Windows; the uniquely-named temp file is the
+        // only surviving copy. Promote the newest one instead of losing the
+        // document entirely.
+        const recovered = await recoverOrphanedTempFile(filePath);
+        if (!recovered) return undefined;
+        continue;
       }
       if (attempt >= TORN_READ_RETRIES) return bytes;
       let size: number | undefined;

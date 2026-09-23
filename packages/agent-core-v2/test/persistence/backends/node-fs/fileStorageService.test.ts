@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
@@ -255,5 +255,68 @@ describe('FileStorageService — mtime', () => {
 
     await svc.delete('scope', 'k.json');
     expect(await svc.mtime('scope', 'k.json')).toBeUndefined();
+  });
+});
+
+describe('FileStorageService — orphaned temp recovery', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'fss-recover-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('promotes a surviving temp file when the target is missing (dead writer pid)', async () => {
+    await mkdir(join(dir, 'scope'), { recursive: true });
+    // `<pid>` of a process that cannot exist (negative / unspawned): parsed as
+    // an integer, so the recovery must not treat it as alive. Use a large pid
+    // beyond typical limits via the dead-pid heuristic: we rely on
+    // `process.kill(pid, 0)` throwing ESRCH for an unspawned pid.
+    const deadPid = 4_000_000;
+    await writeFile(
+      join(dir, 'scope', `config.toml.tmp.${deadPid}.deadbeef`),
+      encoder.encode('recovered = true'),
+    );
+    const svc = new FileStorageService(dir);
+    const bytes = await svc.read('scope', 'config.toml');
+    expect(bytes === undefined ? '' : new TextDecoder().decode(bytes)).toContain('recovered = true');
+    // The temp file no longer exists; the target carries the content.
+    await expect(
+      stat(join(dir, 'scope', `config.toml.tmp.${deadPid}.deadbeef`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await svc.read('scope', 'config.toml')).toBeDefined();
+  });
+
+  it('does not promote temps from a live pid, and returns undefined with no candidates', async () => {
+    await mkdir(join(dir, 'scope'), { recursive: true });
+    await writeFile(
+      join(dir, 'scope', `config.toml.tmp.${process.pid}.ffffff`),
+      encoder.encode('live-writer'),
+    );
+    const svc = new FileStorageService(dir);
+    expect(await svc.read('scope', 'config.toml')).toBeUndefined();
+    await expect(
+      readFile(join(dir, 'scope', `config.toml.tmp.${process.pid}.ffffff`)),
+    ).resolves.toBeDefined();
+  });
+});
+
+describe('FileStorageService — rewrite keeps file mode', () => {
+  it.skipIf(isWin)('re-applies fileMode after overwriting a document with a drifted mode (POSIX only)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fss-mode-'));
+    try {
+      const svc = new FileStorageService(dir, 0o700, 0o600);
+      await svc.write('scope', 'k.json', encoder.encode('{"x":1}'));
+      const { chmod } = await import('node:fs/promises');
+      await chmod(join(dir, 'scope', 'k.json'), 0o644);
+      await svc.write('scope', 'k.json', encoder.encode('{"x":2}'));
+      const fileStat = await stat(join(dir, 'scope', 'k.json'));
+      expect(fileStat.mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 });
