@@ -1,6 +1,6 @@
 Queue a message in a direct child agent's mailbox. A running native child receives it in its active turn; an idle resumable child starts a new run with the message; other messages remain queued until a run can accept them.
 
-If a child using the native executor is running, the message is steered into the active turn: it is injected at the next step boundary and acknowledged only after delivery. An idle child is resumed through the normal AgentRun path, including external-executor children and persisted children whose idle scope was released. A running external child cannot accept mailbox messages mid-turn, so its message stays queued until its next run. Children that are starting or cancelling are not restarted by this tool, and a child that can no longer be resumed returns an error.
+If a child using the native executor is running, the message is steered into the active turn: it is injected at the next step boundary. This tool returns as soon as the message is durably queued — it does not wait for injection, so `status` normally reads `queued` even when delivery lands a moment later. An idle child is resumed in the background through the normal AgentRun path, including external-executor children and persisted children whose idle scope was released. A running external child cannot accept mailbox messages mid-turn, so its message stays queued until its next run. Children that are starting or cancelling are not restarted by this tool, and a child that can no longer be resumed returns an error.
 
 Who you can address:
 
