@@ -38,7 +38,7 @@ import { useNow } from './RelativeTime';
 import { TaskDetailModal } from './TaskDetailModal';
 import { DANGER_GHOST_BUTTON } from './ui';
 
-/** Differentiated subagent-page rail context (G-3). */
+/** Additional context for the selected subagent in the shared rail. */
 export interface SubagentRailContext {
   readonly agentId: string;
   /** The subagent's own timeline card data from the parent transcript. */
@@ -524,12 +524,10 @@ export function RightRail({
   );
   const runningSubagentTasksRef = useRef(runningSubagentTasks);
   runningSubagentTasksRef.current = runningSubagentTasks;
-  // Empty sections collapse entirely (header included). In subagent mode the
-  // task and navigation chapters lead; the child shortcuts live in navigation.
+  // Empty sections collapse entirely (header included) in either rail context.
   const showSubagents =
-    subagent === undefined &&
-    (Object.keys(forest.byId).some((id) => id !== 'main') ||
-      forest.roots.some((root) => root.agentId !== 'main'));
+    Object.keys(forest.byId).some((id) => id !== MAIN_AGENT_ID) ||
+    forest.roots.some((root) => root.agentId !== MAIN_AGENT_ID);
   const showTasks = backgroundTasks.length > 0;
   const showTerminateAll = onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
 
@@ -619,17 +617,6 @@ export function RightRail({
         onDoubleClick={reset}
       />
       <div data-agent-panel-scroll className="min-h-0 flex-1 space-y-5 overflow-y-auto pb-4">
-      {subagent !== undefined ? (
-        <>
-          <RailSection title={t('rail.agentTask')}>
-            <SubagentTaskSection forest={forest} context={subagent} />
-          </RailSection>
-          <RailSection title={t('rail.agentNav')}>
-            <SubagentNavSection forest={forest} context={subagent} onOpenSubagent={onOpenSubagent} />
-          </RailSection>
-        </>
-      ) : null}
-
       {showSubagents ? (
         <RailSection
           title={t('rail.subagents')}
@@ -665,6 +652,17 @@ export function RightRail({
             onOpenTask={setDetailTask}
           />
         </RailSection>
+      ) : null}
+
+      {subagent !== undefined ? (
+        <section data-subagent-context className="space-y-4 rounded-xl border border-accent/40 bg-accent-soft/30 px-3 py-3">
+          <RailSection title={t('rail.agentTask')}>
+            <SubagentTaskSection forest={forest} context={subagent} />
+          </RailSection>
+          <RailSection title={t('rail.agentNav')}>
+            <SubagentNavSection forest={forest} context={subagent} onOpenSubagent={onOpenSubagent} />
+          </RailSection>
+        </section>
       ) : null}
 
       <AgentPanelContainer key={`${state.sessionId}:${selectedAgentId ?? MAIN_AGENT_ID}`}

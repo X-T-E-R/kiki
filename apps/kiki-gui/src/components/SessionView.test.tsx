@@ -1348,7 +1348,7 @@ describe('agent tree chrome', () => {
     expect(html).toContain('overflow-y-auto');
   });
 
-  it('differentiates the subagent rail: own task, needs-input badge, parent and sibling nav', () => {
+  it('adds subagent context to the shared rail: own task, needs-input badge, parent and sibling nav', () => {
     const railForest = buildAgentForest(
       [],
       [
@@ -1416,8 +1416,9 @@ describe('agent tree chrome', () => {
     expect(html).toContain('Scribe');
     // The agent's own todos, not the main agent's.
     expect(html).toContain('child-only todo');
-    // Differentiated: the full-tree overview section yields to the task/nav chapters.
-    expect(html).not.toContain('data-subagent-scroll');
+    // Context remains additive to the full shared tree.
+    expect(html).toContain('data-subagent-context');
+    expect(html).toContain('data-subagent-scroll');
   });
 
   it('omits the needs-input badge when nothing is pending on the subagent', () => {
