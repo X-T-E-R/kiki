@@ -924,6 +924,7 @@ export const zh: Record<I18nKey, string> = {
   'preview.truncated': '文件较大，仅显示前面一部分。',
   'preview.unsupported': '该文件类型暂不支持预览。',
   'preview.title': '预览工作台',
+  'preview.resetWidth': '拖拽调整面板宽度；双击重置',
   'preview.toggle': '预览',
   'preview.toggleAria': '切换预览面板',
   'preview.collapse': '收起预览面板',

@@ -18,6 +18,14 @@ export function useLayoutPreferences(): LayoutPreferences {
   return useSyncExternalStore(subscribeLayoutPreferences, getSnapshot, getServerSnapshot);
 }
 
+function setDragging(active: boolean) {
+  document.body.dataset['paneResizing'] = active ? 'true' : 'false';
+}
+
+function clearDragging() {
+  delete document.body.dataset['paneResizing'];
+}
+
 export function usePaneResize(options: {
   value: number;
   min: number;
@@ -36,9 +44,13 @@ export function usePaneResize(options: {
       const startX = event.clientX;
       const startValue = value;
       handle.setPointerCapture(event.pointerId);
+      handle.dataset['dragging'] = 'true';
+      setDragging(true);
 
       const up = () => {
+        clearDragging();
         onChange(clamp(valueRef, min, max), true);
+        handle.dataset['dragging'] = 'false';
         handle.removeEventListener('pointermove', trackedMove);
         handle.removeEventListener('pointerup', up);
         handle.removeEventListener('pointercancel', up);

@@ -295,21 +295,52 @@ body {
 }
 
 /* Only the desktop flex panel exposes the resize grab handle; the mobile
- * fixed drawer owns the viewport edge and keeps its natural width. */
+ * fixed drawer owns the viewport edge and keeps its natural width. The strip
+ * straddles the boundary: 12px wide, centered on the hairline so the pointer
+ * can grab from either side (the ::after keeps the visual rail 2px). */
 .app-sidebar__resizer {
   position: absolute;
-  right: -3px;
+  right: -6px;
   top: 0;
   bottom: 0;
   z-index: 10;
-  width: 6px;
+  width: 12px;
   cursor: col-resize;
   touch-action: none;
 }
 
-.app-sidebar__resizer:hover,
-.app-sidebar__resizer[data-dragging='true'] {
-  background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+.app-sidebar__resizer::after {
+  content: '';
+  position: absolute;
+  right: 5px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: transparent;
+}
+
+.app-sidebar__resizer:hover::after,
+.app-sidebar__resizer[data-dragging='true']::after {
+  background-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+
+/* While any pane handle is being dragged: global col-resize cursor and no
+ * text selection under the pointer (body[data-pane-resizing]). */
+body[data-pane-resizing='true'] {
+  cursor: col-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* Wrapper around the rail + its grab strip: the aside is a scroll container
+ * (`overflow: hidden` inline), so the strip must live in a sibling rather
+ * than inside the clipped aside. The shell carries no width of its own —
+ * the aside keeps --kiki-rail-width. */
+.app-rail-shell {
+  position: relative;
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
 }
 
 .app-rail {
@@ -326,23 +357,34 @@ body {
   padding: 1rem;
 }
 
-/* The rail also scrolls its own body (`overflow-y: auto`), so the grab strip
- * lives INSIDE the panel's left edge instead of straddling the border — a
- * negative left offset would be clipped by the scroll container. */
+/* The rail's aside is a scroll container (`overflow: hidden` inline), so a
+ * straddling strip would be clipped if it lived inside. The handle lives in
+ * .app-rail-shell (sibling of the aside) and centers the 12px strip on the
+ * boundary so it can be grabbed from the conversation side too. */
 .app-rail__resizer {
   position: absolute;
-  left: 0;
+  left: -6px;
   top: 0;
   bottom: 0;
   z-index: 10;
-  width: 6px;
+  width: 12px;
   cursor: col-resize;
   touch-action: none;
 }
 
-.app-rail__resizer:hover,
-.app-rail__resizer[data-dragging='true'] {
-  background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+.app-rail__resizer::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: transparent;
+}
+
+.app-rail__resizer:hover::after,
+.app-rail__resizer[data-dragging='true']::after {
+  background-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
 }
 
 .app-rail__board-launcher {
@@ -369,6 +411,7 @@ body {
 [data-tasks-scroll],
 [data-subagent-scroll],
 .app-rail,
+.conversation-rail-slot > .app-rail-shell,
 .conversation-shell[data-phase='hero'] .conversation-middle {
   overscroll-behavior-y: contain;
 }
@@ -388,6 +431,7 @@ body {
 }
 
 @media (max-width: 1023px) {
+  .app-rail-shell,
   .app-rail {
     position: fixed;
     right: 0;
@@ -396,7 +440,8 @@ body {
     transform: translateX(100%);
     transition: transform 200ms ease-out;
   }
-  .app-rail.open {
+  .app-rail.open,
+  .app-rail-shell:has(> .app-rail.open) {
     transform: translateX(0);
   }
 }
@@ -470,16 +515,28 @@ body {
 
 .preview-workspace__resizer {
   position: absolute;
-  left: -3px;
+  left: -6px;
   top: 0;
   bottom: 0;
   z-index: 10;
-  width: 6px;
+  width: 12px;
   cursor: col-resize;
+  touch-action: none;
 }
 
-.preview-workspace__resizer:hover {
-  background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+.preview-workspace__resizer::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: transparent;
+}
+
+.preview-workspace__resizer:hover::after,
+.preview-workspace__resizer[data-dragging='true']::after {
+  background-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
 }
 
 @media (max-width: 1023px) {

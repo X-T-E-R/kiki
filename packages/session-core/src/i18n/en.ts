@@ -933,6 +933,7 @@ export const en = {
   'preview.truncated': 'Large file — showing the first part only.',
   'preview.unsupported': 'No preview available for this file type.',
   'preview.title': 'Preview workspace',
+  'preview.resetWidth': 'Drag to resize the panel; double-click to reset',
   'preview.toggle': 'Preview',
   'preview.toggleAria': 'Toggle preview panel',
   'preview.collapse': 'Collapse preview panel',

@@ -601,13 +601,7 @@ export function RightRail({
   });
 
   return (
-    <aside
-      className={
-        className ?? 'app-rail'
-      }
-      style={{ '--kiki-rail-width': `${railWidthValue}px`, overflow: 'hidden', display: 'flex', flexDirection: 'column' } as React.CSSProperties}
-      data-session-rail
-    >
+    <div className="app-rail-shell">
       <div
         data-rail-resizer
         className="app-rail__resizer hidden lg:block"
@@ -616,6 +610,13 @@ export function RightRail({
         onPointerDown={startResize}
         onDoubleClick={reset}
       />
+      <aside
+        className={
+          className ?? 'app-rail'
+        }
+        style={{ '--kiki-rail-width': `${railWidthValue}px`, overflow: 'hidden', display: 'flex', flexDirection: 'column' } as React.CSSProperties}
+        data-session-rail
+      >
       <div data-agent-panel-scroll className="min-h-0 flex-1 space-y-5 overflow-y-auto pb-4">
       {showSubagents ? (
         <RailSection
@@ -723,6 +724,7 @@ export function RightRail({
         onConfirm={() => { void terminateAllSubagents(); }}
         onCancel={() => { setTerminateSnapshot(null); }}
       />
-    </aside>
+      </aside>
+    </div>
   );
 }

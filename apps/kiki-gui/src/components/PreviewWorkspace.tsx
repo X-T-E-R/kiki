@@ -175,11 +175,13 @@ export function PreviewWorkspace({
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [isFullscreen]);
 
-  const startResize = (event: React.PointerEvent) => {
+  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
     if (isFullscreen) return;
     event.preventDefault();
     const handle = event.currentTarget;
     handle.setPointerCapture(event.pointerId);
+    handle.dataset['dragging'] = 'true';
+    document.body.dataset['paneResizing'] = 'true';
     const onMovePointer = (move: Event) => {
       const x = (move as PointerEvent).clientX;
       onWidthChange(clampPreviewWidth(window.innerWidth - x, window.innerWidth), false);
@@ -187,11 +189,15 @@ export function PreviewWorkspace({
     const onUp = (up: Event) => {
       const x = (up as PointerEvent).clientX;
       onWidthChange(clampPreviewWidth(window.innerWidth - x, window.innerWidth), true);
+      handle.dataset['dragging'] = 'false';
+      delete document.body.dataset['paneResizing'];
       handle.removeEventListener('pointermove', onMovePointer);
       handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
     };
     handle.addEventListener('pointermove', onMovePointer);
     handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
   };
 
   if (normalizedTabs.length === 0) {
@@ -220,7 +226,9 @@ export function PreviewWorkspace({
         <div
           className="preview-workspace__resizer"
           aria-hidden
+          title={t('preview.resetWidth')}
           onPointerDown={startResize}
+          onDoubleClick={() => { onWidthChange(clampPreviewWidth(Math.min(MAX_WIDTH, Math.floor(window.innerWidth * 0.6)), window.innerWidth), true); }}
         />
       ) : null}
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-hairline pl-2 pr-1">
