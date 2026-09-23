@@ -706,14 +706,23 @@ it('mounts the owned media preview provider with the shared api ref by default',
   expect(harness.mediaProviderProps.length).toBeGreaterThan(0);
   expect(harness.mediaProviderProps[0]?.apiRef).toBe(previewRef);
   expect(header.querySelector('[data-preview-toggle-probe]')).not.toBeNull();
-  // The shared rail's open/close affordance rides the workspace header — the
-  // same toggle the main session header renders (not a view-level hide
-  // button), so a closed rail is reopenable from the agent page too.
+  // The shared rail's open-rail entry rides the workspace header while the
+  // rail is collapsed, so a closed rail is reopenable from the agent page too.
   const toggle = header.querySelector<HTMLButtonElement>('[data-agent-rail-toggle]');
   expect(toggle).not.toBeNull();
   expect(toggle?.getAttribute('aria-expanded')).toBe('false');
   await act(async () => { toggle?.click(); });
   expect(onToggleRail).toHaveBeenCalledTimes(1);
+});
+
+it('renders no rail hide button once the rail is expanded', async () => {
+  // The expanded rail keeps its own collapse affordances; this header carries
+  // no "hide panel" button (the deleted view-level toggle).
+  await renderWorkspace({ railOpen: true, onToggleRail: vi.fn() });
+  await settle();
+
+  expect(header.querySelector('[data-agent-rail-toggle]')).toBeNull();
+  expect(header.textContent).not.toContain('← Back to session');
 });
 
 it('keeps the rail reopenable on the agent page after a closed rail (wide-screen route state)', async () => {

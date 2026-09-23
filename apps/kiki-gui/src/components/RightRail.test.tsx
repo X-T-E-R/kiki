@@ -119,10 +119,11 @@ describe('RightRail shared chapters', () => {
     }
   });
 
-  it('keeps the focused subagent task set and owner scope consistent with the routed page', async () => {
-    // The focused agent's own tasks lead, the main-session set fills in
-    // deduped by id (SessionView's merge), and the cancel/detail owner scope
-    // is the focused agent — exactly what the routed page shows.
+  it('lists only the focused agent own tasks in the child-focus task bar', async () => {
+    // SessionView hands the rail only the focused agent's own task set when a
+    // panel tab is focused: main-session tasks stay out (their stop/detail
+    // would hit the wrong task service), subagent-kind rows stay out of the
+    // background-task list, and the owner scope is the focused agent.
     const childTasks: Task[] = [
       {
         id: 'child-bash-1', session_id: 'sess-1', kind: 'bash',
@@ -135,23 +136,22 @@ describe('RightRail shared chapters', () => {
         id: 'background-1', session_id: 'sess-1', kind: 'bash', description: 'Dev server',
         status: 'running', created_at: '2026-01-01T00:00:00.000Z',
       },
-      // A subagent-kind row in either set stays out of the task list.
-      {
-        id: 'subagent-1', session_id: 'sess-1', kind: 'subagent', agent_id: 'agent-1',
-        description: 'Researcher', status: 'running', created_at: '2026-01-03T00:00:00.000Z',
-      },
     ];
+    // SessionView's projection: the rail state carries ONLY the child set.
     const rail = await renderRail({
       subagent: context,
-      stateTasks: [...childTasks, ...mainTasks],
+      stateTasks: childTasks,
       ownerAgentId: context.agentId,
     });
 
-    // Both task sets listed; the focused agent's own task never deduped away.
+    // The focused agent's own task listed; the main task never mixed in.
     expect(rail.querySelector('[data-task-open="child-bash-1"]')).not.toBeNull();
-    expect(rail.querySelector('[data-task-open="background-1"]')).not.toBeNull();
-    // Subagent-kind rows stay out of the background-task list in either set.
+    expect(rail.querySelector('[data-task-open="background-1"]')).toBeNull();
     expect(rail.querySelector('[data-task-open="subagent-1"]')).toBeNull();
+
+    // Main focus keeps the session-wide set: the main task is listed.
+    const main = await renderRail({ stateTasks: mainTasks });
+    expect(main.querySelector('[data-task-open="background-1"]')).not.toBeNull();
   });
 
   it('renders the same tree, background tasks, bulk subagent stop and session chapters in both modes', async () => {    const main = await renderRail();

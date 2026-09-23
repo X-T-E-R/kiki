@@ -120,10 +120,11 @@ export interface AgentWorkspaceProps {
   /** Header preview-panel toggle; suppressed where the workspace IS the panel. */
   readonly showPreviewToggle?: boolean;
   /**
-   * Header rail open/close toggle (the shared rail's own affordance, the same
-   * control the main session header renders). Off where the toggle's railOpen
-   * state is a local no-op — the embedded panel tab, whose rail lives in the
-   * main session header.
+   * Header open-rail entry (the shared rail's own affordance, the same
+   * control shape the main session header renders). It renders only while the
+   * rail is collapsed; the expanded state keeps no hide button here. Also off
+   * where the toggle's railOpen state is a local no-op — the embedded panel
+   * tab, whose rail lives in the main session header.
    */
   readonly showRailToggle?: boolean;
   /** Header breadcrumb; suppressed in narrow containers (the relations row stays). */
@@ -219,22 +220,18 @@ function AgentWorkspaceHeader({
         ) : null}
 
         {showPreviewToggle ? <PreviewToggleButton /> : null}
-        {/* The shared rail's own open/close affordance — the same toggle the
-            main session header renders (data-agent-rail-toggle). This is the
-            rail's collapsible control, not a view-level hide button. */}
-        {showRailToggle ? (
+        {/* Pure open-rail entry: renders only while the shared rail is
+            collapsed. Once expanded, the rail's own collapse affordances take
+            over — no "hide panel" button in this header. */}
+        {showRailToggle && !railOpen ? (
           <button
             type="button"
             onClick={onToggleRail}
-            title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
+            title={t('sv.showPanel')}
             aria-label={t('sv.togglePanelAria')}
-            aria-expanded={railOpen}
+            aria-expanded={false}
             data-agent-rail-toggle
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
-              railOpen
-                ? 'bg-accent-soft text-accent'
-                : 'text-ink-faint hover:bg-paper hover:text-ink'
-            }`}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink"
           >
             <PanelIcon className="h-[13px] w-[13px]" />
           </button>
