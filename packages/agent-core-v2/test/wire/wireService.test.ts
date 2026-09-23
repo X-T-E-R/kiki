@@ -248,12 +248,12 @@ describe('WireService appendRecord', () => {
     const expected = new Error('disk full');
     const append = storage.append.bind(storage);
     let writes = 0;
-    storage.append = async () => {
+    storage.append = async (...args: Parameters<typeof storage.append>) => {
       writes++;
       // The initial append and its one automatic retry both fail, so the
       // failure stays sticky until the explicit store recovery.
       if (writes <= 2) throw expected;
-      return append();
+      return append(...args);
     };
     const unexpected: unknown[] = [];
     setUnexpectedErrorHandler((error) => unexpected.push(error));
