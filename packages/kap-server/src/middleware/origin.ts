@@ -72,13 +72,12 @@ export function isOriginAllowed(
 }
 
 function isLoopbackHost(h: string): boolean {
-  return (
-    h === 'localhost' ||
-    h === '::1' ||
-    h === '[::1]' ||
-    h.startsWith('127.') ||
-    h.endsWith('.localhost')
-  );
+  if (h === 'localhost' || h === '::1' || h === '[::1]' || h.endsWith('.localhost')) {
+    return true;
+  }
+  // `startsWith('127.')` would treat `127.attacker.example` as loopback; only
+  // a full dotted-quad 127.0.0.0/8 literal counts.
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
 }
 
 /**

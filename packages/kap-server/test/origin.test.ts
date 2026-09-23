@@ -70,6 +70,15 @@ describe('isOriginAllowed', () => {
   it('does not widen to a public host even when the origin is loopback', () => {
     expect(isOriginAllowed('http://localhost:5175', 'example.com:80', [])).toBe(false);
   });
+
+  it('does not treat a 127.*-prefixed domain as loopback', () => {
+    expect(isOriginAllowed('http://127.attacker.example:5175', '127.0.0.1:58627', [])).toBe(false);
+    expect(isOriginAllowed('http://127.0.0.1.attacker.example:5175', '127.0.0.1:58627', [])).toBe(false);
+  });
+
+  it('still treats full dotted-quad 127/8 literals as loopback', () => {
+    expect(isOriginAllowed('http://127.7.7.7:5175', 'localhost:58627', [])).toBe(true);
+  });
 });
 
 describe('parseCorsOrigins', () => {
