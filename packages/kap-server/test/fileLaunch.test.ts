@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { openInAppCommandFor, revealFileCommandFor } from '../src/lib/fileLaunch';
+import { openFileCommandFor, openInAppCommandFor, revealFileCommandFor } from '../src/lib/fileLaunch';
 
 describe('fileLaunch', () => {
   describe('win32 explorer /select, quoting', () => {
@@ -44,6 +44,26 @@ describe('fileLaunch', () => {
       const cmd = revealFileCommandFor('C:\\proj\\file.txt', 'win32');
       expect(cmd.args).toEqual(['/select,"C:\\proj\\file.txt"']);
       expect(cmd.windowsVerbatimArguments).toBe(true);
+    });
+  });
+
+  describe('win32 cmd /c start quoting', () => {
+    it('openFileCommandFor quotes the target so `&` cannot split the command', () => {
+      const cmd = openFileCommandFor('C:\\work\\a&b.txt', undefined, {}, 'win32');
+      expect(cmd.command).toBe('cmd');
+      expect(cmd.args).toEqual(['/c', 'start', '""', '"C:\\work\\a&b.txt"']);
+      expect(cmd.shell).toBeUndefined();
+    });
+
+    it('openFileCommandFor doubles embedded quotes instead of ending the argument', () => {
+      const cmd = openFileCommandFor('C:\\my "dir"\\file.txt', undefined, {}, 'win32');
+      expect(cmd.args).toEqual(['/c', 'start', '""', '"C:\\my ""dir""\\file.txt"']);
+    });
+
+    it('openFileCommandFor keeps the empty title first', () => {
+      const cmd = openFileCommandFor('C:\\proj\\file.txt', undefined, {}, 'win32');
+      expect(cmd.args[2]).toBe('""');
+      expect(cmd.args[3]).toBe('"C:\\proj\\file.txt"');
     });
   });
 });

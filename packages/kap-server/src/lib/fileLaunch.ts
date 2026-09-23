@@ -31,7 +31,12 @@ export function openFileCommandFor(
     case 'darwin':
       return { command: 'open', args: [absolutePath] };
     case 'win32':
-      return { command: 'cmd', args: ['/c', 'start', '""', absolutePath] };
+      // The quoted target keeps `&` and friends inside one `start` argument;
+      // an unquoted target without whitespace would reach `cmd.exe /c`
+      // verbatim and the part after `&` would execute as a second command.
+      // `start` treats the first quoted argument as the window title, so the
+      // empty title stays first.
+      return { command: 'cmd', args: ['/c', 'start', '""', quoteCmdStartArg(absolutePath)] };
     default:
       return { command: 'xdg-open', args: [absolutePath] };
   }
@@ -236,4 +241,8 @@ function explorerSelectArg(absolutePath: string): string {
 function quoteShellArg(value: string, platform: NodeJS.Platform): string {
   if (platform === 'win32') return `"${value.replaceAll('"', '\\"')}"`;
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function quoteCmdStartArg(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
 }
