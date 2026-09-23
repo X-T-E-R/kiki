@@ -219,4 +219,22 @@ describe("VS Code host bridge protocol", () => {
       error: "path must be a string.",
     });
   });
+
+  it("refuses external.open with a non-web scheme before reaching openExternal", async () => {
+    host.openExternal.mockClear();
+    for (const url of ["ms-msdt:x", "search-ms:query", "file:///C:/Windows/System32/calc.exe", "not a url"]) {
+      const response = await bridge.handle(request("external.open", { url }));
+      expect(response?.ok, url).toBe(false);
+      expect(response?.error, url).toContain("Refusing to open external URL");
+    }
+    expect(host.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("still opens http, https, and mailto externally", async () => {
+    host.openExternal.mockClear();
+    await bridge.handle(request("external.open", { url: "https://example.com" }));
+    await bridge.handle(request("external.open", { url: "http://example.com/a" }));
+    await bridge.handle(request("external.open", { url: "mailto:someone@example.com" }));
+    expect(host.openExternal).toHaveBeenCalledTimes(3);
+  });
 });

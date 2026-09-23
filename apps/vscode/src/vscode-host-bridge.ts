@@ -20,6 +20,9 @@ interface HostResponse {
   readonly error?: string;
 }
 
+/** Schemes the system handler may be asked to open from webview content. */
+const EXTERNAL_OPEN_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+
 export class VscodeHostBridge {
   private readonly injectedEditorContext = new Map<string, string>();
   private readonly connection: DaemonConnection;
@@ -109,11 +112,23 @@ export class VscodeHostBridge {
         await vscode.env.clipboard.writeText(readString(request.params, "text"));
         return undefined;
       case "external.open":
-        await vscode.env.openExternal(vscode.Uri.parse(readString(request.params, "url")));
+        await this.openExternal(readString(request.params, "url"));
         return undefined;
       default:
         throw new Error(`Unknown VS Code host method: ${request.method}`);
     }
+  }
+
+  private async openExternal(url: string): Promise<void> {
+    // `vscode.env.openExternal` hands any registered scheme to the OS.
+    // Webview content reaches this path, so restrict it to web and mail
+    // schemes; everything else (e.g. `ms-msdt:`, `search-ms:`) would launch a
+    // local protocol handler.
+    const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url)?.[1]?.toLowerCase();
+    if (scheme === undefined || !EXTERNAL_OPEN_SCHEMES.has(`${scheme}:`)) {
+      throw new Error(`Refusing to open external URL with scheme ${scheme ?? "(none)"}`);
+    }
+    await vscode.env.openExternal(vscode.Uri.parse(url));
   }
 
   private async pickFiles(): Promise<unknown> {
