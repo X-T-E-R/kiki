@@ -647,6 +647,8 @@ interface PromptEnqueuedPayload {
     profile?: string;
     model?: string;
     thinking?: string;
+    permissionMode?: 'manual' | 'yolo' | 'auto';
+    planGate?: z.infer<typeof PlanGateSchema>;
     swarmMode?: boolean;
     goalObjective?: string;
     goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
@@ -724,6 +726,8 @@ interface PromptReplacedPayload {
     profile?: string;
     model?: string;
     thinking?: string;
+    permissionMode?: 'manual' | 'yolo' | 'auto';
+    planGate?: z.infer<typeof PlanGateSchema>;
     swarmMode?: boolean;
     goalObjective?: string;
     goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
