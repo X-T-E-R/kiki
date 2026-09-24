@@ -26,6 +26,7 @@ import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentConversationUndoService } from '#/agent/undo/undo';
 import { ErrorCodes } from '#/errors';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
   configServices,
   createTestAgent,
@@ -89,6 +90,7 @@ function agentTask(
   options: {
     readonly agentId?: string;
     readonly profile?: string;
+    readonly name?: string;
     readonly abortController?: AbortController;
     readonly timeoutMs?: number;
   } = {},
@@ -102,6 +104,7 @@ function agentTask(
     handle,
     description,
     options.abortController ?? new AbortController(),
+    options.name === undefined ? undefined : { taskName: options.name, agentType: handle.profileName },
   );
   if (options.timeoutMs !== undefined) {
     Object.defineProperty(task, 'timeoutMs', {
@@ -533,8 +536,68 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).toContain('complete="true"');
     expect(text).toContain('Final agent receipt.');
     expect(text).not.toContain('no need to read the same result again');
+    expect(text).not.toMatch(/(?:subagents? still running|subagent 正在运行)/);
     const hook = ctx.allEvents.find((event) => event.event === 'task.notified');
     expect(JSON.stringify(hook)).not.toContain('final subagent summary');
+  });
+
+  it('reports other running children at the end of a completed agent notification', async () => {
+    const { agent, ctx, manager } = createAgentTaskService();
+    ctx.mockNextResponse({ type: 'text', text: 'notification ack' });
+    const turnEnd = ctx.untilTurnEnd();
+    let finishAlpha!: (value: { result: string }) => void;
+    let finishBeta!: (value: { result: string }) => void;
+    const alpha = new Promise<{ result: string }>((resolve) => { finishAlpha = resolve; });
+    const beta = new Promise<{ result: string }>((resolve) => { finishBeta = resolve; });
+    const alphaId = manager.registerTask(agentTask(alpha, 'first sibling', {
+      agentId: 'agent-alpha', name: 'alpha',
+    }));
+    const betaId = manager.registerTask(agentTask(beta, 'second sibling', {
+      agentId: 'agent-beta', name: 'beta',
+    }));
+    const completedId = manager.registerTask(agentTask(
+      Promise.resolve({ result: 'completed child receipt' }),
+      'completed child',
+      { agentId: 'agent-done', name: 'done' },
+    ));
+
+    await manager.wait(completedId);
+    await vi.waitFor(() => { expect(notifiedCount(ctx)).toBe(1); });
+    await turnEnd;
+
+    const text = notificationMessageFor(agent, completedId).content[0]!.text;
+    expect(text).toMatch(/(?:2 subagents still running: alpha, beta|还有 2 个 subagent 正在运行：alpha、beta)\n<\/notification>$/);
+    await Promise.all([manager.suppressTerminalNotification(alphaId), manager.suppressTerminalNotification(betaId)]);
+    finishAlpha({ result: 'alpha done' });
+    finishBeta({ result: 'beta done' });
+    await Promise.all([manager.wait(alphaId), manager.wait(betaId)]);
+  });
+
+  it('reports surviving children after a failed agent notification', async () => {
+    const { agent, ctx, manager } = createAgentTaskService();
+    ctx.mockNextResponse({ type: 'text', text: 'notification ack' });
+    const turnEnd = ctx.untilTurnEnd();
+    let finishSibling!: (value: { result: string }) => void;
+    const sibling = new Promise<{ result: string }>((resolve) => { finishSibling = resolve; });
+    const siblingId = manager.registerTask(agentTask(sibling, 'running sibling', {
+      agentId: 'agent-still-running', name: 'still_running',
+    }));
+    const failedId = manager.registerTask(agentTask(
+      Promise.reject(new Error('example failure')),
+      'failing child',
+      { agentId: 'agent-failed' },
+    ));
+
+    await manager.wait(failedId);
+    await vi.waitFor(() => { expect(notifiedCount(ctx)).toBe(1); });
+    await turnEnd;
+
+    const text = notificationMessageFor(agent, failedId).content[0]!.text;
+    expect(text).toContain('Background agent failed');
+    expect(text).toMatch(/(?:1 subagent still running: still_running|还有 1 个 subagent 正在运行：still_running)\n<\/notification>$/);
+    await manager.suppressTerminalNotification(siblingId);
+    finishSibling({ result: 'done' });
+    await manager.wait(siblingId);
   });
 
   it.each([
@@ -799,7 +862,7 @@ describe('AgentTaskService — notification delivery', () => {
     const taskId = registerProcess(manager, pendingProcess(), 'sleep 60', 'stop test');
 
     const result = await executeTool(
-      new TaskStopTool(manager),
+      new TaskStopTool(manager, ctx.get(IAgentLifecycleService)),
       toolContext('task_stop_silent', { task_id: taskId }),
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -829,7 +892,7 @@ describe('AgentTaskService — notification delivery', () => {
       );
 
       const result = await executeTool(
-        new TaskStopTool(writerFixture.manager),
+        new TaskStopTool(writerFixture.manager, writerFixture.ctx.get(IAgentLifecycleService)),
         toolContext('task_stop_persisted', { task_id: taskId, reason: 'operator cancelled' }),
       );
       expect(result.isError ?? false).toBe(false);

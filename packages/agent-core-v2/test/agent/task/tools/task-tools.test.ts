@@ -33,6 +33,7 @@ import type { SubagentTaskInfo } from '#/agent/tools/agent/subagent-task';
 import { ITaskWaitTool } from '#/agent/tools/task/task-wait/task-wait';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import type { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { executeTool } from '../../../tools/fixtures/execute-tool';
 import { recordingTelemetry, type TelemetryRecord } from '../../../app/telemetry/stubs';
 import { stubFlag } from '../../../app/flag/stubs';
@@ -670,8 +671,9 @@ describe('TaskOutputTool', () => {
 });
 
 describe('TaskStopTool', () => {
+  const noLiveAgents = { list: () => [] } as unknown as IAgentLifecycleService;
   it('has name and accepts the current schema', () => {
-    const tool = new TaskStopTool(new FakeTaskService());
+    const tool = new TaskStopTool(new FakeTaskService(), noLiveAgents);
 
     expect(tool.name).toBe('TaskStop');
     expect(TaskStopInputSchema.safeParse({ task_id: 'bash-1' }).success).toBe(true);
@@ -690,7 +692,7 @@ describe('TaskStopTool', () => {
 
   it('returns error for unknown task', async () => {
     const result = await executeTool(
-      new TaskStopTool(new FakeTaskService()),
+      new TaskStopTool(new FakeTaskService(), noLiveAgents),
       context('task_stop_unknown', { task_id: 'bash-unknown0' }),
     );
 
@@ -703,7 +705,7 @@ describe('TaskStopTool', () => {
     const taskId = tasks.add(processTask({ taskId: 'bash-stop0001' }));
 
     const result = await executeTool(
-      new TaskStopTool(tasks),
+      new TaskStopTool(tasks, noLiveAgents),
       context('task_stop_running', { task_id: taskId, reason: 'custom stop reason' }),
     );
     const output = outputString(result);
@@ -730,7 +732,7 @@ describe('TaskStopTool', () => {
     const taskId = tasks.add(processTask({ taskId: 'bash-default1' }));
 
     const result = await executeTool(
-      new TaskStopTool(tasks),
+      new TaskStopTool(tasks, noLiveAgents),
       context('task_stop_default_reason', { task_id: taskId, reason }),
     );
 
@@ -752,7 +754,7 @@ describe('TaskStopTool', () => {
     );
 
     const result = await executeTool(
-      new TaskStopTool(tasks),
+      new TaskStopTool(tasks, noLiveAgents),
       context('task_stop_terminal', { task_id: taskId }),
     );
 
@@ -778,7 +780,7 @@ describe('TaskStopTool', () => {
     );
 
     const result = await executeTool(
-      new TaskStopTool(tasks),
+      new TaskStopTool(tasks, noLiveAgents),
       context('task_stop_blank_stored_reason', { task_id: 'bash-blank001' }),
     );
 
@@ -786,6 +788,42 @@ describe('TaskStopTool', () => {
     expect(outputString(result).trim().split('\n')[2]).toBe(
       'reason: Task already in terminal state',
     );
+  });
+
+  it('reports other running subagents after stopping an agent task', async () => {
+    const tasks = new FakeTaskService();
+    const stoppedId = tasks.add(agentTaskInfo({
+      status: 'running', endedAt: null, ownerAgentId: 'main',
+    }));
+    tasks.add(agentTaskInfo({
+      taskId: 'agent-other-task', agentId: 'agent-other', collaborationTaskName: 'other',
+      status: 'running', endedAt: null, ownerAgentId: 'main',
+    }));
+
+    const result = await executeTool(
+      new TaskStopTool(tasks, noLiveAgents),
+      context('task_stop_agent', { task_id: stoppedId }),
+    );
+
+    expect(outputString(result).trimEnd()).toMatch(/reason: Stopped by TaskStop\n(?:1 subagent still running: other|还有 1 个 subagent 正在运行：other)$/);
+  });
+
+  it('omits a running-agent status when stopping the last agent task', async () => {
+    const tasks = new FakeTaskService();
+    const stoppedId = tasks.add(agentTaskInfo({
+      status: 'running', endedAt: null, ownerAgentId: 'main',
+    }));
+
+    const result = await executeTool(
+      new TaskStopTool(tasks, noLiveAgents),
+      context('task_stop_last_agent', { task_id: stoppedId }),
+    );
+
+    expect(outputString(result).trimEnd().split('\n')).toEqual([
+      `task_id: ${stoppedId}`,
+      'status: killed',
+      'reason: Stopped by TaskStop',
+    ]);
   });
 });
 

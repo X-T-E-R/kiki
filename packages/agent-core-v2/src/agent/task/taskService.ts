@@ -62,6 +62,7 @@ import {
 } from './task';
 import { resolveAgentTaskConfig } from './configSection';
 import { AgentTaskPersistence } from './persist';
+import { runningSubagentStatus } from './runningSubagentStatus';
 import {
   taskKey,
   TaskNotified,
@@ -1499,6 +1500,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       const notification = buildAgentTaskNotification(info, output);
       const renderContent = (delivery: object): readonly ContentPart[] => {
         const snapshot = budgetNotificationPreview(info, output, delivery);
+        const remainingSubagents = info.kind === 'agent'
+          ? runningSubagentStatus(this, this.lifecycle, this.scopeContext.agentId, info.agentId)
+          : undefined;
         return [{
           type: 'text',
           text: renderNotificationXml({
@@ -1508,6 +1512,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
             children: [
               ...(agentTaskNotificationChildren(info, snapshot) ?? []),
               ...agentRecoveryGuidance(info),
+              ...(remainingSubagents === undefined ? [] : [remainingSubagents]),
             ],
           }),
         }];

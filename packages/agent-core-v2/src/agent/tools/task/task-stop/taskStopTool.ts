@@ -4,7 +4,9 @@ import { type ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
 import { IAgentTaskService } from '#/agent/task/task';
+import { runningSubagentStatus } from '#/agent/task/runningSubagentStatus';
 import { TERMINAL_STATUSES } from '#/agent/task/types';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ITaskStopTool, TaskStopInputSchema, type TaskStopInput } from './task-stop';
 import TASK_STOP_DESCRIPTION from './task-stop.md?raw';
 
@@ -14,7 +16,10 @@ export class TaskStopTool implements ITaskStopTool {
   readonly description = TASK_STOP_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(TaskStopInputSchema);
 
-  constructor(@IAgentTaskService private readonly tasks: IAgentTaskService) {}
+  constructor(
+    @IAgentTaskService private readonly tasks: IAgentTaskService,
+    @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
+  ) {}
 
   resolveExecution(args: TaskStopInput): ToolExecution {
     return {
@@ -49,11 +54,15 @@ export class TaskStopTool implements ITaskStopTool {
           return { isError: true, output: `Failed to stop task: ${args.task_id}` };
         }
 
+        const remainingSubagents = result.kind === 'agent' && result.ownerAgentId !== undefined
+          ? runningSubagentStatus(this.tasks, this.lifecycle, result.ownerAgentId, result.agentId)
+          : undefined;
         return {
           output:
             `task_id: ${result.taskId}\n` +
             `status: ${result.status}\n` +
-            `reason: ${result.stopReason ?? reason}`,
+            `reason: ${result.stopReason ?? reason}` +
+            (remainingSubagents === undefined ? '' : `\n${remainingSubagents}`),
           isError: false,
         };
       },

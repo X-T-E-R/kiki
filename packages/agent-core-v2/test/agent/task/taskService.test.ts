@@ -19,6 +19,7 @@ import {
   type AgentTaskInfo,
 } from '#/agent/task/task';
 import { renderNotificationXml } from '#/agent/task/notificationXml';
+import { runningSubagentStatus } from '#/agent/task/runningSubagentStatus';
 import { AgentTaskService, taskNotificationDeliveryKey } from '#/agent/task/taskService';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import { TaskStopTool } from '#/agent/tools/task/task-stop/taskStopTool';
@@ -104,7 +105,7 @@ describe('AgentTaskService', () => {
     eventBus = disposables.add(new EventBusService());
     injectionProviders = new Map();
     agentHandles = new Map();
-    ix.stub(IAgentLifecycleService, { get: (agentId) => agentHandles.get(agentId) });
+    ix.stub(IAgentLifecycleService, { get: (agentId) => agentHandles.get(agentId), list: () => [] });
     ix.stub(ILogService, stubLog());
     ix.stub(IAgentConversationUndoParticipantRegistry, {
       register: () => toDisposable(() => {}),
@@ -258,7 +259,7 @@ describe('AgentTaskService', () => {
       await Promise.resolve();
 
       if (path === 'TaskStop') {
-        const result = await executeTool(new TaskStopTool(rootTasks), {
+        const result = await executeTool(new TaskStopTool(rootTasks, ix.get(IAgentLifecycleService)), {
           turnId: 0,
           toolCallId: 'stop-parent',
           args: { task_id: rootTaskId, reason: 'stop the tree' },
@@ -1169,7 +1170,7 @@ describe('AgentTaskService', () => {
     bytes: IFileSystemStorageService,
   ): TestInstantiationService {
     const ix = disposables.add(new TestInstantiationService());
-    ix.stub(IAgentLifecycleService, { get: (id) => agentHandles.get(id) });
+    ix.stub(IAgentLifecycleService, { get: (id) => agentHandles.get(id), list: () => [] });
     ix.stub(ILogService, stubLog());
     ix.stub(IAgentConversationUndoParticipantRegistry, {
       register: () => toDisposable(() => {}),
@@ -1227,7 +1228,7 @@ describe('AgentTaskService', () => {
     context: StubContextMemory,
   ): TestInstantiationService {
     const ix = disposables.add(new TestInstantiationService());
-    ix.stub(IAgentLifecycleService, { get: (id) => agentHandles.get(id) });
+    ix.stub(IAgentLifecycleService, { get: (id) => agentHandles.get(id), list: () => [] });
     ix.stub(ILogService, stubLog());
     ix.stub(IAgentConversationUndoParticipantRegistry, {
       register: () => toDisposable(() => {}),
@@ -1775,5 +1776,58 @@ describe('Agent task notification XML', () => {
     expect(text).toContain('category="unknown"');
     expect(text).not.toContain('<task-notification>');
     expect(text).not.toContain('should stay out of the XML');
+  });
+});
+
+describe('running subagent status', () => {
+  it('counts live direct children and running task fallback, not idle, broken, or grandchildren', () => {
+    const disposables = new DisposableStore();
+    const child = (id: string, parentAgentId: string, state: 'running' | 'idle' | 'broken') => {
+      const accessor = disposables.add(new TestInstantiationService());
+      accessor.stub(IAgentScopeContext, makeAgentScopeContext({
+        agentId: id, agentScope: `agents/${id}`, parentAgentId,
+      }));
+      accessor.stub(IAgentExecutionService, { status: () => ({ state }) });
+      return { id, accessor } as unknown as IAgentScopeHandle;
+    };
+    const lifecycle = { list: () => [
+      child('agent-live', 'main', 'running'),
+      child('agent-idle', 'main', 'idle'),
+      child('agent-broken', 'main', 'broken'),
+      child('agent-grandchild', 'agent-live', 'running'),
+    ] };
+    const tasks = { list: () => [
+      {
+        taskId: 'agent-task-idle', agentId: 'agent-idle', collaborationTaskName: 'named',
+        kind: 'agent' as const, description: 'tracked', status: 'running' as const,
+        startedAt: 1, endedAt: null,
+      },
+      {
+        taskId: 'agent-task-broken', agentId: 'agent-broken',
+        kind: 'agent' as const, description: 'broken', status: 'running' as const,
+        startedAt: 1, endedAt: null,
+      },
+    ] };
+
+    expect(runningSubagentStatus(tasks, lifecycle, 'main', undefined, 'en'))
+      .toBe('2 subagents still running: agent-live, named');
+    expect(runningSubagentStatus(tasks, lifecycle, 'main', 'agent-live', 'en'))
+      .toBe('1 subagent still running: named');
+    disposables.dispose();
+  });
+
+  it('truncates long name lists in both English and Chinese', () => {
+    const tasks = { list: () => Array.from({ length: 7 }, (_, index) => ({
+      taskId: `agent-task-${index}`, agentId: `agent-${index}`,
+      collaborationTaskName: `worker_${index + 1}`,
+      kind: 'agent' as const, description: 'tracked', status: 'running' as const,
+      startedAt: 1, endedAt: null,
+    })) };
+    const lifecycle = { list: () => [] };
+
+    expect(runningSubagentStatus(tasks, lifecycle, 'main', undefined, 'en'))
+      .toBe('7 subagents still running: worker_1, worker_2, worker_3, worker_4, worker_5, and 2 more');
+    expect(runningSubagentStatus(tasks, lifecycle, 'main', undefined, 'zh'))
+      .toBe('还有 7 个 subagent 正在运行：worker_1、worker_2、worker_3、worker_4、worker_5 等 2 个');
   });
 });
