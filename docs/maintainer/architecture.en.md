@@ -48,7 +48,7 @@ Explicit model and effort binding and the direct-child tools are separate from e
 
 ## Integrate peer-thread communication
 
-Peer-thread communication defaults off. Set [`[thread_communication] enabled = true`](../en/configuration/config-files.md#thread-communication) to opt in. References include host, workspace, and session identity; cross-host sends are rejected. Only main agents receive the four built-in thread tools. Sending to a cold session may resume it and consume model quota.
+Peer-thread communication defaults off. Set [`[thread_communication] enabled = true`](../en/configuration/config-files.md#thread-communication) to opt in. References include host, workspace, and session identity; cross-host sends are rejected. Only main agents receive the four peer-thread tools. The separate `ThreadCreate` tool opens a top-level session without requiring peer-thread communication. Sending to a cold session may resume it and consume model quota.
 
 The server exposes these routes under `/api`:
 

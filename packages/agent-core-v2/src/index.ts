@@ -486,6 +486,7 @@ import '#/agent/tools/agent-notify/agentNotifyTool';
 export * from '#/agent/tools/agent-send/agent-send';
 import '#/agent/tools/agent-send/agentSendTool';
 export * from '#/agent/tools/thread-communication/threadCommunicationTools';
+export * from '#/agent/tools/thread-communication/threadCreateTool';
 export * from '#/app/sessionManager/sessionLookup';
 export * from '#/workspace/workspaceContext/workspaceContext';
 export * from '#/workspace/sessionLifecycle/sessionLifecycle';

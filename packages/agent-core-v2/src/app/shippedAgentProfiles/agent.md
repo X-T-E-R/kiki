@@ -14,6 +14,7 @@ tools:
   - TaskList
   - TaskOutput
   - TaskStop
+  - ThreadCreate
   - ThreadList
   - ThreadRead
   - ThreadSend

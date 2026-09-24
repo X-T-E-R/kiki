@@ -15,7 +15,7 @@ interface FixtureConfig {
 let config: FixtureConfig;
 const client = {
   getConfig: vi.fn(async () => structuredClone(config)),
-  listTools: vi.fn(async () => ({ tools: ['Read', 'Write'].map((name) => ({ name, description: name, active: true })) })),
+  listTools: vi.fn(async () => ({ tools: ['Read', 'Write', 'ThreadCreate', 'ThreadList'].map((name) => ({ name, description: name, active: true })) })),
   meta: vi.fn(async () => ({ experimental_flags: { 'tool-select': false, task_wait: true, search_worker: true } })),
   patchConfig: vi.fn(async (patch: Record<string, any>) => {
     const { replace_domains: _, ...values } = patch;
@@ -57,6 +57,19 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); query.clear(); });
 
 describe('safe automation drafts', () => {
+  it('lists ThreadCreate separately, defaults to inherited on and can disable only that tool', async () => {
+    await mount();
+    const create = container.querySelector<HTMLSelectElement>('[aria-label="Policy for ThreadCreate"]')!;
+    const list = container.querySelector<HTMLSelectElement>('[aria-label="Policy for ThreadList"]')!;
+    expect(create.value).toBe('inherited');
+    expect(list.value).toBe('inherited');
+    expect(create.closest('div.grid')?.textContent).toContain('Currently available on this server');
+    await change(create, 'disabled');
+    await click('Save tool policy');
+    expect(config.tools).toEqual({ enabled: [], disabled: ['ThreadCreate'] });
+    expect(list.value).toBe('inherited');
+  });
+
   it('preserves a hook draft across tool save/refetch, validates, saves and reloads', async () => {
     await mount();
     await click('Add rule');

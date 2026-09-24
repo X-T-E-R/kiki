@@ -156,14 +156,15 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 ## 协作类
 
-主 Agent 默认提供 4 个 peer thread 工具：`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait`。这些工具通过主机/工作区/会话引用访问同一台本地主机上的现有会话，工具输入中的字段名为 `host_id`、`workspace_id` 与 `session_id`。子 Agent 不提供这些工具。
+主 Agent 默认提供 5 个线程工具：`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait`。`ThreadCreate` 创建独立的顶层会话；另外 4 个工具通过主机/工作区/会话引用访问同一台本地主机上的现有会话，其输入字段为 `host_id`、`workspace_id` 与 `session_id`。子 Agent 无法调用这些工具。
 
+- `ThreadCreate` 仅在用户明确要求新建线程或会话时使用，不能用于常规委派。可选 `cwd` 必须是已存在目录的绝对路径，可以在当前工作区之外；省略时采用当前会话的工作区根目录。可选 `profile` 必须是已启用的主 Agent profile；省略时使用默认主 Agent。可选 `prompt` 最多 100,000 字符，会作为新线程的首条用户消息立即启动；省略时保持空会话，等待用户输入。可选 `title` 优先于自动标题；省略时若提供了 `prompt`，取首行前 80 个字符作为标题，否则沿用会话的默认名称。结果返回 `id`、`title`、`cwd`、`profile` 和 `prompt_started`。新线程几秒内会出现在左侧会话列表中；之后可用 `ThreadSend` 和 `ThreadWait` 继续交互。
 - `ThreadList` 按更新时间从新到旧列出已启用且未归档的会话，也可以用 `workspace_id` 筛选。`limit` 默认为 50，取值为 1–100；还有下一页时会返回不透明 cursor。
 - `ThreadRead` 读取已完成的主 Agent turn，不会恢复冷会话。参数包括 thread 引用与可选 cursor；`limit` 默认为 20，取值为 1–100。
 - `ThreadSend` 持久接收发往另一条 thread 的消息，并从当前主 Agent 会话记录 peer 来源。传入目标 thread、非空且最多 100,000 字符的 `content`，以及非空且最多 256 字符的 `idempotency_key`；它没有来源参数，同一个 key 只能用于同一条消息。
 - `ThreadWait` 等待 terminal、attention、lifecycle 或消息无法投递活动。单次可等待 1–8 条互不重复的 thread；`timeout_ms` 默认为 30,000，取值为 0–60,000。
 
-Peer thread 通信只能在同一台主机内进行，可以跨工作区，并受 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 全局控制。持久化的单工作区覆盖值也可以关闭某个工作区。
+`ThreadCreate` 默认启用，设置页的「自动化 → 工具策略」可单独关闭，不影响另外 4 个线程工具。Peer thread 通信只能在同一台主机内进行，可以跨工作区，并受 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 全局控制。持久化的单工作区覆盖值也可以关闭该工作区的 peer 通信，但不会阻止 `ThreadCreate` 创建会话。
 
 只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的 user 来源输入。详见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
 

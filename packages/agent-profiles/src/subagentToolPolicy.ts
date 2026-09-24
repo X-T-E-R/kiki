@@ -12,6 +12,7 @@ export const SUBAGENT_MAIN_ONLY_TOOL_NAMES = [
   'ExitPlanMode',
   'GetGoal',
   'SetGoalBudget',
+  'ThreadCreate',
   'ThreadList',
   'ThreadRead',
   'ThreadSend',

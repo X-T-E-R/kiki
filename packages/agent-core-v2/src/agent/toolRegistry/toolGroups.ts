@@ -29,6 +29,7 @@ const TOOL_GROUP_BY_NAME: Readonly<Record<string, ToolGroupId>> = {
   TaskOutput: 'task',
   TaskStop: 'task',
   TaskWait: 'task',
+  ThreadCreate: 'thread',
   ThreadList: 'thread',
   ThreadRead: 'thread',
   ThreadSend: 'thread',

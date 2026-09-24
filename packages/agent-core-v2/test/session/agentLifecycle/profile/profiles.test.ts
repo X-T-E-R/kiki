@@ -8,17 +8,14 @@ function source() {
 }
 
 describe('shipped agent profiles', () => {
-  it('wires thread communication and TaskWait into the default profile', () => {
+  it('enables ThreadCreate by default while allowing an independent tool disable', () => {
     const agent = source().get('agent')!;
-    expect(agent.tools).toEqual(
-      expect.arrayContaining([
-        'ThreadList',
-        'ThreadRead',
-        'ThreadSend',
-        'ThreadWait',
-        'TaskWait',
-      ]),
-    );
+    expect(agent.tools).toEqual(expect.arrayContaining([
+      'ThreadCreate', 'ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait', 'TaskWait',
+    ]));
+    expect(isToolActive(agent, 'ThreadCreate')).toBe(true);
+    expect(isToolActive({ ...agent, disallowedTools: ['ThreadCreate'] }, 'ThreadCreate')).toBe(false);
+    expect(isToolActive({ ...agent, disallowedTools: ['ThreadCreate'] }, 'ThreadList')).toBe(true);
     expect(agent.main).toBe(true);
     expect(agent.subagents).toBeUndefined();
   });

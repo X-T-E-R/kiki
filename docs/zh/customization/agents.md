@@ -39,7 +39,7 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 ## Peer thread 通信
 
-Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kiki 会话，也可以跨工作区通信。它与上面的子 Agent 工具相互独立，并且默认关闭。选择启用后，`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait` 这 4 个工具只提供给会话的主 Agent，不提供给子 Agent。
+Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kiki 会话，也可以跨工作区通信。它与上面的子 Agent 工具相互独立，并且默认关闭。选择启用后，`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait` 这 4 个工具只提供给会话的主 Agent，不提供给子 Agent。主 Agent 若要创建独立会话，可直接调用 [`ThreadCreate`](../reference/tools.md#协作类)，无需启用 peer thread 通信。
 
 Thread 引用标识主机、工作区和会话。`ThreadList` 返回后续调用所需的引用；`ThreadRead` 读取已完成的主 Agent turn，不会恢复冷会话；`ThreadSend` 从当前主 Agent 会话派生来源，并持久接收发往另一条 thread、带 peer 归属的消息；`ThreadWait` 最多等待 8 条 thread 的活动，最长等待 60 秒。消息不能跨主机发送。
 
@@ -159,7 +159,7 @@ disallowedTools:
 | `max_completion_tokens` | 否 | 单次 LLM step 的输出 token 上限。仅作为上限声明，生效值取所有声明层的最小值；与输入上限、总上下文窗口互相独立，详见[配置文件](../configuration/config-files.md#models) |
 | `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省或单独的 `*` 表示不增加 profile 白名单限制；空列表（`tools: []`）表示禁用全部工具。[subagent 默认限制](../configuration/config-files.md#subagent)及其他策略仍然生效；看板工具需要精确点名或服务端显式允许 |
 | `disallowedTools` | 否 | 禁止列表，写法与匹配规则相同，在 `tools` 之后应用 |
-| `disabled-tool-groups` | 否 | 内置工具组的禁止列表，YAML 列表或逗号分隔字符串，如 `disabled-tool-groups: [shell, web]`。组内每个内置工具都会被收回，除非该工具在 `tools` 中被显式点名；未知的组名会在加载时报错。同一 profile 内的优先级，从最具体开始：`disallowedTools`（被点名的工具保持禁用）> `tools`（显式列出的工具不受组禁用影响）> `disabled-tool-groups`。只有内置工具属于工具组，MCP 工具与用户工具永远不匹配。各组归属：`agent`（`AgentRun`、`AgentList`、`AgentSend`、`AgentNotify`）、`board`（`BoardRead`、`BoardWrite`）、`cron`（`CronCreate`、`CronList`、`CronDelete`）、`fsRead`（`Read`、`ReadMediaFile`、`Glob`、`Grep`）、`fsWrite`（`Write`、`Edit`）、`goal`（`CreateGoal`、`GetGoal`、`UpdateGoal`、`SetGoalBudget`）、`plan`（`EnterPlanMode`、`ExitPlanMode`、`TodoList`）、`question`（`AskUserQuestion`）、`shell`（`Bash`）、`skill`（`Skill`）、`task`（`TaskList`、`TaskOutput`、`TaskStop`、`TaskWait`）、`thread`（`ThreadList`、`ThreadRead`、`ThreadSend`、`ThreadWait`）、`toolSelect`（`SelectTools`）、`web`（`WebSearch`、`FetchURL`） |
+| `disabled-tool-groups` | 否 | 内置工具组的禁止列表，YAML 列表或逗号分隔字符串，如 `disabled-tool-groups: [shell, web]`。组内每个内置工具都会被收回，除非该工具在 `tools` 中被显式点名；未知的组名会在加载时报错。同一 profile 内的优先级，从最具体开始：`disallowedTools`（被点名的工具保持禁用）> `tools`（显式列出的工具不受组禁用影响）> `disabled-tool-groups`。只有内置工具属于工具组，MCP 工具与用户工具永远不匹配。各组归属：`agent`（`AgentRun`、`AgentList`、`AgentSend`、`AgentNotify`）、`board`（`BoardRead`、`BoardWrite`）、`cron`（`CronCreate`、`CronList`、`CronDelete`）、`fsRead`（`Read`、`ReadMediaFile`、`Glob`、`Grep`）、`fsWrite`（`Write`、`Edit`）、`goal`（`CreateGoal`、`GetGoal`、`UpdateGoal`、`SetGoalBudget`）、`plan`（`EnterPlanMode`、`ExitPlanMode`、`TodoList`）、`question`（`AskUserQuestion`）、`shell`（`Bash`）、`skill`（`Skill`）、`task`（`TaskList`、`TaskOutput`、`TaskStop`、`TaskWait`）、`thread`（`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend`、`ThreadWait`）、`toolSelect`（`SelectTools`）、`web`（`WebSearch`、`FetchURL`） |
 | `subagents` | 否 | 可委派的子 Agent 名称列表，写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。子 Agent 一旦声明该列表，默认严格执行：`subagents: []` 禁止所有新子 Agent 派遣，其他显式名称构成白名单；省略或单独写 `*` 表示不限制 |
 | `subagent_policy` | 否 | `strict` 强制执行声明的 `subagents` 列表；`advisory` 允许派往列表外的目标，但会记录推荐偏离。profile 的显式值优先于设置默认值 |
 
