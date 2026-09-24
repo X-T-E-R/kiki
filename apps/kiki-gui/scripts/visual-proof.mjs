@@ -65,7 +65,7 @@ const LOCALE = process.env.KIKI_PROOF_LOCALE === 'zh' ? 'zh' : 'en';
 const STRINGS = {
   en: {
     newSession: 'New session',
-    noTargetHint: 'to enable sending',
+    autoWorkspace: 'Automatically create a workspace',
     sendAria: 'Send message',
     working: 'working',
     approvalNeeded: 'Approval needed',
@@ -247,7 +247,7 @@ const STRINGS = {
   },
   zh: {
     newSession: '新会话',
-    noTargetHint: '才能发送',
+    autoWorkspace: '自动创建工作区',
     sendAria: '发送消息',
     working: '工作中',
     approvalNeeded: '需要批准',
@@ -1183,28 +1183,33 @@ async function scenarioEmptyStates() {
 }
 
 async function scenarioNewNoWorkspace() {
-  // Zero registered workspaces: the /new composer keeps the textarea
-  // editable but blocks sending, and the hero names the next step instead of
-  // showing a bare disabled button.
+  // Other scenarios may have selected a workspace that this empty fixture no
+  // longer knows. A fresh /new draft must take the automatic workspace path.
+  await page.evaluate(() => localStorage.removeItem('kiki.newSessionDraft'));
   await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
-  await page.waitForSelector(`text=${S.noTargetHint}`, { timeout: 15_000 });
-  await page.fill('textarea', 'Still editable while no workspace is chosen.');
+  await page.locator('[data-hero-workspace] > button', { hasText: S.autoWorkspace }).waitFor({ timeout: 15_000 });
+  await page.fill('textarea', 'Create a workspace for this first session.');
   const textarea = page.locator('textarea[data-composer]');
   if (await textarea.isDisabled()) {
     throw new Error('textarea must stay editable when no workspace exists');
   }
-  const sendButton = page.locator(`button[aria-label="${S.sendAria}"]`);
-  if (!(await sendButton.isDisabled())) {
-    throw new Error('send must stay blocked until a workspace or absolute path is chosen');
-  }
-  if ((await sendButton.getAttribute('title')) === null) {
-    throw new Error('the blocked send button must carry an explanatory tooltip');
-  }
+  await page.waitForFunction((ariaLabel) => {
+    const button = document.querySelector(`button[aria-label="${ariaLabel}"]`);
+    return button !== null && !button.disabled;
+  }, S.sendAria, { timeout: 15_000 });
   await page.waitForTimeout(400);
   await shot('new-no-workspace');
+  const createRequest = page.waitForRequest((request) =>
+    request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
+  await page.press('textarea', 'Enter');
+  const body = (await createRequest).postDataJSON();
+  if (body.workspace_id !== undefined || body.metadata?.cwd !== undefined) {
+    throw new Error(`automatic workspace creation must omit workspace_id and cwd: ${JSON.stringify(body)}`);
+  }
+  await page.waitForURL(/\/s\//, { timeout: 10_000 });
 }
 
 async function scenarioDraftFlow() {
