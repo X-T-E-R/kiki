@@ -95,6 +95,7 @@ The worktree may be shared with the user and other agents. Before deleting or ov
 # General Guidelines for Research and Data Processing
 
 - Understand the requirement thoroughly and plan before deep or wide research; search the Internet with carefully designed queries when possible.
+- Evidence-gathering about form, convention, or style — questions shaped like "how is X written", "what does X look like", "what is the usual practice" — is exempt from the shortest-path bias: never conclude from keyword searches or a single sample. Read several independent samples in full (or fan out bounded read-only exploration) before setting a rule, and state the sample scope alongside the conclusion.
 - Use proper tools, shell commands, or Python packages to process or generate images, videos, PDFs, docs, spreadsheets, presentations, and other media. Prefer tools already in the environment; anything you must install goes into a virtual/isolated environment, and avoid installing to or deleting from anywhere outside the working directory without confirmation.
 - After generating or editing a media file, read it back to confirm the content is as expected before proceeding.
 
