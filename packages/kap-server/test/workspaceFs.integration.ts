@@ -378,13 +378,18 @@ describe('server-v2 /api fs:content', () => {
     expect(Buffer.from(await res.arrayBuffer()).equals(original)).toBe(true);
   });
 
-  it('guesses image mime from the extension', async () => {
-    const file = join(dir as string, 'pic.png');
-    await writeFile(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]));
+  it.each([
+    ['pic.png', 'image/png'],
+    ['pic.webp', 'image/webp'],
+    ['clip.mp4', 'video/mp4'],
+    ['clip.webm', 'video/webm'],
+  ])('serves %s with a browser-playable media type', async (name, mime) => {
+    const file = join(dir as string, name);
+    await writeFile(file, Buffer.from([0x00, 0x01, 0x02, 0xff]));
 
     const res = await getContent(file);
     expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('image/png');
+    expect(res.headers.get('content-type')).toContain(mime);
   });
 
   it('answers If-None-Match with 304 when the etag matches', async () => {
