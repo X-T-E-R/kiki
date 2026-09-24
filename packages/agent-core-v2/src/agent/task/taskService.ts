@@ -29,6 +29,8 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { MessageStepRequest, type StepRequestAdmission } from '#/agent/loop/stepRequest';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { goalKey } from '#/agent/goal/goalOps';
 import { ITaskService, type ITaskHandle, TERMINAL_TASK_STATES } from '#/app/task/task';
@@ -154,6 +156,7 @@ interface ManagedTask extends BufferedTaskOutput {
   readonly abortController: AbortController;
   foregroundSignalCleanup?: () => void;
   lifecyclePromise: Promise<void>;
+  stopping?: Promise<AgentTaskInfo | undefined>;
   persistWriteQueue: Promise<void>;
   notificationPromise?: Promise<void>;
   timeoutHandle?: ReturnType<typeof setTimeout>;
@@ -272,6 +275,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     @IFileSystemStorageService byteStore: IFileSystemStorageService,
     @ISessionContext session: ISessionContext,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
+    @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
     @ITaskService private readonly taskService: ITaskService,
     @IEventBus private readonly eventBus: IEventBus,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -863,23 +867,58 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       readonly finalStatus: 'killed' | 'timed_out';
     },
   ): Promise<AgentTaskInfo | undefined> {
+    if (entry.stopping !== undefined) return entry.stopping;
     if (TERMINAL_STATUSES.has(entry.status)) {
       await entry.persistWriteQueue;
       return this.toInfo(entry);
     }
+    const stopping = this.stopEntryWithGrace(entry, options);
+    entry.stopping = stopping;
+    try {
+      return await stopping;
+    } finally {
+      if (entry.stopping === stopping) entry.stopping = undefined;
+    }
+  }
 
+  private async stopEntryWithGrace(
+    entry: ManagedTask,
+    options: {
+      readonly stopReason?: string;
+      readonly abortReason: unknown;
+      readonly finalStatus: 'killed' | 'timed_out';
+    },
+  ): Promise<AgentTaskInfo | undefined> {
     if (entry.timeoutHandle !== undefined) {
       clearTimeout(entry.timeoutHandle);
       entry.timeoutHandle = undefined;
     }
-    if (options.finalStatus === 'timed_out') {
-      entry.timedOut = true;
-    }
+    if (options.finalStatus === 'timed_out') entry.timedOut = true;
     entry.stopReason = options.stopReason;
+    const info = this.toInfo(entry);
+    const child = info.kind === 'agent' && info.agentId !== undefined
+      ? this.lifecycle.get(info.agentId)
+      : undefined;
+    if (child !== undefined) {
+      try {
+        await child.accessor.get(IAgentTaskService).stopAll(
+          options.stopReason ?? (options.finalStatus === 'timed_out' ? 'Timed out' : undefined),
+        );
+      } catch (error) {
+        this.log.error('failed to stop descendant tasks', { agentId: child.id, error });
+      }
+    }
     if (entry.handle) {
       entry.handle.cancel();
     } else {
       entry.abortController.abort(options.abortReason);
+    }
+    if (child !== undefined) {
+      try {
+        child.accessor.get(IAgentExecutionService).cancel(options.abortReason);
+      } catch (error) {
+        this.log.error('failed to cancel subagent execution', { agentId: child.id, error });
+      }
     }
 
     const graceMs = resolveAgentTaskConfig(this.config)?.killGracePeriodMs ?? SIGTERM_GRACE_MS;

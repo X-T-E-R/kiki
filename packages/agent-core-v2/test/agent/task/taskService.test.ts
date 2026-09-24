@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
+import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentConversationUndoParticipantRegistry } from '#/agent/contextMemory/conversationUndoParticipants';
@@ -20,6 +21,9 @@ import {
 import { renderNotificationXml } from '#/agent/task/notificationXml';
 import { AgentTaskService, taskNotificationDeliveryKey } from '#/agent/task/taskService';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
+import { TaskStopTool } from '#/agent/tools/task/task-stop/taskStopTool';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import type { IHostProcess } from '#/os/interface/hostProcess';
 import { IConfigRegistry, IConfigService } from '#/app/config/config';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -92,12 +96,15 @@ describe('AgentTaskService', () => {
   let ix: TestInstantiationService;
   let eventBus: EventBusService;
   let injectionProviders: Map<string, ContextInjectionProvider>;
+  let agentHandles: Map<string, IAgentScopeHandle>;
 
   beforeEach(() => {
     disposables = new DisposableStore();
     ix = disposables.add(new TestInstantiationService());
     eventBus = disposables.add(new EventBusService());
     injectionProviders = new Map();
+    agentHandles = new Map();
+    ix.stub(IAgentLifecycleService, { get: (agentId) => agentHandles.get(agentId) });
     ix.stub(ILogService, stubLog());
     ix.stub(IAgentConversationUndoParticipantRegistry, {
       register: () => toDisposable(() => {}),
@@ -181,6 +188,138 @@ describe('AgentTaskService', () => {
     expect(listed[0]?.kind).toBe('process');
     expect(await svc.readOutput(id)).toBe('');
     await svc.stop(id);
+  });
+
+  it.each(['TaskStop', 'stopByUser'] as const)(
+    '%s stops grandchild tasks and executions before the parent task, retaining resumable scopes',
+    async (path) => {
+      const docs = mapBackedDocs();
+      const bytes = new InMemoryStorageService();
+      const childIx = buildAgentIx('agent-child', docs, bytes);
+      const grandchildIx = buildAgentIx('agent-grandchild', docs, bytes);
+      agentHandles.set('agent-child', { id: 'agent-child', accessor: childIx } as unknown as IAgentScopeHandle);
+      agentHandles.set('agent-grandchild', { id: 'agent-grandchild', accessor: grandchildIx } as unknown as IAgentScopeHandle);
+      const order: string[] = [];
+      let rejectGrandchild!: (reason: unknown) => void;
+      const grandchildCompletion = new Promise<{ result: string }>((_resolve, reject) => {
+        rejectGrandchild = reject;
+      });
+      let rejectChild!: (reason: unknown) => void;
+      const childCompletion = new Promise<{ result: string }>((_resolve, reject) => {
+        rejectChild = reject;
+      });
+      const cancelGrandchild = vi.fn((reason?: unknown) => {
+        order.push('grandchild execution');
+        rejectGrandchild(reason);
+        return true;
+      });
+      const cancelChild = vi.fn((reason?: unknown) => {
+        order.push('child execution');
+        rejectChild(reason);
+        return true;
+      });
+      grandchildIx.stub(IAgentExecutionService, {
+        cancel: cancelGrandchild,
+        status: () => ({ state: cancelGrandchild.mock.calls.length > 0 ? 'cancelling' : 'running' }),
+      });
+      childIx.stub(IAgentExecutionService, {
+        cancel: cancelChild,
+        status: () => ({ state: cancelChild.mock.calls.length > 0 ? 'cancelling' : 'running' }),
+      });
+      const rootTasks = ix.get(IAgentTaskService);
+      const childTasks = childIx.get(IAgentTaskService);
+      const grandchildTasks = grandchildIx.get(IAgentTaskService);
+      const grandchildTaskId = grandchildTasks.registerTask({
+        ...fakeProcessTask(),
+        start: async (sink) => {
+          await new Promise<void>((resolve) => {
+            sink.signal.addEventListener('abort', () => {
+              order.push('grandchild task');
+              resolve();
+            }, { once: true });
+          });
+          await sink.settle({ status: 'killed' });
+        },
+      });
+      const childController = new AbortController();
+      childController.signal.addEventListener('abort', () => order.push('child task'));
+      const childTaskId = childTasks.registerTask(new SubagentTask(
+        { agentId: 'agent-grandchild', profileName: 'coder', completion: grandchildCompletion },
+        'run grandchild',
+        childController,
+      ));
+      const rootController = new AbortController();
+      rootController.signal.addEventListener('abort', () => order.push('parent task'));
+      const rootTaskId = rootTasks.registerTask(new SubagentTask(
+        { agentId: 'agent-child', profileName: 'coder', completion: childCompletion },
+        'run child',
+        rootController,
+      ));
+      await Promise.resolve();
+
+      if (path === 'TaskStop') {
+        const result = await executeTool(new TaskStopTool(rootTasks), {
+          turnId: 0,
+          toolCallId: 'stop-parent',
+          args: { task_id: rootTaskId, reason: 'stop the tree' },
+          signal: new AbortController().signal,
+        });
+        expect(result.isError).not.toBe(true);
+      } else {
+        await rootTasks.stopByUser(rootTaskId);
+      }
+
+      expect(order).toEqual([
+        'grandchild task', 'child task', 'grandchild execution', 'parent task', 'child execution',
+      ]);
+      expect(grandchildTasks.getTask(grandchildTaskId)).toMatchObject({ status: 'killed' });
+      expect(childTasks.getTask(childTaskId)).toMatchObject({ status: 'killed' });
+      expect(rootTasks.getTask(rootTaskId)).toMatchObject({ status: 'killed' });
+      expect(grandchildIx.get(IAgentExecutionService).status().state).toBe('cancelling');
+      expect(childIx.get(IAgentExecutionService).status().state).toBe('cancelling');
+      expect(agentHandles.has('agent-child')).toBe(true);
+      expect(agentHandles.has('agent-grandchild')).toBe(true);
+    },
+  );
+
+  it('shares concurrent stops and cancels an active child execution even without child tasks', async () => {
+    const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
+    agentHandles.set('agent-child', { id: 'agent-child', accessor: childIx } as unknown as IAgentScopeHandle);
+    const childTasks = childIx.get(IAgentTaskService);
+    expect(childTasks.list()).toEqual([]);
+    let releaseStop!: () => void;
+    const stopGate = new Promise<void>((resolve) => { releaseStop = resolve; });
+    const stopAll = vi.spyOn(childTasks, 'stopAll').mockImplementation(async () => {
+      await stopGate;
+      return [];
+    });
+    let rejectChild!: (reason: unknown) => void;
+    const completion = new Promise<{ result: string }>((_resolve, reject) => {
+      rejectChild = reject;
+    });
+    const cancel = vi.fn((reason?: unknown) => {
+      rejectChild(reason);
+      return true;
+    });
+    childIx.stub(IAgentExecutionService, { cancel });
+    const controller = new AbortController();
+    const rootTasks = ix.get(IAgentTaskService);
+    const taskId = rootTasks.registerTask(new SubagentTask(
+      { agentId: 'agent-child', profileName: 'coder', completion },
+      'run child',
+      controller,
+    ));
+    await Promise.resolve();
+
+    const firstStop = rootTasks.stop(taskId, 'first stop');
+    const secondStop = rootTasks.stop(taskId, 'second stop');
+    expect(controller.signal.aborted).toBe(false);
+    expect(stopAll).toHaveBeenCalledTimes(1);
+    releaseStop();
+    const [first, second] = await Promise.all([firstStop, secondStop]);
+    expect(first).toMatchObject({ status: 'killed', stopReason: 'first stop' });
+    expect(second).toEqual(first);
+    expect(cancel).toHaveBeenCalledExactlyOnceWith('first stop');
   });
 
   it('wait with a timeout beyond the timer ceiling does not resolve immediately', async () => {
@@ -1030,6 +1169,7 @@ describe('AgentTaskService', () => {
     bytes: IFileSystemStorageService,
   ): TestInstantiationService {
     const ix = disposables.add(new TestInstantiationService());
+    ix.stub(IAgentLifecycleService, { get: (id) => agentHandles.get(id) });
     ix.stub(ILogService, stubLog());
     ix.stub(IAgentConversationUndoParticipantRegistry, {
       register: () => toDisposable(() => {}),
@@ -1087,6 +1227,7 @@ describe('AgentTaskService', () => {
     context: StubContextMemory,
   ): TestInstantiationService {
     const ix = disposables.add(new TestInstantiationService());
+    ix.stub(IAgentLifecycleService, { get: (id) => agentHandles.get(id) });
     ix.stub(ILogService, stubLog());
     ix.stub(IAgentConversationUndoParticipantRegistry, {
       register: () => toDisposable(() => {}),
