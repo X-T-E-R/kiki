@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { join } from 'pathe';
@@ -119,6 +119,30 @@ describe('bootstrap() storage seeding', () => {
       expect(storage).toBeInstanceOf(FileStorageService);
     } finally {
       app.dispose();
+    }
+  });
+
+  it('cleans expired dead session locks on startup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-bootstrap-locks-'));
+    const lockDir = join(root, 'session-locks');
+    const lockPath = join(lockDir, 'orphan.lock');
+    await mkdir(lockDir);
+    await writeFile(lockPath, JSON.stringify({
+      version: 1,
+      pid: 2_147_483_647,
+      processStartedAt: 0,
+      token: 'orphan',
+      acquiredAt: Date.now() - 10_000,
+      leaseMs: 1_000,
+    }));
+    const expiredAt = new Date(Date.now() - 5_000);
+    await utimes(lockPath, expiredAt, expiredAt);
+    const { app } = bootstrap({ homeDir: root, clientIdentity: stubClientIdentity });
+    try {
+      await expect.poll(async () => (await readdir(lockDir)).includes('orphan.lock')).toBe(false);
+    } finally {
+      app.dispose();
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

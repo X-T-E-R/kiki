@@ -1,8 +1,10 @@
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fsSync from 'node:fs';
 import {
   link,
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -11,6 +13,7 @@ import {
   utimes,
   writeFile,
 } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { basename, dirname, join } from 'pathe';
 
 import {
@@ -42,6 +45,8 @@ const DEFAULT_RENEW_INTERVAL_MS = 15_000;
 const TAKEOVER_SETTLE_BASE_MS = 60;
 const TAKEOVER_SETTLE_MAX_MS = 2_000;
 const PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);
+const WINDOWS_EPOCH_OFFSET_MS = 11_644_473_600_000;
+const execFileAsync = promisify(execFile);
 const HELD = new Set<FileLock>();
 let exitHooked = false;
 let sidecarSequence = 0;
@@ -57,7 +62,28 @@ function pidAlive(pid: unknown): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+async function ownerProcessAlive(payload: FileLockPayload): Promise<boolean> {
+  if (!pidAlive(payload.pid)) return false;
+  if (payload.pid === process.pid) {
+    return Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) <= 2_000;
+  }
+  if (process.platform !== 'win32') return true;
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-Process -Id ${payload.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()`,
+    ], { timeout: 5_000, windowsHide: true, maxBuffer: 4_096 });
+    const startedAt = Number(stdout.trim()) / 10_000 - WINDOWS_EPOCH_OFFSET_MS;
+    if (!Number.isFinite(startedAt) || startedAt < 0 || startedAt > Date.now() + 60_000) return true;
+    return Math.abs(startedAt - payload.processStartedAt) <= 2_000;
+  } catch {
+    return pidAlive(payload.pid);
   }
 }
 
@@ -67,10 +93,16 @@ function isPayload(value: unknown): value is FileLockPayload {
   return (
     payload.version === 1 &&
     typeof payload.pid === 'number' &&
+    Number.isSafeInteger(payload.pid) &&
+    payload.pid > 0 &&
     typeof payload.processStartedAt === 'number' &&
+    Number.isFinite(payload.processStartedAt) &&
     typeof payload.token === 'string' &&
+    payload.token.length > 0 &&
     typeof payload.acquiredAt === 'number' &&
+    Number.isFinite(payload.acquiredAt) &&
     typeof payload.leaseMs === 'number' &&
+    Number.isFinite(payload.leaseMs) &&
     payload.leaseMs > 0
   );
 }
@@ -83,8 +115,32 @@ function hookExit(): void {
   });
 }
 
+/** Removes expired session locks whose recorded process is no longer their owner. */
+export async function cleanupExpiredSessionLocks(homeDir: string): Promise<number> {
+  const directory = join(homeDir, 'session-locks');
+  let entries: string[];
+  try {
+    entries = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith('.lock')) continue;
+    const lock = new FileLock(join(directory, entry), {}, {});
+    try {
+      if (await lock.reapIfDead()) removed += 1;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EACCES' && code !== 'EPERM') throw error;
+    }
+  }
+  return removed;
+}
+
 /** Acquires a renewable local-filesystem exclusive lock: tokenized process ownership with atomic
- *  create/takeover semantics, kept fresh through a lease heartbeat, reclaiming dead or expired owners
+ *  create/takeover semantics, kept fresh through a lease heartbeat, reclaiming expired dead owners
  *  and releasing only the token held by this lock instance. */
 export async function acquireFileLock(
   lockPath: string,
@@ -173,6 +229,20 @@ class FileLock implements IStorageLock {
     return (await this.inspect())?.payload;
   }
 
+  async reapIfDead(): Promise<boolean> {
+    const seen = await this.inspect();
+    if (seen?.payload === undefined || seen.active || await this.hasLiveForeignWatch()) return false;
+    const current = await this.inspect();
+    if (current?.active !== false || current.payload?.token !== seen.payload.token) return false;
+    try {
+      await unlink(this.lockPath);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
   private async acquireOnce(): Promise<boolean> {
     if (this.held) return true;
     this.token = `${process.pid}:${randomUUID()}`;
@@ -182,10 +252,14 @@ class FileLock implements IStorageLock {
     await writeFile(watchPath, this.payloadText(), { mode: this.fileMode });
     try {
       await this.reapDeadWatches();
-      if (await this.tryCreate()) return true;
-      const seen = await this.inspect();
-      if (seen === null || seen.active) return false;
-      return await this.takeOver();
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (await this.tryCreate()) return true;
+        const seen = await this.inspect();
+        if (seen === null) continue;
+        if (seen.active) return false;
+        if (await this.takeOver()) return true;
+      }
+      return false;
     } finally {
       await unlink(watchPath).catch(() => undefined);
     }
@@ -249,12 +323,14 @@ class FileLock implements IStorageLock {
     let raw: string;
     let modifiedAt: number;
     try {
-      const [content, fileStat] = await Promise.all([
-        readFile(this.lockPath, 'utf8'),
-        stat(this.lockPath),
-      ]);
-      raw = content;
-      modifiedAt = fileStat.mtimeMs;
+      const handle = await open(this.lockPath, 'r');
+      try {
+        const [content, fileStat] = await Promise.all([handle.readFile('utf8'), handle.stat()]);
+        raw = content;
+        modifiedAt = fileStat.mtimeMs;
+      } finally {
+        await handle.close();
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
@@ -265,12 +341,11 @@ class FileLock implements IStorageLock {
       if (isPayload(parsed)) payload = parsed;
     } catch {
     }
-    if (payload === undefined) return { active: false, mine: false };
-    const samePidWrongStart =
-      payload.pid === process.pid && Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) > 2_000;
+    if (payload === undefined) return { active: true, mine: false };
+    const expired = modifiedAt + payload.leaseMs <= Date.now();
     return {
       payload,
-      active: !samePidWrongStart && pidAlive(payload.pid) && modifiedAt + payload.leaseMs > Date.now(),
+      active: !expired || await ownerProcessAlive(payload),
       mine: payload.token === this.token,
     };
   }

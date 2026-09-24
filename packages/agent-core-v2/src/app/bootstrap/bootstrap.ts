@@ -14,6 +14,7 @@ import {
   StorageErrors,
 } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { cleanupExpiredSessionLocks } from '#/persistence/backends/node-fs/fileLock';
 import {
   IAtomicTomlDocumentStore,
   type IAtomicDocumentStore,
@@ -160,6 +161,7 @@ export function bootstrap(input: BootstrapInput, extraSeeds: ScopeSeed = []): Bo
   const app = createAppScope({
     seeds: [...bootstrapSeed(input), ...storageSeed(options), ...skillSeed(), ...extraSeeds],
   });
+  void cleanupExpiredSessionLocks(options.homeDir).catch(() => undefined);
   return { app };
 }
 

@@ -1,9 +1,12 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { cleanupExpiredSessionLocks } from '#/persistence/backends/node-fs/fileLock';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 
 const isWin = process.platform === 'win32';
@@ -123,32 +126,29 @@ describe('FileStorageService — exclusive locks', () => {
     await replacement.release();
   });
 
-  it('reclaims an expired lease even when the recorded pid is alive', async () => {
+  it('does not reclaim an expired lease while its process is still alive', async () => {
     const lockDir = join(dir, 'session-locks');
     const lockPath = join(lockDir, 'session.lock');
     await mkdir(lockDir, { recursive: true });
-    await writeFile(
-      lockPath,
-      JSON.stringify({
-        version: 1,
-        pid: process.pid,
-        processStartedAt: Math.floor(Date.now() - process.uptime() * 1_000),
-        token: 'expired-owner',
-        acquiredAt: Date.now() - 10_000,
-        leaseMs: 1_000,
-        owner: { sessionId: 'session-stale' },
-      }),
-    );
+    const payload = {
+      version: 1,
+      pid: process.pid,
+      processStartedAt: Math.floor(Date.now() - process.uptime() * 1_000),
+      token: 'live-owner',
+      acquiredAt: Date.now() - 10_000,
+      leaseMs: 1_000,
+      owner: { sessionId: 'session-live' },
+    };
+    await writeFile(lockPath, JSON.stringify(payload));
     const expiredAt = new Date(Date.now() - 5_000);
     await utimes(lockPath, expiredAt, expiredAt);
 
     const svc = new FileStorageService(dir);
-    const lock = await svc.acquireLock('session-locks', 'session.lock', {
-      leaseMs: 1_000,
-      renewIntervalMs: 250,
-      owner: { sessionId: 'session-stale' },
+    await expect(svc.acquireLock('session-locks', 'session.lock')).rejects.toMatchObject({
+      code: 'storage.locked',
+      details: { owner: payload.owner, pid: process.pid },
     });
-    await lock.release();
+    expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual(payload);
   });
 
   it('allows exactly one contender to win a stale-lock takeover', async () => {
@@ -166,6 +166,8 @@ describe('FileStorageService — exclusive locks', () => {
         leaseMs: 1_000,
       }),
     );
+    const expiredAt = new Date(Date.now() - 5_000);
+    await utimes(lockPath, expiredAt, expiredAt);
 
     const contenders = [new FileStorageService(dir), new FileStorageService(dir)];
     const results = await Promise.allSettled(
@@ -183,6 +185,124 @@ describe('FileStorageService — exclusive locks', () => {
     expect(losers).toHaveLength(1);
     expect(losers[0]).toMatchObject({ reason: { code: 'storage.locked' } });
     if (winners[0]?.status === 'fulfilled') await winners[0].value.release();
+  });
+
+  it('atomically replaces a dead expired owner with a fresh token and timestamp', async () => {
+    const lockDir = join(dir, 'session-locks');
+    const lockPath = join(lockDir, 'session.lock');
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(lockPath, JSON.stringify({
+      version: 1,
+      pid: 2_147_483_647,
+      processStartedAt: 0,
+      token: 'old-token',
+      acquiredAt: Date.now() - 10_000,
+      leaseMs: 1_000,
+    }));
+    const expiredAt = new Date(Date.now() - 5_000);
+    await utimes(lockPath, expiredAt, expiredAt);
+
+    const before = Date.now();
+    const lock = await new FileStorageService(dir).acquireLock('session-locks', 'session.lock');
+    const current = JSON.parse(await readFile(lockPath, 'utf8')) as {
+      pid: number; token: string; acquiredAt: number; processStartedAt: number;
+    };
+    expect(current).toMatchObject({ pid: process.pid, token: expect.not.stringMatching('old-token') });
+    expect(current.acquiredAt).toBeGreaterThanOrEqual(before);
+    expect(current.processStartedAt).toBeGreaterThan(0);
+    await lock.release();
+    await expect(readFile(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('fences a superseded holder when its pid has the wrong process start time', async () => {
+    const lockPath = join(dir, 'session-locks', 'session.lock');
+    const svc = new FileStorageService(dir);
+    const old = await svc.acquireLock('session-locks', 'session.lock');
+    const payload = JSON.parse(await readFile(lockPath, 'utf8')) as Record<string, unknown>;
+    await writeFile(lockPath, JSON.stringify({ ...payload, processStartedAt: 0 }));
+    const expiredAt = new Date(Date.now() - 180_000);
+    await utimes(lockPath, expiredAt, expiredAt);
+
+    const replacement = await svc.acquireLock('session-locks', 'session.lock');
+    const current = JSON.parse(await readFile(lockPath, 'utf8')) as { token: string };
+    expect(current.token).not.toBe(payload['token']);
+    await old.release();
+    expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ token: current.token });
+    await replacement.release();
+  });
+
+  it.skipIf(!isWin)('distinguishes a live foreign Windows process from a reused pid', async () => {
+    const child = spawn(process.execPath, [
+      '-e',
+      'process.stdout.write(String(Math.floor(Date.now() - process.uptime() * 1000))); setInterval(() => {}, 1000)',
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    try {
+      await once(child, 'spawn');
+      const [startTime] = await once(child.stdout, 'data');
+      const lockPath = join(dir, 'session-locks', 'session.lock');
+      await mkdir(join(dir, 'session-locks'), { recursive: true });
+      const payload = {
+        version: 1,
+        pid: child.pid,
+        processStartedAt: Number(startTime.toString()),
+        token: 'foreign-owner',
+        acquiredAt: Date.now() - 10_000,
+        leaseMs: 1_000,
+      };
+      await writeFile(lockPath, JSON.stringify(payload));
+      const expiredAt = new Date(Date.now() - 5_000);
+      await utimes(lockPath, expiredAt, expiredAt);
+      const svc = new FileStorageService(dir);
+      await expect(svc.acquireLock('session-locks', 'session.lock')).rejects.toMatchObject({
+        code: 'storage.locked',
+      });
+      expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual(payload);
+      await writeFile(lockPath, JSON.stringify({ ...payload, processStartedAt: 0 }));
+      await utimes(lockPath, expiredAt, expiredAt);
+      const lock = await svc.acquireLock('session-locks', 'session.lock');
+      expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ pid: process.pid });
+      await lock.release();
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        await once(child, 'exit');
+      }
+    }
+  });
+
+  it('cleans up only expired dead locks and leaves live, fresh, and malformed locks alone', async () => {
+    const lockDir = join(dir, 'session-locks');
+    await mkdir(lockDir, { recursive: true });
+    const payload = {
+      version: 1,
+      pid: 2_147_483_647,
+      processStartedAt: 0,
+      token: 'dead-token',
+      acquiredAt: Date.now() - 180_000,
+      leaseMs: 1_000,
+    };
+    const dead = join(lockDir, 'expired-dead.lock');
+    const live = join(lockDir, 'expired-live.lock');
+    const fresh = join(lockDir, 'fresh-dead.lock');
+    const malformed = join(lockDir, 'malformed.lock');
+    await writeFile(dead, JSON.stringify(payload));
+    await writeFile(live, JSON.stringify({
+      ...payload,
+      pid: process.pid,
+      processStartedAt: Math.floor(Date.now() - process.uptime() * 1_000),
+    }));
+    await writeFile(fresh, JSON.stringify(payload));
+    await writeFile(malformed, '{incomplete');
+    const expiredAt = new Date(Date.now() - 5_000);
+    await Promise.all([utimes(dead, expiredAt, expiredAt), utimes(live, expiredAt, expiredAt)]);
+
+    expect(await cleanupExpiredSessionLocks(dir)).toBe(1);
+    await expect(readFile(dead)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(live)).resolves.toBeDefined();
+    await expect(readFile(fresh)).resolves.toBeDefined();
+    await expect(readFile(malformed)).resolves.toBeDefined();
+    await expect(new FileStorageService(dir).acquireLock('session-locks', 'fresh-dead.lock'))
+      .rejects.toMatchObject({ code: 'storage.locked' });
   });
 });
 
