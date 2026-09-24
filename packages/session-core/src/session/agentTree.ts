@@ -87,6 +87,8 @@ export interface AgentRosterDescriptor {
   readonly maxContextTokens?: number;
   readonly usage?: AgentUsageSummary;
   readonly status?: string;
+  readonly refreshing?: boolean;
+  readonly refreshingUntil?: string;
   readonly busy?: boolean;
   readonly toolCallCount?: number;
   readonly toolCallCountKnown?: boolean;
@@ -141,6 +143,8 @@ export interface AgentTreeNode {
   readonly maxContextTokens?: number;
   readonly usage?: AgentUsageSummary;
   readonly status: AgentStatus;
+  readonly refreshing?: boolean;
+  readonly refreshingUntil?: string;
   readonly busy: boolean;
   readonly toolCallCount: number;
   readonly toolCallCountKnown?: boolean;
@@ -226,6 +230,8 @@ interface DraftNode {
   maxContextTokens: number | undefined;
   usage: AgentUsageSummary | undefined;
   status: AgentStatus | undefined;
+  refreshing: boolean | undefined;
+  refreshingUntil: string | undefined;
   statusAuthority: number;
   statusStartedAt: number | undefined;
   statusEndedAt: number | undefined;
@@ -329,6 +335,8 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
     a.maxContextTokens === b.maxContextTokens &&
     usageSummaryEqual(a.usage, b.usage) &&
     a.status === b.status &&
+    a.refreshing === b.refreshing &&
+    a.refreshingUntil === b.refreshingUntil &&
     a.busy === b.busy &&
     a.toolCallCount === b.toolCallCount &&
     a.toolCallCountKnown === b.toolCallCountKnown &&
@@ -501,6 +509,8 @@ export function buildAgentForest(
       maxContextTokens: draft.maxContextTokens,
       usage: draft.usage,
       status,
+      refreshing: draft.refreshing,
+      refreshingUntil: draft.refreshingUntil,
       busy: busyFromStatus(status, draft.busy),
       toolCallCount: draft.toolCallCount,
       toolCallCountKnown: draft.toolCallCountKnown,
@@ -696,6 +706,8 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
     maxContextTokens: undefined,
     usage: undefined,
     status: undefined,
+    refreshing: undefined,
+    refreshingUntil: undefined,
     statusAuthority: 0,
     statusStartedAt: undefined,
     statusEndedAt: undefined,
@@ -779,12 +791,23 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
     draft.disposedAt = disposedAt;
     invalidateDisposedRun(draft, disposedAt, STATUS_AUTHORITY.roster);
   }
+  const refreshingAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
+  const refreshing =
+    entry.refreshing === true && entry.disposedAt === undefined &&
+    (parseStatusTimestamp(entry.refreshingUntil) ?? 0) > Date.now() &&
+    (refreshingAt === undefined ||
+      ((draft.statusStartedAt === undefined || draft.statusStartedAt <= refreshingAt) &&
+        (draft.statusEndedAt === undefined || draft.statusEndedAt <= refreshingAt)));
   const status = normalizeStatus(entry.status);
   const accepted =
     status === undefined
       ? draft.status === undefined && draft.disposedAt === undefined
       : applyStatus(draft, status, STATUS_AUTHORITY.roster, entry.startedAt, entry.endedAt)
           .accepted;
+  if (refreshing) {
+    draft.refreshing = true;
+    draft.refreshingUntil = entry.refreshingUntil;
+  }
   if (!accepted) return;
   draft.model = firstPresent(entry.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(entry.thinkingEffort) ?? draft.thinkingEffort;
@@ -1018,6 +1041,8 @@ function clearRunFields(draft: DraftNode): void {
   draft.maxContextTokens = undefined;
   draft.usage = undefined;
   draft.busy = undefined;
+  draft.refreshing = undefined;
+  draft.refreshingUntil = undefined;
   draft.startedAt = undefined;
   draft.endedAt = undefined;
   draft.summary = undefined;

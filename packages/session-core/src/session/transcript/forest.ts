@@ -178,6 +178,8 @@ export function rosterFromSnapshotSubagents(
         model: presentSnapshotText(subagent.model),
         thinkingEffort: presentSnapshotText(subagent.thinking_effort),
         status: subagent.subagent_phase === 'suspended' ? 'suspended' : subagent.status,
+        refreshing: subagent.refreshing,
+        refreshingUntil: subagent.refreshing_until,
         disposedAt: subagent.live === false ? startedAt : undefined,
         toolCallCount: subagent.tool_call_count,
         toolCallCountKnown: subagent.tool_call_count === undefined ? undefined : true,
@@ -475,13 +477,9 @@ export function sessionAgentForestFromAgentSnapshots(
 }
 
 /**
- * Snapshot roster rows back the roster-driven forest when no live snapshot
- * exists (empty `snapshots`, e.g. the persisted-terminal-fields mapping), but
- * they must not create agent-forest nodes on their own next to a live forest.
- * A row is dropped next to a populated forest when its agent is a ghost —
- * absent from every live snapshot — including a retained `live: false` row
- * kept for resume; a row for an agent that is actually present still lands its
- * evidence on that node.
+ * Keep active, unknown and waking roster rows visible before their new
+ * transcript snapshot arrives, while excluding terminal rows without live
+ * evidence. Disposed agents remain ghosts even if retained for resume.
  */
 function filterRosterToLiveOrPresent(
   roster: readonly AgentRosterDescriptor[],
@@ -489,5 +487,9 @@ function filterRosterToLiveOrPresent(
 ): readonly AgentRosterDescriptor[] {
   if (snapshots.size === 0) return roster;
   const presentIds = new Set<string>(snapshots.keys());
-  return roster.filter((entry) => presentIds.has(entry.agentId));
+  return roster.filter((entry) => presentIds.has(entry.agentId) || (
+    entry.disposedAt === undefined &&
+    ((entry.refreshing === true && Date.parse(entry.refreshingUntil ?? '') > Date.now()) ||
+      entry.status === 'running' || entry.status === 'suspended' || entry.status === 'unknown')
+  ));
 }

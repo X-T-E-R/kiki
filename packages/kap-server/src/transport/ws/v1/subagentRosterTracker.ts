@@ -55,6 +55,17 @@ function isoTime(value: number | undefined): string | undefined {
   return value === undefined ? undefined : new Date(value).toISOString();
 }
 
+const REFRESHING_LEASE_MS = 120_000;
+
+function refreshingUntil(): string {
+  return new Date(Date.now() + REFRESHING_LEASE_MS).toISOString();
+}
+
+function clearRefreshing(entry: TrackedSubagent): void {
+  entry.refreshing = undefined;
+  entry.refreshing_until = undefined;
+}
+
 export class SubagentRosterTracker {
   private readonly bySession = new Map<string, Map<string, TrackedSubagent>>();
   private readonly toolCallsBySession = new Map<string, Map<string, Set<string>>>();
@@ -68,6 +79,10 @@ export class SubagentRosterTracker {
       if (event.taskId !== undefined && currentTaskId !== undefined && event.taskId !== currentTaskId) return;
     }
     switch (event.type) {
+      case 'agent.created': {
+        this.markRefreshing(sessionId, event.agentId, event.time);
+        return;
+      }
       case 'subagent.spawned': {
         const roster = this.roster(sessionId);
         const existing = roster.get(event.subagentId);
@@ -220,7 +235,13 @@ export class SubagentRosterTracker {
           Object.assign(
             entry,
             this.resetGeneration(sessionId, event.subagentId, eventAt),
-            { live: undefined, status: 'running', subagent_phase: 'working' },
+            {
+              live: undefined,
+              refreshing: undefined,
+              refreshing_until: undefined,
+              status: 'running',
+              subagent_phase: 'working',
+            },
           );
           return;
         }
@@ -230,7 +251,13 @@ export class SubagentRosterTracker {
           Object.assign(
             entry,
             this.resetGeneration(sessionId, event.subagentId, eventAt),
-            { live: undefined, status: 'running', subagent_phase: 'working' },
+            {
+              live: undefined,
+              refreshing: undefined,
+              refreshing_until: undefined,
+              status: 'running',
+              subagent_phase: 'working',
+            },
           );
           return;
         }
@@ -242,6 +269,7 @@ export class SubagentRosterTracker {
           return;
         }
         entry.live = undefined;
+        clearRefreshing(entry);
         entry.status = 'running';
         entry.subagent_phase = 'working';
         entry.suspended_reason = undefined;
@@ -262,6 +290,8 @@ export class SubagentRosterTracker {
             this.resetGeneration(sessionId, event.subagentId, eventAt),
             {
               live: undefined,
+              refreshing: undefined,
+              refreshing_until: undefined,
               status: 'running',
               subagent_phase: 'suspended',
               suspended_reason: event.reason,
@@ -277,6 +307,7 @@ export class SubagentRosterTracker {
           return;
         }
         entry.live = undefined;
+        clearRefreshing(entry);
         entry.status = 'running';
         entry.subagent_phase = 'suspended';
         entry.suspended_reason = event.reason;
@@ -315,6 +346,7 @@ export class SubagentRosterTracker {
         const activeSince = parsedTime(entry.started_at) ?? parsedTime(entry.created_at);
         if (activeSince !== undefined && activeSince > disposedAt) return;
         entry.live = false;
+        clearRefreshing(entry);
         return;
       }
       case 'tool.call.started': {
@@ -333,7 +365,13 @@ export class SubagentRosterTracker {
           Object.assign(
             entry,
             this.resetGeneration(sessionId, event.agentId, eventAt),
-            { live: undefined, status: 'running', subagent_phase: 'working' },
+            {
+              live: undefined,
+              refreshing: undefined,
+              refreshing_until: undefined,
+              status: 'running',
+              subagent_phase: 'working',
+            },
           );
         } else if (
           eventAt !== undefined &&
@@ -345,6 +383,7 @@ export class SubagentRosterTracker {
         const toolCalls = this.toolCalls(sessionId, event.agentId);
         toolCalls.add(event.toolCallId);
         entry.tool_call_count = toolCalls.size;
+        clearRefreshing(entry);
         return;
       }
       case 'task.started':
@@ -440,6 +479,8 @@ export class SubagentRosterTracker {
         kind: 'subagent',
         description: existing?.description ?? info.description,
         live: restarted ? undefined : existing?.live,
+        refreshing: undefined,
+        refreshing_until: undefined,
         status: projection.status,
         subagent_phase: projection.phase,
         profile: info.profile ?? existing?.profile,
@@ -530,11 +571,31 @@ export class SubagentRosterTracker {
     taskIds.set(info.agentId, info.taskId);
   }
 
+  markRefreshing(sessionId: string, agentId: string, time?: number): void {
+    const entry = this.bySession.get(sessionId)?.get(agentId);
+    if (!entry || (!isTerminalStatus(entry.status) && entry.live !== false)) return;
+    const eventAt = finiteTime(time);
+    const endedAt = parsedTime(entry.completed_at);
+    const disposedAt = this.disposals(sessionId).get(agentId);
+    if (
+      eventAt === undefined ||
+      (endedAt !== undefined && eventAt < endedAt) ||
+      (disposedAt !== undefined && eventAt < disposedAt)
+    ) return;
+    entry.live = undefined;
+    entry.refreshing = true;
+    entry.refreshing_until = refreshingUntil();
+  }
+
   get(sessionId: string): SnapshotSubagent[] {
     const roster = this.bySession.get(sessionId);
     if (!roster) return [];
     const result: SnapshotSubagent[] = [];
     for (const entry of roster.values()) {
+      if (entry.refreshing === true && (parsedTime(entry.refreshing_until) ?? 0) <= Date.now()) {
+        clearRefreshing(entry);
+        if (isTerminalStatus(entry.status)) entry.live = false;
+      }
       const { status, subagent_phase: phase, ...rest } = entry;
       if (status === 'unknown' || phase === 'unknown') continue;
       result.push({ ...rest, status, subagent_phase: phase });
@@ -560,8 +621,8 @@ export class SubagentRosterTracker {
     this.generationStarts(sessionId).set(agentId, startedAt);
     const timestamp = new Date(startedAt).toISOString();
     return {
-      status: 'unknown',
-      subagent_phase: 'unknown',
+      refreshing: true,
+      refreshing_until: refreshingUntil(),
       tool_call_count: 0,
       run_in_background: undefined,
       model: undefined,
@@ -599,6 +660,7 @@ export class SubagentRosterTracker {
     ) {
       return;
     }
+    clearRefreshing(entry);
     entry.subagent_phase = phase;
     entry.status = status;
     entry.completed_at ??= isoTime(eventAt) ?? new Date().toISOString();

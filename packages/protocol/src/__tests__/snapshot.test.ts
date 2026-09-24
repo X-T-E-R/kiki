@@ -160,6 +160,8 @@ describe('rest/snapshot — session snapshot', () => {
           status: 'completed',
           created_at: TS,
           completed_at: TS,
+          refreshing: true,
+          refreshing_until: '2026-06-11T10:32:00.000Z',
           output_preview: 'done',
           subagent_phase: 'completed',
           swarm_index: 1,
@@ -182,7 +184,12 @@ describe('rest/snapshot — session snapshot', () => {
       expect(result.data.subagents).toHaveLength(3);
       expect(result.data.subagents?.[0]?.live).toBe(false);
       expect(result.data.subagents?.[0]?.parent_tool_call_id).toBe('call_1');
-      expect(result.data.subagents?.[1]?.subagent_phase).toBe('completed');
+      expect(result.data.subagents?.[1]).toMatchObject({
+        status: 'completed',
+        subagent_phase: 'completed',
+        refreshing: true,
+        refreshing_until: '2026-06-11T10:32:00.000Z',
+      });
       expect(result.data.subagents?.[2]?.status).toBe('cancelled');
       expect(result.data.subagents?.[2]?.subagent_phase).toBeUndefined();
       for (const row of result.data.subagents ?? []) {

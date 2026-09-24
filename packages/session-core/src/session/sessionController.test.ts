@@ -360,6 +360,47 @@ describe('SessionController prompt runtime projection', () => {
 });
 
 describe('SessionController pipeline', () => {
+  it('refreshes a known terminal child roster on agent.created before its new task appears', async () => {
+    const previous = {
+      id: 'child', session_id: 'session_test', kind: 'subagent' as const,
+      parent_agent_id: 'main', description: 'Child', status: 'completed' as const,
+      subagent_phase: 'completed' as const, live: false, model: 'provider/old',
+      created_at: '2026-01-01T00:00:01.000Z',
+      started_at: '2026-01-01T00:00:01.000Z',
+      completed_at: '2026-01-01T00:00:02.000Z',
+    };
+    const refreshingUntil = new Date(Date.now() + 120_000).toISOString();
+    const reads = vi.fn()
+      .mockResolvedValueOnce(snapshot({ subagents: [previous] }))
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 11, subagents: [{
+        ...previous, live: undefined, refreshing: true, refreshing_until: refreshingUntil,
+      }] }));
+    const controller = new SessionController(
+      {} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test',
+    );
+    await controller.open();
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 1));
+    controller.flushFrames();
+    expect(controller.getForest()?.byId['child']).toBeUndefined();
+
+    controller.handleSignal({
+      type: 'sessionCursorAdvanced', rosterAgentId: 'child', generation: 0,
+      cursor: { seq: 11, epoch: 'epoch-1' },
+    });
+    await waitFor(() => controller.getForest()?.byId['child']?.refreshing === true);
+    expect(controller.getForest()?.byId['child']).toMatchObject({
+      status: 'completed', refreshingUntil, model: 'provider/old',
+      endedAt: '2026-01-01T00:00:02.000Z',
+    });
+    expect(reads).toHaveBeenCalledTimes(2);
+    controller.handleSignal({
+      type: 'sessionCursorAdvanced', rosterAgentId: 'new-child', generation: 0,
+      cursor: { seq: 12, epoch: 'epoch-1' },
+    });
+    expect(reads).toHaveBeenCalledTimes(2);
+    controller.close();
+  });
+
   it('recovers one malformed view baseline and stops on a terminal protocol error', async () => {
     const read = vi.fn(async () => snapshot());
     const callbacks: Parameters<SessionViewFacade['subscribe']>[1][] = [];

@@ -71,6 +71,17 @@ const AgentTreeRow = memo(function AgentTreeRow({
   useEffect(() => {
     if (children.length > 0 || hasActiveChild || isActiveStatus(node.status)) setExpanded(true);
   }, [children.length, hasActiveChild, node.status]);
+  const [refreshing, setRefreshing] = useState(
+    () => node.refreshing === true && Date.parse(node.refreshingUntil ?? '') > Date.now(),
+  );
+  useEffect(() => {
+    const deadline = Date.parse(node.refreshingUntil ?? '');
+    const active = node.refreshing === true && deadline > Date.now();
+    setRefreshing(active);
+    if (!active) return;
+    const timer = setTimeout(() => { setRefreshing(false); }, deadline - Date.now());
+    return () => { clearTimeout(timer); };
+  }, [node.refreshing, node.refreshingUntil]);
 
   const selected = selectedAgentId === node.agentId;
   const indent = Math.min(depth, 6) * 12;
@@ -121,14 +132,14 @@ const AgentTreeRow = memo(function AgentTreeRow({
               }`}
             >
               <span
-                className={`h-2 w-2 shrink-0 rounded-full ${statusDot(node.status)} ${
-                  node.busy ? 'status-dot-busy' : ''
+                className={`h-2 w-2 shrink-0 rounded-full ${refreshing ? 'bg-amber-rule' : statusDot(node.status)} ${
+                  refreshing || node.busy ? 'status-dot-busy' : ''
                 }`}
               />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[12px] font-medium text-ink">{node.label}</span>
                 <span className="block truncate text-[10px] text-ink-faint">
-                  {t(STATUS_I18N[node.status])}
+                  {t(refreshing ? 'subagent.status.refreshing' : STATUS_I18N[node.status])}
                   {node.model !== undefined ? ` · ${node.model}` : ''}
                   {node.thinkingEffort !== undefined
                     ? ` · ${t('subagent.effort', { effort: node.thinkingEffort })}`

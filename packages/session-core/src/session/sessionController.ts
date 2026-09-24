@@ -175,6 +175,7 @@ export class SessionController {
   private frameHandle: unknown = null;
   private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncInFlight = false;
+  private rosterRefreshInFlight = false;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
   private rewriteHold: RewriteHold | undefined;
   private rewriteHoldToken = 0;
@@ -583,6 +584,10 @@ export class SessionController {
         return;
       case 'sessionCursorAdvanced':
         this.advanceSessionCursor(signal.cursor);
+        if (signal.rosterAgentId !== undefined && this.state.snapshotSubagents.some((row) =>
+          (row.agent_id ?? row.id) === signal.rosterAgentId &&
+          (row.live === false || row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled')
+        )) void this.refreshRoster(signal.cursor);
         return;
       case 'historyRewritten':
         this.advanceSessionCursor(signal.cursor);
@@ -614,6 +619,32 @@ export class SessionController {
         if (this.rewriteHold !== undefined) this.handleSubscribeRejected(signal.generation);
         else void this.resync({ rewrite: signal.reason === 'history_rewritten' });
         return;
+    }
+  }
+
+  private async refreshRoster(cursor: SessionCursor): Promise<void> {
+    if (this.closed || this.resyncInFlight || this.rosterRefreshInFlight) return;
+    this.rosterRefreshInFlight = true;
+    const attachment = this.viewAttachment;
+    try {
+      const snapshot = await this.view.snapshot();
+      if (
+        this.closed || this.resyncInFlight || attachment !== this.viewAttachment ||
+        snapshot.epoch !== cursor.epoch ||
+        snapshot.as_of_seq < Math.max(cursor.seq, this.state.cursor.seq) ||
+        snapshot.subagents === undefined
+      ) return;
+      this.setState({
+        ...this.state,
+        version: this.state.version + 1,
+        snapshotSubagents: snapshot.subagents,
+      }, false);
+      this.publishForest();
+      this.notifyMain();
+    } catch {
+      // Best-effort: task ops and reconnect snapshots still recover the row.
+    } finally {
+      this.rosterRefreshInFlight = false;
     }
   }
 

@@ -1,5 +1,5 @@
 import type { Event } from '../src/transport/ws/v1/events';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SubagentRosterTracker } from '../src/transport/ws/v1/subagentRosterTracker';
 
@@ -308,6 +308,111 @@ describe('SubagentRosterTracker', () => {
       expect(t.get(SID)[0]?.completed_at).toBe(new Date(2).toISOString());
     },
   );
+
+  it('retains a terminal row through wakeup, startup, completion, and a failed next wake', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawn('agent-1', { time: 100, taskId: 'task-old', model: 'provider/old' }));
+    t.apply(SID, ev({
+      type: 'task.terminated', time: 200,
+      info: {
+        taskId: 'task-old', kind: 'agent', agentId: 'agent-1', detached: false,
+        description: 'old run', status: 'completed', startedAt: 100, endedAt: 200,
+      },
+    }));
+    t.apply(SID, ev({ type: 'agent.disposed', agentId: 'agent-1', time: 201 }));
+    expect(t.get(SID)[0]).toMatchObject({
+      status: 'completed', subagent_phase: 'completed', live: false,
+      model: 'provider/old', completed_at: new Date(200).toISOString(),
+    });
+    t.apply(SID, ev({ type: 'agent.created', agentId: 'agent-1', time: 200 }));
+    expect(t.get(SID)[0]?.refreshing).toBeUndefined();
+
+    t.apply(SID, ev({ type: 'agent.created', agentId: 'agent-1', time: 250 }));
+    expect(t.get(SID)[0]).toMatchObject({
+      status: 'completed', subagent_phase: 'completed', refreshing: true,
+      model: 'provider/old', completed_at: new Date(200).toISOString(),
+    });
+    expect(t.get(SID)[0]?.live).toBeUndefined();
+    t.apply(SID, ev({
+      type: 'task.started', time: 300,
+      info: {
+        taskId: 'task-new', kind: 'agent', agentId: 'agent-1', detached: true,
+        description: 'new run', status: 'running', startedAt: 300, endedAt: null,
+        model: 'provider/new',
+      },
+    }));
+    expect(t.get(SID)[0]).toMatchObject({
+      status: 'running', subagent_phase: 'working', refreshing: true,
+      model: 'provider/new', started_at: new Date(300).toISOString(),
+    });
+    expect(t.get(SID)[0]?.completed_at).toBeUndefined();
+    t.apply(SID, ev({ type: 'subagent.started', subagentId: 'agent-1', taskId: 'task-new', time: 301 }));
+    expect(t.get(SID)[0]?.refreshing).toBeUndefined();
+    t.apply(SID, ev({
+      type: 'task.terminated', time: 400,
+      info: {
+        taskId: 'task-new', kind: 'agent', agentId: 'agent-1', detached: true,
+        description: 'new run', status: 'completed', startedAt: 300, endedAt: 400,
+        model: 'provider/new',
+      },
+    }));
+    expect(t.get(SID)[0]).toMatchObject({
+      status: 'completed', subagent_phase: 'completed', model: 'provider/new',
+      completed_at: new Date(400).toISOString(),
+    });
+    expect(t.get(SID)[0]?.refreshing).toBeUndefined();
+    t.apply(SID, ev({ type: 'agent.created', agentId: 'agent-1', time: 450 }));
+    expect(t.get(SID)[0]?.refreshing).toBe(true);
+    t.apply(SID, ev({ type: 'agent.disposed', agentId: 'agent-1', time: 460 }));
+    expect(t.get(SID)[0]).toMatchObject({
+      status: 'completed', live: false, completed_at: new Date(400).toISOString(),
+    });
+    expect(t.get(SID)[0]?.refreshing).toBeUndefined();
+    t.apply(SID, ev({
+      type: 'task.started', time: 500,
+      info: {
+        taskId: 'task-failed', kind: 'agent', agentId: 'agent-1', detached: true,
+        description: 'failed run', status: 'running', startedAt: 500, endedAt: null,
+      },
+    }));
+    expect(t.get(SID)[0]?.refreshing).toBe(true);
+    t.apply(SID, ev({
+      type: 'task.terminated', time: 600,
+      info: {
+        taskId: 'task-failed', kind: 'agent', agentId: 'agent-1', detached: true,
+        description: 'failed run', status: 'failed', startedAt: 500, endedAt: 600,
+        stopReason: 'provider error',
+      },
+    }));
+    expect(t.get(SID)[0]).toMatchObject({
+      status: 'failed', subagent_phase: 'failed', completed_at: new Date(600).toISOString(),
+    });
+    expect(t.get(SID)[0]?.refreshing).toBeUndefined();
+  });
+
+  it('expires an unconfirmed wake without replacing the prior terminal metadata', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawn('agent-1', { time: 100, model: 'provider/old' }));
+    t.apply(SID, ev({ type: 'subagent.completed', subagentId: 'agent-1', time: 200, resultSummary: 'done' }));
+    t.apply(SID, ev({ type: 'agent.disposed', agentId: 'agent-1', time: 201 }));
+    t.apply(SID, ev({ type: 'agent.created', agentId: 'agent-1', time: 300 }));
+    const pending = t.get(SID)[0]!;
+    expect(pending).toMatchObject({ status: 'completed', refreshing: true, model: 'provider/old' });
+    expect(pending.live).toBeUndefined();
+    const deadline = Date.parse(pending.refreshing_until!);
+    expect(deadline).toBeGreaterThan(Date.now());
+    const now = vi.spyOn(Date, 'now').mockReturnValue(deadline + 1);
+    try {
+      expect(t.get(SID)[0]).toMatchObject({
+        status: 'completed', live: false, model: 'provider/old',
+        completed_at: new Date(200).toISOString(),
+      });
+      expect(t.get(SID)[0]?.refreshing).toBeUndefined();
+      expect(t.get(SID)[0]?.refreshing_until).toBeUndefined();
+    } finally {
+      now.mockRestore();
+    }
+  });
 
   it('reopens a terminal child when a newer foreground spawn resumes the same agent', () => {
     const t = new SubagentRosterTracker();

@@ -26,6 +26,7 @@ import {
   foldLoopEvent,
   getLiveSessionById,
 } from '@kiki/agent-core-v2';
+import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import type {
   ConfigWarningItem,
   SessionCreatedEvent,
@@ -1245,6 +1246,12 @@ export class SessionEventBroadcaster {
       state.agentDisposables.set(handle.id, this.attachAgent(sessionId, handle));
     };
     for (const handle of agents.list()) subscribeAgent(handle);
+    const dispatch = session.accessor.get(ISessionDispatchService);
+    if (dispatch !== undefined) {
+      state.lifecycleDisposables.push(dispatch.onDidDelegateRun(({ agentId }) => {
+        state.roster.markRefreshing(sessionId, agentId, Date.now());
+      }));
+    }
     state.lifecycleDisposables.push(
       agents.onDidCreate((handle) => {
         subscribeAgent(handle);
@@ -1252,6 +1259,7 @@ export class SessionEventBroadcaster {
           type: 'agent.created',
           agentId: handle.id,
           sessionId,
+          time: Date.now(),
         });
       }),
       agents.onDidDispose((agentId) => {

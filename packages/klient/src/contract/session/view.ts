@@ -70,6 +70,7 @@ export const sessionViewCursorAdvancedSignalSchema = z.object({
   type: z.literal('sessionCursorAdvanced'),
   cursor: sessionCursorSchema,
   generation: sessionViewGenerationSchema,
+  rosterAgentId: z.string().min(1).optional(),
 });
 
 export const sessionViewHistoryRewrittenSignalSchema = z.object({
@@ -143,6 +144,7 @@ export type SessionViewSignal =
   | (SessionViewSignalBase & {
       readonly type: 'sessionCursorAdvanced';
       readonly cursor: SessionCursor;
+      readonly rosterAgentId?: string;
     })
   | (SessionViewSignalBase & {
       readonly type: 'historyRewritten';

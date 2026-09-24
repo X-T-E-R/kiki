@@ -575,6 +575,7 @@ export const sessionMetaUpdatedEventSchema = z.object({
 
 export const agentCreatedEventSchema = z.object({
   type: z.literal('agent.created'),
+  time: z.number().optional(),
 });
 
 export const agentDisposedEventSchema = z.object({

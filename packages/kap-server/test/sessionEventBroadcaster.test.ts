@@ -43,6 +43,7 @@ import {
   StateRegistry,
 } from '@kiki/agent-core-v2';
 import { IAgentToolSelectService } from '@kiki/agent-core-v2/agent/toolSelect/toolSelect';
+import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { TurnStarted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type { AgentEvent } from '../src/transport/ws/v1/events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -159,6 +160,16 @@ class FakeLifecycle {
   private readonly turnCounters = new Map<string, { dispose(): void }>();
   private createHandlers: Array<(h: IScopeHandle) => void> = [];
   private disposeHandlers: Array<(id: string) => void> = [];
+  private readonly delegateHandlers = new Set<(event: { agentId: string }) => void>();
+  readonly dispatch = {
+    onDidDelegateRun: (handler: (event: { agentId: string }) => void) => {
+      this.delegateHandlers.add(handler);
+      return { dispose: () => this.delegateHandlers.delete(handler) };
+    },
+  };
+  delegate(agentId: string): void {
+    for (const handler of this.delegateHandlers) handler({ agentId });
+  }
   list(): readonly FakeAgentHandle[] {
     return this.handles;
   }
@@ -367,6 +378,7 @@ function makeCore(
         if (t === IAgentLifecycleService) return lifecycle;
         if (t === ISessionInteractionService) return lifecycle.interactions;
         if (t === ISessionActivityView) return lifecycle.workView;
+        if (t === ISessionDispatchService) return lifecycle.dispatch;
         if (t === ISessionMetadata) return { read: async () => ({ agents: metaAgents }) };
         return undefined;
       },
@@ -1190,6 +1202,87 @@ describe('SessionEventBroadcaster', () => {
     expect((await bc.getSnapshotState('s1')).subagents).toEqual([
       expect.objectContaining({ id: 'agent-0', live: false, status: 'running' }),
     ]);
+  });
+
+  it('keeps a completed subagent in snapshot roster through recreation, run, and completion', async () => {
+    const lc = new FakeLifecycle();
+    const main = lc.addAgent('main');
+    lc.addAgent('agent-0');
+    sessions.set('s1', lc);
+    const { target, envelopes } = collectingTarget();
+    await bc.subscribe('s1', target);
+    main.bus.emit(agentEvent('subagent.spawned', {
+      subagentId: 'agent-0', subagentName: 'explore', parentAgentId: 'main',
+      parentToolCallId: 'call-0', runInBackground: false,
+      time: 1_000, taskId: 'task-old', model: 'provider/old',
+    }));
+    main.bus.emit(agentEvent('task.terminated', {
+      time: 2_000,
+      info: {
+        taskId: 'task-old', kind: 'agent', agentId: 'agent-0', detached: false,
+        description: 'old run', status: 'completed', startedAt: 1_000, endedAt: 2_000,
+      },
+    }));
+    await bc.getCursor('s1');
+    expect((await bc.getSnapshotState('s1')).subagents[0]).toMatchObject({
+      status: 'completed', model: 'provider/old', completed_at: new Date(2_000).toISOString(),
+    });
+    lc.delegate('agent-0');
+    expect((await bc.getSnapshotState('s1')).subagents[0]).toMatchObject({
+      status: 'completed', refreshing: true, model: 'provider/old',
+      completed_at: new Date(2_000).toISOString(),
+    });
+
+    lc.removeAgent('agent-0');
+    await bc.getCursor('s1');
+    const disposed = envelopes.find((entry) => entry.type === 'agent.disposed');
+    const disposedAt = (disposed?.payload as { time: number }).time;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(disposedAt + 10);
+    try {
+      lc.addAgent('agent-0');
+    } finally {
+      now.mockRestore();
+    }
+    await bc.getCursor('s1');
+    const created = envelopes.find((entry) => entry.type === 'agent.created');
+    expect(created?.payload).toMatchObject({ agentId: 'agent-0', time: disposedAt + 10 });
+    expect((await bc.getSnapshotState('s1')).subagents[0]).toMatchObject({
+      status: 'completed', refreshing: true, model: 'provider/old',
+      completed_at: new Date(2_000).toISOString(),
+    });
+
+    main.bus.emit(agentEvent('task.started', {
+      time: disposedAt + 20,
+      info: {
+        taskId: 'task-new', kind: 'agent', agentId: 'agent-0', detached: true,
+        description: 'new run', status: 'running', startedAt: disposedAt + 20, endedAt: null,
+        model: 'provider/new',
+      },
+    }));
+    await bc.getCursor('s1');
+    expect((await bc.getSnapshotState('s1')).subagents[0]).toMatchObject({
+      status: 'running', refreshing: true, model: 'provider/new',
+    });
+    main.bus.emit(agentEvent('subagent.started', {
+      subagentId: 'agent-0', taskId: 'task-new', time: disposedAt + 21,
+    }));
+    await bc.getCursor('s1');
+    expect((await bc.getSnapshotState('s1')).subagents[0]?.refreshing).toBeUndefined();
+
+    main.bus.emit(agentEvent('task.terminated', {
+      time: disposedAt + 30,
+      info: {
+        taskId: 'task-new', kind: 'agent', agentId: 'agent-0', detached: true,
+        description: 'new run', status: 'completed', startedAt: disposedAt + 20,
+        endedAt: disposedAt + 30, model: 'provider/new',
+      },
+    }));
+    await bc.getCursor('s1');
+    expect((await bc.getSnapshotState('s1')).subagents[0]).toMatchObject({
+      status: 'completed', model: 'provider/new',
+      completed_at: new Date(disposedAt + 30).toISOString(),
+    });
+    expect((await bc.getSnapshotState('s1')).subagents[0]?.refreshing).toBeUndefined();
   });
 
   it('delivers lifecycle events past the agent allowlist (session-grained)', async () => {

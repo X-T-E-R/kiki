@@ -43,4 +43,33 @@ describe('AgentTreeView tool-count display', () => {
     expect(html).not.toContain(' tools');
     expect(html).not.toContain('Not reported');
   });
+
+  it('shows a waking child as refreshing without dropping its last-known metadata', () => {
+    const html = renderRow({
+      agentId: 'child', name: 'Child', status: 'completed', refreshing: true,
+      refreshingUntil: new Date(Date.now() + 120_000).toISOString(),
+      model: 'provider/previous', endedAt: '2026-01-01T00:00:02.000Z',
+    });
+    expect(html).toContain('Child');
+    expect(html).toContain('refreshing');
+    expect(html).toContain('provider/previous');
+    expect(html).toContain('bg-amber-rule');
+    expect(html).not.toContain('status unknown');
+  });
+
+  it('stops showing refresh feedback after the wake lease expires', () => {
+    const html = renderRow({
+      agentId: 'child', name: 'Child', status: 'completed', refreshing: true,
+      refreshingUntil: new Date(Date.now() - 1).toISOString(),
+    });
+    expect(html).toContain('completed');
+    expect(html).not.toContain('refreshing');
+    expect(html).not.toContain('bg-amber-rule');
+  });
+
+  it('renders an unknown tree node instead of dropping the row', () => {
+    const html = renderRow({ agentId: 'child', name: 'Child', status: 'unknown' });
+    expect(html).toContain('Child');
+    expect(html).toContain('status unknown');
+  });
 });

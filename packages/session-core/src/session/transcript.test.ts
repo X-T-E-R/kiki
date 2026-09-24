@@ -701,6 +701,98 @@ describe('transcript authority projection', () => {
     expect(forest.byId['ghost-child']).toBeUndefined();
   });
 
+  it('keeps a resumed child visible before its new task reaches the main transcript without reviving retained ghosts', () => {
+    const previous = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID,
+      parent_agent_id: 'main',
+      status: 'completed',
+      subagent_phase: 'completed',
+      live: false,
+      model: 'provider/kimi-for-coding',
+      started_at: FIXED_AT_1,
+      completed_at: FIXED_AT_2,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(new Map(), [previous]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'completed',
+      model: 'provider/kimi-for-coding',
+      endedAt: FIXED_AT_2,
+    });
+
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot()]]);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [previous]).byId[CHILD_AGENT_ID]).toBeUndefined();
+    const refreshingUntil = new Date(Date.now() + 120_000).toISOString();
+    const refreshing = { ...previous, live: undefined, refreshing: true, refreshing_until: refreshingUntil };
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [refreshing]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'completed', refreshing: true, refreshingUntil,
+      model: 'provider/kimi-for-coding', endedAt: FIXED_AT_2,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...refreshing, live: false }]).byId[CHILD_AGENT_ID]).toBeUndefined();
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{
+      ...refreshing, refreshing_until: new Date(Date.now() - 1).toISOString(),
+    }]).byId[CHILD_AGENT_ID]).toBeUndefined();
+
+    const previousTask = emptySnapshot({
+      tasks: [{
+        taskId: 'task-previous', kind: 'subagent', state: 'completed', detached: true,
+        agentId: CHILD_AGENT_ID, startedAt: FIXED_AT_1, endedAt: FIXED_AT_2, outputTail: '',
+      }],
+    });
+    snapshots.set('main', previousTask);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [refreshing]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'completed', refreshing: true, endedAt: FIXED_AT_2,
+    });
+    snapshots.set('main', emptySnapshot());
+
+    const resumedAt = '2026-01-01T00:00:03.000Z';
+    const resumed = {
+      ...previous,
+      status: 'running' as const,
+      subagent_phase: 'working' as const,
+      live: undefined,
+      started_at: resumedAt,
+      completed_at: undefined,
+    };
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [resumed]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'running',
+      busy: true,
+      model: 'provider/kimi-for-coding',
+      startedAt: resumedAt,
+      endedAt: undefined,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{
+      ...resumed, refreshing: true, refreshing_until: refreshingUntil,
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'running', refreshing: true, refreshingUntil,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...resumed, live: false }]).byId[CHILD_AGENT_ID]).toBeUndefined();
+
+    snapshots.set('main', emptySnapshot({
+      tasks: [{
+        taskId: 'task-resumed',
+        kind: 'subagent',
+        state: 'completed',
+        detached: true,
+        agentId: CHILD_AGENT_ID,
+        startedAt: resumedAt,
+        endedAt: '2026-01-01T00:00:04.000Z',
+        outputTail: '',
+      }],
+    }));
+    const completedAt = '2026-01-01T00:00:04.000Z';
+    const completed = {
+      ...resumed,
+      status: 'completed' as const,
+      subagent_phase: 'completed' as const,
+      completed_at: completedAt,
+    };
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [completed]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'completed',
+      refreshing: undefined,
+      model: 'provider/kimi-for-coding',
+      endedAt: completedAt,
+    });
+  });
+
   it('carries a child snapshot full-history count through the forest without requiring agent meta', () => {
     const main = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
     const snapshots = new Map<string, AgentTranscriptSnapshot>([
