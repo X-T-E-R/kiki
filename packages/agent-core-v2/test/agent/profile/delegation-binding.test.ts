@@ -149,7 +149,7 @@ describe('delegation context at bind', () => {
     const profile = ctx.get(IAgentProfileService);
     await profile.bind({ profile: 'explore', model: MOCK_MODEL });
     const prompt = profile.getSystemPrompt();
-    expect(prompt).toContain('codebase exploration specialist');
+    expect(prompt).toContain('read-only evidence explorer');
     expect(prompt).not.toContain(TASK_AGENT_ROLE_PREFIX);
     expect(prompt).not.toContain('${delegation_context}');
   });
@@ -164,7 +164,7 @@ describe('delegation context at bind', () => {
     });
     const prompt = profile.getSystemPrompt();
     expect(prompt).toContain(TASK_AGENT_ROLE_PREFIX);
-    expect(prompt).toContain('codebase exploration specialist');
+    expect(prompt).toContain('read-only evidence explorer');
     expect(prompt).not.toContain('${delegation_context}');
   });
 

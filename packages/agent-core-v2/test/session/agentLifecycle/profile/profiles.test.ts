@@ -39,7 +39,7 @@ describe('shipped agent profiles', () => {
 
   it('renders shipped profiles against the terminal base prompt', () => {
     const rendered = source().get('explore')!.renderSystemPrompt({});
-    expect(rendered.text).toContain('codebase exploration specialist');
+    expect(rendered.text).toContain('read-only evidence explorer');
     expect(rendered.text).toContain('You are Kiki');
   });
 });
