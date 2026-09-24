@@ -1,6 +1,6 @@
 [package]
 name = "kiki"
-version = "0.1.0"
+version = "0.1.1"
 description = "Kiki desktop client"
 authors = ["Kiki contributors"]
 license = "MIT"
