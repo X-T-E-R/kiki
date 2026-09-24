@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PermissionMode } from '@kiki/protocol';
@@ -10,6 +10,9 @@ import {
   readSettings,
   writeDesktopPrefs,
   writeSettings,
+  settingsServerSnapshot,
+  settingsSnapshot,
+  subscribeSettings,
   type SendShortcut,
   type ThemePreference,
 } from '@kiki/session-core/settings';
@@ -37,6 +40,14 @@ export function GeneralSection() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
   const isDesktop = host.kind === 'tauri';
+  // The fold-steps toggle instant-applies (the transcript reads the pub/sub
+  // snapshot), so it follows the live store instead of the local settings
+  // state the save-on-change cards use.
+  const foldSteps = useSyncExternalStore(
+    subscribeSettings,
+    settingsSnapshot,
+    settingsServerSnapshot,
+  ).foldSteps;
 
   const [titleModelDirty, setTitleModelDirty] = useState(false);
   const [titleModelSaver, setTitleModelSaver] = useState<{
@@ -205,6 +216,17 @@ export function GeneralSection() {
             />
           </div>
           <Hint>{t('st.composer.persistDraftsHint')}</Hint>
+        </div>
+      </SectionCard>
+
+      <SectionCard id="st-card-timeline" title={t('st.transcript.title')}>
+        <div className="space-y-2">
+          <Toggle
+            label={t('st.transcript.foldSteps')}
+            checked={foldSteps}
+            onChange={(checked) => { writeSettings({ foldSteps: checked }); }}
+          />
+          <Hint>{t('st.transcript.foldStepsHint')}</Hint>
         </div>
       </SectionCard>
 

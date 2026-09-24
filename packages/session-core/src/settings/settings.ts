@@ -53,6 +53,8 @@ export interface DesktopSettings {
   requestTimeoutSeconds: number;
   subagentPanelOpenMode: SubagentPanelOpenMode;
   defaultAppendTiming: DefaultAppendTiming;
+  /** Fold runs of tool/shell/thinking steps into one collapsible summary. */
+  foldSteps: boolean;
 }
 
 export type UpdateChannel = 'stable' | 'beta';
@@ -258,6 +260,7 @@ const DEFAULTS: DesktopSettings = {
   requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
   subagentPanelOpenMode: 'tab',
   defaultAppendTiming: 'agent_idle',
+  foldSteps: true,
 };
 
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
@@ -332,6 +335,8 @@ export function readSettings(): DesktopSettings {
     defaultAppendTiming: isDefaultAppendTiming(stored.defaultAppendTiming)
       ? stored.defaultAppendTiming
       : DEFAULTS.defaultAppendTiming,
+    foldSteps:
+      typeof stored.foldSteps === 'boolean' ? stored.foldSteps : DEFAULTS.foldSteps,
   };
 }
 
@@ -1819,6 +1824,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-appearance', titleKey: 'st.appearance.title', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system'] },
   { section: 'general', cardId: 'st-card-permission-defaults', titleKey: 'st.defaults.title', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.hint'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts'] },
+  { section: 'general', cardId: 'st-card-timeline', titleKey: 'st.transcript.title', keywordKeys: ['st.transcript.foldSteps', 'st.transcript.foldStepsHint'], synonyms: ['timeline', '时间线', 'transcript', '会话记录', 'fold steps', '折叠', '工具步骤'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'general', cardId: 'st-card-session-title', titleKey: 'st.experimental.sessionTitle', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff', 'st.sessionTitleModel.hint', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型'] },
   { section: 'ai', tab: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder', 'st.models.remoteIdAria', 'st.images.acceptedTypes', 'st.images.convertUnsupported'], synonyms: ['模型目录', 'model catalog', '模型列表', 'model editing', '模型编辑', 'remote id', '远端模型 ID', 'image policy', '图片策略', '图片类型', '图片转换'] },

@@ -41,6 +41,11 @@ import {
   type TimelineAnnotation,
 } from '@kiki/session-core/composer';
 import {
+  subscribeSettings,
+  settingsServerSnapshot,
+  settingsSnapshot,
+} from '@kiki/session-core/settings';
+import {
   agentChildren,
   groupBlocks,
   groupHasError,
@@ -1127,8 +1132,11 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
 });
 
 /**
- * Folded tool run — aionui's group summary row, kiki rules: collapsed by
- * default, spinner while any tool runs, auto-expands on error only.
+ * Folded step run — aionui's group summary row, kiki rules: collapsed by
+ * default, spinner while any member runs, auto-expands on error only. The
+ * row folds tool calls, shell runs and thinking into one compact block; the
+ * summary shows the step count, tool names and the real framed durations
+ * (unknown timings never fabricate a total).
  */
 const ToolGroupRow = memo(
   function ToolGroupRow({
@@ -1140,7 +1148,7 @@ const ToolGroupRow = memo(
     agentNames?: ReadonlyMap<string, string>;
     onOpenAgent?: (agentId: string) => void;
   }) {
-  const { t } = useI18n();
+  const { t, time } = useI18n();
   const running = groupHasRunning(group);
   const hasError = groupHasError(group);
   const [expanded, setExpanded] = useState(false);
@@ -1154,15 +1162,22 @@ const ToolGroupRow = memo(
       <button
         type="button"
         onClick={() => { setExpanded((value) => !value); }}
+        aria-expanded={expanded}
+        aria-label={t('transcript.stepsAria')}
         className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-paper/60"
       >
         <span className="w-6 shrink-0 text-center font-mono text-[12px] text-ink-soft">☰</span>
         <span className="shrink-0 text-[12.5px] font-semibold text-ink">
-          {t('transcript.steps', { count: group.tools.length })}
+          {t('transcript.steps', { count: group.count })}
         </span>
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
           {groupToolNames(group)}
         </span>
+        {!running && !hasError && group.durationMs !== undefined ? (
+          <span className="shrink-0 font-mono text-[10px] text-ink-faint">
+            {time.formatDuration(group.durationMs)}
+          </span>
+        ) : null}
         {running ? (
           <svg className="spinner h-3.5 w-3.5 text-accent" viewBox="0 0 16 16" fill="none" aria-label={t('transcript.runningAria')}>
             <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
@@ -1185,15 +1200,25 @@ const ToolGroupRow = memo(
           {group.tools.map((tool) => (
             <ToolCard key={tool.id} block={tool} agentNames={agentNames} onOpenAgent={onOpenAgent} />
           ))}
+          {group.shells.map((shell) => (
+            <ShellMessage key={shell.id} block={shell} />
+          ))}
+          {group.thinking.map((thinking) => (
+            <ThinkingMessage key={thinking.id} block={thinking} />
+          ))}
         </div>
       ) : null}
     </div>
   );
   },
-  // groupBlocks rebuilds the wrapper per publish; the tool blocks themselves
+  // groupBlocks rebuilds the wrapper per publish; the step blocks themselves
   // keep identity, so element-wise comparison preserves the memo.
   (prev, next) =>
+    prev.group.count === next.group.count &&
     prev.group.tools.length === next.group.tools.length &&
+    prev.group.shells.length === next.group.shells.length &&
+    prev.group.thinking.length === next.group.thinking.length &&
+    prev.group.durationMs === next.group.durationMs &&
     prev.agentNames === next.agentNames &&
     prev.onOpenAgent === next.onOpenAgent &&
     prev.group.tools.every((tool, index) => tool === next.group.tools[index]),
@@ -2100,6 +2125,13 @@ export function Transcript({
   // The forest prop is rebuilt per publish upstream; stabilize it by content
   // so row memos survive unrelated deltas (Finding: forest identity).
   const stableForest = useStableForest(forest);
+  // The fold-steps preference is app-global chrome (Settings' Timeline card
+  // writes it), so the transcript reacts immediately via its pub/sub snapshot.
+  const foldSteps = useSyncExternalStore(
+    subscribeSettings,
+    settingsSnapshot,
+    settingsServerSnapshot,
+  ).foldSteps;
   // Manual subagent card form overrides (G-4): once the user expands or
   // collapses a card by hand the automatic active→full / terminal→compact
   // rule no longer touches that agent's card. Keyed by subagentId so the
