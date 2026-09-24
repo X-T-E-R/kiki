@@ -187,10 +187,36 @@ describe('ModelCatalogCard row editor', () => {
     expect(option.textContent).toContain('Suggestions — not configured yet');
     await act(async () => { option.click(); });
     expect(createModel).not.toHaveBeenCalled();
+    const capabilities = container.querySelector('[role="group"][aria-label="Capabilities for remote-suggested"]')!;
+    expect(capabilities.querySelector('button[aria-pressed="true"]')?.textContent).toBe('thinking');
+    expect([...capabilities.querySelectorAll('button[aria-pressed="true"]')].map((button) => button.textContent)).toEqual(['thinking', 'tool_use']);
     await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
-    expect(createModel).toHaveBeenCalledWith(expect.objectContaining({ id: 'gateway/remote-suggested', provider_id: 'gateway', remote_id: 'remote-suggested', max_context_size: 128000 }));
+    expect(createModel).toHaveBeenCalledWith(expect.objectContaining({ id: 'gateway/remote-suggested', provider_id: 'gateway', remote_id: 'remote-suggested', max_context_size: 250000, capabilities: ['thinking', 'tool_use'] }));
     expect(setDefaultModel).not.toHaveBeenCalled();
     expect(patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('preserves discovered capabilities without duplicates and lets the user uncheck defaults', async () => {
+    listDiscoveredModels.mockResolvedValue({
+      items: [{
+        provider_id: 'gateway',
+        fetched_at: 100,
+        attempted_at: 100,
+        models: [{ remote_id: 'remote-suggested', max_context_size: 64000, capabilities: ['image_in', 'tool_use', 'thinking', 'tool_use'] }],
+      }],
+    });
+    const container = await renderCard();
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Suggestions — not configured yet"]')!.click(); });
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((button) => button.textContent?.includes('remote-suggested'))!;
+    await act(async () => { option.click(); });
+    const capabilities = container.querySelector('[role="group"][aria-label="Capabilities for remote-suggested"]')!;
+    expect([...capabilities.querySelectorAll('button[aria-pressed="true"]')].map((button) => button.textContent)).toEqual(['thinking', 'tool_use', 'image_in']);
+    await act(async () => { [...capabilities.querySelectorAll('button')].find((button) => button.textContent === 'thinking')!.click(); });
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    expect(createModel).toHaveBeenCalledWith(expect.objectContaining({
+      max_context_size: 64000,
+      capabilities: ['image_in', 'tool_use'],
+    }));
   });
 
   it('reads the model entity and saves a sparse patch with its revision', async () => {

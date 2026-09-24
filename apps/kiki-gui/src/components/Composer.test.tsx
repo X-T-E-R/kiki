@@ -1430,6 +1430,72 @@ describe('Composer slash skill catalog', () => {
     expect(container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
   });
 
+  it('waits for a pending catalog before sending /kiki-ops without an unknown warning', async () => {
+    const catalog = deferred<{ skills: typeof workspaceSkill[] }>();
+    listWorkspaceSkills.mockReturnValue(catalog.promise);
+    const onActivateSkill = vi.fn();
+    const onSend = vi.fn();
+    const { container } = await renderComposer({
+      value: '/kiki-ops Explain profiles.',
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill,
+      onSend,
+    });
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    expect(listWorkspaceSkills).toHaveBeenCalledTimes(1);
+    await click(sendButton);
+    expect(sendButton.disabled).toBe(true);
+    expect(container.querySelector('[data-slash-confirm]')).toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+    await act(async () => {
+      catalog.resolve({ skills: [{ ...workspaceSkill, name: 'kiki-ops' }] });
+    });
+    await settle();
+    expect(container.querySelector('[data-slash-confirm]')).toBeNull();
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Explain profiles.', []);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unsent slash draft recoverable when its catalog fails, then retries activation', async () => {
+    listWorkspaceSkills.mockRejectedValue(new Error('catalog offline'));
+    const onActivateSkill = vi.fn();
+    const onSend = vi.fn();
+    const { container } = await renderComposer({
+      value: '/kiki-ops Help me get started.',
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill,
+      onSend,
+    });
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    await click(sendButton);
+    await settle();
+    expect(container.querySelector('[data-slash-confirm]')).toBeNull();
+    expect(container.textContent).toContain('Could not load skills. Please try sending again.');
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.value).toBe('/kiki-ops Help me get started.');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onActivateSkill).not.toHaveBeenCalled();
+
+    listWorkspaceSkills.mockResolvedValue({ skills: [{ ...workspaceSkill, name: 'kiki-ops' }] });
+    await click(sendButton);
+    await settle();
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Help me get started.', []);
+  });
+
+  it('activates the built-in first-run command for a new directory without a workspace catalog', async () => {
+    const onActivateSkill = vi.fn();
+    const onSend = vi.fn();
+    const { container } = await renderComposer({
+      value: '/kiki-ops Help me get started.',
+      onActivateSkill,
+      onSend,
+    });
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    expect(listWorkspaceSkills).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-slash-confirm]')).toBeNull();
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Help me get started.', []);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it('selects a command into the draft, shows source and args, and sends its catalog name once', async () => {
     const command = { ...workspaceSkill, name: 'plan', path: '/workspace/.kiki/commands/plan.md',
       prompt_command: true, disable_model_invocation: true, argument_hint: '<topic>' };
@@ -1459,7 +1525,7 @@ describe('Composer slash skill catalog', () => {
     expect(onChangePlanMode).not.toHaveBeenCalled();
   });
 
-  it('sends a hand-typed `/skill args` draft as plain prompt text (VS Code preflight)', async () => {
+  it('activates a hand-typed `/skill args` draft with VS Code skill preflight', async () => {
     vscodeRuntime.value = true;
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onActivateSkill = vi.fn();
@@ -1476,14 +1542,12 @@ describe('Composer slash skill catalog', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     await settle();
-    // No menu accept happened: the draft is prose and ships verbatim (with
-    // the VS Code autosave preflight of a normal send).
-    expect(preparePrompt).toHaveBeenCalledWith('/review --fix', expect.any(String), true);
-    expect(onSend).toHaveBeenCalledWith('/review --fix', []);
-    expect(onActivateSkill).not.toHaveBeenCalled();
+    expect(preparePrompt).toHaveBeenCalledWith('', expect.any(String), false);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', []);
+    expect(onSend).not.toHaveBeenCalled();
   });
 
-  it('sends a hand-typed `/skill args` draft as plain prompt text (desktop)', async () => {
+  it('activates a hand-typed `/skill args` draft on desktop', async () => {
     desktopRuntime.value = true;
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onActivateSkill = vi.fn();
@@ -1501,8 +1565,8 @@ describe('Composer slash skill catalog', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
 
-    expect(onSend).toHaveBeenCalledWith('/review --fix', []);
-    expect(onActivateSkill).not.toHaveBeenCalled();
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', []);
+    expect(onSend).not.toHaveBeenCalled();
     expect(preparePrompt).not.toHaveBeenCalled();
   });
 

@@ -812,6 +812,7 @@ export const en = {
   'composer.slash.shortcuts': 'Shortcuts',
   'composer.slash.empty': 'No matching commands — Enter sends the line as a plain prompt.',
   'composer.slash.skillsFailed': 'Could not load skills — showing shortcuts only.',
+  'composer.slash.submitCatalogFailed': 'Could not load skills. Please try sending again.',
   'composer.slash.notActivatable': 'not activatable',
   'composer.slash.skillBadge': 'skill',
   'composer.slash.previewAria': 'Skill or command details',
@@ -2730,7 +2731,7 @@ export const en = {
   'onboarding.sessionFallback':
     'Opened a new-session draft instead — pick a folder and send to begin.',
   'onboarding.welcomeDraft':
-    "/kiki-ops I'm new here — check my current setup and help me finish the remaining recommended configuration.",
+    "/kiki-ops I'm new here. Help me finish setup, then briefly explain what a subagent profile is and ask what kind I'd like to create.",
   // Queue strip + composer queue-edit round-trip (drag reorder, armed remove).
   'queue.editTitle': 'Edit in the composer — confirming puts it back at the same queue position',
   'queue.editingBadge': 'Editing in the composer',

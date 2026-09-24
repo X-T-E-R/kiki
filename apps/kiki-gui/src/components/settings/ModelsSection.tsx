@@ -444,6 +444,8 @@ export function ThinkingCard() {
   );
 }
 
+const DEFAULT_DISCOVERED_CAPABILITIES = ['thinking', 'tool_use'] as const;
+
 /** Explicit fetching and a separate, user-confirmed model creation flow. */
 export function CatalogRefreshCard() {
   const { client } = useConnection();
@@ -453,7 +455,8 @@ export function CatalogRefreshCard() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [selected, setSelected] = useState('');
   const [alias, setAlias] = useState('');
-  const [context, setContext] = useState(128000);
+  const [context, setContext] = useState(250000);
+  const [capabilities, setCapabilities] = useState<string[]>([...DEFAULT_DISCOVERED_CAPABILITIES]);
   const discovered = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
   const choices = (discovered.data?.items ?? []).flatMap((group) => group.models.map((model) => ({
     value: JSON.stringify([group.provider_id, model.remote_id]),
@@ -494,7 +497,7 @@ export function CatalogRefreshCard() {
         remote_id: choice.model.remote_id,
         display_name: choice.model.display_name,
         max_context_size: context,
-        capabilities: choice.model.capabilities,
+        capabilities,
         support_efforts: choice.model.support_efforts,
       });
       setSelected('');
@@ -519,7 +522,8 @@ export function CatalogRefreshCard() {
             setSelected(value);
             const item = choices.find((candidate) => candidate.value === value);
             setAlias(item === undefined ? '' : `${item.providerId}/${item.model.remote_id}`);
-            setContext(item?.model.max_context_size ?? 128000);
+            setContext(item?.model.max_context_size ?? 250000);
+            setCapabilities([...new Set([...(item?.model.capabilities ?? []), ...DEFAULT_DISCOVERED_CAPABILITIES])]);
           }}
           ariaLabel={t('st.providers.catalogGroupSuggested')}
           searchPlaceholder={t('st.providers.modelSearchPlaceholder')}
@@ -533,6 +537,18 @@ export function CatalogRefreshCard() {
               <input className={INPUT} value={alias} disabled={busy} onChange={(event) => { setAlias(event.target.value); }} />
             </label>
             <ContextStepper value={context} onChange={setContext} ariaLabel={t('st.models.contextAria', { model: choice.model.remote_id })} />
+            <div className="space-y-1">
+              <p className="text-[10.5px] font-medium text-ink-faint">{t('st.chips.capabilities')}</p>
+              <ChipSelect
+                values={capabilities}
+                knownOptions={KNOWN_CAPABILITIES}
+                onChange={setCapabilities}
+                ariaLabel={t('st.models.capsAria', { model: choice.model.remote_id })}
+                addPlaceholder={t('st.chips.addPlaceholder')}
+                removeLabel={(value) => t('st.chips.removeAria', { value })}
+                disabled={busy}
+              />
+            </div>
             <button type="button" className={PRIMARY_BUTTON} disabled={busy} onClick={() => void save()}>{t('common.save')}</button>
             <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={() => { setSelected(''); }}>{t('common.cancel')}</button>
           </div>

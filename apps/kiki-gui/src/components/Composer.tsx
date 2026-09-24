@@ -35,6 +35,7 @@ import {
   classifySlashSubmission,
   completeSlashTrigger,
   filterSlashItems,
+  parseSlashDraft,
   parseSlashTrigger,
   type SlashActionId,
   type SlashItem,
@@ -456,12 +457,10 @@ export function Composer({
     name: string;
     reason: 'unknown' | 'disabled';
   } | null>(null);
-  // A skill row accepted from the slash menu earns its args: `/name args`
-  // composed after a menu accept activates on send. A hand-typed `/name args`
-  // draft is prose — it ships as plain text instead of being eaten by a skill
-  // activation. Cleared as soon as the draft no longer starts with the
-  // accepted token.
-  const menuAcceptedSkillRef = useRef<string | null>(null);
+  const [slashCatalogPending, setSlashCatalogPending] = useState(false);
+  const slashCatalogPendingRef = useRef(false);
+  const currentSlashDraftRef = useRef({ text, sessionId, workspaceId });
+  currentSlashDraftRef.current = { text, sessionId, workspaceId };
   // Queue-edit remove is a two-step control: the first click arms the button
   // ("Remove?"), the second actually drops the queued message. The arm times
   // out so a stray hover never leaves a live one-click remove behind.
@@ -740,7 +739,8 @@ export function Composer({
       !sendDisabled &&
       !selectionBlocked &&
       !pendingAttachments &&
-      !turnInFlight;
+      !turnInFlight &&
+      !slashCatalogPending;
 
   // The chips band (quote/annotations/goal-mode/attachments/errors/typo
   // guard) only exists with content; it gates the wrapper's top padding above
@@ -879,7 +879,6 @@ export function Composer({
       if (trigger === null) return;
       const completed = completeSlashTrigger(text, trigger, item.name);
       pushUndoSnapshot({ text, cursor: lastCursorRef.current });
-      menuAcceptedSkillRef.current = item.name;
       onChange(completed.text);
       lastCursorRef.current = completed.cursor;
       // Caret to the end of the completed token after the controlled value lands.
@@ -1109,8 +1108,49 @@ export function Composer({
     });
   }, [host]);
 
+  const submitWithSlashItems = (items: readonly SlashItem[], catalogAvailable: boolean) => {
+    const classified = classifySlashSubmission(items, text.trim());
+    if (classified !== null) {
+      if (classified.kind === 'unknown' || classified.kind === 'disabled') {
+        if (catalogAvailable || classified.kind === 'disabled') {
+          setSlashConfirm({
+            name: classified.kind === 'unknown' ? classified.name : classified.item.name,
+            reason: classified.kind,
+          });
+          return;
+        }
+        const builtin = parseSlashDraft(text.trim());
+        if (!skillCatalogReady && builtin?.query.toLowerCase() === 'kiki-ops' && onActivateSkill !== undefined) {
+          activateSkill('kiki-ops', builtin.args);
+          return;
+        }
+      } else {
+        if (classified.item.kind === 'skill' && onActivateSkill !== undefined) {
+          activateSkill(classified.item.skill?.name ?? classified.item.name, classified.args);
+          return;
+        }
+        if (classified.item.kind === 'action' && classified.item.action !== undefined) {
+          // `/goal <text>` sends immediately with the args as `goal_objective`.
+          // A bare `/goal` arms the next message when goal mode is available.
+          if (classified.item.action === 'goal' && classified.args !== '') {
+            sendPrompt(classified.args, { goalObjective: classified.args });
+            return;
+          }
+          // Prose after a client shortcut (`/plan do it`) is a message, not a
+          // command — only a bare action token runs the shortcut.
+          if (classified.args === '') {
+            onChange('');
+            runAction(classified.item.action);
+            return;
+          }
+        }
+      }
+    }
+    sendPrompt(text.trim(), goalMode && onChangeGoalMode !== undefined ? { goalObjective: text.trim() } : undefined);
+  };
+
   const send = () => {
-    if (!canSend) return;
+    if (!canSend || slashCatalogPendingRef.current) return;
     // Queue-edit mode: the draft IS a queued message's text. Confirming hands
     // it to the queue round-trip (in-place replace at the original slot) —
     // never to command classification, skill activation, or a fresh send.
@@ -1133,51 +1173,25 @@ export function Composer({
       }
       return;
     }
-    // Every hand-off below consumes the draft, so close any stale menu.
     setMenu(null);
-    // Submit-time command resolution: `/name args…` for a known entry runs the
-    // command; a slash-looking draft that resolves to nothing is intercepted
-    // for an explicit confirm — a typo never silently ships as prompt text.
-    const classified = classifySlashSubmission(slashItems, text.trim());
-    if (classified !== null) {
-      if (classified.kind === 'unknown' || classified.kind === 'disabled') {
-        setSlashConfirm({
-          name: classified.kind === 'unknown' ? classified.name : classified.item.name,
-          reason: classified.kind,
-        });
-        return;
-      }
-      if (classified.item.kind === 'skill' && onActivateSkill !== undefined) {
-        // Args-bearing activations require a menu accept (tracked by
-        // `menuAcceptedSkillRef`); a hand-typed `/name args` draft is prose
-        // and falls through to the plain-text send below. Bare `/name` is an
-        // unambiguous command and always activates.
-        const menuAccepted =
-          menuAcceptedSkillRef.current !== null &&
-          classified.item.name.toLowerCase() === menuAcceptedSkillRef.current.toLowerCase();
-        if (classified.args === '' || menuAccepted) {
-          menuAcceptedSkillRef.current = null;
-          activateSkill(classified.item.skill?.name ?? classified.item.name, classified.args);
+    if (text.trim().startsWith('/') && skillCatalogReady && !skillsQuery.isSuccess) {
+      slashCatalogPendingRef.current = true;
+      setSlashCatalogPending(true);
+      void refetchSkills({ cancelRefetch: false }).then((result) => {
+        slashCatalogPendingRef.current = false;
+        setSlashCatalogPending(false);
+        const current = currentSlashDraftRef.current;
+        if (current.text !== text || current.sessionId !== sessionId || current.workspaceId !== workspaceId) return;
+        if (result.data === undefined) {
+          setAttachmentError(t('composer.slash.submitCatalogFailed'));
           return;
         }
-      }
-      if (classified.item.kind === 'action' && classified.item.action !== undefined) {
-        // `/goal <text>` sends immediately with the args as `goal_objective`.
-        // A bare `/goal` arms the next message when goal mode is available.
-        if (classified.item.action === 'goal' && classified.args !== '') {
-          sendPrompt(classified.args, { goalObjective: classified.args });
-          return;
-        }
-        // Prose after a client shortcut (`/plan do it`) is a message, not a
-        // command — only a bare action token runs the shortcut.
-        if (classified.args === '') {
-          onChange('');
-          runAction(classified.item.action);
-          return;
-        }
-      }
+        setAttachmentError((previous) => previous === t('composer.slash.submitCatalogFailed') ? null : previous);
+        submitWithSlashItems(buildSlashItems(result.data.skills, { hasSession: sessionId !== undefined }), true);
+      });
+      return;
     }
-    void sendPrompt(text.trim(), goalMode && onChangeGoalMode !== undefined ? { goalObjective: text.trim() } : undefined);
+    submitWithSlashItems(slashItems, skillsQuery.isSuccess);
   };
 
   /**
@@ -1768,15 +1782,6 @@ export function Composer({
                 // An edit while browsing history ends the browse; the edited
                 // text stands (the pre-browse draft is superseded by it).
                 historyIndexRef.current = null;
-                // The menu-accepted skill token earns args only while the
-                // draft still leads with that token.
-                const acceptedSkill = menuAcceptedSkillRef.current;
-                if (
-                  acceptedSkill !== null &&
-                  !event.target.value.toLowerCase().startsWith(`/${acceptedSkill.toLowerCase()}`)
-                ) {
-                  menuAcceptedSkillRef.current = null;
-                }
                 onChange(event.target.value);
                 lastCursorRef.current = event.target.selectionStart;
                 setSlashConfirm(null);

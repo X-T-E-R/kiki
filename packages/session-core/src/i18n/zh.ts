@@ -806,6 +806,7 @@ export const zh: Record<I18nKey, string> = {
   'composer.slash.shortcuts': '快捷指令',
   'composer.slash.empty': '没有匹配的指令 — Enter 会按普通消息发送。',
   'composer.slash.skillsFailed': '技能加载失败 — 仅显示快捷指令。',
+  'composer.slash.submitCatalogFailed': '无法加载技能，请重试发送。',
   'composer.slash.notActivatable': '不可激活',
   'composer.slash.skillBadge': '技能',
   'composer.slash.previewAria': '技能或命令详情',
@@ -2659,7 +2660,7 @@ export const zh: Record<I18nKey, string> = {
   'onboarding.reenter': '重新进入引导',
   'onboarding.reenterHint': '重新走一遍首次启动引导：供应商、偏好与搜索。',
   'onboarding.sessionFallback': '已改为打开新会话草稿——选择目录后发送即可开始。',
-  'onboarding.welcomeDraft': '/kiki-ops 我是新用户，请检查当前配置是否完整，并帮我完成剩余推荐配置。',
+  'onboarding.welcomeDraft': '/kiki-ops 我是新用户，帮我完成设置。请简要解释什么是 subagent profile，再问我想创建什么样的角色。',
   // 排队条与输入框的排队消息编辑往返（拖拽调序、二次确认移除）。
   'queue.editTitle': '放回输入框编辑 — 确认后回到原排队位置',
   'queue.editingBadge': '正在输入框中编辑',

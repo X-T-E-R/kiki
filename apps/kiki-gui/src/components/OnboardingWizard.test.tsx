@@ -22,7 +22,9 @@ import {
 } from './OnboardingWizard';
 
 const WELCOME_DRAFT_EN =
-  "/kiki-ops I'm new here — check my current setup and help me finish the remaining recommended configuration.";
+  "/kiki-ops I'm new here. Help me finish setup, then briefly explain what a subagent profile is and ask what kind I'd like to create.";
+const WELCOME_DRAFT_ZH =
+  '/kiki-ops 我是新用户，帮我完成设置。请简要解释什么是 subagent profile，再问我想创建什么样的角色。';
 
 const getAuth = vi.fn();
 const listProviders = vi.fn();
@@ -249,15 +251,7 @@ describe('OnboardingWizard', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(createSession).toHaveBeenCalledWith({ workspace_id: 'wd_a' });
-    const draft = readDraft('s_onboarding_1');
-    expect(draft).toContain(WELCOME_DRAFT_EN);
-    expect(draft).toContain('Ask whether I want implementer in <KIKI_HOME>/agents/implementer.md');
-    expect(draft).toContain('then separately whether I want reviewer in <KIKI_HOME>/agents/reviewer.md');
-    expect(draft).toContain('Only after I agree to each specific profile');
-    expect(draft).toContain('built-in kiki-profile skill');
-    expect(draft).toContain('model_alias: inherit unchanged');
-    expect(draft).toContain('follows the model used by its parent at dispatch time');
-    expect(draft).toContain('change it to a fixed model in Settings');
+    expect(readDraft('s_onboarding_1')).toBe(WELCOME_DRAFT_EN);
     expect(navigate).toHaveBeenCalledWith('/s/s_onboarding_1');
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
@@ -273,13 +267,12 @@ describe('OnboardingWizard', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(createSession).not.toHaveBeenCalled();
-    expect(readDraft('new')).toContain(WELCOME_DRAFT_EN);
-    expect(readDraft('new')).toContain('Only after I agree to each specific profile');
+    expect(readDraft('new')).toBe(WELCOME_DRAFT_EN);
     expect(navigate).toHaveBeenCalledWith('/new');
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('localizes the per-profile opt-in in the Chinese welcome draft', async () => {
+  it('localizes the short profile invitation in the Chinese welcome draft', async () => {
     localStorage.setItem('kiki.locale', 'zh');
     await mount();
     await click(buttonByText('下一步'));
@@ -288,15 +281,7 @@ describe('OnboardingWizard', () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    const draft = readDraft('new');
-    expect(draft).toContain('/kiki-ops 我是新用户');
-    expect(draft).toContain('先问我要不要在 <KIKI_HOME>/agents/implementer.md 创建 implementer');
-    expect(draft).toContain('再单独问我要不要在 <KIKI_HOME>/agents/reviewer.md 创建 reviewer');
-    expect(draft).toContain('只有我对某个角色明确同意后');
-    expect(draft).toContain('加载内置 kiki-profile skill');
-    expect(draft).toContain('保留示例中的 model_alias: inherit');
-    expect(draft).toContain('跟随父 Agent 派发时使用的模型');
-    expect(draft).toContain('可在设置中改为固定模型');
+    expect(readDraft('new')).toBe(WELCOME_DRAFT_ZH);
   });
 
   it('never overwrites a /new draft the user already typed', async () => {
