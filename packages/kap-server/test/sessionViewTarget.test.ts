@@ -24,7 +24,7 @@ describe('SessionViewTarget', () => {
     ]);
   });
 
-  it('projects existing agent.created events as roster-refresh hints with their cursor', () => {
+  it('projects existing agent.created and agent.disposed events as roster-refresh hints', () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
     target.begin(3);
@@ -32,11 +32,21 @@ describe('SessionViewTarget', () => {
       ...durable(13), type: 'agent.created',
       payload: { type: 'agent.created', agentId: 'agent-1', time: 1_000 },
     });
-    target.finish({ seq: 13, epoch: 'session-epoch' }, false);
-    expect(signals[0]).toEqual({
-      type: 'sessionCursorAdvanced', rosterAgentId: 'agent-1',
-      cursor: { seq: 13, epoch: 'session-epoch' }, generation: 3,
+    target.send({
+      ...durable(14), type: 'agent.disposed',
+      payload: { type: 'agent.disposed', agentId: 'agent-1', time: 1_100 },
     });
+    target.finish({ seq: 14, epoch: 'session-epoch' }, false);
+    expect(signals.slice(0, 2)).toEqual([
+      {
+        type: 'sessionCursorAdvanced', rosterAgentId: 'agent-1',
+        cursor: { seq: 13, epoch: 'session-epoch' }, generation: 3,
+      },
+      {
+        type: 'sessionCursorAdvanced', rosterAgentId: 'agent-1',
+        cursor: { seq: 14, epoch: 'session-epoch' }, generation: 3,
+      },
+    ]);
   });
 
   it('preserves rewrite and epoch invalidation signals', () => {

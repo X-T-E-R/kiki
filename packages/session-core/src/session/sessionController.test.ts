@@ -360,7 +360,7 @@ describe('SessionController prompt runtime projection', () => {
 });
 
 describe('SessionController pipeline', () => {
-  it('refreshes a known terminal child roster on agent.created before its new task appears', async () => {
+  it('refreshes a waking child on creation and removes it on disposal without unrelated events', async () => {
     const previous = {
       id: 'child', session_id: 'session_test', kind: 'subagent' as const,
       parent_agent_id: 'main', description: 'Child', status: 'completed' as const,
@@ -374,7 +374,8 @@ describe('SessionController pipeline', () => {
       .mockResolvedValueOnce(snapshot({ subagents: [previous] }))
       .mockResolvedValueOnce(snapshot({ as_of_seq: 11, subagents: [{
         ...previous, live: undefined, refreshing: true, refreshing_until: refreshingUntil,
-      }] }));
+      }] }))
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 12, subagents: [previous] }));
     const controller = new SessionController(
       {} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test',
     );
@@ -394,10 +395,79 @@ describe('SessionController pipeline', () => {
     });
     expect(reads).toHaveBeenCalledTimes(2);
     controller.handleSignal({
-      type: 'sessionCursorAdvanced', rosterAgentId: 'new-child', generation: 0,
+      type: 'sessionCursorAdvanced', rosterAgentId: 'child', generation: 0,
       cursor: { seq: 12, epoch: 'epoch-1' },
     });
+    await waitFor(() => controller.getForest()?.byId['child'] === undefined);
+    expect(reads).toHaveBeenCalledTimes(3);
+    controller.handleSignal({
+      type: 'sessionCursorAdvanced', rosterAgentId: 'new-child', generation: 0,
+      cursor: { seq: 13, epoch: 'epoch-1' },
+    });
+    expect(reads).toHaveBeenCalledTimes(3);
+    controller.close();
+  });
+
+  it('removes a terminal waking child when its lease expires without any event', async () => {
+    const reads = vi.fn(async () => snapshot({ subagents: [{
+      id: 'child', session_id: 'session_test', kind: 'subagent',
+      parent_agent_id: 'main', description: 'Child', status: 'completed',
+      subagent_phase: 'completed', live: undefined, refreshing: true,
+      refreshing_until: new Date(Date.now() + 150).toISOString(),
+      created_at: '2026-01-01T00:00:01.000Z',
+      completed_at: '2026-01-01T00:00:02.000Z',
+    }] }));
+    const controller = new SessionController(
+      {} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test',
+    );
+    await controller.open();
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 1));
+    controller.flushFrames();
+    expect(controller.getForest()?.byId['child']).toMatchObject({ refreshing: true });
+    await waitFor(() => controller.getForest()?.byId['child'] === undefined);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(controller.getState().snapshotSubagents[0]).toMatchObject({ live: false });
+    controller.close();
+  });
+
+  it('retries a delayed roster read for the latest of two waking children', async () => {
+    const child = (id: string) => ({
+      id, session_id: 'session_test', kind: 'subagent' as const,
+      parent_agent_id: 'main', description: id, status: 'completed' as const,
+      subagent_phase: 'completed' as const, live: false,
+      created_at: '2026-01-01T00:00:01.000Z',
+      completed_at: '2026-01-01T00:00:02.000Z',
+    });
+    const previous = [child('child-a'), child('child-b')];
+    const firstRefresh = deferred<SessionSnapshotResponse>();
+    const refreshingUntil = new Date(Date.now() + 120_000).toISOString();
+    const reads = vi.fn()
+      .mockResolvedValueOnce(snapshot({ subagents: previous }))
+      .mockReturnValueOnce(firstRefresh.promise)
+      .mockResolvedValueOnce(snapshot({ as_of_seq: 12, subagents: previous.map((row) => ({
+        ...row, live: undefined, refreshing: true, refreshing_until: refreshingUntil,
+      })) }));
+    const controller = new SessionController(
+      {} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test',
+    );
+    await controller.open();
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 1));
+    controller.flushFrames();
+    for (const agentId of ['child-a', 'child-b']) {
+      expect(controller.getForest()?.byId[agentId]).toBeUndefined();
+    }
+    controller.handleSignal({ type: 'sessionCursorAdvanced', rosterAgentId: 'child-a',
+      generation: 0, cursor: { seq: 11, epoch: 'epoch-1' } });
     expect(reads).toHaveBeenCalledTimes(2);
+    controller.handleSignal({ type: 'sessionCursorAdvanced', rosterAgentId: 'child-b',
+      generation: 0, cursor: { seq: 12, epoch: 'epoch-1' } });
+    expect(reads).toHaveBeenCalledTimes(2);
+    firstRefresh.resolve(snapshot({ as_of_seq: 11, subagents: [{
+      ...previous[0]!, live: undefined, refreshing: true, refreshing_until: refreshingUntil,
+    }, previous[1]!] }));
+    await waitFor(() => reads.mock.calls.length === 3);
+    await waitFor(() => ['child-a', 'child-b'].every((id) => controller.getForest()?.byId[id]?.refreshing === true));
+    expect(controller.getState().snapshotSubagents).toHaveLength(2);
     controller.close();
   });
 

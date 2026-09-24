@@ -176,6 +176,8 @@ export class SessionController {
   private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncInFlight = false;
   private rosterRefreshInFlight = false;
+  private rosterRefreshQueuedCursor: SessionCursor | undefined;
+  private rosterLeaseTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
   private rewriteHold: RewriteHold | undefined;
   private rewriteHoldToken = 0;
@@ -285,8 +287,48 @@ export class SessionController {
 
   private setState(next: SessionViewState, immediate = true): void {
     if (next === this.state) return;
+    const rosterChanged = next.snapshotSubagents !== this.state.snapshotSubagents;
     this.state = next;
+    if (rosterChanged) this.scheduleRosterLease();
     if (immediate) this.notifyMain();
+  }
+
+  private clearRosterLeaseTimer(): void {
+    if (this.rosterLeaseTimer === null) return;
+    clearTimeout(this.rosterLeaseTimer);
+    this.rosterLeaseTimer = null;
+  }
+
+  private scheduleRosterLease(): void {
+    this.clearRosterLeaseTimer();
+    if (this.closed) return;
+    let nearest = Infinity;
+    for (const row of this.state.snapshotSubagents) {
+      if (row.refreshing !== true) continue;
+      const until = Date.parse(row.refreshing_until ?? '');
+      nearest = Math.min(nearest, Number.isFinite(until) ? until : 0);
+    }
+    if (nearest === Infinity) return;
+    this.rosterLeaseTimer = setTimeout(() => {
+      this.rosterLeaseTimer = null;
+      if (this.closed) return;
+      const now = Date.now();
+      let changed = false;
+      const next = this.state.snapshotSubagents.map((row) => {
+        if (row.refreshing !== true || Date.parse(row.refreshing_until ?? '') > now) return row;
+        changed = true;
+        const terminal = row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled';
+        return { ...row, refreshing: undefined, refreshing_until: undefined,
+          live: terminal ? false : row.live };
+      });
+      if (!changed) {
+        this.scheduleRosterLease();
+        return;
+      }
+      this.setState({ ...this.state, version: this.state.version + 1, snapshotSubagents: next }, false);
+      this.publishForest();
+      this.notifyMain();
+    }, Math.min(2_147_483_647, Math.max(0, nearest - Date.now())));
   }
 
   private isDocumentHidden(): boolean {
@@ -378,6 +420,7 @@ export class SessionController {
     this.agentViews.clear();
     this.visibilityDocument?.removeEventListener?.('visibilitychange', this.onVisibilityChange);
     this.clearResyncTimer();
+    this.clearRosterLeaseTimer();
     this.clearRewriteHold();
     this.cancelVisibleFrameFlush();
     this.clearHiddenFrameTimer();
@@ -585,8 +628,7 @@ export class SessionController {
       case 'sessionCursorAdvanced':
         this.advanceSessionCursor(signal.cursor);
         if (signal.rosterAgentId !== undefined && this.state.snapshotSubagents.some((row) =>
-          (row.agent_id ?? row.id) === signal.rosterAgentId &&
-          (row.live === false || row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled')
+          (row.agent_id ?? row.id) === signal.rosterAgentId
         )) void this.refreshRoster(signal.cursor);
         return;
       case 'historyRewritten':
@@ -623,7 +665,14 @@ export class SessionController {
   }
 
   private async refreshRoster(cursor: SessionCursor): Promise<void> {
-    if (this.closed || this.resyncInFlight || this.rosterRefreshInFlight) return;
+    if (this.closed || this.resyncInFlight) return;
+    if (this.rosterRefreshInFlight) {
+      const queued = this.rosterRefreshQueuedCursor;
+      if (queued === undefined || cursor.epoch !== queued.epoch || cursor.seq > queued.seq) {
+        this.rosterRefreshQueuedCursor = cursor;
+      }
+      return;
+    }
     this.rosterRefreshInFlight = true;
     const attachment = this.viewAttachment;
     try {
@@ -645,6 +694,9 @@ export class SessionController {
       // Best-effort: task ops and reconnect snapshots still recover the row.
     } finally {
       this.rosterRefreshInFlight = false;
+      const queued = this.rosterRefreshQueuedCursor;
+      this.rosterRefreshQueuedCursor = undefined;
+      if (queued !== undefined && !this.closed && !this.resyncInFlight) void this.refreshRoster(queued);
     }
   }
 

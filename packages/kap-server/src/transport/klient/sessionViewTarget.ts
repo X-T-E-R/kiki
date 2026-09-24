@@ -91,7 +91,7 @@ export class SessionViewTarget implements BroadcastTarget {
     const payload = envelope.payload;
     if (payload !== null && typeof payload === 'object') {
       const event = payload as { type?: unknown; agentId?: unknown; reason?: unknown; target_message_id?: unknown };
-      if (event.type === 'agent.created' && typeof event.agentId === 'string' && event.agentId !== '') {
+      if ((event.type === 'agent.created' || event.type === 'agent.disposed') && typeof event.agentId === 'string' && event.agentId !== '') {
         return { type: 'sessionCursorAdvanced', cursor, generation: this.generation, rosterAgentId: event.agentId };
       }
       if (event.type === 'event.session.history_rewritten' && (event.reason === 'edit_resend' || event.reason === 'regenerate') && typeof event.target_message_id === 'string') {
