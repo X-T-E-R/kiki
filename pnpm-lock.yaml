@@ -409,8 +409,8 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(zod@4.3.6)
       '@nb-corp/nb-search':
-        specifier: file:../../vendor/nb-search-0.3.0-725c0408.tgz
-        version: file:vendor/nb-search-0.3.0-725c0408.tgz(playwright@1.60.0)
+        specifier: file:../../vendor/nb-search-0.4.0-22c490b8.tgz
+        version: file:vendor/nb-search-0.4.0-22c490b8.tgz(playwright@1.60.0)
       ajv:
         specifier: ^8.18.0
         version: 8.18.0
@@ -656,8 +656,8 @@ importers:
         specifier: ^9.3.0
         version: 9.3.0
       '@nb-corp/nb-search':
-        specifier: file:../../vendor/nb-search-0.3.0-725c0408.tgz
-        version: file:vendor/nb-search-0.3.0-725c0408.tgz(playwright@1.60.0)
+        specifier: file:../../vendor/nb-search-0.4.0-22c490b8.tgz
+        version: file:vendor/nb-search-0.4.0-22c490b8.tgz(playwright@1.60.0)
       own-work:
         specifier: file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz
         version: file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz
@@ -2194,9 +2194,9 @@ packages:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
 
-  '@nb-corp/nb-search@file:vendor/nb-search-0.3.0-725c0408.tgz':
-    resolution: {integrity: sha512-clwECDDgY5jCRKl89PH+kx5ThMY0+nGqndCKlLIiNlxJNhcAqy9aslIK5cxQwNxEbK7YpqZa1RwocRctwTo+Hg==, tarball: file:vendor/nb-search-0.3.0-725c0408.tgz}
-    version: 0.3.0
+  '@nb-corp/nb-search@file:vendor/nb-search-0.4.0-22c490b8.tgz':
+    resolution: {integrity: sha512-IsSQuIRJ0ZfsE32U0ZHBBgYIGrf4A8m9s5nfRd2DU6mtJHdMbwq4+HCq+negWytGcsVUyDpGahYC37AG/5T4Iw==, tarball: file:vendor/nb-search-0.4.0-22c490b8.tgz}
+    version: 0.4.0
     engines: {node: '>=24.15.0'}
     hasBin: true
     peerDependencies:
@@ -9762,7 +9762,7 @@ snapshots:
       '@tybys/wasm-util': 0.10.1
     optional: true
 
-  '@nb-corp/nb-search@file:vendor/nb-search-0.3.0-725c0408.tgz(playwright@1.60.0)':
+  '@nb-corp/nb-search@file:vendor/nb-search-0.4.0-22c490b8.tgz(playwright@1.60.0)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.29.0(zod@4.3.6)
       zod: 4.3.6

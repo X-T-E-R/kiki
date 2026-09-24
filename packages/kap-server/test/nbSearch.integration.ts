@@ -177,7 +177,7 @@ describe('server-v2 /api/nb-search', () => {
     expect(original.data.providers.instances.find((entry) => entry.id === 'exa.default')?.credential.configured).toBe(true);
     expect((await saveSource(false)).code).toBe(0);
     const isolated = await get<NbSearchCapabilities>('/nb-search/capabilities');
-    expect(isolated.data.search.default_lane).toBeUndefined();
+    expect(isolated.data.search.default_lane).toBe('github.repositories');
     expect(isolated.data.providers.instances.find((entry) => entry.id === 'exa.default')?.credential.configured).toBe(false);
     expect((await get<Record<string, unknown>>('/config')).data['nb_search_source']).toEqual({ reuse_local_config: false });
     expect((await saveSource(true)).code).toBe(0);
@@ -316,21 +316,24 @@ env = "KIKI_EXA_KEY"
     expect((await get<NbSearchCapabilities>('/nb-search/capabilities')).data.config_source?.reuse_local_config).toBe(true);
   });
 
-  it('reports an unconfigured search default as unavailable while keeping fetch ready', async () => {
+  it('reports keyless repository search and fetch ready without configuration', async () => {
+    vi.stubEnv('NB_SEARCH_GITHUB_TOKEN', undefined);
     await boot();
 
     const response = await get<{
-      search: { configured: boolean; available: boolean; issues: string[] };
+      search: { configured: boolean; available: boolean; selection?: string; issues: string[] };
       fetch: { configured: boolean; available: boolean; selection?: string };
     }>('/nb-search/test');
 
     expect(response.code).toBe(0);
     expect(response.data.search).toEqual({
-      configured: false,
-      available: false,
-      issues: ['DEFAULT_NOT_CONFIGURED'],
+      configured: true,
+      available: true,
+      selection: 'github.repositories',
+      issues: ['RATE_LIMIT_UNAUTHENTICATED'],
     });
     expect(response.data.fetch.configured).toBe(true);
+    expect(response.data.fetch.available).toBe(true);
     expect(response.data.fetch.selection).toBe('direct.fetch -> jina.reader');
   });
 

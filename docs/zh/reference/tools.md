@@ -50,7 +50,7 @@
 
 ## 网络类
 
-两个工具都由 Kiki 内置的搜索与抓取模块支撑，该模块随产品一起安装，不需要额外的安装步骤。模块的 provider 实例、凭证槽、lane 和默认 fetch chain 都已内置：网页搜索只要配置好可用的 lane 即可工作，抓取则直接使用内置默认链。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。
+两个工具都由 Kiki 内置的搜索与抓取模块支撑，随产品一起安装，不需要额外的安装步骤。免密钥的仓库搜索 lane 和 URL 抓取链无需配置即可使用；通用网页搜索需选择其他 lane。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
@@ -61,7 +61,7 @@
 
 通过 Kiki 内置的 `nb-search` 模块进行搜索。最小调用为 `{ "query": "搜索词" }`，对应 `action: "run"`，其余字段沿用 `[nb_search]` 默认值。`query` 可以是单个字符串或字符串数组。
 
-若 `[nb_search.defaults]` 中没有配置默认 `search_lane`，且调用里也未通过 `lane`、`lanes` 或 `preset` 显式选择，工具会提示当前没有可用的搜索 lane，需要明确指定已配置的 lane 或 preset 才能继续执行。显式的 lane、`lanes` 列表或 preset 会覆盖配置默认值；选择无效或不可用时直接报错，不会悄悄换成其他 provider。
+零配置下，默认使用 `github.repositories`，只检索 GitHub 仓库，而非全网。查阅库文档请显式选择 `context7.docs`（返回 typed 结果）；免密钥通用网页检索可显式选择 `duckduckgo.search`，但公共 HTML 端点可能触发 CAPTCHA。需要可靠的通用检索时，建议配置 `exa.search` 等提供商。若显式删除默认 lane，且调用时未指定 `lane`、`lanes` 或 `preset`，工具仍会拒绝运行；显式选择会覆盖默认值，选择无效或不可用时也不会悄悄换成其他 provider。
 
 `run` 接受以下几组真正影响行为的参数：
 
@@ -82,7 +82,7 @@
 
 ### `FetchURL`
 
-通过 Kiki 内置的 `nb-search` 模块抓取或抽取内容。最小调用为 `{ "url": "https://example.com" }`，对应 `action: "run"` 的 URL 简写；不要把简写 `url` 与 `source` 形式混用。默认 fetch chain 返回 Markdown；HTML 响应被抽取为正文文本，纯文本或 Markdown 页面则直接透传。
+通过 Kiki 内置的 `nb-search` 模块抓取或抽取内容。最小调用为 `{ "url": "https://example.com" }`，对应 `action: "run"` 的 URL 简写；不要把简写 `url` 与 `source` 形式混用。URL 的免密钥默认链先尝试 `direct.fetch`，失败时用 `jina.reader` 抽取正文；直连成功但内容无用时，需显式配置质量规则才会回退。默认链返回 Markdown；HTML 响应被抽取为正文文本，纯文本或 Markdown 页面则直接透传。
 
 `run` 接受以下几组真正影响行为的参数：
 

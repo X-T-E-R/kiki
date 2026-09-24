@@ -70,7 +70,7 @@
     "@kiki/minidb": "workspace:^",
     "@kiki/protocol": "workspace:^",
     "@kiki/tree-sitter-bash": "workspace:^",
-    "@nb-corp/nb-search": "file:../../vendor/nb-search-0.3.0-725c0408.tgz",
+    "@nb-corp/nb-search": "file:../../vendor/nb-search-0.4.0-22c490b8.tgz",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
     "chokidar": "^4.0.3",

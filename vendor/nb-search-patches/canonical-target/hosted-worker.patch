@@ -1,15 +1,17 @@
+diff --git a/src/index.ts b/src/index.ts
+index 64038dc..a445c97 100644
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -8,6 +8,8 @@
+@@ -8,6 +8,8 @@ import { NbSearchError } from './errors.ts';
  export type { HttpRequest, HttpResponse, HttpTransport } from './transport.ts';
  export { ResponseLimitError } from './transport.ts';
  export { captureFetchFileIdentity } from './fetch-sources.ts';
 +export { runWorker } from './worker-runtime.ts';
 +export type { WorkerLauncher } from './query-jobs.ts';
- 
- export { createNbSearchRemoteClient } from './remote-client.ts';
- export type { CreateNbSearchRemoteClientOptions } from './remote-client.ts';
-@@ -22,8 +24,9 @@
+ export type { ScriptContext, ScriptRequest, ScriptResults, ScriptModule } from './providers/script.ts';
+ export { resolveProviderOperation } from './provider-operation.ts';
+ export type { ResolvedProviderOperation } from './provider-operation.ts';
+@@ -25,8 +27,9 @@ export { builtInProviderRegistrations, ProviderRegistry, REGISTRY_SCHEMA_VERSION
  export type { ProviderDescriptor, ProviderFactoryContext, ProviderPorts, ProviderRegistration } from './provider-registry.ts';
  export type { ArtifactChunk, ArtifactRef, CapabilityEnvelope, CapabilityIssue, CapabilityIssueCode, CapabilityProviderDescriptor, CapabilityProviderInstance, ErrorEnvelope, FetchCancelEnvelope, FetchDocument, FetchEnvelope, FetchFileScope, FetchGetEnvelope, FetchInputKind, FetchOperationDescriptor, FetchPipelineDescriptor, FetchProvider, FetchProviderRequest, FetchProviderResult, FetchReadEnvelope, FetchRepresentation, FetchRunAsyncEnvelope, FetchRunSyncEnvelope, FetchSource, FetchStageRole, FetchWarning, Freshness, Hint, JobKind, JobReceipt, JobState, JsonValue, LaneCost, LaneLatency, LaneOutcome, LaneOutcomeState, LogicalStatus, OutputChannel, ProviderId, ProviderInstanceId, ProviderName, ProviderResult, PublicError, PublicErrorCode, QueryExecution, QueryExecutionRequest, QueryOperationDescriptor, QueryOperationOutput, QueryProvider, QueryProviderValue, SearchCancelEnvelope, SearchEnvelope, SearchGetEnvelope, SearchLogicalOutput, SearchReadEnvelope, SearchResult, SearchResultsOutput, SearchRunAsyncEnvelope, SearchRunSyncEnvelope, SearchSelection, SearchTypedOutput } from './types.ts';
  
@@ -21,6 +23,21 @@
 +  if (options.launcher !== undefined && typeof options.launcher.launch !== 'function') throw new NbSearchError('CONFIGURATION_ERROR', 'launcher must implement launch.');
 +  return createRuntimeComposition(options.env, { launcher: options.launcher, ...(options.config === undefined ? {} : { config: options.config }), ...(options.overrides === undefined ? {} : { overrides: options.overrides }), ...(options.provider_registrations === undefined ? {} : { provider_registrations: options.provider_registrations }), ...(options.http_transport === undefined ? {} : { transport: options.http_transport, disable_detached_async: true }) }).runtime;
  }
+diff --git a/src/worker-runtime.ts b/src/worker-runtime.ts
+new file mode 100644
+index 0000000..9c51ea9
+--- /dev/null
++++ b/src/worker-runtime.ts
+@@ -0,0 +1,7 @@
++import { homedir } from 'node:os';
++import { resolve } from 'node:path';
++import { createFetchJobRunnerFromSnapshot, createQueryJobRunnerFromSnapshot } from './app.ts';
++import { NbSearchError, publicError } from './errors.ts';
++import { JobStore } from './job-store.ts';
++
++export async function runWorker(jobId: string, env: NodeJS.ProcessEnv = process.env, explicitJobsRoot?: string, onReady?: () => void): Promise<void> { const jobsRoot = resolve(explicitJobsRoot ?? env['NB_SEARCH_JOBS_ROOT'] ?? resolve(env['NB_SEARCH_HOME'] ?? resolve(homedir(), '.nb-search'), 'jobs')); const store = new JobStore(jobsRoot); await store.prune(); try { const snapshot = await store.readExecutionSnapshot(jobId); const runner = snapshot.kind === 'search' ? createQueryJobRunnerFromSnapshot(snapshot, store, env) : createFetchJobRunnerFromSnapshot(snapshot, store, env); onReady?.(); await runner.run(jobId); } catch (error) { const job = await store.read(jobId); if (job.state === 'queued') { const safe = error instanceof NbSearchError ? error : new NbSearchError('INTERNAL', 'The worker failed.', false, undefined, { cause: error }); await store.transition(jobId, 'failed', { error: publicError(safe) }); return; } throw error; } }
+diff --git a/src/worker.ts b/src/worker.ts
+index b982a08..0db755b 100644
 --- a/src/worker.ts
 +++ b/src/worker.ts
 @@ -1,10 +1,6 @@
@@ -36,13 +53,3 @@
 +import { runWorker } from './worker-runtime.ts';
 +export { runWorker } from './worker-runtime.ts';
  if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) { const jobId = process.argv[2]; const jobsRoot = process.argv[3]; if (jobId === undefined) { process.stderr.write('worker job_id is required.\n'); process.exitCode = 2; } else await runWorker(jobId, process.env, jobsRoot); }
---- /dev/null
-+++ b/src/worker-runtime.ts
-@@ -0,0 +1,7 @@
-+import { homedir } from 'node:os';
-+import { resolve } from 'node:path';
-+import { createFetchJobRunnerFromSnapshot, createQueryJobRunnerFromSnapshot } from './app.ts';
-+import { NbSearchError, publicError } from './errors.ts';
-+import { JobStore } from './job-store.ts';
-+
-+export async function runWorker(jobId: string, env: NodeJS.ProcessEnv = process.env, explicitJobsRoot?: string, onReady?: () => void): Promise<void> { const jobsRoot = resolve(explicitJobsRoot ?? env['NB_SEARCH_JOBS_ROOT'] ?? resolve(env['NB_SEARCH_HOME'] ?? resolve(homedir(), '.nb-search'), 'jobs')); const store = new JobStore(jobsRoot); await store.prune(); try { const snapshot = await store.readExecutionSnapshot(jobId); const runner = snapshot.kind === 'search' ? createQueryJobRunnerFromSnapshot(snapshot, store, env) : createFetchJobRunnerFromSnapshot(snapshot, store, env); onReady?.(); await runner.run(jobId); } catch (error) { const job = await store.read(jobId); if (job.state === 'queued') { const safe = error instanceof NbSearchError ? error : new NbSearchError('INTERNAL', 'The worker failed.', false, undefined, { cause: error }); await store.transition(jobId, 'failed', { error: publicError(safe) }); return; } throw error; } }

@@ -1,5 +1,5 @@
 diff --git a/src/config-sources.ts b/src/config-sources.ts
-index 84b39aa..ead9df8 100644
+index 372153e..e94a3ab 100644
 --- a/src/config-sources.ts
 +++ b/src/config-sources.ts
 @@ -14,10 +14,15 @@ export interface ResolveConfigurationOptions { env?: NodeJS.ProcessEnv; config?:
@@ -29,7 +29,7 @@ index 84b39aa..ead9df8 100644
        'context7.docs': { provider_instance_id: 'context7.default', operation_id: 'docs', latency: 'medium', cost: 'cheap' },
        'zhipu.search': { provider_instance_id: 'zhipu.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['zhipu'] },
 diff --git a/src/fetch-providers.ts b/src/fetch-providers.ts
-index 0c92ade..4e9f232 100644
+index da4208a..283327c 100644
 --- a/src/fetch-providers.ts
 +++ b/src/fetch-providers.ts
 @@ -43,13 +43,16 @@ export class TavilyExtractFetchProvider implements FetchProvider {
@@ -52,11 +52,11 @@ index 0c92ade..4e9f232 100644
    }
  }
 diff --git a/src/lane-guidance.ts b/src/lane-guidance.ts
-index c9c4fd8..9672704 100644
+index 049a1df..8c8aecb 100644
 --- a/src/lane-guidance.ts
 +++ b/src/lane-guidance.ts
 @@ -19,8 +19,10 @@ const guide: Record<string, readonly [GuidanceGroup, string]> = {
-   'brave/search': ['onboarding', 'General web evidence retrieval'], 'parallel/search': ['onboarding', 'General web evidence retrieval'],
+   'brave/search': ['onboarding', 'General web evidence retrieval'], 'duckduckgo/search': ['onboarding', 'Keyless web search; public HTML access may require CAPTCHA'], 'parallel/search': ['onboarding', 'General web evidence retrieval'],
    'searxng/search': ['onboarding', 'Self-hosted general web retrieval'], 'zhipu/search': ['onboarding', 'General web evidence retrieval'],
    'direct-http/fetch': ['onboarding', 'Default URL document acquisition'], 'jina-reader/reader': ['onboarding', 'URL reader pipeline'],
 -  'exa/synthesis': ['research', 'Provider-generated synthesis with supporting evidence'], 'tavily/synthesis': ['research', 'Provider-generated synthesis with supporting evidence'],
@@ -68,19 +68,19 @@ index c9c4fd8..9672704 100644
    'grok/x-synthesis': ['specialist', 'Responses X-focused synthesis'], 'context7/docs': ['specialist', 'Library and code documentation'],
    'github/repositories': ['specialist', 'Repository discovery'], 'firecrawl/search': ['specialist', 'Search with extracted web content'],
 diff --git a/src/provider-registry.ts b/src/provider-registry.ts
-index 51039e6..50b4dc4 100644
+index e92313c..8f8eda1 100644
 --- a/src/provider-registry.ts
 +++ b/src/provider-registry.ts
-@@ -15,7 +15,7 @@ import { OpenAiCompatibleFetchProvider, OpenAiCompatibleSynthesisProvider, valid
- import { ParallelSearchProvider } from './providers/parallel.ts';
+@@ -17,7 +17,7 @@ import { ParallelSearchProvider } from './providers/parallel.ts';
  import { SearxngSearchProvider, validateSearxngBaseUrl } from './providers/searxng.ts';
  import { ZhipuSearchProvider } from './providers/zhipu.ts';
--import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, TavilyAnswerProvider, TavilyProvider, validateGmaEffort, validateGmaApiMode, resolveGmaUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
-+import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, TavilyAnswerProvider, TavilyCrawlProvider, TavilyProvider, TavilyResearchProvider, validateGmaEffort, validateGmaApiMode, resolveGmaUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
+ import { scriptRegistration } from './providers/script.ts';
+-import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, TavilyAnswerProvider, TavilyProvider, resolveGmaOptions, resolveGmaUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
++import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, TavilyAnswerProvider, TavilyCrawlProvider, TavilyProvider, TavilyResearchProvider, resolveGmaOptions, resolveGmaUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
  import type { HttpTransport } from './transport.ts';
  import type { FetchOperationDescriptor, FetchProvider, JsonValue, ProviderId, QueryOperationDescriptor, QueryProvider, QueryProviderValue } from './types.ts';
  
-@@ -86,9 +86,9 @@ const exaRegistration: ProviderRegistration = {
+@@ -88,9 +88,9 @@ const exaRegistration: ProviderRegistration = {
    create(context) { const credential = requireCredential(context); const common = commonOptions(context, credential); const searchPath = option(context.instance, 'search_path'); const synthesisPath = option(context.instance, 'synthesis_path'); const results = new ExaProvider({ ...common, ...(searchPath === undefined ? {} : { searchPath }) }); const synthesis = new ExaResearchLightProvider({ ...common, ...(synthesisPath === undefined ? {} : { operationPath: synthesisPath }) }); return { query: { search: resultsProvider(results), synthesis: { name: 'exa', redactions: synthesis.redactions, async execute(request) { const value = await synthesis.researchLight({ capability: 'research-light', query: request.query, retrieval_result_count: request.limit, ...(request.freshness === undefined ? {} : { freshness: request.freshness }), request_time_utc: request.request_time_utc, signal: request.signal }); return typed({ text: value.synthesis ?? '', supporting_urls: value.supporting_urls, resolved_type: value.resolved_type, citation_status: citationStatus() }); } } }, fetch: { contents: new ExaContentsFetchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }) }) } }; },
  };
  const tavilyRegistration: ProviderRegistration = {
@@ -93,7 +93,7 @@ index 51039e6..50b4dc4 100644
  const firecrawlRegistration: ProviderRegistration = {
    descriptor: { provider_id: 'firecrawl', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [remoteFetch('scrape')], activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
 diff --git a/src/providers.ts b/src/providers.ts
-index 771d0dc..44715f7 100644
+index ffaecac..926a2ef 100644
 --- a/src/providers.ts
 +++ b/src/providers.ts
 @@ -1,4 +1,5 @@
@@ -331,7 +331,7 @@ index 771d0dc..44715f7 100644
  export class ExaResearchLightProvider implements ResearchLightProvider {
    readonly name = 'exa' as const;
    readonly provider_id = 'exa' as const;
-@@ -581,7 +699,7 @@ function assertProviderStatus(
+@@ -589,7 +707,7 @@ function assertProviderStatus(
  function safeProviderError(error: unknown, provider: ProviderName, redactions: readonly string[]): NbSearchError {
    if (error instanceof NbSearchError) {
      return new NbSearchError(error.code, redactText(error.message, redactions), error.retryable, provider, {
@@ -340,7 +340,7 @@ index 771d0dc..44715f7 100644
      });
    }
    return new NbSearchError('PROVIDER_UNAVAILABLE', redactText(`${provider} provider failed.`, redactions), true, provider, { cause: error });
-@@ -596,8 +714,73 @@ function semanticText(value: unknown, label: string): string | undefined {
+@@ -604,8 +722,73 @@ function semanticText(value: unknown, label: string): string | undefined {
    return text;
  }
  
@@ -445,23 +445,23 @@ index f4ba5d6..a0d1176 100644
    it('propagates browser optional-dependency readiness to the provider instance', async () => { const root = await mkdtemp(join(tmpdir(), 'nb-search-cap-browser-')); roots.push(root); const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root, test_only_browser_render_io: { available: false, async resolve() { return []; }, async render() { throw new Error('must not render'); } }, config: { home: root, jobs_root: join(root, 'jobs') } }); const value = await app.runtime.capabilities(); const instance = value.providers.instances.find((provider) => provider.id === 'browser-render.default'); expect(instance?.availability).toBe('unavailable'); expect(instance?.issues.map((issue) => issue.code)).toEqual(expect.arrayContaining(['PROVIDER_PORTS_UNAVAILABLE', 'BROWSER_NOT_INSTALLED'])); expect(value.fetch.pipelines.find((pipeline) => pipeline.id === 'browser.render')).toMatchObject({ availability: 'unavailable', issues: [{ code: 'BROWSER_NOT_INSTALLED' }] }); });
  });
 diff --git a/test/config.test.ts b/test/config.test.ts
-index 9edfb63..a94e519 100644
+index 08b312a..3238840 100644
 --- a/test/config.test.ts
 +++ b/test/config.test.ts
 @@ -9,7 +9,7 @@ const roots: string[] = [];
  afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
  async function root() { const value = await mkdtemp(join(tmpdir(), 'nb-search-config-v4-')); roots.push(value); return value; }
  describe('schema v4 configuration', () => {
--  it('uses operation bindings and input-specific fetch chains', () => { const config = defaultConfiguration('C:/tmp/nb-search'); expect(config.schema_version).toBe('4'); expect(Object.keys(config.lanes).sort()).toEqual(['brave.search', 'browser.render', 'context7.docs', 'direct.fetch', 'direct.local', 'exa.contents', 'exa.search', 'exa.synthesis', 'firecrawl.scrape', 'firecrawl.search', 'github.repositories', 'gma.research', 'grok.synthesis', 'grok.x-synthesis', 'jina.reader', 'oac.fetch', 'oac.synthesis', 'parallel.search', 'searxng.search', 'tavily.extract', 'tavily.search', 'tavily.synthesis', 'wayback.fetch', 'zhipu.search']); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'file', pipelines: ['direct.local'] }); expect(config.fetch.file_scopes).toEqual([]); expect(config.execution.fetch).toMatchObject({ max_source_bytes: 2 * 1024 * 1024, quality: { min_content_chars: 0, blocked_markers: [] } }); expect(config.lanes['exa.search']).toEqual({ provider_instance_id: 'exa.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['exa'] }); });
-+  it('uses operation bindings and input-specific fetch chains', () => { const config = defaultConfiguration('C:/tmp/nb-search'); expect(config.schema_version).toBe('4'); expect(Object.keys(config.lanes).sort()).toEqual(['brave.search', 'browser.render', 'context7.docs', 'direct.fetch', 'direct.local', 'exa.contents', 'exa.search', 'exa.synthesis', 'firecrawl.scrape', 'firecrawl.search', 'github.repositories', 'gma.research', 'grok.synthesis', 'grok.x-synthesis', 'jina.reader', 'oac.fetch', 'oac.synthesis', 'parallel.search', 'searxng.search', 'tavily.crawl', 'tavily.extract', 'tavily.research', 'tavily.search', 'tavily.synthesis', 'wayback.fetch', 'zhipu.search']); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'file', pipelines: ['direct.local'] }); expect(config.fetch.file_scopes).toEqual([]); expect(config.execution.fetch).toMatchObject({ max_source_bytes: 2 * 1024 * 1024, quality: { min_content_chars: 0, blocked_markers: [] } }); expect(config.lanes['exa.search']).toEqual({ provider_instance_id: 'exa.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['exa'] }); });
+-  it('uses operation bindings and input-specific fetch chains', () => { const config = defaultConfiguration('C:/tmp/nb-search'); expect(config.schema_version).toBe('4'); expect(Object.keys(config.lanes).sort()).toEqual(['brave.search', 'browser.render', 'context7.docs', 'direct.fetch', 'direct.local', 'duckduckgo.search', 'exa.contents', 'exa.search', 'exa.synthesis', 'firecrawl.scrape', 'firecrawl.search', 'github.repositories', 'gma.research', 'grok.synthesis', 'grok.x-synthesis', 'jina.reader', 'oac.fetch', 'oac.synthesis', 'parallel.search', 'searxng.search', 'tavily.extract', 'tavily.search', 'tavily.synthesis', 'wayback.fetch', 'zhipu.search']); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'file', pipelines: ['direct.local'] }); expect(config.fetch.file_scopes).toEqual([]); expect(config.defaults.search_lane).toBe('github.repositories'); expect(config.lanes['duckduckgo.search']?.cost).toBe('free'); expect(config.execution.fetch).toMatchObject({ max_source_bytes: 2 * 1024 * 1024, quality: { min_content_chars: 0, blocked_markers: [] } }); expect(config.lanes['exa.search']).toEqual({ provider_instance_id: 'exa.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['exa'] }); });
++  it('uses operation bindings and input-specific fetch chains', () => { const config = defaultConfiguration('C:/tmp/nb-search'); expect(config.schema_version).toBe('4'); expect(Object.keys(config.lanes).sort()).toEqual(['brave.search', 'browser.render', 'context7.docs', 'direct.fetch', 'direct.local', 'duckduckgo.search', 'exa.contents', 'exa.search', 'exa.synthesis', 'firecrawl.scrape', 'firecrawl.search', 'github.repositories', 'gma.research', 'grok.synthesis', 'grok.x-synthesis', 'jina.reader', 'oac.fetch', 'oac.synthesis', 'parallel.search', 'searxng.search', 'tavily.crawl', 'tavily.extract', 'tavily.research', 'tavily.search', 'tavily.synthesis', 'wayback.fetch', 'zhipu.search']); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }); expect(config.defaults.fetch_chain).toContainEqual({ input_kind: 'file', pipelines: ['direct.local'] }); expect(config.fetch.file_scopes).toEqual([]); expect(config.defaults.search_lane).toBe('github.repositories'); expect(config.lanes['duckduckgo.search']?.cost).toBe('free'); expect(config.execution.fetch).toMatchObject({ max_source_bytes: 2 * 1024 * 1024, quality: { min_content_chars: 0, blocked_markers: [] } }); expect(config.lanes['exa.search']).toEqual({ provider_instance_id: 'exa.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['exa'] }); });
    it('rejects the removed fetch_lane field', async () => { const home = await root(); expect(() => resolveConfiguration({ env: { NB_SEARCH_HOME: home }, cwd: home, homeDirectory: home, config: { defaults: { fetch_lane: 'direct.fetch' } } as never })).toThrow(/fetch_lane/); });
    it('ignores every legacy credential and routing environment alias', async () => { const home = await root(); const baseline = resolveConfiguration({ env: { NB_SEARCH_HOME: home }, cwd: home, homeDirectory: home }); const injected = resolveConfiguration({ env: { NB_SEARCH_HOME: home, SEARCH_LAYER_CREDENTIALS: 'x', EXA_API_KEY: 'legacy', TAVILY_API_KEY: 'legacy', GROK_API_KEY: 'legacy', GROK_MODEL: 'legacy', SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS: '1' }, cwd: home, homeDirectory: home }); expect(injected.config_fingerprint).toBe(baseline.config_fingerprint); expect(injected.secret_bindings.size).toBe(0); expect(JSON.stringify(injected)).not.toMatch(/legacy_path|LEGACY_NOT_FOUND|LEGACY_INVALID|legacy-json/); });
    it('uses canonical provider environment names only', async () => { const home = await root(); const resolved = resolveConfiguration({ env: { NB_SEARCH_HOME: home, NB_SEARCH_EXA_API_KEY: 'canonical', NB_SEARCH_EXA_BASE_URL: 'https://exa.example' }, cwd: home, homeDirectory: home }); expect(resolved.secret_bindings.get('exa.default')?.value).toBe('canonical'); expect(resolved.config.provider_instances['exa.default']?.base_url).toBe('https://exa.example'); });
 diff --git a/test/fetch-providers.test.ts b/test/fetch-providers.test.ts
-index 51c4184..cdc7a2c 100644
+index f6b6735..6b38eeb 100644
 --- a/test/fetch-providers.test.ts
 +++ b/test/fetch-providers.test.ts
-@@ -18,8 +18,10 @@ describe('fetch provider adapters', () => {
+@@ -19,8 +19,10 @@ describe('fetch provider adapters', () => {
    });
  
    it('normalizes Tavily Extract and sends the extract request', async () => {
@@ -475,11 +475,11 @@ index 51c4184..cdc7a2c 100644
  
    it('normalizes Exa Contents and sends the contents request', async () => {
 diff --git a/test/providers.test.ts b/test/providers.test.ts
-index 9731610..54a21c9 100644
+index 777799b..c580616 100644
 --- a/test/providers.test.ts
 +++ b/test/providers.test.ts
-@@ -1,7 +1,7 @@
- import { describe, expect, it } from 'vitest';
+@@ -7,7 +7,7 @@ import { DuckDuckGoSearchProvider } from '../src/providers/duckduckgo.ts';
+ import { FetchJsonTransport } from '../src/transport.ts';
  import type { ProviderInstanceConfig } from '../src/config-schema.ts';
  import { builtInProviderRegistrations, ProviderRegistry } from '../src/provider-registry.ts';
 -import { ExaProvider, TavilyProvider, resolveSearchUrl } from '../src/providers.ts';
@@ -487,7 +487,7 @@ index 9731610..54a21c9 100644
  import type { JsonRequest, JsonResponse, JsonTransport } from '../src/transport.ts';
  
  describe('provider wire adapters', () => {
-@@ -16,10 +16,15 @@ describe('provider wire adapters', () => {
+@@ -22,10 +22,15 @@ describe('provider wire adapters', () => {
    it('builds the Tavily results request and normalizes the endpoint once', async () => {
      const transport = new CaptureTransport({ status: 200, body: { results: [{ title: 'T', url: 'https://t.test', content: 'body', published_date: '2026-02-01' }] } });
      const provider = new TavilyProvider({ apiKey: 'tavily-secret', transport });
@@ -505,7 +505,7 @@ index 9731610..54a21c9 100644
    });
  
    it('adapts Exa and Tavily synthesis wire responses to schema-bound typed JSON', async () => {
-@@ -32,7 +37,84 @@ describe('provider wire adapters', () => {
+@@ -38,7 +43,84 @@ describe('provider wire adapters', () => {
      const tavilyTransport = new CaptureTransport({ status: 200, body: { answer: 'tavily text', results: [{ title: 'Source', url: 'https://source.test', content: 'body' }] } });
      const tavily = registry.create('tavily.default', instance('tavily'), context('tavily', tavilyTransport));
      await expect(tavily.query['synthesis']!.execute(queryRequest())).resolves.toEqual({ channel: 'typed', data: { text: 'tavily text', supporting_urls: [{ url: 'https://source.test', title: 'Source', source: 'provider-result' }], citation_status: { claim_linked_citations: false, evidence_map_available: false, semantic_verification: false } } });
@@ -591,7 +591,7 @@ index 9731610..54a21c9 100644
    });
  
    it.each([[401, 'PROVIDER_AUTH', false], [429, 'PROVIDER_RATE_LIMIT', true], [500, 'PROVIDER_UNAVAILABLE', true], [503, 'PROVIDER_UNAVAILABLE', true]] as const)('maps HTTP %s to %s', async (status, code, retryable) => {
-@@ -57,6 +139,18 @@ class CaptureTransport implements JsonTransport {
+@@ -101,6 +183,18 @@ class CaptureTransport implements JsonTransport {
    async send<T>(requestValue: JsonRequest): Promise<JsonResponse<T>> { this.requests.push(requestValue); return this.response as JsonResponse<T>; }
  }
  
@@ -611,9 +611,17 @@ index 9731610..54a21c9 100644
  function context(providerId: string, transport: JsonTransport) { return { credential: { credential_slot_id: `${providerId}.default`, provider_id: providerId, value: 'secret', worker_grant: { kind: 'environment' as const, name: 'TEST_KEY' } }, transports: { http: transport }, clock: () => new Date('2026-01-01T00:00:00.000Z') }; }
  function request() { return { query: 'query', limit: 3, signal: new AbortController().signal }; }
 diff --git a/website/sources/index.md b/website/sources/index.md
-index 4cb1567..2f2030f 100644
+index 0cabfb2..06313e3 100644
 --- a/website/sources/index.md
 +++ b/website/sources/index.md
+@@ -1,6 +1,6 @@
+ # 信息源目录 (Sources Catalog)
+ 
+-`nb-search` 内置支持 16 个搜索源（Search Lanes）与 9 个内容抓取管道（Fetch Pipelines）。本地文档转换与 Markdown/资源保存请使用独立的 [nb-extract](https://github.com/NB-Corp/nb-extract) 工具。这些源依据用途场景、成本结构、延迟特征与输出通道进行分类。
++`nb-search` 内置支持 18 个搜索源（Search Lanes）与 9 个内容抓取管道（Fetch Pipelines）。本地文档转换与 Markdown/资源保存请使用独立的 [nb-extract](https://github.com/NB-Corp/nb-extract) 工具。这些源依据用途场景、成本结构、延迟特征与输出通道进行分类。
+ 
+ ::: tip 维度说明
+ 表格中的相对成本（`free` / `cheap` / `expensive`）和相对延迟（`fast` / `medium` / `slow`）属于运行时配置内严格声明的定性元数据标签，便于上层编排器进行粗粒度选择，并非真实账单计费依据或基准跑分。
 @@ -18,18 +18,18 @@
     - **典型源**：
       - 代码与工程：`github.repositories`（仓库检索）、`context7.docs`（框架文档上下文）。
@@ -629,11 +637,11 @@ index 4cb1567..2f2030f 100644
  在本地运行 `node scripts/nb-search.mjs --doctor` 可输出包含用途分组指引的配置就绪摘要；调用 `capabilities` 可查看各源实时的端口激活与支持模式。注意下表中列出的“支持模式”适用于默认未注入自定义 `http_transport` 的标准本地运行时；若宿主显式注入了自定义 transport，所有异步模式将被禁用。`readiness` 仅反映本地配置完整度，并非外部上游的在线可用性探测。
  :::
  
--## 15 个搜索源 (Search Lanes)
-+## 17 个搜索源 (Search Lanes)
+-## 16 个搜索源 (Search Lanes)
++## 18 个搜索源 (Search Lanes)
  
--内置 15 个搜索源分布在不同的底层 Provider 与操作中：
-+内置 17 个搜索源分布在不同的底层 Provider 与操作中：
+-内置 16 个搜索源分布在不同的底层 Provider 与操作中：
++内置 18 个搜索源分布在不同的底层 Provider 与操作中：
  
  | Lane 标识 | Provider / 操作 | 输出通道与 Schema | 支持模式 (就绪时) | 必需凭据与端点配置 | 相对成本 / 延迟 | 特征与端点约定 |
  |---|---|---|---|---|---|---|

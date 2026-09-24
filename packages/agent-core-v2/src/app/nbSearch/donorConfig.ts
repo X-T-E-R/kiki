@@ -35,8 +35,9 @@ import { mergeNbSearchConfig } from './configSection';
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * Port of nb-search 0.2.0 config-sources defaults. The public runtime revision
- * is checked against this resolver before any credential-bearing operation.
+ * Port of nb-search 0.4.0 config-sources defaults with Kiki's Tavily lanes.
+ * The public runtime revision is checked against this resolver before any
+ * credential-bearing operation.
  */
 export function defaultNbSearchConfiguration(home: string): CanonicalConfig {
   const instance = (provider_id: string, credential_slot_id?: string, options: Record<string, unknown> = {}): ProviderInstanceConfig => ({ provider_id, enabled: true, credential_slot_id, options });
@@ -47,7 +48,7 @@ export function defaultNbSearchConfiguration(home: string): CanonicalConfig {
       'jina-reader.default': instance('jina-reader', 'jina-reader.default'), 'firecrawl.default': instance('firecrawl', 'firecrawl.default'),
       'brave.default': instance('brave', 'brave.default'),
       'context7.default': instance('context7', 'context7.default'), 'zhipu.default': instance('zhipu', 'zhipu.default'),
-      'github.default': instance('github', 'github.default'),
+      'github.default': instance('github', 'github.default'), 'duckduckgo.default': instance('duckduckgo'),
       'parallel.default': instance('parallel', 'parallel.default'), 'searxng.default': instance('searxng'),
       'openai-compatible.default': instance('openai-compatible', 'openai-compatible.default'),
       'grok.default': instance('grok', 'grok.default', { model: 'grok-4.1-fast' }),
@@ -76,6 +77,7 @@ export function defaultNbSearchConfiguration(home: string): CanonicalConfig {
       'context7.docs': { provider_instance_id: 'context7.default', operation_id: 'docs', latency: 'medium', cost: 'cheap' },
       'zhipu.search': { provider_instance_id: 'zhipu.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['zhipu'] },
       'github.repositories': { provider_instance_id: 'github.default', operation_id: 'repositories', latency: 'fast', cost: 'free', evidence_groups: ['github'] },
+      'duckduckgo.search': { provider_instance_id: 'duckduckgo.default', operation_id: 'search', latency: 'medium', cost: 'free', evidence_groups: ['duckduckgo'] },
       'parallel.search': { provider_instance_id: 'parallel.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['parallel'] },
       'searxng.search': { provider_instance_id: 'searxng.default', operation_id: 'search', latency: 'medium', cost: 'free', evidence_groups: ['searxng'] },
       'oac.synthesis': { provider_instance_id: 'openai-compatible.default', operation_id: 'synthesis', latency: 'slow', cost: 'expensive' },
@@ -92,7 +94,7 @@ export function defaultNbSearchConfiguration(home: string): CanonicalConfig {
       'wayback.fetch': { provider_instance_id: 'wayback.default', operation_id: 'fetch', latency: 'medium', cost: 'free' },
       'browser.render': { provider_instance_id: 'browser-render.default', operation_id: 'render', latency: 'slow', cost: 'free' },
     },
-    defaults: { fetch_chain: [{ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }, { input_kind: 'inline_text', pipelines: ['direct.local'] }, { input_kind: 'inline_bytes', pipelines: ['direct.local'] }, { input_kind: 'file', pipelines: ['direct.local'] }] },
+    defaults: { search_lane: 'github.repositories', fetch_chain: [{ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }, { input_kind: 'inline_text', pipelines: ['direct.local'] }, { input_kind: 'inline_bytes', pipelines: ['direct.local'] }, { input_kind: 'file', pipelines: ['direct.local'] }] },
     presets: {}, fetch: { file_scopes: [] },
     execution: { max_provider_calls: 64, max_concurrency: 8, retry_count: 1, search_timeout_ms: 30_000, fetch_timeout_ms: 60_000, max_inline_bytes: 16 * 1024 * 1024, fetch: { max_source_bytes: 2097152, max_response_bytes: 2097152, max_content_chars: 200_000, max_redirects: 5, quality: { min_content_chars: 0, blocked_markers: [] } } },
   };

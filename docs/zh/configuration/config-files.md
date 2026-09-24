@@ -570,15 +570,15 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 `nb_search` 配置 Kiki 内置的搜索与抓取模块，也就是 `WebSearch` 和 `FetchURL` 工具背后的能力。该模块是 Kiki 的一部分：随产品一起安装，不需要额外的安装步骤；其中的 provider 实例、凭证槽、lane 和默认 fetch chain 都已经内置。
 
-在这些内置默认值之上，你只需提供所选 provider 的凭证（通过其凭证槽中指定的环境变量），并配置一个默认搜索 lane，让 `WebSearch` 在没有显式 lane 参数时也能运行。字段名与合并行为遵循该模块的 canonical 配置 contract，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
+默认的 `WebSearch` lane 是 `github.repositories`，不需要凭证或配置，但只检索 GitHub 仓库。查阅代码库文档时可显式选择 `context7.docs`；它返回 typed 文档上下文，不能与结果型 lane 组合。`duckduckgo.search` 是可选的免密钥通用网页 lane，但其公共 HTML 端点可能返回 CAPTCHA；如需更稳定的通用检索，请配置其他 provider 的凭证并覆盖 `defaults.search_lane`。字段名与合并行为遵循该模块的规范配置约定，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `provider_instances` | `table` | 否 | 命名 provider 实例，包含 `provider_id`、`enabled`、可选的 `credential_slot_id` / `base_url`，以及 provider 专属 `options` |
 | `credential_slots` | `table` | 否 | 命名凭据槽，只包含 `provider_id` 和 `env` 中的环境变量名 |
 | `lanes` | `table` | 否 | 命名 operation lane，包含 `provider_instance_id`、`operation_id`、`latency`、`cost` 和可选 `evidence_groups` |
-| `defaults.search_lane` | `string` | 否 | `WebSearch` 使用的默认 lane；未配置时网页搜索 fail-closed |
-| `defaults.fetch_chain` | `array<table>` | 否 | 按输入类型和 representation 配置 fetch pipeline chain；URL 的内置默认值为 `direct.fetch`，随后尝试 `jina.reader` |
+| `defaults.search_lane` | `string` | 否 | 内置默认值为 `github.repositories`（仅仓库）；通用网页检索需要覆盖。显式删除默认值且不指定 lane 时，`WebSearch` 仍会拒绝运行 |
+| `defaults.fetch_chain` | `array<table>` | 否 | URL 默认先用 `direct.fetch`，失败时尝试免密钥的 `jina.reader`；直连成功但内容无用时，需显式配置 `execution.fetch.quality` 规则才能触发回退 |
 | `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 
 凭据值不会写入 `config.toml`。这是对[供应商凭证](#providers)设计的一次刻意例外——供应商的 `api_key` 写在配置文件里，而搜索模块的凭据放在服务器进程环境中：凭证槽的 `env` 字段只登记环境变量名，凭据值本身从不进入 `config.toml`。Kiki 服务器进程中的环境变量优先，包括显式设置的空值。开启本机复用后，Kiki 可以从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的本机 nb-search `secrets.json` 补充缺少的变量，只导入匹配凭证槽的变量，并在使用前校验提供商、地址、凭证槽及文件保护。会重定向已导入凭证的配置变更将被拒绝，不会静默重新绑定。该模块不读取其他终端的变量，也不会自动加载独立的 `.env` 文件。密钥值与凭证文件均不会发送到 GUI。

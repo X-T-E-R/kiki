@@ -1,17 +1,8 @@
---- a/src/types.ts
-+++ b/src/types.ts
-@@ -59,7 +59,7 @@
- export interface FetchProviderResult { url?: string; final_url?: string; title?: string; content: string; content_type: string; media_type: string; representation: FetchRepresentation; format: 'text'; byte_length: number; truncated: boolean; warnings: FetchWarning[] }
- export interface FetchProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; fetch(request: FetchProviderRequest): Promise<FetchProviderResult> }
- export interface FetchDocument extends FetchProviderResult { source_lane: string }
--export interface FetchFileScope { id: string; root: string; media_types?: readonly string[] }
-+export interface FetchFileScope { id: string; root: string; media_types?: readonly string[]; canonical_target?: string; approved_identity?: { dev: string; ino: string } }
- 
- export interface ProviderResult {
-   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
+diff --git a/src/config-schema.ts b/src/config-schema.ts
+index 5c4179a..2f4767a 100644
 --- a/src/config-schema.ts
 +++ b/src/config-schema.ts
-@@ -31,7 +31,7 @@
+@@ -31,7 +31,7 @@ const credentialSlotSchema = z.object({ provider_id: z.string().trim().min(1).ma
  const laneSchema = z.object({ provider_instance_id: z.string().trim().min(1).max(256), operation_id: z.string().trim().min(1).max(128), latency: z.enum(['fast', 'medium', 'slow']), cost: z.enum(['free', 'cheap', 'expensive']), evidence_groups: z.array(z.string().trim().min(1).max(128)).min(1).max(32).optional() }).strict();
  const presetSchema = z.object({ lanes: z.array(z.string().trim().min(1).max(256)).min(1) }).strict().superRefine((value, context) => { if (new Set(value.lanes).size !== value.lanes.length) context.addIssue({ code: 'custom', path: ['lanes'], message: 'preset lanes must be unique' }); });
  const fetchChainSchema = z.object({ input_kind: z.enum(['url', 'inline_text', 'inline_bytes', 'file']), representation: z.enum(['markdown', 'text']).optional(), pipelines: z.array(z.string().trim().min(1).max(256)).min(1) }).strict();
@@ -20,9 +11,11 @@
  const fetchConfigSchema = z.object({ file_scopes: z.array(fileScopeSchema).max(64) }).strict().superRefine((value, context) => { if (new Set(value.file_scopes.map((item) => item.id)).size !== value.file_scopes.length) context.addIssue({ code: 'custom', path: ['file_scopes'], message: 'file scope ids must be unique' }); });
  const qualitySchema = z.object({ min_content_chars: z.number().int().min(0).max(10_000_000), blocked_markers: z.array(z.string().min(1).max(256)).max(64) }).strict();
  const fetchExecutionSchema = z.object({ max_source_bytes: z.number().int().min(1).max(64 * 1024 * 1024), max_response_bytes: z.number().int().min(1024).max(64 * 1024 * 1024), max_content_chars: z.number().int().min(256).max(10_000_000), max_redirects: z.number().int().min(0).max(20), quality: qualitySchema }).strict();
+diff --git a/src/fetch-sources.ts b/src/fetch-sources.ts
+index c9d107d..c359de9 100644
 --- a/src/fetch-sources.ts
 +++ b/src/fetch-sources.ts
-@@ -7,10 +7,26 @@
+@@ -7,10 +7,26 @@ import type { FetchFileScope, FetchProvider, FetchProviderRequest, FetchProvider
  
  const TEXT_MEDIA_TYPES = ['text/html', 'text/plain', 'text/markdown'] as const;
  interface FileIdentity { dev: number; ino: number; size: number; isFile(): boolean }
@@ -51,7 +44,7 @@
  export class LocalFetchProvider implements FetchProvider {
    readonly name = 'local-reader';
    constructor(private readonly fileIo: LocalFetchFileIo = nodeFileIo) {}
-@@ -43,10 +59,18 @@
+@@ -43,10 +59,18 @@ async function acquireLocalSource(request: FetchProviderRequest, fileIo: LocalFe
  async function readScopedFile(scopeId: string, path: string, scopes: readonly FetchFileScope[], maxBytes: number, fileIo: LocalFetchFileIo): Promise<{ bytes: Buffer; scope: FetchFileScope }> {
    const scope = scopes.find((item) => item.id === scopeId); if (scope === undefined) throw new NbSearchError('FETCH_SCOPE_NOT_FOUND', `File scope ${scopeId} is not configured.`);
    if (isAbsolute(path)) throw blockedFile(); let root: string; try { root = await fileIo.realpath(resolve(scope.root)); } catch (error) { throw new NbSearchError('FETCH_FILE_BLOCKED', 'The file scope root is unavailable.', false, undefined, { cause: error }); } const candidate = resolve(root, path); assertContained(root, candidate);
@@ -70,10 +63,24 @@
      const current = await fileIo.stat(canonical); if (!current.isFile() || current.dev !== opened.dev || current.ino !== opened.ino) throw blockedFile();
      return { bytes: await readBounded(handle, maxBytes), scope };
    } finally { await handle.close(); }
+diff --git a/src/index.ts b/src/index.ts
+index b467cd4..64038dc 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -7,6 +7,7 @@ import { NbSearchError } from './errors.ts';
+ 
+ export type { HttpRequest, HttpResponse, HttpTransport } from './transport.ts';
+ export { ResponseLimitError } from './transport.ts';
++export { captureFetchFileIdentity } from './fetch-sources.ts';
+ export type { ScriptContext, ScriptRequest, ScriptResults, ScriptModule } from './providers/script.ts';
+ export { resolveProviderOperation } from './provider-operation.ts';
+ export type { ResolvedProviderOperation } from './provider-operation.ts';
+diff --git a/src/provider-registry.ts b/src/provider-registry.ts
+index 3f8241f..e92313c 100644
 --- a/src/provider-registry.ts
 +++ b/src/provider-registry.ts
-@@ -72,7 +72,7 @@
- function registrationsWithFetchIo(directIo: DirectFetchIo | undefined, browserIo: BrowserRenderIo): readonly ProviderRegistration[] { return [directRegistration(directIo), waybackRegistration(directIo), browserRegistration(browserIo), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, context7Registration, zhipuRegistration, githubRegistration, parallelRegistration, searxngRegistration, openAiCompatibleRegistration, grokRegistration, gmaRegistration]; }
+@@ -74,7 +74,7 @@ export function builtInProviderRegistrationsForInternalTest(testDirectIo?: Direc
+ function registrationsWithFetchIo(directIo: DirectFetchIo | undefined, browserIo: BrowserRenderIo): readonly ProviderRegistration[] { return [directRegistration(directIo), waybackRegistration(directIo), browserRegistration(browserIo), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, context7Registration, zhipuRegistration, githubRegistration, duckduckgoRegistration, parallelRegistration, searxngRegistration, openAiCompatibleRegistration, grokRegistration, gmaRegistration, scriptRegistration]; }
  const urlStages = [{ id: 'remote.acquire', role: 'acquire' as const }, { id: 'content.extract', role: 'extract' as const }];
  const remoteFetch = (operation_id: string): FetchOperationDescriptor => ({ operation_id, schema_id: 'nb-search.fetch@1', input_kinds: ['url'], media_types: ['text/html', 'text/plain', 'text/markdown'], representations: ['markdown', 'text'], execution_modes: ['sync'], egress: 'url', stages: urlStages });
 -function directRegistration(io: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'direct-http', adapter_version: '1', query_operations: [], fetch_operations: [{ ...remoteFetch('fetch'), media_types: ['text/html', 'application/xhtml+xml', 'text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'application/ld+json', 'application/xml', 'text/xml', 'application/rss+xml', 'application/atom+xml'], stages: [{ id: 'direct.http', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }, { operation_id: 'local', schema_id: 'nb-search.fetch@1', input_kinds: ['inline_text', 'inline_bytes', 'file'], media_types: ['text/html', 'text/plain', 'text/markdown'], representations: ['markdown', 'text'], execution_modes: ['sync', 'async'], egress: 'none', stages: [{ id: 'local.acquire', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: { fetch: new DirectFetchProvider(io), local: new LocalFetchProvider() } }) }; }
@@ -81,16 +88,22 @@
  function waybackRegistration(directIo: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'wayback', adapter_version: '1', query_operations: [], fetch_operations: [{ ...remoteFetch('fetch'), media_types: ['text/html', 'application/xhtml+xml', 'text/plain', 'text/markdown'], stages: [{ id: 'wayback.lookup', role: 'acquire' }, { id: 'wayback.snapshot', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: (context) => ({ query: {}, fetch: { fetch: new WaybackFetchProvider({ transport: context.transports.http, ...(directIo === undefined ? {} : { directIo }) }) } }) }; }
  function browserRegistration(io: BrowserRenderIo): ProviderRegistration { return { descriptor: { provider_id: 'browser-render', adapter_version: '1', query_operations: [], fetch_operations: [{ operation_id: 'render', schema_id: 'nb-search.fetch@1', input_kinds: ['url'], media_types: ['text/html', 'application/xhtml+xml', 'text/plain'], representations: ['markdown', 'text'], execution_modes: ['async'], egress: 'url', stages: [{ id: 'browser.chromium', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: io.available ? { render: new BrowserRenderProvider(io) } : {} as Readonly<Record<string, FetchProvider>> }) }; }
  const jinaRegistration: ProviderRegistration = {
---- a/src/index.ts
-+++ b/src/index.ts
-@@ -7,6 +7,7 @@
+diff --git a/src/types.ts b/src/types.ts
+index 2a7403e..2c8d6bc 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -59,7 +59,7 @@ export interface FetchProviderRequest { source: FetchSource; representation: Fet
+ export interface FetchProviderResult { url?: string; final_url?: string; title?: string; content: string; content_type: string; media_type: string; representation: FetchRepresentation; format: 'text'; byte_length: number; truncated: boolean; warnings: FetchWarning[] }
+ export interface FetchProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; fetch(request: FetchProviderRequest): Promise<FetchProviderResult> }
+ export interface FetchDocument extends FetchProviderResult { source_lane: string }
+-export interface FetchFileScope { id: string; root: string; media_types?: readonly string[] }
++export interface FetchFileScope { id: string; root: string; media_types?: readonly string[]; canonical_target?: string; approved_identity?: { dev: string; ino: string } }
  
- export type { HttpRequest, HttpResponse, HttpTransport } from './transport.ts';
- export { ResponseLimitError } from './transport.ts';
-+export { captureFetchFileIdentity } from './fetch-sources.ts';
- 
- export { createNbSearchRemoteClient } from './remote-client.ts';
- export type { CreateNbSearchRemoteClientOptions } from './remote-client.ts';
+ export interface ProviderResult {
+   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
+diff --git a/test/file-admission.test.ts b/test/file-admission.test.ts
+new file mode 100644
+index 0000000..9b3603e
 --- /dev/null
 +++ b/test/file-admission.test.ts
 @@ -0,0 +1,111 @@

@@ -108,6 +108,11 @@ describe('nb-search independent donor parity', () => {
     const expected = await createNbSearchRuntime({ env }).capabilities({});
     const resolved = resolveNbSearchConfig(env, {}, undefined);
     expect(resolved.lanes['tavily.extract']?.latency).toBe('fast');
+    expect(resolved.defaults.search_lane).toBe('github.repositories');
+    expect(resolved.lanes['duckduckgo.search']).toMatchObject({ provider_instance_id: 'duckduckgo.default', operation_id: 'search', cost: 'free' });
+    expect(expected.search.default_lane).toBe('github.repositories');
+    expect(expected.search.lanes.find((lane) => lane.id === 'github.repositories')?.availability).toBe('ready');
+    expect(expected.search.lanes.find((lane) => lane.id === 'duckduckgo.search')?.availability).toBe('ready');
     expect(nbSearchConfigRevision(resolved)).toBe(expected.revision);
     expect(resolved.lanes['tavily.crawl']).toMatchObject({ provider_instance_id: 'tavily.default', operation_id: 'crawl', latency: 'slow', cost: 'cheap' });
     expect(resolved.lanes['tavily.research']).toMatchObject({ provider_instance_id: 'tavily.default', operation_id: 'research', latency: 'slow', cost: 'expensive' });
