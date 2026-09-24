@@ -113,14 +113,22 @@ export class ValueReader {
     this.reopenWal();
   }
 
-  close(): void {
+  closeSnapshot(): void {
     if (this.snapshotFd !== null) {
       fs.closeSync(this.snapshotFd);
       this.snapshotFd = null;
     }
+  }
+
+  closeWal(): void {
     if (this.walFd !== null) {
       fs.closeSync(this.walFd);
       this.walFd = null;
     }
+  }
+
+  close(): void {
+    this.closeSnapshot();
+    this.closeWal();
   }
 }

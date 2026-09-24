@@ -56,7 +56,7 @@ import fs from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { WAL } from './wal.js';
-import { renameReplace } from './rename-replace.js';
+import { renameReplace, withWindowsEpermRetry } from './rename-replace.js';
 import { writeSnapshot } from './snapshot.js';
 import type { Store, ValueLoc } from './store.js';
 import type { FsyncPolicy, WalStats } from './wal.js';
@@ -94,13 +94,15 @@ export interface CompactionTarget {
      *  durability is knowingly degraded (warned once) rather than aborted. */
     dirFsyncUnsupported?: boolean;
   };
-  /** Reader for disk-backed values; reopened after snapshot/WAL rotation so
-   *  remapped value pointers read from the new files. On Windows it is also
-   *  closed before the rotation renames (see rotateReplace). The optional
-   *  readAsync powers the stage-6 grouped async snapshot reads. */
+  /** Reader for disk-backed values. On Windows each destination handle is
+   *  released only for its own rename and reattached before the next await;
+   *  remapped pointers always match the newly attached file. */
   valueReader?: {
+    closeSnapshot(): void;
+    closeWal(): void;
+    reopenSnapshot(): void;
+    reopenWal(): void;
     reopenBoth(): void;
-    close?(): void;
     readAsync?(loc: ValueLoc): Promise<Buffer>;
   };
   /** Optional hook invoked (and awaited) after the snapshot + WAL rotation
@@ -304,14 +306,11 @@ async function runCompaction(db: CompactionTarget): Promise<void> {
   // later write hitting WAL_SEALED/'WAL is closed' forever. The catch below
   // rolls the db forward to a writable state by swapping in a FRESH WAL on
   // db.walPath (it appends at the real EOF of whatever file the path now
-  // holds). `rotated` tracks the commit point: before the WAL rename the old
-  // full WAL is still at db.walPath and the old store pointers stay valid (a
-  // renamed-in new snapshot paired with the old WAL is consistent — see the
-  // crash-safety note above); past it, the new layout is on disk and recovery
-  // must additionally apply the store-pointer remap + reader reopen. If the
-  // rollback itself also fails (e.g. persistent EMFILE), the db stays
-  // unwritable but the on-disk snapshot/WAL pair is consistent either way, so
-  // the next process open still recovers.
+  // holds). A snapshot-only rename also needs its pointers remapped before a
+  // reader can reopen the new snapshot; the old full WAL offsets stay intact.
+  // Past the WAL rename, both files and their pointers switch together. If
+  // WAL recovery itself fails (e.g. persistent EMFILE), the next process open
+  // can still recover the consistent on-disk snapshot/WAL pair.
   let releaseRotation!: () => void;
   db._rotateLock = new Promise<void>((resolve) => {
     releaseRotation = resolve;
@@ -320,18 +319,25 @@ async function runCompaction(db: CompactionTarget): Promise<void> {
   // Stage 6: from here to the remap/reader reopen, a shutdown must wait for
   // the rotation rather than cancelling it mid-flight.
   db.onMaintenancePhase?.('publishing');
+  const windowsReader = process.platform === 'win32' ? db.valueReader : undefined;
+  let snapshotRotated = false;
+  let snapshotRemapped = false;
   let rotated = false;
   let remapped = false;
-  // Remap disk-backed value pointers to the new snapshot/WAL files. Guarded
-  // against double application: the wal-offset shift is NOT idempotent.
+  const remapSnapshot = (): void => {
+    if (snapshotRemapped) return;
+    db.store.remapLocs((k: string, loc: ValueLoc) =>
+      loc.file === 'wal' && loc.off >= baseOffset ? undefined : snapRes.locs.get(k));
+    snapshotRemapped = true;
+  };
+  // The WAL-offset shift is NOT idempotent; never apply it twice on recovery.
   const remap = (): void => {
     if (remapped) return;
-    const snapLocs = snapRes.locs;
     db.store.remapLocs((k: string, loc: ValueLoc) => {
       if (loc.file === 'wal' && loc.off >= baseOffset) {
         return { file: 'wal', off: loc.off - baseOffset, len: loc.len };
       }
-      return snapLocs.get(k);
+      return snapRes.locs.get(k);
     });
     remapped = true;
   };
@@ -350,46 +356,71 @@ async function runCompaction(db: CompactionTarget): Promise<void> {
 
     await db.wal.close();
 
-    // Windows cannot rename over an open destination, so our own ValueReader
-    // must let go of the old snapshot/WAL before the renames below. POSIX
-    // keeps the handles across the rotation (old fd reads the unlinked old
-    // inode) — no close needed there; after the remap segment below,
-    // reopenBoth() re-attaches both handles on every platform.
-    if (process.platform === 'win32') db.valueReader?.close?.();
-
     // Snapshot first, then WAL — see the crash-safety note in the file header.
-    // That argument assumes each rename is durable before the next one lands,
-    // so the directory fsyncs here are STRICT: a failure aborts the rotation
-    // (the catch below rolls back) instead of silently weakening the
-    // invariant. Platforms without directory fsync degrade via fsyncDir itself.
-    await rotateReplace(tmp, snap);
+    // On Windows release ONLY the destination reader for each rename attempt;
+    // an EPERM retry reopens it before sleeping. The WAL reader stays attached
+    // across the snapshot rename and strict directory fsync, including failures.
+    if (windowsReader) {
+      await withWindowsEpermRetry(async () => {
+        windowsReader.closeSnapshot();
+        try {
+          await fs.rename(tmp, snap);
+        } catch (err) {
+          windowsReader.reopenSnapshot();
+          throw err;
+        }
+      });
+    } else {
+      await rotateReplace(tmp, snap);
+    }
+    snapshotRotated = true;
+    if (windowsReader) {
+      remapSnapshot();
+      windowsReader.reopenSnapshot();
+    }
+    // Directory fsyncs are strict: a real failure aborts this rotation.
     await fsyncDir(db.dir, { strict: true, stats: db.stats });
-    await rotateReplace(walTmp, db.walPath);
+
+    if (windowsReader) {
+      await withWindowsEpermRetry(async () => {
+        windowsReader.closeWal();
+        try {
+          await fs.rename(walTmp, db.walPath);
+        } catch (err) {
+          windowsReader.reopenWal();
+          throw err;
+        }
+      });
+    } else {
+      await rotateReplace(walTmp, db.walPath);
+    }
     rotated = true;
+    // Pair the new offsets and reader fds in the same synchronous segment,
+    // before the next await (fsync / fresh WAL open). No long-lived closed WAL
+    // handle remains in the rotation's asynchronous windows.
+    remap();
+    db.valueReader?.reopenBoth();
     await fsyncDir(db.dir, { strict: true, stats: db.stats });
 
     const fresh = new WAL(db.walPath, { fsyncPolicy: db.fsyncPolicy, syncIntervalMs: db.syncIntervalMs, stats: db.stats });
     db.wal = fresh;
     await fresh.open();
-
-    // Commit the in-memory view to the new files. Do this in the same
-    // synchronous segment as the fd reopen, so synchronous readers can never
-    // observe a new pointer against an old fd or vice versa.
-    remap();
-    db.valueReader?.reopenBoth();
   } catch (err) {
+    // Repair the reader before any asynchronous WAL recovery. A failure before
+    // the WAL rename keeps old WAL offsets but may already have replaced the
+    // snapshot. Reopen each side independently, even if the other side fails.
     try {
-      // Swap the sealed/closed WAL for a fresh handle on db.walPath. The swap
-      // comes first: it both restores appendability and stops late in-flight
-      // writers from publishing old-file value pointers against the fresh WAL.
+      if (rotated) remap();
+      else if (snapshotRotated) remapSnapshot();
+    } catch { /* best-effort recovery */ }
+    try { db.valueReader?.reopenSnapshot(); } catch { /* best-effort recovery */ }
+    try { db.valueReader?.reopenWal(); } catch { /* best-effort recovery */ }
+    try {
+      // Swap the sealed/closed WAL for a fresh append handle at the real EOF.
       await db.wal.close().catch(() => {});
       const fresh = new WAL(db.walPath, { fsyncPolicy: db.fsyncPolicy, syncIntervalMs: db.syncIntervalMs, stats: db.stats });
       await fresh.open();
       db.wal = fresh;
-      if (rotated) {
-        remap();
-        db.valueReader?.reopenBoth();
-      }
     } catch {
       // Best-effort recovery only — on-disk state is consistent regardless.
     }

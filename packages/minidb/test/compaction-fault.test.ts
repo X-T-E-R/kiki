@@ -39,6 +39,7 @@ function mockFsPromises(open: (path: string, flags?: string) => Promise<MockHand
 
 afterEach(() => {
   vi.doUnmock('node:fs/promises');
+  vi.doUnmock('../src/snapshot.js');
   vi.resetModules();
 });
 
@@ -180,22 +181,50 @@ function mockFsWithFaults(faults: {
 // calls are the only directory syncs in the system, so counting directory
 // opens targets "the first/second dir fsync of the first compaction"
 // deterministically.
-function mockFsWithDirSyncFault(dir: string, failOnCalls: ReadonlySet<number>): void {
+function mockFsWithDirSyncFault(dir: string, failOnCalls: ReadonlySet<number>, onSync?: () => Promise<void>): void {
   let dirOpens = 0;
   const open = (async (p: PathLike, flags?: string | number, mode?: string | number) => {
     const h = await fs.open(p, flags as string | number | undefined, mode as never);
     if (String(p) === dir && flags === 'r') {
       dirOpens++;
-      if (failOnCalls.has(dirOpens)) {
-        h.sync = async () => {
+      const call = dirOpens;
+      const sync = h.sync.bind(h);
+      h.sync = async () => {
+        if (failOnCalls.has(call)) {
           throw Object.assign(new Error('injected dir fsync failure'), { code: 'EIO' });
-        };
-      }
+        }
+        await onSync?.();
+        await sync();
+      };
     }
     return h;
   }) as typeof fs.open;
   const mocked = { ...fs, open };
   vi.doMock('node:fs/promises', () => ({ ...mocked, default: mocked }));
+}
+
+async function asWindows<T>(run: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...descriptor, value: 'win32' });
+  try {
+    return await run();
+  } finally {
+    Object.defineProperty(process, 'platform', descriptor);
+  }
+}
+
+function mockPostFenceWrite(afterSnapshot: () => Promise<void>): void {
+  vi.doMock('../src/snapshot.js', async () => {
+    const real = await vi.importActual<typeof import('../src/snapshot.js')>('../src/snapshot.js');
+    return {
+      ...real,
+      writeSnapshot: async (...args: Parameters<typeof real.writeSnapshot>) => {
+        const result = await real.writeSnapshot(...args);
+        await afterSnapshot();
+        return result;
+      },
+    };
+  });
 }
 
 test('wal.close() propagates a final-sync failure but still releases the file handle', async () => {
@@ -282,6 +311,124 @@ test('rotation: a WAL close() failure leaves the db writable and compact() retri
     assert.equal(db.get('parked'), 'during-failed-rotation');
     assert.equal(db.get('post'), 'still-writable');
     await db.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('Windows rotation keeps disk-backed WAL and snapshot values readable while the first directory fsync is pending', async () => {
+  const dir = await tmpDir();
+  let armed = false;
+  let paused = false;
+  let appendTail: () => Promise<void> = async () => {};
+  mockPostFenceWrite(() => appendTail());
+  let reached!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { reached = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  mockFsWithDirSyncFault(dir, new Set(), async () => {
+    if (armed && !paused) {
+      paused = true;
+      reached();
+      await gate;
+    }
+  });
+  const { MiniDb } = await import('../src/index.js');
+  let compactP: Promise<void> | undefined;
+  try {
+    await asWindows(async () => {
+      const db = await MiniDb.open<string>({ dir, valueCodec: 'string', valueMode: 'disk', fsyncPolicy: 'no', compactThresholdBytes: 1 << 30, indexGenerations: false });
+      await db.set('snapshot-key', 'snapshot-value');
+      await db.compact(); // create a pre-existing snapshot-backed ref
+      await db.set('wal-key', 'wal-value');
+      appendTail = () => db.set('tail-key', 'tail-value'); // post-fence: must stay WAL-backed at the first fsync
+      armed = true;
+      compactP = db.compact();
+      try {
+        await entered;
+        assert.equal(db._rotateLock !== null, true);
+        const tailRef = db.store.map.get('tail-key')?.ref;
+        assert.ok(tailRef?.kind === 'disk' && tailRef.loc.file === 'wal');
+        assert.equal(db.get('tail-key'), 'tail-value');
+        assert.equal(await db.getAsync('tail-key'), 'tail-value');
+        assert.equal(db.get('wal-key'), 'wal-value');
+        assert.equal(db.get('snapshot-key'), 'snapshot-value');
+        assert.equal(await db.getAsync('snapshot-key'), 'snapshot-value');
+      } finally {
+        release();
+      }
+      await compactP;
+      assert.equal(db.get('tail-key'), 'tail-value');
+      await db.close();
+    });
+  } finally {
+    release();
+    await compactP?.catch(() => {});
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('Windows rotation reopens disk-backed WAL values between EPERM retries and after a failed rename', async () => {
+  let armed = false;
+  let attempts = 0;
+  let checkRetry!: () => void;
+  let retryRead: Promise<unknown> | undefined;
+  let appendTail: () => Promise<void> = async () => {};
+  mockPostFenceWrite(() => appendTail());
+  mockFsWithFaults({
+    rename: (src, dst) => {
+      if (!armed || !src.endsWith('db.wal.tmp') || !dst.endsWith('db.wal')) return null;
+      attempts++;
+      if (attempts === 1) {
+        retryRead = new Promise((resolve) => {
+          setTimeout(() => {
+            try { checkRetry(); resolve(null); } catch (err) { resolve(err); }
+          }, 5);
+        });
+        return Object.assign(new Error('injected sharing violation'), { code: 'EPERM' });
+      }
+      armed = false;
+      return Object.assign(new Error('injected WAL rename failure'), { code: 'EIO' });
+    },
+  });
+  const { MiniDb } = await import('../src/index.js');
+  const dir = await tmpDir();
+  try {
+    await asWindows(async () => {
+      let db = await MiniDb.open<string>({ dir, valueCodec: 'string', valueMode: 'disk', fsyncPolicy: 'no', compactThresholdBytes: 1 << 30, indexGenerations: false });
+      await db.set('snapshot-key', 'snapshot-value');
+      await db.compact();
+      await db.set('wal-key', 'wal-value');
+      appendTail = () => db.set('tail-key', 'tail-value');
+      checkRetry = () => {
+        assert.equal(attempts, 1, 'read occurs during the EPERM backoff');
+        const tailRef = db.store.map.get('tail-key')?.ref;
+        assert.ok(tailRef?.kind === 'disk' && tailRef.loc.file === 'wal');
+        assert.equal(db.get('tail-key'), 'tail-value');
+        assert.equal(db.get('snapshot-key'), 'snapshot-value');
+      };
+      armed = true;
+      await assert.rejects(db.compact(), /injected WAL rename failure/);
+      assert.equal(attempts, 2);
+      assert.equal(await retryRead, null);
+      assert.equal(db.get('tail-key'), 'tail-value');
+      assert.equal(await db.getAsync('tail-key'), 'tail-value');
+      assert.equal(db.get('wal-key'), 'wal-value');
+      assert.equal(db.get('snapshot-key'), 'snapshot-value');
+      assert.equal(await db.getAsync('snapshot-key'), 'snapshot-value');
+      appendTail = async () => {};
+      await db.set('post', 'still-writable');
+      await db.compact();
+      assert.equal(db.get('tail-key'), 'tail-value');
+      await db.close();
+
+      db = await MiniDb.open<string>({ dir, valueCodec: 'string', valueMode: 'disk', readOnly: true });
+      assert.equal(db.get('snapshot-key'), 'snapshot-value');
+      assert.equal(db.get('wal-key'), 'wal-value');
+      assert.equal(db.get('tail-key'), 'tail-value');
+      assert.equal(db.get('post'), 'still-writable');
+      await db.close();
+    });
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
