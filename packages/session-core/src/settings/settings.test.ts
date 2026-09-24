@@ -1059,6 +1059,10 @@ describe('settings search breadcrumbs and synonyms', () => {
     ['提供商', 'st-card-auth'],
     ['模型目录', 'st-card-models'],
     ['模型目录刷新', 'st-card-catalog-refresh'],
+    // The fold-steps switch moved from its own timeline card into the
+    // composer card; the legacy terms keep finding it.
+    ['transcript', 'st-card-composer'],
+    ['timeline', 'st-card-composer'],
     ['Profiles', 'st-card-subagent-profiles'],
     ['子 Agent', 'st-card-subagents'],
   ])('matches the legacy/synonym term %s in English', (term, cardId) => {
@@ -1071,6 +1075,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     ['供应商', 'st-card-providers'],
     ['model catalog', 'st-card-models'],
     ['catalog refresh', 'st-card-catalog-refresh'],
+    ['会话记录', 'st-card-composer'],
   ])('matches the legacy/synonym term %s in Chinese', (term, cardId) => {
     const index = buildSettingsSearchIndex({}, tZh);
     expect(searchSettings(index, term).some((hit) => hit.cardId === cardId)).toBe(true);
