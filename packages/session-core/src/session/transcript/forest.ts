@@ -471,5 +471,23 @@ export function sessionAgentForestFromAgentSnapshots(
     tasks.push(...taskItemsFromTranscriptTasks(taskList));
   }
   roster.push(...rosterFromSnapshotSubagents(snapshotSubagents));
-  return overlayForestDisplayFields(buildAgentForest(live, roster, tasks), live);
+  return overlayForestDisplayFields(buildAgentForest(live, filterRosterToLiveOrPresent(roster, snapshots), tasks), live);
+}
+
+/**
+ * Snapshot roster rows back the roster-driven forest when no live snapshot
+ * exists (empty `snapshots`, e.g. the persisted-terminal-fields mapping), but
+ * they must not create agent-forest nodes on their own next to a live forest.
+ * A row is dropped next to a populated forest when its agent is a ghost —
+ * absent from every live snapshot — including a retained `live: false` row
+ * kept for resume; a row for an agent that is actually present still lands its
+ * evidence on that node.
+ */
+function filterRosterToLiveOrPresent(
+  roster: readonly AgentRosterDescriptor[],
+  snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
+): readonly AgentRosterDescriptor[] {
+  if (snapshots.size === 0) return roster;
+  const presentIds = new Set<string>(snapshots.keys());
+  return roster.filter((entry) => presentIds.has(entry.agentId));
 }
