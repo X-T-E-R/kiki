@@ -341,6 +341,15 @@ describe('ReadMediaFileTool', () => {
     expect(parts[2]).toEqual({ type: 'text', text: '</image>' });
   });
 
+  it('records a resolved absolute image path when invoked with a relative path', async () => {
+    const tool = makeTool({ '/workspace/sample.png': { data: pngBuffer() } });
+    const execution = await tool.resolveExecution({ path: './sample.png' });
+    expect(execution).toMatchObject({ display: { kind: 'file_io', path: '/workspace/sample.png' } });
+    expect(outputParts(await execute(tool, { path: './sample.png' }))[0]).toEqual({
+      type: 'text', text: '<image path="/workspace/sample.png">',
+    });
+  });
+
   it('downsamples large images and points the model to region readback', async () => {
     const big = Buffer.from(
       await new Jimp({ width: 2200, height: 2200, color: 0x3366ccff }).getBuffer('image/png'),

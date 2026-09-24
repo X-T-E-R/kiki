@@ -96,6 +96,50 @@ describe('extractToolOutputMedia', () => {
     ]);
   });
 
+  it('uses the absolute file path instead of a non-browser blob reference in cold tool results', () => {
+    const output = [
+      { type: 'text', text: '<image path="C:\\work\\shots\\home.png">' },
+      { type: 'image_url', imageUrl: { url: `blobref:image/png;${'a'.repeat(64)}` } },
+      { type: 'text', text: '</image>' },
+    ];
+    expect(extractToolOutputMedia(output)).toEqual({
+      text: '',
+      media: [{ kind: 'image', url: undefined, path: 'C:\\work\\shots\\home.png', mime: 'image/png' }],
+    });
+  });
+
+  it('associates video paths without leaking wrapper tags and keeps playable videos unchanged', () => {
+    expect(extractToolOutputMedia([
+      { type: 'text', text: '<video path="/work/clip.mp4">' },
+      { type: 'video_url', videoUrl: { url: 'ms://uploaded-id' } },
+      { type: 'text', text: '</video>' },
+      { type: 'text', text: '<video path="/work/inline.mp4">' },
+      { type: 'video_url', video_url: { url: 'data:video/mp4;base64,AAA' } },
+      { type: 'text', text: '</video>' },
+    ])).toEqual({
+      text: '',
+      media: [
+        { kind: 'video', url: undefined, path: '/work/clip.mp4', mime: undefined },
+        { kind: 'video', url: 'data:video/mp4;base64,AAA', path: '/work/inline.mp4', mime: 'video/mp4' },
+      ],
+    });
+  });
+
+  it('does not attach an image path to unrelated media or pass a private URL to the browser', () => {
+    expect(extractToolOutputMedia([
+      { type: 'text', text: '<image path="/work/one.png">' },
+      { type: 'video_url', videoUrl: { url: 'ms://video-id' } },
+      { type: 'text', text: '</image>' },
+      { type: 'image_url', imageUrl: { url: `blobref:image/png;${'b'.repeat(64)}` } },
+    ])).toEqual({
+      text: '',
+      media: [
+        { kind: 'video', url: undefined, path: undefined, mime: undefined },
+        { kind: 'image', url: undefined, path: undefined, mime: 'image/png' },
+      ],
+    });
+  });
+
   it('returns undefined for plain strings, objects, and text-only arrays', () => {
     expect(extractToolOutputMedia('plain')).toBeUndefined();
     expect(extractToolOutputMedia({ kind: 'text', text: 'x' })).toBeUndefined();

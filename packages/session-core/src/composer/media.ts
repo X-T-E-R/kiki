@@ -81,14 +81,25 @@ export function mediaFromContentParts(content: readonly ContentPart[]): MediaRef
 // ---------------------------------------------------------------------------
 
 export interface ToolOutputMedia {
-  /** Text parts joined, with `<image …>` / `</image>` wrapper tags stripped. */
+  /** Text parts joined, with image/video wrapper tags stripped. */
   readonly text: string;
   readonly media: readonly MediaRef[];
 }
 
-const IMAGE_OPEN_TAG_RE = /<image\b[^>]*>/i;
-const IMAGE_PATH_RE = /\bpath="([^"]*)"/i;
-const IMAGE_ANY_TAG_RE = /<\/?image\b[^>]*>/gi;
+const MEDIA_TAG_RE = /<(\/?)(image|video)\b([^>]*)>/gi;
+const MEDIA_PATH_RE = /\bpath=(?:"([^"]*)"|'([^']*)')/i;
+const BLOBREF_MIME_RE = /^blobref:([^;]+);/i;
+const BROWSER_MEDIA_URL_RE = /^(?:data:|blob:|https?:\/\/)/i;
+
+function toolMediaRef(ref: MediaRef, path: string | undefined): MediaRef {
+  const url = ref.url;
+  return {
+    ...ref,
+    url: url !== undefined && BROWSER_MEDIA_URL_RE.test(url) ? url : undefined,
+    path,
+    mime: ref.mime ?? (url === undefined ? undefined : BLOBREF_MIME_RE.exec(url)?.[1]),
+  };
+}
 
 function engineMediaUrl(part: Record<string, unknown>): { url: string; kind: 'image' | 'video' } | undefined {
   for (const [type, keys] of [
@@ -119,42 +130,44 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
   if (!Array.isArray(output)) return undefined;
   const media: MediaRef[] = [];
   const texts: string[] = [];
-  let pendingPath: string | undefined;
+  let pending: { kind: 'image' | 'video'; path: string } | undefined;
   for (const item of output) {
     if (typeof item !== 'object' || item === null) continue;
     const part = item as Record<string, unknown>;
     if (part['type'] === 'text') {
       const text = part['text'];
       if (typeof text !== 'string') continue;
-      if (IMAGE_OPEN_TAG_RE.test(text)) {
-        pendingPath = IMAGE_PATH_RE.exec(text)?.[1] ?? pendingPath;
+      for (const tag of text.matchAll(MEDIA_TAG_RE)) {
+        const kind = tag[2]?.toLowerCase() as 'image' | 'video';
+        if (tag[1] === '/') {
+          if (pending?.kind === kind) pending = undefined;
+        } else {
+          const path = MEDIA_PATH_RE.exec(tag[3] ?? '')?.slice(1).find((value) => value !== undefined && value !== '');
+          pending = path === undefined ? undefined : { kind, path };
+        }
       }
-      const cleaned = text.replaceAll(IMAGE_ANY_TAG_RE, '').trim();
+      const cleaned = text.replaceAll(MEDIA_TAG_RE, '').trim();
       if (cleaned !== '') texts.push(cleaned);
       continue;
     }
     const engineRef = engineMediaUrl(part);
     if (engineRef !== undefined) {
-      media.push({
+      media.push(toolMediaRef({
         kind: engineRef.kind,
         url: engineRef.url,
-        path: pendingPath,
         mime: mimeFromDataUrl(engineRef.url),
-      });
-      pendingPath = undefined;
+      }, pending?.kind === engineRef.kind ? pending.path : undefined));
+      pending = undefined;
       continue;
     }
     if (part['type'] === 'image' || part['type'] === 'video') {
       const source = part['source'];
       if (typeof source === 'object' && source !== null) {
-        media.push({
-          ...refFromSource(
-            part['type'],
-            source as Extract<ContentPart, { type: 'image' }>['source'],
-          ),
-          path: pendingPath,
-        });
-        pendingPath = undefined;
+        media.push(toolMediaRef(
+          refFromSource(part['type'], source as Extract<ContentPart, { type: 'image' }>['source']),
+          pending?.kind === part['type'] ? pending.path : undefined,
+        ));
+        pending = undefined;
       }
     }
   }

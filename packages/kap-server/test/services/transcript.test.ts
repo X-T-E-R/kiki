@@ -249,6 +249,55 @@ describe('TranscriptService projection', () => {
     }
   });
 
+  it('keeps a path-backed media tool result in cold transcript frames', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-cold-media-'));
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+      await mkdir(wireDir, { recursive: true });
+      const path = 'C:\\work\\shots\\home.png';
+      const output = [
+        { type: 'text', text: `<image path="${path}">` },
+        { type: 'image_url', imageUrl: { url: `blobref:image/png;${'a'.repeat(64)}` } },
+        { type: 'text', text: '</image>' },
+      ];
+      const records = [
+        {
+          type: 'turn.prompt', turnId: 0, promptId: 'prompt-1',
+          input: [{ type: 'text', text: 'view this' }], origin: { kind: 'user' }, time: 1000,
+        },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' }, time: 2000,
+        },
+        {
+          type: 'context.append_loop_event',
+          event: {
+            type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'part-tool-1',
+            toolCallId: 'call-media', name: 'ReadMediaFile', args: { path },
+          },
+          time: 3000,
+        },
+        {
+          type: 'context.append_loop_event',
+          event: { type: 'tool.result', toolCallId: 'call-media', result: { output, isError: false } },
+          time: 4000,
+        },
+      ];
+      await writeFile(join(wireDir, 'wire.jsonl'), `${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
+
+      const snapshot = await service.readColdSnapshot('s1', 'main');
+      const turn = snapshot?.items.find((item) => item.kind === 'turn');
+      const frame = turn?.kind === 'turn'
+        ? turn.steps.flatMap((step) => step.frames).find((item) => item.kind === 'tool')
+        : undefined;
+      expect(frame).toMatchObject({ kind: 'tool', name: 'ReadMediaFile', output });
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('readColdSnapshot folds task/todo/goal/plan/interaction records into the cold snapshot', async () => {
     const home = await mkdtemp(join(tmpdir(), 'transcript-cold-facts-'));
     try {

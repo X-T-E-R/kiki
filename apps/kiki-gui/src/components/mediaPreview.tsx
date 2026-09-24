@@ -628,16 +628,18 @@ function FileChip({ item }: { item: MediaRef }) {
   );
 }
 
-/** Thumbnail for a path-backed image (fs:content needs the bearer header). */
-function HostImageThumb({ path, name }: { path: string; name?: string }) {
+/** Preview for path-backed image/video results (fs:content needs the bearer header). */
+function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; path: string } }) {
   const { t } = useI18n();
-  const connection = useOptionalConnection();
+  const client = useOptionalConnection()?.client;
   const preview = useMediaPreview();
+  const { path, name, kind } = item;
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    const client = connection?.client;
+    setUrl(null);
+    setFailed(false);
     if (client === undefined) {
       setFailed(true);
       return;
@@ -647,6 +649,10 @@ function HostImageThumb({ path, name }: { path: string; name?: string }) {
     client.readHostFileBytes(path).then(
       ({ bytes, mime }) => {
         if (cancelled) return;
+        if (!mime.startsWith(`${kind}/`)) {
+          setFailed(true);
+          return;
+        }
         objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
         setUrl(objectUrl);
       },
@@ -658,17 +664,18 @@ function HostImageThumb({ path, name }: { path: string; name?: string }) {
       cancelled = true;
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
     };
-  }, [connection, path]);
+  }, [client, kind, path]);
 
-  if (failed) {
-    return <FileChip item={{ kind: 'image', path, name: name ?? basenameOf(path) }} />;
-  }
+  if (failed) return <FileChip item={item} />;
   if (url === null) {
     return (
       <span className="flex h-28 w-40 items-center justify-center rounded-lg border border-hairline bg-paper text-[11px] text-ink-faint">
         {t('preview.loading')}
       </span>
     );
+  }
+  if (kind === 'video') {
+    return <video src={url} controls className="max-h-52 rounded-lg border border-hairline" />;
   }
   return (
     <button
@@ -708,7 +715,7 @@ function MediaPart({ item }: { item: MediaRef }) {
         </button>
       );
     }
-    if (item.path !== undefined) return <HostImageThumb path={item.path} name={item.name} />;
+    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'image', path: item.path }} />;
     if (item.fileId !== undefined) return <SessionMediaThumb item={item} />;
     return <FileChip item={item} />;
   }
@@ -718,6 +725,7 @@ function MediaPart({ item }: { item: MediaRef }) {
         <video src={item.url} controls className="max-h-52 rounded-lg border border-hairline" />
       );
     }
+    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'video', path: item.path }} />;
     if (item.fileId !== undefined) return <SessionMediaThumb item={item} />;
     return <FileChip item={item} />;
   }
