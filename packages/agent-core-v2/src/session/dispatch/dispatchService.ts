@@ -13,6 +13,8 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
+import { IAgentTaskService } from '#/agent/task/task';
+import { SubagentTask, type SubagentHandle } from '#/agent/tools/agent/subagent-task';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IConfigService } from '#/app/config/config';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
@@ -44,10 +46,13 @@ import {
   resolveDispatchCapacityLimits,
   resolveInheritedModelAlias,
   resolveSubagentBinding,
+  resolveSubagentTimeoutMs,
   withDispatchPolicyDefaults,
 } from '#/session/subagent/configSection';
+import { mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
 import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagent/subagent';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import {
   ISessionDispatchService,
@@ -387,9 +392,29 @@ export class SessionDispatchService implements ISessionDispatchService {
       ? undefined
       : this.capacity.reserve(owner, resolveDispatchCapacityLimits(this.config), child.agentId);
     const release = reservation ?? (() => {});
+    let cleanup = (): void => {};
     try {
-      return this.trackCapacity(await this.runExistingReserved(child, requestInput, options, reservation), release);
+      const requester = delegator?.kind === 'agent' && options.requesterAgentId === undefined
+        ? this.requireHandle(delegator.agentId, 'Delegator agent')
+        : undefined;
+      const controller = requester === undefined ? undefined : new AbortController();
+      if (controller !== undefined) {
+        const abort = (): void => { controller.abort(options.signal.reason); };
+        options.signal.addEventListener('abort', abort, { once: true });
+        cleanup = (): void => { options.signal.removeEventListener('abort', abort); };
+      }
+      const run = await this.runExistingReserved(
+        child,
+        requestInput,
+        controller === undefined ? options : { ...options, signal: controller.signal },
+        reservation,
+      );
+      const tracked = this.trackCapacity(run, release);
+      return requester === undefined || controller === undefined
+        ? tracked
+        : this.registerOwnedContinuation(tracked, requester, controller, cleanup);
     } catch (error) {
+      cleanup();
       release();
       throw error;
     }
@@ -483,6 +508,66 @@ export class SessionDispatchService implements ISessionDispatchService {
         signal: options.signal,
         onReady: options.onReady,
         capacityReservation: reservation,
+      }),
+    };
+  }
+
+  private registerOwnedContinuation(
+    run: DispatchRun,
+    requester: IAgentScopeHandle,
+    controller: AbortController,
+    cleanup: () => void,
+  ): DispatchRun {
+    return {
+      ...run,
+      started: run.started.then(async (execution) => {
+        void execution.completion.then(cleanup, cleanup);
+        let resolveRunTask!: (taskId: string | undefined) => void;
+        const runTask = new Promise<string | undefined>((resolve) => { resolveRunTask = resolve; });
+        const mirrored = mirrorAgentRun(requester, execution, {
+          profileName: run.child.profileName,
+          prompt: run.request.kind === 'prompt' ? run.request.prompt : undefined,
+          signal: controller.signal,
+          deferStarted: true,
+          resolveTaskId: () => runTask,
+          cancel: (reason) => { controller.abort(reason); },
+        });
+        const handle: SubagentHandle = {
+          agentId: run.child.agentId,
+          profileName: run.child.profileName,
+          name: run.child.name,
+          model: run.child.modelAlias,
+          thinkingEffort: run.child.thinkingEffort,
+          completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
+        };
+        let taskId: string | undefined;
+        try {
+          taskId = requester.accessor.get(IAgentTaskService).registerTask(
+            new SubagentTask(
+              handle,
+              run.child.name === undefined ? `Continue ${run.child.profileName} agent` : `Continue ${run.child.name} agent`,
+              controller,
+              run.child.name === undefined
+                ? undefined
+                : { taskName: run.child.name, agentType: run.child.profileName },
+            ),
+            { timeoutMs: resolveSubagentTimeoutMs(this.config) },
+          );
+          await this.recordRun(run.child.agentId, taskId);
+          await requester.accessor.get(IEventDispatcher).dispatch(
+            new SubagentStarted({ subagentId: run.child.agentId, taskId }),
+          );
+          resolveRunTask(taskId);
+          return execution;
+        } catch (error) {
+          resolveRunTask(taskId);
+          controller.abort(error);
+          void handle.completion.catch(() => {});
+          throw error;
+        }
+      }, (error: unknown) => {
+        cleanup();
+        throw error;
       }),
     };
   }

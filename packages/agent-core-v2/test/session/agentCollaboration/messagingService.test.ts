@@ -6,9 +6,14 @@ import { ClusterDb } from '@kiki/minidb/cluster';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Event, Emitter } from '#/_base/event';
+import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { ServiceIdentifier } from '#/_base/di/instantiation';
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { TestInstantiationService } from '#/_base/di/test';
+import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
+import { IConfigService } from '#/app/config/config';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { HomeRuntimeError } from '#/app/runtimeHost/errors';
@@ -40,12 +45,20 @@ import {
 } from '#/agent/llmRequester/llmRequester';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
-import type {
-  DispatchChild,
-  DispatchRun,
+import { IAgentCollaborationRegistry, COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
+import {
   ISessionDispatchService,
+  type DispatchChild,
+  type DispatchRun,
 } from '#/session/dispatch/dispatch';
+import { SessionDispatchService } from '#/session/dispatch/dispatchService';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
 import { AgentMessageMailboxFullError } from '#/session/agentCollaboration/messageMailbox';
 import type { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
@@ -54,7 +67,7 @@ import {
   AgentCollaborationMessageStoreAdapter,
   MAILBOX_HOST_ID,
 } from '#/session/agentCollaboration/threadMailboxAdapter';
-import type { AgentMeta, ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { AgentRunRequest, RunAgentOptions } from '#/session/subagent/subagent';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
@@ -504,6 +517,106 @@ describe('agent collaboration safe-boundary delivery', () => {
       }));
     } finally {
       service.dispose();
+      await ctx.dispose();
+    }
+  });
+
+  it('notifies the parent after each AgentSend wakeup finishes under a distinct task id', async () => {
+    const ctx = createTestAgent();
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const target = agentHandle('agent-target');
+    const agents: Record<string, AgentMeta> = {
+      main: { type: 'main' },
+      'agent-target': {
+        type: 'sub',
+        parentAgentId: 'main',
+        delegator: { kind: 'agent', agentId: 'main' },
+        labels: {},
+      },
+    };
+    const metadata: ISessionMetadata = {
+      ...metadataHarness(() => agents),
+      registerAgent: async (agentId, meta) => { agents[agentId] = meta; },
+    };
+    let lifecycle!: AgentLifecycle;
+    const main: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: {
+        get: <T>(id: ServiceIdentifier<T>): T => {
+          if (id === ISessionMetadata) return metadata as T;
+          if (id === IAgentLifecycleService) return lifecycle as T;
+          if (id === ISessionSubagentService) return ix.get(ISessionSubagentService) as T;
+          return ctx.get(id);
+        },
+      },
+      dispose: () => {},
+    };
+    lifecycle = lifecycleHarness([main, target.handle]).service;
+    const completions: Array<(summary: string) => void> = [];
+    ix.stub(IAgentLifecycleService, lifecycle);
+    ix.stub(ISessionMetadata, metadata);
+    ix.stub(ISessionSubagentService, {
+      run: async (agentId, _request, options) => {
+        await target.execution.hooks.onWillRun.run({ signal: options.signal });
+        return {
+          agentId,
+          turn: {} as never,
+          completion: new Promise<{ summary: string }>((resolve) => {
+            completions.push((summary) => { resolve({ summary }); });
+          }),
+        };
+      },
+      notifyAgentTaskStopped: () => {},
+    });
+    ix.stub(ISessionAgentProfileCatalog, {});
+    ix.stub(IAgentCollaborationRegistry, {});
+    ix.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });
+    ix.stub(IModelCatalog, {});
+    ix.stub(IModelService, {});
+    ix.stub(ILogService, { warn: () => {} });
+    ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
+    const tasks = ctx.get(IAgentTaskService);
+    const service = messagingService(
+      mailboxStore(tempDir()),
+      lifecycle,
+      sessionContext(),
+      metadata,
+      ix.get(ISessionDispatchService),
+    );
+    try {
+      const taskIds: string[] = [];
+      for (const [index, text] of ['first update', 'second update'].entries()) {
+        ctx.mockNextResponse({ type: 'text', text: `parent read ${String(index)}` });
+        const accepted = await service.send({
+          ...sendInput(text, `wake-${String(index)}`),
+          idleWake: 'owned-child',
+        });
+        expect(accepted).toMatchObject({ delivery: 'delivered', resumed: true });
+        const task = tasks.list(false).find((item) => item.kind === 'agent' && item.agentId === 'agent-target' && item.status === 'running');
+        expect(task).toBeDefined();
+        const taskId = task!.taskId;
+        taskIds.push(taskId);
+        expect(agents['agent-target']?.labels?.[COLLABORATION_LATEST_TASK_LABEL]).toBe(taskId);
+        completions[index]!(`result ${String(index)}`);
+        await tasks.wait(taskId, 1000);
+        await vi.waitFor(() => {
+          expect(ctx.context.get()).toContainEqual(expect.objectContaining({
+            content: [expect.objectContaining({
+              type: 'text',
+              text: expect.stringContaining(`result ${String(index)}`),
+            })],
+            origin: expect.objectContaining({ kind: 'task', taskId, status: 'completed' }),
+          }));
+        });
+        await ctx.get(IAgentLoopService).settled();
+      }
+      expect(new Set(taskIds).size).toBe(2);
+      expect(ctx.llmCalls).toHaveLength(2);
+    } finally {
+      service.dispose();
+      disposables.dispose();
       await ctx.dispose();
     }
   });
@@ -1597,6 +1710,7 @@ function agentHandle(
       thinkingLevel: 'off',
       executorId: options.executorId,
     }),
+    prepareResumeBinding: async () => () => {},
   };
   const wire = {
     _serviceBrand: undefined,
@@ -1612,6 +1726,7 @@ function agentHandle(
         if (id === IAgentLoopService) return loop as T;
         if (id === IAgentPromptService) return prompt as T;
         if (id === IAgentProfileService) return profile as T;
+        if (id === IAgentTokenCountingService) return { statusSize: () => 0 } as T;
         if (id === IWireService) return wire as T;
         if (id === IAgentLifecycleService) return undefined as T;
         throw new Error('unexpected agent service');

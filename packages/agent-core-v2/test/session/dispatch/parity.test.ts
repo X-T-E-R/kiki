@@ -1401,6 +1401,32 @@ describe('AgentRun and dispatch parity golden', () => {
     await complete(lane, 3);
   });
 
+  it('keeps AgentRun resume registration single-owned and external continuations outside parent tasks', async () => {
+    const internal = createLane(disposables, 'internal');
+    const spawned = await internal.runInternal({
+      profile: 'coder', name: 'owned_child', prompt: 'start', description: 'Spawn', background: true,
+    });
+    expect(spawned.isError).not.toBe(true);
+    await complete(internal, 0);
+    const resumed = await internal.runInternal({
+      resume: 'owned_child', prompt: 'continue', description: 'Resume', background: true,
+    });
+    expect(resumed.isError).not.toBe(true);
+    expect(internal.taskRecords.size).toBe(2);
+    await complete(internal, 1);
+
+    const external = createLane(disposables, 'external');
+    const first = await external.external.dispatch({
+      authority, target: 'named', taskName: 'external_child', profileName: 'coder', message: 'start',
+    });
+    await completeExternal(external, first.dispatchId, 0);
+    const continued = await external.external.dispatch({
+      authority, target: 'named', taskName: 'external_child', message: 'continue',
+    });
+    await completeExternal(external, continued.dispatchId, 1);
+    expect(external.taskRecords.size).toBe(0);
+  });
+
   it('shares the tree limit across main, child and grandchild dispatch and retains cancelled descendants until settlement', async () => {
     const lane = createLane(disposables, 'internal', { capacity: { maxDirectChildren: 16, maxTotalSubagents: 2 } });
     const dispatch = lane.ix.get(ISessionDispatchService);
