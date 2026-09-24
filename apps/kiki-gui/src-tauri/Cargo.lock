@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "kiki"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "dirs",
  "kill_tree",
