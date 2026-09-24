@@ -33,7 +33,7 @@ The default v2 engine (Kiki desktop and `kiki` CLI/TUI) gives the main `agent` p
 
 `AgentList` returns direct children, including retained historical swarm entries. Default `include_finished=false` lists running children and children with no tracking task; pass `true` when you need children whose latest background task has already finished or failed. At most 50 entries are returned, running first.
 
-`AgentSend` queues a mailbox message that is delivered as early as possible: when the child is running, the message is steered into its active turn at the next step boundary; when the child is idle, it stays queued and is read at the beginning of the child's next step. Address the child by `name` or agent id.
+`AgentSend` queues a mailbox message that is delivered as early as possible: when the child is running, the message is steered into its active turn at the next step boundary; when the child is idle and resumable, it starts a new run with the message, whose completion notifies the parent like any other agent task. Address the child by `name` or agent id.
 
 `AgentNotify` runs in the opposite direction and is available only to subagents: it queues a fire-and-forget message in the parent agent's mailbox, injected into the parent's active turn at the next step boundary (or read when the parent next runs). The main agent has no parent and never receives this tool. The switch `[agents] notify_parent = false` in `config.toml` turns it off globally; it defaults to on.
 
