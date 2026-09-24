@@ -229,30 +229,31 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
         workspaces: new Set(info.workspaces ?? []),
       };
 
-      let inflightWrites = 0;
-      let onWritesDrained: (() => void) | null = null;
-
-      const write = async (): Promise<void> => {
-        if (state.released) return;
-        inflightWrites += 1;
-        try {
+      let pendingWrites = Promise.resolve();
+      const write = (patch?: { port?: number; workspaces?: readonly string[] }): Promise<void> => {
+        const current = pendingWrites.then(async () => {
+          if (state.released) return;
+          const port = patch?.port ?? state.port;
+          const workspaces = new Set(state.workspaces);
+          for (const workspace of patch?.workspaces ?? []) workspaces.add(workspace);
           const full: ServerInstanceInfo = {
             serverId,
             pid: info.pid,
             host: info.host,
-            port: state.port,
+            port,
             startedAt: info.startedAt,
             heartbeatAt: now(),
-            workspaces: [...state.workspaces],
+            workspaces: [...workspaces],
             serverVersion: info.serverVersion,
             buildId: info.buildId,
             buildChannel: info.buildChannel,
           };
           await writeFileAtomic(filePath, encode(full));
-        } finally {
-          inflightWrites -= 1;
-          if (inflightWrites === 0) onWritesDrained?.();
-        }
+          state.port = port;
+          state.workspaces = workspaces;
+        });
+        pendingWrites = current.catch(() => undefined);
+        return current;
       };
 
       await write();
@@ -267,19 +268,13 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
         serverId,
         async update(patch) {
           if (state.released) return;
-          if (patch.port !== undefined) state.port = patch.port;
-          for (const workspace of patch.workspaces ?? []) state.workspaces.add(workspace);
-          await write();
+          await write(patch);
         },
         async release() {
           if (state.released) return;
           state.released = true;
           clearInterval(timer);
-          if (inflightWrites > 0) {
-            await new Promise<void>((resolve) => {
-              onWritesDrained = resolve;
-            });
-          }
+          await pendingWrites;
           try {
             await unlink(filePath);
           } catch (err) {

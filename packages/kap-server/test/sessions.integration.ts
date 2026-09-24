@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
@@ -23,6 +23,7 @@ import {
   IAtomicDocumentStore,
   IEventBus,
   IEventService,
+  ISessionContext,
   ISessionIndex,
   ISessionIndexMirror,
   ISessionAgentProfileCatalog,
@@ -590,6 +591,46 @@ describe('server-v2 /api/sessions', () => {
     expect(await readdir(join(home as string, 'workspaces'))).toEqual([]);
     const sessions = await getJson<PageWire>('/api/sessions');
     expect(sessions.body.data.items).toEqual([]);
+  });
+
+  it('removes a created session when automatic workspace registration fails', async () => {
+    const core = (server as RunningServer).core.accessor;
+    const manager = core.get(ISessionManager);
+    const announced: string[] = [];
+    let sessionDir: string | undefined;
+    const events: Event2[] = [];
+    const onCreated = manager.onDidCreateSession?.(({ sessionId, handle }) => {
+      announced.push(sessionId);
+      sessionDir = handle.accessor.get(ISessionContext).sessionDir;
+    });
+    const onEvent = core.get(IEventService).subscribe((event) => events.push(event));
+    const instancesDir = join(home as string, 'server', 'instances');
+    const backupDir = join(home as string, 'server', 'instances-backup');
+    await rename(instancesDir, backupDir);
+    let failed: Awaited<ReturnType<typeof postJson<null>>>;
+    try {
+      failed = await postJson<null>('/api/sessions', {});
+    } finally {
+      await rename(backupDir, instancesDir);
+      onCreated?.dispose();
+      onEvent.dispose();
+    }
+
+    expect(failed.status).toBe(200);
+    expect(failed.body.code).toBe(50001);
+    expect(announced).toHaveLength(1);
+    expect(manager.list()).toEqual([]);
+    expect(sessionDir).toBeDefined();
+    await expect(stat(sessionDir!)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await core.get(ISessionIndex).get(announced[0]!)).toBeUndefined();
+    expect(events.filter((event) => event.type === 'event.session.created')).toEqual([]);
+    const sessions = await getJson<PageWire>('/api/sessions');
+    expect(sessions.body.code).toBe(0);
+    expect(sessions.body.data.items).toEqual([]);
+    const workspaces = await getJson<{ items: unknown[] }>('/api/workspaces');
+    expect(workspaces.body.code).toBe(0);
+    expect(workspaces.body.data.items).toEqual([]);
+    expect(await readdir(join(home as string, 'workspaces'))).toEqual([]);
   });
 
   it('keeps an automatic workspace adopted by a concurrent session before the first creation fails', async () => {

@@ -355,7 +355,15 @@ export function registerSessionsRoutes(
                 },
         });
         sessionCreated = true;
-        if (autoRoot !== undefined) await onWorkspaceServed?.(touched.root);
+        if (autoRoot !== undefined) {
+          try {
+            await onWorkspaceServed?.(touched.root);
+          } catch (error) {
+            await core.accessor.get(ISessionManager).delete(handle.id);
+            sessionCreated = false;
+            throw error;
+          }
+        }
         if (typeof body.title === 'string') {
           await handle.accessor.get(ISessionMetadata).setTitle(body.title);
         }

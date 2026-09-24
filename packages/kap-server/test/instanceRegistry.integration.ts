@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -220,6 +220,33 @@ describe('createInstanceRegistry — update', () => {
     const reg = await registry.register({ ...baseInfo, workspaces: ['C:\\repo-a'] });
     await reg.update({ workspaces: ['C:\\repo-b', 'C:\\repo-a'] });
     expect(readInstance(reg.serverId).workspaces).toEqual(['C:\\repo-a', 'C:\\repo-b']);
+    await reg.release();
+  });
+
+  it('does not retain a failed workspace update for the next heartbeat', async () => {
+    const registry = createInstanceRegistry({ instancesDir, now: () => 1000 });
+    const reg = await registry.register(baseInfo);
+    const backupDir = join(tmpDir, 'instances-backup');
+    renameSync(instancesDir, backupDir);
+    try {
+      await expect(reg.update({ port: 9000, workspaces: ['failed-workspace'] })).rejects.toThrow();
+    } finally {
+      renameSync(backupDir, instancesDir);
+    }
+    await reg.update({});
+    expect(readInstance(reg.serverId).port).toBe(baseInfo.port);
+    expect(readInstance(reg.serverId).workspaces).toEqual([]);
+    await reg.release();
+  });
+
+  it('preserves both workspaces from concurrent successful updates', async () => {
+    const registry = createInstanceRegistry({ instancesDir, now: () => 1000 });
+    const reg = await registry.register(baseInfo);
+    await Promise.all([
+      reg.update({ workspaces: ['first'] }),
+      reg.update({ workspaces: ['second'] }),
+    ]);
+    expect(readInstance(reg.serverId).workspaces).toEqual(['first', 'second']);
     await reg.release();
   });
 });
