@@ -205,7 +205,12 @@ export function GeneralSection() {
               <option value="cmd-enter">{t('st.composer.shortcutCmdEnter')}</option>
             </select>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          {/* Both preference switches share one row: at desktop widths the
+              row costs nothing over the single-toggle layout (the General
+              density budget at 1280×800 is measured, so a standalone card
+              for the fold-steps switch overflows the screen); at narrow
+              widths the second toggle wraps below. */}
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <Toggle
               label={t('st.composer.persistDrafts')}
               checked={settings.draftPersistence}
@@ -214,19 +219,13 @@ export function GeneralSection() {
                 if (!checked) clearStoredDrafts();
               }}
             />
+            <Toggle
+              label={t('st.transcript.foldSteps')}
+              checked={foldSteps}
+              onChange={(checked) => { writeSettings({ foldSteps: checked }); }}
+            />
           </div>
           <Hint>{t('st.composer.persistDraftsHint')}</Hint>
-        </div>
-      </SectionCard>
-
-      <SectionCard id="st-card-timeline" title={t('st.transcript.title')}>
-        <div className="space-y-2">
-          <Toggle
-            label={t('st.transcript.foldSteps')}
-            checked={foldSteps}
-            onChange={(checked) => { writeSettings({ foldSteps: checked }); }}
-          />
-          <Hint>{t('st.transcript.foldStepsHint')}</Hint>
         </div>
       </SectionCard>
 

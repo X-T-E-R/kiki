@@ -960,6 +960,7 @@ export const zh: Record<I18nKey, string> = {
 
   // ---- subagent cards ----
   'subagent.status.unknown': '状态未知',
+  'subagent.status.refreshing': '刷新中…',
   'subagent.status.running': '运行中',
   'subagent.status.suspended': '已挂起',
   'subagent.status.completed': '已完成',
@@ -1499,9 +1500,7 @@ export const zh: Record<I18nKey, string> = {
   'st.composer.shortcutCmdEnter': '⌘/Ctrl+Enter 发送 · Enter 换行',
   'st.composer.persistDrafts': '保留输入草稿',
   'st.composer.persistDraftsHint': '关闭后，草稿只留在本次运行中，不会写入或从磁盘恢复；刷新或重启后消失。',
-  'st.transcript.title': '时间线',
   'st.transcript.foldSteps': '折叠工具步骤',
-  'st.transcript.foldStepsHint': '连续的工具调用、shell 命令和思考折叠成一个可展开的「步骤」块。消息、代理事件和错误始终可见。',
   'st.desktop.title': '桌面行为',
   'st.desktop.notifications': '显示批准通知',
   'st.desktop.tray': '最小化到托盘',

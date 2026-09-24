@@ -969,6 +969,7 @@ export const en = {
 
   // ---- subagent cards ----
   'subagent.status.unknown': 'status unknown',
+  'subagent.status.refreshing': 'refreshing…',
   'subagent.status.running': 'running',
   'subagent.status.suspended': 'suspended',
   'subagent.status.completed': 'completed',
@@ -1517,10 +1518,7 @@ export const en = {
   'st.composer.persistDrafts': 'Persist composer drafts',
   'st.composer.persistDraftsHint':
     'When off, drafts stay in this app run only. They are not written to or restored from disk; a refresh or restart clears them.',
-  'st.transcript.title': 'Timeline',
   'st.transcript.foldSteps': 'Collapse tool steps',
-  'st.transcript.foldStepsHint':
-    'Runs of tool calls, shell commands and thinking collapse into one expandable “Steps” block. Messages, agent events and errors always stay visible.',
   'st.desktop.title': 'Desktop behaviour',
   'st.desktop.notifications': 'Show approval notifications',
   'st.desktop.tray': 'Hide to tray',
