@@ -577,6 +577,72 @@ describe('server-v2 /api/sessions', () => {
     }
   });
 
+  it('rolls back an automatically allocated workspace after a rejected session profile', async () => {
+    const created = await postJson<null>('/api/sessions', {
+      agent_config: { profile: 'missing-profile' },
+    });
+    expect(created.body.code).toBe(40001);
+    expect(created.body.msg).toContain('Unknown agent profile');
+
+    const workspaces = await getJson<{ items: unknown[] }>('/api/workspaces');
+    expect(workspaces.body.code).toBe(0);
+    expect(workspaces.body.data.items).toEqual([]);
+    expect(await readdir(join(home as string, 'workspaces'))).toEqual([]);
+    const sessions = await getJson<PageWire>('/api/sessions');
+    expect(sessions.body.data.items).toEqual([]);
+  });
+
+  it('keeps an automatic workspace adopted by a concurrent session before the first creation fails', async () => {
+    const manager = (server as RunningServer).core.accessor.get(ISessionManager);
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
+    let releaseFailure!: () => void;
+    const paused = new Promise<void>((resolve) => { releaseFailure = resolve; });
+    vi.spyOn(manager, 'create').mockImplementationOnce(async () => {
+      resolveStarted();
+      await paused;
+      throw new Error('failed after another session adopted the workspace');
+    });
+
+    const pending = postJson<null>('/api/sessions', {});
+    await started;
+    let adopted: SessionWire;
+    try {
+      const workspaces = await getJson<{ items: { id: string; root: string }[] }>('/api/workspaces');
+      expect(workspaces.body.data.items).toHaveLength(1);
+      const created = await postJson<SessionWire>('/api/sessions', {
+        workspace_id: workspaces.body.data.items[0]!.id,
+      });
+      expect(created.body.code).toBe(0);
+      adopted = created.body.data;
+    } finally {
+      releaseFailure();
+    }
+    const failed = await pending;
+    expect(failed.body.code).not.toBe(0);
+    const sessions = await getJson<PageWire>('/api/sessions');
+    expect(sessions.body.data.items).toHaveLength(1);
+    const workspaces = await getJson<{ items: { id: string; root: string }[] }>('/api/workspaces');
+    expect(workspaces.body.data.items).toHaveLength(1);
+    expect(workspaces.body.data.items[0]?.id).toBe(adopted.workspace_id);
+    expect(workspaces.body.data.items[0]?.root).toBe(adopted.metadata.cwd);
+    expect((await stat(adopted.metadata.cwd)).isDirectory()).toBe(true);
+  });
+
+  it('keeps files written into a new workspace even when session creation fails', async () => {
+    const manager = (server as RunningServer).core.accessor.get(ISessionManager);
+    vi.spyOn(manager, 'create').mockImplementationOnce(async (options) => {
+      await writeFile(join(options.workDir, 'saved.txt'), 'keep this');
+      throw new Error('failure after workspace content was written');
+    });
+
+    const failed = await postJson<null>('/api/sessions', {});
+    expect(failed.body.code).not.toBe(0);
+    const workspaces = await getJson<{ items: { root: string }[] }>('/api/workspaces');
+    expect(workspaces.body.data.items).toHaveLength(1);
+    expect(await readFile(join(workspaces.body.data.items[0]!.root, 'saved.txt'), 'utf8')).toBe('keep this');
+  });
+
   it('rejects create with unknown workspace_id (40410)', async () => {
     const { body } = await postJson<null>('/api/sessions', {
       workspace_id: 'wd_missing_000000000000',

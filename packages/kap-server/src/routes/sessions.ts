@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
@@ -33,6 +34,7 @@ import {
   SessionCreated,
   IWorkspaceAliases,
   ISessionManager,
+  IWorkspaceInstanceManager,
   IWorkspaceService,
   MAIN_AGENT_ID,
   ProfileError,
@@ -48,6 +50,7 @@ import {
   type Scope,
   type SessionSummary,
   type SessionUsageSummary,
+  type Workspace,
 } from '@kiki/agent-core-v2';
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
 import { toRestContextBreakdown } from '../protocol/context-usage';
@@ -213,6 +216,41 @@ const sessionSourceOverlayResponseSchema = z.object({
   skills: z.number().int().nonnegative(),
 });
 
+async function removeUnusedAutoWorkspace(
+  core: Scope,
+  root: string,
+  registered: Workspace | undefined,
+): Promise<void> {
+  const registry = core.accessor.get(IWorkspaceService);
+  if (registered !== undefined) {
+    const current = await registry.get(registered.id);
+    if (
+      current === undefined
+      || current.root !== root
+      || current.createdAt !== registered.createdAt
+      || current.lastOpenedAt !== registered.lastOpenedAt
+      || current.name !== registered.name
+      || current.pinned
+    ) return;
+    if (core.accessor.get(ISessionManager).list().some(
+      (session) => session.accessor.get(ISessionContext).workspaceId === registered.id,
+    )) return;
+    if (core.accessor.get(IWorkspaceInstanceManager).referenceCount(registered.id) > 0) return;
+    if (await core.accessor.get(ISessionIndex).count({
+      workspaceIds: [registered.id],
+      includeArchived: true,
+    }) > 0) return;
+  }
+  try {
+    await rmdir(root);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOTEMPTY' || code === 'EEXIST') return;
+    if (code !== 'ENOENT') throw error;
+  }
+  if (registered !== undefined) await registry.delete(registered.id);
+}
+
 export function registerSessionsRoutes(
   app: SessionRouteHost,
   core: Scope,
@@ -282,17 +320,25 @@ export function registerSessionsRoutes(
         workDir = workspace.root;
       }
 
+      let autoRoot: string | undefined;
+      let registeredAutoWorkspace: Workspace | undefined;
+      let sessionCreated = false;
       try {
         let autoWorkspaceName: string | undefined;
         if (workDir === undefined) {
           const date = new Date().toISOString().slice(0, 10);
           const id = randomUUID();
-          workDir = join(core.accessor.get(IBootstrapService).homeDir, 'workspaces', `${date}-${id}`);
+          const root = join(core.accessor.get(IBootstrapService).homeDir, 'workspaces');
+          const hostFs = core.accessor.get(IHostFileSystem);
+          await hostFs.mkdir(root, { recursive: true });
+          workDir = join(root, `${date}-${id}`);
           autoWorkspaceName = `Untitled workspace ${date} ${id.slice(0, 8)}`;
-          await core.accessor.get(IHostFileSystem).mkdir(workDir, { recursive: true });
+          await hostFs.mkdir(workDir);
+          autoRoot = workDir;
         }
         const touched = await registry.createOrTouch(workDir, autoWorkspaceName);
-        await onWorkspaceServed?.(touched.root);
+        if (autoRoot === undefined) await onWorkspaceServed?.(touched.root);
+        else registeredAutoWorkspace = touched;
         const handle = await core.accessor.get(ISessionManager).create({
           workspaceId: touched.id,
           workDir,
@@ -308,6 +354,8 @@ export function registerSessionsRoutes(
                   strictThinking: body.agent_config.thinking !== undefined,
                 },
         });
+        sessionCreated = true;
+        if (autoRoot !== undefined) await onWorkspaceServed?.(touched.root);
         if (typeof body.title === 'string') {
           await handle.accessor.get(ISessionMetadata).setTitle(body.title);
         }
@@ -329,6 +377,16 @@ export function registerSessionsRoutes(
         );
         reply.send(okEnvelope(session, req.id));
       } catch (error) {
+        if (autoRoot !== undefined && !sessionCreated) {
+          try {
+            await removeUnusedAutoWorkspace(core, autoRoot, registeredAutoWorkspace);
+          } catch (cleanupError) {
+            requestLog(req)?.warn(
+              { err: cleanupError, workspace_root: autoRoot },
+              'automatic workspace cleanup failed',
+            );
+          }
+        }
         sendMappedError(reply, req, error);
       }
     },
