@@ -63,7 +63,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
           />
         </svg>
         <span className="min-w-0 truncate">
-          {label ?? (state.workspacesLoading ? t('hero.workspaceLoading') : t('hero.chooseWorkspace'))}
+          {label ?? (state.autoWorkspace ? t('new.autoWorkspace') : state.workspacesLoading ? t('hero.workspaceLoading') : t('hero.chooseWorkspace'))}
         </span>
         <svg
           width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden
@@ -149,8 +149,9 @@ function NewSessionPageContent({ onToggleSidebar, prefillNavigationKey }: {
   // sending while keeping the draft and selection controls editable.
   const composerDisabled = state.busy;
   const cwd = state.cwd.trim();
-  const sendDisabled =
-    state.effectiveWorkspace === undefined && (cwd === '' || !isAbsoluteCwdPath(cwd));
+  const sendDisabled = cwd !== ''
+    ? !isAbsoluteCwdPath(cwd)
+    : state.effectiveWorkspace === undefined && !state.autoWorkspace;
   const showTargetHint = sendDisabled && !state.workspacesLoading;
   const mentionScopeKey = cwd !== '' ? `cwd:${cwd}` : `ws:${state.effectiveWorkspace?.id ?? ''}`;
 

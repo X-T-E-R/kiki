@@ -55,6 +55,7 @@ import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 
 const DRAFT_KEY = 'new';
+export const AUTO_WORKSPACE_ID = '__auto__';
 
 /** One-shot skill activation carried across the /new → /s/:id navigation. */
 export interface DraftSkillHandoff {
@@ -182,9 +183,12 @@ export function useNewSessionDraft({
   const effectiveWorkspace: Workspace | undefined = useMemo(
     () =>
       workspaceId === '' ? sortWorkspacesByRecency(workspaces)[0]
+        : workspaceId === AUTO_WORKSPACE_ID ? undefined
         : workspaces.find((w) => w.id === workspaceId),
     [workspaces, workspaceId],
   );
+  const autoWorkspace = cwd.trim() === '' && effectiveWorkspace === undefined
+    && (workspaceId === '' || workspaceId === AUTO_WORKSPACE_ID);
 
   const configQuery = useQuery({
     queryKey: ['config'],
@@ -203,9 +207,13 @@ export function useNewSessionDraft({
     if (directory !== '') return isAbsoluteCwdPath(directory)
       ? { mode: 'cwd', cwd: directory, effective: true }
       : { mode: 'disabled' };
-    if (effectiveWorkspace === undefined) return { mode: 'disabled' };
-    return { mode: 'workspace', workspaceId: effectiveWorkspace.id, effective: true };
-  }, [cwd, effectiveWorkspace]);
+    if (effectiveWorkspace !== undefined) {
+      return { mode: 'workspace', workspaceId: effectiveWorkspace.id, effective: true };
+    }
+    return workspaceId === '' || workspaceId === AUTO_WORKSPACE_ID
+      ? { mode: 'unscoped' }
+      : { mode: 'disabled' };
+  }, [cwd, effectiveWorkspace, workspaceId]);
   const agentProfilesQuery = useQuery({
     queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
     queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
@@ -492,6 +500,7 @@ export function useNewSessionDraft({
     workspaces,
     workspacesLoading,
     effectiveWorkspace,
+    autoWorkspace,
     agentProfileCatalogMode,
     agentProfileCatalogPending,
     needsProviderSetup: providerSetupNeeded,
@@ -530,18 +539,23 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
   const trimmedCwd = state.cwd.trim();
   const cwdInvalid = trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd);
   const workspaceOptions: readonly SearchableSelectOption[] = useMemo(
-    () =>
-      sortWorkspacesByPinnedThenRecency(state.workspaces).map((workspace) => ({
+    () => [
+      {
+        value: AUTO_WORKSPACE_ID,
+        label: t('new.autoWorkspace'),
+        description: t('new.autoWorkspaceHint'),
+      },
+      ...sortWorkspacesByPinnedThenRecency(state.workspaces).map((workspace) => ({
         value: workspace.id,
         label: workspace.name,
         hint: workspace.root,
         title: workspace.name,
       })),
-    [state.workspaces],
+    ],
+    [state.workspaces, t],
   );
 
-  // First run has nothing in the dropdown, so the row alone reads as broken.
-  // One sentence above it says what a workspace is for.
+  // First run has no registered folders, but automatic allocation remains available.
   const firstRun = !state.workspacesLoading && state.workspaces.length === 0;
 
   return (
@@ -554,10 +568,9 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
         <SearchableSelect
           id="new-workspace-select"
           options={workspaceOptions}
-          value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? '')}
+          value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? AUTO_WORKSPACE_ID)}
           onChange={(nextId) => { state.selectWorkspace(nextId); }}
           disabled={state.workspacesLoading}
-          emptyText={t('new.noWorkspaces')}
           ariaLabel={t('new.workspace')}
           buttonClassName="flex w-64 max-w-full items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
         />
@@ -600,6 +613,9 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
           ) : null}
         </div>
       </div>
+      {state.autoWorkspace ? (
+        <p className="text-[11px] leading-relaxed text-ink-faint">{t('new.autoWorkspaceHint')}</p>
+      ) : null}
     </div>
   );
 }

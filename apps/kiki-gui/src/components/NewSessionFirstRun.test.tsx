@@ -17,6 +17,7 @@ import type { AuthSummary } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import {
+  AUTO_WORKSPACE_ID,
   WorkspacePickerFields,
   needsProviderSetup,
   type NewSessionDraftState,
@@ -68,7 +69,8 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       workspaces: [],
       workspacesLoading: false,
       effectiveWorkspace: undefined,
-      agentProfileCatalogMode: { mode: 'none' },
+      autoWorkspace: true,
+      agentProfileCatalogMode: { mode: 'unscoped' },
       agentProfileCatalogPending: false,
       needsProviderSetup: false,
       canBrowseForWorkspace: false,
@@ -120,6 +122,7 @@ function draftState(overrides: Partial<NewSessionDraftState> = {}): NewSessionDr
     workspaces: [],
     workspacesLoading: false,
     effectiveWorkspace: undefined,
+    autoWorkspace: true,
     workspaceId: '',
     cwd: '',
     canBrowseForWorkspace: false,
@@ -168,15 +171,18 @@ describe('WorkspacePickerFields first-run affordances', () => {
     expect(browseForWorkspace).toHaveBeenCalledTimes(1);
   });
 
-  it('explains what a workspace is for only while the catalog is empty', async () => {
+  it('explains the first-run automatic workspace only while the catalog is empty', async () => {
     const empty = await mount(draftState());
-    expect(empty.textContent).toContain('usually a project root');
+    expect(empty.textContent).toContain('Choose a project folder, or send now');
+    expect(empty.textContent).toContain('create a new folder in Kiki Home');
+    expect(empty.querySelector<HTMLButtonElement>('#new-workspace-select')?.disabled).toBe(false);
 
     const loading = await mount(draftState({ workspacesLoading: true }));
-    expect(loading.textContent).not.toContain('usually a project root');
+    expect(loading.textContent).not.toContain('Choose a project folder, or send now');
 
     const populated = await mount(
       draftState({
+        autoWorkspace: false,
         workspaces: [
           {
             id: 'wd_a',
@@ -190,7 +196,34 @@ describe('WorkspacePickerFields first-run affordances', () => {
         ],
       }),
     );
-    expect(populated.textContent).not.toContain('usually a project root');
+    expect(populated.textContent).not.toContain('Choose a project folder, or send now');
+  });
+
+  it('offers explicit automatic allocation even when workspaces already exist', async () => {
+    const selectWorkspace = vi.fn();
+    const container = await mount(draftState({
+      workspaceId: 'wd_a',
+      autoWorkspace: false,
+      effectiveWorkspace: {
+        id: 'wd_a', root: 'C:/proj', name: 'proj',
+        created_at: '2026-01-01T00:00:00.000Z',
+        last_opened_at: '2026-01-01T00:00:00.000Z',
+        session_count: 0, pinned: false,
+      },
+      workspaces: [{
+        id: 'wd_a', root: 'C:/proj', name: 'proj',
+        created_at: '2026-01-01T00:00:00.000Z',
+        last_opened_at: '2026-01-01T00:00:00.000Z',
+        session_count: 0, pinned: false,
+      }],
+      selectWorkspace,
+    }));
+    await act(async () => { container.querySelector<HTMLButtonElement>('#new-workspace-select')?.click(); });
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find((button) => button.textContent?.includes('Automatically create a workspace'));
+    expect(option?.textContent).toContain('create a new folder in Kiki Home');
+    await act(async () => { option?.click(); });
+    expect(selectWorkspace).toHaveBeenCalledWith(AUTO_WORKSPACE_ID);
   });
 });
 
@@ -253,6 +286,12 @@ async function mountNewSessionPage(onToggleSidebar: () => void): Promise<HTMLDiv
 }
 
 describe('the /new recent-sessions strip', () => {
+  it('shows automatic workspace creation without a workspace-required warning', async () => {
+    const container = await mountNewSessionPage(vi.fn());
+    expect(container.querySelector('[data-hero-workspace]')?.textContent).toContain('Automatically create a workspace');
+    expect(container.textContent).not.toContain('Choose another workspace');
+  });
+
   it('opens the session list instead of the workspaces settings page', async () => {
     const onToggleSidebar = vi.fn();
     await mountNewSessionPage(onToggleSidebar);

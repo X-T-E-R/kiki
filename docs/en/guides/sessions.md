@@ -44,6 +44,8 @@ Changing the storage setting does not migrate cards; existing cards keep referen
 
 ## Starting and resuming sessions
 
+On the desktop or browser **New session** page, you can use an existing workspace, enter an absolute project directory, or select **Automatically create a workspace**. When no workspaces are registered, the automatic option is selected by default. On your first send, Kiki creates a new directory under `$KIKI_HOME/workspaces/` (default: `~/.kiki/workspaces/`), registers it as a workspace, and opens the session there. An explicitly selected workspace that was later deleted stays invalid until you choose another workspace or the automatic option; Kiki will not silently use a different existing one. See [Data locations](../configuration/data-locations.md#directory-layout) for the directory layout and cleanup implications.
+
 Every time you run `kiki` directly it creates a new session. To resume a previous session, use one of the following:
 
 **Resume the most recent session in the current directory (`-c` is the short form of `--continue`, the same `kiki -c` shown in [First launch](../getting-started/first-launch.md)):**

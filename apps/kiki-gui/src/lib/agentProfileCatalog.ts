@@ -12,6 +12,7 @@ export async function invalidateAgentProfileCatalogs(client: QueryClient): Promi
 
 export type AgentProfileCatalogMode =
   | { readonly mode: 'global' }
+  | { readonly mode: 'unscoped' }
   | { readonly mode: 'workspace'; readonly workspaceId: string; readonly effective?: boolean }
   | { readonly mode: 'cwd'; readonly cwd: string; readonly effective?: boolean }
   | { readonly mode: 'disabled' };
@@ -58,12 +59,18 @@ export async function loadAgentProfileCatalog(
     }
     return client.listNamedAgentProfiles();
   };
+  const unscoped = (response: ListNamedAgentProfilesResponse): ListNamedAgentProfilesResponse =>
+    catalog.mode === 'unscoped'
+      ? { ...response, items: response.items.filter((item) =>
+          item.workspace_id === undefined && (item.workspace_ids?.length ?? 0) === 0
+        ) }
+      : response;
   const initial = await load();
-  if (isComplete(initial)) return initial;
+  if (isComplete(initial)) return unscoped(initial);
   await new Promise<void>((resolve) => {
     setTimeout(resolve, INCOMPLETE_CATALOG_RETRY_DELAY_MS);
   });
   const retried = await load();
-  if (isComplete(retried)) return retried;
+  if (isComplete(retried)) return unscoped(retried);
   throw new Error(translate('en', 'agentProfileCatalog.loading'));
 }

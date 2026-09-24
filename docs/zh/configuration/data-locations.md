@@ -31,7 +31,7 @@ export KIKI_HOME="$HOME/.config/kiki"
 
 ## 目录结构
 
-```
+```text
 $KIKI_HOME  （默认 ~/.kiki）
 ├── config.toml             # 用户配置
 ├── credentials.toml        # 供应商凭证（仅属主可读写，0600）
@@ -45,6 +45,9 @@ $KIKI_HOME  （默认 ~/.kiki）
 │   ├── installed.json      # 已安装 plugin 记录与启用状态
 │   └── managed/            # zip/本地路径安装的 plugin 副本
 ├── session_index.jsonl     # 会话索引
+├── workspaces.json          # 已注册工作区的名称与根目录
+├── workspaces/              # 自动创建的工作区目录
+│   └── <date>-<id>/
 ├── credentials/            # OAuth 凭据（目录 0700，文件 0600；与 credentials.toml 不同）
 │   ├── <name>.json
 │   └── mcp/
@@ -74,6 +77,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 - **`hooks/`**：`[[hooks]]` command 路径引用的脚本文件（如 `node ~/.kiki/hooks/check-bash.mjs`）。详见 [Hooks](../customization/hooks.md)。
 - **`plugins/installed.json`**：记录已安装的 plugin、每个 plugin 的启用状态，以及通过 `/plugins` 或 `/plugins mcp disable|enable` 修改的 MCP server 能力状态。本地路径和 zip URL 安装的文件会复制到 `plugins/managed/<id>/`。详见 [Plugins](../customization/plugins.md)。
 - **`credentials/`**：OAuth 凭据目录——与上面的 `credentials.toml` 文件不同——权限 `0o700`（目录）/ `0o600`（文件），仅当前用户可读写。托管供应商的 OAuth 登录态存为 `credentials/<name>.json`，MCP server 凭据存在 `credentials/mcp/` 子目录下。凭据写入使用原子流程（tmp → fsync → rename）防止写损。
+- **`workspaces.json` 与 `workspaces/`**：分别记录已注册工作区，以及新会话未指定工作区时 Kiki 创建的项目目录。每个自动创建的会话使用独立目录；这里是工作文件，与 `sessions/` 下的会话历史不同。
 
 ## 会话数据
 
@@ -109,7 +113,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 
 ## 清理数据
 
-删除数据根目录（`~/.kiki/` 或 `KIKI_HOME` 指定路径）可清除所有运行时数据。未设置 `KIKI_HOME` 且桌面兼容家目录保持默认时，桌面 OAuth 凭据在 `~/.kimi-code/credentials/`（见本页开头的说明），删除 `~/.kiki/` **不会**清掉它。只需清理部分内容时：
+删除数据根目录（`~/.kiki/` 或 `KIKI_HOME` 指定路径）会清除所有运行时数据，**包括自动创建的工作区中的文件**。删除前请备份这些工作文件。归档会话或注销工作区不会删除工作目录；只清理 `sessions/` 也不会删除 `workspaces/`。未设置 `KIKI_HOME` 且桌面兼容家目录保持默认时，桌面 OAuth 凭据在 `~/.kimi-code/credentials/`（见本页开头的说明），删除 `~/.kiki/` **不会**清掉它。只需清理部分内容时：
 
 | 需求 | 操作 |
 | --- | --- |

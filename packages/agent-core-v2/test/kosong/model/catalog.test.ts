@@ -1571,6 +1571,20 @@ describe('ModelCatalog enumeration', () => {
     }
   });
 
+  it('reports an actual declared process environment key by name, never by value', async () => {
+    vi.stubEnv('KIMI_API_KEY', 'sk-shell-only');
+    const { host, catalog } = createHost({ providers: { kimi: { type: 'kimi' } }, models: {} });
+    try {
+      expect(await catalog.listProviders()).toEqual([expect.objectContaining({
+        id: 'kimi', api_key_env: 'KIMI_API_KEY', has_api_key: true, status: 'connected',
+      })]);
+      expect((await catalog.getProvider('kimi')).api_key).toBeUndefined();
+    } finally {
+      host.dispose();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('marks an OAuth provider connected when a cached token exists', async () => {
     const { host, catalog } = createHost(
       {

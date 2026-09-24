@@ -31,7 +31,7 @@ Once set, **all** Kiki data — config, provider credentials, sessions, logs, OA
 
 ## Directory layout
 
-```
+```text
 $KIKI_HOME  (default: ~/.kiki)
 ├── config.toml             # User configuration
 ├── credentials.toml        # Provider credentials (owner-only, 0600)
@@ -45,6 +45,9 @@ $KIKI_HOME  (default: ~/.kiki)
 │   ├── installed.json      # Installed plugin records and enabled state
 │   └── managed/            # Plugin copies installed from zip/local paths
 ├── session_index.jsonl     # Session index
+├── workspaces.json          # Registered workspace names and roots
+├── workspaces/              # Automatically created workspace directories
+│   └── <date>-<id>/
 ├── credentials/            # OAuth credentials (dir 0700, files 0600; separate from credentials.toml)
 │   ├── <name>.json
 │   └── mcp/
@@ -74,6 +77,7 @@ Each top-level file under the data root serves a specific purpose; most are mana
 - **`hooks/`**: script files referenced by `[[hooks]]` command paths (for example `node ~/.kiki/hooks/check-bash.mjs`). See [Hooks](../customization/hooks.md).
 - **`plugins/installed.json`**: records installed plugins, each plugin's enabled state, and MCP server capability state changes made via `/plugins` or `/plugins mcp disable|enable`. Files installed from local paths or zip URLs are copied to `plugins/managed/<id>/`. See [Plugins](../customization/plugins.md).
 - **`credentials/`**: OAuth credential directory — distinct from the `credentials.toml` file above — with permissions `0o700` (directory) / `0o600` (files), readable and writable only by the current user. OAuth logins for managed providers are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. Credentials are written using an atomic flow (tmp → fsync → rename) to prevent corruption.
+- **`workspaces.json` and `workspaces/`**: the registered workspace catalog and the project directories Kiki creates when a new session has no selected workspace. Each automatically created session receives a distinct directory; these are working files, separate from the session history under `sessions/`.
 
 ## Session data
 
@@ -109,7 +113,7 @@ Terminal input history is saved separately per working directory, at `user-histo
 
 ## Clearing data
 
-Deleting the data root directory (`~/.kiki/` or the path set by `KIKI_HOME`) removes all runtime data. With `KIKI_HOME` unset and the desktop compatibility home left at its default, the desktop OAuth credentials live under `~/.kimi-code/credentials/` (see the note at the top of this page) and are **not** removed by deleting `~/.kiki/`. To clear only part of the data:
+Deleting the data root directory (`~/.kiki/` or the path set by `KIKI_HOME`) removes all runtime data, **including files in automatically created workspaces**. Back up those working files before deleting the root. Archiving a session or unregistering its workspace does not delete its working directory; clearing only `sessions/` also leaves `workspaces/` intact. With `KIKI_HOME` unset and the desktop compatibility home left at its default, the desktop OAuth credentials live under `~/.kimi-code/credentials/` (see the note at the top of this page) and are **not** removed by deleting `~/.kiki/`. To clear only part of the data:
 
 | Goal | Action |
 | --- | --- |

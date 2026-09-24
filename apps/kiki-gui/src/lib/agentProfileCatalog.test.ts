@@ -19,6 +19,22 @@ afterEach(() => {
 });
 
 describe('loadAgentProfileCatalog', () => {
+  it('excludes workspace registrations from the unscoped create catalog without changing the global view', async () => {
+    const items = [
+      { name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] },
+      { name: 'scoped', source: 'workspace', main: true, disabled: false, routes: [], workspace_id: 'wd_a' },
+      { name: 'merged', source: 'workspace', main: true, disabled: false, routes: [], workspace_ids: ['wd_a'] },
+    ];
+    const listNamedAgentProfiles = vi.fn().mockResolvedValue({ items, complete: true });
+    const client = { listNamedAgentProfiles } as unknown as Pick<KikiClient, 'listNamedAgentProfiles'>;
+
+    const unscoped = await loadAgentProfileCatalog(client, { mode: 'unscoped' });
+    expect(unscoped.items.map((item) => item.name)).toEqual(['agent']);
+    expect(await loadAgentProfileCatalog(client, { mode: 'global' })).toEqual({ items, complete: true });
+    expect(listNamedAgentProfiles.mock.calls).toEqual([[], []]);
+    expect(agentProfileCatalogQueryKey({ mode: 'unscoped' })).not.toEqual(agentProfileCatalogQueryKey({ mode: 'global' }));
+  });
+
   it('refetches an incomplete catalog once and only caches the complete response', async () => {
     vi.useFakeTimers();
     const listNamedAgentProfiles = vi.fn()

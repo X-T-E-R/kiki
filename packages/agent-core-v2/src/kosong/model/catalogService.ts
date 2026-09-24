@@ -27,7 +27,6 @@ import {
 import {
   explainProviderEndpoint,
   getProviderDefinition,
-  resolveProviderEndpoint,
 } from '../provider/providerDefinition';
 import { resolveImagePolicy } from '../provider/providerImagePolicy';
 
@@ -40,6 +39,7 @@ import {
   type ProviderCatalogItem,
   type ProviderCredentialState,
   type SetDefaultModelResponse,
+  providerCredentialFields,
   StaticAuthProvider,
   toProtocolModel,
   toProtocolModelFallback,
@@ -602,18 +602,18 @@ export function resolveOutboundHeaders(
 }
 
 /**
- * The credential summary a provider projection reports instead of a secret:
- * a configured api key (config or the type's env bag) and a cached OAuth
- * token. Shared by the catalog read and the config mutation service so both
- * describe the same connection state.
+ * Connection state shared by catalog reads and config mutations. Inline API
+ * keys and declared environment sources are both treated as configured; a
+ * cached OAuth token independently marks an OAuth connection as active.
  */
 export async function resolveProviderCredentialState(
   providerId: string,
   provider: ProviderConfig,
   oauth: Pick<IModelOAuthTokens, 'hasCachedAccessToken'>,
 ): Promise<ProviderCredentialState> {
+  const key = providerCredentialFields(providerId, provider);
   return {
-    hasApiKey: hasConfiguredApiKey(provider),
+    hasApiKey: key.api_key !== undefined || key.api_key_env !== undefined,
     hasOAuthToken:
       provider.oauth === undefined
         ? false
@@ -738,12 +738,6 @@ function locationFromVertexAIBaseUrl(baseUrl: string | undefined): string | unde
   } catch {
     return undefined;
   }
-}
-
-function hasConfiguredApiKey(provider: ProviderConfig): boolean {
-  if (nonEmpty(provider.apiKey) !== undefined) return true;
-  if (provider.type === undefined) return false;
-  return resolveProviderEndpoint(provider.type, provider.env ?? {}).apiKey !== undefined;
 }
 
 function probeCredentials(auth: ResolvedModelAuthMaterial): string[] {

@@ -1,6 +1,11 @@
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+
 import {
   ErrorCodes,
   DEFAULT_AGENT_PROFILE_NAME,
+  IBootstrapService,
+  IHostFileSystem,
   AGENT_PROFILE_SOURCE_PRIORITY,
   SKILL_SOURCE_PRIORITY,
   IAgentActivityView,
@@ -246,18 +251,8 @@ export function registerSessionsRoutes(
       const body = req.body;
       const callerCwd = typeof body.metadata?.cwd === 'string' ? body.metadata.cwd : undefined;
       const workspaceId = body.workspace_id;
-      if (workspaceId === undefined && callerCwd === undefined) {
-        reply.send(
-          buildValidationEnvelope(
-            [{ path: 'metadata.cwd', message: 'either workspace_id or metadata.cwd is required' }],
-            req.id,
-          ),
-        );
-        return;
-      }
-
       const registry = core.accessor.get(IWorkspaceService);
-      let workDir: string;
+      let workDir = callerCwd;
       if (workspaceId !== undefined) {
         const workspace = await registry.get(workspaceId);
         if (workspace === undefined) {
@@ -285,12 +280,18 @@ export function registerSessionsRoutes(
           return;
         }
         workDir = workspace.root;
-      } else {
-        workDir = callerCwd as string;
       }
 
       try {
-        const touched = await registry.createOrTouch(workDir);
+        let autoWorkspaceName: string | undefined;
+        if (workDir === undefined) {
+          const date = new Date().toISOString().slice(0, 10);
+          const id = randomUUID();
+          workDir = join(core.accessor.get(IBootstrapService).homeDir, 'workspaces', `${date}-${id}`);
+          autoWorkspaceName = `Untitled workspace ${date} ${id.slice(0, 8)}`;
+          await core.accessor.get(IHostFileSystem).mkdir(workDir, { recursive: true });
+        }
+        const touched = await registry.createOrTouch(workDir, autoWorkspaceName);
         await onWorkspaceServed?.(touched.root);
         const handle = await core.accessor.get(ISessionManager).create({
           workspaceId: touched.id,

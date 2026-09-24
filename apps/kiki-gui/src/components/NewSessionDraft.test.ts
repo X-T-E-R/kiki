@@ -10,6 +10,7 @@ import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
 import { buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
 import {
+  AUTO_WORKSPACE_ID,
   buildNewSessionCreate,
   isAbsoluteCwdPath,
   useNewSessionDraft,
@@ -180,6 +181,19 @@ describe('buildNewSessionCreate', () => {
       },
     });
   });
+
+  it('omits workspace_id and metadata.cwd for automatic allocation', () => {
+    const body = buildNewSessionCreate({
+      cwd: '',
+      profile: 'agent',
+      permissionMode: 'manual',
+      planMode: false,
+      swarmMode: false,
+    });
+    expect(body.workspace_id).toBeUndefined();
+    expect(body.metadata).toBeUndefined();
+    expect(body.agent_config).toMatchObject({ profile: 'agent' });
+  });
 });
 
 describe('useNewSessionDraft agent profile scope', () => {
@@ -220,6 +234,28 @@ describe('useNewSessionDraft agent profile scope', () => {
     await settleDraft(() => client.createSession.mock.calls.length > 0);
     return client.createSession.mock.calls.at(-1)?.[0] as SessionCreate;
   };
+
+  it('uses unscoped profiles and creates without a target on first run', async () => {
+    const catalog = deferred<{ items: NamedAgentProfile[] }>();
+    client.listNamedAgentProfiles.mockReturnValue(catalog.promise);
+
+    await renderDraft();
+    let state = await settleDraft((value) =>
+      value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 1
+    );
+    expect(state.autoWorkspace).toBe(true);
+    expect(state.agentProfileCatalogMode).toEqual({ mode: 'unscoped' });
+    await act(async () => { void state.send('Wait for the profile catalog', []); });
+    expect(client.createSession).not.toHaveBeenCalled();
+
+    catalog.resolve({ items: [profile('agent')] });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith();
+    const body = await sentBody(state);
+    expect(body.workspace_id).toBeUndefined();
+    expect(body.metadata).toBeUndefined();
+    expect(body.agent_config?.profile).toBe('agent');
+  });
 
   it('blocks creation until an initial agent is validated and then sends its workspace pins', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
@@ -827,6 +863,48 @@ describe('useNewSessionDraft agent profile scope', () => {
     });
   });
 
+  it('retains an explicit automatic choice across remount and excludes workspace-only profiles', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low')] });
+    client.listNamedAgentProfiles.mockResolvedValue({
+      items: [
+        profile('agent'),
+        { ...profile('workspace-choice', 'provider/alpha', 'low'), workspace_id: 'wd_alpha' },
+      ],
+    });
+
+    await renderDraft({ initialWorkspaceId: 'wd_alpha' });
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { state.setAgentProfile('workspace-choice'); });
+    state = await settleDraft((value) => value.modelOverride === 'provider/alpha');
+    await act(async () => {
+      state.selectWorkspace(AUTO_WORKSPACE_ID);
+      void state.send('Do not use the old workspace catalog', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+    state = await settleDraft((value) =>
+      !value.agentProfileCatalogPending && value.agentProfileCatalogMode.mode === 'unscoped'
+    );
+    expect(state.autoWorkspace).toBe(true);
+    expect(state.effectiveWorkspace).toBeUndefined();
+    expect(readStoredDraft()).toMatchObject({ workspaceId: AUTO_WORKSPACE_ID });
+    await act(async () => { void state.send('A workspace-only profile is not available', []); });
+    expect(client.createSession).not.toHaveBeenCalled();
+
+    await unmountDraft();
+    await renderDraft();
+    state = await settleDraft((value) => !value.agentProfileCatalogPending && !value.workspacesLoading);
+    expect(state.workspaceId).toBe(AUTO_WORKSPACE_ID);
+    expect(state.autoWorkspace).toBe(true);
+    expect(state.agentProfile).toBe('workspace-choice');
+    expect(client.listNamedAgentProfiles.mock.calls.at(-1)).toEqual([]);
+    await act(async () => { state.setAgentProfile('agent'); });
+    state = await settleDraft((value) => value.agentProfile === 'agent' && value.modelOverride === undefined);
+    const body = await sentBody(state);
+    expect(body.workspace_id).toBeUndefined();
+    expect(body.metadata).toBeUndefined();
+  });
+
   it('keeps a deleted workspace id after remount instead of falling back to another workspace', async () => {
     client.listWorkspaces.mockResolvedValue({
       items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
@@ -855,6 +933,8 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = await settleDraft((value) => !value.workspacesLoading && !value.agentProfileCatalogPending);
     expect(state.workspaceId).toBe('wd_alpha');
     expect(state.effectiveWorkspace).toBeUndefined();
+    expect(state.autoWorkspace).toBe(false);
+    expect(state.agentProfileCatalogMode).toEqual({ mode: 'disabled' });
     expect(state.agentProfile).toBe('workspace-choice');
     expect(state.modelOverride).toBe('provider/alpha');
     expect(state.effectiveEffort).toBe('low');

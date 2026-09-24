@@ -139,10 +139,9 @@ export function providerCredentialFields(
     return { api_key_env: provider.apiKey?.trim() ? 'KIKI_MODEL_API_KEY' : undefined };
   }
   if (provider.apiKey?.trim()) return { api_key: provider.apiKey };
-  const endpoint = provider.type === undefined
-    ? undefined
-    : explainProviderEndpoint(provider.type, provider.env ?? {});
-  return { api_key_env: endpoint?.apiKeyEnvName };
+  if (provider.type === undefined) return {};
+  const bag = explainProviderEndpoint(provider.type, provider.env ?? {});
+  return { api_key_env: bag.apiKeyEnvName ?? explainProviderEndpoint(provider.type).apiKeyEnvName };
 }
 
 export function toProtocolModel(

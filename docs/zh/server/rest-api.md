@@ -130,7 +130,7 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `POST /api/sessions` | 创建会话（需 `workspace_id` 或 `metadata.cwd`） |
+| `POST /api/sessions` | 创建会话；同时省略 `workspace_id` 与 `metadata.cwd` 时自动分配新工作区 |
 | `GET /api/sessions` | 列出会话，游标分页，支持 `busy` / `archived_only` 等过滤 |
 | `GET /api/sessions/{session_id}` | 读取单个会话 |
 | `GET /api/sessions/{session_id}/profile` | 读取会话档案 |
@@ -143,6 +143,8 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/sessions/{session_id}/warnings` | 会话级告警 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流，不走信封） |
 | `GET /api/sessions/{session_id}/snapshot` | 客户端重建用全量快照（含 `as_of_seq` 与 `epoch`） |
+
+要自动分配工作区，可向 `POST /api/sessions` 发送 `{}`。服务端会在 `$KIKI_HOME/workspaces/` 下为该会话新建独立目录并注册工作区；响应中的 `workspace_id` 和 `metadata.cwd` 是新工作区的信息。显式提供已有 `workspace_id` 或 `metadata.cwd` 时仍按原方式定位，未知 `workspace_id` 仍会被拒绝。
 
 ### 消息与转录
 

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
@@ -553,10 +553,28 @@ describe('server-v2 /api/sessions', () => {
     expect(created.body.msg).toContain('disallowedTools');
   });
 
-  it('rejects create without cwd or workspace_id (40001)', async () => {
-    const { body } = await postJson<null>('/api/sessions', { title: 'no cwd' });
-    expect(body.code).toBe(40001);
-    expect(body.details?.[0]?.path).toBe('metadata.cwd');
+  it('creates and registers a new directory for each session without a workspace target', async () => {
+    const first = await postJson<SessionWire>('/api/sessions', { title: 'No workspace selected' });
+    const second = await postJson<SessionWire>('/api/sessions', {});
+    expect(first.status).toBe(200);
+    expect(first.body.code, JSON.stringify(first.body)).toBe(0);
+    expect(second.body.code, JSON.stringify(second.body)).toBe(0);
+    expect(first.body.data.title).toBe('No workspace selected');
+    expect(first.body.data.workspace_id).not.toBe(second.body.data.workspace_id);
+
+    const workspaces = await getJson<{
+      items: { id: string; name: string; root: string }[];
+    }>('/api/workspaces');
+    expect(workspaces.body.code).toBe(0);
+    expect(workspaces.body.data.items).toHaveLength(2);
+    for (const session of [first.body.data, second.body.data]) {
+      const workspace = workspaces.body.data.items.find((item) => item.id === session.workspace_id);
+      expect(workspace).toBeDefined();
+      expect(workspace?.name).toMatch(/^Untitled workspace /);
+      expect(workspace?.root).toBe(session.metadata.cwd);
+      expect(workspace?.root.startsWith(join(home as string, 'workspaces'))).toBe(true);
+      expect((await stat(session.metadata.cwd)).isDirectory()).toBe(true);
+    }
   });
 
   it('rejects create with unknown workspace_id (40410)', async () => {

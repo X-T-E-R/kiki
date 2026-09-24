@@ -130,7 +130,7 @@ Endpoints are grouped by resource below. A `:{action}` suffix in a path is the a
 
 | Method and path | Description |
 | --- | --- |
-| `POST /api/sessions` | Create a session (requires `workspace_id` or `metadata.cwd`) |
+| `POST /api/sessions` | Create a session; omit both `workspace_id` and `metadata.cwd` to allocate a new workspace |
 | `GET /api/sessions` | List sessions; cursor pagination with filters such as `busy` and `archived_only` |
 | `GET /api/sessions/{session_id}` | Read one session |
 | `GET /api/sessions/{session_id}/profile` | Read the session profile |
@@ -143,6 +143,8 @@ Endpoints are grouped by resource below. A `:{action}` suffix in a path is the a
 | `GET /api/sessions/{session_id}/warnings` | Session-level warnings |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream, not enveloped) |
 | `GET /api/sessions/{session_id}/snapshot` | Full snapshot for client rebuilds (with `as_of_seq` and `epoch`) |
+
+For automatic allocation, send `{}` to `POST /api/sessions`. The server creates a distinct directory under `$KIKI_HOME/workspaces/`, registers it, and returns its `workspace_id` and `metadata.cwd` in the session response. Supplying an existing `workspace_id` or `metadata.cwd` keeps the existing targeting behavior; an unknown `workspace_id` is still rejected.
 
 ### Messages and transcript
 
