@@ -1,12 +1,20 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  agentScopeOf,
+  closeSessionById,
   getLiveSessionById,
+  IBlobStore,
+  IBootstrapService,
   IFileService,
+  ISessionIndex,
   ISessionManager,
   ISessionMediaStore,
+  sessionScopeOf,
+  workspacePersistenceScope,
 } from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -386,6 +394,48 @@ describe('POST /api/files (server-v2)', () => {
 });
 
 describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
+  it('replays distinct saved image regions without resuming a cold session', async () => {
+    const r = await boot();
+    const sessionId = await createSession(r);
+    const summary = await r.core.accessor.get(ISessionIndex).get(sessionId);
+    if (summary === undefined) throw new Error('session missing from index');
+    const bootstrap = r.core.accessor.get(IBootstrapService);
+    const agentScope = agentScopeOf(
+      sessionScopeOf(workspacePersistenceScope(bootstrap.scope('sessions'), summary.workspaceId), sessionId),
+      'agent-1',
+    );
+    const blobs = r.core.accessor.get(IBlobStore);
+    const crops = [Buffer.from('left crop'), Buffer.from('right crop')];
+    const hashes = crops.map((crop) => createHash('sha256').update(crop.toString('base64')).digest('hex'));
+    for (const [index, crop] of crops.entries()) await blobs.put(`${agentScope}/blobs`, hashes[index]!, crop);
+    await closeSessionById(r.core.accessor, sessionId);
+    expect(getLiveSessionById(r.core.accessor, sessionId)).toBeUndefined();
+
+    for (const [index, crop] of crops.entries()) {
+      const res = await appOf(r).inject({
+        method: 'GET', url: `/api/sessions/${sessionId}/media/blobref:agent-1:${hashes[index]}`,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toBe('application/octet-stream');
+      expect(res.rawPayload).toEqual(crop);
+      expect(getLiveSessionById(r.core.accessor, sessionId)).toBeUndefined();
+    }
+
+    const range = await appOf(r).inject({
+      method: 'GET', url: `/api/sessions/${sessionId}/media/blobref:agent-1:${hashes[0]}`,
+      headers: { range: 'bytes=1-3' },
+    });
+    expect(range.statusCode).toBe(206);
+    expect(range.rawPayload).toEqual(crops[0]!.subarray(1, 4));
+    expect(getLiveSessionById(r.core.accessor, sessionId)).toBeUndefined();
+
+    for (const fileId of [`blobref:other-agent:${hashes[0]}`, `blobref:..:${hashes[0]}`, 'blobref:agent-1:invalid']) {
+      const missing = await appOf(r).inject({ method: 'GET', url: `/api/sessions/${sessionId}/media/${fileId}` });
+      expect(missing.statusCode).toBe(404);
+      expect((missing.json() as Envelope).code).toBe(40407);
+    }
+  });
+
   it('serves the session copy after the transient upload is deleted', async () => {
     const r = await boot();
     const data = Buffer.from('canonical image bytes');

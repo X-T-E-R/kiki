@@ -23,6 +23,8 @@ export interface MediaRef {
   readonly url?: string;
   /** Absolute host path, when the part references a file on disk. */
   readonly path?: string;
+  /** Persisted tool-result bytes, scoped to the session and producing agent. */
+  readonly blobHash?: string;
   readonly name?: string;
   readonly mime?: string;
   readonly size?: number;
@@ -88,16 +90,22 @@ export interface ToolOutputMedia {
 
 const MEDIA_TAG_RE = /<(\/?)(image|video)\b([^>]*)>/gi;
 const MEDIA_PATH_RE = /\bpath=(?:"([^"]*)"|'([^']*)')/i;
-const BLOBREF_MIME_RE = /^blobref:([^;]+);/i;
+const BLOBREF_RE = /^blobref:((?:image|video)\/[A-Za-z0-9.+_-]+);([0-9a-f]{64})$/;
 const BROWSER_MEDIA_URL_RE = /^(?:data:|blob:|https?:\/\/)/i;
 
 function toolMediaRef(ref: MediaRef, path: string | undefined): MediaRef {
   const url = ref.url;
+  if (url?.startsWith('blobref:')) {
+    const match = BLOBREF_RE.exec(url);
+    if (match !== null && match[1]?.startsWith(`${ref.kind}/`)) {
+      return { ...ref, url: undefined, path, mime: match[1], blobHash: match[2] };
+    }
+    return { ...ref, url: undefined, path: undefined, name: path, mime: undefined };
+  }
   return {
     ...ref,
     url: url !== undefined && BROWSER_MEDIA_URL_RE.test(url) ? url : undefined,
     path,
-    mime: ref.mime ?? (url === undefined ? undefined : BLOBREF_MIME_RE.exec(url)?.[1]),
   };
 }
 

@@ -175,7 +175,7 @@ function readMediaBlock(path: string, url: string, kind: 'image' | 'video' = 'im
 
 async function renderReadMedia(block: ToolBlock): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
-  await renderSettled(root, <MediaPreviewProvider sessionId="session_test"><ToolCard block={block} /></MediaPreviewProvider>);
+  await renderSettled(root, <MediaPreviewProvider sessionId="session_test"><ToolCard block={block} agentId="main" /></MediaPreviewProvider>);
   await act(async () => {
     container.querySelector('[data-tool] > button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await Promise.resolve();
@@ -184,29 +184,82 @@ async function renderReadMedia(block: ToolBlock): Promise<HTMLDivElement> {
 }
 
 describe('ReadMediaFile tool result preview', () => {
-  it('reads an absolute Windows image path when the cold transcript holds a blob reference', async () => {
+  it('reads the saved image bytes, not the current absolute Windows path', async () => {
     const path = 'C:\\work\\shots\\home.png';
-    mocks.readHostFileBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
+    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'application/octet-stream' });
     const container = await renderReadMedia(readMediaBlock(path, `blobref:image/png;${'a'.repeat(64)}`));
 
-    expect(mocks.readHostFileBytes).toHaveBeenCalledWith(path);
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${'a'.repeat(64)}`);
+    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
     const image = container.querySelector('img');
     expect(image?.getAttribute('src')).toBe('blob:kiki-session-media');
+    expect(vi.mocked(URL.createObjectURL).mock.calls.at(-1)?.[0]).toMatchObject({ type: 'image/png', size: 3 });
     await act(async () => {
       image?.closest('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(document.body.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe('blob:kiki-session-media');
   });
 
-  it('uses the normalized absolute result path for relative input and keeps inline media inline', async () => {
-    mocks.readHostFileBytes.mockResolvedValue({ bytes: new Uint8Array([1]), mime: 'image/png' });
+  it('keeps the original absolute result path for relative input and preserves inline media', async () => {
+    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1]), mime: 'application/octet-stream' });
     const cold = await renderReadMedia(readMediaBlock('/workspace/shot.png', `blobref:image/png;${'b'.repeat(64)}`, 'image', './shot.png'));
-    expect(mocks.readHostFileBytes).toHaveBeenCalledWith('/workspace/shot.png');
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${'b'.repeat(64)}`);
     expect(cold.querySelector('img')?.getAttribute('src')).toBe('blob:kiki-session-media');
 
     const live = await renderReadMedia(readMediaBlock('/workspace/live.png', 'data:image/png;base64,AAA'));
     expect(live.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAA');
-    expect(mocks.readHostFileBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
+  });
+
+  it('replays two different crops of the same image without showing the original file', async () => {
+    const left = 'a'.repeat(64);
+    const right = 'b'.repeat(64);
+    const path = '/workspace/original.png';
+    const crops = new Map([
+      [`blobref:agent-1:${left}`, new Uint8Array([1, 2, 3])],
+      [`blobref:agent-1:${right}`, new Uint8Array([4, 5, 6, 7])],
+    ]);
+    mocks.readSessionMediaBytes.mockImplementation(async (_sessionId: string, fileId: string) => ({
+      bytes: crops.get(fileId), mime: 'application/octet-stream',
+    }));
+    vi.mocked(URL.createObjectURL).mockImplementationOnce(() => 'blob:crop-left').mockImplementationOnce(() => 'blob:crop-right');
+    const leftBlock = { ...readMediaBlock(path, `blobref:image/png;${left}`),
+      id: 'crop-left', toolCallId: 'crop-left', args: { path, region: { x: 0, y: 0, width: 2, height: 2 } } };
+    const rightBlock = { ...readMediaBlock(path, `blobref:image/png;${right}`),
+      id: 'crop-right', toolCallId: 'crop-right', args: { path, region: { x: 2, y: 0, width: 2, height: 2 } } };
+    const { root, container } = makeRoot();
+    await renderSettled(root, <MediaPreviewProvider sessionId="session_test">
+      <ToolCard block={leftBlock} agentId="agent-1" />
+      <ToolCard block={rightBlock} agentId="agent-1" />
+    </MediaPreviewProvider>);
+    await act(async () => {
+      for (const button of container.querySelectorAll('[data-tool] > button')) {
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      }
+      await Promise.resolve();
+    });
+
+    expect(mocks.readSessionMediaBytes.mock.calls).toEqual([
+      ['session_test', `blobref:agent-1:${left}`],
+      ['session_test', `blobref:agent-1:${right}`],
+    ]);
+    expect([...container.querySelectorAll('img')].map((image) => image.getAttribute('src'))).toEqual([
+      'blob:crop-left', 'blob:crop-right',
+    ]);
+    expect(vi.mocked(URL.createObjectURL).mock.calls.slice(-2).map(([blob]) => (blob as Blob).size)).toEqual([3, 4]);
+    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
+  });
+
+  it('plays saved video bytes with the blob reference MIME rather than the generic download MIME', async () => {
+    const hash = 'd'.repeat(64);
+    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'application/octet-stream' });
+    const container = await renderReadMedia(readMediaBlock('/workspace/crop.mp4', `blobref:video/mp4;${hash}`, 'video'));
+
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${hash}`);
+    expect(container.querySelector('video')?.getAttribute('src')).toBe('blob:kiki-session-media');
+    expect(vi.mocked(URL.createObjectURL).mock.calls.at(-1)?.[0]).toMatchObject({ type: 'video/mp4' });
+    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
   });
 
   it('previews provider-only video URLs from the host path and preserves inline videos', async () => {
@@ -220,11 +273,12 @@ describe('ReadMediaFile tool result preview', () => {
     expect(mocks.readHostFileBytes).toHaveBeenCalledTimes(1);
   });
 
-  it('shows a file chip instead of a broken image when the original file is unavailable', async () => {
-    mocks.readHostFileBytes.mockRejectedValue(new Error('file not found'));
+  it('shows a file chip rather than a false original-file preview when saved media is missing', async () => {
+    mocks.readSessionMediaBytes.mockRejectedValue(new Error('blob not found'));
     const container = await renderReadMedia(readMediaBlock('/workspace/deleted.png', `blobref:image/png;${'c'.repeat(64)}`));
 
-    expect(mocks.readHostFileBytes).toHaveBeenCalledWith('/workspace/deleted.png');
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', `blobref:main:${'c'.repeat(64)}`);
+    expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
     expect(container.querySelector('img')).toBeNull();
     expect(container.textContent).toContain('deleted.png');
   });

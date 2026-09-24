@@ -96,7 +96,7 @@ describe('extractToolOutputMedia', () => {
     ]);
   });
 
-  it('uses the absolute file path instead of a non-browser blob reference in cold tool results', () => {
+  it('preserves the exact persisted media hash alongside the original display path', () => {
     const output = [
       { type: 'text', text: '<image path="C:\\work\\shots\\home.png">' },
       { type: 'image_url', imageUrl: { url: `blobref:image/png;${'a'.repeat(64)}` } },
@@ -104,7 +104,7 @@ describe('extractToolOutputMedia', () => {
     ];
     expect(extractToolOutputMedia(output)).toEqual({
       text: '',
-      media: [{ kind: 'image', url: undefined, path: 'C:\\work\\shots\\home.png', mime: 'image/png' }],
+      media: [{ kind: 'image', url: undefined, path: 'C:\\work\\shots\\home.png', mime: 'image/png', blobHash: 'a'.repeat(64) }],
     });
   });
 
@@ -135,7 +135,23 @@ describe('extractToolOutputMedia', () => {
       text: '',
       media: [
         { kind: 'video', url: undefined, path: undefined, mime: undefined },
-        { kind: 'image', url: undefined, path: undefined, mime: 'image/png' },
+        { kind: 'image', url: undefined, path: undefined, mime: 'image/png', blobHash: 'b'.repeat(64) },
+      ],
+    });
+  });
+
+  it('preserves video blob bytes and never substitutes the host path for malformed blob references', () => {
+    expect(extractToolOutputMedia([
+      { type: 'text', text: '<video path="/work/crop.mp4">' },
+      { type: 'video_url', videoUrl: { url: `blobref:video/mp4;${'c'.repeat(64)}` } },
+      { type: 'text', text: '</video>' },
+      { type: 'text', text: '<image path="/work/original.png">' },
+      { type: 'image_url', imageUrl: { url: 'blobref:image/png;not-a-hash' } },
+    ])).toEqual({
+      text: '',
+      media: [
+        { kind: 'video', url: undefined, path: '/work/crop.mp4', mime: 'video/mp4', blobHash: 'c'.repeat(64) },
+        { kind: 'image', url: undefined, path: undefined, name: '/work/original.png', mime: undefined },
       ],
     });
   });

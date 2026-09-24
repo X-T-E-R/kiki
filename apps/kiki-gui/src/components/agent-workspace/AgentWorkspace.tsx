@@ -539,6 +539,7 @@ export function AgentWorkspace({
         : null}
       <Transcript
         state={agentState}
+        agentId={agentId}
         onLoadOlder={handleLoadOlder}
         onResolveApproval={handleResolveApproval}
         onAnswerQuestion={handleAnswerQuestion}

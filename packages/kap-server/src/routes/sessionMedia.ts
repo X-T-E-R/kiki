@@ -4,13 +4,22 @@ import {
   ISessionMediaStore,
   type SessionMediaFile,
 } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
 import {
   FileErrors,
   IFileService,
   isFileError,
 } from '@kiki/agent-core-v2/app/file/fileService';
+import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import { resumeSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
+import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
+import {
+  agentScopeOf,
+  sessionScopeOf,
+  workspacePersistenceScope,
+} from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import type { Scope } from '@kiki/agent-core-v2/_base/di/scope';
+import { isPlainAgentId } from '@kiki/transcript';
 import { z } from 'zod';
 
 import { buildContentDisposition } from '../lib/contentDisposition';
@@ -67,16 +76,23 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
     async (req, reply) => {
       const r = reply as unknown as SessionMediaReply;
       const { session_id, file_id } = req.params;
-      const session = await resumeSessionById(core.accessor, session_id);
-      if (session === undefined) {
-        return r
-          .code(404)
-          .send(
-            errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id),
-          ) as unknown as void;
+      let file: SessionMediaFile | undefined;
+      if (file_id.startsWith('blobref:')) {
+        const summary = await core.accessor.get(ISessionIndex).get(session_id);
+        if (summary === undefined) {
+          r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
+          return;
+        }
+        file = await openPersistedToolMedia(core, session_id, summary.workspaceId, file_id);
+      } else {
+        const session = await resumeSessionById(core.accessor, session_id);
+        if (session === undefined) {
+          r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
+          return;
+        }
+        file = await session.accessor.get(ISessionMediaStore).open(file_id);
+        file ??= await openStagedUpload(core, file_id);
       }
-      let file = await session.accessor.get(ISessionMediaStore).open(file_id);
-      file ??= await openStagedUpload(core, file_id);
       if (file === undefined) {
         return r
           .code(404)
@@ -123,6 +139,30 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       }
     },
   );
+}
+
+async function openPersistedToolMedia(
+  core: Scope,
+  sessionId: string,
+  workspaceId: string,
+  fileId: string,
+): Promise<SessionMediaFile | undefined> {
+  const match = /^blobref:([A-Za-z0-9._-]{1,128}):([0-9a-f]{64})$/.exec(fileId);
+  if (match === null || !isPlainAgentId(match[1]!)) return undefined;
+  const sessionScope = sessionScopeOf(
+    workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId),
+    sessionId,
+  );
+  const bytes = await core.accessor.get(IBlobStore).get(`${agentScopeOf(sessionScope, match[1]!)}/blobs`, match[2]!);
+  if (bytes === undefined) return undefined;
+  return {
+    name: 'tool-result.bin',
+    mediaType: 'application/octet-stream',
+    size: bytes.byteLength,
+    stream: async function* (range) {
+      yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
+    },
+  };
 }
 
 async function openStagedUpload(

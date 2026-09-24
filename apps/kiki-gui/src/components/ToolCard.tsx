@@ -217,7 +217,7 @@ function CommandIsland({ command, output }: { command: string; output?: ReactNod
   );
 }
 
-function OutputView({ output }: { output: unknown }) {
+function OutputView({ output, agentId }: { output: unknown; agentId: string }) {
   const { t } = useI18n();
   if (output === undefined || output === null) return null;
   // Engine media results (ReadMediaFile & friends) arrive as raw content-part
@@ -231,7 +231,7 @@ function OutputView({ output }: { output: unknown }) {
             {mediaOutput.text}
           </pre>
         ) : null}
-        <MediaPartList media={mediaOutput.media} />
+        <MediaPartList media={mediaOutput.media} agentId={agentId} />
       </div>
     );
   }
@@ -295,10 +295,12 @@ function truncateJson(value: unknown, truncatedNote: string, limit = 6000): stri
 
 export const ToolCard = memo(function ToolCard({
   block,
+  agentId = 'main',
   agentNames,
   onOpenAgent,
 }: {
   block: ToolBlock;
+  agentId?: string;
   /** subagentId → display name, so agentRef chips read as names, not ids. */
   agentNames?: ReadonlyMap<string, string>;
   onOpenAgent?: (agentId: string) => void;
@@ -410,7 +412,7 @@ export const ToolCard = memo(function ToolCard({
             <CommandIsland
               command={block.display.command}
               output={
-                block.output !== undefined ? <OutputView output={block.output} /> : undefined
+                block.output !== undefined ? <OutputView output={block.output} agentId={agentId} /> : undefined
               }
             />
           ) : (
@@ -450,7 +452,7 @@ export const ToolCard = memo(function ToolCard({
                   <p className="mb-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
                     {t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}
                   </p>
-                  <OutputView output={block.output} />
+                  <OutputView output={block.output} agentId={agentId} />
                 </div>
               ) : null}
               {block.agentRefs !== undefined && block.agentRefs.length > 0 && onOpenAgent !== undefined ? (

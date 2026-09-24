@@ -398,8 +398,9 @@ function useSessionMedia(
     client.readSessionMediaBytes(sessionId, item.fileId).then(
       ({ bytes, mime, name }) => {
         if (cancelled) return;
-        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        setLoad({ status: 'ready', bytes, mime, name, url: objectUrl });
+        const mediaType = item.blobHash === undefined ? mime : (item.mime ?? mime);
+        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
+        setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl });
       },
       () => {
         if (!cancelled) setLoad({ status: 'failed' });
@@ -409,7 +410,7 @@ function useSessionMedia(
       cancelled = true;
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
     };
-  }, [client, enabled, item.fileId, sessionId]);
+  }, [client, enabled, item.blobHash, item.fileId, item.mime, sessionId]);
 
   return load;
 }
@@ -558,7 +559,7 @@ function SessionMediaThumb({ item }: { item: MediaRef }) {
 
   let body: ReactNode;
   if (load.status === 'failed') {
-    body = <FileChip item={item} />;
+    body = <FileChip item={item.blobHash === undefined ? item : { ...item, path: undefined, fileId: undefined }} />;
   } else if (load.status === 'loading') {
     body = (
       <span className="flex h-28 w-40 items-center justify-center rounded-lg border border-hairline bg-paper text-[11px] text-ink-faint">
@@ -689,9 +690,18 @@ function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; 
   );
 }
 
-function MediaPart({ item }: { item: MediaRef }) {
+function MediaPart({ item, agentId }: { item: MediaRef; agentId?: string }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
+  if (item.blobHash !== undefined) {
+    const savedItem = {
+      ...item,
+      path: undefined,
+      name: item.name ?? (item.path === undefined ? undefined : basenameOf(item.path)),
+      fileId: agentId === undefined ? undefined : `blobref:${agentId}:${item.blobHash}`,
+    };
+    return agentId === undefined ? <FileChip item={savedItem} /> : <SessionMediaThumb item={savedItem} />;
+  }
   if (item.kind === 'image') {
     if (item.url !== undefined) {
       const name = item.name ?? t('media.viewImage');
@@ -736,15 +746,17 @@ function MediaPart({ item }: { item: MediaRef }) {
 export function MediaPartList({
   media,
   align = 'start',
+  agentId,
 }: {
   media: readonly MediaRef[];
   align?: 'start' | 'end';
+  agentId?: string;
 }) {
   if (media.length === 0) return null;
   return (
     <div className={`mt-1.5 flex flex-wrap gap-2 ${align === 'end' ? 'justify-end' : ''}`}>
       {media.map((item, index) => (
-        <MediaPart key={index} item={item} />
+        <MediaPart key={index} item={item} agentId={agentId} />
       ))}
     </div>
   );

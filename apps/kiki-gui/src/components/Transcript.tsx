@@ -1141,10 +1141,12 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
 const ToolGroupRow = memo(
   function ToolGroupRow({
     group,
+    agentId,
     agentNames,
     onOpenAgent,
   }: {
     group: ToolGroup;
+    agentId: string;
     agentNames?: ReadonlyMap<string, string>;
     onOpenAgent?: (agentId: string) => void;
   }) {
@@ -1202,7 +1204,7 @@ const ToolGroupRow = memo(
               order it happened. */}
           {group.members.map((member) =>
             member.kind === 'tool' ? (
-              <ToolCard key={member.id} block={member} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+              <ToolCard key={member.id} block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
             ) : member.kind === 'shell' ? (
               <ShellMessage key={member.id} block={member} />
             ) : member.kind === 'thinking' ? (
@@ -1219,6 +1221,7 @@ const ToolGroupRow = memo(
   // ordered member compares — the aggregations alone would miss a shell
   // turning failed or a thinking block's streaming text.
   (prev, next) =>
+    prev.agentId === next.agentId &&
     prev.group.members.length === next.group.members.length &&
     prev.group.members.every((member, index) => member === next.group.members[index]) &&
     prev.group.durationMs === next.group.durationMs &&
@@ -1594,6 +1597,7 @@ function captureTranscriptAnchor(
 
 type TranscriptRowProps = {
   node: GroupedDisplayNode;
+  agentId: string;
   readOnly: boolean;
   approvalShortcutHints: boolean;
   agentNames: ReadonlyMap<string, string>;
@@ -1650,6 +1654,7 @@ function subagentBranchEqual(
 const TranscriptRow = memo(
   function TranscriptRow({
     node,
+    agentId,
     readOnly,
     approvalShortcutHints,
     agentNames,
@@ -1673,9 +1678,9 @@ const TranscriptRow = memo(
     const rowTurnId = displayNodeTurnId(node);
     const renderNode = (member: DisplayNode): ReactNode =>
       member.kind === 'tool-group' ? (
-        <ToolGroupRow group={member} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+        <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
       ) : member.kind === 'tool' ? (
-        <ToolCard block={member} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+        <ToolCard block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
       ) : (
         <BlockView
           block={member}
@@ -1716,6 +1721,7 @@ const TranscriptRow = memo(
   (prev, next) =>
     (displayNodesEqual(prev.node as DisplayNode, next.node as DisplayNode) ||
       historyRunsEqual(prev.node, next.node)) &&
+    prev.agentId === next.agentId &&
     prev.readOnly === next.readOnly &&
     prev.approvalShortcutHints === next.approvalShortcutHints &&
     (!nodeUsesAgentNames(prev.node) || prev.agentNames === next.agentNames) &&
@@ -2017,6 +2023,7 @@ export const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTai
 
 export function Transcript({
   state,
+  agentId = 'main',
   onLoadOlder,
   onResolveApproval,
   onAnswerQuestion,
@@ -2029,6 +2036,7 @@ export function Transcript({
   rowActions,
 }: {
   state: SessionViewState;
+  agentId?: string;
   onLoadOlder: () => Promise<boolean>;
   onResolveApproval: (
     approvalId: string,
@@ -2466,6 +2474,7 @@ export function Transcript({
                   {node === undefined ? null : (
                     <TranscriptRow
                       node={node}
+                      agentId={agentId}
                       readOnly={readOnly}
                       approvalShortcutHints={hasUnresolvedApproval}
                       agentNames={agentNames}

@@ -249,18 +249,22 @@ describe('TranscriptService projection', () => {
     }
   });
 
-  it('keeps a path-backed media tool result in cold transcript frames', async () => {
+  it('keeps two independently cropped media results in cold transcript frames', async () => {
     const home = await mkdtemp(join(tmpdir(), 'transcript-cold-media-'));
     const service = new TranscriptService({ homeDir: home, core: coldCore() });
     try {
       const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
       await mkdir(wireDir, { recursive: true });
       const path = 'C:\\work\\shots\\home.png';
-      const output = [
-        { type: 'text', text: `<image path="${path}">` },
-        { type: 'image_url', imageUrl: { url: `blobref:image/png;${'a'.repeat(64)}` } },
-        { type: 'text', text: '</image>' },
+      const crops = [
+        { region: { x: 0, y: 0, width: 2, height: 2 }, hash: 'a'.repeat(64) },
+        { region: { x: 2, y: 0, width: 2, height: 2 }, hash: 'b'.repeat(64) },
       ];
+      const outputs = crops.map(({ hash }) => [
+        { type: 'text', text: `<image path="${path}">` },
+        { type: 'image_url', imageUrl: { url: `blobref:image/png;${hash}` } },
+        { type: 'text', text: '</image>' },
+      ]);
       const records = [
         {
           type: 'turn.prompt', turnId: 0, promptId: 'prompt-1',
@@ -270,28 +274,36 @@ describe('TranscriptService projection', () => {
           type: 'context.append_loop_event',
           event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' }, time: 2000,
         },
-        {
-          type: 'context.append_loop_event',
-          event: {
-            type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'part-tool-1',
-            toolCallId: 'call-media', name: 'ReadMediaFile', args: { path },
+        ...crops.flatMap(({ region }, index) => [
+          {
+            type: 'context.append_loop_event',
+            event: {
+              type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: `part-tool-${index}`,
+              toolCallId: `call-media-${index}`, name: 'ReadMediaFile', args: { path, region },
+            },
+            time: 3000 + index * 2000,
           },
-          time: 3000,
-        },
-        {
-          type: 'context.append_loop_event',
-          event: { type: 'tool.result', toolCallId: 'call-media', result: { output, isError: false } },
-          time: 4000,
-        },
+          {
+            type: 'context.append_loop_event',
+            event: {
+              type: 'tool.result', toolCallId: `call-media-${index}`,
+              result: { output: outputs[index], isError: false },
+            },
+            time: 4000 + index * 2000,
+          },
+        ]),
       ];
       await writeFile(join(wireDir, 'wire.jsonl'), `${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
 
       const snapshot = await service.readColdSnapshot('s1', 'main');
       const turn = snapshot?.items.find((item) => item.kind === 'turn');
-      const frame = turn?.kind === 'turn'
-        ? turn.steps.flatMap((step) => step.frames).find((item) => item.kind === 'tool')
-        : undefined;
-      expect(frame).toMatchObject({ kind: 'tool', name: 'ReadMediaFile', output });
+      const frames = turn?.kind === 'turn'
+        ? turn.steps.flatMap((step) => step.frames).filter((item) => item.kind === 'tool')
+        : [];
+      expect(frames).toEqual([
+        expect.objectContaining({ kind: 'tool', name: 'ReadMediaFile', output: outputs[0] }),
+        expect.objectContaining({ kind: 'tool', name: 'ReadMediaFile', output: outputs[1] }),
+      ]);
     } finally {
       service.dispose();
       await rm(home, { recursive: true, force: true });
