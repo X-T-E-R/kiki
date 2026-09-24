@@ -29,7 +29,6 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { MessageStepRequest, type StepRequestAdmission } from '#/agent/loop/stepRequest';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { goalKey } from '#/agent/goal/goalOps';
@@ -913,13 +912,6 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.handle.cancel();
     } else {
       entry.abortController.abort(options.abortReason);
-    }
-    if (child !== undefined) {
-      try {
-        child.accessor.get(IAgentExecutionService).cancel(options.abortReason);
-      } catch (error) {
-        this.log.error('failed to cancel subagent execution', { agentId: child.id, error });
-      }
     }
 
     const graceMs = resolveAgentTaskConfig(this.config)?.killGracePeriodMs ?? SIGTERM_GRACE_MS;

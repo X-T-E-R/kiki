@@ -209,23 +209,15 @@ describe('AgentTaskService', () => {
       const childCompletion = new Promise<{ result: string }>((_resolve, reject) => {
         rejectChild = reject;
       });
-      const cancelGrandchild = vi.fn((reason?: unknown) => {
-        order.push('grandchild execution');
-        rejectGrandchild(reason);
-        return true;
-      });
-      const cancelChild = vi.fn((reason?: unknown) => {
-        order.push('child execution');
-        rejectChild(reason);
-        return true;
-      });
+      const cancelGrandchild = vi.fn(() => true);
+      const cancelChild = vi.fn(() => true);
       grandchildIx.stub(IAgentExecutionService, {
         cancel: cancelGrandchild,
-        status: () => ({ state: cancelGrandchild.mock.calls.length > 0 ? 'cancelling' : 'running' }),
+        status: () => ({ state: order.includes('grandchild execution') ? 'cancelling' : 'running' }),
       });
       childIx.stub(IAgentExecutionService, {
         cancel: cancelChild,
-        status: () => ({ state: cancelChild.mock.calls.length > 0 ? 'cancelling' : 'running' }),
+        status: () => ({ state: order.includes('child execution') ? 'cancelling' : 'running' }),
       });
       const rootTasks = ix.get(IAgentTaskService);
       const childTasks = childIx.get(IAgentTaskService);
@@ -243,14 +235,20 @@ describe('AgentTaskService', () => {
         },
       });
       const childController = new AbortController();
-      childController.signal.addEventListener('abort', () => order.push('child task'));
+      childController.signal.addEventListener('abort', () => {
+        order.push('child task', 'grandchild execution');
+        rejectGrandchild(childController.signal.reason);
+      });
       const childTaskId = childTasks.registerTask(new SubagentTask(
         { agentId: 'agent-grandchild', profileName: 'coder', completion: grandchildCompletion },
         'run grandchild',
         childController,
       ));
       const rootController = new AbortController();
-      rootController.signal.addEventListener('abort', () => order.push('parent task'));
+      rootController.signal.addEventListener('abort', () => {
+        order.push('parent task', 'child execution');
+        rejectChild(rootController.signal.reason);
+      });
       const rootTaskId = rootTasks.registerTask(new SubagentTask(
         { agentId: 'agent-child', profileName: 'coder', completion: childCompletion },
         'run child',
@@ -278,12 +276,14 @@ describe('AgentTaskService', () => {
       expect(rootTasks.getTask(rootTaskId)).toMatchObject({ status: 'killed' });
       expect(grandchildIx.get(IAgentExecutionService).status().state).toBe('cancelling');
       expect(childIx.get(IAgentExecutionService).status().state).toBe('cancelling');
+      expect(cancelGrandchild).not.toHaveBeenCalled();
+      expect(cancelChild).not.toHaveBeenCalled();
       expect(agentHandles.has('agent-child')).toBe(true);
       expect(agentHandles.has('agent-grandchild')).toBe(true);
     },
   );
 
-  it('shares concurrent stops and cancels an active child execution even without child tasks', async () => {
+  it('shares concurrent stops and cancels only the task-owned run without child tasks', async () => {
     const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
     agentHandles.set('agent-child', { id: 'agent-child', accessor: childIx } as unknown as IAgentScopeHandle);
     const childTasks = childIx.get(IAgentTaskService);
@@ -298,12 +298,10 @@ describe('AgentTaskService', () => {
     const completion = new Promise<{ result: string }>((_resolve, reject) => {
       rejectChild = reject;
     });
-    const cancel = vi.fn((reason?: unknown) => {
-      rejectChild(reason);
-      return true;
-    });
+    const cancel = vi.fn(() => true);
     childIx.stub(IAgentExecutionService, { cancel });
     const controller = new AbortController();
+    controller.signal.addEventListener('abort', () => rejectChild(controller.signal.reason));
     const rootTasks = ix.get(IAgentTaskService);
     const taskId = rootTasks.registerTask(new SubagentTask(
       { agentId: 'agent-child', profileName: 'coder', completion },
@@ -320,7 +318,42 @@ describe('AgentTaskService', () => {
     const [first, second] = await Promise.all([firstStop, secondStop]);
     expect(first).toMatchObject({ status: 'killed', stopReason: 'first stop' });
     expect(second).toEqual(first);
-    expect(cancel).toHaveBeenCalledExactlyOnceWith('first stop');
+    expect(controller.signal.aborted).toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('stops one prompt-owned subagent task without cancelling another run on its child scope', async () => {
+    const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
+    agentHandles.set('agent-child', { id: 'agent-child', accessor: childIx } as unknown as IAgentScopeHandle);
+    const rootTasks = ix.get(IAgentTaskService);
+    const registerPromptRun = (label: string) => {
+      const controller = new AbortController();
+      const completion = new Promise<{ result: string }>((_resolve, reject) => {
+        controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+      });
+      const taskId = rootTasks.registerTask(new SubagentTask(
+        { agentId: 'agent-child', profileName: 'coder', completion },
+        label,
+        controller,
+      ));
+      return { taskId, controller };
+    };
+    const first = registerPromptRun('first prompt');
+    const second = registerPromptRun('queued prompt');
+    const cancelScope = vi.fn((reason?: unknown) => {
+      first.controller.abort(reason);
+      second.controller.abort(reason);
+      return true;
+    });
+    childIx.stub(IAgentExecutionService, { cancel: cancelScope });
+    await Promise.resolve();
+
+    expect(await rootTasks.stopByUser(first.taskId)).toMatchObject({ status: 'killed' });
+    expect(first.controller.signal.aborted).toBe(true);
+    expect(rootTasks.getTask(second.taskId)).toMatchObject({ status: 'running' });
+    expect(second.controller.signal.aborted).toBe(false);
+    expect(cancelScope).not.toHaveBeenCalled();
+    expect(await rootTasks.stopByUser(second.taskId)).toMatchObject({ status: 'killed' });
   });
 
   it('wait with a timeout beyond the timer ceiling does not resolve immediately', async () => {
