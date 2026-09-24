@@ -440,7 +440,7 @@ describe('settings persistence and validation', () => {
     ).toBe('C:\\skills\\shared\nD:\\team\\skills\nE:\\personal\\skills');
   });
 
-  it('builds an editable provider draft without ever reading an existing secret', () => {
+  it('prefills an editable provider draft with the stored inline key', () => {
     const draft = providerDraftFromCatalog(
       {
         id: 'example',
@@ -448,6 +448,7 @@ describe('settings persistence and validation', () => {
         base_url: 'https://api.example.test/v1',
         default_model: 'example/chat',
         request_identity: { preset: 'kimi_code' },
+        api_key: 'sk-stored',
         has_api_key: true,
         status: 'connected',
         models: ['example/chat'],
@@ -463,7 +464,7 @@ describe('settings persistence and validation', () => {
         request_identity: { overrides: { client: { user_agent: 'host' } } },
       }],
     );
-    expect(draft?.apiKey).toBe('');
+    expect(draft?.apiKey).toBe('sk-stored');
     expect(draft?.defaultModel).toBe('example/chat');
     expect(draft?.models[0]?.id).toBe('example/chat');
     expect(draft?.models[0]?.remoteId).toBe('chat');
@@ -716,6 +717,12 @@ describe('settings persistence and validation', () => {
 
     expect(providerPatchBody(providerDraft({ apiKey: 'sk-new' }), baseline)?.['api_key'])
       .toBe('sk-new');
+    const stored = providerDraft({ apiKey: 'sk-stored' });
+    expect(providerPatchBody(stored, stored)).toBeNull();
+    expect(providerPatchBody({ ...stored, baseUrl: 'https://api.example.test/v2' }, stored))
+      .toEqual({ base_url: 'https://api.example.test/v2' });
+    expect(providerPatchBody({ ...stored, apiKey: 'sk-replaced' }, stored)).toEqual({ api_key: 'sk-replaced' });
+    expect(providerPatchBody({ ...stored, apiKey: '' }, stored)).toEqual({ api_key: '' });
     expect(providerPatchBody(providerDraft({ clearApiKey: true }), baseline)?.['api_key'])
       .toBe('');
   });

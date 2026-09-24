@@ -5,6 +5,8 @@ import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 
 export type ProviderType = string;
 
+export const ENV_MODEL_PROVIDER_KEY = '__kimi_env__';
+
 export interface OAuthRef {
   storage: 'file' | 'keyring';
   key: string;

@@ -180,9 +180,9 @@ function blankModel(): ProviderModelDraft {
   return {
     id: '',
     remoteId: '',
-    maxContextSize: 128000,
+    maxContextSize: 250000,
     displayName: '',
-    capabilities: [],
+    capabilities: ['thinking', 'tool_use'],
     supportEfforts: [],
     requestIdentityChoice: 'inherit',
     requestIdentityOverridesJson: '',
@@ -631,6 +631,8 @@ export function ProviderFields({
   draft,
   onChange,
   hasStoredKey,
+  baselineApiKey = '',
+  apiKeyEnv,
   managed = false,
   idLocked = false,
   refreshProviderId,
@@ -640,6 +642,8 @@ export function ProviderFields({
   draft: ProviderDraft;
   onChange: (draft: ProviderDraft) => void;
   hasStoredKey: boolean;
+  baselineApiKey?: string;
+  apiKeyEnv?: string;
   /** OAuth-managed providers have no usable API-key save/clear/delete surface. */
   managed?: boolean;
   /**
@@ -662,6 +666,7 @@ export function ProviderFields({
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const [probing, setProbing] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
   const [probeFeedback, setProbeFeedback] = useState<Feedback>(null);
   const queryClient = useQueryClient();
   const [localSuggestions, setLocalSuggestions] = useState<readonly ProviderModelCatalogChoice[]>([]);
@@ -684,7 +689,10 @@ export function ProviderFields({
     setProbeFeedback(null);
     try {
       if (refreshProviderId !== undefined) {
-        const result = await client.refreshProvider(refreshProviderId);
+        const draftKey = !draft.clearApiKey && draft.apiKey !== baselineApiKey && draft.apiKey !== ''
+          ? draft.apiKey
+          : undefined;
+        const result = await client.refreshProvider(refreshProviderId, draftKey);
         await queryClient.invalidateQueries({ queryKey: ['discovered-models'] });
         const failure = result.failed.find((entry) => entry.provider === refreshProviderId);
         if (failure !== undefined) throw new Error(failure.reason);
@@ -766,17 +774,26 @@ export function ProviderFields({
       ) : (
         <div>
           <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.apiKey')}
-            <input
-              type="password"
-              autoComplete="new-password"
-              className={`${INPUT} mt-1`}
-              value={draft.apiKey}
-              disabled={draft.clearApiKey}
-              onChange={(event) => { onChange({ ...draft, apiKey: event.target.value }); }}
-              placeholder={hasStoredKey ? t('st.providers.keyStored') : t('st.providers.keyNew')}
-            />
+            <span className="mt-1 flex items-center gap-2">
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                autoComplete="new-password"
+                className={`${INPUT} min-w-0 flex-1`}
+                value={draft.apiKey}
+                disabled={draft.clearApiKey}
+                onChange={(event) => { onChange({ ...draft, apiKey: event.target.value }); }}
+                placeholder={apiKeyEnv === undefined
+                  ? (hasStoredKey ? t('st.providers.keyStored') : t('st.providers.keyNew'))
+                  : t('st.providers.keyEnv', { name: apiKeyEnv })}
+              />
+              {draft.apiKey !== '' ? (
+                <button type="button" className={SECONDARY_BUTTON} onClick={() => { setShowApiKey((value) => !value); }}>
+                  {showApiKey ? t('st.providers.hideKey') : t('st.providers.showKey')}
+                </button>
+              ) : null}
+            </span>
           </label>
-          <Hint>{t('st.providers.keyHint')}</Hint>
+          <Hint>{apiKeyEnv === undefined ? t('st.providers.keyHint') : t('st.providers.keyEnvHint', { name: apiKeyEnv })}</Hint>
         </div>
       )}
       <div className="flex flex-wrap items-center gap-3">
@@ -995,7 +1012,11 @@ export function ProviderEditor({
         mutationSucceeded = true;
         setRevisions({ provider: updatedProvider.revision, models: revisionMap });
       }
-      const saved = { ...normalized, apiKey: '', clearApiKey: false };
+      const saved = {
+        ...normalized,
+        apiKey: normalized.clearApiKey ? '' : normalized.apiKey,
+        clearApiKey: false,
+      };
       setDraft(saved);
       setBaseline(saved);
       await onSaved();
@@ -1060,6 +1081,8 @@ export function ProviderEditor({
             draft={draft}
             onChange={setDraft}
             hasStoredKey={provider.has_api_key}
+            baselineApiKey={baseline.apiKey}
+            apiKeyEnv={provider.api_key_env}
             managed={managed}
             idLocked
             refreshProviderId={provider.id}

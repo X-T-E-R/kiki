@@ -65,6 +65,7 @@ export interface ModelCatalogChanged {
 export interface RefreshProviderModelsOptions {
   readonly scope?: RefreshProviderModelsScope;
   readonly providerId?: string;
+  readonly apiKey?: string;
 }
 
 export interface IProviderDiscoveryService {

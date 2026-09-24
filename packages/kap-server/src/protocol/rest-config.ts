@@ -103,6 +103,8 @@ export const providerConfigResponseSchema = z.object({
   type: z.string(),
   base_url: z.string().optional(),
   default_model: z.string().optional(),
+  api_key: z.string().min(1).optional(),
+  api_key_env: z.string().min(1).optional(),
   has_api_key: z.boolean(),
 });
 export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema>;

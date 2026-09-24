@@ -11,6 +11,7 @@ import type { ServiceContract } from '../types.js';
 export const refreshProviderModelsOptionsSchema = z.object({
   scope: z.enum(['all', 'oauth']).optional(),
   providerId: z.string().optional(),
+  apiKey: z.string().min(1).optional(),
 });
 
 export { listDiscoveredModelsResponseSchema, refreshProviderModelsResponseSchema };

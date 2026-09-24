@@ -1174,7 +1174,7 @@ export function providerDraftFromCatalog(
     type: provider.type,
     baseUrl: provider.base_url ?? '',
     defaultModel: provider.default_model ?? '',
-    apiKey: '',
+    apiKey: provider.api_key ?? '',
     clearApiKey: false,
     ...requestIdentityLayerDraftFromPolicy(provider.request_identity),
     ...imagePolicyDraftFromWire(provider.images),
@@ -1444,7 +1444,7 @@ export function providerPatchBody(
   if (imagePatch !== undefined) patch.images = imagePatch;
   if (draft.clearApiKey) {
     patch.api_key = '';
-  } else if (draft.apiKey !== '') {
+  } else if (draft.apiKey !== baseline.apiKey) {
     patch.api_key = draft.apiKey;
   }
   return Object.keys(patch).length === 0 ? null : patch;

@@ -26,9 +26,8 @@ export type ListProvidersResponse = z.infer<typeof listProvidersResponseSchema>;
 
 /**
  * One provider entity: the connection projection plus the write token
- * (`revision`) the next PATCH must carry. It never reveals a stored secret —
- * authentication state is reported as `has_api_key`/`status`, not as the key
- * itself.
+ * (`revision`) the next PATCH must carry. Locally stored provider API keys
+ * are returned for editing; env-backed credentials expose only the variable name.
  */
 export const providerEntitySchema = providerCatalogItemSchema.extend({
   revision: z.string().min(1),

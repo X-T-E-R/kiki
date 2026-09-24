@@ -24,7 +24,8 @@ import type {
   ModelsSection,
 } from '#/kosong/model/model';
 import type { ThinkingConfig } from '#/kosong/model/thinking';
-import type { OAuthRef, ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
+import { ENV_MODEL_PROVIDER_KEY, type OAuthRef, type ProviderConfig, type ProvidersSection } from '#/kosong/provider/provider';
+export { ENV_MODEL_PROVIDER_KEY } from '#/kosong/provider/provider';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -32,8 +33,6 @@ import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIde
 export const PROVIDERS_SECTION = 'providers';
 
 export const DEFAULT_PROVIDER_SECTION = 'defaultProvider';
-
-export const ENV_MODEL_PROVIDER_KEY = '__kimi_env__';
 
 export const ProviderTypeSchema = z.string();
 

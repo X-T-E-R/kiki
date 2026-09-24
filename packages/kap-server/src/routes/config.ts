@@ -7,6 +7,8 @@ import {
 } from '@kiki/agent-core-v2';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
+import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
 import {
@@ -61,7 +63,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       method: 'GET',
       path: '/config',
       success: { data: configResponseSchema },
-      description: 'Get the global Kiki configuration (secrets redacted)',
+      description: 'Get the global Kiki configuration, including stored provider API keys for local editing; other secrets are redacted.',
       tags: ['config'],
     },
     async (req, reply) => {
@@ -187,33 +189,22 @@ function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
   return configResponseWireSchema.parse(wire);
 }
 
-interface ProviderLike {
-  readonly type?: unknown;
-  readonly baseUrl?: unknown;
-  readonly defaultModel?: unknown;
-  readonly apiKey?: unknown;
-  readonly oauth?: unknown;
-}
-
 function toProviderResponses(value: unknown): Record<string, ProviderResponse> {
   const result: Record<string, ProviderResponse> = {};
   if (!isPlainObject(value)) return result;
   for (const [id, raw] of Object.entries(value)) {
-    const provider = raw as ProviderLike;
+    const provider = raw as ProviderConfig;
+    const key = providerCredentialFields(id, provider);
     result[id] = {
       type: typeof provider.type === 'string' ? provider.type : '',
       base_url: nonEmpty(provider.baseUrl),
       default_model: nonEmpty(provider.defaultModel),
-      has_api_key: hasProviderCredential(provider),
+      api_key: key.api_key,
+      api_key_env: key.api_key_env,
+      has_api_key: key.api_key !== undefined || key.api_key_env !== undefined || provider.oauth !== undefined,
     };
   }
   return result;
-}
-
-function hasProviderCredential(provider: ProviderLike): boolean {
-  if (nonEmpty(provider.apiKey) !== undefined) return true;
-  if (provider.oauth !== undefined) return true;
-  return false;
 }
 
 function nonEmpty(value: unknown): string | undefined {

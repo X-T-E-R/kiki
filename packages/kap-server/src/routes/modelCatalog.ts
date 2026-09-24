@@ -34,6 +34,7 @@ import {
   patchProviderRequestSchema,
   patchProviderResponseSchema,
   providerCollectionActionBodySchema,
+  refreshProviderRequestSchema,
   refreshProviderModelsResponseSchema,
   revisionConflictDetailsSchema,
   setDefaultModelResponseSchema,
@@ -119,13 +120,6 @@ async function loadMutation(core: Scope): Promise<IModelCatalogMutationService> 
   await core.accessor.get(IConfigService).ready;
   await core.accessor.get(IKosongConfigService).ready;
   return core.accessor.get(IModelCatalogMutationService);
-}
-
-async function loadConfig(core: Scope): Promise<IConfigService> {
-  const config = core.accessor.get(IConfigService);
-  await config.ready;
-  await core.accessor.get(IKosongConfigService).ready;
-  return config;
 }
 
 async function loadDiscovery(core: Scope): Promise<IProviderDiscoveryService> {
@@ -363,7 +357,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       path: '/providers',
       success: { data: listProvidersResponseSchema },
       description:
-        'List configured providers. No route on this surface ever returns a stored secret: authentication state is reported as `has_api_key`/`status`.',
+        'List configured providers, including locally stored inline API keys for editing; env-backed credentials return only their variable names.',
       tags: ['providers'],
     },
     async (req, reply) => {
@@ -424,7 +418,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         ...revisionConflictErrors,
       },
       description:
-        'Partially update one provider connection. The body never carries a model list: models are their own entities, so saving a connection field can no longer rebuild or drop them. `base_url`/`default_model`/`request_identity` accept `null` to clear; `api_key` is tri-state (omitted keeps the stored key, "" clears it, any other value replaces it) and is never echoed back. The path id is the identity — connections are not renamed in place. OAuth-managed providers may update base_url/default_model/request_identity only; type and credential changes are rejected. Answers 200 with `{provider, revision}`.',
+        'Partially update one provider connection. The body never carries a model list: models are their own entities, so saving a connection field can no longer rebuild or drop them. `base_url`/`default_model`/`request_identity` accept `null` to clear; `api_key` is tri-state (omitted keeps the stored key, "" clears it, any other value replaces it). The path id is the identity — connections are not renamed in place. OAuth-managed providers may update base_url/default_model/request_identity only; type and credential changes are rejected. Answers 200 with `{provider, revision}`.',
       tags: ['providers'],
       operationId: 'patchProvider',
     },
@@ -512,12 +506,13 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       method: 'POST',
       path: '/providers/{tail}',
       params: providerActionTailParamSchema,
+      body: refreshProviderRequestSchema.optional(),
       success: { data: refreshProviderModelsResponseSchema },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
       },
-      description: 'Refresh model metadata for a single provider',
+      description: 'Refresh one provider, optionally using a request-only api_key instead of its configured key.',
       tags: ['providers'],
       operationId: 'refreshProvider',
     },
@@ -537,6 +532,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         }
         const result = await (await loadDiscovery(core)).refreshProviderModels({
           providerId: parsed.id,
+          apiKey: req.body?.api_key,
         });
         reply.send(okEnvelope(result, req.id));
       } catch (err) {
@@ -562,7 +558,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
       },
       description:
-        'Get one configured provider with the `revision` its next PATCH must carry. The stored `api_key` is never returned.',
+        'Get one configured provider with its revision, inline API key for editing or env variable name for env-backed credentials.',
       tags: ['providers'],
       operationId: 'getProvider',
     },

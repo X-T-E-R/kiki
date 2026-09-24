@@ -6,7 +6,8 @@ import type { ProviderRequestAuth, ServiceTier } from '#/kosong/contract/provide
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { Protocol, ProtocolProviderOptions } from '#/kosong/protocol/protocol';
 
-import type { ProviderConfig } from '../provider/provider';
+import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig } from '../provider/provider';
+import { explainProviderEndpoint } from '../provider/providerDefinition';
 import {
   IMAGE_MIME_TYPES,
   type ImagePolicyConfig,
@@ -111,6 +112,8 @@ export const providerCatalogItemSchema = z.object({
   default_model: z.string().min(1).optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
   images: imagePolicyWireSchema.optional(),
+  api_key: z.string().min(1).optional(),
+  api_key_env: z.string().min(1).optional(),
   has_api_key: z.boolean(),
   status: providerCatalogStatusSchema,
   models: z.array(z.string().min(1)).optional(),
@@ -126,6 +129,20 @@ export type SetDefaultModelResponse = z.infer<typeof setDefaultModelResponseSche
 export interface ProviderCredentialState {
   readonly hasApiKey: boolean;
   readonly hasOAuthToken: boolean;
+}
+
+export function providerCredentialFields(
+  providerId: string,
+  provider: Pick<ProviderConfig, 'type' | 'apiKey' | 'env'>,
+): { api_key?: string; api_key_env?: string } {
+  if (providerId === ENV_MODEL_PROVIDER_KEY) {
+    return { api_key_env: provider.apiKey?.trim() ? 'KIKI_MODEL_API_KEY' : undefined };
+  }
+  if (provider.apiKey?.trim()) return { api_key: provider.apiKey };
+  const endpoint = provider.type === undefined
+    ? undefined
+    : explainProviderEndpoint(provider.type, provider.env ?? {});
+  return { api_key_env: endpoint?.apiKeyEnvName };
 }
 
 export function toProtocolModel(
@@ -180,6 +197,7 @@ export function toProtocolProvider(
   const providerModels = modelIdsForProvider(models, providerId);
   const defaultModel =
     provider.defaultModel ?? globalDefaultForProvider(models, globalDefaultModel, providerId);
+  const key = providerCredentialFields(providerId, provider);
   return {
     id: providerId,
     type: provider.type ?? 'openai',
@@ -187,6 +205,8 @@ export function toProtocolProvider(
     default_model: defaultModel,
     request_identity: requestIdentityToWire(provider.requestIdentity),
     images: imagePolicyToWire(provider.images),
+    api_key: key.api_key,
+    api_key_env: key.api_key_env,
     has_api_key: credential.hasApiKey,
     status: credential.hasApiKey || credential.hasOAuthToken ? 'connected' : 'unconfigured',
     models: providerModels,

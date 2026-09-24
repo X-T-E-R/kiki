@@ -126,9 +126,20 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
     }
 
     const exclusion = this.computeStaticExclusion();
-    const initial = this.readUserConfigShape(exclusion);
-    const connections = new Map(Object.entries(initial.providers).map(([id, provider]) =>
+    const configured = this.readUserConfigShape(exclusion);
+    const connections = new Map(Object.entries(configured.providers).map(([id, provider]) =>
       [id, connectionFingerprint(provider)]));
+    const providerId = options.providerId;
+    const target = providerId === undefined ? undefined : configured.providers[providerId];
+    const initial = providerId !== undefined && target !== undefined && target['oauth'] === undefined && options.apiKey !== undefined
+      ? {
+          ...configured,
+          providers: {
+            ...configured.providers,
+            [providerId]: { ...target, apiKey: options.apiKey },
+          },
+        }
+      : configured;
     const { outboundUserAgent } = await this.identity.resolved();
     const result = await refreshProviderModels(this.buildRefreshHost(exclusion, outboundUserAgent, initial), {
       scope: options.scope,

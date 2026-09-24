@@ -256,6 +256,7 @@ describe('server-v2 /api provider write endpoints', () => {
       type: 'openai',
       base_url: 'https://api.openai.example/v1',
       default_model: 'my-openai/gpt-4.1',
+      api_key: 'sk-test-openai',
       has_api_key: true,
       status: 'connected',
       models: ['my-openai/gpt-4.1', 'my-openai/gpt-4o-mini'],
@@ -296,6 +297,7 @@ describe('server-v2 /api provider write endpoints', () => {
         type: 'openai',
         base_url: 'https://api.openai.example/v1',
         default_model: 'my-openai/gpt-4.1',
+        api_key: 'sk-test-openai',
         has_api_key: true,
         status: 'connected',
         models: ['my-openai/gpt-4.1', 'my-openai/gpt-4o-mini'],
@@ -811,6 +813,7 @@ describe('server-v2 /api provider write endpoints', () => {
       type: 'openai',
       base_url: 'https://api.openai.example/v2',
       default_model: 'gpt4o',
+      api_key: 'sk-openai',
       has_api_key: true,
       status: 'connected',
       models: ['gpt4o'],
@@ -1160,11 +1163,11 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(single.body.data).not.toHaveProperty('default_model');
   });
 
-  it('never reveals a stored api_key on provider reads', async () => {
+  it('returns stored inline keys for editing and stops returning a cleared key', async () => {
     await boot(KEEP_DEFAULT_TOML);
     const withKey = await getJson<Record<string, unknown>>('/api/providers/openai');
     expect(withKey.body.code).toBe(0);
-    expect(withKey.body.data).not.toHaveProperty('api_key');
+    expect(withKey.body.data?.['api_key']).toBe('sk-openai');
     expect(withKey.body.data?.['has_api_key']).toBe(true);
 
     await patchJson<unknown>('/api/providers/openai', { api_key: '' });
@@ -1172,9 +1175,8 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(cleared.body.data).not.toHaveProperty('api_key');
 
     const list = await getJson<{ items: Array<Record<string, unknown>> }>('/api/providers');
-    for (const item of list.body.data.items) {
-      expect(item).not.toHaveProperty('api_key');
-    }
+    expect(list.body.data.items.find((item) => item['id'] === 'kimi')?.['api_key']).toBe('sk-test');
+    expect(list.body.data.items.find((item) => item['id'] === 'openai')).not.toHaveProperty('api_key');
   });
 
   it('rejects a base_url containing an env placeholder with 40001', async () => {

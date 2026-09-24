@@ -1121,9 +1121,9 @@ export class KikiClient {
     return this.run(this.rest.catalog.provider(providerId));
   }
 
-  /** Server-side model probe using the configured provider credentials. */
-  refreshProvider(providerId: string): Promise<RefreshProviderModelsResponse> {
-    return this.run(this.klient.global.kosong.refreshProviders({ providerId }));
+  /** Server-side model probe, optionally with an unsaved API key for this request only. */
+  refreshProvider(providerId: string, apiKey?: string): Promise<RefreshProviderModelsResponse> {
+    return this.run(this.klient.global.kosong.refreshProviders({ providerId, apiKey }));
   }
 
   /**

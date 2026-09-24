@@ -14,6 +14,7 @@ import {
   patchProviderRequestSchema,
   providerCatalogItemSchema,
   providerCatalogStatusSchema,
+  refreshProviderRequestSchema,
   requestIdentityPolicySchema,
   setDefaultModelResponseSchema,
   type ModelCatalogItem,
@@ -52,6 +53,12 @@ describe('model catalog schemas', () => {
       { provider_id: 'other', fetched_at: 99, attempted_at: 100, models: [{ remote_id: 'vendor/new' }] }];
     expect(listDiscoveredModelsResponseSchema.parse({ items })).toEqual({ items });
     expect(refreshProviderModelsResponseSchema.parse({ changed: [], unchanged: [], failed: [], discovered: items }).discovered).toEqual(items);
+  });
+
+  it('accepts a request-only key for single-provider refresh', () => {
+    expect(refreshProviderRequestSchema.parse({ api_key: 'sk-draft' })).toEqual({ api_key: 'sk-draft' });
+    expect(refreshProviderRequestSchema.safeParse({ api_key: '' }).success).toBe(false);
+    expect(refreshProviderRequestSchema.safeParse({ provider_id: 'edge' }).success).toBe(false);
   });
 
   it('round-trips a model catalog item', () => {
@@ -137,7 +144,10 @@ describe('model catalog schemas', () => {
     },
   );
 
-  it('round-trips a provider catalog item', () => {
+  it('round-trips inline keys or env names across provider and config responses', () => {
+    expect(providerCatalogItemSchema.parse({ ...provider, api_key: 'sk-inline' }).api_key).toBe('sk-inline');
+    expect(getProviderResponseSchema.parse({ ...provider, api_key_env: 'KIMI_API_KEY', revision: 'rev-1' }).api_key_env).toBe('KIMI_API_KEY');
+    expect(configResponseSchema.parse({ providers: { kimi: { type: 'kimi', api_key: 'sk-inline', has_api_key: true } } }).providers['kimi']?.api_key).toBe('sk-inline');
     expect(providerCatalogItemSchema.parse(provider)).toEqual(provider);
     expect(getProviderResponseSchema.parse({ ...provider, revision: 'rev-1' })).toEqual({
       ...provider,

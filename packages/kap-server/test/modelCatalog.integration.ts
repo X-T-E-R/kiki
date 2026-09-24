@@ -277,6 +277,7 @@ describe('server-v2 /api model/provider catalog', () => {
         base_url: 'https://api.example.test/v1',
         default_model: 'k2',
         request_identity: { overrides: { client: { user_agent: 'host' } } },
+        api_key: 'sk-test',
         has_api_key: true,
         status: 'connected',
         models: ['k2', 'turbo'],
@@ -298,16 +299,32 @@ describe('server-v2 /api model/provider catalog', () => {
       base_url: 'https://api.example.test/v1',
       default_model: 'k2',
       request_identity: { overrides: { client: { user_agent: 'host' } } },
+      api_key: 'sk-test',
       has_api_key: true,
       status: 'connected',
       models: ['k2', 'turbo'],
     });
     expect(typeof single.body.data?.['revision']).toBe('string');
-    expect(single.body.data).not.toHaveProperty('api_key');
 
     const noKey = await getJson<Record<string, unknown>>('/api/providers/openai');
     expect(noKey.body.code).toBe(0);
     expect(noKey.body.data).not.toHaveProperty('api_key');
+  });
+
+  it('returns only the declared environment variable name for env-backed provider keys', async () => {
+    await boot([
+      '[providers.kimi]',
+      'type = "kimi"',
+      '',
+      '[providers.kimi.env]',
+      'KIMI_API_KEY = "sk-env-only"',
+    ].join('\n'));
+    const single = await getJson<Record<string, unknown>>('/api/providers/kimi');
+    expect(single.body.data).toMatchObject({ api_key_env: 'KIMI_API_KEY', has_api_key: true });
+    expect(single.body.data).not.toHaveProperty('api_key');
+    const config = await getJson<{ providers: Record<string, Record<string, unknown>> }>('/api/config');
+    expect(config.body.data.providers['kimi']).toMatchObject({ api_key_env: 'KIMI_API_KEY', has_api_key: true });
+    expect(config.body.data.providers['kimi']).not.toHaveProperty('api_key');
   });
 
   it('sets the global default model and reflects it in /auth', async () => {
@@ -349,6 +366,18 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(status).toBe(200);
     expect(body.code).toBe(0);
     expect(body.data).toEqual({ changed: [], unchanged: [], failed: [] });
+  });
+
+  it('forwards a draft key on single-provider refresh without adding it to collection refresh', async () => {
+    const refreshProviderModels = vi.fn(async () => ({ changed: [], unchanged: ['kimi'], failed: [] }));
+    const seeds = [[IProviderDiscoveryService, discoveryStub(refreshProviderModels)]] as unknown as ScopeSeed;
+    await boot(CATALOG_TOML, seeds);
+    const result = await postJson<unknown>('/api/providers/kimi:refresh', { api_key: 'sk-draft' });
+    expect(result.body.code).toBe(0);
+    expect(refreshProviderModels).toHaveBeenCalledWith({ providerId: 'kimi', apiKey: 'sk-draft' });
+    const invalid = await postJson<unknown>('/api/providers/kimi:refresh', { api_key: '' });
+    expect(invalid.body.code).not.toBe(0);
+    expect(refreshProviderModels).toHaveBeenCalledTimes(1);
   });
 
   it('returns an empty refresh result through the providers:refresh route when no providers are configured', async () => {

@@ -132,6 +132,8 @@ export const providerCatalogItemSchema = z.object({
   default_model: z.string().min(1).optional(),
   request_identity: requestIdentityPolicySchema.optional(),
   images: imagePolicySchema.optional(),
+  api_key: z.string().min(1).optional(),
+  api_key_env: z.string().min(1).optional(),
   has_api_key: z.boolean(),
   status: providerCatalogStatusSchema,
   models: z.array(z.string().min(1)).optional(),
@@ -290,8 +292,7 @@ export type CreateModelRequest = z.infer<typeof createModelRequestSchema>;
  * their own entities (`/models`), so saving one field of a connection can no
  * longer rebuild or drop its models. `base_url`, `default_model` and
  * `request_identity` accept `null` to clear; `api_key` stays tri-state
- * (absent keeps the stored key, `""` clears, any other value replaces) and is
- * never echoed back.
+ * (absent keeps the stored key, `""` clears, any other value replaces).
  */
 export const patchProviderRequestSchema = z
   .object({
@@ -475,6 +476,11 @@ export const providerCollectionActionBodySchema = z.object({
   url: z.string().min(1).optional(),
 });
 export type ProviderCollectionActionBody = z.infer<typeof providerCollectionActionBodySchema>;
+
+export const refreshProviderRequestSchema = z.object({
+  api_key: z.string().min(1).optional(),
+}).strict();
+export type RefreshProviderRequest = z.infer<typeof refreshProviderRequestSchema>;
 
 export const listCatalogProvidersResponseSchema = z.object({
   items: z.array(catalogProviderItemSchema),

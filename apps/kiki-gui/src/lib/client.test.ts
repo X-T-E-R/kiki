@@ -72,6 +72,19 @@ describe('KikiClient.refreshProvider', () => {
     expect(init?.method).toBe('POST');
     vi.unstubAllGlobals();
   });
+
+  it('passes a draft key only to the targeted provider refresh procedure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      expect(JSON.parse(init?.body as string)).toEqual({
+        procedure: { scope: 'core', service: 'providerDiscovery', method: 'refreshProviderModels' },
+        params: [{ providerId: 'example', apiKey: 'sk-draft' }],
+      });
+      return Response.json({ code: 0, msg: 'success', data: { changed: [], unchanged: ['example'], failed: [] } });
+    }));
+    try {
+      await new KikiClient({ baseUrl: 'http://127.0.0.1:8080' }).refreshProvider('example', 'sk-draft');
+    } finally { vi.unstubAllGlobals(); }
+  });
 });
 
 describe('KikiClient transport error mapping', () => {

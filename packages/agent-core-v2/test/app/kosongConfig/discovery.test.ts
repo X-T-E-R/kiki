@@ -119,6 +119,41 @@ describe('manual provider discovery', () => {
     } finally { host.dispose(); }
   });
 
+  it('uses a request-only draft key for the targeted fetch without replacing the stored key', async () => {
+    const fetchMock = vi.fn(async () => catalogResponse('remote-new'));
+    vi.stubGlobal('fetch', fetchMock);
+    const { host, discovery, config } = await createHost(sections);
+    const writes = vi.spyOn(config, 'replaceSections');
+    try {
+      const result = await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft' });
+      expect(result.discovered?.[0]?.models).toEqual([{ remote_id: 'remote-new' }]);
+      expect(fetchMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer sk-draft' }),
+      }));
+      expect(config.get('providers')).toEqual(sections.providers);
+      expect(writes).not.toHaveBeenCalled();
+      expect((await discovery.listDiscoveredModels()).items[0]?.models).toEqual([{ remote_id: 'remote-new' }]);
+    } finally { host.dispose(); }
+  });
+
+  it('redacts a failed draft-key probe and leaves the stored key usable', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ error: { message: 'invalid key sk-draft' } }, { status: 401 }))
+      .mockResolvedValueOnce(catalogResponse('remote-new'));
+    vi.stubGlobal('fetch', fetchMock);
+    const { host, discovery, config } = await createHost(sections);
+    try {
+      const failed = await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft' });
+      expect(failed.failed).toHaveLength(1);
+      expect(JSON.stringify(failed)).not.toContain('sk-draft');
+      expect(config.get('providers')).toEqual(sections.providers);
+      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      expect(fetchMock).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer sk-example-key' }),
+      }));
+    } finally { host.dispose(); }
+  });
+
   it('filters saved remote IDs independently of aliases, and forgets suggestions on a new app instance', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => catalogResponse('remote-new')));
     const first = await createHost(sections);

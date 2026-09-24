@@ -97,6 +97,7 @@ const COLON_PROVIDER: ProviderCatalogItem = {
   type: 'openai',
   base_url: 'https://edge.example.test/v1',
   default_model: 'fast',
+  api_key: 'sk-stored',
   has_api_key: true,
   status: 'connected',
   models: ['fast'],
@@ -241,6 +242,63 @@ function buttonByText(container: HTMLElement, text: string): HTMLButtonElement {
 }
 
 describe('ProviderEditor save channel', () => {
+  it('prefills, reveals, edits, and clears a stored key without replacing it when unchanged', async () => {
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    expect(key.value).toBe('sk-stored');
+    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
+    await act(async () => { buttonByText(container, 'Show').click(); });
+    expect(key.type).toBe('text');
+    expect(key.value).toBe('sk-stored');
+    await act(async () => { buttonByText(container, 'Hide').click(); });
+    expect(key.type).toBe('password');
+
+    const url = [...container.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
+    await act(async () => { setInputValue(url, 'https://edge-2.example.test/v1'); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
+      base_url: 'https://edge-2.example.test/v1', base_revision: 'provider-rev-1',
+    });
+    expect(key.value).toBe('sk-stored');
+
+    await act(async () => { setInputValue(key, 'sk-new'); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { api_key: 'sk-new', base_revision: 'provider-rev-2' });
+    expect(key.value).toBe('sk-new');
+
+    await act(async () => { setInputValue(key, ''); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, { api_key: '', base_revision: 'provider-rev-2' });
+    expect(key.value).toBe('');
+  });
+
+  it('shows an environment source without exposing its value and saves an inline override', async () => {
+    const envProvider: ProviderCatalogItem = {
+      ...COLON_PROVIDER, api_key: undefined, api_key_env: 'OPENAI_API_KEY',
+    };
+    const container = await renderEditor(envProvider, FAST_MODELS, false, async () => {});
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    expect(key.value).toBe('');
+    expect(key.placeholder).toContain('OPENAI_API_KEY');
+    expect(container.textContent).toContain('Using OPENAI_API_KEY');
+    await act(async () => { setInputValue(key, 'sk-inline'); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenCalledWith(envProvider.id, { api_key: 'sk-inline', base_revision: 'provider-rev-1' });
+    expect(key.value).toBe('sk-inline');
+  });
+
+  it('probes with a changed unsaved key but uses the stored key when untouched', async () => {
+    refreshProvider.mockResolvedValue({ changed: [], unchanged: [COLON_PROVIDER.id], failed: [] });
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
+    expect(refreshProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, undefined);
+    await act(async () => { setInputValue(key, 'sk-draft'); });
+    await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
+    expect(refreshProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, 'sk-draft');
+    expect(updateProvider).not.toHaveBeenCalled();
+  });
+
   it('keeps provider A draft and baseline through provider B save and real query invalidation', async () => {
     updateModel.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
       const renamed = { ...MANAGED_MODELS[0]!, display_name: String(patch['display_name']) };
@@ -512,7 +570,7 @@ describe('ProviderEditor save channel', () => {
       provider_id: 'edge:gateway',
       provider_source: 'provider',
       remote_id: 'new-model',
-      max_context_size: 128000,
+      max_context_size: 250000,
       revision: 'new-model-rev-1',
       issues: [],
     });
@@ -535,6 +593,10 @@ describe('ProviderEditor save channel', () => {
 
     await act(async () => { buttonByText(container, 'Save provider').click(); });
     expect(createModel).toHaveBeenCalledTimes(1);
+    expect(createModel).toHaveBeenCalledWith(expect.objectContaining({
+      max_context_size: 250000,
+      capabilities: ['thinking', 'tool_use'],
+    }));
     expect(onSaved).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('edge:gateway/new-model');
     expect(container.textContent).toContain('Provider changed since it was read.');
@@ -607,7 +669,7 @@ describe('ProviderEditor save channel', () => {
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Model 2 display name"]')!.value)
       .toBe('');
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Model 2 context size"]')!.value)
-      .toBe('128');
+      .toBe('250');
   });
 
   it('fetches only on click and creates a discovered model only after choosing and saving', async () => {

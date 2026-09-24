@@ -740,7 +740,7 @@ describe('server-v2 /api/config', () => {
     expect(await readFile(join(home as string, backups[0] as string), 'utf-8')).toBe(legacy);
   });
 
-  it('reports provider credentials as has_api_key without echoing or persisting api_key in config.toml', async () => {
+  it('returns provider keys for editing while keeping them out of config.toml', async () => {
     await boot([
       '[providers.example]',
       'type = "openai"',
@@ -749,8 +749,7 @@ describe('server-v2 /api/config', () => {
     ].join('\n'));
 
     const migrated = await getConfig();
-    expect(migrated.providers['example']).toMatchObject({ type: 'openai', has_api_key: true });
-    expect(migrated.providers['example']).not.toHaveProperty('api_key');
+    expect(migrated.providers['example']).toMatchObject({ type: 'openai', api_key: 'legacy-secret', has_api_key: true });
 
     const patched = await patchConfig({
       providers: {
@@ -765,13 +764,13 @@ describe('server-v2 /api/config', () => {
     expect(patchedProvider).toMatchObject({
       type: 'openai',
       base_url: 'https://api.example.test/v1',
+      api_key: 'patched-secret',
       has_api_key: true,
     });
-    expect(patchedProvider).not.toHaveProperty('api_key');
 
     const raw = await (await authedFetch(server as RunningServer, base, '/api/config')).text();
+    expect(raw).toContain('patched-secret');
     expect(raw).not.toContain('legacy-secret');
-    expect(raw).not.toContain('patched-secret');
 
     const configText = await readFile(join(home as string, 'config.toml'), 'utf-8');
     expect(configText).not.toContain('api_key');
