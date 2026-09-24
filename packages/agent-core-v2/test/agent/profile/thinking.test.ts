@@ -117,7 +117,7 @@ describe('resolveThinkingEffortForModel', () => {
     ).toBe('on');
   });
 
-  it('honors a configured effort when clamping always-thinking models back on', () => {
+  it('uses the model default before the global effort when clamping always-thinking models back on', () => {
     expect(
       resolveThinkingEffortForModel(
         undefined,
@@ -125,10 +125,18 @@ describe('resolveThinkingEffortForModel', () => {
         alwaysThinkingEffortModel,
         true,
       ),
-    ).toBe('max');
+    ).toBe('high');
     expect(
       resolveThinkingEffortForModel(undefined, { enabled: false }, alwaysThinkingEffortModel, true),
     ).toBe('high');
+    expect(
+      resolveThinkingEffortForModel(
+        undefined,
+        { enabled: false, effort: 'max' },
+        { ...alwaysThinkingEffortModel, defaultEffort: undefined },
+        true,
+      ),
+    ).toBe('max');
   });
 
   it('does not force on for models that are not always-thinking', () => {
@@ -168,7 +176,7 @@ describe('resolveThinkingEffortForModel', () => {
     ).toBe('high');
     expect(
       resolveThinkingEffortForModel(undefined, { enabled: false, effort: 'max' }, alwaysThinkingEffortModel),
-    ).toBe('max');
+    ).toBe('high');
   });
 
   it('carries custom requested efforts through', () => {

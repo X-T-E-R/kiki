@@ -149,8 +149,10 @@ export function projectSubagentCapabilities(
         thinking = resolveThinkingEffortForModel(thinking, defaults, model,
           requiresStrictThinkingValidation(services.protocols, model.protocol, model.providerType));
         assertSubagentModelNotDenied(services.config, resolved.model, services.models);
-        effortSource ??= model.overrides?.defaultEffort !== undefined ? 'model'
-          : defaults?.effort !== undefined || defaults?.enabled !== undefined ? 'config' : 'model';
+        effortSource ??= model.overrides?.defaultEffort?.trim() ? 'model'
+          : defaults?.enabled === false ? 'config'
+            : model.defaultEffort?.trim() ? 'model'
+              : defaults?.effort !== undefined || defaults?.enabled !== undefined ? 'config' : 'model';
       } else {
         const validated = services.executors.validateBinding(executor.descriptor.id, executor.options, {
           modelAlias: resolved.model,

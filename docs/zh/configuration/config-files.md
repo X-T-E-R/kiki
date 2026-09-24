@@ -329,7 +329,7 @@ Router: classify this task (build or fix) now, then adopt the matching style —
 子 Agent 的模型只有两个来源：通过 `AgentRun` 派发时传入的 `model_alias`，或所选 profile、route、caller lease 上的 pin。
 调用方模型与 `default_model` 都不是静默回退来源；既没有传参数又没有生效 pin 时，派发会以 `model.not_configured` 失败，不会创建子 Agent。在 subagent profile、route 或 caller lease 中写 `model_alias: inherit`，或向 `AgentRun` 显式传 `model_alias: "inherit"`，才会绑定调用方当前已解析的模型。main agent 没有调用方，其 profile 不可使用 `inherit`。
 
-thinking effort 可以留空。使用 `model_alias: inherit` 时，它会跟随调用方的有效思考强度；工具显式 `effort`，或 profile、route、caller lease、匹配的 `model_profiles` 条目上适用的 effort pin 优先。其他情况下按工具 `effort` → 匹配的 `model_profiles` 档位 → 所选模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身在全局 [`[thinking]`](#thinking) 配置下的默认档位解析。
+thinking effort 可以留空。使用 `model_alias: inherit` 时，它会跟随调用方的有效思考强度；工具显式 `effort`，或 profile、route、caller lease、匹配的 `model_profiles` 条目上适用的 effort pin 优先。其他情况下按工具 `effort` → 匹配的 `model_profiles` 档位 → 所选模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型的 `overrides.default_effort` → 模型的 `default_effort` → 全局 [`[thinking].effort`](#thinking) → 模型能力兜底档位解析。
 
 ## `thinking`
 
@@ -337,8 +337,8 @@ thinking effort 可以留空。使用 `model_alias: inherit` 时，它会跟随�
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | 新会话是否默认开启 Thinking，设为 `false` 可强制关闭 |
-| `effort` | `string` | — | Thinking 强度（例如 `low`、`medium`、`high`、`xhigh`、`max`）。非 Kimi provider 在上游协议接受具体 effort 值时不会改写该值；如果上游拒绝，请改成该模型支持的档位。协议仅提供等级或 token budget 时，仍需做格式转换。对于带 `support_efforts` 的 Kimi 模型，若该配置值不在列表中，会回落到模型默认档位；没有该列表的 Kimi 模型会把任意开启值视为布尔 `on` |
+| `enabled` | `boolean` | `true` | 新会话是否默认开启 Thinking；设为 `false` 时，未固定的 effort 会关闭，但显式请求与模型覆盖项仍生效 |
+| `effort` | `string` | — | 模型的 `default_effort` 和 `overrides.default_effort` 之后的全局兜底档位（例如 `low`、`medium`、`high`、`xhigh`、`max`）。非 Kimi provider 在上游协议接受具体 effort 值时不会改写该值；如果上游拒绝，请改成该模型支持的档位。协议仅提供等级或 token budget 时，仍需做格式转换。对于带 `support_efforts` 的 Kimi 模型，若该配置值不在列表中，会回落到模型默认档位；没有该列表的 Kimi 模型会把任意开启值视为布尔 `on` |
 | `keep` | `string` | `"all"` | 保留思考透传。在 `kimi` 上以 `thinking.keep` 发送；在 `anthropic`（Claude 以及 Kimi 的 Anthropic 兼容模式）上以 `context_management` 的 `clear_thinking_20251015` 编辑发送（开启 keep 会让 Anthropic 请求走 beta Messages API；关值可禁用 keep 并回到标准端点）。`"all"` 会保留历史轮次的思考内容（`reasoning_content` / Anthropic thinking blocks）；传入关值（`false`/`0`/`no`/`off`/`none`/`null`）可禁用。可被 `KIKI_MODEL_THINKING_KEEP` 覆盖；仅在 Thinking 开启时注入 |
 
 ### 已废弃字段

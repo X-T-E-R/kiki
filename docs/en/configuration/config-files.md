@@ -340,7 +340,7 @@ caller's effective thinking effort unless an explicit tool `effort` or an
 applicable profile, route, caller-lease, or matching `model_profiles` effort pin
 wins. Otherwise, effort resolves as tool `effort` → matching `model_profiles`
 effort → profile `thinking_effort` when the selected model matches its pin →
-the bound model's own default under the global [`[thinking]`](#thinking) config.
+the bound model's `overrides.default_effort` → its `default_effort` → global [`[thinking].effort`](#thinking) → the model's capability fallback.
 
 ## `thinking`
 
@@ -348,8 +348,8 @@ the bound model's own default under the global [`[thinking]`](#thinking) config.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | Whether Thinking is enabled by default for new sessions; set to `false` to force Thinking off |
-| `effort` | `string` | — | Thinking effort level (for example `low`, `medium`, `high`, `xhigh`, `max`). Non-Kimi providers do not remap concrete effort values when the upstream protocol accepts them; if the provider rejects the value, choose one that the model supports. Protocols that expose only levels or token budgets still require format conversion. Kimi models with `support_efforts` fall back to their model default when this configured value is not listed; Kimi models without that list treat every enabled value as boolean `on` |
+| `enabled` | `boolean` | `true` | Whether Thinking is enabled by default for new sessions; `false` turns off an unpinned effort, but explicit requests and model overrides still apply |
+| `effort` | `string` | — | Global fallback after the selected model's `default_effort` and `overrides.default_effort` (for example `low`, `medium`, `high`, `xhigh`, `max`). Non-Kimi providers do not remap concrete effort values when the upstream protocol accepts them; if the provider rejects the value, choose one that the model supports. Protocols that expose only levels or token budgets still require format conversion. Kimi models with `support_efforts` fall back to their model default when this configured value is not listed; Kimi models without that list treat every enabled value as boolean `on` |
 | `keep` | `string` | `"all"` | Preserved Thinking passthrough. On `kimi` it is sent as `thinking.keep`; on `anthropic` (Claude and Kimi's Anthropic-compatible mode) it is sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API; an off-value disables keep and returns to the standard endpoint). `"all"` preserves prior turns' reasoning (`reasoning_content` / Anthropic thinking blocks); set to an off-value (`false`/`0`/`no`/`off`/`none`/`null`) to disable. Overridden by `KIKI_MODEL_THINKING_KEEP`; only injected while Thinking is on |
 
 ### Deprecated fields

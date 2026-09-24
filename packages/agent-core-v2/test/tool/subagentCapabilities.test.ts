@@ -156,6 +156,22 @@ describe('subagent capability final bindings', () => {
     });
   });
 
+  it('attributes the selected model default instead of the global thinking effort', () => {
+    model = { ...model, defaultEffort: 'high' };
+    vi.spyOn(services.config, 'get').mockImplementation((section: string) =>
+      section === 'thinking' ? { effort: 'low' } : undefined);
+    expect(project(helper())[0]).toMatchObject({
+      thinkingEffort: 'high', effortSource: 'model', defaultsAvailable: true,
+    });
+    expect(project(helper({ thinkingEffort: 'low' }))[0]).toMatchObject({
+      thinkingEffort: 'low', effortSource: 'profile', defaultsAvailable: true,
+    });
+    model = { ...model, defaultEffort: undefined };
+    expect(project(helper())[0]).toMatchObject({
+      thinkingEffort: 'low', effortSource: 'config', defaultsAvailable: true,
+    });
+  });
+
   it('CAP-R1 reports an always-thinking adjustment as a route pin advisory', () => {
     model = { ...model, alwaysThinking: true };
     const profile = helper();

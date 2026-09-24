@@ -86,8 +86,11 @@ Thinking effort resolves in this order:
 3. A matching `model_profiles` entry.
 4. The profile's top-level `thinking_effort`, only when the selected model matches the profile's default `model_alias`.
 5. `[models."<alias>"].overrides.default_effort`.
-6. The `[thinking]` global default.
-7. The model's catalog or capability default.
+6. The selected model's `default_effort`, including `[models."<alias>"].default_effort`.
+7. The global `[thinking].effort`.
+8. If neither default effort is set, the model's supported-effort midpoint or capability fallback.
+
+When `[thinking].enabled` is `false`, an unpinned effort resolves to Off unless a model override is set. Models with `always_thinking` cannot be turned Off; their fallback follows the model-default-then-global order.
 
 A profile without `model_alias` skips only the top-level effort layer; it does not fail closed, and resolution continues with the next default layer. On a plain resume, omitting model parameters keeps the current binding. An alias resolving to the same canonical model is a no-op. Changing only `effort` keeps the saved model. Changing to a different canonical model without `effort` re-resolves effort for the new model; on resume, that model change still requires `allow_model_change: true`. Existing parameter validation and the external executor's own validation remain in force.
 

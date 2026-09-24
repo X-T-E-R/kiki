@@ -50,27 +50,36 @@ describe('resolveThinkingEffortForModel', () => {
     defaultEffort: 'high',
   };
 
-  it('prefers the normalized request, then config, then the model default', () => {
-    expect(resolveThinkingEffortForModel('HIGH', undefined, thinkingModel, true)).toBe('high');
-    expect(resolveThinkingEffortForModel(undefined, { effort: 'low' }, thinkingModel, true)).toBe('low');
-    expect(resolveThinkingEffortForModel(undefined, undefined, thinkingModel, true)).toBe('high');
-    expect(resolveThinkingEffortForModel(undefined, { enabled: false }, thinkingModel, true)).toBe('off');
+  it('prefers a model default over the global effort when no effort is requested', () => {
+    const model = { ...thinkingModel, supportEfforts: ['low', 'max', 'xhigh'], defaultEffort: 'xhigh' };
+    expect(resolveThinkingEffortForModel(undefined, { effort: 'max' }, model, true)).toBe('xhigh');
+    expect(resolveThinkingEffortForModel(undefined, undefined, model, true)).toBe('xhigh');
+    expect(resolveThinkingEffortForModel(undefined, { effort: 'max' }, {
+      ...model, defaultEffort: 'max',
+    }, true)).toBe('max');
   });
 
-  it('uses user model overrides before global fallback without promoting catalog defaults', () => {
+  it('prefers user model overrides over model and global defaults', () => {
     const model = { ...thinkingModel, overrides: { defaultEffort: 'medium' } };
     expect(resolveThinkingEffortForModel(undefined, { effort: 'low' }, model, true)).toBe('medium');
     expect(resolveThinkingEffortForModel('low', { effort: 'high' }, model, true)).toBe('low');
-    expect(resolveThinkingEffortForModel(undefined, { effort: 'low' }, thinkingModel, true)).toBe('low');
-    expect(resolveThinkingEffortForModel(undefined, undefined, thinkingModel, true)).toBe('high');
   });
 
-  it('picks the middle effort when the model declares no default', () => {
-    expect(
-      defaultThinkingEffortForModel({ capabilities: ['thinking'], supportEfforts: ['low', 'medium', 'high'] }),
-    ).toBe('medium');
+  it('uses the global effort and then the middle effort when the model declares no default', () => {
+    const model = { capabilities: ['thinking'], supportEfforts: ['low', 'medium', 'high'] };
+    expect(resolveThinkingEffortForModel(undefined, { effort: 'low' }, model, true)).toBe('low');
+    expect(resolveThinkingEffortForModel(undefined, undefined, model, true)).toBe('medium');
+    expect(defaultThinkingEffortForModel(model)).toBe('medium');
     expect(defaultThinkingEffortForModel({ capabilities: ['thinking'] })).toBe('on');
     expect(defaultThinkingEffortForModel(undefined)).toBe('off');
+  });
+
+  it('keeps explicit effort highest and enabled=false disabling unpinned defaults', () => {
+    const model = { ...thinkingModel, overrides: { defaultEffort: 'medium' } };
+    expect(resolveThinkingEffortForModel('low', { effort: 'medium' }, model, true)).toBe('low');
+    expect(resolveThinkingEffortForModel('  HIGH ', { enabled: false }, model, true)).toBe('high');
+    expect(resolveThinkingEffortForModel(undefined, { enabled: false }, thinkingModel, true)).toBe('off');
+    expect(resolveThinkingEffortForModel(undefined, { enabled: false }, model, true)).toBe('medium');
   });
 
   it('normalizes unknown efforts back to the model default under kimi semantics', () => {

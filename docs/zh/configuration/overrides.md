@@ -86,8 +86,11 @@ Thinking effort 按以下顺序解析：
 3. 匹配的 `model_profiles` 条目。
 4. profile 顶层的 `thinking_effort`，但仅当所选模型匹配 profile 的默认 `model_alias`。
 5. `[models."<alias>"].overrides.default_effort`。
-6. `[thinking]` 全局默认值。
-7. 模型自身的 catalog 或 capability 默认值。
+6. 所选模型的 `default_effort`，包括 `[models."<alias>"].default_effort`。
+7. 全局 `[thinking].effort`。
+8. 两处均未设置默认 effort 时，回退到模型支持档位的中间值或能力默认值。
+
+`[thinking].enabled` 为 `false` 时，未固定的 effort 会解析为 Off，除非模型覆盖项另有设置。`always_thinking` 模型无法关闭；其兜底档位按模型默认值优先、全局默认值次之的顺序选择。
 
 没有 `model_alias` 的 profile 只跳过顶层 effort 这一层，不会 fail closed；解析会继续使用下一层默认值。普通 resume 省略模型参数时保持当前绑定；alias 解析到同一规范模型时为 no-op。只修改 `effort` 时保留已保存的模型；切换到不同规范模型且省略 `effort` 时，按新模型重新解析 effort。恢复时切换到不同规范模型仍需 `allow_model_change: true`。既有参数校验以及外部 executor 自行完成的校验继续生效。
 
