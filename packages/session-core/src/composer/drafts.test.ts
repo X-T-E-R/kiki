@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { PermissionMode } from '@kiki/protocol';
 
 import type { ComposerAttachment } from './attachments';
+import { addAnnotation, removeAnnotation } from './selectionQuote';
 import {
   appendToDraft,
   clearComposerState,
@@ -28,6 +29,7 @@ import {
 function emptyState(patch: Partial<Parameters<typeof writeComposerState>[1]> = {}) {
   return {
     attachments: [],
+    annotations: [],
     permissionMode: undefined,
     planMode: undefined,
     planGate: undefined,
@@ -73,6 +75,24 @@ describe('per-session composer state (memory-only)', () => {
     expect(readComposerState('s2').swarmMode).toBe(true);
   });
 
+  it('keeps unsent annotations when leaving and reopening a session, without leaking to another', () => {
+    const first = addAnnotation([], 'selected source', 'first comment');
+    writeComposerState('session-a', emptyState({ annotations: first }));
+
+    const second = addAnnotation([], 'other source', 'other comment');
+    writeComposerState('session-b', emptyState({ annotations: second }));
+    expect(readComposerState('session-b').annotations).toEqual(second);
+
+    const restored = readComposerState('session-a').annotations ?? [];
+    expect(restored).toEqual(first);
+    writeComposerState('session-a', emptyState({ annotations: removeAnnotation(restored, first[0]!.id) }));
+    expect(readComposerState('session-a').annotations).toEqual([]);
+    expect(readComposerState('session-b').annotations).toEqual(second);
+
+    resetComposerMemoryForTests();
+    expect(readComposerState('session-a').annotations).toBeUndefined();
+  });
+
   it('clears one session without touching its neighbours', () => {
     writeComposerState('s1', emptyState({ permissionMode: 'yolo' }));
     writeComposerState('s2', emptyState({ permissionMode: 'manual' }));
@@ -81,7 +101,7 @@ describe('per-session composer state (memory-only)', () => {
     expect(readComposerState('s2').permissionMode).toBe('manual');
   });
 
-  it('persists scalar model and effort overrides across memory resets without persisting permissions or attachments', () => {
+  it('persists scalar model and effort overrides across memory resets without persisting permissions, attachments or annotations', () => {
     const attachments: ComposerAttachment[] = [
       { kind: 'file', path: 'src/app.ts', name: 'app.ts', isDir: false },
       {
@@ -95,6 +115,7 @@ describe('per-session composer state (memory-only)', () => {
     ];
     writeComposerState('s1', emptyState({
       attachments,
+      annotations: addAnnotation([], 'selected source', 'private comment'),
       permissionMode: 'auto',
       planMode: true,
       planGate: 'gated',
@@ -119,6 +140,7 @@ describe('per-session composer state (memory-only)', () => {
     expect(restored.swarmMode).toBeUndefined();
     expect(restored.goalObjective).toBeUndefined();
     expect(restored.attachments).toBeUndefined();
+    expect(restored.annotations).toBeUndefined();
   });
 
   it('ignores malformed stored scalars and removes non-whitelisted fields when updating a neighbour', () => {

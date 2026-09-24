@@ -1201,8 +1201,11 @@ export function SessionView({
   // with the session; send (and the chip's ×) clear it explicitly.
   const [quote, setQuote] = useState<string | null>(null);
   // Selection annotations (quote + one-line comment) accumulate independently
-  // of the quote chip — any number of them ride the same prompt.
-  const [annotations, setAnnotations] = useState<readonly SelectionAnnotation[]>([]);
+  // of the quote chip — any number ride the same prompt, and unsent ones return
+  // with the session's in-memory composer chrome after navigation.
+  const [annotations, setAnnotations] = useState<readonly SelectionAnnotation[]>(
+    () => restoredComposer.annotations ?? [],
+  );
   const transcriptQuoteRef = useRef<HTMLDivElement>(null);
   const focusComposer = useCallback(() => {
     // Return focus to the composer so the user can type the follow-up at once.
@@ -1369,10 +1372,12 @@ export function SessionView({
   }, []);
 
   // Capture in-memory chrome for session switches. The storage owner mirrors
-  // only model/effort overrides to disk, never attachments or run controls.
+  // only model/effort overrides to disk, never attachments, unsent annotations
+  // or run controls.
   useEffect(() => {
     writeComposerState(sessionId, {
       attachments,
+      annotations,
       permissionMode: permissionOverride,
       planMode: planOverride,
       planGate: planGateOverride,
@@ -1384,6 +1389,7 @@ export function SessionView({
   }, [
     sessionId,
     attachments,
+    annotations,
     permissionOverride,
     planOverride,
     planGateOverride,

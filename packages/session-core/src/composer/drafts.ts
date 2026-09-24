@@ -3,6 +3,7 @@
 import type { PermissionMode, PromptPlanGate } from '@kiki/protocol';
 
 import type { ComposerAttachment } from './attachments';
+import type { SelectionAnnotation } from './selectionQuote';
 import { readSettings } from '../settings/settings';
 
 const KEY = 'kiki.drafts';
@@ -85,11 +86,12 @@ export function resetDraftMemoryForTests(): void {
 
 /**
  * In-memory chrome survives session switches. Only model/effort overrides
- * are optionally mirrored to disk; attachments and execution controls never
- * cross that persistence boundary.
+ * are optionally mirrored to disk; attachments, unsent annotations and
+ * execution controls never cross that persistence boundary.
  */
 export interface ComposerSessionState {
   attachments: readonly ComposerAttachment[];
+  annotations: readonly SelectionAnnotation[];
   /** Pill overrides; `undefined` means "no local override" (store/default). */
   permissionMode: PermissionMode | undefined;
   planMode: boolean | undefined;
