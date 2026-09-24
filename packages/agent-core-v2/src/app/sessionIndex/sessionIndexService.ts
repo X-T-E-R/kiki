@@ -40,7 +40,7 @@ import {
 import { SessionIndexBuildingError } from './errors';
 import { SessionIndexProjector } from './sessionIndexProjector';
 import {
-  readSessionSummary,
+  readSessionSummaryResult,
   scanSessionsMaxMtime,
   summaryMatchesChildOf,
 } from './sessionIndexSource';
@@ -805,14 +805,15 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           const sessionIds = await this.listStorage(`${this.sessionsScope}/${workspaceId}`);
           if (sessionIds === undefined || !sessionIds.includes(id)) continue;
         }
-        const summary = await readSessionSummary(
+        const result = await readSessionSummaryResult(
           this.docs,
           this.sessionsScope,
           workspaceId,
           id,
+          this.log,
         );
-        if (summary !== undefined) {
-          authoritative = summary;
+        if (result.kind === 'found') {
+          authoritative = result.summary;
           break;
         }
       }
@@ -845,13 +846,14 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         const sessionIds = await this.listStorage(`${this.sessionsScope}/${workspaceId}`);
         if (sessionIds === undefined) continue;
         for (const sessionId of sessionIds) {
-          const summary = await readSessionSummary(
+          const result = await readSessionSummaryResult(
             this.docs,
             this.sessionsScope,
             workspaceId,
             sessionId,
+            this.log,
           );
-          if (summary !== undefined) collected.push(summary);
+          if (result.kind === 'found') collected.push(result.summary);
         }
       }
       return collected;

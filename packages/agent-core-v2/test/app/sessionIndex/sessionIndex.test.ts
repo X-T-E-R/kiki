@@ -55,7 +55,7 @@ import {
   type Page,
   type WriteOp,
 } from '#/persistence/interface/queryStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 
 import { stubSessionIndexMirror } from './stubs';
 import { stubBootstrap } from '../bootstrap/stubs';
@@ -527,6 +527,35 @@ describe('FileSessionIndex (legacy)', () => {
     expect(warnings).toContain('session index skips a non-directory entry');
   });
 
+  it('skips a file whose stat is denied while scanning mtimes', async () => {
+    await seedSession('readable', { createdAt: 1, updatedAt: 2 });
+    await seedSession('denied', { createdAt: 3, updatedAt: 4 });
+    class DeniedStatStorage extends FileStorageService {
+      override async mtime(scope: string, key: string): Promise<number | undefined> {
+        if (scope === `sessions/${workspaceId}/denied` && key === 'state.json') {
+          throw new StorageError(StorageErrors.codes.STORAGE_PERMISSION_DENIED, 'stat denied');
+        }
+        return super.mtime(scope, key);
+      }
+    }
+    const warnings: string[] = [];
+    const log: ILogService = { ...stubLog(), warn: (message) => { warnings.push(message); } };
+    await expect(scanSessionsMaxMtime(new DeniedStatStorage(homeDir), 'sessions', log))
+      .resolves.toBeGreaterThan(0);
+    expect(warnings).toContain('session index skips unreadable metadata stat');
+  });
+
+  it('flag-off listings skip corrupted files without hiding healthy sessions', async () => {
+    await seedSession('readable', { title: 'healthy', createdAt: 1, updatedAt: 2 });
+    await fsp.mkdir(join(sessionsDir, workspaceId, 'bad'), { recursive: true });
+    await fsp.writeFile(join(sessionsDir, workspaceId, 'bad', 'state.json'), '');
+    const store = build();
+    expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id))
+      .toEqual(['readable']);
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+    expect(await store.get('bad', workspaceId)).toBeUndefined();
+  });
+
   it('pages with the before/after keyset cursors', async () => {
     for (let i = 0; i < 5; i++) {
       await seedSession(`s${i}`, { createdAt: i, updatedAt: i });
@@ -799,6 +828,92 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     const page = await store.listRecent({ workspaceIds: [workspaceId] });
     expect(page.items.map((s) => s.id)).toEqual(['active']);
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+  });
+
+  it('publishes past zero-byte and malformed session metadata, then retries repaired files', async () => {
+    await seedSession('first', { title: 'first', createdAt: 1, updatedAt: 2 });
+    const zeroPath = join(sessionsDir, workspaceId, 'zero', 'state.json');
+    await fsp.mkdir(join(sessionsDir, workspaceId, 'zero'), { recursive: true });
+    await fsp.writeFile(zeroPath, '');
+    const malformedPath = join(sessionsDir, workspaceId, 'malformed', 'session-meta', 'state.json');
+    await fsp.mkdir(join(sessionsDir, workspaceId, 'malformed', 'session-meta'), { recursive: true });
+    await fsp.writeFile(malformedPath, '{broken');
+    const warnings: { message: string; path?: unknown }[] = [];
+    const log: ILogService = {
+      ...stubLog(),
+      warn: (message, details) => warnings.push({
+        message,
+        path: details !== null && typeof details === 'object' && 'path' in details
+          ? details.path
+          : undefined,
+      }),
+    };
+    const fileStorage = new FileStorageService(homeDir);
+    const host = createScopedTestHost([
+      stubPair(IFileSystemStorageService, fileStorage),
+      stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
+      stubPair(IBootstrapService, stubBootstrap(homeDir)),
+      stubPair(ILogService, log),
+      stubPair(IFlagService, stubFlag(true)),
+    ]);
+    disposeHost = () => {
+      host.dispose();
+    };
+    queryStore = host.app.accessor.get(IQueryStore);
+    mirror = host.app.accessor.get(ISessionIndexMirror);
+    const store = host.app.accessor.get(ISessionIndex) as FileSessionIndex;
+
+    expect(await store.prepare()).toMatchObject({ state: 'ready', generation: 1, degradedCount: 0 });
+    expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id)).toEqual(['first']);
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+    expect(warnings).toEqual(expect.arrayContaining([
+      { message: 'session index skips unreadable metadata', path: `sessions/${workspaceId}/zero/state.json` },
+      { message: 'session index skips unreadable metadata', path: `sessions/${workspaceId}/malformed/session-meta/state.json` },
+    ]));
+
+    await seedSession('second', { title: 'second', createdAt: 3, updatedAt: 4 });
+    await store.reprojectNow();
+    expect(store.status()).toMatchObject({ state: 'ready', generation: 2, degradedCount: 0 });
+    expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id)).toEqual(['second', 'first']);
+    await fsp.writeFile(zeroPath, JSON.stringify({ title: 'repaired', createdAt: 5, updatedAt: 6 }));
+    await store.reconcileNow();
+    expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id)).toEqual(['zero', 'second', 'first']);
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(3);
+  });
+
+  it('publishes healthy sessions when one metadata read is denied', async () => {
+    class DeniedDocumentStore extends JsonAtomicDocumentStore {
+      override async get<T>(scope: string, key: string): Promise<T | undefined> {
+        if (scope === `sessions/${workspaceId}/denied/session-meta` && key === 'state.json') {
+          throw new StorageError(StorageErrors.codes.STORAGE_PERMISSION_DENIED, 'read denied');
+        }
+        return super.get<T>(scope, key);
+      }
+    }
+    await seedSession('healthy', { title: 'visible', createdAt: 1, updatedAt: 2 });
+    await seedSession('denied', { title: 'hidden', createdAt: 3, updatedAt: 4 });
+    const fileStorage = new FileStorageService(homeDir);
+    const store = build(fileStorage, true, new AppendLogStore(fileStorage), new DeniedDocumentStore(fileStorage));
+    expect(await store.prepare()).toMatchObject({ state: 'ready', generation: 1, degradedCount: 0 });
+    expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id))
+      .toEqual(['healthy']);
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+  });
+
+  it('fails closed when the sessions root cannot be enumerated', async () => {
+    class UnreadableRootStorage extends FileStorageService {
+      override async list(scope: string, prefix?: string): Promise<readonly string[]> {
+        if (scope === 'sessions') throw new Error('sessions root is unreadable');
+        return super.list(scope, prefix);
+      }
+    }
+    await seedSession('healthy', { createdAt: 1, updatedAt: 2 });
+    const store = build(new UnreadableRootStorage(homeDir));
+    expect(await store.prepare()).toMatchObject({ state: 'degraded', reason: 'projection failed' });
+    await expect(store.listRecent({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(
+      SessionIndexBuildingError,
+    );
   });
 
   it('emits status changes once across prepare and repeated ready calls', async () => {

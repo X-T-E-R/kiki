@@ -27,7 +27,6 @@ import {
   listSessionIds,
   listWorkspaceIds,
   mapBounded,
-  readSessionSummary,
   readSessionSummaryResult,
   sessionStateFingerprint,
   summaryEquals,
@@ -239,7 +238,7 @@ export class SessionIndexProjector {
         SCAN_CONCURRENCY,
         async (sessionId) => ({
           sessionId,
-          result: await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId),
+          result: await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log),
         }),
       );
       const changedIds: string[] = [];
@@ -394,21 +393,22 @@ export class SessionIndexProjector {
           sessionId,
           log,
         );
-        const summary = await readSessionSummary(docs, sessionsScope, workspaceId, sessionId);
-        return { sessionId, fingerprint, summary };
+        const result = await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
+        return { sessionId, fingerprint, result };
       });
       const activeSessionIds: string[] = [];
       const archivedSessionIds: string[] = [];
       for (const item of found) {
-        fingerprints.set(item.sessionId, item.fingerprint);
         sourceMaxMtimeMs = Math.max(
           sourceMaxMtimeMs,
           item.fingerprint.directMtimeMs,
           item.fingerprint.nestedMtimeMs,
         );
-        if (item.summary === undefined) continue;
-        summaries.push(item.summary);
-        if (item.summary.archived) archivedSessionIds.push(item.sessionId);
+        if (item.result.kind === 'error') continue;
+        fingerprints.set(item.sessionId, item.fingerprint);
+        if (item.result.kind === 'missing') continue;
+        summaries.push(item.result.summary);
+        if (item.result.summary.archived) archivedSessionIds.push(item.sessionId);
         else activeSessionIds.push(item.sessionId);
       }
       counts.set(workspaceId, {

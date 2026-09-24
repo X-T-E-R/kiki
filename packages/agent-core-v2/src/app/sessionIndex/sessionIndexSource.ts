@@ -206,15 +206,25 @@ async function listChildEntries(
 
 async function tolerantStat<T>(
   read: () => Promise<T | undefined>,
+  path: string,
   log: ILogService | undefined,
 ): Promise<T | undefined> {
   try {
     return await read();
   } catch (error) {
-    if (!isNonDirectoryEntry(error)) throw error;
-    warnSkippedEntry(error, log);
+    if (isNonDirectoryEntry(error)) {
+      warnSkippedEntry(error, log);
+    } else if (error instanceof StorageError) {
+      log?.warn('session index skips unreadable metadata stat', { path, error: String(error) });
+    } else {
+      throw error;
+    }
     return undefined;
   }
+}
+
+function warnUnreadableMetadata(log: ILogService | undefined, path: string, error: unknown): void {
+  log?.warn('session index skips unreadable metadata', { path, error: String(error) });
 }
 
 export type SessionSummaryReadResult =
@@ -227,24 +237,19 @@ export async function readSessionSummaryResult(
   sessionsScope: string,
   workspaceId: string,
   sessionId: string,
+  log?: ILogService,
 ): Promise<SessionSummaryReadResult> {
-  const metadata = await readSessionMetadataResult(docs, sessionsScope, workspaceId, sessionId);
+  const metadata = await readSessionMetadataResult(docs, sessionsScope, workspaceId, sessionId, log);
   if (metadata.kind !== 'found') return metadata;
-  return {
-    kind: 'found',
-    summary: summaryFromMetadata(metadata.meta, workspaceId, sessionId),
-  };
-}
-
-export async function readSessionSummary(
-  docs: IAtomicDocumentStore,
-  sessionsScope: string,
-  workspaceId: string,
-  sessionId: string,
-): Promise<SessionSummary | undefined> {
-  const result = await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId);
-  if (result.kind === 'error') throw result.error;
-  return result.kind === 'found' ? result.summary : undefined;
+  try {
+    return {
+      kind: 'found',
+      summary: summaryFromMetadata(metadata.meta, workspaceId, sessionId),
+    };
+  } catch (error) {
+    warnUnreadableMetadata(log, metadata.path, error);
+    return { kind: 'error', error };
+  }
 }
 
 function summaryFromMetadata(
@@ -274,7 +279,7 @@ function summaryFromMetadata(
 }
 
 type SessionMetadataReadResult =
-  | { readonly kind: 'found'; readonly meta: Record<string, unknown> }
+  | { readonly kind: 'found'; readonly meta: Record<string, unknown>; readonly path: string }
   | { readonly kind: 'missing' }
   | { readonly kind: 'error'; readonly error: unknown };
 
@@ -283,19 +288,25 @@ async function readSessionMetadataResult(
   sessionsScope: string,
   workspaceId: string,
   sessionId: string,
+  log?: ILogService,
 ): Promise<SessionMetadataReadResult> {
   const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
+  const directPath = `${base}/${META_KEY}`;
   let current: Record<string, unknown> | undefined;
   try {
     current = await docs.get<Record<string, unknown>>(base, META_KEY);
   } catch (error) {
+    warnUnreadableMetadata(log, directPath, error);
     return { kind: 'error', error };
   }
-  if (current !== undefined) return { kind: 'found', meta: current };
+  if (current !== undefined) return { kind: 'found', meta: current, path: directPath };
+  const legacyScope = `${base}/${META_SCOPE}`;
+  const legacyPath = `${legacyScope}/${META_KEY}`;
   try {
-    const legacy = await docs.get<Record<string, unknown>>(`${base}/${META_SCOPE}`, META_KEY);
-    return legacy === undefined ? { kind: 'missing' } : { kind: 'found', meta: legacy };
+    const legacy = await docs.get<Record<string, unknown>>(legacyScope, META_KEY);
+    return legacy === undefined ? { kind: 'missing' } : { kind: 'found', meta: legacy, path: legacyPath };
   } catch (error) {
+    warnUnreadableMetadata(log, legacyPath, error);
     return { kind: 'error', error };
   }
 }
@@ -330,10 +341,10 @@ export async function sessionStateFingerprint(
   const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
   const nestedScope = `${base}/${META_SCOPE}`;
   const [directMtimeMs, directSize, nestedMtimeMs, nestedSize] = await Promise.all([
-    tolerantStat(() => storage.mtime(base, META_KEY), log),
-    tolerantStat(() => storage.size(base, META_KEY), log),
-    tolerantStat(() => storage.mtime(nestedScope, META_KEY), log),
-    tolerantStat(() => storage.size(nestedScope, META_KEY), log),
+    tolerantStat(() => storage.mtime(base, META_KEY), `${base}/${META_KEY}`, log),
+    tolerantStat(() => storage.size(base, META_KEY), `${base}/${META_KEY}`, log),
+    tolerantStat(() => storage.mtime(nestedScope, META_KEY), `${nestedScope}/${META_KEY}`, log),
+    tolerantStat(() => storage.size(nestedScope, META_KEY), `${nestedScope}/${META_KEY}`, log),
   ]);
   return {
     directMtimeMs: directMtimeMs ?? 0,
