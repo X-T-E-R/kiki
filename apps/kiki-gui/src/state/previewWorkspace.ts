@@ -1,7 +1,7 @@
 /**
  * Preview workspace tab state — the pure reducer behind the resident preview
- * panel. Tab identity is either a host file path or a panel descriptor; ordering
- * is user-controlled via drag reorder. Kept framework-free so tab semantics
+ * panel. Tab identity is a host file path, a built-in skill name, or a panel
+ * descriptor; ordering is user-controlled via drag reorder. Kept framework-free so tab semantics
  * (activate-on-reopen, neighbor activation on close, bounded reorder) are
  * unit-testable without a DOM.
  */
@@ -17,7 +17,12 @@ export interface PanelTab {
   readonly title?: string;
 }
 
-export type PreviewTab = FileTab | PanelTab;
+export interface SkillTab {
+  readonly kind: 'skill';
+  readonly name: string;
+}
+
+export type PreviewTab = FileTab | PanelTab | SkillTab;
 
 export interface PreviewTabsState {
   /** Open tabs, in strip order. */
@@ -30,7 +35,8 @@ export const EMPTY_PREVIEW_TABS: PreviewTabsState = { tabs: [], active: null };
 
 export function previewTabKey(tab: PreviewTab | string): string {
   if (typeof tab === 'string') return tab;
-  return tab.kind === 'file' ? tab.path : `panel:${tab.agentId}`;
+  if (tab.kind === 'file') return tab.path;
+  return tab.kind === 'panel' ? `panel:${tab.agentId}` : `skill:builtin:${tab.name}`;
 }
 
 export function normalizeTabInput(input: string | PreviewTab): PreviewTab {

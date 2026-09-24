@@ -5,7 +5,7 @@ import { useI18n } from '../../i18n';
 import { useOptionalConnection } from '../../state/connection';
 import { Dialog } from '../Dialog';
 import { FilePathLink } from '../mediaPreview';
-import { SkillContentCollapse } from '../capabilities/SkillContentCollapse';
+import { SkillPreviewButton } from '../capabilities/SkillPreviewButton';
 import { CapabilityStateBadge } from './CapabilityStateBadge';
 import { ProfileDetailSections } from './ProfileDetailSections';
 import { toolCategoryLabel } from './ToolChipList';
@@ -370,9 +370,11 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               ) : null}
               {currentTarget.skill.path ? (
                 <div className="flex flex-col gap-0.5 pt-1 border-t border-hairline">
-                  <dt className="text-ink-faint">{t('agentPanel.fileLabel')}</dt>
+                  <dt className="text-ink-faint">{t(currentTarget.skill.source === 'builtin' ? 'cap.source.builtin' : 'agentPanel.fileLabel')}</dt>
                   <dd className="text-ink-soft break-all text-[10px]">
-                    <FilePathLink path={currentTarget.skill.path} />
+                    {currentTarget.skill.source === 'builtin'
+                      ? currentTarget.skill.path
+                      : <FilePathLink path={currentTarget.skill.path} />}
                   </dd>
                 </div>
               ) : null}
@@ -385,7 +387,11 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             </dl>
 
             {currentTarget.skill.path ? (
-              <SkillContentCollapse path={currentTarget.skill.path} />
+              <SkillPreviewButton skill={{
+                name: currentTarget.skill.name,
+                source: currentTarget.skill.source,
+                path: currentTarget.skill.path,
+              }} onOpen={onClose} />
             ) : null}
           </div>
         )}

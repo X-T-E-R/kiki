@@ -21,6 +21,8 @@ export interface MediaPreviewApi {
   readonly openFile: (reference: string | FileReference) => void;
   /** Open a subagent panel tab in the preview workspace. */
   readonly openAgentPanel: (agentId: string, title?: string) => void;
+  /** Open a read-only built-in skill in the preview workspace. */
+  readonly openBuiltinSkill: (name: string) => void;
   /** Open an attachment backed by a canonical session media id. */
   readonly openAttachment: (item: MediaRef) => void;
   /** Number of open preview tabs (0 → the header toggle hides itself). */

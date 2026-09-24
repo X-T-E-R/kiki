@@ -4,10 +4,12 @@ import { join } from 'node:path';
 
 import {
   IAgentLifecycleService,
+  KIKI_OPS_SKILL,
   getLiveSessionById,
 } from '@kiki/agent-core-v2';
 import {
   activateSkillResultSchema,
+  builtinSkillContentResponseSchema,
   listSkillsResponseSchema,
 } from '../src/protocol/rest-skill';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -154,6 +156,30 @@ describe('server-v2 /api skills', () => {
     await expect.poll(async () => (await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`))
       .body.data.skills.find((skill) => skill.name === 'notes')?.description, { timeout: 10000 })
       .toBe('Updated user notes.');
+  });
+
+  describe('GET /api/skills/{name}:content', () => {
+    it('returns the embedded built-in body without using the filesystem or opening a session', async () => {
+      const { body } = await getJson<{ name: string; content: string }>('/api/skills/kiki-ops:content');
+      expect(body.code).toBe(0);
+      expect(builtinSkillContentResponseSchema.parse(body.data)).toEqual({
+        name: 'kiki-ops',
+        content: KIKI_OPS_SKILL.content,
+      });
+      expect(body.data.content).toContain('# Kiki operations (kiki-ops)');
+    });
+
+    it('does not expose file skills or nonexistent names via the built-in channel', async () => {
+      const root = await makeWorkspaceDir();
+      await seedProjectSkill(root, 'local-only');
+      const workspaceId = await registerWorkspace(root);
+      const catalog = await getJson<{ skills: SkillWire[] }>(`/api/workspaces/${workspaceId}/skills`);
+      expect(catalog.body.data.skills.find((skill) => skill.name === 'local-only')?.source).toBe('project');
+      const missing = await getJson<null>('/api/skills/local-only:content');
+      expect(missing.body.code).toBe(40415);
+      const unknown = await getJson<null>('/api/skills/does-not-exist:content');
+      expect(unknown.body.code).toBe(40415);
+    });
   });
 
   describe('GET /api/sessions/{sid}/skills', () => {

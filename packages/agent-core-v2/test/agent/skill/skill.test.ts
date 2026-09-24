@@ -415,6 +415,25 @@ describe('SkillTool', () => {
     expect(readText).not.toHaveBeenCalled();
   });
 
+  it('does not resolve a built-in command URI as a host file when checking command aliases', async () => {
+    skills.register(stubSkill('built-in-command', {
+      source: 'builtin',
+      path: 'builtin://built-in-command',
+      dir: 'builtin://built-in-command',
+      metadata: { promptCommand: true, disableModelInvocation: true },
+    }));
+    const realpath = vi.fn(async (path: string) => {
+      if (path.startsWith('builtin://')) throw new Error2(ErrorCodes.OS_FS_UNKNOWN, 'Not a host path');
+      return path;
+    });
+    const result = await executeTool(
+      makeTool(ix, undefined, '# Independent', { realpath }),
+      toolContext({ path: '/workspace/independent.md' }),
+    );
+    expect(result.isError).not.toBe(true);
+    expect(realpath).not.toHaveBeenCalledWith('builtin://built-in-command');
+  });
+
   it('does not read outside an isolated runtime workspace', async () => {
     await expect(makeTool(ix).resolveExecution({ path: '/outside/skill.md' })).rejects.toThrow();
   });

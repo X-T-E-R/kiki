@@ -195,6 +195,10 @@ export interface HttpRestFacade {
     export(sessionId: string): Promise<HttpRestSessionArchive>;
   };
 
+  readonly skills: {
+    readBuiltinContent(name: string): Promise<import('@kiki/protocol').BuiltinSkillContentResponse>;
+  };
+
   readonly workspaces: {
     list(): Promise<import('@kiki/protocol').ListWorkspacesResponse>;
     rename(workspaceId: string, name: string): Promise<import('@kiki/protocol').Workspace>;

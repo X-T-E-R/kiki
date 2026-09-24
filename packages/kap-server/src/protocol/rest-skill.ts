@@ -8,6 +8,12 @@ export const listSkillsResponseSchema = z.object({
 });
 export type ListSkillsResponse = z.infer<typeof listSkillsResponseSchema>;
 
+export const builtinSkillContentResponseSchema = z.object({
+  name: z.string().min(1),
+  content: z.string(),
+});
+export type BuiltinSkillContentResponse = z.infer<typeof builtinSkillContentResponseSchema>;
+
 /**
  * Attachment parts accepted on skill activation — the media/file subset of
  * the prompt submission's `MessageContent` (text stays in `args`).

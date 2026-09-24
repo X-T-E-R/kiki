@@ -28,6 +28,18 @@ describe('previewWorkspace tab reducer', () => {
     expect(state.active).toBe('panel:agent-1');
   });
 
+  it('keeps a built-in skill distinct from file and panel tabs and reopens the same tab', () => {
+    let state = openPreviewTab(EMPTY_PREVIEW_TABS, '/work/kiki-ops/SKILL.md');
+    state = openPreviewTab(state, { kind: 'skill', name: 'kiki-ops' });
+    state = openPreviewTab(state, { kind: 'panel', agentId: 'kiki-ops' });
+    expect(state.tabs.map(previewTabKey)).toEqual(['/work/kiki-ops/SKILL.md', 'skill:builtin:kiki-ops', 'panel:kiki-ops']);
+    state = openPreviewTab(state, { kind: 'skill', name: 'kiki-ops' });
+    expect(state.tabs).toHaveLength(3);
+    expect(state.active).toBe('skill:builtin:kiki-ops');
+    state = closePreviewTab(state, 'skill:builtin:kiki-ops');
+    expect(state.active).toBe('panel:kiki-ops');
+  });
+
   it('reopening an existing tab only activates it (no duplicate)', () => {
     let state = openPreviewTab(EMPTY_PREVIEW_TABS, '/a.ts');
     state = openPreviewTab(state, '/b.ts');

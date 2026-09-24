@@ -51,6 +51,21 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('reads built-in skill content by name without passing its URI to the file endpoint', async () => {
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      expect(new URL(String(input)).pathname).toBe('/api/skills/kiki%2Fops:content');
+      return envelope({ name: 'kiki/ops', content: '# Built-in instructions' });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.skills.readBuiltinContent('kiki/ops')).resolves.toEqual({
+        name: 'kiki/ops', content: '# Built-in instructions',
+      });
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('reads one encoded provider entry from the model directory', async () => {
     const catalog = { id: 'edge/gateway', models: [] };
     const fetchMock = vi.fn(async (input: string | URL) => {

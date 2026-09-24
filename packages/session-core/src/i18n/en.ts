@@ -956,6 +956,7 @@ export const en = {
   'preview.saved': 'Saved',
   'preview.unsaved': 'Unsaved changes',
   'preview.editUnsupported': 'Read-only here — editing needs the desktop app (the server has no file-write endpoint yet).',
+  'preview.builtinSkillReadOnly': 'Built-in · read-only',
   'preview.oversized': 'File is too large to edit — opened read-only.',
   'preview.conflictBody': 'This file changed on disk since it was loaded.',
   'preview.overwrite': 'Overwrite',

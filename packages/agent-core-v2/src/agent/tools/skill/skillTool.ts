@@ -92,7 +92,7 @@ export class SkillTool implements ISkillTool {
           if (actualPath !== path) return errorResult('Skill file target changed after path admission. Retry the tool call.');
           await this.catalog.ready;
           for (const entry of this.catalog.catalog.listSkills()) {
-            if (entry.metadata.promptCommand !== true) continue;
+            if (entry.metadata.promptCommand !== true || entry.source === 'builtin') continue;
             let canonicalCommandPath: string;
             try {
               canonicalCommandPath = await lease.runtime.fs!.realpath(entry.path);

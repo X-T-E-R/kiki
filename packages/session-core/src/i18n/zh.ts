@@ -947,6 +947,7 @@ export const zh: Record<I18nKey, string> = {
   'preview.saved': '已保存',
   'preview.unsaved': '未保存的修改',
   'preview.editUnsupported': '此处为只读——编辑需使用桌面应用（服务端暂未提供写文件端点）。',
+  'preview.builtinSkillReadOnly': '内置 · 只读',
   'preview.oversized': '文件过大，无法编辑——已按只读打开。',
   'preview.conflictBody': '该文件在磁盘上已被修改。',
   'preview.overwrite': '覆盖保存',

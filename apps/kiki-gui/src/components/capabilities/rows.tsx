@@ -17,7 +17,7 @@ import { skillGroupId } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, type Feedback } from '../controls';
 import { FilePathLink } from '../mediaPreview';
-import { SkillContentCollapse } from './SkillContentCollapse';
+import { SkillPreviewButton } from './SkillPreviewButton';
 import { SECONDARY_BUTTON } from '../ui';
 
 const BADGE_CLASS =
@@ -66,9 +66,9 @@ export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sour
         </p>
       ) : null}
       <div className="mt-1 truncate font-mono text-[10px] text-ink-faint">
-        <FilePathLink path={skill.path} />
+        {skill.source === 'builtin' ? skill.path : <FilePathLink path={skill.path} />}
       </div>
-      <SkillContentCollapse path={skill.path} />
+      <SkillPreviewButton skill={skill} />
     </div>
   );
 }

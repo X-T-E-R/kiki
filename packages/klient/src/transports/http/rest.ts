@@ -178,6 +178,12 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
     },
 
+    skills: {
+      readBuiltinContent: (name: string) => transport.json<import('@kiki/protocol').BuiltinSkillContentResponse>(
+        `/skills/${encodeURIComponent(name)}:content`,
+      ),
+    },
+
     workspaces: {
       list: () => transport.json('/workspaces'),
       rename: (workspaceId: string, name: string) => transport.json(

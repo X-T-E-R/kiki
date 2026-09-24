@@ -1,10 +1,10 @@
 /**
  * PreviewWorkspace — the resident multi-tab preview panel. One tab per host
- * file path or agent panel; tabs close via the × or the context menu (close /
- * close others / close all), reorder by drag, and mark unsaved buffers with a
- * dot. Content routes by extension: images escalate to the lightbox, markdown
- * toggles rendered/source, code/text open in a CodeMirror view, and unknown
- * binaries get the download fallback. Text files are editable where a write
+ * file path, built-in skill or agent panel; tabs close via the × or the context
+ * menu (close / close others / close all), reorder by drag, and mark unsaved
+ * buffers with a dot. Content routes by extension: images escalate to the
+ * lightbox, markdown toggles rendered/source, code/text open in a CodeMirror
+ * view, and unknown binaries get the download fallback. Text files are editable where a write
  * channel exists (desktop); everything degrades to read-only otherwise. Every
  * tab's view stays mounted while hidden so editor buffers survive tab
  * switches. Collapsing the panel hides it in place for the same reason: the
@@ -261,6 +261,22 @@ export function PreviewWorkspace({
                   if (dragged !== null && dragged !== key) onMove(dragged, index);
                 }}
               />
+            ) : tab.kind === 'skill' ? (
+              <PreviewSkillTab
+                key={key}
+                tabKey={key}
+                name={tab.name}
+                active={isTabActive}
+                onActivate={() => { onActivate(key); }}
+                onClose={() => { onClose(key); }}
+                onContextMenu={(x, y) => { setMenu({ tab, x, y }); }}
+                onDragStart={() => { dragKeyRef.current = key; }}
+                onDrop={() => {
+                  const dragged = dragKeyRef.current;
+                  dragKeyRef.current = null;
+                  if (dragged !== null && dragged !== key) onMove(dragged, index);
+                }}
+              />
             ) : (
               <PreviewPanelTab
                 key={key}
@@ -339,6 +355,9 @@ export function PreviewWorkspace({
               )}
             </div>
           );
+        }
+        if (tab.kind === 'skill') {
+          return <PreviewSkillView key={key} tabKey={key} name={tab.name} visible={isTabActive} />;
         }
         return (
           <PreviewTabView
@@ -566,6 +585,72 @@ function PreviewFileTab({
   );
 }
 
+function PreviewSkillTab({
+  tabKey,
+  name,
+  active,
+  onActivate,
+  onClose,
+  onContextMenu,
+  onDragStart,
+  onDrop,
+}: {
+  readonly tabKey: string;
+  readonly name: string;
+  readonly active: boolean;
+  readonly onActivate: () => void;
+  readonly onClose: () => void;
+  readonly onContextMenu: (x: number, y: number) => void;
+  readonly onDragStart: () => void;
+  readonly onDrop: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div
+      role="tab"
+      aria-selected={active}
+      title={`${t('cap.source.builtin')} · ${name} / SKILL.md`}
+      draggable
+      data-preview-tab={tabKey}
+      data-preview-tab-key={tabKey}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', tabKey);
+        onDragStart();
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        onDrop();
+      }}
+      onClick={onActivate}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onContextMenu(event.clientX, event.clientY);
+      }}
+      className={`group flex h-7 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none ${
+        active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
+      }`}
+    >
+      <span className="min-w-0 truncate">SKILL.md</span>
+      <span className="min-w-0 truncate text-[10px] text-ink-faint">{name}</span>
+      <button
+        type="button"
+        aria-label={`${t('common.close')} ${name} SKILL.md`}
+        onClick={(event) => { event.stopPropagation(); onClose(); }}
+        className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+        }`}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 function PreviewPanelTab({
   tabKey,
   tab,
@@ -764,7 +849,7 @@ function TabContextMenu({
             </>
           ) : null}
         </>
-      ) : (
+      ) : tab.kind === 'panel' ? (
         <>
           <div className="mx-1 my-1 border-t border-hairline" />
           {workspaceNavigation !== undefined ? (
@@ -790,7 +875,7 @@ function TabContextMenu({
             {t('preview.copyAgentId')}
           </button>
         </>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -823,6 +908,89 @@ async function downloadHostFile(
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+function PreviewSkillView({
+  tabKey,
+  name,
+  visible,
+}: {
+  readonly tabKey: string;
+  readonly name: string;
+  readonly visible: boolean;
+}) {
+  const { t } = useI18n();
+  const client = useOptionalConnection()?.client;
+  const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
+  const [attempt, setAttempt] = useState(0);
+  const [state, setState] = useState<
+    | { readonly status: 'loading' }
+    | { readonly status: 'error'; readonly message: string }
+    | { readonly status: 'ready'; readonly content: string }
+  >({ status: 'loading' });
+
+  useEffect(() => {
+    if (client === undefined) {
+      setState({ status: 'error', message: t('diagnostics.unavailable') });
+      return;
+    }
+    let cancelled = false;
+    setState({ status: 'loading' });
+    client.readBuiltinSkill(name).then(
+      (content) => { if (!cancelled) setState({ status: 'ready', content }); },
+      (error: unknown) => {
+        if (!cancelled) setState({ status: 'error', message: error instanceof Error ? error.message : String(error) });
+      },
+    );
+    return () => { cancelled = true; };
+  }, [client, name, attempt, t]);
+
+  return (
+    <div
+      role="tabpanel"
+      hidden={!visible}
+      className={`min-h-0 flex-1 flex-col ${visible ? 'flex' : 'hidden'}`}
+      data-preview-tabpanel={tabKey}
+    >
+      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
+        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-faint">
+          {t('cap.source.builtin')} · {name} / SKILL.md
+        </span>
+        <span className="shrink-0 text-[10.5px] text-ink-faint">{t('preview.builtinSkillReadOnly')}</span>
+        <span className="flex shrink-0 overflow-hidden rounded-full border border-hairline text-[10.5px]">
+          {(['rendered', 'source'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              data-md-mode={option}
+              onClick={() => { setMode(option); }}
+              className={`px-2 py-0.5 transition-colors ${
+                mode === option ? 'bg-accent-soft font-medium text-accent' : 'text-ink-faint hover:text-ink-soft'
+              }`}
+            >
+              {t(option === 'rendered' ? 'preview.rendered' : 'preview.source')}
+            </button>
+          ))}
+        </span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        {state.status === 'loading' ? (
+          <p role="status" className="text-[12px] text-ink-faint">{t('preview.loading')}</p>
+        ) : state.status === 'error' ? (
+          <div role="alert" className="text-[12px] text-danger">
+            <span>{state.message}</span>{' '}
+            <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="underline">
+              {t('common.retry')}
+            </button>
+          </div>
+        ) : mode === 'rendered' ? (
+          <Markdown text={state.content} />
+        ) : (
+          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">{state.content}</pre>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function PreviewTabView({

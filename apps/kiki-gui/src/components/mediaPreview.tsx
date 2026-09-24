@@ -164,6 +164,11 @@ export function MediaPreviewProvider({
     setPanelOpen(true);
   }, []);
 
+  const openBuiltinSkill = useCallback((name: string) => {
+    setTabsState((state) => openPreviewTab(state, { kind: 'skill', name }));
+    setPanelOpen(true);
+  }, []);
+
   const togglePanel = useCallback(() => { setPanelOpen((value) => !value); }, []);
 
   const reportDirty = useCallback((path: string, dirty: boolean) => {
@@ -251,12 +256,13 @@ export function MediaPreviewProvider({
       openFile,
       openAttachment: (item) => { setAttachment(item); },
       openAgentPanel,
+      openBuiltinSkill,
       previewTabCount: tabsState.tabs.length,
       previewPanelOpen: panelOpen,
       togglePreviewPanel: togglePanel,
       activeAgentPanelId,
     }),
-    [cwd, sessionId, openFile, openAgentPanel, tabsState.tabs, tabsState.active, panelOpen, togglePanel, activeAgentPanelId],
+    [cwd, sessionId, openFile, openAgentPanel, openBuiltinSkill, tabsState.tabs, tabsState.active, panelOpen, togglePanel, activeAgentPanelId],
   );
 
   useEffect(() => {

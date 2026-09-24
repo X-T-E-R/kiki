@@ -362,6 +362,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/skills/{tail}",
+    ],
+    [
+      "GET",
       "/api/threads",
     ],
     [
@@ -675,6 +679,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/sessions/{session_id}/title/generate",
+    ],
+    [
+      "POST",
+      "/api/sessions/{session_id}/turns/{tail}",
     ],
     [
       "POST",

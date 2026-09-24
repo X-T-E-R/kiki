@@ -22,6 +22,7 @@ import { useConnection } from '../../state/connection';
 import { CapabilityGroup } from '../capabilities/CapabilityGroup';
 import { SkillCard } from '../capabilities/rows';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
+import { MediaPreviewProvider } from '../mediaPreview';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
@@ -360,14 +361,16 @@ export function SkillsSection() {
   }, [reportWorkspaceScope, workspaceScopeName]);
 
   return (
-    <div className="space-y-4">
-      {workspacesQuery.isError ? <InlineError error={workspacesQuery.error} /> : null}
-      <SkillCatalogCard
-        workspaceId={workspaceId}
-        workspaceOptions={workspaceOptions}
-        onWorkspaceChange={setWorkspaceId}
-      />
-      <SkillsDefaultsCard />
-    </div>
+    <MediaPreviewProvider>
+      <div className="space-y-4">
+        {workspacesQuery.isError ? <InlineError error={workspacesQuery.error} /> : null}
+        <SkillCatalogCard
+          workspaceId={workspaceId}
+          workspaceOptions={workspaceOptions}
+          onWorkspaceChange={setWorkspaceId}
+        />
+        <SkillsDefaultsCard />
+      </div>
+    </MediaPreviewProvider>
   );
 }

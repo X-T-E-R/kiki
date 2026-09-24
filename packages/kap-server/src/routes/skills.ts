@@ -4,6 +4,7 @@ import {
   IAgentProfileService,
   IAgentSkillService,
   IBootstrapService,
+  IBuiltinSkillSource,
   IFileService,
   ISessionContext,
   ISessionIndex,
@@ -15,6 +16,7 @@ import {
   IWorkspaceService,
   isError2,
   isUserActivatableSkillType,
+  normalizeSkillName,
   resumeSessionById,
   sessionMediaOriginalsDir,
   type ContentPart,
@@ -40,6 +42,7 @@ import { ErrorCode } from '../protocol/error-codes';
 import {
   activateSkillRequestSchema,
   activateSkillResultSchema,
+  builtinSkillContentResponseSchema,
   listSkillsResponseSchema,
 } from '../protocol/rest-skill';
 import { workspaceIdParamSchema } from '../protocol/rest-workspace';
@@ -95,6 +98,45 @@ async function resolveActivatedSession(
 }
 
 export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
+  const builtinContentRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/skills/{tail}',
+      params: z.object({ tail: z.string().min(1) }),
+      success: { data: builtinSkillContentResponseSchema },
+      errors: {
+        [ErrorCode.VALIDATION_FAILED]: {},
+        [ErrorCode.SKILL_NOT_FOUND]: {},
+      },
+      description: 'Read the content of a visible built-in skill',
+      tags: ['skills'],
+      operationId: 'readBuiltinSkillContent',
+    },
+    async (req, reply) => {
+      const parsed = parseActionSuffix({
+        tail: req.params.tail,
+        allowedActions: ['content'] as const,
+        resourceLabel: 'skill_name',
+      });
+      if (parsed.kind !== 'action') {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${req.params.tail}`, req.id));
+        return;
+      }
+      const { skills } = await core.accessor.get(IBuiltinSkillSource).load();
+      const skill = skills.findLast((entry) => entry.source === 'builtin' && normalizeSkillName(entry.name) === normalizeSkillName(parsed.id));
+      if (skill === undefined) {
+        reply.send(errEnvelope(ErrorCode.SKILL_NOT_FOUND, `Skill "${parsed.id}" was not found`, req.id));
+        return;
+      }
+      reply.send(okEnvelope({ name: skill.name, content: skill.content }, req.id));
+    },
+  );
+  app.get(
+    builtinContentRoute.path,
+    builtinContentRoute.options,
+    builtinContentRoute.handler as Parameters<SkillsRouteHost['get']>[2],
+  );
+
   const listSkillsRoute = defineRoute(
     {
       method: 'GET',

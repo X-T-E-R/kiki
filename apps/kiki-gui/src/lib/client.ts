@@ -1076,6 +1076,11 @@ export class KikiClient {
     return this.run(this.rest.filesystem.readHostFile(path));
   }
 
+  async readBuiltinSkill(name: string): Promise<string> {
+    const result = await this.run(this.rest.skills.readBuiltinContent(name));
+    return result.content;
+  }
+
   /** Binary variant of readHostFile, retaining the server MIME. */
   async readHostFileBytes(path: string): Promise<{ bytes: Uint8Array; mime: string }> {
     const result = await this.run(this.rest.filesystem.readHostFileBytes(path));
