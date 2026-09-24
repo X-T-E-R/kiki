@@ -64,14 +64,18 @@ describe('config REST protocol', () => {
     expect(patchConfigRequestSchema.parse({
       nb_search: {
         defaults: { search_lane: 'context7.docs' },
+        provider_instances: { 'tavily.default': { key_strategy: 'priority', balance_ttl_ms: 600_000 } },
         execution: { search_timeout_ms: 15_000 },
       },
     })).toEqual({
       nb_search: {
         defaults: { search_lane: 'context7.docs' },
+        provider_instances: { 'tavily.default': { key_strategy: 'priority', balance_ttl_ms: 600_000 } },
         execution: { search_timeout_ms: 15_000 },
       },
     });
+    expect(patchConfigRequestSchema.safeParse({ nb_search: { provider_instances: { 'tavily.default': { key_strategy: 'random' } } } }).success).toBe(false);
+    expect(patchConfigRequestSchema.safeParse({ nb_search: { provider_instances: { 'tavily.default': { balance_ttl_ms: 999 } } } }).success).toBe(false);
   });
 });
 

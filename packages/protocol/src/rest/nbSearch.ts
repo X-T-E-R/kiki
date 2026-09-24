@@ -30,6 +30,8 @@ const providerInstancePatchSchema = z
     enabled: z.boolean().optional(),
     credential_slot_id: z.string().trim().min(1).max(256).optional(),
     base_url: z.string().url().optional(),
+    key_strategy: z.enum(['round-robin', 'priority']).optional(),
+    balance_ttl_ms: z.number().int().min(60_000).max(86_400_000).optional(),
     options: z.record(z.string(), z.unknown()).nullable().optional(),
   })
   .strict();

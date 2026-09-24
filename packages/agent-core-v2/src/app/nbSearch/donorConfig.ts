@@ -35,9 +35,9 @@ import { mergeNbSearchConfig } from './configSection';
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * Port of nb-search 0.4.0 config-sources defaults with Kiki's Tavily lanes.
- * The public runtime revision is checked against this resolver before any
- * credential-bearing operation.
+ * Port of nb-search 0.4.0 config-sources defaults at f7cbfde0 with Kiki's
+ * Tavily lanes. The public runtime revision is checked against this resolver
+ * before any credential-bearing operation.
  */
 export function defaultNbSearchConfiguration(home: string): CanonicalConfig {
   const instance = (provider_id: string, credential_slot_id?: string, options: Record<string, unknown> = {}): ProviderInstanceConfig => ({ provider_id, enabled: true, credential_slot_id, options });

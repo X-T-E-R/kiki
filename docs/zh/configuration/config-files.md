@@ -574,7 +574,7 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `provider_instances` | `table` | 否 | 命名 provider 实例，包含 `provider_id`、`enabled`、可选的 `credential_slot_id` / `base_url`，以及 provider 专属 `options` |
+| `provider_instances` | `table` | 否 | 命名 provider 实例，包含 `provider_id`、`enabled`、可选的 `credential_slot_id` / `base_url`、`key_strategy`（`round-robin` 或 `priority`）、`balance_ttl_ms`（60,000–86,400,000 毫秒）及 provider 专属 `options` |
 | `credential_slots` | `table` | 否 | 命名凭据槽，只包含 `provider_id` 和 `env` 中的环境变量名 |
 | `lanes` | `table` | 否 | 命名 operation lane，包含 `provider_instance_id`、`operation_id`、`latency`、`cost` 和可选 `evidence_groups` |
 | `defaults.search_lane` | `string` | 否 | 内置默认值为 `github.repositories`（仅仓库）；通用网页检索需要覆盖。显式删除默认值且不指定 lane 时，`WebSearch` 仍会拒绝运行 |
@@ -582,6 +582,10 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 
 凭据值不会写入 `config.toml`。这是对[供应商凭证](#providers)设计的一次刻意例外——供应商的 `api_key` 写在配置文件里，而搜索模块的凭据放在服务器进程环境中：凭证槽的 `env` 字段只登记环境变量名，凭据值本身从不进入 `config.toml`。Kiki 服务器进程中的环境变量优先，包括显式设置的空值。开启本机复用后，Kiki 可以从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的本机 nb-search `secrets.json` 补充缺少的变量，只导入匹配凭证槽的变量，并在使用前校验提供商、地址、凭证槽及文件保护。会重定向已导入凭证的配置变更将被拒绝，不会静默重新绑定。该模块不读取其他终端的变量，也不会自动加载独立的 `.env` 文件。密钥值与凭证文件均不会发送到 GUI。
+
+开启本机复用时，`~/.nb-search/secrets.json` 中 `values.NB_SEARCH_TAVILY_API_KEY` 原有的单个 Tavily 密钥可以直接沿用，无须迁移或补充第二个密钥。需要多个密钥时，把同一字段或 Kiki 服务器的 `NB_SEARCH_TAVILY_API_KEY` 环境变量设为有序、逗号分隔的 1–32 个不同且非空的密钥，例如 `YOUR_FIRST_API_KEY,YOUR_SECOND_API_KEY`；逗号两侧的空格会被忽略。不要把密钥写入 `config.toml`，且服务器环境变量仍优先于本机凭证文件。其他已配置凭证槽也使用相同格式。
+
+同一 Kiki 服务器进程中的同步 `WebSearch` 和 `FetchURL` 调用（包括不同会话）共用密钥调度状态；配置或凭证变化时会重新建立调度器。`round-robin` 是默认策略，`priority` 则按顺序优先选用第一个可用密钥。401/403 会在当前 runtime 生命周期内隔离该密钥；429 按 `Retry-After` 或默认 60 秒冷却；5xx 或连接错误会对单个密钥最多重试两次，然后轮换。402 表示额度耗尽，默认缓存 10 分钟；正常调用不会逐次查询用量，手动 `keyUsage()` 查询只在 nb-search 本地 SDK 中提供，不属于 Kiki 的 REST 工具。脱离进程运行的异步作业各有独立 worker，**不共享**服务器的轮转与冷却状态。
 
 默认按以下顺序合并设置：该模块的内置默认值、服务器本机的 nb-search 配置、服务器环境变量、Kiki 的 `[nb_search]` 覆盖项。本机文件由 `NB_SEARCH_CONFIG` 指定；未指定时，使用 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 `config.json`。默认文件不存在时仍可使用其他配置层；显式路径不存在或文件不可读时，该来源会显示不可用。
 
@@ -615,6 +619,17 @@ max_source_bytes = 2097152
 max_response_bytes = 2097152
 max_content_chars = 200000
 max_redirects = 5
+```
+
+如果希望默认用 Tavily 搜索，并优先使用第一个可用密钥，在 Kiki 的 `config.toml` 中加入以下设置。不设置 `key_strategy` 时默认轮流选择密钥；`balance_ttl_ms` 控制用量与额度耗尽状态的缓存时间，不会启动后台轮询。
+
+```toml
+[nb_search.defaults]
+search_lane = "tavily.search"
+
+[nb_search.provider_instances."tavily.default"]
+key_strategy = "priority"
+balance_ttl_ms = 600000
 ```
 
 ## `permission`

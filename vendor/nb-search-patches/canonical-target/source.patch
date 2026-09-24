@@ -1,5 +1,5 @@
 diff --git a/src/config-schema.ts b/src/config-schema.ts
-index 5c4179a..2f4767a 100644
+index 653959b..e3b9ac0 100644
 --- a/src/config-schema.ts
 +++ b/src/config-schema.ts
 @@ -31,7 +31,7 @@ const credentialSlotSchema = z.object({ provider_id: z.string().trim().min(1).ma
@@ -64,7 +64,7 @@ index c9d107d..c359de9 100644
      return { bytes: await readBounded(handle, maxBytes), scope };
    } finally { await handle.close(); }
 diff --git a/src/index.ts b/src/index.ts
-index b467cd4..64038dc 100644
+index ad55d8d..900f2e8 100644
 --- a/src/index.ts
 +++ b/src/index.ts
 @@ -7,6 +7,7 @@ import { NbSearchError } from './errors.ts';

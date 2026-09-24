@@ -1,5 +1,5 @@
 diff --git a/src/index.ts b/src/index.ts
-index 64038dc..a445c97 100644
+index 900f2e8..8fa1262 100644
 --- a/src/index.ts
 +++ b/src/index.ts
 @@ -8,6 +8,8 @@ import { NbSearchError } from './errors.ts';
@@ -11,13 +11,13 @@ index 64038dc..a445c97 100644
  export type { ScriptContext, ScriptRequest, ScriptResults, ScriptModule } from './providers/script.ts';
  export { resolveProviderOperation } from './provider-operation.ts';
  export type { ResolvedProviderOperation } from './provider-operation.ts';
-@@ -25,8 +27,9 @@ export { builtInProviderRegistrations, ProviderRegistry, REGISTRY_SCHEMA_VERSION
+@@ -26,8 +28,9 @@ export { builtInProviderRegistrations, ProviderRegistry, REGISTRY_SCHEMA_VERSION
  export type { ProviderDescriptor, ProviderFactoryContext, ProviderPorts, ProviderRegistration } from './provider-registry.ts';
  export type { ArtifactChunk, ArtifactRef, CapabilityEnvelope, CapabilityIssue, CapabilityIssueCode, CapabilityProviderDescriptor, CapabilityProviderInstance, ErrorEnvelope, FetchCancelEnvelope, FetchDocument, FetchEnvelope, FetchFileScope, FetchGetEnvelope, FetchInputKind, FetchOperationDescriptor, FetchPipelineDescriptor, FetchProvider, FetchProviderRequest, FetchProviderResult, FetchReadEnvelope, FetchRepresentation, FetchRunAsyncEnvelope, FetchRunSyncEnvelope, FetchSource, FetchStageRole, FetchWarning, Freshness, Hint, JobKind, JobReceipt, JobState, JsonValue, LaneCost, LaneLatency, LaneOutcome, LaneOutcomeState, LogicalStatus, OutputChannel, ProviderId, ProviderInstanceId, ProviderName, ProviderResult, PublicError, PublicErrorCode, QueryExecution, QueryExecutionRequest, QueryOperationDescriptor, QueryOperationOutput, QueryProvider, QueryProviderValue, SearchCancelEnvelope, SearchEnvelope, SearchGetEnvelope, SearchLogicalOutput, SearchReadEnvelope, SearchResult, SearchResultsOutput, SearchRunAsyncEnvelope, SearchRunSyncEnvelope, SearchSelection, SearchTypedOutput } from './types.ts';
  
 -export interface CreateNbSearchRuntimeOptions { env?: NodeJS.ProcessEnv; config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; provider_registrations?: readonly ProviderRegistration[]; http_transport?: HttpTransport }
 +export interface CreateNbSearchRuntimeOptions { env?: NodeJS.ProcessEnv; config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; provider_registrations?: readonly ProviderRegistration[]; http_transport?: HttpTransport; launcher?: import('./query-jobs.ts').WorkerLauncher }
- export function createNbSearchRuntime(options: CreateNbSearchRuntimeOptions = {}): NbSearchRuntime {
+ export function createNbSearchRuntime(options: CreateNbSearchRuntimeOptions = {}): LocalNbSearchRuntime {
    if (options.http_transport !== undefined && (options.http_transport === null || typeof options.http_transport.send !== 'function')) throw new NbSearchError('CONFIGURATION_ERROR', 'http_transport must implement send.');
 -  return createRuntimeComposition(options.env, { ...(options.config === undefined ? {} : { config: options.config }), ...(options.overrides === undefined ? {} : { overrides: options.overrides }), ...(options.provider_registrations === undefined ? {} : { provider_registrations: options.provider_registrations }), ...(options.http_transport === undefined ? {} : { transport: options.http_transport, disable_detached_async: true }) }).runtime;
 +  if (options.launcher !== undefined && typeof options.launcher.launch !== 'function') throw new NbSearchError('CONFIGURATION_ERROR', 'launcher must implement launch.');

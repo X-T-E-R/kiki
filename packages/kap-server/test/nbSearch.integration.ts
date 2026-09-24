@@ -92,6 +92,38 @@ describe('server-v2 /api/nb-search', () => {
     expect((await get<NbSearchCapabilities>('/nb-search/capabilities')).data.config_source?.credential_source).toBe('environment');
   });
 
+  it.each(['fixture-tavily-single', 'fixture-tavily-one,fixture-tavily-two'])('reuses local Tavily credentials with value=%s without leaking them', async (value) => {
+    const localHome = await localCliHome();
+    await writeFile(join(localHome, 'config.json'), JSON.stringify({ defaults: { search_lane: 'tavily.search' } }));
+    await writeFile(join(localHome, 'secrets.json'), JSON.stringify({
+      schema_version: '1',
+      values: { NB_SEARCH_TAVILY_API_KEY: value },
+      bindings: { NB_SEARCH_TAVILY_API_KEY: [{ instance: 'tavily.default', provider: 'tavily', slot: 'tavily.default', env: 'NB_SEARCH_TAVILY_API_KEY', base_url: null }] },
+    }), { mode: 0o600 });
+    await boot();
+    const capabilities = await get<NbSearchCapabilities>('/nb-search/capabilities');
+    expect(capabilities.data.config_source).toMatchObject({ availability: 'ready', local_credentials: 'present', credential_source: 'environment+local' });
+    expect(capabilities.data.providers.instances.find((instance) => instance.id === 'tavily.default')?.credential.configured).toBe(true);
+    expect(capabilities.data.search.default_lane).toBe('tavily.search');
+    for (const key of value.split(',')) expect(JSON.stringify(capabilities)).not.toContain(key);
+    expect(process.env['NB_SEARCH_TAVILY_API_KEY']).toBeUndefined();
+  });
+
+  it('rejects duplicate local keys without exposing their values or using stale search capabilities', async () => {
+    const localHome = await localCliHome();
+    await writeFile(join(localHome, 'config.json'), '{}');
+    const secretPath = join(localHome, 'secrets.json');
+    await writeFile(secretPath, JSON.stringify({ schema_version: '1', values: { NB_SEARCH_TAVILY_API_KEY: 'fixture-original' } }), { mode: 0o600 });
+    await boot();
+    const ready = await get<NbSearchCapabilities>('/nb-search/capabilities');
+    expect(ready.data.providers.instances.find((instance) => instance.id === 'tavily.default')?.credential.configured).toBe(true);
+    await writeFile(secretPath, JSON.stringify({ schema_version: '1', values: { NB_SEARCH_TAVILY_API_KEY: 'fixture-duplicate,fixture-duplicate' } }));
+    const capabilities = await get<NbSearchCapabilities>('/nb-search/capabilities');
+    expect(capabilities.data.config_source).toMatchObject({ availability: 'unavailable', issues: ['EFFECTIVE_CONFIG_INVALID', 'CONFIGURATION_ERROR'] });
+    expect(capabilities.data.providers.instances).toEqual([]);
+    expect(JSON.stringify(capabilities)).not.toContain('fixture-duplicate');
+  });
+
   it.runIf(process.platform === 'win32').each([false, true])('NB-06 rejects alias-based credential redirects before saving with metadata=%s', async (withBindings) => {
     const localHome = await localCliHome();
     await writeFile(join(localHome, 'config.json'), '{}');

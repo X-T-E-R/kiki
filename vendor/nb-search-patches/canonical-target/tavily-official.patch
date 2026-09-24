@@ -1,8 +1,8 @@
 diff --git a/src/config-sources.ts b/src/config-sources.ts
-index 372153e..e94a3ab 100644
+index b6d8331..602b4f8 100644
 --- a/src/config-sources.ts
 +++ b/src/config-sources.ts
-@@ -14,10 +14,15 @@ export interface ResolveConfigurationOptions { env?: NodeJS.ProcessEnv; config?:
+@@ -20,10 +20,15 @@ export interface ResolveConfigurationOptions { env?: NodeJS.ProcessEnv; config?:
  export interface SearchTimeoutLane { provider_id: string; operation_id: string }
  export const DEFAULT_SEARCH_TIMEOUT_MS = 30_000;
  export const DEFAULT_GMA_SEARCH_TIMEOUT_MS = 600_000;
@@ -19,7 +19,7 @@ index 372153e..e94a3ab 100644
  }
  const instance = (provider_id: string, credential_slot_id: string | undefined, options: Record<string, unknown> = {}, base_url?: string): ProviderInstanceConfig => ({ provider_id, enabled: true, ...(credential_slot_id === undefined ? {} : { credential_slot_id }), ...(base_url === undefined ? {} : { base_url }), options });
  export const DEFAULT_FETCH_BLOCKED_MARKERS = ['cf-challenge', 'cf-mitigated', 'verify you are human', 'just a moment', 'please enable javascript', '__cf_chl'] as const;
-@@ -52,6 +57,8 @@ export function defaultConfiguration(home: string): CanonicalConfig {
+@@ -58,6 +63,8 @@ export function defaultConfiguration(home: string): CanonicalConfig {
        'exa.contents': { provider_instance_id: 'exa.default', operation_id: 'contents', latency: 'fast', cost: 'cheap' },
        'tavily.search': { provider_instance_id: 'tavily.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['tavily'] },
        'tavily.synthesis': { provider_instance_id: 'tavily.default', operation_id: 'synthesis', latency: 'medium', cost: 'cheap' },
@@ -474,6 +474,30 @@ index f6b6735..6b38eeb 100644
    });
  
    it('normalizes Exa Contents and sends the contents request', async () => {
+diff --git a/test/key-scheduler.test.ts b/test/key-scheduler.test.ts
+index dd4d64f..3193b2b 100644
+--- a/test/key-scheduler.test.ts
++++ b/test/key-scheduler.test.ts
+@@ -94,16 +94,16 @@ describe('provider key scheduling', () => {
+     expect(searched).toEqual(['alpha', 'alpha', 'beta']);
+     expect((await pool.usage())[0]).toMatchObject({ state: 'ready', usage: { remaining: 8 } });
+   });
+-  it('shares rotation across real Tavily search body and fetch Authorization ports', async () => {
++  it('shares rotation across real Tavily search and fetch Authorization ports', async () => {
+     const keys: string[] = [];
+     const send: HttpTransport['send'] = async <T>(input: HttpRequest) => {
+-      if (input.url.endsWith('/search')) { keys.push((input.body as { api_key: string }).api_key); return { status: 200, body: { results: [{ url: 'https://example.org', title: 'Example', content: 'Found' }] } as T }; }
++      if (input.url.endsWith('/search')) { keys.push(input.headers?.['Authorization'] ?? 'missing'); return { status: 200, body: { results: [{ url: 'https://example.org', title: 'Example', content: 'Found' }] } as T }; }
+       keys.push(input.headers?.['Authorization'] ?? 'missing'); return { status: 200, body: { results: [{ url: 'https://example.org', raw_content: 'Fetched article content' }] } as T };
+     };
+     const runtime = createNbSearchRuntime({ env: { NB_SEARCH_TAVILY_API_KEY: 'alpha,beta' }, http_transport: { send } });
+     expect(await runtime.search({ action: 'run', query: 'example', lane: 'tavily.search' })).toMatchObject({ status: 'succeeded' });
+     expect(await runtime.fetch({ url: 'https://example.org', pipeline: 'tavily.extract' })).toMatchObject({ status: 'succeeded' });
+-    expect(keys).toEqual(['alpha', 'Bearer beta']);
++    expect(keys).toEqual(['Bearer alpha', 'Bearer beta']);
+   });
+   it('queries Firecrawl team credits only when asked and skips unsupported Exa usage', async () => {
+     const requests: string[] = [];
 diff --git a/test/providers.test.ts b/test/providers.test.ts
 index 777799b..c580616 100644
 --- a/test/providers.test.ts

@@ -859,6 +859,52 @@ describe('NbSearchService', () => {
     expect(second.search).toHaveBeenCalled();
   });
 
+  it('keeps the key scheduler across synchronous calls, then resets it when credentials change', async () => {
+    const donor = await vi.importActual<typeof import('@nb-corp/nb-search')>('@nb-corp/nb-search');
+    await mkdir(resolve('.tmp'), { recursive: true });
+    const fixture = await mkdtemp(join(resolve('.tmp'), 'nb-search-keys-'));
+    const path = join(fixture, 'config.json');
+    await writeFile(path, '{}');
+    const env = { NB_SEARCH_HOME: fixture, NB_SEARCH_CONFIG: path, NB_SEARCH_TAVILY_API_KEY: 'fixture-first,fixture-second' };
+    const requests: string[] = [];
+    let limitFirst = false;
+    createRuntimeMock.mockImplementation((options) => donor.createNbSearchRuntime({ ...options, http_transport: {
+      send: async <T>(request: HttpRequest): Promise<import('@nb-corp/nb-search').HttpResponse<T>> => {
+        const authorization = request.headers?.['Authorization'] ?? 'missing';
+        requests.push(authorization);
+        if (limitFirst && authorization === 'Bearer fixture-first') return { status: 429, headers: { 'Retry-After': '60' }, body: {} as T };
+        return { status: 200, body: { results: [{ url: 'https://example.test/result', title: 'Example', content: 'Found' }] } as T };
+      },
+    } }));
+    ix.get(INbSearchSourceStore).withSource = async (reuse, _config, use) => use({
+      env: { ...env },
+      status: { reuse_local_config: reuse, layers: ['defaults', 'local', 'environment', 'kiki'], local_config: 'missing', availability: 'ready', issues: [] },
+    });
+    ix.get(IConfigService).get = ((domain: string) => domain === NB_SEARCH_SECTION ? { defaults: { search_lane: 'tavily.search' } } : undefined) as IConfigService['get'];
+    const service = ix.get(INbSearchService);
+    try {
+      expect((await service.search('first')).status).toBe('succeeded');
+      expect((await service.search('second')).status).toBe('succeeded');
+      expect(requests).toEqual(['Bearer fixture-first', 'Bearer fixture-second']);
+      expect(createRuntimeMock).toHaveBeenCalledTimes(1);
+      limitFirst = true;
+      expect((await service.search('third')).status).toBe('succeeded');
+      expect((await service.search('fourth')).status).toBe('succeeded');
+      expect(requests).toEqual(['Bearer fixture-first', 'Bearer fixture-second', 'Bearer fixture-first', 'Bearer fixture-second', 'Bearer fixture-second']);
+      env.NB_SEARCH_TAVILY_API_KEY = 'fixture-third,fixture-fourth';
+      expect((await service.search('fifth')).status).toBe('succeeded');
+      expect(requests.at(-1)).toBe('Bearer fixture-third');
+      expect(createRuntimeMock).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(await service.capabilities())).not.toContain('fixture-third');
+      configChanges.fire({ domain: NB_SEARCH_SECTION, source: 'set', previousValue: {}, value: {} });
+      expect((await service.search('sixth')).status).toBe('succeeded');
+      expect(requests.at(-1)).toBe('Bearer fixture-third');
+      expect(createRuntimeMock).toHaveBeenCalledTimes(3);
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed on invalid configuration without leaking donor errors or using a stale runtime', async () => {
     const previous = stubService() as unknown as NbSearchRuntime;
     createRuntimeMock.mockReturnValueOnce(previous);
@@ -869,6 +915,7 @@ describe('NbSearchService', () => {
         code: 'CONFIGURATION_ERROR',
       });
     });
+    configChanges.fire({ domain: NB_SEARCH_SECTION, source: 'set', previousValue: {}, value: {} });
     const capabilities = await service.capabilities();
     expect(capabilities.config_source).toMatchObject({
       availability: 'unavailable',

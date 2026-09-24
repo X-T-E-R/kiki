@@ -585,7 +585,7 @@ No credentials or configuration are required for the default `WebSearch` lane, `
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `provider_instances` | `table` | No | Named provider instances with `provider_id`, `enabled`, optional `credential_slot_id` / `base_url`, and provider-specific `options` |
+| `provider_instances` | `table` | No | Named provider instances with `provider_id`, `enabled`, optional `credential_slot_id` / `base_url`, `key_strategy` (`round-robin` or `priority`), `balance_ttl_ms` (60,000–86,400,000), and provider-specific `options` |
 | `credential_slots` | `table` | No | Named credential slots containing only `provider_id` and the environment-variable name in `env` |
 | `lanes` | `table` | No | Named operation lanes with `provider_instance_id`, `operation_id`, `latency`, `cost`, and optional `evidence_groups` |
 | `defaults.search_lane` | `string` | No | Built-in default is `github.repositories` (repositories only); override for general-web search. Explicitly removing the default without selecting a lane makes `WebSearch` fail closed |
@@ -593,6 +593,10 @@ No credentials or configuration are required for the default `WebSearch` lane, `
 | `execution` | `table` | No | Provider-call, concurrency, retry, timeout, inline-output, response-size, redirect, content-size, and quality budgets |
 
 Credential values are never stored in `config.toml`. This is a deliberate exception to the [provider credential](#providers) design, where `api_key` sits in the config file: search-module credentials live in the server process environment instead — each credential slot only names the environment variable in its `env` field, and the value itself is never written into `config.toml`. The Kiki server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki can fill missing variables from the local nb-search `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It only imports variables for matching credential slots and checks the provider, endpoint, slot, and file protection before use. Changes that redirect imported credentials are rejected rather than silently rebinding them. The module does not read variables from another terminal or automatically load separate `.env` files. Neither secret values nor the credential file are sent to the GUI.
+
+An existing single Tavily key in `~/.nb-search/secrets.json` under `values.NB_SEARCH_TAVILY_API_KEY` keeps working without migration when local reuse is enabled. For multiple keys, set that same value or the Kiki server's `NB_SEARCH_TAVILY_API_KEY` environment variable to an ordered, comma-separated list of 1–32 distinct nonempty keys, such as `YOUR_FIRST_API_KEY,YOUR_SECOND_API_KEY`. Do not put the keys in `config.toml`; the server environment takes precedence over the local file. The same format works for other configured credential slots.
+
+Kiki reuses the provider scheduler across synchronous `WebSearch` and `FetchURL` calls, even across sessions in the same server process; a configuration or credential change starts a fresh scheduler. `round-robin` is the default key strategy; `priority` tries the first available key before the next. Authentication failures (401/403) quarantine a key until the runtime is rebuilt, 429 applies `Retry-After` or a 60-second cooldown, and 5xx or connection failures get up to two key-level retries before rotation. A 402 marks the key exhausted until the usage cache expires (10 minutes by default); usage is not queried on every call, and the optional `keyUsage()` check exists only in the local nb-search SDK, not Kiki's REST tools. Detached async jobs each run in their own worker and **do not** share the server's key rotation or cooldown state.
 
 By default, settings are layered in this order: the module's built-in defaults, the server's local nb-search configuration, the server environment, then Kiki's `[nb_search]` overrides. The local file is selected by `NB_SEARCH_CONFIG`, or by `config.json` under `NB_SEARCH_HOME` (default: `~/.nb-search`). A missing default file is allowed; an explicit path that is missing or unreadable makes that source unavailable.
 
@@ -626,6 +630,17 @@ max_source_bytes = 2097152
 max_response_bytes = 2097152
 max_content_chars = 200000
 max_redirects = 5
+```
+
+To use Tavily as the default search lane and prefer the first available key, add the following to Kiki's `config.toml`. Leave `key_strategy` unset for round-robin; the `balance_ttl_ms` setting controls the cached credit-usage and exhaustion window, not a background polling interval.
+
+```toml
+[nb_search.defaults]
+search_lane = "tavily.search"
+
+[nb_search.provider_instances."tavily.default"]
+key_strategy = "priority"
+balance_ttl_ms = 600000
 ```
 
 ## `permission`

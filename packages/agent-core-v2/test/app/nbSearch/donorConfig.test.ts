@@ -121,6 +121,18 @@ describe('nb-search independent donor parity', () => {
     expect(configured.search.lanes.find((lane) => lane.id === 'tavily.research')).toMatchObject({ output: { channel: 'typed', schema_id: 'nb-search.research@1' }, execution_modes: ['sync', 'async'], availability: 'ready' });
   });
 
+  it('NB-05 preserves multi-key provider settings without changing revision for credential values', async () => {
+    const patch = { provider_instances: { 'tavily.default': { key_strategy: 'priority' as const, balance_ttl_ms: 600_000 } } };
+    const configuredEnv = { ...env, NB_SEARCH_TAVILY_API_KEY: 'fixture-first,fixture-second' };
+    const resolved = resolveNbSearchConfig(configuredEnv, {}, patch);
+    const donor = await createNbSearchRuntime({ env: configuredEnv, config: patch }).capabilities({});
+    expect(resolved.provider_instances['tavily.default']).toMatchObject({ key_strategy: 'priority', balance_ttl_ms: 600_000 });
+    expect(pinnedNbSearchConfig(resolved).provider_instances?.['tavily.default']).toMatchObject({ key_strategy: 'priority', balance_ttl_ms: 600_000 });
+    expect(nbSearchConfigRevision(resolved)).toBe(donor.revision);
+    expect(donor.revision).toBe((await createNbSearchRuntime({ env: { ...configuredEnv, NB_SEARCH_TAVILY_API_KEY: 'fixture-other' }, config: patch }).capabilities({})).revision);
+    expect(JSON.stringify(donor)).not.toContain('fixture-first');
+  });
+
   it('keeps parseResolvedConfig diagnostics to a field path and code', () => {
     let error: unknown;
     try {

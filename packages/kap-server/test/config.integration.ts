@@ -143,6 +143,9 @@ describe('server-v2 /api/config', () => {
         credential_slots: {
           'exa.default': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' },
         },
+        provider_instances: {
+          'tavily.default': { key_strategy: 'priority', balance_ttl_ms: 600_000 },
+        },
         defaults: { search_lane: 'exa.search' },
         execution: { search_timeout_ms: 15_000, fetch_timeout_ms: 20_000 },
       },
@@ -152,6 +155,9 @@ describe('server-v2 /api/config', () => {
       credential_slots: {
         'exa.default': { provider_id: 'exa', env: 'TEAM_EXA_API_KEY' },
       },
+      provider_instances: {
+        'tavily.default': { key_strategy: 'priority', balance_ttl_ms: 600_000 },
+      },
       defaults: { search_lane: 'exa.search' },
       execution: { search_timeout_ms: 15_000, fetch_timeout_ms: 20_000 },
     });
@@ -159,6 +165,8 @@ describe('server-v2 /api/config', () => {
     const before = await readFile(configPath, 'utf-8');
     expect(before).toContain('[nb_search.defaults]');
     expect(before).toContain('env = "TEAM_EXA_API_KEY"');
+    expect(before).toContain('key_strategy = "priority"');
+    expect(before).toContain('balance_ttl_ms = 600000');
 
     const response = await authedFetch(server as RunningServer, base, '/api/config', {
       method: 'POST',

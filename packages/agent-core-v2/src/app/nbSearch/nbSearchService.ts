@@ -1,4 +1,5 @@
 import {
+  stableFingerprint,
   type CapabilityEnvelope,
   type FetchRunSyncEnvelope,
   type NbSearchRuntime,
@@ -18,7 +19,7 @@ import { NB_SEARCH_SECTION, NB_SEARCH_SOURCE_SECTION, type NbSearchConfig, type 
 import { nbSearchConfigIssues, nbSearchConfigRevision, resolveNbSearchConfig, pinnedNbSearchConfig } from './donorConfig';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { INbSearchService, type NbSearchCapabilities, type NbSearchReadiness, type NbSearchTestStatus } from './nbSearch';
-import { INbSearchSourceStore } from './sourceStore';
+import { INbSearchSourceStore, type NbSearchSource } from './sourceStore';
 import { describeCapabilities } from './toolDescriptions';
 
 export class NbSearchService implements INbSearchService {
@@ -27,6 +28,7 @@ export class NbSearchService implements INbSearchService {
   #generation = 0;
   #descriptionSnapshot: { expiresAt: number; search: string; fetch: string } | undefined;
   #preparing: Promise<void> | undefined;
+  #runtimeCache: { signature: string; runtime: Promise<NbSearchRuntime | undefined> } | undefined;
 
   constructor(
     @IConfigService private readonly config: IConfigService,
@@ -37,10 +39,15 @@ export class NbSearchService implements INbSearchService {
       this.#generation++;
       this.#descriptionSnapshot = undefined;
       this.#preparing = undefined;
+      this.#runtimeCache = undefined;
     });
   }
 
   dispose(): void {
+    this.#generation++;
+    this.#runtimeCache = undefined;
+    this.#descriptionSnapshot = undefined;
+    this.#preparing = undefined;
     this.#configListener.dispose();
   }
 
@@ -146,16 +153,23 @@ export class NbSearchService implements INbSearchService {
     runtime?: NbSearchRuntime;
     status: NbSearchConfigSourceStatus;
   }> {
+    const generation = this.#generation;
     return this.sources.withSource(reuseLocalConfig, config, async (source) => {
       const { env, status } = source;
-      if (status.availability === 'unavailable') return { status };
+      if (status.availability === 'unavailable') {
+        if (generation === this.#generation) this.#runtimeCache = undefined;
+        return { status };
+      }
       try {
         const mismatch = () => ({ status: { ...status, availability: 'unavailable' as const, local_credentials: 'rejected' as const, issues: ['LOCAL_CONFIG_RESOLVER_MISMATCH'] } });
-        const effective = admission === undefined ? undefined : resolveNbSearchConfig(env, source.config, config);
-        if (admission !== undefined && effective !== undefined && fetchFilePath(effective, admission.source) !== admission.path) throw new Error2(ErrorCodes.REQUEST_INVALID, 'FETCH_FILE_BLOCKED: configured scope changed after file admission.');
-        const baseline = createNbSearchRuntime({ env, config: effective === undefined ? source.config ?? config : pinnedNbSearchConfig(effective) });
+        if (admission === undefined) {
+          const runtime = await this.#sharedRuntime(source, config, generation);
+          return runtime === undefined ? mismatch() : { runtime, status };
+        }
+        const effective = resolveNbSearchConfig(env, source.config, config);
+        if (fetchFilePath(effective, admission.source) !== admission.path) throw new Error2(ErrorCodes.REQUEST_INVALID, 'FETCH_FILE_BLOCKED: configured scope changed after file admission.');
+        const baseline = createNbSearchRuntime({ env, config: pinnedNbSearchConfig(effective) });
         if (source.expectedRevision !== undefined && (await baseline.capabilities({})).revision !== source.expectedRevision) return mismatch();
-        if (admission === undefined || effective === undefined) return { runtime: baseline, status };
         const scoped = { ...effective, fetch: { ...effective.fetch, file_scopes: effective.fetch.file_scopes.map((scope) => {
           if (scope.id !== admission.source.scope) return scope;
           if ('canonical_target' in scope && scope.canonical_target !== undefined && scope.canonical_target !== admission.path) throw new Error2(ErrorCodes.REQUEST_INVALID, 'FETCH_FILE_BLOCKED: configured canonical target does not match admission.');
@@ -168,6 +182,7 @@ export class NbSearchService implements INbSearchService {
         return { runtime, status };
       } catch (error) {
         if (error instanceof Error2 && error.code === ErrorCodes.REQUEST_INVALID) throw error;
+        if (generation === this.#generation) this.#runtimeCache = undefined;
         return {
           status: {
             ...status,
@@ -177,6 +192,37 @@ export class NbSearchService implements INbSearchService {
         };
       }
     });
+  }
+
+  async #sharedRuntime(source: NbSearchSource, config: NbSearchConfig | undefined, generation: number): Promise<NbSearchRuntime | undefined> {
+    const resolved = resolveNbSearchConfig(source.env, source.config ?? config, undefined);
+    const names = new Set([
+      ...Object.keys(source.env).filter((name) => name.toUpperCase().startsWith('NB_SEARCH_')),
+      ...Object.values(resolved.credential_slots).map((slot) => slot.env),
+    ]);
+    const signature = stableFingerprint({
+      reuse_local_config: source.status.reuse_local_config,
+      config: source.config ?? config,
+      revision: source.expectedRevision,
+      environment: Object.fromEntries([...names].sort().map((name) => [name, source.env[name] ?? null])),
+    });
+    const previous = generation === this.#generation ? this.#runtimeCache : undefined;
+    if (previous?.signature === signature) return previous.runtime;
+    const runtime = (async () => {
+      const created = createNbSearchRuntime({ env: source.env, config: source.config ?? config });
+      if (source.expectedRevision !== undefined && (await created.capabilities({})).revision !== source.expectedRevision) return undefined;
+      return created;
+    })();
+    const entry = { signature, runtime };
+    if (generation === this.#generation) this.#runtimeCache = entry;
+    try {
+      const ready = await runtime;
+      if (ready === undefined && this.#runtimeCache === entry) this.#runtimeCache = undefined;
+      return ready;
+    } catch (error) {
+      if (this.#runtimeCache === entry) this.#runtimeCache = undefined;
+      throw error;
+    }
   }
 }
 

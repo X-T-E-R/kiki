@@ -72,6 +72,8 @@ Without configuration, this call uses `github.repositories`: results cover GitHu
 
 Results are either ranked source links with snippets or typed research or documentation answers. Provider output is not independent verification — cite the actual URLs inline and use `FetchURL` when you need primary-source full text.
 
+With multiple provider keys, synchronous `WebSearch` and `FetchURL` calls on the same server share key rotation and cooldown across calls and sessions; detached async jobs start independent schedulers. See [`nb_search`](../configuration/config-files.md#nb-search) for the key format, settings, and existing single-key compatibility.
+
 ```json
 { "query": "kimi-code release notes" }
 ```

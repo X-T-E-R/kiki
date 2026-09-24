@@ -72,6 +72,8 @@
 
 结果可能是排序后的链接/摘要，也可能是 typed 的研究/文档回答。provider 的输出不是独立验证——引用时给出实际 URL，需要原文时改用 `FetchURL`。
 
+配置多个密钥后，同一服务器上的同步 `WebSearch` 和 `FetchURL` 调用会跨调用、跨会话共享轮转和冷却状态；脱离进程的异步作业各自建立独立调度器。密钥格式、配置项及原有单密钥兼容方式见 [`nb_search`](../configuration/config-files.md#nb-search)。
+
 ```json
 { "query": "kimi-code release notes" }
 ```
