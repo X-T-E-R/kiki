@@ -1197,28 +1197,32 @@ const ToolGroupRow = memo(
       </button>
       {expanded ? (
         <div className="space-y-2 border-t border-hairline px-3 py-2.5">
-          {group.tools.map((tool) => (
-            <ToolCard key={tool.id} block={tool} agentNames={agentNames} onOpenAgent={onOpenAgent} />
-          ))}
-          {group.shells.map((shell) => (
-            <ShellMessage key={shell.id} block={shell} />
-          ))}
-          {group.thinking.map((thinking) => (
-            <ThinkingMessage key={thinking.id} block={thinking} />
-          ))}
+          {/* Members render in ORIGINAL occurrence order — never the per-kind
+              aggregations, so Read → shell → thinking → Edit stays in the
+              order it happened. */}
+          {group.members.map((member) =>
+            member.kind === 'tool' ? (
+              <ToolCard key={member.id} block={member} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+            ) : member.kind === 'shell' ? (
+              <ShellMessage key={member.id} block={member} />
+            ) : member.kind === 'thinking' ? (
+              <ThinkingMessage key={member.id} block={member} />
+            ) : null,
+          )}
         </div>
       ) : null}
     </div>
   );
   },
   // groupBlocks rebuilds the wrapper per publish; the step blocks themselves
-  // keep identity, so element-wise comparison preserves the memo.
+  // keep identity, so element-wise comparison preserves the memo. Every
+  // ordered member compares — the aggregations alone would miss a shell
+  // turning failed or a thinking block's streaming text.
   (prev, next) =>
-    prev.group.count === next.group.count &&
-    prev.group.tools.length === next.group.tools.length &&
-    prev.group.shells.length === next.group.shells.length &&
-    prev.group.thinking.length === next.group.thinking.length &&
+    prev.group.members.length === next.group.members.length &&
+    prev.group.members.every((member, index) => member === next.group.members[index]) &&
     prev.group.durationMs === next.group.durationMs &&
+    prev.group.startedAt === next.group.startedAt &&
     prev.agentNames === next.agentNames &&
     prev.onOpenAgent === next.onOpenAgent &&
     prev.group.tools.every((tool, index) => tool === next.group.tools[index]),
@@ -1536,14 +1540,15 @@ export function useStableForest<T extends AgentForest | undefined>(forest: T): T
 
 function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
   if (a === b) return true;
-  // groupBlocks rebuilds the ToolGroup wrapper per publish while the tool
-  // blocks inside keep identity — compare element-wise (same rule as
-  // ToolGroupRow's own memo comparator).
+  // groupBlocks rebuilds the ToolGroup wrapper per publish while the step
+  // blocks inside keep identity — compare every ordered member element-wise
+  // (same rule as ToolGroupRow's own memo comparator): the tool list alone
+  // would miss a shell turning failed or a thinking block's streaming text.
   if (a.kind === 'tool-group' && b.kind === 'tool-group') {
     return (
       a.id === b.id &&
-      a.tools.length === b.tools.length &&
-      a.tools.every((tool, index) => tool === b.tools[index])
+      a.members.length === b.members.length &&
+      a.members.every((member, index) => member === b.members[index])
     );
   }
   return false;
@@ -2121,10 +2126,6 @@ export function Transcript({
   useEffect(() => {
     if (annotationPopover !== null && openAnnotation === undefined) setAnnotationPopover(null);
   }, [annotationPopover, openAnnotation]);
-  const nodes = useMemo(() => groupBlocks(timelineBlocks), [timelineBlocks]);
-  // The forest prop is rebuilt per publish upstream; stabilize it by content
-  // so row memos survive unrelated deltas (Finding: forest identity).
-  const stableForest = useStableForest(forest);
   // The fold-steps preference is app-global chrome (Settings' Timeline card
   // writes it), so the transcript reacts immediately via its pub/sub snapshot.
   const foldSteps = useSyncExternalStore(
@@ -2132,6 +2133,16 @@ export function Transcript({
     settingsSnapshot,
     settingsServerSnapshot,
   ).foldSteps;
+  // The fold preference is part of the grouping input: off renders the raw
+  // step blocks (no groups at all), on folds runs of ≥2, and toggling it
+  // re-groups on the next render — the switch applies instantly.
+  const nodes = useMemo(
+    () => (foldSteps ? groupBlocks(timelineBlocks) : timelineBlocks),
+    [foldSteps, timelineBlocks],
+  );
+  // The forest prop is rebuilt per publish upstream; stabilize it by content
+  // so row memos survive unrelated deltas (Finding: forest identity).
+  const stableForest = useStableForest(forest);
   // Manual subagent card form overrides (G-4): once the user expands or
   // collapses a card by hand the automatic active→full / terminal→compact
   // rule no longer touches that agent's card. Keyed by subagentId so the

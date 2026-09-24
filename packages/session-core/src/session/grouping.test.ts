@@ -189,4 +189,21 @@ describe('groupBlocks', () => {
     const nodes = groupBlocks([first, tool('A')]);
     expect((nodes[0] as ToolGroup).id).toBe(`group-${first.id}`);
   });
+
+  it('keeps the run in original occurrence order — never per-kind buckets', () => {
+    const read = tool('Read');
+    const bash = shell();
+    const ponder = thinking();
+    const edit = tool('Edit');
+    const group = groupBlocks([read, bash, ponder, edit])[0] as ToolGroup;
+    expect(group.members).toEqual([read, bash, ponder, edit]);
+  });
+
+  it('preserves member identity for memo comparators', () => {
+    const read = tool('Read');
+    const bash = shell();
+    const group = groupBlocks([read, bash])[0] as ToolGroup;
+    expect(group.members[0]).toBe(read);
+    expect(group.members[1]).toBe(bash);
+  });
 });

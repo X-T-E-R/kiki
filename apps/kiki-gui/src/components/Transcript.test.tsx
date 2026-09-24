@@ -45,6 +45,7 @@ import {
   type Block,
   type SessionViewState,
 } from '@kiki/session-core/session';
+import { writeSettings } from '@kiki/session-core/settings';
 import {
   ASSISTANT_FRAME_ID,
   CHILD_AGENT_ID,
@@ -3164,5 +3165,193 @@ describe('terminal pile-up folding (timeline tail)', () => {
     });
     expect(container.textContent).toContain('Run the nightly report.');
     expect(container.textContent).not.toContain('<cron-fire');
+  });
+});
+
+describe('step folding (fold-steps)', () => {
+  function stepTool(toolCallId: string, overrides: Partial<Extract<Block, { kind: 'tool' }>> = {}): Block {
+    return {
+      kind: 'tool',
+      id: `tool-${toolCallId}`,
+      toolCallId,
+      name: 'Read',
+      argsText: '',
+      args: undefined,
+      display: undefined,
+      description: undefined,
+      status: 'done',
+      output: 'ok',
+      isError: undefined,
+      startedAt: undefined,
+      durationMs: undefined,
+      progressText: undefined,
+      ...overrides,
+    };
+  }
+
+  function stepShell(id: string, overrides: Partial<Extract<Block, { kind: 'shell' }>> = {}): Block {
+    return {
+      kind: 'shell',
+      id,
+      commandId: id,
+      command: 'npm test',
+      output: '',
+      done: true,
+      isError: undefined,
+      ...overrides,
+    };
+  }
+
+  function stepThinking(id: string, overrides: Partial<Extract<Block, { kind: 'thinking' }>> = {}): Block {
+    return {
+      kind: 'thinking',
+      id,
+      text: 'pondering',
+      streaming: false,
+      createdAt: undefined,
+      ...overrides,
+    };
+  }
+
+  async function renderSteps(blocks: Block[]): Promise<HTMLDivElement> {
+    return renderTranscript(blocks);
+  }
+
+  it('folds runs of steps into one summary row and expands in original order', async () => {
+    const read = stepTool('t-read', { name: 'Read' });
+    const bash = stepShell('shell-1');
+    const ponder = stepThinking('think-1');
+    const edit = stepTool('t-edit', { name: 'Edit' });
+    const container = await renderSteps([read, bash, ponder, edit]);
+
+    // Collapsed by default: one group summary, no bare step rows.
+    const summary = container.querySelector('[aria-label*="expand"]');
+    expect(summary).not.toBeNull();
+    expect(container.textContent).toContain('4');
+    expect(container.querySelectorAll('[data-shell]')).toHaveLength(0);
+    expect(container.querySelectorAll('.thinking-row')).toHaveLength(0);
+
+    // Expand: members appear in ORIGINAL occurrence order — Read, shell,
+    // thinking, Edit — never the per-kind buckets.
+    await act(async () => {
+      click(summary!);
+    });
+    // DEBUG
+    const order = [
+      ...container.querySelectorAll('[data-tool-id], [data-shell], .thinking-row'),
+    ].map(
+      (el) =>
+        el.getAttribute('data-tool-id') ??
+        (el.hasAttribute('data-shell') ? 'shell' : 'thinking'),
+    );
+    expect(order).toEqual(['t-read', 'shell', 'thinking', 't-edit']);
+  });
+
+  it('keeps single steps bare and non-step blocks unfolded', async () => {
+    const container = await renderSteps([
+      stepTool('t-only'),
+      assistantBlock('a-after', 'here is the summary'),
+    ]);
+    // A single tool after an assistant message stays a bare ToolCard.
+    expect(container.querySelectorAll('[data-shell]')).toHaveLength(0);
+    expect(container.textContent).not.toContain('Steps ·');
+  });
+
+  it('applies the fold-steps toggle instantly — off renders raw steps', async () => {
+    const probe = makeRoot();
+    const blocks = [stepTool('t-read', { name: 'Read' }), stepShell('shell-1')];
+    const render = async () => {
+      await renderSettled(
+        probe.root,
+        <Transcript
+          state={transcriptState(blocks)}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+        />,
+      );
+    };
+    await render();
+    // Folded by default.
+    expect(probe.container.textContent).toContain('Steps ·');
+    expect(probe.container.querySelectorAll('[data-shell]')).toHaveLength(0);
+    try {
+      // Flipping the setting re-groups on the next render without a remount.
+      await act(async () => {
+        writeSettings({ foldSteps: false });
+      });
+      expect(probe.container.textContent).not.toContain('Steps ·');
+      expect(probe.container.querySelectorAll('[data-shell]')).toHaveLength(1);
+      // Back on: the steps fold again.
+      await act(async () => {
+        writeSettings({ foldSteps: true });
+      });
+      expect(probe.container.textContent).toContain('Steps ·');
+      expect(probe.container.querySelectorAll('[data-shell]')).toHaveLength(0);
+    } finally {
+      writeSettings({ foldSteps: true });
+    }
+  });
+
+  it('refreshes the summary and expanded rows when a member turns failed', async () => {
+    const probe = makeRoot();
+    const render = async (blocks: Block[]) => {
+      await renderSettled(
+        probe.root,
+        <Transcript
+          state={transcriptState(blocks)}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+        />,
+      );
+    };
+    const runningShell = stepShell('shell-1', { done: false });
+    const tool = stepTool('t-read', { name: 'Read' });
+    await renderSteps([tool, runningShell]);
+    await render([tool, runningShell]);
+    // Running: the group summary shows the spinner, not the error glyph.
+    let summary = probe.container.querySelector('[aria-label*="expand"]')!;
+    expect(summary.querySelector('.spinner')).not.toBeNull();
+
+    const failedShell = stepShell('shell-1', { done: true, isError: true });
+    await render([tool, failedShell]);
+    summary = probe.container.querySelector('[aria-label*="expand"]')!;
+    // Auto-expanded on error: the failed shell's danger state is visible.
+    expect(probe.container.querySelectorAll('[data-shell]')).toHaveLength(1);
+    expect(probe.container.textContent).toContain('failed');
+    expect(summary.querySelector('.spinner')).toBeNull();
+  });
+
+  it('refreshes expanded thinking content while it streams', async () => {
+    const probe = makeRoot();
+    const render = async (blocks: Block[]) => {
+      await renderSettled(
+        probe.root,
+        <Transcript
+          state={transcriptState(blocks)}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+        />,
+      );
+    };
+    const tool = stepTool('t-read', { name: 'Read' });
+    const idle = stepThinking('think-1', { text: 'first pass' });
+    await render([tool, idle]);
+    await act(async () => {
+      click(probe.container.querySelector('[aria-label*="expand"]')!);
+    });
+    expect(probe.container.textContent).toContain('first pass');
+
+    const streaming = stepThinking('think-1', {
+      text: 'first pass — deeper consideration',
+      streaming: true,
+    });
+    await render([tool, streaming]);
+    expect(probe.container.textContent).toContain('deeper consideration');
   });
 });

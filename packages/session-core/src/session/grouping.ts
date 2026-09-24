@@ -18,11 +18,17 @@ export interface ToolGroup {
   readonly kind: 'tool-group';
   /** Stable id derived from the first step in the run. */
   readonly id: string;
-  /** Tool calls in the run, in order. */
+  /**
+   * The run's steps in ORIGINAL occurrence order — the expanded view renders
+   * this, never the per-kind lists, so Read → shell → thinking → Edit stays
+   * in the order it happened.
+   */
+  readonly members: readonly Block[];
+  /** Tool calls in the run, in order (summary aggregation only). */
   readonly tools: readonly ToolBlock[];
-  /** Shell runs in the run, in order. */
+  /** Shell runs in the run, in order (summary aggregation only). */
   readonly shells: readonly ShellBlock[];
-  /** Thinking blocks in the run, in order. */
+  /** Thinking blocks in the run, in order (summary aggregation only). */
   readonly thinking: readonly ThinkingBlock[];
   /** Total member count (tools + shells + thinking). */
   readonly count: number;
@@ -68,6 +74,7 @@ export function groupBlocks(blocks: readonly Block[]): DisplayNode[] {
       nodes.push({
         kind: 'tool-group',
         id: `group-${run[0]!.id}`,
+        members: run,
         tools,
         shells,
         thinking,
