@@ -47,7 +47,7 @@ describe('subagent capability final bindings', () => {
   });
 
   afterEach(() => {
-    expect(externalStart).not.toHaveBeenCalled();
+    if (externalStart.mock.calls.length > 0) throw new Error('External execution was attempted');
     ix.dispose();
     vi.clearAllMocks();
   });
@@ -241,5 +241,33 @@ describe('subagent capability final bindings', () => {
       defaultsAvailable: false,
       unavailableReasonCode: 'binding_constraints_unsatisfied',
     });
+  });
+
+  it('skips a stale frozen-catalog target whose profile vanished from the snapshot', () => {
+    services.models.list = () => ({ example: {} });
+    const live = helper({ name: 'live' });
+    const ghost = helper({ name: 'ghost' });
+    const catalog = {
+      get: (name: string) => (name === live.name ? live : undefined),
+      list: () => [live],
+      getDefault: () => live,
+      resolveSelection: ({ profile }: { readonly profile?: string }) => {
+        if (profile !== live.name) throw new Error('unknown profile');
+        return { profile: live, baseProfile: live };
+      },
+    };
+    const snapshot = {
+      publicProfiles: new Map([[live.name, live]]),
+      defaultProfile: live,
+      routes: new Map(),
+      scopedBindings: new Map(),
+      sourceDefinitions: new Map(),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    const projected = projectSubagentModelCatalog(catalog, { profileName: 'lead' },
+      { profiles: [live, ghost], routes: [], snapshot }, services.models, services.config);
+    expect(projected.profiles.map((profile) => profile.name)).toEqual(['live']);
+    expect(projected.aliases).toContain('example');
   });
 });

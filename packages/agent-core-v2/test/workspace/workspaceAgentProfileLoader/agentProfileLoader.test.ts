@@ -182,7 +182,7 @@ function sourceParentMd(
   extraLease = '',
   extraProfile = '',
 ): string {
-  return `---\nname: ${name}\ndescription: ${name}\n${extraProfile}subagents:\n  - \"*\"\n  - name: ${alias}\n    source: ${source}\n${extraLease}---\n\nYou are ${name}.\n`;
+  return `---\nname: ${name}\ndescription: ${name}\n${extraProfile}subagents:\n  - "*"\n  - name: ${alias}\n    source: ${source}\n${extraLease}---\n\nYou are ${name}.\n`;
 }
 
 function privateAgentMd(name: string, description: string, extra = ''): string {
@@ -1830,9 +1830,8 @@ describe('agent profile loaders + session catalog', () => {
           private: true,
         });
         expect(stack.catalog.resolveSelection({ profile: 'm3-worker' }).profile.name).toBe('m3-worker');
-        expect(
-          resolveSubagentDispatch(stack.catalog, caller, { profileName: 'm3-worker' }).selection.profile.name,
-        ).toBe('m3-worker');
+        expect(() => resolveSubagentDispatch(stack.catalog, caller, { profileName: 'm3-worker' }))
+          .toThrow(/private and cannot be dispatched/);
         expect(stack.catalog.list().map((profile) => profile.name)).not.toContain('m3-worker');
         expect(stack.catalog.snapshot().publicProfiles.has('m3-worker')).toBe(false);
 
@@ -1852,12 +1851,10 @@ describe('agent profile loaders + session catalog', () => {
 
         expect(stack.catalog.get('m3-worker')).toBeUndefined();
         expect(() => stack.catalog.list()).not.toThrow();
-        expect(
-          resolveSubagentDispatch(stack.catalog, caller, {
-            profileName: 'm3-worker',
-            snapshot: frozen,
-          }).selection.profile.description,
-        ).toBe('public worker');
+        expect(() => resolveSubagentDispatch(stack.catalog, caller, {
+          profileName: 'm3-worker',
+          snapshot: frozen,
+        })).toThrow(/Unknown agent profile/);
       });
     });
   });

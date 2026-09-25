@@ -6,6 +6,7 @@ import { fillLeasePins, type CallerLeaseOwner } from '#/app/agentProfileCatalog/
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import { listAvailableSubagentTargets, resolveSubagentTarget, type SubagentDispatchCaller, type SubagentDispatchCatalog } from '#/app/agentProfileCatalog/subagentDispatch';
 import type { IConfigService } from '#/app/config/config';
+import { ErrorCodes, isError2 } from '#/errors';
 import type { IModelService } from '#/kosong/model/model';
 
 import { assertSubagentModelNotDenied, INHERIT_MODEL_ALIAS, resolveInheritedModelAlias } from './configSection';
@@ -29,11 +30,21 @@ export function projectSubagentModelCatalog(
 ): { readonly profiles: readonly AgentProfile[]; readonly routes: readonly (AgentProfileRouteCatalogEntry & { readonly allowedModels: readonly string[] })[]; readonly aliases: readonly string[] } {
   const targets = listAvailableSubagentTargets(catalog, caller, input, models);
   const aliases = new Set<string>();
-  const profiles = targets.profiles.map((profile) => {
-    const projected = projectTarget(profile.name);
+  const profiles = targets.profiles.flatMap((profile) => {
+    let projected: ReturnType<typeof projectTarget>;
+    try {
+      projected = projectTarget(profile.name);
+    } catch (error) {
+      if (isError2(error) && (
+        error.code === ErrorCodes.PROFILE_UNKNOWN ||
+        error.code === ErrorCodes.ROUTE_UNKNOWN ||
+        error.code === ErrorCodes.ROUTE_BASE_MISSING
+      )) return [];
+      throw error;
+    }
     const resolver = modelAliasResolverForExecutor(profile.executor, models);
     const permitted = new Set(projected.allowedModels.map((alias) => resolver.resolveId(alias) ?? alias));
-    return {
+    return [{
       ...profile,
       modelAlias: projected.modelAlias,
       thinkingEffort: projected.thinkingEffort,
@@ -45,11 +56,20 @@ export function projectSubagentModelCatalog(
           return false;
         }
       }),
-    };
+    }];
   });
-  const routes = targets.routes.map((route) => {
-    const projected = projectTarget(route.profile, route.id);
-    return { ...route, allowedModels: projected.allowedModels };
+  const routes = targets.routes.flatMap((route) => {
+    try {
+      const projected = projectTarget(route.profile, route.id);
+      return [{ ...route, allowedModels: projected.allowedModels }];
+    } catch (error) {
+      if (isError2(error) && (
+        error.code === ErrorCodes.PROFILE_UNKNOWN ||
+        error.code === ErrorCodes.ROUTE_UNKNOWN ||
+        error.code === ErrorCodes.ROUTE_BASE_MISSING
+      )) return [];
+      throw error;
+    }
   });
   return { profiles, routes, aliases: [...aliases] };
 

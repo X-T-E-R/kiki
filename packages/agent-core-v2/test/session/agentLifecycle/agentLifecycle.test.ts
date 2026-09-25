@@ -36,6 +36,10 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import {
+  DEFAULT_AGENT_PROFILE_NAME,
+  normalizeAgentProfile,
+} from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IPromptFieldRegistry } from '#/app/promptField/promptFieldRegistry';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IModelCatalog } from '#/kosong/model/catalog';
@@ -1248,6 +1252,111 @@ describe('AgentLifecycleService', () => {
     expect(svc.get('child')).toBeUndefined();
   });
 
+  it('falls back to the default profile when the persisted restore profile is gone from the catalog', async () => {
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+    ]).store);
+    ix.stub(ISessionMetadata, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeMetadata: Event.None,
+      read: async () => ({
+        id: 'sess_test',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        agents: { child: { type: 'sub', labels: { profileName: 'deleted-profile' } } },
+      }),
+      update: async () => {},
+      setTitle: async () => {},
+      setArchived: async () => {},
+      registerAgent,
+    } as unknown as ISessionMetadata);
+    const defaultProfile = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      modelAlias: 'provider/child-model',
+      systemPrompt: () => 'default profile',
+    });
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None,
+      get: () => undefined,
+      getDefault: () => defaultProfile,
+      list: () => [defaultProfile],
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: () => {
+        throw new Error2(ErrorCodes.PROFILE_UNKNOWN, 'unknown profile');
+      },
+      load: async () => {},
+      reload: async () => {},
+    } as unknown as ISessionAgentProfileCatalog);
+    ix.stub(IAgentIdentity, {
+      _serviceBrand: undefined,
+      resolved: async () => ({ displayName: 'Test' }),
+    } as unknown as IAgentIdentity);
+    ix.stub(IModelCatalog, {
+      _serviceBrand: undefined,
+      get: () => ({ providerName: 'test-provider' }),
+    } as unknown as IModelCatalog);
+    ix.stub(ISessionContext, {
+      _serviceBrand: undefined,
+      sessionId: 'sess_test',
+      workspaceId: 'ws_test',
+      sessionDir: '/tmp/kimi-agentLifecycle-test',
+      metaScope: 'test',
+      cwd: '/tmp/kimi-agentLifecycle-work',
+      scope: (subKey?: string) =>
+        subKey === undefined || subKey === ''
+          ? 'sessions/ws_test/sess_test'
+          : `sessions/ws_test/sess_test/${subKey}`,
+    } as unknown as ISessionContext);
+    ix.stub(IPluginService, {
+      ...pluginServiceStub,
+      enabledSystemPrompts: async () => [],
+      hasLoadedSnapshot: () => false,
+    } as unknown as IPluginService);
+    ix.stub(IHostClock, {
+      _serviceBrand: undefined,
+      now: () => new Date('2026-09-26T00:00:00Z'),
+      timeZone: () => 'UTC',
+    });
+    ix.stub(IBootstrapService, {
+      _serviceBrand: undefined,
+      homeDir: '/tmp/kimi-agentLifecycle-home',
+      cwd: '/tmp/kimi-agentLifecycle-home',
+      getEnv: () => undefined,
+      args: {},
+    } as unknown as IBootstrapService);
+    ix.stub(IAgentToolRegistryService, {
+      _serviceBrand: undefined,
+      listReferences: () => [],
+    } as unknown as IAgentToolRegistryService);
+    ix.stub(IBuiltinAgentProfileLoader, {
+      _serviceBrand: undefined,
+      list: () => [],
+    } as unknown as IBuiltinAgentProfileLoader);
+    const svc = ix.get(IAgentLifecycleService);
+
+    const restored = await svc.create({
+      agentId: 'child',
+      restoreBinding: {
+        profileName: 'deleted-profile',
+        modelAlias: 'provider/child-model',
+        thinkingEffort: 'high',
+        executorId: 'native',
+        executorProtocol: 'native',
+      },
+    });
+
+    expect(restored.accessor.get(IAgentProfileService).data()).toMatchObject({
+      profileName: DEFAULT_AGENT_PROFILE_NAME,
+      modelAlias: 'provider/child-model',
+      thinkingLevel: 'high',
+    });
+  });
+
   it('keeps a persisted display name when restored profile metadata differs', async () => {
     ix.stub(IAppendLogStore, recordingAppendLog([
       createWireMetadataRecord(1),
@@ -1746,7 +1855,7 @@ describe('AgentLifecycleService', () => {
       disposables.dispose();
     };
     const bindReadonly = async (child: IAgentScopeHandle): Promise<void> => {
-      child.accessor.get(IEventDispatcher).dispatch(new ProfileBind({
+      await child.accessor.get(IEventDispatcher).dispatch(new ProfileBind({
         profileName: 'explore',
         routeId: 'research-route',
         executionRestriction: 'research-readonly',

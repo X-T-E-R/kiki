@@ -13,6 +13,7 @@ import {
   type AgentProfile,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { BUILTIN_AGENT_PROFILE_SOURCE_ID } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import { resolveSubagentDispatch } from '#/app/agentProfileCatalog/subagentDispatch';
 import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProfileRegistryService';
 import { IConfigService } from '#/app/config/config';
 import type { IFlagService } from '#/app/flag/flag';
@@ -456,6 +457,35 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
 
     expect(seen).toEqual(['workspace', 'user', 'user']);
     subscription.dispose();
+    catalog.dispose();
+    container.dispose();
+  });
+
+  it('keeps private profiles resolvable but rejects new dispatch from live and frozen catalogs', () => {
+    const { container, catalog } = makeCatalog();
+    const initial = profile('worker');
+    catalog.setContribution('hot', { profiles: [profile(DEFAULT_AGENT_PROFILE_NAME), initial] }, 10);
+    const frozen = catalog.snapshot();
+    expect(resolveSubagentDispatch(catalog, { profileName: DEFAULT_AGENT_PROFILE_NAME },
+      { profileName: 'worker', snapshot: frozen }).selection.profile).toBe(initial);
+
+    const hidden = normalizeAgentProfile({ name: 'worker', private: true, systemPrompt: () => 'hidden version' });
+    catalog.setContribution('hot', { profiles: [profile(DEFAULT_AGENT_PROFILE_NAME), hidden] }, 10);
+    expect(catalog.get('worker')).toBe(hidden);
+    expect(catalog.list().map((entry) => entry.name)).not.toContain('worker');
+    expect(() => resolveSubagentDispatch(catalog, { profileName: DEFAULT_AGENT_PROFILE_NAME },
+      { profileName: 'worker', snapshot: frozen })).toThrow(/private and cannot be dispatched/);
+    expect(() => resolveSubagentDispatch(catalog, { profileName: DEFAULT_AGENT_PROFILE_NAME },
+      { profileName: 'worker' })).toThrow(/private and cannot be dispatched/);
+
+    catalog.setContribution('hot', { profiles: [profile(DEFAULT_AGENT_PROFILE_NAME)] }, 10);
+    expect(() => resolveSubagentDispatch(catalog, { profileName: DEFAULT_AGENT_PROFILE_NAME },
+      { profileName: 'worker', snapshot: frozen })).toThrow(/Unknown agent profile/);
+
+    const latest = normalizeAgentProfile({ name: 'worker', systemPrompt: () => 'new version' });
+    catalog.setContribution('hot', { profiles: [profile(DEFAULT_AGENT_PROFILE_NAME), latest] }, 10);
+    expect(resolveSubagentDispatch(catalog, { profileName: DEFAULT_AGENT_PROFILE_NAME },
+      { profileName: 'worker', snapshot: catalog.snapshot() }).selection.profile).toBe(latest);
     catalog.dispose();
     container.dispose();
   });

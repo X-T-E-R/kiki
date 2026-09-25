@@ -449,6 +449,48 @@ describe('AgentProfileService.bind', () => {
     expect(profile.data().boundProfile?.description).toBe('new definition');
   });
 
+  it.each(['private', 'deleted', 'invalid'] as const)('keeps an already bound profile when a reload makes it %s', async (change) => {
+    const original = normalizeAgentProfile({
+      name: 'active-worker', modelAlias: RESUME_OLD_MODEL, systemPrompt: () => 'stable prompt',
+    });
+    let current: AgentProfile | undefined = original;
+    const catalog: ISessionAgentProfileCatalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => name === current?.name ? current : undefined,
+      getDefault: () => original,
+      list: () => current === undefined || current.private === true ? [] : [current],
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: () => { throw new Error('not a route'); },
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    };
+    ctx = createTestAgent(
+      nativeResumeOptions(),
+      sessionService(ISessionAgentProfileCatalog, catalog),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: original.name, model: RESUME_OLD_MODEL, thinking: 'low' });
+    const binding = profile.data().boundProfile;
+    if (change === 'private') {
+      current = normalizeAgentProfile({
+        name: original.name, private: true, modelAlias: RESUME_OLD_MODEL,
+        systemPrompt: () => 'hidden prompt',
+      });
+    } else if (change === 'deleted') {
+      current = undefined;
+    }
+    await profile.rebuildPromptContext();
+    await profile.refreshSystemPrompt();
+    expect(profile.getSystemPrompt()).toContain('stable prompt');
+    expect(profile.data().boundProfile).toEqual(binding);
+    expect(profile.data().profileName).toBe(original.name);
+  });
+
   it('binds an external profile without persisting descriptor environment secrets', async () => {
     const secret = 'sentinel-profile-secret';
     const descriptorConfig = {
@@ -2228,6 +2270,10 @@ describe('AgentProfileService.bind', () => {
         allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
         allowedEfforts: ['low', 'high'],
       });
+      if (catalogState === 'missing') {
+        await restored.rebuildPromptContext();
+        expect(restored.data().profileName).toBe(original.name);
+      }
       const apply = await prepareResumeBinding(restored, {
         modelAlias: RESUME_NEW_MODEL,
         thinkingEffort: 'high',

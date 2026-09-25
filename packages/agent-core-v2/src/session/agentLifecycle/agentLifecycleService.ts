@@ -1,7 +1,7 @@
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { join } from 'pathe';
 import { LifecycleScope } from '#/app/scopes';
 import {
@@ -24,7 +24,9 @@ import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { WarningIssued } from '#/agent/profile/profileOps';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { abortError } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -339,9 +341,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       this.subscribeUsage(handle);
       this.onWillCreateEmitter.fire(handle);
       await handle.accessor.get(IEventDispatcher).restore();
-      await this.bindBootstrap(handle, opts);
+      const restoreFellBack = await this.bindBootstrap(handle, opts);
       if (opts.restoreBinding !== undefined) {
-        await this.validateRestoredBinding(handle, opts.restoreBinding);
+        await this.validateRestoredBinding(handle, opts.restoreBinding, restoreFellBack);
       }
       const profile = handle.accessor.get(IAgentProfileService).data();
       if ((profile.executorId ?? 'native') === 'native') {
@@ -406,8 +408,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private async bindBootstrap(
     handle: IAgentScopeHandle,
     opts: CreateAgentOptions,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const profile = handle.accessor.get(IAgentProfileService);
+    let restoreFellBack = false;
     if (opts.binding !== undefined) {
       await profile.bind({
         ...opts.binding,
@@ -418,13 +421,35 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       profile.data().profileName === undefined &&
       profile.data().routeId === undefined
     ) {
-      await profile.bind({
-        profile: opts.restoreBinding.profileName,
-        route: opts.restoreBinding.routeId,
-        model: opts.restoreBinding.modelAlias,
-        thinking: opts.restoreBinding.thinkingEffort,
-        delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
-      });
+      try {
+        await profile.bind({
+          profile: opts.restoreBinding.profileName,
+          route: opts.restoreBinding.routeId,
+          model: opts.restoreBinding.modelAlias,
+          thinking: opts.restoreBinding.thinkingEffort,
+          delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
+        });
+      } catch (error) {
+        if (
+          !isError2(error) ||
+          (error.code !== ErrorCodes.PROFILE_UNKNOWN &&
+            error.code !== ErrorCodes.ROUTE_UNKNOWN &&
+            error.code !== ErrorCodes.ROUTE_BASE_MISSING)
+        ) {
+          throw error;
+        }
+        restoreFellBack = true;
+        await profile.bind({
+          profile: DEFAULT_AGENT_PROFILE_NAME,
+          model: opts.restoreBinding.modelAlias,
+          thinking: opts.restoreBinding.thinkingEffort,
+          delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
+        });
+        await handle.accessor.get(IEventDispatcher).dispatch(new WarningIssued({
+          code: 'restore-profile-missing',
+          message: `Persisted profile "${opts.restoreBinding.profileName ?? opts.restoreBinding.routeId ?? ''}" is unavailable; restored with the default profile instead.`,
+        }));
+      }
     }
     const permissionMode = this.config.get<PermissionMode>(DEFAULT_PERMISSION_MODE_SECTION);
     const hasRestoredPermissionMode = handle.accessor
@@ -433,6 +458,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     if (permissionMode !== undefined && !hasRestoredPermissionMode) {
       handle.accessor.get(IAgentPermissionModeService).setMode(permissionMode);
     }
+    return restoreFellBack;
   }
 
   private validateRestoreBindingInput(agentId: string, binding: AgentRestoreBinding): void {
@@ -462,6 +488,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private async validateRestoredBinding(
     handle: IAgentScopeHandle,
     binding: AgentRestoreBinding,
+    restoreFellBack = false,
   ): Promise<void> {
     const profile = handle.accessor.get(IAgentProfileService);
     const data = profile.data();
@@ -474,6 +501,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       executorProtocol: data.executorProtocol,
     };
     const mismatches = (Object.keys(binding) as (keyof AgentRestoreBinding)[])
+      .filter((field) => !(restoreFellBack && (field === 'profileName' || field === 'routeId')))
       .filter((field) => binding[field] !== undefined && binding[field] !== actual[field])
       .map((field) => ({ field, expected: binding[field], actual: actual[field] }));
     if (mismatches.length > 0) {

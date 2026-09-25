@@ -1129,6 +1129,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.systemPromptRefreshTail.catch(() => undefined);
     const current = this.profileState;
     if (current.profileName === undefined) return;
+    const liveProfile = this.catalog.get(current.profileName);
+    if (liveProfile === undefined || liveProfile.private === true ||
+      (current.routeId !== undefined && !this.catalog.listRoutes().some((route) => route.id === current.routeId))) {
+      await this.refreshSystemPrompt();
+      return;
+    }
     this.activeProfile = undefined;
     this.frozenSkillListing = undefined;
     this.frozenPluginSections = undefined;
@@ -1151,10 +1157,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private async refreshSystemPromptNow(): Promise<void> {
-    const profile = this.resolveActiveProfile();
-    if (profile === undefined) return;
-
     try {
+      const profile = this.resolveActiveProfile();
+      if (profile === undefined) return;
       const context = await this.buildSystemPromptContext(profile);
       this.activeProfile = profile;
       const assembled = await this.assembleBoundSystemPrompt(

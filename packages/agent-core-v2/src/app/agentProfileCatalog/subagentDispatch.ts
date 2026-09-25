@@ -49,6 +49,7 @@ export interface SubagentDispatchCatalog {
   get(name: string): AgentProfile | undefined;
   getDefault(): AgentProfile;
   list(): readonly AgentProfile[];
+  listRoutes?(): readonly AgentProfileRouteCatalogEntry[];
   snapshot?(): AgentProfileCatalogSnapshot;
   resolveSelection(input: {
     readonly profile?: string;
@@ -165,16 +166,15 @@ export function resolveSubagentDispatch(
         snapshot === undefined
           ? catalog.get(profileName)
           : (snapshot.resolvableProfiles ?? snapshot.publicProfiles).get(profileName);
-      if (profile === undefined) {
-        const available = [
-          ...(snapshot === undefined ? catalog.list() : snapshot.publicProfiles.values()),
-        ]
-          .map((item) => item.name)
-          .join(', ');
+      if (profile === undefined || (input.selectionKind !== 'profile_file' && !catalog.list().some((item) => item.name === profileName))) {
+        const available = catalog.list().map((item) => item.name).join(', ');
+        const hidden = catalog.get(profileName)?.private === true;
         throw new Error2(
           ErrorCodes.PROFILE_UNKNOWN,
-          `Unknown agent profile: "${profileName}". Available agent profiles: ${available}`,
-          { details: { profileName, available } },
+          hidden
+            ? `Agent profile "${profileName}" is private and cannot be dispatched. Available agent profiles: ${available}`
+            : `Unknown agent profile: "${profileName}". Available agent profiles: ${available}`,
+          { details: { profileName, available, private: hidden } },
         );
       }
       selection = { profile, baseProfile: profile };
@@ -219,6 +219,20 @@ export function resolveSubagentDispatch(
       baseProfile,
       route,
     };
+  }
+  if (selection.route !== undefined && (
+    !catalog.list().some((profile) => profile.name === selection.baseProfile.name)
+    || (catalog.listRoutes !== undefined && !catalog.listRoutes().some((route) => route.id === selection.route?.id))
+  )) {
+    const profileName = selection.baseProfile.name;
+    const hidden = catalog.get(profileName)?.private === true;
+    throw new Error2(
+      hidden ? ErrorCodes.PROFILE_UNKNOWN : ErrorCodes.ROUTE_UNKNOWN,
+      hidden
+        ? `Agent profile "${profileName}" is private and cannot be dispatched through route "${selection.route.id}".`
+        : `Agent profile route "${selection.route.id}" is no longer available for dispatch.`,
+      { details: { profileName, route: selection.route.id, private: hidden } },
+    );
   }
   const decision = evaluateSubagentDispatchDecision(
     catalog,

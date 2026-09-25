@@ -74,6 +74,10 @@ GUI 的 main agent 选择器使用当前工作区或工作目录的有效 Agent 
 
 在「设置 → 智能体」中选择工作区，可以查看默认主档、实际来源与 subagent 能力。文件 profile 的编辑会作用于界面所示来源；编辑遗留 `SYSTEM.md` 的常用字段时，会添加 Frontmatter 并保留提示词正文。已选配置后来不可用时，原值仍会保留并显示诊断，方便重新选择。
 
+### Profile 热刷新与进行中的会话
+
+agent 文件会被监听并在变更时热刷新。热刷新不会打断进行中的会话：已在运行或恢复的 agent 继续使用其绑定时的提示词与约束快照，哪怕对应 profile 被编辑、设为 `private`、删除或失效。冻结的派遣列表会跳过失效目标，而不是让整段对话失败。变更只对**新的**派遣生效——向私有或已删除 profile 发起新派遣会得到明确报错。恢复缺少可恢复绑定快照且 profile 已不存在的旧记录时，降级到默认 profile 并给出警告；模型、effort 与执行器仍会被校验。
+
 ### 重建会话上下文
 
 修改提示词来源后，在会话作曲器中打开 profile 选择器并选择「重建上下文」。二次确认后，Kiki 会从磁盘重新加载当前 profile、提示字段覆写、Agent Skills、`AGENTS.md` 指令，以及 plugin 的提示词和 session-start 注入，重新协调其他运行时上下文注入，并让后续请求使用重建后的快照。对话消息会保留。轮次运行期间此操作不可用；请等待会话空闲后重试。
@@ -162,6 +166,8 @@ disallowedTools:
 | `disabled-tool-groups` | 否 | 内置工具组的禁止列表，YAML 列表或逗号分隔字符串，如 `disabled-tool-groups: [shell, web]`。组内每个内置工具都会被收回，除非该工具在 `tools` 中被显式点名；未知的组名会在加载时报错。同一 profile 内的优先级，从最具体开始：`disallowedTools`（被点名的工具保持禁用）> `tools`（显式列出的工具不受组禁用影响）> `disabled-tool-groups`。只有内置工具属于工具组，MCP 工具与用户工具永远不匹配。各组归属：`agent`（`AgentRun`、`AgentList`、`AgentSend`、`AgentNotify`）、`board`（`BoardRead`、`BoardWrite`）、`cron`（`CronCreate`、`CronList`、`CronDelete`）、`fsRead`（`Read`、`ReadMediaFile`、`Glob`、`Grep`）、`fsWrite`（`Write`、`Edit`）、`goal`（`CreateGoal`、`GetGoal`、`UpdateGoal`、`SetGoalBudget`）、`plan`（`EnterPlanMode`、`ExitPlanMode`、`TodoList`）、`question`（`AskUserQuestion`）、`shell`（`Bash`）、`skill`（`Skill`）、`task`（`TaskList`、`TaskOutput`、`TaskStop`、`TaskWait`）、`thread`（`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend`、`ThreadWait`）、`toolSelect`（`SelectTools`）、`web`（`WebSearch`、`FetchURL`） |
 | `subagents` | 否 | 可委派的子 Agent 名称列表，写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。子 Agent 一旦声明该列表，默认严格执行：`subagents: []` 禁止所有新子 Agent 派遣，其他显式名称构成白名单；省略或单独写 `*` 表示不限制 |
 | `subagent_policy` | 否 | `strict` 强制执行声明的 `subagents` 列表；`advisory` 允许派往列表外的目标，但会记录推荐偏离。profile 的显式值优先于设置默认值 |
+| `private` | 否 | 在派遣与选择列表（`AgentRun`、设置页选择器）中隐藏该 profile。私有 profile 仍然注册在案：已在运行或恢复的 agent 继续按绑定快照工作，而**新的**派遣会以"profile is private"明确报错。用于下线某个角色而不打断进行中的会话 |
+
 
 派遣策略有两个独立默认值：`[subagent] main_dispatch_policy = "advisory"` 适用于主 Agent；`[subagent] subagent_dispatch_policy = "strict"` 适用于声明了 `subagents` 列表的子 Agent。两者均可取 `advisory` 或 `strict`，可在「设置 → Agents」修改。未声明列表的子 Agent 仍默认 advisory，不受后一个默认值影响。能力面板将目标区分为「推荐」「允许但不推荐」「明确禁止」；`AgentRun` 仅列出允许目标，并突出推荐目标。模型与思考强度的建议独立于派遣策略，仍是软约束。
 
