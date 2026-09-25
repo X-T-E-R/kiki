@@ -543,6 +543,18 @@ export interface SessionStateSnapshot {
       readonly thinkingEffort?: string;
       readonly executor?: string;
       readonly executorProtocol?: string;
+      readonly status?: 'completed' | 'cancelled' | 'failed';
+      readonly completedAt?: number;
+      readonly resultSummary?: string;
+      readonly error?: string;
+      readonly usage?: /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
+        inputOther: number;
+        output: number;
+        inputCacheRead: number;
+        inputCacheCreation: number;
+      };
+      readonly contextTokens?: number;
+      readonly toolCallCount?: number;
     }>>;
     readonly custom?: Record<string, unknown>;
     readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
