@@ -109,41 +109,50 @@ export function sampleConfig() {
  * Five bindings so every visible model label tells the same role story:
  * judgement on the strong models (Astra thinking, Fable review), execution and
  * exploration on the fast ones (DeepSeek, GLM).
+ *
+ * The agent's *resolved* model identity is validated against this catalog, and
+ * the validation matches on the model id. A role whose rail label is the
+ * product's display-normalized alias (`Claude Fable`) therefore needs a catalog
+ * entry whose id IS that alias as well as the slug the profile file binds
+ * (`claude-fable-5`) — otherwise the agent composer renders the product's real
+ * "Model … is no longer available" failure banner.
  */
 export function sampleModels() {
-  const spec = (role, { provider, maxContextSize = 262_144, efforts, capabilities }) => ({
+  const spec = (id, display, { provider, maxContextSize = 262_144, efforts, defaultEffort, capabilities }) => ({
     provider,
-    model: ROLE_BINDING[role].id,
-    display_name: ROLE_BINDING[role].display,
+    model: id,
+    display_name: display,
     max_context_size: maxContextSize,
     support_efforts: efforts,
-    default_effort: ROLE_BINDING[role].effort,
+    default_effort: defaultEffort,
     capabilities,
   });
-  return [
-    spec('main', { provider: 'kimi-code', efforts: ['low', 'medium', 'high', 'max'], capabilities: ['reasoning', 'tools', 'vision'] }),
-    spec('thinker', { provider: 'axon', efforts: ['high', 'xhigh', 'max'], capabilities: ['reasoning'] }),
-    spec('reviewer', { provider: 'anthropic', maxContextSize: 200_000, efforts: ['low', 'medium', 'high', 'max'], capabilities: ['reasoning', 'vision'] }),
-    spec('builder', { provider: 'deepseek', efforts: ['low', 'medium', 'max'], capabilities: ['tools'] }),
-    spec('explorer', { provider: 'zhipu', maxContextSize: 131_072, efforts: ['low', 'max'], capabilities: ['tools'] }),
-  ];
+  const main = spec(ROLE_BINDING.main.id, ROLE_BINDING.main.display, { provider: 'kimi-code', efforts: ['low', 'medium', 'high', 'max'], defaultEffort: ROLE_BINDING.main.effort, capabilities: ['reasoning', 'tools', 'vision'] });
+  const thinker = spec(ROLE_BINDING.thinker.id, ROLE_BINDING.thinker.display, { provider: 'axon', efforts: ['high', 'xhigh', 'max'], defaultEffort: ROLE_BINDING.thinker.effort, capabilities: ['reasoning'] });
+  const reviewerSlug = spec('claude-fable-5', 'Claude Fable', { provider: 'anthropic', maxContextSize: 200_000, efforts: ['low', 'medium', 'high', 'max'], defaultEffort: 'high', capabilities: ['reasoning', 'vision'] });
+  const reviewerAlias = spec(ROLE_BINDING.reviewer.rail, 'Claude Fable', { provider: 'anthropic', maxContextSize: 200_000, efforts: ['low', 'medium', 'high', 'max'], defaultEffort: 'high', capabilities: ['reasoning', 'vision'] });
+  const builderSlug = spec('deepseek-v4-flash', 'DeepSeek V4 Flash', { provider: 'deepseek', efforts: ['low', 'medium', 'max'], defaultEffort: 'max', capabilities: ['tools'] });
+  const builderAlias = spec(ROLE_BINDING.builder.rail, 'DeepSeek V4 Flash', { provider: 'deepseek', efforts: ['low', 'medium', 'max'], defaultEffort: 'max', capabilities: ['tools'] });
+  const explorerSlug = spec('glm-5.3-flash', 'GLM 5.3 Flash', { provider: 'zhipu', maxContextSize: 131_072, efforts: ['low', 'max'], defaultEffort: 'max', capabilities: ['tools'] });
+  const explorerAlias = spec(ROLE_BINDING.explorer.rail, 'GLM 5.3 Flash', { provider: 'zhipu', maxContextSize: 131_072, efforts: ['low', 'max'], defaultEffort: 'max', capabilities: ['tools'] });
+  return [main, thinker, reviewerSlug, reviewerAlias, builderSlug, builderAlias, explorerSlug, explorerAlias];
 }
 
 export function sampleProviders() {
-  const provider = (id, type, model) => ({
+  const provider = (id, type, models) => ({
     id,
     type,
     has_api_key: true,
     status: 'connected',
-    default_model: model,
-    models: [model],
+    default_model: models[0],
+    models,
   });
   return [
-    provider('kimi-code', 'openai', ROLE_BINDING.main.id),
-    provider('axon', 'openai', ROLE_BINDING.thinker.id),
-    provider('anthropic', 'anthropic', ROLE_BINDING.reviewer.id),
-    provider('deepseek', 'openai', ROLE_BINDING.builder.id),
-    provider('zhipu', 'openai', ROLE_BINDING.explorer.id),
+    provider('kimi-code', 'openai', [ROLE_BINDING.main.id]),
+    provider('axon', 'openai', [ROLE_BINDING.thinker.id]),
+    provider('anthropic', 'anthropic', ['claude-fable-5', ROLE_BINDING.reviewer.rail]),
+    provider('deepseek', 'openai', ['deepseek-v4-flash', ROLE_BINDING.builder.rail]),
+    provider('zhipu', 'openai', ['glm-5.3-flash', ROLE_BINDING.explorer.rail]),
   ];
 }
 
