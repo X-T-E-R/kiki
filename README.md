@@ -11,15 +11,23 @@ No cloud relay. No agent lock-in. No black-box prompts.
 
 **Spotlights:** [nb-search — web access with real key management](marketing/nb-search.en.md) · [Task board — work you can point at](marketing/task-board.en.md)
 
+![The Kiki workbench: a live dispatch tree of subagents, a background task, an active goal, and a queued message — all in one window.](marketing/shots/h01-fleet-workbench.en.light.png)
+
+*Example scene rendered by the real Kiki UI; not a measured model-performance demo.*
+
 Kiki began as a fork of [Kimi Code](https://github.com/MoonshotAI/kimi-code) and is now developed independently.
 
 ## Why Kiki
 
 **Own the agent.** A Kiki agent is one Markdown file: the frontmatter declares its tools, model binding, and dispatch rules; the body *is* its system prompt. Profiles hot-reload in ~200 ms, can be edited from the settings UI or any text editor, and are portable — your existing Claude Code or OpenCode agent files load as-is. And every built-in prompt is overridable down to individual tool descriptions: globally, per model, or per profile, with `kiki prompt-fields` to inspect and validate exactly what the model will see.
 
+![A subagent profile in Settings: source path, frontmatter bindings, and the raw Markdown system prompt, editable in place.](marketing/shots/r01-reviewer-profile.en.light.png)
+
 **Run the fleet.** Dispatch subagents into isolated contexts with per-role model bindings; detach long work into background tasks; queue messages while the agent is busy, with per-message timing; pin a `/goal` the agent pursues across turns; schedule cron prompts into sessions; track work on the per-workspace task board.
 
 **A real agent toolchain.** The agent operates the same surface you do: `AgentRun` / `AgentSend` / `AgentList` to dispatch and message subagents, `ThreadCreate` to open an entirely new conversation thread with its own workspace, `CronCreate` to schedule future work, `CreateGoal` to pin a long-running objective, and `TaskList` / `TaskOutput` / `TaskStop` to supervise what is already running. Orchestration is something the agent *does*, not something you wire up.
+
+![An active goal with pause/cancel controls and a message queue with per-message timing.](marketing/shots/r02-goal-queue.en.light.png)
 
 **See everything.** The agent panel shows the live dispatch tree — who is running, who is done, what came back — and the transcript folds tool-step groups out of your way. Completion notices, questions, and approvals are first-class UI, not log lines you have to tail.
 

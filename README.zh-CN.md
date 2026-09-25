@@ -11,15 +11,23 @@ Kiki 是一个本地 agent 工作台：每一个 agent——无论是主 agent �
 
 **特色聚焦**：[nb-search —— 带真钥匙管理的联网能力](marketing/nb-search.zh-CN.md) · [任务看板 —— 看得见、指得着的工作](marketing/task-board.zh-CN.md)
 
+![Kiki 工作台：实时子代理派发树、后台任务、进行中的目标和排队消息，同屏可见。](marketing/shots/h01-fleet-workbench.zh.light.png)
+
+*示例场景；由真实 Kiki 界面渲染，不代表模型性能实测。*
+
 Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，现已独立发展。
 
 ## 为什么是 Kiki
 
 **拥有你的 agent。** 一个 Kiki agent 就是一份 Markdown 文件：frontmatter 声明它的工具、模型绑定与派发规则，正文*就是*它的系统提示词。profile 约 200ms 热更新，可以在设置界面或任何编辑器里修改，并且可移植——你现有的 Claude Code、OpenCode agent 文件可以直接加载。所有内置提示词都可覆写，精确到单个工具的描述：全局、按模型、按 profile 三层任选，配合 `kiki prompt-fields` 可以查证模型最终看到的每一段文字。
 
+![设置中的子代理 profile：来源路径、frontmatter 绑定和 Markdown 系统提示词原文，可就地编辑。](marketing/shots/r01-reviewer-profile.zh.light.png)
+
 **指挥你的机队。** 把子代理派进隔离上下文，每个角色可绑定各自模型；耗时任务转后台；agent 忙碌时消息排队、逐条调整时机；`/goal` 锁定一个跨轮持续推进的目标；cron 按计划往会话里注入 prompt；任务看板按工作区跟踪进展。
 
 **真正的 agent 工具链。** agent 操作的是和你同一套台面：`AgentRun` / `AgentSend` / `AgentList` 派发和联络子代理，`ThreadCreate` 直接开一条带独立工作区的全新会话线程，`CronCreate` 安排未来工作，`CreateGoal` 锁定长期目标，`TaskList` / `TaskOutput` / `TaskStop` 监督正在运行的一切。编排是 agent 自己动手做的事，不是要你接线的工程。
+
+![进行中的目标带暂停/取消控制，消息队列逐条调整发送时机。](marketing/shots/r02-goal-queue.zh.light.png)
 
 **看见一切。** agent 面板实时展示派发树——谁在跑、谁完成了、带回了什么；会话时间线把工具步骤折叠成组，不占你的注意力。完成通知、提问、审批都是一等公民的界面，不是需要你去翻的日志。
 
