@@ -1,13 +1,34 @@
 # Kiki
 
+**Agents as profiles. Fleets under your control.**
+
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/en/) <br>
 [Documentation](https://x-t-e-r.github.io/kiki/en/) · [Issues](https://github.com/X-T-E-R/kiki/issues) · [中文](README.zh-CN.md)
 
-## What is Kiki
+Kiki is a local agent workspace where every agent — the main one and each subagent — is a single Markdown file you own. Kiki runs them, teams them, and keeps the whole fleet visible while they work. It ships in three forms that share one daemon and one session store: a desktop app, a terminal CLI/TUI, and a browser UI. Kimi models work out of the box; other compatible providers can be configured.
 
-Kiki is a local agent workspace: it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. It ships in three forms that share one daemon and one session store — a desktop app, a terminal CLI/TUI, and a browser UI served by the local server. It works out of the box with Moonshot AI's Kimi models and can also be configured to use other compatible providers.
+No cloud relay. No agent lock-in. No black-box prompts.
 
 Kiki began as a fork of [Kimi Code](https://github.com/MoonshotAI/kimi-code) and is now developed independently.
+
+## Why Kiki
+
+**Own the agent.** A Kiki agent is one Markdown file: the frontmatter declares its tools, model binding, and dispatch rules; the body *is* its system prompt. Profiles hot-reload in ~200 ms, can be edited from the settings UI or any text editor, and are portable — your existing Claude Code or OpenCode agent files load as-is. And every built-in prompt is overridable down to individual tool descriptions: globally, per model, or per profile, with `kiki prompt-fields` to inspect and validate exactly what the model will see.
+
+**Run the fleet.** Dispatch subagents into isolated contexts with per-role model bindings; detach long work into background tasks; queue messages while the agent is busy, with per-message timing; pin a `/goal` the agent pursues across turns; schedule cron prompts into sessions; track work on the per-workspace task board.
+
+**A real agent toolchain.** The agent operates the same surface you do: `AgentRun` / `AgentSend` / `AgentList` to dispatch and message subagents, `ThreadCreate` to open an entirely new conversation thread with its own workspace, `CronCreate` to schedule future work, `CreateGoal` to pin a long-running objective, and `TaskList` / `TaskOutput` / `TaskStop` to supervise what is already running. Orchestration is something the agent *does*, not something you wire up.
+
+**See everything.** The agent panel shows the live dispatch tree — who is running, who is done, what came back — and the transcript folds tool-step groups out of your way. Completion notices, questions, and approvals are first-class UI, not log lines you have to tail.
+
+## Feature highlights
+
+- **Three forms, one workspace.** Desktop app, terminal TUI, and browser UI share the same daemon, sessions, and configuration — switch freely, or drive a session from Zed/JetBrains over [ACP](https://agentclientprotocol.com/).
+- **Video input.** Drop a screen recording or demo clip into the chat and let the agent watch what is hard to describe in words.
+- **AI-native MCP configuration.** Add, edit, and authenticate MCP servers conversationally with `/kiki-ops`, without hand-editing JSON.
+- **Plugin ecosystem.** Install skills, MCP servers, and data sources from the marketplace or any GitHub repo, with each install's trust level surfaced up front.
+- **Lifecycle hooks.** Run local commands at key points to gate risky tool calls, audit decisions, trigger desktop notifications, or connect your own automation.
+- **Provider and model management.** Configure providers, models, and thinking effort from the settings UI; credentials stay in local files you can inspect.
 
 ## Install
 
@@ -42,21 +63,6 @@ On first launch, run `/login` and choose either Kimi Code OAuth or a Moonshot AI
 Take a look at this project and explain its main directories.
 ```
 
-## Key Features
-
-- **Three forms, one workspace.** Desktop app, terminal TUI, and browser UI share the same daemon, sessions, and configuration — switch between them freely.
-- **Subagents for focused, parallel work.** Dispatch subagents in isolated contexts while keeping the main conversation clean, and watch them live in the agent panel.
-- **Background tasks and message queue.** Long-running work detaches into background tasks; messages sent while the agent is busy queue up with per-message timing control.
-- **Goal mode.** Start a message with `/goal` to pin an objective the agent pursues across turns, with pause, edit, and cancel controls.
-- **Task board.** Track requirements and tasks per workspace, linked to the sessions that work on them.
-- **Scheduled tasks.** Cron jobs fire prompts into sessions on a schedule, managed from a global panel.
-- **Provider and model management.** Configure providers, models, and thinking effort from the settings UI; Kimi works out of the box.
-- **Video input.** Drop a screen recording or demo clip into the chat and let the agent watch what is hard to describe in words.
-- **AI-native MCP configuration.** Add, edit, and authenticate Model Context Protocol servers conversationally with `/kiki-ops`, without hand-editing JSON.
-- **Rich plugin ecosystem.** Install skills, MCP servers, and data sources from the marketplace or any GitHub repo, with each install's trust level surfaced up front.
-- **Lifecycle hooks.** Run local commands at key points to gate risky tool calls, audit decisions, trigger desktop notifications, or connect to your own automation.
-- **Editor & IDE integration (ACP).** Drive a Kiki session straight from Zed, JetBrains, or any [Agent Client Protocol](https://agentclientprotocol.com/) client with `kiki acp`.
-
 ## Use it in your editor (ACP)
 
 Kiki speaks the [Agent Client Protocol](https://agentclientprotocol.com/), so ACP-compatible editors and IDEs (Zed, JetBrains, …) can drive a session over stdio. Log in once, then point your editor at the `kiki acp` subcommand — no extra login needed.
@@ -83,6 +89,8 @@ Then open a new conversation in Zed's Agent panel. See the [ACP guide](https://x
 - [Installation](https://x-t-e-r.github.io/kiki/en/getting-started/installation)
 - [First launch](https://x-t-e-r.github.io/kiki/en/getting-started/first-launch)
 - [Desktop app](https://x-t-e-r.github.io/kiki/en/getting-started/desktop-app)
+- [Agent profiles](https://x-t-e-r.github.io/kiki/en/customization/agent-profiles)
+- [Prompt field overrides](https://x-t-e-r.github.io/kiki/en/customization/prompt-fields)
 - [Interaction and approvals](https://x-t-e-r.github.io/kiki/en/guides/interaction)
 - [Configuration](https://x-t-e-r.github.io/kiki/en/configuration/config-files)
 - [Command reference](https://x-t-e-r.github.io/kiki/en/reference/command)
