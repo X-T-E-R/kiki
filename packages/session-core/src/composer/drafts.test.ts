@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PermissionMode } from '@kiki/protocol';
 
@@ -11,6 +11,7 @@ import {
   clearComposerState,
   clearNewSessionDraft,
   clearStoredDrafts,
+  flushDrafts,
   INPUT_HISTORY_LIMIT,
   pushInputHistory,
   readComposerState,
@@ -43,6 +44,57 @@ function emptyState(patch: Partial<Parameters<typeof writeComposerState>[1]> = {
 
 beforeEach(() => {
   clearStoredDrafts();
+});
+
+describe('debounced composer drafts', () => {
+  beforeEach(() => {
+    resetDraftMemoryForTests();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    resetDraftMemoryForTests();
+    vi.useRealTimers();
+  });
+
+  it('coalesces typing across sessions, keeps synchronous reads, and restores after flush', () => {
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+    try {
+      writeDraft('one', 'a');
+      writeDraft('one', 'ab');
+      writeDraft('two', 'b');
+      expect(readDraft('one')).toBe('ab');
+      expect(localStorage.getItem('kiki.drafts')).toBeNull();
+      vi.advanceTimersByTime(399);
+      expect(localStorage.getItem('kiki.drafts')).toBeNull();
+      vi.advanceTimersByTime(1);
+      expect(writes.mock.calls.filter(([key]) => key === 'kiki.drafts')).toHaveLength(1);
+      expect(JSON.parse(localStorage.getItem('kiki.drafts') ?? '{}')).toEqual({ one: 'ab', two: 'b' });
+      resetDraftMemoryForTests();
+      expect(readDraft('one')).toBe('ab');
+    } finally {
+      writes.mockRestore();
+    }
+  });
+
+  it('flushes pending input on pagehide, preserving other-tab edits', () => {
+    writeDraft('one', 'my draft');
+    localStorage.setItem('kiki.drafts', JSON.stringify({ other: 'another tab' }));
+    window.dispatchEvent(new Event('pagehide'));
+    expect(JSON.parse(localStorage.getItem('kiki.drafts') ?? '{}')).toEqual({ other: 'another tab', one: 'my draft' });
+    resetDraftMemoryForTests();
+    expect(readDraft('one')).toBe('my draft');
+  });
+
+  it('does not resurrect cleared or deleted drafts on a late timer', () => {
+    writeDraft('one', 'discarded');
+    clearStoredDrafts();
+    vi.runAllTimers();
+    expect(localStorage.getItem('kiki.drafts')).toBeNull();
+    writeDraft('one', 'kept');
+    writeDraft('one', '');
+    flushDrafts();
+    expect(localStorage.getItem('kiki.drafts')).toBeNull();
+  });
 });
 
 describe('per-session composer state (memory-only)', () => {

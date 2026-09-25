@@ -45,6 +45,7 @@ import {
   buildPromptContent,
   buildQuotePrefix,
   buildSkillActivation,
+  flushDrafts,
   readComposerState,
   readDraft,
   removeAnnotation,
@@ -1372,6 +1373,7 @@ export function SessionView({
     const stored = readDraft(sessionId);
     draftRef.current = stored;
     setDraft(stored);
+    return () => { flushDrafts(); };
   }, [sessionId]);
   // Stable identity: the shell-seat memo depends on these (fresh functions per
   // render would re-publish the composer on every keystroke's render).

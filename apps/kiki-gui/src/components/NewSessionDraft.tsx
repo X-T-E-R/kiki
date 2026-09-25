@@ -24,6 +24,7 @@ import type {
 import {
   buildPromptContent,
   clearNewSessionDraft,
+  flushDrafts,
   readDraft,
   readNewSessionDraft,
   writeDraft,
@@ -251,6 +252,7 @@ export function useNewSessionDraft({
 
   useEffect(() => {
     setDraft(readDraft(DRAFT_KEY));
+    return () => { flushDrafts(); };
   }, []);
 
   const setModelOverride = useCallback((model: string | undefined) => {

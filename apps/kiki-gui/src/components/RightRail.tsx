@@ -30,11 +30,11 @@ import { useI18n } from '../i18n';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
 import { pushToast } from '../lib/toasts';
-import { AgentSubtreeView, AgentTreeView } from './AgentTreeView';
+import { VirtualAgentTreeView } from './AgentTreeView';
 import { AgentPanelContainer } from './AgentPanelContainer';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
-import { useNow } from './RelativeTime';
+import { RelativeTime } from './RelativeTime';
 import { TaskDetailModal } from './TaskDetailModal';
 import { DANGER_GHOST_BUTTON } from './ui';
 
@@ -50,33 +50,41 @@ export interface SubagentRailContext {
 }
 
 /**
- * Counts rows (tagged `data-rail-item`) that sit fully below the scroll
- * container's visible bottom edge. Re-runs every render (the lists are small)
- * plus on scroll and resize, so the "N more below" hint tracks the viewport.
+ * Counts rows (tagged `data-rail-item`) fully below the scroll viewport.
+ * Observes actual size/content changes instead of forcing layout each render.
  */
-function useHiddenBelow(ref: React.RefObject<HTMLDivElement | null>): number {
+function useHiddenBelow(ref: React.RefObject<HTMLDivElement | null>, content: unknown): number {
   const [hidden, setHidden] = useState(0);
   useLayoutEffect(() => {
     const container = ref.current;
     if (container === null) return;
+    let frame: number | undefined;
     const update = () => {
       const bottom = container.getBoundingClientRect().bottom;
       let count = 0;
       for (const item of container.querySelectorAll('[data-rail-item]')) {
         if (item.getBoundingClientRect().top > bottom + 1) count += 1;
       }
-      setHidden(count);
+      setHidden((previous) => previous === count ? previous : count);
+    };
+    const schedule = () => {
+      if (frame !== undefined) return;
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        update();
+      });
     };
     update();
-    // jsdom (component tests) has no ResizeObserver; scroll still covered.
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
     observer?.observe(container);
-    container.addEventListener('scroll', update, { passive: true });
+    if (container.firstElementChild !== null) observer?.observe(container.firstElementChild);
+    container.addEventListener('scroll', schedule, { passive: true });
     return () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
       observer?.disconnect();
-      container.removeEventListener('scroll', update);
+      container.removeEventListener('scroll', schedule);
     };
-  });
+  }, [ref, content]);
   return hidden;
 }
 
@@ -162,9 +170,9 @@ const TasksSection = memo(function TasksSection({
   const { t } = useI18n();
   const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const hiddenBelow = useHiddenBelow(scrollRef);
   // Running work first, then newest-created — same order as the tasks page.
   const sorted = useMemo(() => sortTasks(tasks), [tasks]);
+  const hiddenBelow = useHiddenBelow(scrollRef, sorted);
   if (sorted.length === 0) {
     return <p className="text-[12px] text-ink-faint">{t('rail.noTasks')}</p>;
   }
@@ -245,21 +253,19 @@ const SubagentsSection = memo(function SubagentsSection({
 }) {
   const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const hiddenBelow = useHiddenBelow(scrollRef);
   return (
-    <div ref={scrollRef} data-subagent-scroll className="max-h-80 overflow-y-auto pr-1">
-      <AgentTreeView forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpen} />
-      <div className="sticky bottom-0 bg-panel pt-1.5 pb-0.5">
-        <OverflowHint count={hiddenBelow} />
-        <button
-          type="button"
-          data-subagents-view-all
-          onClick={onViewAll}
-          className="text-[10.5px] font-medium text-accent transition-colors hover:text-accent-deep"
-        >
-          {t('tasks.viewAll')}
-        </button>
+    <div>
+      <div ref={scrollRef} data-subagent-scroll className="max-h-80 overflow-y-auto pr-1">
+        <VirtualAgentTreeView forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpen} scrollRef={scrollRef} />
       </div>
+      <button
+        type="button"
+        data-subagents-view-all
+        onClick={onViewAll}
+        className="pt-1.5 text-[10.5px] font-medium text-accent transition-colors hover:text-accent-deep"
+      >
+        {t('tasks.viewAll')}
+      </button>
     </div>
   );
 });
@@ -411,6 +417,8 @@ const SubagentNavSection = memo(function SubagentNavSection({
   const prev = index > 0 ? ordered[index - 1] : undefined;
   const next = index >= 0 && index < ordered.length - 1 ? ordered[index + 1] : undefined;
   const children = agentChildren(forest, context.agentId);
+  const childrenForest = useMemo(() => ({ roots: children, byId: forest.byId }), [children, forest.byId]);
+  const childrenScrollRef = useRef<HTMLDivElement>(null);
   return (
     <div className="space-y-1.5">
       {parentId !== undefined && context.onJumpToSpawn !== undefined ? (
@@ -453,10 +461,10 @@ const SubagentNavSection = memo(function SubagentNavSection({
         </div>
       ) : null}
       {children.length > 0 ? (
-        <div data-agent-children-nav>
-          <AgentSubtreeView
-            forest={forest}
-            agentId={context.agentId}
+        <div ref={childrenScrollRef} data-agent-children-nav className="max-h-80 overflow-y-auto">
+          <VirtualAgentTreeView
+            forest={childrenForest}
+            scrollRef={childrenScrollRef}
             onOpen={onOpenSubagent}
           />
         </div>
@@ -582,11 +590,11 @@ export function RightRail({
   onOpenSubagent: (agentId: string) => void;
   className?: string;
 }) {
-  const { t, time } = useI18n();
-  useNow();
+  const { t } = useI18n();
   const session = state.session;
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [subagentsAllOpen, setSubagentsAllOpen] = useState(false);
+  const allAgentsScrollRef = useRef<HTMLDivElement>(null);
   const [terminateSnapshot, setTerminateSnapshot] = useState<readonly Task[] | null>(null);
   const [terminatingAll, setTerminatingAll] = useState(false);
   const panelSlot = useRef<HTMLDivElement>(null);
@@ -774,7 +782,10 @@ export function RightRail({
           {session !== undefined ? <>
             <MetaRow label={t('rail.directory')} value={session.metadata.cwd} mono />
             <MetaRow label={t('rail.messages')} value={String(session.message_count)} />
-            <MetaRow label={t('rail.updatedRow')} value={time.relativeTime(session.updated_at)} />
+            <div className="flex items-baseline justify-between gap-2 text-[11.5px]">
+              <span className="text-[11px] text-ink-faint">{t('rail.updatedRow')}</span>
+              <RelativeTime at={session.updated_at} className="min-w-0 truncate text-ink" />
+            </div>
           </> : null}
         </div>
       </RailSection>
@@ -800,9 +811,11 @@ export function RightRail({
           <h3 className="shrink-0 font-display text-[17px] font-semibold text-ink">
             {t('rail.subagents')}
           </h3>
-          <div data-subagents-all-scroll className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1">
-            <AgentTreeView
+          <div ref={allAgentsScrollRef} data-subagents-all-scroll className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1">
+            <VirtualAgentTreeView
               forest={forest}
+              scrollRef={allAgentsScrollRef}
+              viewportHeight={640}
               selectedAgentId={selectedAgentId}
               onOpen={(agentId) => {
                 setSubagentsAllOpen(false);

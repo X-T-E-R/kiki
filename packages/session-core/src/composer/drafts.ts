@@ -11,7 +11,11 @@ const PERSISTED_COMPOSER_STATE_KEY = 'kiki.composerStates';
 const PERSISTED_NEW_SESSION_DRAFT_KEY = 'kiki.newSessionDraft';
 
 const memory = new Map<string, string>();
+const pending = new Map<string, string>();
+const DRAFT_WRITE_DELAY_MS = 400;
+let writeTimer: ReturnType<typeof setTimeout> | undefined;
 let hydratedFromDisk = false;
+let unloadListenersInstalled = false;
 
 function draftsEnabled(): boolean {
   return readSettings().draftPersistence;
@@ -28,19 +32,47 @@ function readAllStored(): Record<string, string> {
   }
 }
 
-function persistOne(sessionId: string, text: string): void {
-  const all = readAllStored();
-  if (text === '') {
-    delete all[sessionId];
-  } else {
-    all[sessionId] = text;
+function cancelDraftWrite(): void {
+  if (writeTimer !== undefined) clearTimeout(writeTimer);
+  writeTimer = undefined;
+  pending.clear();
+}
+
+/** Persist all pending edits together (also called when leaving a page or composer). */
+export function flushDrafts(): void {
+  if (writeTimer !== undefined) clearTimeout(writeTimer);
+  writeTimer = undefined;
+  if (pending.size === 0) return;
+  if (!draftsEnabled()) {
+    pending.clear();
+    return;
   }
+  // Merge at flush time so edits from another tab to other sessions survive.
+  const all = readAllStored();
+  for (const [sessionId, text] of pending) {
+    if (text === '') delete all[sessionId];
+    else all[sessionId] = text;
+  }
+  pending.clear();
   try {
     if (Object.keys(all).length === 0) localStorage.removeItem(KEY);
     else localStorage.setItem(KEY, JSON.stringify(all));
   } catch {
     // storage full / unavailable — drafts are a convenience, not a guarantee
   }
+}
+
+function scheduleDraftWrite(): void {
+  if (!unloadListenersInstalled && typeof window !== 'undefined') {
+    window.addEventListener('pagehide', flushDrafts);
+    window.addEventListener('beforeunload', flushDrafts);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushDrafts();
+    });
+    unloadListenersInstalled = true;
+  }
+  if (writeTimer !== undefined) clearTimeout(writeTimer);
+  writeTimer = setTimeout(flushDrafts, DRAFT_WRITE_DELAY_MS);
 }
 
 function hydrateFromDiskIfNeeded(): void {
@@ -61,12 +93,17 @@ export function writeDraft(sessionId: string, text: string): void {
   hydrateFromDiskIfNeeded();
   if (text === '') memory.delete(sessionId);
   else memory.set(sessionId, text);
-  if (!draftsEnabled()) return;
-  persistOne(sessionId, text);
+  if (!draftsEnabled()) {
+    cancelDraftWrite();
+    return;
+  }
+  pending.set(sessionId, text);
+  scheduleDraftWrite();
 }
 
 /** Drop the on-disk store. In-memory drafts for this app run stay put. */
 export function clearStoredDrafts(): void {
+  cancelDraftWrite();
   try {
     localStorage.removeItem(KEY);
     localStorage.removeItem(PERSISTED_COMPOSER_STATE_KEY);
@@ -78,6 +115,7 @@ export function clearStoredDrafts(): void {
 
 /** Test-only: forget this-process memory as if the module were freshly imported. */
 export function resetDraftMemoryForTests(): void {
+  cancelDraftWrite();
   memory.clear();
   hydratedFromDisk = false;
 }

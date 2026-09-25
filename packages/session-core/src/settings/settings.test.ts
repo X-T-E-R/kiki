@@ -75,7 +75,7 @@ import {
   writeSettings,
   type ProviderDraft,
 } from './settings';
-import { clearStoredDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from '../composer/drafts';
+import { clearStoredDrafts, flushDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from '../composer/drafts';
 import { translate, type I18nKey } from '../i18n/locale';
 import { parseNamedAgentTools } from './agentSettings';
 import { mcpConfigFromDraft } from './mcp';
@@ -1435,6 +1435,7 @@ describe('draft persistence gate', () => {
   it('keeps in-memory drafts when persistence is off and does not write disk', () => {
     writeDraft('s1', 'keep me');
     expect(readDraft('s1')).toBe('keep me');
+    flushDrafts();
     expect(localStorage.getItem('kiki.drafts')).toContain('keep me');
     writeSettings({ draftPersistence: false });
     clearStoredDrafts();
@@ -1445,6 +1446,7 @@ describe('draft persistence gate', () => {
     expect(localStorage.getItem('kiki.drafts')).toBeNull();
     writeSettings({ draftPersistence: true });
     writeDraft('s1', 'now persisted');
+    flushDrafts();
     expect(localStorage.getItem('kiki.drafts')).toContain('now persisted');
   });
 

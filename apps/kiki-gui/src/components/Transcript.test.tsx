@@ -2193,6 +2193,10 @@ describe('virtualized transcript scrolling', () => {
     }));
     const { root, container } = makeRoot();
     await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    const ticks = container.querySelectorAll<HTMLButtonElement>('[data-floor-tick]');
+    expect(ticks.length).toBe(64);
+    expect(ticks[0]?.getAttribute('aria-label')).toContain('1');
+    expect(ticks[63]?.getAttribute('aria-label')).toContain('100');
     expect(container.querySelector('[data-block-id="floor-0"]')).toBeNull();
 
     await act(async () => {

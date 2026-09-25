@@ -94,7 +94,7 @@ import { ApprovalCard, QuestionCard } from './Interactions';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
-import { RelativeTime, useNow } from './RelativeTime';
+import { RelativeTime } from './RelativeTime';
 import { MessageRowActions, UserMessageEditor } from './RowActions';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
 import { ToolCard } from './ToolCard';
@@ -1955,11 +1955,10 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({
  */
 export const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTailInfo }) {
   const { t, time } = useI18n();
-  useNow();
   const [copied, setCopied] = useState(false);
   const isFailed = tail.state === 'failed';
   const isCancelled = tail.state === 'cancelled';
-  const facts: string[] = [time.relativeTime(tail.endedAt)];
+  const facts: string[] = [];
   if (tail.durationMs !== undefined) {
     facts.push(t('transcript.ranFor', { duration: time.formatDuration(tail.durationMs) }));
   }
@@ -1999,7 +1998,7 @@ export const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTai
             </span>
           ) : null}
           <span className={`font-mono text-[10.5px] ${isFailed ? 'text-danger/80' : isCancelled ? 'text-amber-ink/80' : 'text-ink-faint'}`}>
-            {facts.join(' · ')}
+            <RelativeTime at={tail.endedAt} />{facts.length > 0 ? ` · ${facts.join(' · ')}` : ''}
           </span>
           {isFailed && tail.error !== undefined ? (
             <button

@@ -2,39 +2,38 @@ import { useSyncExternalStore } from 'react';
 
 import { useI18n } from '../i18n';
 
-const TICK_MS = 1_000;
-let current = Date.now();
-let timer: ReturnType<typeof setInterval> | undefined;
-const listeners = new Set<() => void>();
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  if (timer === undefined) {
-    timer = setInterval(() => {
-      current = Date.now();
-      for (const active of listeners) active();
-    }, TICK_MS);
-  }
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0 && timer !== undefined) {
-      clearInterval(timer);
-      timer = undefined;
-    }
+function clock(intervalMs: number) {
+  let current = Date.now();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const listeners = new Set<() => void>();
+  return {
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      if (timer === undefined) {
+        current = Date.now();
+        timer = setInterval(() => {
+          current = Date.now();
+          for (const active of listeners) active();
+        }, intervalMs);
+      }
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0 && timer !== undefined) {
+          clearInterval(timer);
+          timer = undefined;
+        }
+      };
+    },
+    getSnapshot: () => current,
   };
 }
 
-function getSnapshot(): number {
-  return current;
-}
+const seconds = clock(1_000);
+const minutes = clock(60_000);
 
-/**
- * Shared 1s clock for relative-time displays: one interval for the whole app,
- * running only while at least one consumer is mounted. Components calling this
- * hook re-render on every tick, so their `time.relativeTime(...)` output ages.
- */
+/** Shared second clock for live elapsed-duration and countdown displays. */
 export function useNow(): number {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  return useSyncExternalStore(seconds.subscribe, seconds.getSnapshot, seconds.getSnapshot);
 }
 
 /**
@@ -43,6 +42,11 @@ export function useNow(): number {
  */
 export function RelativeTime({ at, className }: { readonly at: string; readonly className?: string }) {
   const { time } = useI18n();
-  useNow();
+  const recent = Date.now() - Date.parse(at) < 60_000;
+  useSyncExternalStore(
+    recent ? seconds.subscribe : minutes.subscribe,
+    recent ? seconds.getSnapshot : minutes.getSnapshot,
+    recent ? seconds.getSnapshot : minutes.getSnapshot,
+  );
   return <span className={className}>{time.relativeTime(at)}</span>;
 }

@@ -13,6 +13,7 @@ import { buildFloorEntries, type Block, type FloorEntry } from '@kiki/session-co
 import { useI18n } from '../i18n';
 
 const REVEAL_IDLE_MS = 1400;
+const MAX_FLOOR_TICKS = 64;
 
 function sameFloorEntries(left: readonly FloorEntry[], right: readonly FloorEntry[]): boolean {
   if (left.length !== right.length) return false;
@@ -104,29 +105,42 @@ export function FloorNavRail({
   }, [entries, nodeIndexes, scrollRef, virtualizer]);
 
   const ticks = useMemo(
-    () => entries.map((entry, index) => {
-      const active = entry.blockId === activeId;
-      return (
-        <button
-          key={entry.blockId}
-          type="button"
-          data-floor-tick
-          data-floor-active={active || undefined}
-          title={entry.preview}
-          aria-label={t('transcript.floorTickAria', { index: index + 1, preview: entry.preview })}
-          onClick={() => {
-            setActiveId(entry.blockId);
-            virtualizer.scrollToIndex(nodeIndexes.get(entry.blockId)!, {
-              align: 'start',
-              behavior: 'smooth',
-            });
-          }}
-          className={`h-[3px] rounded-full transition-all duration-150 ${
-            active ? 'w-[18px] bg-accent' : 'w-[10px] bg-ink-faint/40 hover:bg-ink-faint/70'
-          }`}
-        />
-      );
-    }),
+    () => {
+      const indexes = entries.length <= MAX_FLOOR_TICKS
+        ? entries.map((_, index) => index)
+        : Array.from({ length: MAX_FLOOR_TICKS }, (_, index) =>
+            Math.round(index * (entries.length - 1) / (MAX_FLOOR_TICKS - 1)));
+      const activeIndex = entries.findIndex((entry) => entry.blockId === activeId);
+      if (activeIndex >= 0 && !indexes.includes(activeIndex)) {
+        const nearest = Math.round(activeIndex * (MAX_FLOOR_TICKS - 1) / (entries.length - 1));
+        indexes[Math.max(1, Math.min(MAX_FLOOR_TICKS - 2, nearest))] = activeIndex;
+        indexes.sort((left, right) => left - right);
+      }
+      return indexes.map((index) => {
+        const entry = entries[index]!;
+        const active = entry.blockId === activeId;
+        return (
+          <button
+            key={entry.blockId}
+            type="button"
+            data-floor-tick
+            data-floor-active={active || undefined}
+            title={entry.preview}
+            aria-label={t('transcript.floorTickAria', { index: index + 1, preview: entry.preview })}
+            onClick={() => {
+              setActiveId(entry.blockId);
+              virtualizer.scrollToIndex(nodeIndexes.get(entry.blockId)!, {
+                align: 'start',
+                behavior: 'smooth',
+              });
+            }}
+            className={`h-[3px] rounded-full transition-all duration-150 ${
+              active ? 'w-[18px] bg-accent' : 'w-[10px] bg-ink-faint/40 hover:bg-ink-faint/70'
+            }`}
+          />
+        );
+      });
+    },
     [activeId, entries, nodeIndexes, t, virtualizer],
   );
 

@@ -40,6 +40,10 @@ const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONM
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute('data-subagent-scroll') || this.hasAttribute('data-subagents-all-scroll') || this.hasAttribute('data-agent-children-nav') ? 320 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(320);
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 afterEach(async () => {
@@ -50,6 +54,7 @@ afterEach(async () => {
 });
 afterAll(() => {
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -58,9 +63,11 @@ async function renderRail({
   empty = false,
   stateTasks,
   ownerAgentId,
+  agentForest,
 }: {
   subagent?: SubagentRailContext;
   empty?: boolean;
+  agentForest?: ReturnType<typeof buildAgentForest>;
   /** Main-session tasks; the child-only set arrives via `subagent`'s tasks. */
   stateTasks?: readonly Task[];
   /** Rail cancel/detail owner scope (the focused agent's task service). */
@@ -76,7 +83,7 @@ async function renderRail({
         <I18nProvider>
           <RightRail
             state={{ ...createViewState('sess-1'), tasks: (empty ? [] : stateTasks) ?? tasks }}
-            forest={empty ? buildAgentForest([], [{ agentId: 'main', name: 'Main' }]) : forest}
+            forest={agentForest ?? (empty ? buildAgentForest([], [{ agentId: 'main', name: 'Main' }]) : forest)}
             selectedAgentId={subagent?.agentId}
             subagent={subagent}
             taskOwnerAgentId={ownerAgentId}
@@ -188,7 +195,7 @@ describe('RightRail shared chapters', () => {
     ]);
     for (const rail of [main, child]) {
       expect(rail.querySelector('[data-agent-tree] [data-agent-id="agent-1"]')).not.toBeNull();
-      expect(rail.querySelector('[data-subagent-scroll] [data-subagents-view-all]')).not.toBeNull();
+      expect(rail.querySelector('[data-subagent-scroll] + [data-subagents-view-all]')).not.toBeNull();
       expect(rail.querySelector('[data-tasks-scroll] [data-task-open="background-1"]')).not.toBeNull();
       expect(rail.querySelector('[data-task-open="subagent-1"]')).toBeNull();
       expect(rail.querySelector('[data-terminate-all-subagents]')).not.toBeNull();
@@ -221,6 +228,52 @@ describe('RightRail shared chapters', () => {
       expect(section?.querySelector('[data-agent-tree]')).toBeNull();
       await act(async () => { toggle?.click(); });
       expect(section?.querySelector('[data-agent-tree]')).not.toBeNull();
+    }
+  });
+
+  it('bounds mounted agent rows in a large rail and its view-all dialog', async () => {
+    const large = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      ...Array.from({ length: 511 }, (_, index) => ({
+        agentId: `child-${index}`, parentAgentId: 'main', name: `Child ${index}`, status: 'completed' as const,
+      })),
+    ]);
+    const rail = await renderRail({ agentForest: large });
+    const railRows = rail.querySelectorAll('[data-subagent-scroll] [data-agent-id]');
+    expect(railRows.length).toBeGreaterThan(0);
+    expect(railRows.length).toBeLessThan(25);
+    const scroll = rail.querySelector<HTMLDivElement>('[data-subagent-scroll]')!;
+    await act(async () => {
+      scroll.scrollTop = 52 * 480;
+      scroll.dispatchEvent(new Event('scroll'));
+    });
+    const expectedId = large.byId['main']!.childIds[479];
+    expect(scroll.querySelector(`[data-agent-id="${expectedId}"]`)).not.toBeNull();
+    expect(scroll.querySelectorAll('[data-agent-id]').length).toBeLessThan(25);
+    await act(async () => {
+      rail.querySelector<HTMLButtonElement>('[data-subagents-view-all]')!.click();
+    });
+    const dialogRows = document.querySelectorAll('[data-subagents-all-scroll] [data-agent-id]');
+    expect(dialogRows.length).toBeGreaterThan(0);
+    expect(dialogRows.length).toBeLessThan(35);
+    const focused = await renderRail({
+      agentForest: large,
+      subagent: { agentId: 'main', block: undefined, pendingInteractionCount: 0, onJumpToSpawn: undefined },
+    });
+    const childRows = focused.querySelectorAll('[data-agent-children-nav] [data-agent-id]');
+    expect(childRows.length).toBeGreaterThan(0);
+    expect(childRows.length).toBeLessThan(25);
+  });
+
+  it('does not remeasure every task row when opening the tree dialog', async () => {
+    const rail = await renderRail();
+    const tasks = rail.querySelector('[data-tasks-scroll]')!;
+    const measure = vi.spyOn(tasks, 'querySelectorAll');
+    try {
+      await act(async () => { rail.querySelector<HTMLButtonElement>('[data-subagents-view-all]')!.click(); });
+      expect(measure).not.toHaveBeenCalled();
+    } finally {
+      measure.mockRestore();
     }
   });
 });
