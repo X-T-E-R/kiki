@@ -176,7 +176,8 @@ export class HttpChannel implements KlientChannel {
     const requestOptions = options ?? {};
     return this.performFetch(path, requestOptions, async (response) => {
       const contentType = response.headers.get('content-type') ?? '';
-      if (response.ok && !(requestOptions.jsonErrorOnSuccess === true && contentType.includes('json'))) {
+      if ((response.ok || (response.status === 304 && requestOptions.headers?.['if-none-match'] !== undefined)) &&
+          !(requestOptions.jsonErrorOnSuccess === true && contentType.includes('json'))) {
         return consume(response);
       }
       const envelope = await this.readEnvelope(response, requestOptions.signal);
@@ -232,6 +233,7 @@ export class HttpChannel implements KlientChannel {
       }
       const headers: Record<string, string> = {
         accept: options.expectBinary === true ? 'application/octet-stream' : 'application/json',
+        ...options.headers,
       };
       if (this.token !== undefined && options.skipAuth !== true) headers['authorization'] = `Bearer ${this.token}`;
       if (options.body !== undefined) headers['content-type'] = 'application/json';

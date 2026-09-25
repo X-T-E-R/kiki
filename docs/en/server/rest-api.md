@@ -186,6 +186,9 @@ Sending now adds the selected prompts to the active turn, or starts them as new 
 | `GET /api/sessions/{session_id}/tasks` | List background tasks |
 | `GET /api/sessions/{session_id}/tasks/{task_id}` | Read a task (optional output preview) |
 | `POST /api/sessions/{session_id}/tasks/{task_id}:cancel` | Cancel a task |
+| `GET /api/cron` | List scheduled tasks across workspaces |
+
+Task and cron lists accept `page_size` (1–100, default 100) and `offset` (default 0). Responses include `items`, `has_more`, and `next_offset` when more results remain. The task list also accepts `status`; the cron list accepts `session_id`. Offset pages may shift if tasks change between requests.
 
 ### Skills, tools, and MCP
 
@@ -397,10 +400,11 @@ The following endpoints stream binary bodies instead of a JSON payload. Their HT
 | --- | --- | --- | --- |
 | `GET /api/files/{file_id}` | Download an uploaded file | Yes | No (sends an `etag` header but ignores `If-None-Match`) |
 | `GET /api/sessions/{session_id}/fs/{path}:download` | Download a session workspace file | Yes | Yes |
+| `GET /api/sessions/{session_id}/media/{file_id}` | Read session media, including saved tool-result blobs | Yes | Yes |
 | `GET /api/fs:content` | Raw bytes of any host file (gated only by the token — be careful when exposing the port) | Yes | Yes |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream) | No | No |
 
-Error semantics differ as well: `GET /api/files/{file_id}` answers lookup and storage failures with real 404 / 500 statuses (parameter validation still uses the HTTP 200 envelope), while the other three report every failure through the standard [response envelope](#response-envelope) — clients must keep checking the envelope `code` on those endpoints.
+Error semantics differ as well: `GET /api/files/{file_id}` and session media downloads answer lookup and storage failures with real 404 / 500 statuses (file parameter validation still uses the HTTP 200 envelope), while the other three report failures through the standard [response envelope](#response-envelope) — clients must keep checking the envelope `code` on those endpoints.
 
 ## Next steps
 

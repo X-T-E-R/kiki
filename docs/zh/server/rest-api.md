@@ -186,6 +186,9 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/sessions/{session_id}/tasks` | 列出后台任务 |
 | `GET /api/sessions/{session_id}/tasks/{task_id}` | 读取任务（可选输出预览） |
 | `POST /api/sessions/{session_id}/tasks/{task_id}:cancel` | 取消任务 |
+| `GET /api/cron` | 跨工作区列出定时任务 |
+
+任务和定时任务列表支持 `page_size`（1–100，默认 100）与 `offset`（默认 0）。响应包含 `items`、`has_more`，有下一页时还包含 `next_offset`。后台任务列表另支持 `status`，定时任务列表另支持 `session_id`。若两次请求之间任务发生变化，按偏移量翻页可能出现位置偏移。
 
 ### 技能、工具与 MCP
 
@@ -397,10 +400,11 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 | --- | --- | --- | --- |
 | `GET /api/files/{file_id}` | 下载已上传文件 | 支持 | 不支持（会发送 `etag` 头，但不处理 `If-None-Match`） |
 | `GET /api/sessions/{session_id}/fs/{path}:download` | 下载会话工作区文件 | 支持 | 支持 |
+| `GET /api/sessions/{session_id}/media/{file_id}` | 读取会话媒体文件，包括已保存的工具结果 blob | 支持 | 支持 |
 | `GET /api/fs:content` | 读取本机任意文件（仅受 token 保护，谨慎暴露端口） | 支持 | 支持 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流） | 不支持 | 不支持 |
 
-错误语义也不相同：`GET /api/files/{file_id}` 对查找和存储失败返回真实 404 / 500 状态码（参数校验失败仍走 HTTP 200 信封），其余三个端点的所有失败都走标准[响应信封](#响应信封)——客户端在这三个端点上仍需检查信封中的 `code`。
+错误语义也不相同：`GET /api/files/{file_id}` 和会话媒体下载对查找和存储失败返回真实 404 / 500 状态码（文件端点的参数校验失败仍走 HTTP 200 信封），其余三个端点的失败走标准[响应信封](#响应信封)——客户端仍需检查信封中的 `code`。
 
 ## 下一步
 

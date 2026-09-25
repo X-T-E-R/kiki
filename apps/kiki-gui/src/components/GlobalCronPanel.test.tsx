@@ -78,7 +78,12 @@ beforeEach(() => {
   for (const mock of [listCronTasks, pauseCronTask, resumeCronTask, runCronTask, deleteCronTask]) {
     mock.mockReset();
   }
-  listCronTasks.mockImplementation(() => Promise.resolve({ items: currentTasks }));
+  listCronTasks.mockImplementation((query: { offset?: number; page_size?: number } = {}) => Promise.resolve({
+    items: currentTasks.slice(query.offset ?? 0, (query.offset ?? 0) + (query.page_size ?? 100)),
+    has_more: currentTasks.length > (query.offset ?? 0) + (query.page_size ?? 100),
+    next_offset: currentTasks.length > (query.offset ?? 0) + (query.page_size ?? 100)
+      ? (query.offset ?? 0) + (query.page_size ?? 100) : undefined,
+  }));
   pauseCronTask.mockImplementation((id: string) => {
     const found = currentTasks.find((task) => task.id === id);
     if (found === undefined) {
@@ -152,6 +157,18 @@ async function openPanel(): Promise<HTMLElement> {
 }
 
 describe('GlobalCronPanel', () => {
+  it('loads subsequent scheduled-task pages on demand', async () => {
+    seedTasks(Array.from({ length: 101 }, (_, index) => makeCronTask({ id: `task-${index}` })));
+    await mount();
+    const dialog = await openPanel();
+    expect(dialog.querySelectorAll('[data-cron-task]')).toHaveLength(100);
+    const more = [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Load more scheduled tasks')!;
+    await act(async () => { more.click(); });
+    await flush();
+    expect(listCronTasks).toHaveBeenCalledWith({ page_size: 100, offset: 100 });
+    expect(dialog.querySelectorAll('[data-cron-task]')).toHaveLength(101);
+  });
+
   it('opens from the rail launcher and renders rows with status, schedule, prompt, and ownership', async () => {
     seedTasks([
       makeCronTask({ id: 'task-1' }),

@@ -129,6 +129,7 @@ export interface AgentWorkspaceProps {
   readonly showRailToggle?: boolean;
   /** Header breadcrumb; suppressed in narrow containers (the relations row stays). */
   readonly showBreadcrumb?: boolean;
+  readonly transcriptVisible?: boolean;
 }
 
 export function resolveRunningSubagentTask(input: {
@@ -267,6 +268,7 @@ export function AgentWorkspace({
   showPreviewToggle = true,
   showRailToggle = true,
   showBreadcrumb = true,
+  transcriptVisible = true,
 }: AgentWorkspaceProps) {
   const { t } = useI18n();
   const { client } = useConnection();
@@ -291,8 +293,8 @@ export function AgentWorkspace({
   // republishing for every hidden child delta.
   const subscribeAgent = useCallback(
     (listener: () => void) =>
-      controller === null ? () => {} : controller.subscribeAgent(agentId, listener),
-    [controller, agentId],
+      controller === null || !transcriptVisible ? () => {} : controller.subscribeAgent(agentId, listener),
+    [controller, agentId, transcriptVisible],
   );
   const agentLiveState = useSyncExternalStore(subscribeAgent, () =>
     controller !== null ? controller.getAgentState(agentId) : emptyAgentView,
@@ -301,10 +303,10 @@ export function AgentWorkspace({
     (controller?.getForest() ?? sessionAgentForest(sessionState)).byId[agentId]?.parentAgentId;
   const subscribeParentAgent = useCallback(
     (listener: () => void) =>
-      controller === null || parentAgentId === undefined || parentAgentId === MAIN_AGENT_ID
+      controller === null || !transcriptVisible || parentAgentId === undefined || parentAgentId === MAIN_AGENT_ID
         ? () => {}
         : controller.subscribeAgent(parentAgentId, listener),
-    [controller, parentAgentId],
+    [controller, parentAgentId, transcriptVisible],
   );
   const parentAgentState = useSyncExternalStore(subscribeParentAgent, () =>
     controller !== null && parentAgentId !== undefined && parentAgentId !== MAIN_AGENT_ID

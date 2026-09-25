@@ -131,6 +131,26 @@ describe('cron management routes', () => {
     return task;
   }
 
+  it('caps the cross-workspace list and exposes subsequent pages', async () => {
+    const sessionId = await createSession();
+    await addTask(sessionId, { prompt: 'first' });
+    await addTask(sessionId, { prompt: 'second' });
+    await addTask(sessionId, { prompt: 'third' });
+    const first = await request<{ items: CronTaskWire[]; has_more: boolean; next_offset?: number }>(
+      '/api/cron?page_size=2',
+    );
+    expect(first.data.items).toHaveLength(2);
+    expect(first.data).toMatchObject({ has_more: true, next_offset: 2 });
+    const second = await request<{ items: CronTaskWire[]; has_more: boolean }>(
+      '/api/cron?page_size=2&offset=2',
+    );
+    expect(second.data.items).toHaveLength(1);
+    expect(second.data.has_more).toBe(false);
+    expect(new Set([...first.data.items, ...second.data.items].map((item) => item.id)).size).toBe(3);
+    const invalid = await request<null>('/api/cron?page_size=101');
+    expect(invalid.code).toBe(40001);
+  });
+
   it('aggregates scheduled tasks across sessions with management fields', async () => {
     const firstSession = await createSession();
     const secondSession = await createSession();

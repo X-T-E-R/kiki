@@ -113,13 +113,20 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       const context = await presentationContext(core);
-      const query = req.query as { session_id?: string };
+      const query = req.query as { session_id?: string; page_size?: number; offset?: number };
       const located = await collectCronTasks(core);
-      const items = located
+      const sorted = located
         .filter((entry) => query.session_id === undefined || entry.sessionId === query.session_id)
         .map((entry) => toWireTask(entry, context))
         .toSorted(compareCronTasks);
-      reply.send(okEnvelope({ items }, req.id));
+      const offset = query.offset ?? 0;
+      const pageSize = query.page_size ?? 100;
+      const has_more = sorted.length > offset + pageSize;
+      reply.send(okEnvelope({
+        items: sorted.slice(offset, offset + pageSize),
+        has_more,
+        next_offset: has_more ? offset + pageSize : undefined,
+      }, req.id));
     },
   );
   app.get(listRoute.path, listRoute.options, listRoute.handler as Parameters<CronRouteHost['get']>[2]);

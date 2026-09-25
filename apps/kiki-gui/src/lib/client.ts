@@ -92,6 +92,7 @@ import type {
   SetDefaultModelResponse,
   ShippedAgentProfile as ProtocolShippedAgentProfile,
   Task,
+  TaskStatus,
   Terminal,
   UndoSessionResponse,
   UpdateNamedAgentProfileRequest as ProtocolUpdateNamedAgentProfileRequest,
@@ -422,6 +423,8 @@ export type CronTask = HttpRestCronTask;
 
 export interface ListCronTasksResponse {
   readonly items: readonly CronTask[];
+  readonly has_more?: boolean;
+  readonly next_offset?: number;
 }
 
 /**
@@ -743,6 +746,8 @@ export class KikiClient {
   readonly sessions: ReturnType<typeof createSessionTransport>;
   private readonly token: string | undefined;
   private serverLeaseId: string | undefined;
+  private readonly previewBytes = new Map<string, { bytes: Uint8Array; mime: string; name?: string; etag: string }>();
+  private previewCacheBytes = 0;
 
   constructor(options: KikiClientOptions) {
     this.baseUrl = options.baseUrl;
@@ -966,8 +971,8 @@ export class KikiClient {
     return this.sessions.dismissQuestion(sessionId, questionId);
   }
 
-  listTasks(sessionId: string): Promise<ListTasksResponse> {
-    return this.run(() => this.rest.sessions.listTasks(sessionId));
+  listTasks(sessionId: string, query?: { status?: TaskStatus; page_size?: number; offset?: number }): Promise<ListTasksResponse> {
+    return this.run(() => this.rest.sessions.listTasks(sessionId, query));
   }
 
   /** Single task; `with_output` opts into the tail-of-log preview (≤32KB default). */
@@ -1087,18 +1092,49 @@ export class KikiClient {
     return result.content;
   }
 
+  async previewHostFile(path: string, maxBytes = 512_001): Promise<{ text: string; truncated: boolean }> {
+    return this.run(this.rest.filesystem.previewHostFile(path, maxBytes));
+  }
+
+  private async cachedPreviewBytes(
+    key: string,
+    read: (etag?: string) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
+  ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
+    const cached = this.previewBytes.get(key);
+    const result = await this.run(read(cached?.etag));
+    if (result.notModified) {
+      if (cached === undefined) throw new Error('Preview cache is missing a validated response');
+      return cached;
+    }
+    if (cached !== undefined) {
+      this.previewBytes.delete(key);
+      this.previewCacheBytes -= cached.bytes.byteLength;
+    }
+    if (result.etag !== undefined && result.bytes.byteLength <= 32 * 1024 * 1024) {
+      this.previewBytes.set(key, { ...result, etag: result.etag });
+      this.previewCacheBytes += result.bytes.byteLength;
+      while (this.previewBytes.size > 8 || this.previewCacheBytes > 32 * 1024 * 1024) {
+        const oldest = this.previewBytes.keys().next().value!;
+        this.previewCacheBytes -= this.previewBytes.get(oldest)!.bytes.byteLength;
+        this.previewBytes.delete(oldest);
+      }
+    }
+    return result;
+  }
+
   /** Binary variant of readHostFile, retaining the server MIME. */
-  async readHostFileBytes(path: string): Promise<{ bytes: Uint8Array; mime: string }> {
-    const result = await this.run(this.rest.filesystem.readHostFileBytes(path));
-    return { bytes: result.bytes, mime: result.mime };
+  readHostFileBytes(path: string): Promise<{ bytes: Uint8Array; mime: string }> {
+    return this.cachedPreviewBytes(`host:${path}`, (etag) =>
+      this.rest.filesystem.readHostFileBytes(path, { ifNoneMatch: etag }));
   }
 
   /** Read a canonical transcript attachment (or its staged-upload fallback). */
-  async readSessionMediaBytes(
+  readSessionMediaBytes(
     sessionId: string,
     fileId: string,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
-    return this.run(this.rest.sessions.media(sessionId, fileId));
+    return this.cachedPreviewBytes(`media:${sessionId}:${fileId}`, (etag) =>
+      this.rest.sessions.media(sessionId, fileId, { ifNoneMatch: etag }));
   }
 
   listWorkspaces(): Promise<ListWorkspacesResponse> {
@@ -1349,8 +1385,8 @@ export class KikiClient {
     }));
   }
 
-  /** `GET /api/cron` — every workspace's scheduled tasks, next-fire order. */
-  listCronTasks(query: { session_id?: string } = {}): Promise<ListCronTasksResponse> {
+  /** `GET /api/cron` — paged cross-workspace scheduled tasks, next-fire order. */
+  listCronTasks(query: { session_id?: string; page_size?: number; offset?: number } = {}): Promise<ListCronTasksResponse> {
     return this.run(this.rest.cron.list(query));
   }
 

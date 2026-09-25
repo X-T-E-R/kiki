@@ -1153,7 +1153,9 @@ describe('SessionController transcript authority', () => {
       '*': 'turn', main: 'delta', 'child-2': 'delta',
     });
     controller.updateAgentView('right', 'off');
-    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'turn', main: 'delta' });
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+      '*': 'turn', main: 'delta', 'child-2': 'off',
+    });
     controller.close();
   });
 
@@ -1183,6 +1185,23 @@ describe('SessionController transcript authority', () => {
     controller.updateAgentView('inspector', 'delta');
     expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(releasedCalls);
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'turn', main: 'delta' });
+    controller.close();
+  });
+
+  it('suppresses wildcard transcript history for 511 hidden tabs after their listeners release', async () => {
+    const { controller, socket } = await openTranscriptController();
+    const releases = Array.from({ length: 511 }, (_, index) => {
+      const agentId = `child-${index}`;
+      controller.retainAgentView(`tab-${index}`, agentId, 'delta');
+      return controller.subscribeAgent(agentId, vi.fn());
+    });
+    for (let index = 0; index < 511; index++) {
+      controller.updateAgentView(`tab-${index}`, 'off');
+      releases[index]!();
+    }
+    const grades = socket.setTranscriptGrades.mock.lastCall?.[1] as Record<string, string>;
+    expect(Object.entries(grades).filter(([key, grade]) => key.startsWith('child-') && grade === 'off')).toHaveLength(511);
+    expect(grades).toMatchObject({ '*': 'turn', main: 'delta' });
     controller.close();
   });
 

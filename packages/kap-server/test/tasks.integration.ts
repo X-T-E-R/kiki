@@ -43,6 +43,8 @@ interface TaskWire {
 
 interface ListWire {
   items: TaskWire[];
+  has_more: boolean;
+  next_offset?: number;
 }
 
 describe('server-v2 /api/sessions/{sid}/tasks', () => {
@@ -269,6 +271,21 @@ describe('server-v2 /api/sessions/{sid}/tasks', () => {
     const completed = await getJson<ListWire>(`/api/sessions/${id}/tasks?status=completed`);
     expect(completed.body.code).toBe(0);
     expect(completed.body.data.items).toEqual([]);
+  });
+
+  it('bounds and pages task lists without repeating rows', async () => {
+    const id = await createSession();
+    const tasks = await mainAgentTasks(id);
+    const ids = Array.from({ length: 4 }, () => tasks.registerTask(fakeTask('process')));
+    await flush();
+    const first = await getJson<ListWire>(`/api/sessions/${id}/tasks?page_size=2`);
+    expect(first.body.data.items.map((item) => item.id)).toEqual(ids.slice(0, 2));
+    expect(first.body.data).toMatchObject({ has_more: true, next_offset: 2 });
+    const second = await getJson<ListWire>(`/api/sessions/${id}/tasks?page_size=2&offset=2`);
+    expect(second.body.data.items.map((item) => item.id)).toEqual(ids.slice(2));
+    expect(second.body.data.has_more).toBe(false);
+    const invalid = await getJson<null>(`/api/sessions/${id}/tasks?page_size=101`);
+    expect(invalid.body.code).toBe(40001);
   });
 
   it('gets a single task by id and 40406 for an unknown task', async () => {

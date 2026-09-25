@@ -697,6 +697,25 @@ function renderWorkspace(overrides: Partial<ComponentProps<typeof AgentWorkspace
   ));
 }
 
+it('releases per-agent transcript observation while an embedded tab is hidden', async () => {
+  const release = vi.fn();
+  const subscribeAgent = vi.fn(() => release);
+  const controller = {
+    ...controllerStub({ forest: testForest(), agentStates: {} }),
+    subscribeAgent,
+  } as unknown as SessionController;
+  await renderWorkspace({ controller, transcriptVisible: true });
+  expect(subscribeAgent).toHaveBeenCalledWith('child', expect.any(Function));
+  expect(release).not.toHaveBeenCalled();
+
+  await renderWorkspace({ controller, transcriptVisible: false });
+  expect(release).toHaveBeenCalledTimes(1);
+  expect(subscribeAgent).toHaveBeenCalledTimes(1);
+
+  await renderWorkspace({ controller, transcriptVisible: true });
+  expect(subscribeAgent).toHaveBeenCalledTimes(2);
+});
+
 it('mounts the owned media preview provider with the shared api ref by default', async () => {
   const previewRef = createRef<MediaPreviewApi>();
   const onToggleRail = vi.fn();

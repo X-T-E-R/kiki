@@ -21,6 +21,10 @@ export class BlobStoreService implements IBlobStore {
     return this.storage.read(scope, key);
   }
 
+  size(scope: string, key: string): Promise<number | undefined> {
+    return this.storage.size(scope, key);
+  }
+
   getStream(scope: string, key: string, range?: BlobReadRange): AsyncIterable<Uint8Array> {
     return this.storage.readStream(scope, key, range);
   }

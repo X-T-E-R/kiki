@@ -212,6 +212,29 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('requests bounded text and validates cached media with conditional headers', async () => {
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/fs:content')) {
+        expect(init?.headers).toMatchObject({ range: 'bytes=0-7' });
+        return new Response('abcdefgh', { status: 206, headers: { 'content-range': 'bytes 0-7/100' } });
+      }
+      expect(init?.headers).toMatchObject({ 'if-none-match': '"cached"' });
+      return new Response(null, { status: 304, headers: { etag: '"cached"' } });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.filesystem.previewHostFile('/tmp/large.txt', 8)).resolves.toEqual({
+        text: 'abcdefgh', truncated: true,
+      });
+      const media = await channel.rest.sessions.media('s1', 'f1', { ifNoneMatch: '"cached"' });
+      expect(media.notModified).toBe(true);
+      expect(media.bytes.byteLength).toBe(0);
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('keeps valid JSON files as raw bytes, even when they resemble an envelope', async () => {
     const envelopeShaped = '{"code":50001,"msg":"file document","data":{"ok":true}}';
     const ordinaryJson = '{"items":[1,2,3]}';

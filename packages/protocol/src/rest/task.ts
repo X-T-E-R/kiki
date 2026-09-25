@@ -20,11 +20,15 @@ import { taskSchema, taskStatusSchema } from '../task';
 
 export const listTasksQuerySchema = z.object({
   status: taskStatusSchema.optional(),
+  page_size: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
 });
 export type ListTasksQuery = z.infer<typeof listTasksQuerySchema>;
 
 export const listTasksResponseSchema = z.object({
   items: z.array(taskSchema),
+  has_more: z.boolean().optional(),
+  next_offset: z.number().int().nonnegative().optional(),
 });
 export type ListTasksResponse = z.infer<typeof listTasksResponseSchema>;
 

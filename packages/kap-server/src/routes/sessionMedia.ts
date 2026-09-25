@@ -101,11 +101,15 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
           ) as unknown as void;
       }
 
+      const etag = `"${session_id}-${file_id}-${file.size}"`;
       r
         .type(file.mediaType)
         .header('content-disposition', buildContentDisposition(file.name, file.mediaType))
         .header('accept-ranges', 'bytes')
-        .header('etag', `"${session_id}-${file_id}-${file.size}"`);
+        .header('etag', etag);
+      if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) {
+        return r.code(304).send(null) as void;
+      }
 
       const range = parseRangeHeader(pickHeader(req.headers, 'range'), file.size);
       if (range !== null) {
@@ -153,15 +157,20 @@ async function openPersistedToolMedia(
     workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId),
     sessionId,
   );
-  const bytes = await core.accessor.get(IBlobStore).get(`${agentScopeOf(sessionScope, match[1]!)}/blobs`, match[2]!);
-  if (bytes === undefined) return undefined;
+  const blobs = core.accessor.get(IBlobStore);
+  const scope = `${agentScopeOf(sessionScope, match[1]!)}/blobs`;
+  const bytes = blobs.size === undefined ? await blobs.get(scope, match[2]!) : undefined;
+  const size = blobs.size === undefined ? bytes?.byteLength : await blobs.size(scope, match[2]!);
+  if (size === undefined) return undefined;
   return {
     name: 'tool-result.bin',
     mediaType: 'application/octet-stream',
-    size: bytes.byteLength,
-    stream: async function* (range) {
-      yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
-    },
+    size,
+    stream: bytes === undefined
+      ? (range) => blobs.getStream(scope, match[2]!, range)
+      : async function* (range) {
+          yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
+        },
   };
 }
 

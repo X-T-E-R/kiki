@@ -88,27 +88,44 @@ async function renderPage(initialPath = '/s/sess-1/tasks') {
 }
 
 describe('TasksPage', () => {
-  it('renders status filter chips with counts and filters rows by status', async () => {
-    listTasks.mockResolvedValue({
-      items: [
-        makeTask({ id: 't1', status: 'running', description: 'dev server' }),
-        makeTask({ id: 't2', status: 'failed', description: 'broken build' }),
-        makeTask({ id: 't3', status: 'completed', description: 'lint pass' }),
-      ],
-    });
+  it('requests server-filtered, bounded task pages', async () => {
+    const all = [
+      makeTask({ id: 't1', status: 'running', description: 'dev server' }),
+      makeTask({ id: 't2', status: 'failed', description: 'broken build' }),
+      makeTask({ id: 't3', status: 'completed', description: 'lint pass' }),
+    ];
+    listTasks.mockImplementation(async (_id, query) => ({
+      items: query.status === undefined ? all : all.filter((task) => task.status === query.status),
+    }));
     const container = await renderPage();
-    expect(listTasks).toHaveBeenCalledWith('sess-1');
+    expect(listTasks).toHaveBeenCalledWith('sess-1', { status: undefined, page_size: 100, offset: 0 });
     expect(container.querySelectorAll('[data-task-row]')).toHaveLength(3);
     expect(container.textContent).toContain('dev server');
 
     const failedChip = container.querySelector<HTMLButtonElement>('[data-status-filter="failed"]')!;
-    expect(failedChip.textContent).toContain('1');
     await act(async () => {
       failedChip.click();
     });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(listTasks).toHaveBeenLastCalledWith('sess-1', { status: 'failed', page_size: 100, offset: 0 });
     const rows = container.querySelectorAll('[data-task-row]');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toContain('broken build');
+  });
+
+  it('loads the next page only when requested', async () => {
+    listTasks.mockImplementation(async (_id, query) => ({
+      items: [makeTask({ id: query.offset === 0 ? 'first' : 'second' })],
+      next_offset: query.offset === 0 ? 100 : undefined,
+      has_more: query.offset === 0,
+    }));
+    const container = await renderPage();
+    expect(container.querySelectorAll('[data-task-row]')).toHaveLength(1);
+    const loadMore = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Load more tasks')!;
+    await act(async () => { loadMore.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(listTasks).toHaveBeenCalledWith('sess-1', { status: undefined, page_size: 100, offset: 100 });
+    expect(container.querySelectorAll('[data-task-row]')).toHaveLength(2);
   });
 
   it('shows the empty state when the session has no tasks', async () => {

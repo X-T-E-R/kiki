@@ -18,10 +18,14 @@ export const cronTaskSchema = z.object({
 
 export const listCronTasksQuerySchema = z.object({
   session_id: z.string().min(1).optional(),
+  page_size: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
 });
 
 export const listCronTasksResponseSchema = z.object({
   items: z.array(cronTaskSchema),
+  has_more: z.boolean(),
+  next_offset: z.number().int().nonnegative().optional(),
 });
 
 export const cronTaskActionQuerySchema = z.object({

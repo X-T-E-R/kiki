@@ -7,16 +7,16 @@
  * scopes tasks under `/sessions/{id}/tasks*`), so the page stays
  * session-scoped and keeps a "back to session" exit.
  *
- * Data: the list rides `listTasks` (unpaginated — the server returns every
- * task incl. terminal "ghost" tasks) and polls only while something is still
- * running. Row expansion lazily fetches `GET tasks/{id}?with_output=true`
- * for the tail-of-log preview; cancellation reuses the same
+ * Data: the list rides paged `listTasks` (including terminal "ghost" tasks)
+ * and polls only while something is still running. Row expansion lazily
+ * fetches `GET tasks/{id}?with_output=true` for the tail-of-log preview;
+ * cancellation reuses the same
  * `:cancel` route as the rail and treats 40904 (already finished) as a
  * success-shaped refetch, matching `KikiClient.cancelTask`'s okCodes.
  */
 
 import { useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import type { Task, TaskStatus } from '@kiki/protocol';
@@ -150,12 +150,18 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   // that straddled a tick still flushes to the DOM before polling stops.
   const lastRunningAtRef = useRef(0);
 
-  const tasksQuery = useQuery({
-    queryKey: ['session-tasks', sessionId],
-    queryFn: () => client.listTasks(sessionId).then((response) => response.items),
+  const tasksQuery = useInfiniteQuery({
+    queryKey: ['session-tasks', sessionId, filter],
+    queryFn: ({ pageParam }) => client.listTasks(sessionId, {
+      status: filter === 'all' ? undefined : filter,
+      page_size: 100,
+      offset: pageParam,
+    }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.next_offset,
     enabled: sessionId !== '',
     refetchInterval: (query) => {
-      const data = query.state.data ?? [];
+      const data = query.state.data?.pages.flatMap((page) => page.items) ?? [];
       const running = data.some((task) => task.status === 'running');
       if (running) {
         lastRunningAtRef.current = Date.now();
@@ -187,15 +193,9 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     },
   });
 
-  const tasks = useMemo(() => sortTasks(tasksQuery.data ?? []), [tasksQuery.data]);
-  const counts = useMemo(() => {
-    const map = new Map<TaskStatus, number>();
-    for (const task of tasks) map.set(task.status, (map.get(task.status) ?? 0) + 1);
-    return map;
-  }, [tasks]);
-  const visible = useMemo(
-    () => (filter === 'all' ? tasks : tasks.filter((task) => task.status === filter)),
-    [tasks, filter],
+  const tasks = useMemo(
+    () => sortTasks(tasksQuery.data?.pages.flatMap((page) => page.items) ?? []),
+    [tasksQuery.data],
   );
 
   return (
@@ -255,44 +255,37 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   aria-label={t('tasks.title')}
                   className="inline-flex rounded-lg border border-hairline bg-panel p-0.5"
                 >
-                  {STATUS_FILTERS.map((candidate) => {
-                    const count =
-                      candidate === 'all' ? tasks.length : (counts.get(candidate) ?? 0);
-                    return (
-                      <button
-                        key={candidate}
-                        type="button"
-                        data-status-filter={candidate}
-                        onClick={() => { setFilter(candidate); }}
-                        aria-pressed={filter === candidate}
-                        className={`rounded-md px-2.5 py-1 text-[11.5px] transition-colors ${
-                          filter === candidate
-                            ? 'bg-accent-soft font-semibold text-accent'
-                            : 'text-ink-soft hover:text-ink'
-                        }`}
-                      >
-                        {candidate === 'all'
-                          ? t('tasks.filter.all')
-                          : t(`rail.taskStatus.${candidate}`)}
-                        <span className="ml-1 font-mono text-[10px] tabular-nums opacity-70">
-                          {count}
-                        </span>
-                      </button>
-                    );
-                  })}
+                  {STATUS_FILTERS.map((candidate) => (
+                    <button
+                      key={candidate}
+                      type="button"
+                      data-status-filter={candidate}
+                      onClick={() => { setFilter(candidate); }}
+                      aria-pressed={filter === candidate}
+                      className={`rounded-md px-2.5 py-1 text-[11.5px] transition-colors ${
+                        filter === candidate
+                          ? 'bg-accent-soft font-semibold text-accent'
+                          : 'text-ink-soft hover:text-ink'
+                      }`}
+                    >
+                      {candidate === 'all'
+                        ? t('tasks.filter.all')
+                        : t(`rail.taskStatus.${candidate}`)}
+                    </button>
+                  ))}
                 </div>
                 <span className="ml-auto text-[11px] text-ink-faint">
-                  {tp('tasks.count', visible.length)}
+                  {tp('tasks.count', tasks.length)}
                 </span>
               </div>
 
-              {visible.length === 0 ? (
+              {tasks.length === 0 ? (
                 <p className="rounded-2xl border border-hairline bg-panel px-4 py-10 text-center text-[12.5px] text-ink-faint">
                   {t('tasks.emptyFilter')}
                 </p>
               ) : (
                 <ul className="space-y-2">
-                  {visible.map((task) => {
+                  {tasks.map((task) => {
                     const expanded = expandedId === task.id;
                     const running = task.status === 'running';
                     return (
@@ -367,6 +360,13 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   })}
                 </ul>
               )}
+              {tasksQuery.hasNextPage ? (
+                <button type="button" disabled={tasksQuery.isFetchingNextPage}
+                  onClick={() => { void tasksQuery.fetchNextPage(); }}
+                  className="rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft disabled:opacity-50">
+                  {t('tasks.loadMore')}
+                </button>
+              ) : null}
             </>
           )}
         </div>

@@ -590,6 +590,30 @@ describe('KikiClient.readHostFileBytes', () => {
 });
 
 describe('KikiClient.readSessionMediaBytes', () => {
+  it('revalidates an 8 MiB image preview without transferring it again', async () => {
+    const image = new Uint8Array(8 * 1024 * 1024);
+    const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      if (fetchMock.mock.calls.length > 1) {
+        expect((init?.headers as Record<string, string>)['if-none-match']).toBe('"image-v1"');
+        return new Response(null, { status: 304, headers: { etag: '"image-v1"' } });
+      }
+      return new Response(image, {
+        status: 200, headers: { 'content-type': 'image/png', etag: '"image-v1"' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+    try {
+      const first = await client.readSessionMediaBytes('s1', 'image');
+      const second = await client.readSessionMediaBytes('s1', 'image');
+      expect(first.bytes.byteLength).toBe(8 * 1024 * 1024);
+      expect(second.bytes).toBe(first.bytes);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('reads canonical session media with auth, MIME, and server filename', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const parsed = new URL(String(url));

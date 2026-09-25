@@ -39,6 +39,7 @@ import type { AgentWorkspaceNavigation } from './agent-workspace';
 import { useOptionalConversationShell } from './ConversationShell';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
+import { previewThumbnail } from './imageThumbnail';
 import { MediaLightbox } from './MediaLightbox';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
@@ -373,6 +374,7 @@ type SessionMediaLoad =
       readonly mime: string;
       readonly name?: string;
       readonly url: string;
+      readonly thumbnailUrl?: string;
     };
 
 function useSessionMedia(
@@ -394,13 +396,19 @@ function useSessionMedia(
     }
     let cancelled = false;
     let objectUrl: string | undefined;
+    let thumbnailUrl: string | undefined;
     setLoad({ status: 'loading' });
     client.readSessionMediaBytes(sessionId, item.fileId).then(
-      ({ bytes, mime, name }) => {
+      async ({ bytes, mime, name }) => {
         if (cancelled) return;
         const mediaType = item.blobHash === undefined ? mime : (item.mime ?? mime);
+        thumbnailUrl = item.kind === 'image' ? await previewThumbnail(bytes, mediaType) : undefined;
+        if (cancelled) {
+          if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
+          return;
+        }
         objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
-        setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl });
+        setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl, thumbnailUrl });
       },
       () => {
         if (!cancelled) setLoad({ status: 'failed' });
@@ -409,8 +417,9 @@ function useSessionMedia(
     return () => {
       cancelled = true;
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+      if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
     };
-  }, [client, enabled, item.blobHash, item.fileId, item.mime, sessionId]);
+  }, [client, enabled, item.blobHash, item.fileId, item.mime, item.kind, sessionId]);
 
   return load;
 }
@@ -576,7 +585,7 @@ function SessionMediaThumb({ item }: { item: MediaRef }) {
         onClick={() => { preview?.openImage(load.url, name); }}
         className="overflow-hidden rounded-lg border border-hairline transition-colors hover:border-accent"
       >
-        <img src={load.url} alt={name} className="h-28 w-auto object-cover" />
+        <img src={load.thumbnailUrl ?? load.url} alt={name} className="h-28 w-auto object-cover" />
       </button>
     );
   }
@@ -636,10 +645,12 @@ function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; 
   const preview = useMediaPreview();
   const { path, name, kind } = item;
   const [url, setUrl] = useState<string | null>(null);
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     setUrl(null);
+    setThumbnailUrl(null);
     setFailed(false);
     if (client === undefined) {
       setFailed(true);
@@ -647,14 +658,21 @@ function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; 
     }
     let cancelled = false;
     let objectUrl: string | undefined;
+    let thumbnail: string | undefined;
     client.readHostFileBytes(path).then(
-      ({ bytes, mime }) => {
+      async ({ bytes, mime }) => {
         if (cancelled) return;
         if (!mime.startsWith(`${kind}/`)) {
           setFailed(true);
           return;
         }
+        thumbnail = kind === 'image' ? await previewThumbnail(bytes, mime) : undefined;
+        if (cancelled) {
+          if (thumbnail !== undefined) URL.revokeObjectURL(thumbnail);
+          return;
+        }
         objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+        setThumbnailUrl(thumbnail ?? null);
         setUrl(objectUrl);
       },
       () => {
@@ -664,6 +682,7 @@ function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; 
     return () => {
       cancelled = true;
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+      if (thumbnail !== undefined) URL.revokeObjectURL(thumbnail);
     };
   }, [client, kind, path]);
 
@@ -685,7 +704,7 @@ function HostMediaThumb({ item }: { item: MediaRef & { kind: 'image' | 'video'; 
       onClick={() => { preview?.openImage(url, name ?? basenameOf(path)); }}
       className="overflow-hidden rounded-lg border border-hairline transition-colors hover:border-accent"
     >
-      <img src={url} alt={name ?? basenameOf(path)} className="h-28 w-auto object-cover" />
+      <img src={thumbnailUrl ?? url} alt={name ?? basenameOf(path)} className="h-28 w-auto object-cover" />
     </button>
   );
 }

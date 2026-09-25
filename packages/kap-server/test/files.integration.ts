@@ -16,7 +16,7 @@ import {
   sessionScopeOf,
   workspacePersistenceScope,
 } from '@kiki/agent-core-v2';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -421,13 +421,19 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
       expect(getLiveSessionById(r.core.accessor, sessionId)).toBeUndefined();
     }
 
+    const get = vi.spyOn(blobs, 'get');
+    const stream = vi.spyOn(blobs, 'getStream');
     const range = await appOf(r).inject({
       method: 'GET', url: `/api/sessions/${sessionId}/media/blobref:agent-1:${hashes[0]}`,
       headers: { range: 'bytes=1-3' },
     });
     expect(range.statusCode).toBe(206);
     expect(range.rawPayload).toEqual(crops[0]!.subarray(1, 4));
+    expect(stream).toHaveBeenCalledWith(`${agentScope}/blobs`, hashes[0], { start: 1, end: 3 });
+    expect(get).not.toHaveBeenCalled();
     expect(getLiveSessionById(r.core.accessor, sessionId)).toBeUndefined();
+    get.mockRestore();
+    stream.mockRestore();
 
     for (const fileId of [`blobref:other-agent:${hashes[0]}`, `blobref:..:${hashes[0]}`, 'blobref:agent-1:invalid']) {
       const missing = await appOf(r).inject({ method: 'GET', url: `/api/sessions/${sessionId}/media/${fileId}` });
@@ -456,6 +462,13 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
       /inline; filename="pasted image\.png"/,
     );
     expect(res.rawPayload).toEqual(data);
+    const cached = await appOf(r).inject({
+      method: 'GET',
+      url: `/api/sessions/${sessionId}/media/${meta.id}`,
+      headers: { 'if-none-match': String(res.headers['etag']) },
+    });
+    expect(cached.statusCode).toBe(304);
+    expect(cached.rawPayload).toHaveLength(0);
   });
 
   it('serves the staged upload before intake materializes the session copy', async () => {

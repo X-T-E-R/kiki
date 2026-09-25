@@ -46,6 +46,7 @@ import {
 import { AgentWorkspace, type AgentWorkspaceNavigation } from './agent-workspace';
 import { CodeEditor } from './CodeEditor';
 import { ConfirmDialog } from './ConfirmDialog';
+import { previewThumbnail } from './imageThumbnail';
 import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 
@@ -473,6 +474,7 @@ function AgentTabWorkspace({
           onStopAgentTask={onStopAgentTask ?? (() => Promise.resolve())}
           slots={slots}
           inheritMediaPreview
+          transcriptVisible={visible}
           showPreviewToggle={false}
           showRailToggle={false}
           showBreadcrumb={false}
@@ -1046,7 +1048,7 @@ function ImageTabView({
   const [state, setState] = useState<
     | { readonly status: 'loading' }
     | { readonly status: 'error' }
-    | { readonly status: 'ready'; readonly url: string; readonly size: number }
+    | { readonly status: 'ready'; readonly url: string; readonly thumbnailUrl?: string; readonly size: number }
   >({ status: 'loading' });
 
   useEffect(() => {
@@ -1057,12 +1059,18 @@ function ImageTabView({
     }
     let cancelled = false;
     let objectUrl: string | undefined;
+    let thumbnailUrl: string | undefined;
     setState({ status: 'loading' });
     client.readHostFileBytes(path).then(
-      ({ bytes, mime }) => {
+      async ({ bytes, mime }) => {
         if (cancelled) return;
+        thumbnailUrl = await previewThumbnail(bytes, mime);
+        if (cancelled) {
+          if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
+          return;
+        }
         objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        setState({ status: 'ready', url: objectUrl, size: bytes.byteLength });
+        setState({ status: 'ready', url: objectUrl, thumbnailUrl, size: bytes.byteLength });
       },
       () => {
         if (!cancelled) setState({ status: 'error' });
@@ -1071,6 +1079,7 @@ function ImageTabView({
     return () => {
       cancelled = true;
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+      if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
     };
   }, [connection, path]);
 
@@ -1093,7 +1102,7 @@ function ImageTabView({
             title={t('media.viewImage')}
           >
             <img
-              src={state.url}
+              src={state.thumbnailUrl ?? state.url}
               alt={name}
               className="max-h-[70vh] rounded-lg border border-hairline object-contain"
             />
@@ -1178,7 +1187,7 @@ function TextTabView({
     }
     const next = new HostFileEditorController({
       path,
-      readFile: (target) => client.readHostFile(target),
+      readFile: (target) => client.previewHostFile(target),
       writeFile: host.writeFileText,
     });
     setController(next);

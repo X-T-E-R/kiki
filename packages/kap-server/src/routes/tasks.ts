@@ -84,13 +84,18 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
         return;
       }
 
-      const all = (resolved.tasks?.list(false) ?? []).map((info) =>
-        toWireTask(session_id, info),
-      );
-      const query = req.query as { status?: TaskStatus };
-      const items =
-        query.status !== undefined ? all.filter((t) => t.status === query.status) : all;
-      reply.send(okEnvelope({ items }, req.id));
+      const query = req.query as { status?: TaskStatus; page_size?: number; offset?: number };
+      const pageSize = query.page_size ?? 100;
+      const offset = query.offset ?? 0;
+      const all = resolved.tasks?.list(false, query.status === undefined ? offset + pageSize + 1 : undefined) ?? [];
+      const matching = query.status === undefined ? all : all.filter((task) => task.status === query.status);
+      const page = matching.slice(offset, offset + pageSize);
+      const has_more = matching.length > offset + pageSize;
+      reply.send(okEnvelope({
+        items: page.map((info) => toWireTask(session_id, info)),
+        has_more,
+        next_offset: has_more ? offset + pageSize : undefined,
+      }, req.id));
     },
   );
   app.get(listRoute.path, listRoute.options, listRoute.handler as Parameters<TasksRouteHost['get']>[2]);

@@ -180,6 +180,22 @@ describe('HostFileEditorController', () => {
     controller.dispose();
   });
 
+  it('never writes a byte-range-truncated preview even when its text is short', async () => {
+    const writeFile = vi.fn(async () => {});
+    const controller = new HostFileEditorController({
+      path: '/work/file.ts',
+      readFile: async () => ({ text: '中', truncated: true }),
+      writeFile,
+    });
+    await controller.load();
+    expect(controller.getState().oversized).toBe(true);
+    expect(controller.editable).toBe(false);
+    controller.setDraft('edit');
+    await controller.saveNow();
+    expect(writeFile).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
   it('parks the save on conflict when the file changed on disk', async () => {
     const { controller, disk, writes } = makeController();
     await controller.load();

@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import type { Session, Workspace } from '@kiki/protocol';
 import { ErrorCode } from '@kiki/protocol';
 import type { To } from 'react-router-dom';
@@ -26,7 +26,7 @@ import type { To } from 'react-router-dom';
 import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
-import { ApiError, type CronTask } from '../lib/client';
+import { ApiError, type CronTask, type ListCronTasksResponse } from '../lib/client';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -254,9 +254,11 @@ function CronPanelBody({
   const queryClient = useQueryClient();
   const [pendingDelete, setPendingDelete] = useState<CronTask | null>(null);
 
-  const tasksQuery = useQuery({
+  const tasksQuery = useInfiniteQuery({
     queryKey: CRON_TASKS_QUERY_KEY,
-    queryFn: () => client.listCronTasks().then((response) => response.items),
+    queryFn: ({ pageParam }) => client.listCronTasks({ page_size: 100, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.next_offset,
   });
 
   // While the delete confirm is up, the panel's Esc/backdrop close cancels the
@@ -292,10 +294,15 @@ function CronPanelBody({
         ? client.pauseCronTask(task.id, task.session_id ?? undefined)
         : client.resumeCronTask(task.id, task.session_id ?? undefined),
     onSuccess: (result, { pause }) => {
-      queryClient.setQueryData<readonly CronTask[]>(CRON_TASKS_QUERY_KEY, (old) =>
-        old?.map((entry) => (entry.id === result.task.id && entry.workspace_id === result.task.workspace_id
-          ? result.task
-          : entry)),
+      queryClient.setQueryData<InfiniteData<ListCronTasksResponse, number>>(CRON_TASKS_QUERY_KEY, (old) =>
+        old === undefined ? undefined : {
+          ...old,
+          pages: old.pages.map((page) => ({
+            ...page,
+            items: page.items.map((entry) =>
+              entry.id === result.task.id && entry.workspace_id === result.task.workspace_id ? result.task : entry),
+          })),
+        },
       );
       pushToast({ tone: 'success', text: pause ? t('cron.toast.paused') : t('cron.toast.resumed') });
     },
@@ -316,8 +323,15 @@ function CronPanelBody({
   const deleteMutation = useMutation({
     mutationFn: (task: CronTask) => client.deleteCronTask(task.id, task.session_id ?? undefined),
     onSuccess: (_result, task) => {
-      queryClient.setQueryData<readonly CronTask[]>(CRON_TASKS_QUERY_KEY, (old) =>
-        old?.filter((entry) => !(entry.id === task.id && entry.workspace_id === task.workspace_id)),
+      queryClient.setQueryData<InfiniteData<ListCronTasksResponse, number>>(CRON_TASKS_QUERY_KEY, (old) =>
+        old === undefined ? undefined : {
+          ...old,
+          pages: old.pages.map((page) => ({
+            ...page,
+            items: page.items.filter((entry) =>
+              !(entry.id === task.id && entry.workspace_id === task.workspace_id)),
+          })),
+        },
       );
       pushToast({ tone: 'success', text: t('cron.toast.deleted') });
       setPendingDelete(null);
@@ -347,7 +361,7 @@ function CronPanelBody({
     [onNavigate, onCloseRequest],
   );
 
-  const tasks = tasksQuery.data ?? [];
+  const tasks = tasksQuery.data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
     <>
@@ -415,21 +429,30 @@ function CronPanelBody({
             </p>
           </div>
         ) : (
-          <ul className="space-y-3" data-cron-list>
-            {tasks.map((task) => (
-              <CronTaskRow
-                key={`${task.workspace_id}:${task.id}`}
-                task={task}
-                sessionTitle={task.session_id === null ? undefined : sessionsById.get(task.session_id)?.title}
-                workspaceName={workspacesById.get(task.workspace_id)?.name}
-                pending={busyTaskId === task.id}
-                onOpenSession={openSession}
-                onPauseResume={(target, pause) => { pauseResumeMutation.mutate({ task: target, pause }); }}
-                onRun={(target) => { runMutation.mutate(target); }}
-                onDelete={(target) => { setPendingDelete(target); }}
-              />
-            ))}
-          </ul>
+          <>
+            <ul className="space-y-3" data-cron-list>
+              {tasks.map((task) => (
+                <CronTaskRow
+                  key={`${task.workspace_id}:${task.id}`}
+                  task={task}
+                  sessionTitle={task.session_id === null ? undefined : sessionsById.get(task.session_id)?.title}
+                  workspaceName={workspacesById.get(task.workspace_id)?.name}
+                  pending={busyTaskId === task.id}
+                  onOpenSession={openSession}
+                  onPauseResume={(target, pause) => { pauseResumeMutation.mutate({ task: target, pause }); }}
+                  onRun={(target) => { runMutation.mutate(target); }}
+                  onDelete={(target) => { setPendingDelete(target); }}
+                />
+              ))}
+            </ul>
+            {tasksQuery.hasNextPage ? (
+              <button type="button" disabled={tasksQuery.isFetchingNextPage}
+                onClick={() => { void tasksQuery.fetchNextPage(); }}
+                className="mt-4 rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft disabled:opacity-50">
+                {t('cron.panel.loadMore')}
+              </button>
+            ) : null}
+          </>
         )}
       </div>
 

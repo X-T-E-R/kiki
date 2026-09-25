@@ -43,6 +43,8 @@ vi.mock('../state/connection', async (importOriginal) => {
   const fakeClient = {
     readHostFile: (path: string) =>
       path in FILES ? Promise.resolve(FILES[path]) : Promise.reject(new Error('not found')),
+    previewHostFile: (path: string) =>
+      path in FILES ? Promise.resolve({ text: FILES[path], truncated: false }) : Promise.reject(new Error('not found')),
     readHostFileBytes: () => Promise.reject(new Error('not found')),
   };
   return {
@@ -91,6 +93,7 @@ const agentWorkspaceHarness = vi.hoisted(() => ({
     inheritMediaPreview: unknown;
     showPreviewToggle: unknown;
     railIsOverlay: unknown;
+    transcriptVisible: unknown;
     slotsProvided: boolean;
   }>,
 }));
@@ -101,6 +104,7 @@ vi.mock('./agent-workspace', () => ({
     inheritMediaPreview?: unknown;
     showPreviewToggle?: unknown;
     railIsOverlay?: unknown;
+    transcriptVisible?: unknown;
     slots?: unknown;
   }) => {
     agentWorkspaceHarness.calls.push({
@@ -108,6 +112,7 @@ vi.mock('./agent-workspace', () => ({
       inheritMediaPreview: props.inheritMediaPreview,
       showPreviewToggle: props.showPreviewToggle,
       railIsOverlay: props.railIsOverlay,
+      transcriptVisible: props.transcriptVisible,
       slotsProvided: props.slots !== undefined,
     });
     return <div data-agent-workspace={props.target.agentId} />;
@@ -781,11 +786,13 @@ describe('PreviewWorkspace agent tabs', () => {
     const probe = await renderAgentPreview(controller, vi.fn());
     await openPanel(probe.container, 'sub-123');
     expect(controller.retainAgentView).toHaveBeenCalledTimes(1);
+    expect(agentWorkspaceHarness.calls.at(-1)?.transcriptVisible).toBe(true);
 
     // Switching to another tab hides the workspace: the demand drops to the
     // summary baseline in one update, without a release/re-retain swing.
     await openFile(probe.container, '/work/src/server.ts');
     expect(controller.updateAgentView).toHaveBeenLastCalledWith('panel:sub-123', 'off');
+    expect(agentWorkspaceHarness.calls.at(-1)?.transcriptVisible).toBe(false);
     expect(controller.retainAgentView).toHaveBeenCalledTimes(1);
     expect(controller.releaseAgentView).not.toHaveBeenCalled();
 
@@ -796,6 +803,7 @@ describe('PreviewWorkspace agent tabs', () => {
         .dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(controller.updateAgentView).toHaveBeenLastCalledWith('panel:sub-123', 'delta');
+    expect(agentWorkspaceHarness.calls.at(-1)?.transcriptVisible).toBe(true);
     expect(controller.retainAgentView).toHaveBeenCalledTimes(1);
 
     // Collapsing the whole panel hides the active tab as well.
@@ -805,6 +813,7 @@ describe('PreviewWorkspace agent tabs', () => {
         .dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(controller.updateAgentView).toHaveBeenLastCalledWith('panel:sub-123', 'off');
+    expect(agentWorkspaceHarness.calls.at(-1)?.transcriptVisible).toBe(false);
     expect(controller.releaseAgentView).not.toHaveBeenCalled();
 
     // Closing the tab releases the lease.

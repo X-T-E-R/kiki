@@ -37,6 +37,7 @@ export interface HttpRestJsonOptions extends HttpRestRequestOptions {
   readonly method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   readonly body?: unknown;
   readonly query?: Record<string, string | number | boolean | undefined>;
+  readonly headers?: Readonly<Record<string, string>>;
   readonly okCodes?: readonly number[];
   readonly allowMissingRoute?: boolean;
   readonly expectBinary?: boolean;
@@ -136,8 +137,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         );
         return result.items;
       },
-      listTasks: (sessionId: string) => transport.json<ListTasksResponse>(
+      listTasks: (sessionId: string, query) => transport.json<ListTasksResponse>(
         `/sessions/${encodeURIComponent(sessionId)}/tasks`,
+        { query: { status: query?.status, page_size: query?.page_size, offset: query?.offset } },
       ),
       getTask: (sessionId: string, taskId: string, query = {}) => transport.json<Task>(
         `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
@@ -160,9 +162,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/sessions/${encodeURIComponent(sessionId)}/fs:search`,
         { method: 'POST', body, signal: options?.signal, timeoutMs: options?.timeoutMs },
       ),
-      media: async (sessionId: string, fileId: string) => readBinary(
+      media: async (sessionId: string, fileId: string, options) => readBinary(
         transport,
         `/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(fileId)}`,
+        { headers: options?.ifNoneMatch === undefined ? undefined : { 'if-none-match': options.ifNoneMatch } },
       ),
       export: (sessionId: string) => transport.raw(
         `/sessions/${encodeURIComponent(sessionId)}/export`,
@@ -257,7 +260,19 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         { method: 'GET', query: { path } },
         (response) => response.text(),
       ),
-      readHostFileBytes: (path: string) => readBinary(transport, '/fs:content', { query: { path } }),
+      previewHostFile: (path: string, maxBytes: number) => transport.raw(
+        '/fs:content',
+        { method: 'GET', query: { path }, headers: { range: `bytes=0-${maxBytes - 1}` } },
+        async (response) => ({
+          text: await response.text(),
+          truncated: response.status === 206 &&
+            Number(response.headers.get('content-range')?.split('/')[1]) > maxBytes,
+        }),
+      ),
+      readHostFileBytes: (path: string, options) => readBinary(transport, '/fs:content', {
+        query: { path },
+        headers: options?.ifNoneMatch === undefined ? undefined : { 'if-none-match': options.ifNoneMatch },
+      }),
       workspaceFsSearch: (workspace: string, body, options) => transport.json<FsSearchResponse>('/workspace/fs:search', {
         method: 'POST',
         body: { ...body, workspace },
@@ -276,9 +291,13 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     cron: {
-      list: (query: HttpRestCronTaskQuery = {}) => transport.json<{ readonly items: readonly HttpRestCronTask[] }>(
+      list: (query: HttpRestCronTaskQuery = {}) => transport.json<{
+        readonly items: readonly HttpRestCronTask[];
+        readonly has_more?: boolean;
+        readonly next_offset?: number;
+      }>(
         '/cron',
-        { query: { session_id: query.session_id } },
+        { query: { session_id: query.session_id, page_size: query.page_size, offset: query.offset } },
       ),
       pause: (taskId, query: HttpRestCronTaskQuery = {}) => transport.json<{ readonly task: HttpRestCronTask }>(
         `/cron/${encodeURIComponent(taskId)}:pause`,
@@ -336,7 +355,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 async function readBinary(
   transport: HttpRestTransport,
   path: string,
-  options?: Pick<HttpRestJsonOptions, 'query' | 'signal' | 'expectBinary'>,
+  options?: Pick<HttpRestJsonOptions, 'query' | 'signal' | 'expectBinary' | 'headers'>,
 ) {
   return transport.raw(
     path,
@@ -352,7 +371,13 @@ async function readBinary(
         } catch {
         }
       }
-      return { bytes: new Uint8Array(await response.arrayBuffer()), mime, name };
+      return {
+        bytes: new Uint8Array(await response.arrayBuffer()),
+        mime,
+        name,
+        etag: response.headers.get('etag') ?? undefined,
+        notModified: response.status === 304,
+      };
     },
   );
 }

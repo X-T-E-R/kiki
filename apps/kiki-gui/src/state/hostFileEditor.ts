@@ -39,7 +39,7 @@ export interface HostFileEditorSnapshot {
 
 export interface HostFileEditorOptions {
   readonly path: string;
-  readonly readFile: (path: string) => Promise<string>;
+  readonly readFile: (path: string) => Promise<string | { readonly text: string; readonly truncated: boolean }>;
   /** Absent → the buffer is view-only (no write channel on this runtime). */
   readonly writeFile?: (path: string, text: string) => Promise<void>;
   readonly autosaveMs?: number;
@@ -94,9 +94,11 @@ export class HostFileEditorController {
     const token = ++this.loadToken;
     this.patch({ status: 'loading', error: undefined });
     try {
-      const text = await this.options.readFile(this.options.path);
+      const loaded = await this.options.readFile(this.options.path);
       if (this.disposed || token !== this.loadToken) return;
-      const oversized = text.length > (this.options.maxChars ?? DEFAULT_MAX_CHARS);
+      const text = typeof loaded === 'string' ? loaded : loaded.text;
+      const oversized = (typeof loaded !== 'string' && loaded.truncated) ||
+        text.length > (this.options.maxChars ?? DEFAULT_MAX_CHARS);
       this.patch({
         status: 'ready',
         savedText: text,
@@ -140,7 +142,8 @@ export class HostFileEditorController {
     try {
       const current = await this.options.readFile(this.options.path);
       if (this.disposed) return;
-      if (current !== baseline) {
+      if ((typeof current === 'string' ? current : current.text) !== baseline ||
+          (typeof current !== 'string' && current.truncated)) {
         this.patch({ saving: false, conflict: true });
         return;
       }

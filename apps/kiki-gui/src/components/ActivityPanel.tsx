@@ -174,7 +174,7 @@ export function ActivityPanel({ sessions }: { sessions: readonly Session[] }) {
   const taskQueries = useQueries({
     queries: busyIds.map((sessionId) => ({
       queryKey: ['activity-tasks', sessionId],
-      queryFn: () => client.listTasks(sessionId).then((data) => data.items),
+      queryFn: () => client.listTasks(sessionId, { status: 'running' }).then((data) => data.items),
       refetchInterval: pollInterval,
       staleTime: pollInterval - 1_000,
     })),

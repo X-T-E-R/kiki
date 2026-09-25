@@ -601,6 +601,9 @@ export class SessionController {
       if (!Object.hasOwn(grades, agentId)) grades[agentId] = 'turn';
     }
     for (const { agentId, grade } of this.agentViews.values()) {
+      if (grade === 'off' && !Object.hasOwn(grades, agentId)) grades[agentId] = 'off';
+    }
+    for (const { agentId, grade } of this.agentViews.values()) {
       if (grade === 'off') continue;
       const current = gradeFor(grades, agentId);
       grades[agentId] = GRADE_RANK[grade] > GRADE_RANK[current] ? grade : current;

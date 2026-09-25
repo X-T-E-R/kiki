@@ -113,6 +113,8 @@ export interface HttpRestBinaryFile {
   readonly bytes: Uint8Array;
   readonly mime: string;
   readonly name?: string;
+  readonly etag?: string;
+  readonly notModified?: boolean;
 }
 
 export interface HttpRestSessionArchive {
@@ -144,6 +146,8 @@ export interface HttpRestCronTask {
 /** `session_id` disambiguates a task id that exists in several sessions. */
 export interface HttpRestCronTaskQuery {
   readonly session_id?: string;
+  readonly page_size?: number;
+  readonly offset?: number;
 }
 
 export type HttpRestConfigPatch = PatchConfigRequest & {
@@ -180,7 +184,7 @@ export interface HttpRestFacade {
     listPrompts(sessionId: string): Promise<PromptListResponse>;
     listApprovals(sessionId: string): Promise<ApprovalRequest[]>;
     listQuestions(sessionId: string): Promise<import('@kiki/protocol').QuestionRequest[]>;
-    listTasks(sessionId: string): Promise<ListTasksResponse>;
+    listTasks(sessionId: string, query?: { readonly status?: import('@kiki/protocol').TaskStatus; readonly page_size?: number; readonly offset?: number }): Promise<ListTasksResponse>;
     getTask(sessionId: string, taskId: string, query?: GetTaskQuery): Promise<Task>;
     listSkills(sessionId: string): Promise<ListSkillsResponse>;
     activateSkill(
@@ -193,7 +197,7 @@ export interface HttpRestFacade {
       body: { readonly query: string; readonly limit?: number },
       options?: HttpRestRequestOptions,
     ): Promise<FsSearchResponse>;
-    media(sessionId: string, fileId: string): Promise<HttpRestBinaryFile>;
+    media(sessionId: string, fileId: string, options?: { readonly ifNoneMatch?: string }): Promise<HttpRestBinaryFile>;
     export(sessionId: string): Promise<HttpRestSessionArchive>;
   };
 
@@ -240,7 +244,8 @@ export interface HttpRestFacade {
 
   readonly filesystem: {
     readHostFile(path: string): Promise<string>;
-    readHostFileBytes(path: string): Promise<HttpRestBinaryFile>;
+    previewHostFile(path: string, maxBytes: number): Promise<{ readonly text: string; readonly truncated: boolean }>;
+    readHostFileBytes(path: string, options?: { readonly ifNoneMatch?: string }): Promise<HttpRestBinaryFile>;
     workspaceFsSearch(
       workspace: string,
       body: { readonly query: string; readonly limit?: number },
@@ -257,7 +262,11 @@ export interface HttpRestFacade {
 
   /** Cross-workspace cron aggregate: `GET /api/cron` plus per-task actions. */
   readonly cron: {
-    list(query?: HttpRestCronTaskQuery): Promise<{ readonly items: readonly HttpRestCronTask[] }>;
+    list(query?: HttpRestCronTaskQuery): Promise<{
+      readonly items: readonly HttpRestCronTask[];
+      readonly has_more?: boolean;
+      readonly next_offset?: number;
+    }>;
     pause(
       taskId: string,
       query?: HttpRestCronTaskQuery,

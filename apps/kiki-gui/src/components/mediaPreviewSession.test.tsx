@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { I18nProvider } from '../i18n';
 import type { ToolBlock } from '@kiki/session-core/session';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { previewThumbnail } from './imageThumbnail';
 import { ToolCard } from './ToolCard';
 
 const mocks = vi.hoisted(() => ({
@@ -98,6 +99,27 @@ afterAll(() => {
 });
 
 describe('session media preview', () => {
+  it('decodes a bounded offscreen thumbnail rather than displaying the full bitmap', async () => {
+    const close = vi.fn();
+    const drawImage = vi.fn();
+    const bitmap = { width: 4000, height: 2000, close };
+    const createBitmap = vi.fn(async () => bitmap);
+    const offscreen = vi.fn(function (this: object, width: number, height: number) {
+      return { width, height, getContext: () => ({ drawImage }), convertToBlob: async () => new Blob() };
+    });
+    vi.stubGlobal('createImageBitmap', createBitmap);
+    vi.stubGlobal('OffscreenCanvas', offscreen);
+    try {
+      await expect(previewThumbnail(new Uint8Array([1, 2, 3]), 'image/png')).resolves.toBe('blob:kiki-session-media');
+      expect(createBitmap).toHaveBeenCalledTimes(1);
+      expect(offscreen).toHaveBeenCalledWith(768, 384);
+      expect(drawImage).toHaveBeenCalledWith(bitmap, 0, 0, 768, 384);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('loads a fileId image through the authenticated session route and opens it', async () => {
     mocks.readSessionMediaBytes.mockResolvedValue({
       bytes: new Uint8Array([1, 2, 3]),
