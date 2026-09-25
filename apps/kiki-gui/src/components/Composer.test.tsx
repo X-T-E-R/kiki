@@ -12,7 +12,7 @@ import { createViewState, projectAgentTranscriptView } from '@kiki/session-core/
 import { emptySnapshot, userTurnSnapshot } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import type { HostFileDrop } from '../host';
 import { I18nProvider } from '../i18n';
-import type { NamedAgentProfile } from '../lib/client';
+import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { Composer } from './Composer';
 import { canAbortActiveTurn } from './SessionView';
@@ -53,6 +53,7 @@ vi.mock('../host/vscode', () => ({
 }));
 
 const containers: HTMLDivElement[] = [];
+const roots: Root[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
@@ -101,6 +102,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  act(() => { for (const root of roots.splice(0)) root.unmount(); });
   for (const container of containers.splice(0)) container.remove();
 });
 
@@ -114,12 +116,14 @@ async function renderComposer(
 ): Promise<{
   container: HTMLDivElement;
   root: Root;
+  queryClient: QueryClient;
   rerender: (props: Partial<Parameters<typeof Composer>[0]>) => Promise<void>;
 }> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rerender = async (nextProps: Partial<Parameters<typeof Composer>[0]>) => {
     await act(async () => {
@@ -163,7 +167,7 @@ async function renderComposer(
   await rerender(props);
   await settle();
   await settle();
-  return { container, root, rerender };
+  return { container, root, queryClient: client, rerender };
 }
 
 /** Let react-query promises land and the re-render flush, on a macrotask cadence. */
@@ -1406,6 +1410,19 @@ describe('Composer slash skill catalog', () => {
     expect(empty.container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for skills');
   });
 
+  it('reuses a fresh skills catalog when opening the slash menu again', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const { container } = await renderComposer({ value: '/', workspaceId: 'wd_fixture_0123456789ab' });
+    expect(listWorkspaceSkills).toHaveBeenCalledTimes(1);
+    await openSlashMenu(container);
+    expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/review');
+    expect(listWorkspaceSkills).toHaveBeenCalledTimes(1);
+    await pressKey(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, { key: 'Escape' });
+    await openSlashMenu(container);
+    expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/review');
+    expect(listWorkspaceSkills).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the live session catalog on /s/:id even when a workspace id is also set', async () => {
     listSessionSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const { container } = await renderComposer({
@@ -1688,6 +1705,7 @@ async function renderStatefulComposer(
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(
@@ -2003,6 +2021,56 @@ describe('Composer skill preview card', () => {
 });
 
 describe('Composer restored selection diagnostics', () => {
+  it.each([
+    { catalog: 'model', code: API_CODES.TIMEOUT },
+    { catalog: 'profile', code: -1 },
+  ])('allows sending without a banner when the $catalog catalog has transport error $code', async ({ catalog, code }) => {
+    const failure = new ApiError({ code, msg: 'Connection unavailable', data: null });
+    if (catalog === 'model') listModels.mockRejectedValueOnce(failure);
+    else listNamedAgentProfiles.mockRejectedValueOnce(failure);
+    const onSend = vi.fn();
+    const onChangeModel = vi.fn();
+    const { container } = await renderComposer({
+      value: 'preserved prompt',
+      model: 'fixture/kiki-pro',
+      agentProfile: 'agent',
+      onChangeModel,
+      onSend,
+    });
+    expect(catalog === 'model' ? listModels : listNamedAgentProfiles).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
+    await pressKey(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('preserved prompt', []);
+    expect(onChangeModel).not.toHaveBeenCalled();
+  });
+
+  it('retries a timed-out model read in the background and clears the transient failure on success', async () => {
+    listModels.mockRejectedValueOnce(new ApiError({ code: API_CODES.TIMEOUT, msg: 'Request timed out', data: null }));
+    const { container, queryClient } = await renderComposer({ model: 'fixture/kiki-pro', value: 'hello' });
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_150));
+    });
+    expect(listModels).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryState(['models'])?.status).toBe('success');
+    expect(queryClient.getQueryState(['models'])?.error).toBeNull();
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
+  });
+
+  it('still blocks sending and offers retry on a deterministic catalog error', async () => {
+    listModels.mockRejectedValue(new ApiError({ code: API_CODES.REQUEST_INVALID, msg: 'Invalid model config', data: null }));
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'hello', onSend });
+    expect(container.querySelector('[data-selection-diagnostic][role="alert"]')?.textContent).toContain('Invalid model config');
+    expect(container.querySelector('[data-selection-diagnostic] button')?.textContent).toBe('Retry');
+    await pressKey(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(listModels).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a removed model visible, blocks sending, and keeps the input and reselect path usable', async () => {
     const onSend = vi.fn();
     const onChangeModel = vi.fn();

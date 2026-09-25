@@ -72,7 +72,7 @@ import {
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
-import type { NamedAgentProfile } from '../lib/client';
+import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
@@ -100,6 +100,18 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
 const REBUILD_CONTEXT_OPTION = '__kiki_rebuild_context__';
+const CATALOG_RETRY_INTERVAL_MS = 30_000;
+
+const isTransientCatalogError = (error: unknown): boolean =>
+  error instanceof ApiError && (error.code === API_CODES.TIMEOUT || error.code === -1);
+
+const retryCatalog = (failureCount: number, error: Error): boolean =>
+  isTransientCatalogError(error) && failureCount < 3;
+const catalogRetryDelay = (attempt: number): number =>
+  Math.min(1000 * 2 ** attempt, CATALOG_RETRY_INTERVAL_MS);
+const catalogRefetchInterval = (query: { state: { error: Error | null } }): number | false =>
+  isTransientCatalogError(query.state.error) ? CATALOG_RETRY_INTERVAL_MS : false;
+
 let vscodeConversationSequence = 0;
 
 function nextVscodeConversationKey(): string {
@@ -507,6 +519,9 @@ export function Composer({
     queryKey: ['models'],
     queryFn: () => client.listModels(),
     staleTime: 60_000,
+    retry: retryCatalog,
+    retryDelay: catalogRetryDelay,
+    refetchInterval: catalogRefetchInterval,
   });
   const models = modelsQuery.data?.items ?? [];
 
@@ -575,7 +590,9 @@ export function Composer({
     queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
     enabled: agentProfileCatalogMode.mode !== 'disabled',
     staleTime: 60_000,
-    retry: false,
+    retry: retryCatalog,
+    retryDelay: catalogRetryDelay,
+    refetchInterval: catalogRefetchInterval,
   });
   const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
     () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? [], t),
@@ -606,8 +623,13 @@ export function Composer({
   const resolvedModelKey = model !== undefined
     ? resolveCatalogModel(models, model)?.id
     : undefined;
-  const selectionLoading = modelsQuery.isPending || (validateProfile && agentProfilesQuery.isPending);
-  const selectionCatalogError = modelsQuery.error ?? (validateProfile ? agentProfilesQuery.error : null);
+  // A transport failure says nothing about whether a preserved selection is valid.
+  // During its background retry, React Query is still pending but must not hold send.
+  const selectionLoading =
+    (modelsQuery.isPending && !isTransientCatalogError(modelsQuery.failureReason)) ||
+    (validateProfile && agentProfilesQuery.isPending && !isTransientCatalogError(agentProfilesQuery.failureReason));
+  const selectionCatalogError = [modelsQuery.error, validateProfile ? agentProfilesQuery.error : null]
+    .find((error) => error !== null && !isTransientCatalogError(error)) ?? null;
   const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
     && !agentProfileOptions.some((item) => item.value === agentProfile);
   const invalidModel = modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
@@ -651,9 +673,14 @@ export function Composer({
   const skillCatalogReady = sessionId !== undefined || workspaceId !== undefined;
   const slashMenuOpen = menu?.kind === 'slash';
   const refetchSkills = skillsQuery.refetch;
+  const slashMenuWasOpenRef = useRef(false);
   useEffect(() => {
-    if (slashMenuOpen && skillCatalogReady) void refetchSkills();
-  }, [slashMenuOpen, skillCatalogReady, refetchSkills]);
+    const justOpened = slashMenuOpen && !slashMenuWasOpenRef.current;
+    slashMenuWasOpenRef.current = slashMenuOpen;
+    if (justOpened && skillCatalogReady && skillsQuery.isStale && !skillsQuery.isFetching) {
+      void skillsQuery.refetch();
+    }
+  }, [slashMenuOpen, skillCatalogReady, skillsQuery.isStale, skillsQuery.isFetching, skillsQuery.refetch]);
 
   const slashItems = useMemo(
     () => buildSlashItems(skills, { hasSession: sessionId !== undefined }),

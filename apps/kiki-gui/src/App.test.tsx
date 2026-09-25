@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { isEditableTarget, retryRootReadModelQuery, runStartupUpdateCheck } from './App';
+import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, isEditableTarget, retryRootReadModelQuery, runStartupUpdateCheck } from './App';
 import { resolveFallbackPhase } from './components/ConversationShell';
 import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';
@@ -125,6 +125,12 @@ describe('startup desktop update check', () => {
     await expect(runStartupUpdateCheck(host, 'install', vi.fn(), installed)).resolves.toBe('installed');
     expect(update.install).toHaveBeenCalledOnce();
     expect(installed).toHaveBeenCalledWith(update);
+  });
+});
+
+describe('session first-page polling', () => {
+  it('spaces first-page refreshes to a 15-second visible interval', () => {
+    expect(SESSION_FIRST_PAGE_POLL_INTERVAL_MS).toBe(15_000);
   });
 });
 

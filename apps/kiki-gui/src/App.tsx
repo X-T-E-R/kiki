@@ -81,6 +81,8 @@ import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
 
+export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
+
 export function retryRootReadModelQuery(_failureCount: number, error: Error): boolean {
   return isSessionIndexBuildingError(error);
 }
@@ -274,7 +276,7 @@ export function App() {
   const queryClient = useQueryClient();
   useEffect(() => {
     return startVisiblePoll({
-      intervalMs: 5000,
+      intervalMs: SESSION_FIRST_PAGE_POLL_INTERVAL_MS,
       task: async () => {
         const first = await client.listSessions({
           page_size: 100,

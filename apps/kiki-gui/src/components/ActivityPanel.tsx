@@ -123,6 +123,12 @@ function WaitingRow({ entry, onOpen }: { entry: ActivityEntry; onOpen: () => voi
   );
 }
 
+export function activityPollInterval(busyCount: number): number {
+  if (busyCount <= 2) return 5_000;
+  if (busyCount <= 5) return 10_000;
+  return 15_000;
+}
+
 export function ActivityPanel({ sessions }: { sessions: readonly Session[] }) {
   const { client } = useConnection();
   const registry = useOptionalControllerRegistry();
@@ -155,20 +161,22 @@ export function ActivityPanel({ sessions }: { sessions: readonly Session[] }) {
     () => sessions.filter((session) => session.busy).map((session) => session.id),
     [sessions],
   );
+  // Keep the single-session cadence; spread requests when many turns are busy.
+  const pollInterval = activityPollInterval(busyIds.length);
   const promptQueries = useQueries({
     queries: busyIds.map((sessionId) => ({
       queryKey: ['activity-prompts', sessionId],
       queryFn: () => client.listPrompts(sessionId),
-      refetchInterval: 5000,
-      staleTime: 4000,
+      refetchInterval: pollInterval,
+      staleTime: pollInterval - 1_000,
     })),
   });
   const taskQueries = useQueries({
     queries: busyIds.map((sessionId) => ({
       queryKey: ['activity-tasks', sessionId],
       queryFn: () => client.listTasks(sessionId).then((data) => data.items),
-      refetchInterval: 5000,
-      staleTime: 4000,
+      refetchInterval: pollInterval,
+      staleTime: pollInterval - 1_000,
     })),
   });
 
