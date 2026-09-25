@@ -39,8 +39,8 @@ macOS dmg **未经 Apple 签名或公证**。校验后，首次启动时在「�
 使用 Node.js 24.15.0 或更新版本时，也可选择以下 npm 安装方式：
 
 ```sh
-npm install -g kiki-cli       # CLI/TUI + 对应平台的桌面版
-npm install -g kiki-cli-lite  # 仅 CLI/TUI
+npm install -g kiki-agent       # CLI/TUI + 对应平台的桌面版
+npm install -g kiki-agent-lite  # 仅 CLI/TUI
 kiki --version
 ```
 
@@ -67,9 +67,9 @@ pnpm dev:cli -- --help
 kiki --version
 ```
 
-**更新**：独立 CLI 可用新版 Release 文件替换；npm 安装则运行 `npm install -g kiki-cli@latest` 或 `npm install -g kiki-cli-lite@latest`。Windows 桌面版可在 **设置 → 关于** 中检查并安装已签名的 NSIS 更新，见 [Kiki 桌面版](./desktop-app.md#更新)。Linux 和 macOS 的桌面构建需要手动下载新版，不使用 Windows 的更新 feed。
+**更新**：独立 CLI 可用新版 Release 文件替换；npm 安装则运行 `npm install -g kiki-agent@latest` 或 `npm install -g kiki-agent-lite@latest`。Windows 桌面版可在 **设置 → 关于** 中检查并安装已签名的 NSIS 更新，见 [Kiki 桌面版](./desktop-app.md#更新)。Linux 和 macOS 的桌面构建需要手动下载新版，不使用 Windows 的更新 feed。
 
-**卸载**：独立 CLI 从 `PATH` 删除；npm 包运行 `npm uninstall -g kiki-cli` 或 `npm uninstall -g kiki-cli-lite`。npm 卸载不会自动删除安装包安装的 Windows 应用或已复制到「应用程序」的 macOS 应用，仍需在系统中卸载。源码开发可删除仓库检出。Windows 桌面版在「已安装的应用」卸载，Linux deb 使用系统包管理器，macOS 删除「应用程序」里的 Kiki.app。删除可执行文件不会删除你的数据——会话历史与配置位于 `~/.kiki/`，下次安装仍可使用；如需一并删除，见[数据路径](../configuration/data-locations.md)。
+**卸载**：独立 CLI 从 `PATH` 删除；npm 包运行 `npm uninstall -g kiki-agent` 或 `npm uninstall -g kiki-agent-lite`。npm 卸载不会自动删除安装包安装的 Windows 应用或已复制到「应用程序」的 macOS 应用，仍需在系统中卸载。源码开发可删除仓库检出。Windows 桌面版在「已安装的应用」卸载，Linux deb 使用系统包管理器，macOS 删除「应用程序」里的 Kiki.app。删除可执行文件不会删除你的数据——会话历史与配置位于 `~/.kiki/`，下次安装仍可使用；如需一并删除，见[数据路径](../configuration/data-locations.md)。
 
 ## 下一步
 

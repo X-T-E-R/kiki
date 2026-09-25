@@ -39,8 +39,8 @@ Download its `<filename>.sha256` file, compare its hash, rename the downloaded e
 With Node.js 24.15.0 or later, npm offers two alternatives:
 
 ```sh
-npm install -g kiki-cli       # CLI/TUI and the matching desktop build
-npm install -g kiki-cli-lite  # CLI/TUI only
+npm install -g kiki-agent       # CLI/TUI and the matching desktop build
+npm install -g kiki-agent-lite  # CLI/TUI only
 kiki --version
 ```
 
@@ -67,9 +67,9 @@ For a release build, verify the installed version before upgrading:
 kiki --version
 ```
 
-**Update**: replace a standalone `kiki` executable with the matching newer Release asset, or run `npm install -g kiki-cli@latest` / `npm install -g kiki-cli-lite@latest` for an npm installation. On Windows, the desktop app can also check and install signed NSIS updates from **Settings → About** — see [Kiki desktop](./desktop-app.md#update). Linux and macOS desktop bundles require a new manual download; they do not use that Windows updater feed.
+**Update**: replace a standalone `kiki` executable with the matching newer Release asset, or run `npm install -g kiki-agent@latest` / `npm install -g kiki-agent-lite@latest` for an npm installation. On Windows, the desktop app can also check and install signed NSIS updates from **Settings → About** — see [Kiki desktop](./desktop-app.md#update). Linux and macOS desktop bundles require a new manual download; they do not use that Windows updater feed.
 
-**Uninstall**: remove a standalone `kiki` executable from your `PATH`, or run `npm uninstall -g kiki-cli` / `npm uninstall -g kiki-cli-lite`. npm uninstall does not remove an app copied to Applications or a Windows installer it ran; uninstall those through the OS. Source development is removed by deleting the checkout. For the desktop bundles, use **Installed apps** in Windows Settings, your package manager for a Linux deb, or delete Kiki.app from Applications on macOS. Removing the executable does not delete your data — session history and configuration live under `~/.kiki/` and stay available to the next installation; see [Data locations](../configuration/data-locations.md) if you want to remove it as well.
+**Uninstall**: remove a standalone `kiki` executable from your `PATH`, or run `npm uninstall -g kiki-agent` / `npm uninstall -g kiki-agent-lite`. npm uninstall does not remove an app copied to Applications or a Windows installer it ran; uninstall those through the OS. Source development is removed by deleting the checkout. For the desktop bundles, use **Installed apps** in Windows Settings, your package manager for a Linux deb, or delete Kiki.app from Applications on macOS. Removing the executable does not delete your data — session history and configuration live under `~/.kiki/` and stay available to the next installation; see [Data locations](../configuration/data-locations.md) if you want to remove it as well.
 
 ## Next steps
 

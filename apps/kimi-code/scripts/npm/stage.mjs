@@ -8,7 +8,7 @@ const desktopVersion = JSON.parse(await readFile(resolve(root, '../kiki-gui/pack
 if (source.version !== desktopVersion) throw new Error(`CLI ${source.version} and desktop ${desktopVersion} must use the same release version`);
 
 await rm(destination, { recursive: true, force: true });
-for (const [kind, name] of [['lite', 'kiki-cli-lite'], ['full', 'kiki-cli']]) {
+for (const [kind, name] of [['lite', 'kiki-agent-lite'], ['full', 'kiki-agent']]) {
   const dir = resolve(destination, kind);
   await mkdir(dir, { recursive: true });
   for (const asset of ['dist', 'native', 'README.md']) {

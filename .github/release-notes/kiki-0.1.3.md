@@ -23,7 +23,7 @@ The third feature update for **Kiki** — a local-first AI coding agent with a T
 
 - **Linux**: `AppImage` and `.deb` for x64. **macOS**: `dmg` for Apple Silicon and Intel (unsigned, not notarized — see the installation guide for first open).
 - **One installer story**: the Windows installer and the full npm package both include the CLI; `kiki desktop` launches the desktop app from the terminal.
-- **npm**: `npm install -g kiki-cli` (desktop + CLI) or `kiki-cli-lite` (CLI/TUI only). Requires Node.js 24.15+.
+- **npm**: `npm install -g kiki-agent` (desktop + CLI) or `kiki-agent-lite` (CLI/TUI only). Requires Node.js 24.15+.
 
 ## Known issues
 
@@ -51,7 +51,7 @@ Standalone single-file executables (no archives), each with a `<file>.sha256` ch
 | macOS Intel / Apple Silicon | `kiki-darwin-x64` / `kiki-darwin-arm64` |
 | Linux x64 / ARM64 | `kiki-linux-x64` / `kiki-linux-arm64` |
 
-Or from npm: `kiki-cli` (desktop + CLI) or `kiki-cli-lite` (CLI/TUI only), Node.js 24.15+.
+Or from npm: `kiki-agent` (desktop + CLI) or `kiki-agent-lite` (CLI/TUI only), Node.js 24.15+.
 
 ## Verifying downloads
 

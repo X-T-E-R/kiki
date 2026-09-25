@@ -58,7 +58,7 @@ Choose a build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 
 
 Standalone CLI files have matching `.sha256` checksums. On macOS, the dmg is unsigned and not notarized: verify the download, drag Kiki to Applications, then use **Control-click → Open** on first launch. Add the CLI to your `PATH` separately; the dmg does not change it.
 
-Alternatively, with Node.js 24.15.0+ install the CLI/TUI and desktop with `npm install -g kiki-cli`, or only the CLI/TUI with `npm install -g kiki-cli-lite`. The full npm package downloads and checksum-verifies the matching desktop release at install time; it requires network access. Run `kiki desktop` to open the installed app (or get installation instructions if it is absent).
+Alternatively, with Node.js 24.15.0+ install the CLI/TUI and desktop with `npm install -g kiki-agent`, or only the CLI/TUI with `npm install -g kiki-agent-lite`. The full npm package downloads and checksum-verifies the matching desktop release at install time; it requires network access. Run `kiki desktop` to open the installed app (or get installation instructions if it is absent).
 
 > On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because the Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
 

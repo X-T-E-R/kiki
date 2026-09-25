@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, rename } from 'node:fs/promises';
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, rename } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
@@ -19,7 +19,7 @@ const supported = (process.platform === 'win32' && process.arch === 'x64')
   || (process.platform === 'linux' && process.arch === 'x64');
 
 if (!supported) {
-  throw new Error(`No Kiki desktop npm bundle for ${process.platform}-${process.arch}. Use kiki-cli-lite or download the platform release asset.`);
+  throw new Error(`No Kiki desktop npm bundle for ${process.platform}-${process.arch}. Use kiki-agent-lite or download the platform release asset.`);
 }
 
 const url = `https://github.com/X-T-E-R/kiki/releases/download/kiki-v${version}/${asset}`;
