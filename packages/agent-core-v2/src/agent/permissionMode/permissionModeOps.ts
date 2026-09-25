@@ -14,7 +14,7 @@ export class PermissionSetMode extends Event2<z.infer<typeof permissionSetModeSc
 }
 export interface PermissionSetMode extends z.infer<typeof permissionSetModeSchema> {}
 
-export const permissionModeKey = defineState('permissionMode', (): PermissionMode => 'manual')
+export const permissionModeKey = defineState('permissionMode', (): PermissionMode => 'auto')
   .replayable({ schema: z.custom<PermissionMode>() })
   .on(PermissionSetMode, (_s, e) => e.mode);
 

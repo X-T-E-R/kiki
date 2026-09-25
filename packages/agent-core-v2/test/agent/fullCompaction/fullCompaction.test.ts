@@ -25,7 +25,7 @@ import { MASTER_ENV } from '#/app/flag/flagService';
 import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 import type { TestAgentContext, TestAgentOptions, TestAgentServiceOverride } from '../../harness';
-import { agentService, appServices, createCommandRunner, execEnvServices, hostEnvironmentServices, sessionServices, testAgent } from '../../harness';
+import { agentService, appServices, createCommandRunner, execEnvServices, hostEnvironmentServices, permissionModeServices, sessionServices, testAgent } from '../../harness';
 import { IAgentToolSelectAnnouncementsService } from '#/agent/toolSelect/toolSelectAnnouncements';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import {
@@ -402,7 +402,10 @@ describe('FullCompaction', () => {
   });
 
   it('rejects a manual compaction while a turn is active', async () => {
-    const ctx = testAgent(execEnvServices({ processRunner: createCommandRunner('should-not-run') }));
+    const ctx = testAgent(
+      execEnvServices({ processRunner: createCommandRunner('should-not-run') }),
+      permissionModeServices('manual'),
+    );
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -1815,7 +1818,7 @@ describe('FullCompaction', () => {
 
   it('blocks the turn until auto compaction finishes', async () => {
     const records: TelemetryRecord[] = [];
-    const ctx = testAgent({ telemetry: recordingTelemetry(records) });
+    const ctx = testAgent({ telemetry: recordingTelemetry(records) }, permissionModeServices('manual'));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -2160,12 +2163,15 @@ describe('FullCompaction', () => {
   });
 
   it('does not auto compact small contexts when reserved size exceeds the model window', async () => {
-    const ctx = testAgent({
-      initialConfig: {
-        providers: {},
-        loopControl: { reservedContextSize: 50_000 },
+    const ctx = testAgent(
+      {
+        initialConfig: {
+          providers: {},
+          loopControl: { reservedContextSize: 50_000 },
+        },
       },
-    });
+      permissionModeServices('manual'),
+    );
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: {
@@ -2196,6 +2202,7 @@ describe('FullCompaction', () => {
           loopControl: { reservedContextSize: 0 },
         },
       },
+      permissionModeServices('manual'),
     );
     const parameters = {
       type: 'object',
@@ -2561,7 +2568,7 @@ describe('FullCompaction', () => {
       }
       throw new Error(`Unexpected generate call ${String(callCount)}`);
     };
-    const ctx = testAgent({ generate });
+    const ctx = testAgent({ generate }, permissionModeServices('manual'));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -2641,13 +2648,16 @@ describe('FullCompaction', () => {
       }
       throw new Error(`Unexpected generate call ${String(callCount)}`);
     };
-    const ctx = testAgent({
-      generate,
-      initialConfig: {
-        providers: {},
-        tokenCounting: { strategy: 'measured' },
+    const ctx = testAgent(
+      {
+        generate,
+        initialConfig: {
+          providers: {},
+          tokenCounting: { strategy: 'measured' },
+        },
       },
-    });
+      permissionModeServices('manual'),
+    );
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -2709,7 +2719,7 @@ describe('FullCompaction', () => {
       }
       throw new Error(`Unexpected generate call ${String(callCount)}`);
     };
-    const ctx = testAgent({ generate });
+    const ctx = testAgent({ generate }, permissionModeServices('manual'));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: {
@@ -2814,7 +2824,7 @@ describe('FullCompaction', () => {
       }
       throw new Error(`Unexpected generate call ${String(callCount)}`);
     };
-    const ctx = testAgent({ generate });
+    const ctx = testAgent({ generate }, permissionModeServices('manual'));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: {
@@ -3000,7 +3010,7 @@ describe('FullCompaction', () => {
       }
       throw new Error(`Unexpected generate call ${String(callCount)}`);
     };
-    const ctx = testAgent({ generate, telemetry: recordingTelemetry(records) });
+    const ctx = testAgent({ generate, telemetry: recordingTelemetry(records) }, permissionModeServices('manual'));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -3046,7 +3056,7 @@ describe('FullCompaction', () => {
       }
       throw new Error(`Unexpected generate call ${String(callCount)}`);
     };
-    const ctx = testAgent({ generate });
+    const ctx = testAgent({ generate }, permissionModeServices('manual'));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -3112,7 +3122,7 @@ describe('FullCompaction', () => {
       });
       return textResult('Recovered with hard cap.');
     };
-    const ctx = testAgent({ generate });
+    const ctx = testAgent({ generate }, permissionModeServices('manual'));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -3148,7 +3158,7 @@ describe('FullCompaction', () => {
         });
         return textResult('Recovered with opt-out.');
       };
-      const ctx = testAgent({ generate });
+      const ctx = testAgent({ generate }, permissionModeServices('manual'));
       ctx.configure({
         provider: CATALOGUED_PROVIDER,
         modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -3182,7 +3192,7 @@ describe('FullCompaction', () => {
       });
       return textResult('Recovered with max output.');
     };
-    const ctx = testAgent({ generate });
+    const ctx = testAgent({ generate }, permissionModeServices('manual'));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -3221,7 +3231,7 @@ describe('FullCompaction', () => {
       });
       return textResult('Recovered with default cap.');
     };
-    const ctx = testAgent({ generate });
+    const ctx = testAgent({ generate }, permissionModeServices('manual'));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -3261,9 +3271,12 @@ describe('FullCompaction', () => {
       }
       throw new Error(`Unexpected generate call ${String(callCount)}`);
     };
-    const ctx = testAgent({
-      generate,
-    });
+    const ctx = testAgent(
+      {
+        generate,
+      },
+      permissionModeServices('manual'),
+    );
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: {

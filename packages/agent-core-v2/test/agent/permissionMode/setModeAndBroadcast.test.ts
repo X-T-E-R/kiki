@@ -21,6 +21,7 @@ describe('setModeAndBroadcast', () => {
     records = [];
     ctx = createTestAgent(telemetryServices(recordingTelemetry(records)));
 
+    await ctx.rpc.setPermission({ mode: 'manual' });
     await ctx.rpc.setPermission({ mode: 'auto' });
 
     expect(ctx.get(IAgentPermissionModeService).mode).toBe('auto');

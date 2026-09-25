@@ -11,6 +11,7 @@ import {
   InMemoryWireRecordPersistence,
   agentService,
   createTestAgent,
+  permissionModeServices,
   wireRecordPersistenceServices,
   type TestAgentContext,
 } from '../../../harness';
@@ -250,6 +251,7 @@ describe('GoalInjection integration', () => {
       ctx = createTestAgent(
         wireRecordPersistenceServices(persistence),
         agentService(IAgentSwarmService, stubAgentSwarm()),
+        permissionModeServices('manual'),
       );
       goals = ctx.get(IAgentGoalService) as GoalServiceTestManager;
       profile = ctx.get(IAgentProfileService);

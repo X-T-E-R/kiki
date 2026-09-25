@@ -149,17 +149,17 @@ describe('AgentPermissionModeService (wire-backed)', () => {
       }),
     );
 
-    expect(svc.mode).toBe('manual');
+    expect(svc.mode).toBe('auto');
 
-    svc.setMode('manual');
+    svc.setMode('auto');
     expect(changes).toEqual([]);
 
-    svc.setMode('auto');
-    expect(svc.mode).toBe('auto');
-    expect(changes).toEqual([{ mode: 'auto', previousMode: 'manual' }]);
+    svc.setMode('manual');
+    expect(svc.mode).toBe('manual');
+    expect(changes).toEqual([{ mode: 'manual', previousMode: 'auto' }]);
 
-    svc.setMode('auto');
-    expect(changes).toEqual([{ mode: 'auto', previousMode: 'manual' }]);
+    svc.setMode('manual');
+    expect(changes).toEqual([{ mode: 'manual', previousMode: 'auto' }]);
   });
 
   it('enforces a persistent mode ceiling across later mode changes', () => {
@@ -185,7 +185,7 @@ describe('AgentPermissionModeService (wire-backed)', () => {
     expect('payload' in records[0]!).toBe(false);
   });
 
-  it('persists an explicitly configured manual mode when it matches the initial value', async () => {
+  it('persists an explicitly configured mode', async () => {
     svc.setMode('manual');
 
     expect(await readRecords()).toEqual([
@@ -196,6 +196,8 @@ describe('AgentPermissionModeService (wire-backed)', () => {
   it('registers auto-mode reminder injection through the injection service', async () => {
     expect(registeredInjection?.name).toBe('permission_mode');
 
+    svc.setMode('manual');
+    await runRegisteredInjection();
     expect(await runRegisteredInjection()).toBeUndefined();
 
     svc.setMode('auto');
@@ -219,6 +221,8 @@ describe('AgentPermissionModeService (wire-backed)', () => {
   });
 
   it('announces nothing after compaction when the current mode carries no reminder', async () => {
+    svc.setMode('manual');
+    await runRegisteredInjection();
     expect(await runRegisteredInjection()).toBeUndefined();
 
     spliceReminderOut();
