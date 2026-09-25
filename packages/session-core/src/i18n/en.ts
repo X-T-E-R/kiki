@@ -728,11 +728,11 @@ export const en = {
 
   // ---- composer ----
   'composer.mode.manual': 'manual',
-  'composer.mode.manualHint': 'Approve every action',
+  'composer.mode.manualHint': 'Ask before every action',
   'composer.mode.auto': 'auto',
-  'composer.mode.autoHint': 'Approve reads, ask for writes',
+  'composer.mode.autoHint': 'Fully autonomous — never asks',
   'composer.mode.yolo': 'yolo',
-  'composer.mode.yoloHint': 'Never ask',
+  'composer.mode.yoloHint': 'Approve everything, but may still ask',
   'composer.modeAria': 'Mode',
   'composer.planAria': 'Plan',
   'composer.plan': 'plan',

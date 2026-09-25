@@ -195,7 +195,7 @@ export function useNewSessionDraft({
     queryFn: () => client.getConfig(),
     staleTime: 60_000,
   });
-  const serverDefaultModel = configQuery.data?.default_model;
+  const serverDefaultModel = configQuery.data?.default_model || undefined;
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
