@@ -100,6 +100,31 @@ function sharedChapters(container: Element) {
 }
 
 describe('RightRail shared chapters', () => {
+  it('mounts the agent panel only when its rail slot enters the viewport', async () => {
+    let notify: IntersectionObserverCallback | undefined;
+    const originalObserver = globalThis.IntersectionObserver;
+    const disconnect = vi.fn();
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { notify = callback; }
+      observe = vi.fn();
+      disconnect = disconnect;
+    });
+    try {
+      const rail = await renderRail();
+      expect(rail.querySelector('[data-panel-props]')).toBeNull();
+      await act(async () => {
+        notify?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+      });
+      expect(rail.querySelector('[data-panel-props]')).not.toBeNull();
+      const mounted = mounts[0];
+      await act(async () => { mounted?.root.unmount(); });
+      mounts.shift();
+      expect(disconnect).toHaveBeenCalled();
+    } finally {
+      vi.stubGlobal('IntersectionObserver', originalObserver);
+    }
+  });
+
   it('names the rail owner in both focus states: main agent or the focused subagent', async () => {
     const main = await renderRail();
     const child = await renderRail({ subagent: context });
@@ -176,7 +201,8 @@ describe('RightRail shared chapters', () => {
     expect(highlight?.textContent).toContain('Navigate');
     expect(highlight?.querySelector('[data-needs-input]')?.textContent).toContain('1');
     expect(child.querySelector('[data-tasks-scroll]')?.closest('section')?.nextElementSibling).toBe(highlight);
-    expect(highlight?.nextElementSibling?.matches('[data-panel-props]')).toBe(true);
+    expect(highlight?.nextElementSibling?.matches('[data-rail-agent-panel-slot]')).toBe(true);
+    expect(highlight?.nextElementSibling?.querySelector('[data-panel-props]')).not.toBeNull();
   });
 
   it('keeps empty chapters hidden and retains collapsible chapter behavior in both modes', async () => {

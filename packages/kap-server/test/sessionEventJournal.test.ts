@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type EventEnvelope,
@@ -58,6 +58,65 @@ describe('SessionEventJournal', () => {
     expect(j2.seq).toBe(2);
     expect(j2.nextSeq()).toBe(3);
     await j2.close();
+  });
+
+  it('recovers a large monotonic journal using bounded edge reads', async () => {
+    const header = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_large', created_at: 1 });
+    const first = JSON.stringify({ kind: 'event', seq: 1, envelope: envelope(1) });
+    const last = JSON.stringify({ kind: 'event', seq: 2, envelope: envelope(2) });
+    await writeFile(filePath, `${header}\n` + `${first}\n`.repeat(50_000) + `${last}\n`);
+    const handle = await open(filePath, 'r');
+    const read = vi.spyOn(Object.getPrototypeOf(handle), 'read');
+    await handle.close();
+    try {
+      const journal = await SessionEventJournal.open(filePath);
+      expect(journal.epoch).toBe('ep_large');
+      expect(journal.seq).toBe(2);
+      expect(read.mock.calls.reduce((bytes, args) => bytes + (Number(args[2]) || 0), 0))
+        .toBeLessThanOrEqual(2 * 64 * 1024);
+      await journal.close();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('falls back to a full scan for damaged tail and retains the maximum seq and epoch', async () => {
+    const header = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_damaged', created_at: 1 });
+    const high = JSON.stringify({ kind: 'event', seq: 9, envelope: envelope(9) });
+    const low = JSON.stringify({ kind: 'event', seq: 2, envelope: envelope(2) });
+    await writeFile(filePath, `${header}\n${high}\n${low}\nnot-json\n`);
+    const journal = await SessionEventJournal.open(filePath);
+    expect(journal.epoch).toBe('ep_damaged');
+    expect(journal.seq).toBe(9);
+    await journal.close();
+  });
+
+  it('falls back when a valid but out-of-order tail hides the earlier maximum', async () => {
+    const header = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_order', created_at: 1 });
+    const high = JSON.stringify({ kind: 'event', seq: 9, envelope: envelope(9) });
+    const low = JSON.stringify({ kind: 'event', seq: 2, envelope: envelope(2) });
+    await writeFile(filePath, `${header}\n${high}\n${low}\n`);
+    const journal = await SessionEventJournal.open(filePath);
+    expect(journal.epoch).toBe('ep_order');
+    expect(journal.seq).toBe(9);
+    await journal.close();
+  });
+
+  it('recovers the last complete event after a truncated final line', async () => {
+    const header = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_truncated', created_at: 1 });
+    const event = JSON.stringify({ kind: 'event', seq: 3, envelope: envelope(3) });
+    await writeFile(filePath, `${header}\n${event}\n{"kind":"event","seq":4`);
+    const journal = await SessionEventJournal.open(filePath);
+    expect(journal.epoch).toBe('ep_truncated');
+    expect(journal.seq).toBe(3);
+    await journal.close();
+  });
+
+  it('recovers a header after a damaged leading line via the full scan', async () => {
+    await writeFile(filePath, 'bad\n' + JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_late', created_at: 1 }) + '\n');
+    const journal = await SessionEventJournal.open(filePath);
+    expect(journal.epoch).toBe('ep_late');
+    await journal.close();
   });
 
   it('rotates to a fresh epoch when the header is corrupt', async () => {

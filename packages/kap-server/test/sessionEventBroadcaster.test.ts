@@ -606,6 +606,16 @@ describe('SessionEventBroadcaster', () => {
     ]);
   });
 
+  it('captures a compact count without reading or folding the wire', async () => {
+    const lifecycle = new FakeLifecycle();
+    const main = lifecycle.addAgent('main');
+    main.set(IAgentContextMemoryService, { get: () => [{ role: 'user', content: [], toolCalls: [] }] });
+    sessions.set('s1', lifecycle);
+    const snapshot = await bc.getSnapshotState('s1', { captureMessages: false });
+    expect(snapshot.contextMessages).toEqual([]);
+    expect(snapshot.contextMessageCount).toBe(1);
+  });
+
   it('does not estimate the context breakdown in status wire events', async () => {
     const lc = new FakeLifecycle();
     const main = lc.addAgent('main');

@@ -14,6 +14,7 @@ import type {
   PromptSubmitResult,
   QuestionResponse,
   Session,
+  SessionSnapshotResponse,
 } from '@kiki/protocol';
 import {
   AgentTranscript,
@@ -183,6 +184,7 @@ export class SessionController {
   private rewriteHoldToken = 0;
   private closed = false;
 
+  private readonly snapshotControllers = new Set<AbortController>();
   private readonly agentStates = new Map<string, SessionViewState>();
   private readonly publishedAgentStates = new Map<string, SessionViewState>();
   private readonly agentListeners = new Map<string, Set<Listener>>();
@@ -376,10 +378,20 @@ export class SessionController {
     }
   };
 
+  private async readSnapshot(): Promise<SessionSnapshotResponse> {
+    const controller = new AbortController();
+    this.snapshotControllers.add(controller);
+    try {
+      return await this.view.snapshot({ signal: controller.signal });
+    } finally {
+      this.snapshotControllers.delete(controller);
+    }
+  }
+
   /** Initial sync: snapshot shell → subscribe_v2 with per-agent grades. */
   async open(): Promise<void> {
     try {
-      const snapshot = await this.view.snapshot();
+      const snapshot = await this.readSnapshot();
       if (this.closed) return;
       this.setState(applyTranscriptShell(this.sessionId, snapshot, this.state));
       this.transcriptGrades = this.requestedTranscriptGrades();
@@ -417,6 +429,8 @@ export class SessionController {
 
   close(): void {
     this.closed = true;
+    for (const controller of this.snapshotControllers) controller.abort();
+    this.snapshotControllers.clear();
     this.agentViews.clear();
     this.visibilityDocument?.removeEventListener?.('visibilitychange', this.onVisibilityChange);
     this.clearResyncTimer();
@@ -676,7 +690,7 @@ export class SessionController {
     this.rosterRefreshInFlight = true;
     const attachment = this.viewAttachment;
     try {
-      const snapshot = await this.view.snapshot();
+      const snapshot = await this.readSnapshot();
       if (
         this.closed || this.resyncInFlight || attachment !== this.viewAttachment ||
         snapshot.epoch !== cursor.epoch ||
@@ -756,7 +770,7 @@ export class SessionController {
     this.setState(setResyncing(this.state, true));
     const attachment = this.viewAttachment;
     try {
-      const snapshot = await this.view.snapshot();
+      const snapshot = await this.readSnapshot();
       if (this.closed || attachment !== this.viewAttachment) return;
       for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
       this.pendingTranscriptBatches.clear();

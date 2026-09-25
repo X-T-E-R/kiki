@@ -117,7 +117,7 @@ export async function assembleSnapshot(
 
   const main = await ensureMainAgent(handle);
   const snapState = await broadcaster.getSnapshotState(sessionId, {
-    captureMessages: true,
+    captureMessages: !compact,
     capture: async () => {
       const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
       const workspace = await core.accessor.get(IWorkspaceService).get(workspaceId);
@@ -167,7 +167,7 @@ export async function assembleSnapshot(
   return {
     as_of_seq: snapState.seq,
     epoch: snapState.epoch,
-    session: { ...session, message_count: snapState.contextMessages.length },
+    session: { ...session, message_count: compact ? snapState.contextMessageCount : snapState.contextMessages.length },
     messages: { items: messageTail?.items ?? [], has_more: messageTail?.has_more ?? false },
     in_flight_turn: inFlightTurn,
     subagents,

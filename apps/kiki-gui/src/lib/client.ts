@@ -752,14 +752,14 @@ export class KikiClient {
   sessionView(sessionId: string): SessionViewFacade {
     const view = this.klient.session(sessionId).view;
     return {
-      snapshot: async () => {
+      snapshot: async (options) => {
         const snapshotKlient = createKlient({
           endpoint: this.baseUrl,
           token: this.token,
           timeoutMs: 0,
         });
         try {
-          return await this.run(() => snapshotKlient.session(sessionId).view.snapshot());
+          return await this.run(() => snapshotKlient.session(sessionId).view.snapshot(options));
         } finally {
           await snapshotKlient.close();
         }

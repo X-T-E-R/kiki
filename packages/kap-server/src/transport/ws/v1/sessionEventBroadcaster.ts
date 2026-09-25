@@ -55,7 +55,7 @@ import {
 
 import { toWireApproval } from '../../../routes/approvals';
 import { toWireQuestion } from '../../../routes/questions';
-import { captureContextMessageHistory } from '../../../services/messages/messageHistory';
+import { cachedMessageCount, captureContextMessageHistory } from '../../../services/messages/messageHistory';
 import { projectPromptContentParts } from '../../../services/messages/messageProjection';
 import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/legacyStatus';
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
@@ -90,6 +90,7 @@ export interface SessionSnapshotState {
   epoch: string;
   contextMessages: readonly ContextMessage[];
   contextMessageTimes: readonly (number | undefined)[];
+  contextMessageCount: number;
   inFlightTurn: InFlightTurn | null;
   subagents: SnapshotSubagent[];
   pendingApprovals: ReturnType<typeof toWireApproval>[];
@@ -874,6 +875,7 @@ export class SessionEventBroadcaster {
         epoch: cold?.epoch ?? '',
         contextMessages: [],
         contextMessageTimes: [],
+        contextMessageCount: 0,
         inFlightTurn: null,
         subagents: [],
         pendingApprovals: [],
@@ -889,6 +891,9 @@ export class SessionEventBroadcaster {
         seq: state.journal.seq,
         epoch: state.journal.epoch,
         contextMessages,
+        contextMessageCount: captureMessages
+          ? state.contextMessages.length
+          : cachedMessageCount(this.opts.core, sessionId, state.contextMessages) ?? state.contextMessages.length,
         mainAgent,
         inFlightTurn: state.tracker.get(sessionId),
         subagents: state.roster.get(sessionId),

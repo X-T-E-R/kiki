@@ -589,6 +589,25 @@ export function RightRail({
   const [subagentsAllOpen, setSubagentsAllOpen] = useState(false);
   const [terminateSnapshot, setTerminateSnapshot] = useState<readonly Task[] | null>(null);
   const [terminatingAll, setTerminatingAll] = useState(false);
+  const panelSlot = useRef<HTMLDivElement>(null);
+  const [panelVisible, setPanelVisible] = useState(false);
+  const [panelMounted, setPanelMounted] = useState(false);
+  useEffect(() => {
+    const slot = panelSlot.current;
+    if (slot === null) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setPanelVisible(true);
+      setPanelMounted(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      const visible = entry?.isIntersecting === true;
+      setPanelVisible(visible);
+      if (visible) setPanelMounted(true);
+    }, { root: slot.parentElement });
+    observer.observe(slot);
+    return () => observer.disconnect();
+  }, []);
   const backgroundTasks = useMemo(
     () => state.tasks.filter((task) => task.kind !== 'subagent' && task.status === 'running'),
     [state.tasks],
@@ -745,8 +764,10 @@ export function RightRail({
         </section>
       ) : null}
 
-      <AgentPanelContainer key={`${state.sessionId}:${selectedAgentId ?? MAIN_AGENT_ID}`}
-        state={state} forest={forest} agentId={selectedAgentId ?? MAIN_AGENT_ID} />
+      <div ref={panelSlot} data-rail-agent-panel-slot className="min-h-px">
+        {panelMounted ? <AgentPanelContainer key={`${state.sessionId}:${selectedAgentId ?? MAIN_AGENT_ID}`}
+          state={state} forest={forest} agentId={selectedAgentId ?? MAIN_AGENT_ID} visible={panelVisible} /> : null}
+      </div>
 
       <RailSection title={t('rail.session')}>
         <div className="space-y-1.5">

@@ -20,7 +20,7 @@ import {
   type SessionViewTranscriptCatchUpInput,
   type SessionViewTranscriptPageInput,
 } from '../../contract/session/view.js';
-import type { SessionViewChannel } from '../channel.js';
+import type { CallOptions, SessionViewChannel } from '../channel.js';
 import { KlientValidationError } from '../validation.js';
 
 export interface SessionViewSubscription {
@@ -38,7 +38,7 @@ export interface SessionViewTranscriptFacade {
 }
 
 export interface SessionViewFacade {
-  snapshot(): Promise<SessionSnapshotResponse>;
+  snapshot(options?: CallOptions): Promise<SessionSnapshotResponse>;
   readonly transcript: SessionViewTranscriptFacade;
   subscribe(
     input: SessionViewSubscribeInput,
@@ -70,8 +70,8 @@ export function createSessionViewFacade(
     return result.data;
   };
   return {
-    async snapshot() {
-      const output = await requireChannel().snapshot(sessionId);
+    async snapshot(options) {
+      const output = await requireChannel().snapshot(sessionId, options);
       return validate
         ? parse('output', 'session.view.snapshot', sessionViewSnapshotOutputSchema, output)
         : (output as SessionSnapshotResponse);

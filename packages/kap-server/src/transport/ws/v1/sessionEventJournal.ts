@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { ulid } from 'ulid';
 
 const JOURNAL_VERSION = 1;
+const WATERMARK_READ_BYTES = 64 * 1024;
 
 /**
  * Wire event envelope — matches `wsEventEnvelopeSchema` /
@@ -71,9 +72,9 @@ export class SessionEventJournal {
   }
 
   /**
-   * Open (or create) the journal for `filePath`. Scans an existing file to
-   * recover `{epoch, lastSeq}`. A missing file or an unreadable header starts
-   * a fresh journal with a new epoch.
+   * Open (or create) the journal for `filePath`. Recovers the header and the
+   * latest durable seq from bounded reads, scanning in full if either edge is
+   * damaged. A missing file or unreadable header starts a fresh epoch.
    */
   static async open(filePath: string, logger: JournalLogger = noopLogger): Promise<SessionEventJournal> {
     let epoch: string | undefined;
@@ -81,16 +82,10 @@ export class SessionEventJournal {
     let sawAnyLine = false;
 
     try {
-      for await (const raw of readLines(filePath)) {
-        sawAnyLine = true;
-        const parsed = parseJournalLine(raw);
-        if (parsed === undefined) continue;
-        if (parsed.kind === 'journal_header') {
-          if (epoch === undefined) epoch = parsed.epoch;
-          continue;
-        }
-        if (parsed.seq > lastSeq) lastSeq = parsed.seq;
-      }
+      const watermark = await readWatermark(filePath);
+      epoch = watermark.epoch;
+      lastSeq = watermark.lastSeq;
+      sawAnyLine = watermark.sawAnyLine;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
@@ -217,6 +212,70 @@ export class SessionEventJournal {
 /** Default per-session journal path under `<eventsDir>/<sessionId>.jsonl`. */
 export function sessionJournalPath(eventsDir: string, sessionId: string): string {
   return join(eventsDir, `${sessionId}.jsonl`);
+}
+
+async function readWatermark(filePath: string): Promise<{
+  epoch: string | undefined;
+  lastSeq: number;
+  sawAnyLine: boolean;
+}> {
+  const file = await open(filePath, 'r');
+  let fast: { epoch: string; lastSeq: number; sawAnyLine: boolean } | undefined;
+  try {
+    const { size } = await file.stat();
+    if (size === 0) return { epoch: undefined, lastSeq: 0, sawAnyLine: false };
+    const headSize = Math.min(size, WATERMARK_READ_BYTES);
+    const head = Buffer.allocUnsafe(headSize);
+    await file.read(head, 0, headSize, 0);
+    const headerEnd = head.indexOf(10);
+    const header = headerEnd >= 0
+      ? parseJournalLine(head.subarray(0, headerEnd).toString('utf8'))
+      : size <= headSize ? parseJournalLine(head.toString('utf8')) : undefined;
+    if (header?.kind === 'journal_header') {
+      const tailStart = Math.max(0, size - WATERMARK_READ_BYTES);
+      const tail = Buffer.allocUnsafe(size - tailStart);
+      await file.read(tail, 0, tail.length, tailStart);
+      let end = tail.length;
+      let lastSeq = 0;
+      let valid = true;
+      while (end > 0) {
+        if (tail[end - 1] === 10) end -= 1;
+        if (end === 0) break;
+        const separator = tail.lastIndexOf(10, end - 1);
+        if (separator < 0 && tailStart > 0) break;
+        const line = tail.subarray(separator + 1, end);
+        const parsed = parseJournalLine(line.toString('utf8'));
+        if (parsed === undefined) {
+          valid = false;
+          break;
+        }
+        if (parsed.kind === 'event') {
+          if (lastSeq > 0 && parsed.seq > lastSeq) valid = false;
+          lastSeq = Math.max(lastSeq, parsed.seq);
+        } else if (tailStart > 0 || parsed.epoch !== header.epoch) {
+          valid = false;
+        }
+        if (!valid) break;
+        end = separator + 1;
+      }
+      if (valid && (lastSeq > 0 || tailStart === 0)) {
+        fast = { epoch: header.epoch, lastSeq, sawAnyLine: true };
+      }
+    }
+  } finally {
+    await file.close();
+  }
+  if (fast !== undefined) return fast;
+  let epoch: string | undefined;
+  let lastSeq = 0;
+  let sawAnyLine = false;
+  for await (const raw of readLines(filePath)) {
+    sawAnyLine = true;
+    const parsed = parseJournalLine(raw);
+    if (parsed?.kind === 'journal_header' && epoch === undefined) epoch = parsed.epoch;
+    if (parsed?.kind === 'event') lastSeq = Math.max(lastSeq, parsed.seq);
+  }
+  return { epoch, lastSeq, sawAnyLine };
 }
 
 function parseJournalLine(raw: string): JournalHeaderLine | JournalEventLine | undefined {

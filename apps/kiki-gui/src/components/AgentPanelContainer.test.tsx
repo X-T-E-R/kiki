@@ -106,9 +106,9 @@ afterEach(async () => {
   element.remove();
 });
 
-async function render(agentId: string, options: { routed?: SessionViewState; forest?: AgentForest } = {}) {
+async function render(agentId: string, options: { routed?: SessionViewState; forest?: AgentForest; visible?: boolean } = {}) {
   await act(async () => root.render(<QueryClientProvider client={queryClient}><MemoryRouter><I18nProvider>
-    <AgentPanelContainer state={options.routed ?? routedState()} forest={options.forest ?? forestOf([agentId])} agentId={agentId} />
+    <AgentPanelContainer state={options.routed ?? routedState()} forest={options.forest ?? forestOf([agentId])} agentId={agentId} visible={options.visible} />
   </I18nProvider></MemoryRouter></QueryClientProvider>));
   for (let i = 0; i < 5; i++) await act(async () => {
     if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
@@ -119,6 +119,19 @@ async function render(agentId: string, options: { routed?: SessionViewState; for
 function todosStatus(): string | undefined {
   return element.querySelector<HTMLElement>('[data-agent-todos-status]')?.dataset['agentTodosStatus'];
 }
+
+it('defers agent panel reads until visible and stops reads while hidden', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'child' }, available: false,
+    targets: [], tools: [], skills: [], metrics: {},
+  });
+  await render('child', { visible: false });
+  expect(getAgentCapabilities).not.toHaveBeenCalled();
+  await render('child', { visible: true });
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
+  await render('child', { visible: false });
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
+});
 
 it('queries the selected identity, keeps missing billing unknown and does not reuse another agent todo', async () => {
   getAgentCapabilities.mockImplementation(async (query) => ({

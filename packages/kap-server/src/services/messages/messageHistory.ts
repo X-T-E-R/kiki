@@ -56,6 +56,17 @@ const messageHistoryCacheStates = new WeakMap<Scope, MessageHistoryCacheState>()
 const messageHistoryLifecycleScopes = new WeakSet<Scope>();
 const messageHistoryRefreshes = new WeakMap<Scope, Map<string, Promise<MessageHistoryCacheEntry>>>();
 
+/** Count a compatible, already-materialized history plus its live tail without reading the wire. */
+export function cachedMessageCount(
+  core: Scope,
+  sessionId: string,
+  contextMessages: readonly ContextMessage[],
+): number | undefined {
+  const entry = messageHistoryCacheStates.get(core)?.cache.get(sessionId);
+  if (entry === undefined || !contextTailCompatible(entry.observedContext, contextMessages)) return undefined;
+  return entry.messages.length + contextMessages.length - entry.observedContext.length;
+}
+
 export function messageHistoryCacheReport(core: Scope): {
   readonly entries: number;
   readonly bytes: number;

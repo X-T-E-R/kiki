@@ -165,9 +165,10 @@ describe('server-v2 snapshot route enrichment', () => {
       .fn<() => ReadonlyMap<string, number>>()
       .mockReturnValueOnce(new Map([['agent-1', 2]]))
       .mockReturnValue(new Map());
-    const getSnapshotState = vi.fn(async (_sessionId: string, options: { capture?: () => Promise<unknown> }) => ({
+    const getSnapshotState = vi.fn(async (_sessionId: string, options: { captureMessages?: boolean; capture?: () => Promise<unknown> }) => ({
       seq: 1,
       epoch: 'ep_snapshot',
+      contextMessageCount: 1,
       captured: await options.capture?.(),
       pendingApprovals: [{
         approval_id: 'approval-snapshot', session_id: sessionId, turn_id: 7,
@@ -176,7 +177,7 @@ describe('server-v2 snapshot route enrichment', () => {
         created_at: new Date(now).toISOString(), expires_at: new Date(now + 60_000).toISOString(),
       }],
       pendingQuestions: [],
-      contextMessages: [
+      contextMessages: options.captureMessages === false ? [] : [
         {
           id: 'message-snapshot',
           role: 'user' as const,
@@ -282,7 +283,7 @@ describe('server-v2 snapshot route enrichment', () => {
         tool_call_count: 3,
       }),
     ]);
-    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: true, capture: expect.any(Function) }));
+    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: false, capture: expect.any(Function) }));
     expect(getMaterializedTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(getTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, ['agent-1']);
     expect(loadParts).not.toHaveBeenCalled();
@@ -990,11 +991,18 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
 
     expect(getLiveSessionById(server!.core.accessor, sid)).toBeUndefined();
 
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const readSpy = vi.spyOn(appendLog, 'read');
+    const compact = await snapshot(sid, 'transcript');
+    readSpy.mockClear();
+    const compactWarm = await snapshot(sid, 'transcript');
+    expect(readSpy).not.toHaveBeenCalled();
+    expect(compactWarm.messages.items).toEqual([]);
     const snap = await snapshot(sid);
+    readSpy.mockRestore();
     expect(snap.session.id).toBe(sid);
     expect(snap.session.message_count).toBe(2);
     expect(snap.messages.items).toHaveLength(2);
-    const compact = await snapshot(sid, 'transcript');
     expect(compact.session.message_count).toBe(2);
     expect(compact.messages.items).toEqual([]);
     expect((snap.messages.items[0]!.content[0] as { text: string }).text).toBe('hello-from-disk');
@@ -1183,6 +1191,7 @@ describe('legacy snapshot message tail projection', () => {
       ) => ({
         seq: 7,
         epoch: 'ep_tail',
+        contextMessageCount: size,
         captured: await options.capture?.(),
         pendingApprovals: [],
         pendingQuestions: [],

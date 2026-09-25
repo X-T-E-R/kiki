@@ -185,6 +185,23 @@ describe('KikiClient transport error mapping', () => {
 
     await expect(pending).resolves.toMatchObject({ as_of_seq: 0, session: { id: 's1' } });
   });
+
+  it('forwards a session snapshot abort signal to the dedicated HTTP request', async () => {
+    const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    const controller = new AbortController();
+    const pending = client.sessionView('s1').snapshot({ signal: controller.signal });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const requestSignal = fetchMock.mock.calls[0]?.[1]?.signal;
+    expect(requestSignal?.aborted).toBe(false);
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(requestSignal?.aborted).toBe(true);
+  });
 });
 
 describe('KikiClient config responses', () => {

@@ -360,6 +360,26 @@ describe('SessionController prompt runtime projection', () => {
 });
 
 describe('SessionController pipeline', () => {
+  it('aborts the in-flight snapshot when the session closes', async () => {
+    let signal: AbortSignal | undefined;
+    const view: SessionViewFacade = {
+      ...fakeView({ snapshot: vi.fn() }, {}),
+      snapshot: vi.fn(({ signal: requestedSignal } = {}) => {
+        signal = requestedSignal;
+        return new Promise<SessionSnapshotResponse>((_resolve, reject) => {
+          requestedSignal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      }),
+    };
+    const controller = new SessionController({} as KikiClient, view, 'session_test');
+    const opening = controller.open();
+    expect(signal?.aborted).toBe(false);
+    controller.close();
+    expect(signal?.aborted).toBe(true);
+    await opening;
+    expect(controller.getState().loaded).toBe(false);
+  });
+
   it('refreshes a waking child on creation and removes it on disposal without unrelated events', async () => {
     const previous = {
       id: 'child', session_id: 'session_test', kind: 'subagent' as const,

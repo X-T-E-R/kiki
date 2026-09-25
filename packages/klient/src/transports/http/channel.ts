@@ -97,7 +97,7 @@ export class HttpChannel implements KlientChannel {
   }
 
   readonly sessionView: SessionViewChannel = {
-    snapshot: (sessionId) => this.viewRequest(`/api/klient/session-view/${encodeURIComponent(sessionId)}/snapshot`, {}),
+    snapshot: (sessionId, options) => this.viewRequest(`/api/klient/session-view/${encodeURIComponent(sessionId)}/snapshot`, {}, { signal: options?.signal, timeoutMs: options?.timeoutMs }),
     transcriptPage: (sessionId, input) => this.viewRequest(`/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript`, {
       agent_id: input.agentId, before_turn: input.beforeTurn, after_turn: input.afterTurn, page_size: input.pageSize,
     }),
@@ -136,10 +136,11 @@ export class HttpChannel implements KlientChannel {
     path: string,
     query: Record<string, string | number | undefined>,
     options?: {
-      readonly method: 'GET' | 'POST';
+      readonly method?: 'GET' | 'POST';
       readonly body?: unknown;
-      readonly okCodes: readonly number[];
+      readonly okCodes?: readonly number[];
       readonly timeoutMs?: number;
+      readonly signal?: AbortSignal;
     },
   ): Promise<unknown> {
     return this.requestJson(path, { ...options, query });

@@ -85,10 +85,11 @@ function useAgentViewState(sessionId: string, agentId: string): SessionViewState
   return useSyncExternalStore(subscribeAgent, readAgentState);
 }
 
-export function AgentPanelContainer({ state, forest, agentId }: {
+export function AgentPanelContainer({ state, forest, agentId, visible = true }: {
   state: SessionViewState;
   forest: AgentForest;
   agentId: string;
+  visible?: boolean;
 }) {
   const { klient } = useConnection();
   const { t } = useI18n();
@@ -103,12 +104,10 @@ export function AgentPanelContainer({ state, forest, agentId }: {
   const capabilities = useQuery({
     queryKey: ['agentCapabilities', query],
     queryFn: ({ signal }) => klient.global.agentPanel.read(query, { signal }),
-    // Session-level gate only: this RPC needs the session open, and its payload
-    // is already scoped by `agent_id`, so no agent data leaks through the flag.
-    enabled: state.loaded && !state.resyncing,
-    refetchInterval: (current) => active && current.state.data?.metrics?.[agentId] !== undefined ? 15_000 : false,
+    enabled: visible && state.loaded && !state.resyncing,
+    refetchInterval: (current) => visible && active && current.state.data?.metrics?.[agentId] !== undefined ? 15_000 : false,
     refetchIntervalInBackground: false,
-    refetchOnWindowFocus: active,
+    refetchOnWindowFocus: visible && active,
     retry: false,
   });
   const refreshSignature = JSON.stringify([
@@ -122,10 +121,10 @@ export function AgentPanelContainer({ state, forest, agentId }: {
   ]);
   const previousSignature = useRef(refreshSignature);
   useEffect(() => {
-    if (previousSignature.current === refreshSignature || !state.loaded || state.resyncing || capabilities.isFetching) return;
+    if (!visible || previousSignature.current === refreshSignature || !state.loaded || state.resyncing || capabilities.isFetching) return;
     previousSignature.current = refreshSignature;
     void capabilities.refetch({ cancelRefetch: false });
-  }, [refreshSignature, state.loaded, state.resyncing, capabilities.isFetching, capabilities.refetch]);
+  }, [visible, refreshSignature, state.loaded, state.resyncing, capabilities.isFetching, capabilities.refetch]);
   const data = capabilities.data;
   const profile = data?.profile;
   const metrics = data?.metrics ?? {};

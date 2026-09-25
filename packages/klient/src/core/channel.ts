@@ -29,7 +29,7 @@ export interface SessionViewChannelSubscription {
 }
 
 export interface SessionViewChannel {
-  snapshot(sessionId: string): Promise<unknown>;
+  snapshot(sessionId: string, options?: CallOptions): Promise<unknown>;
   transcriptPage(sessionId: string, input: SessionViewTranscriptPageInput): Promise<unknown>;
   transcriptCatchUp(sessionId: string, input: SessionViewTranscriptCatchUpInput): Promise<unknown>;
   subscribe(
