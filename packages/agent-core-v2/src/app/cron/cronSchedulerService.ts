@@ -1,7 +1,11 @@
+import { join } from 'node:path';
+
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { IntervalTimer } from '#/_base/utils/timer';
+import { IntervalTimer, TimeoutTimer, MAX_TIMER_DELAY_MS } from '#/_base/utils/timer';
 import { IConfigService } from '#/app/config/config';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { ISessionManager, type SessionLease } from '#/app/sessionManager/sessionManager';
 import { LifecycleScope } from '#/app/scopes';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
@@ -14,14 +18,20 @@ import { ICronTaskPersistence } from './cronTaskPersistence';
 import { jitteredNextCronRunMs, oneShotJitteredNextCronRunMs } from './jitter';
 import { ICronScheduler } from './cronScheduler';
 
-const DEFAULT_POLL_INTERVAL_MS = 1_000;
+const DEFAULT_REFRESH_INTERVAL_MS = 10 * 60_000;
+const WATCH_DEBOUNCE_MS = 200;
+const OVERDUE_RETRY_MS = 60_000;
 
 export class CronSchedulerService extends Disposable implements ICronScheduler {
   declare readonly _serviceBrand: undefined;
 
   private readonly timer = this._register(new IntervalTimer({ unref: true }));
+  private readonly dueTimer = this._register(new TimeoutTimer());
+  private readonly watchDebounce = this._register(new TimeoutTimer());
+  private tasks: readonly CronTask[] = [];
   private clocks: ClockSources = SYSTEM_CLOCKS;
   private currentTick: Promise<void> | undefined;
+  private reloadQueued = false;
   private sigusr1Handler: NodeJS.SignalsListener | undefined;
   private disposed = false;
 
@@ -29,6 +39,8 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
     @IConfigService private readonly config: IConfigService,
     @ICronTaskPersistence private readonly store: ICronTaskPersistence,
     @ISessionManager private readonly sessions: ISessionManager,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
   ) {
     super();
     this._register(
@@ -41,9 +53,20 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
   }
 
   tick(): Promise<void> {
-    if (this.currentTick !== undefined) return this.currentTick;
-    const current = this.runTick().finally(() => {
+    return this.scheduleTick(true);
+  }
+
+  private scheduleTick(reload: boolean): Promise<void> {
+    if (this.currentTick !== undefined) {
+      if (reload) this.reloadQueued = true;
+      return this.currentTick;
+    }
+    const current = this.runTick(reload).finally(() => {
       if (this.currentTick === current) this.currentTick = undefined;
+      if (this.reloadQueued && !this.disposed) {
+        this.reloadQueued = false;
+        void this.tick().catch((error: unknown) => this.debugError('reload', error));
+      }
     });
     this.currentTick = current;
     return current;
@@ -58,33 +81,67 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
       this.bindSigusr1();
       return;
     }
-    const interval = cfg.pollIntervalMs === undefined ? DEFAULT_POLL_INTERVAL_MS : cfg.pollIntervalMs;
-    if (interval !== null && interval !== 0) {
-      this.timer.cancelAndSet(() => {
-        void this.tick().catch((error: unknown) => this.debugError('tick', error));
-      }, interval);
+    try {
+      const watch = this._register(this.fsWatch.watch(join(this.bootstrap.homeDir, this.bootstrap.scope('cron'))));
+      this._register(watch.onDidChange(() => this.requestReload()));
+      void watch.ready.catch((error: unknown) => this.debugError('watch', error));
+    } catch (error) {
+      this.debugError('watch', error);
     }
+    if (this.store.onDidChange !== undefined) {
+      this._register(this.store.onDidChange(() => this.requestReload()));
+    }
+    this._register(this.config.onDidSectionChange((event) => {
+      if (event.domain !== CRON_SECTION) return;
+      this.configureRefresh();
+      this.requestReload();
+    }));
+    this.configureRefresh();
     void this.tick().catch((error: unknown) => this.debugError('initial tick', error));
   }
 
-  private async runTick(): Promise<void> {
+  private configureRefresh(): void {
+    this.timer.cancel();
+    this.dueTimer.cancel();
+    const cfg = this.getCronConfig();
+    if (cfg.manualTick || cfg.disabled || cfg.pollIntervalMs === 0 || cfg.pollIntervalMs === null) return;
+    this.timer.cancelAndSet(() => {
+      void this.tick().catch((error: unknown) => this.debugError('refresh', error));
+    }, cfg.pollIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS);
+    this.scheduleNextWake(cfg);
+  }
+
+  private requestReload(): void {
+    if (this.disposed) return;
+    this.watchDebounce.cancelAndSet(() => {
+      const cfg = this.getCronConfig();
+      if (cfg.manualTick || cfg.disabled || cfg.pollIntervalMs === 0 || cfg.pollIntervalMs === null) return;
+      void this.tick().catch((error: unknown) => this.debugError('change', error));
+    }, WATCH_DEBOUNCE_MS);
+  }
+
+  private async loadTasks(): Promise<void> {
+    const tasks: CronTask[] = [];
+    for (const workspaceId of await this.store.listWorkspaceIds()) {
+      tasks.push(...await this.store.list({ workspaceId }));
+    }
+    this.tasks = tasks;
+  }
+
+  private async runTick(reload: boolean): Promise<void> {
     await this.config.ready;
+    if (this.disposed) return;
     const cfg = this.getCronConfig();
     if (cfg.disabled) return;
     this.clocks = resolveClockSources(cfg.clock, cfg.debug);
-
+    if (reload) await this.loadTasks();
     const now = this.clocks.wallNow();
     const dueSessionIds = new Set<string>();
-    const workspaceIds = await this.store.listWorkspaceIds();
-    for (const workspaceId of workspaceIds) {
-      const tasks = await this.store.list({ workspaceId });
-      for (const task of tasks) {
-        const sessionId = task.tags?.[CRON_SESSION_TAG];
-        if (sessionId === undefined || task.paused === true) continue;
-        if (this.isDue(task, now, cfg.noJitter)) dueSessionIds.add(sessionId);
-      }
+    for (const task of this.tasks) {
+      const sessionId = task.tags?.[CRON_SESSION_TAG];
+      if (sessionId === undefined || task.paused === true) continue;
+      if (this.isDue(task, now, cfg.noJitter)) dueSessionIds.add(sessionId);
     }
-
     for (const sessionId of dueSessionIds) {
       try {
         await this.fireSession(sessionId);
@@ -92,6 +149,24 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
         this.debugError(`session ${sessionId}`, error);
       }
     }
+    if (dueSessionIds.size > 0) await this.loadTasks();
+    this.scheduleNextWake(cfg);
+  }
+
+  private scheduleNextWake(cfg: CronConfig): void {
+    this.dueTimer.cancel();
+    if (cfg.manualTick || cfg.disabled || cfg.pollIntervalMs === 0 || cfg.pollIntervalMs === null) return;
+    const now = this.clocks.wallNow();
+    let next = Infinity;
+    for (const task of this.tasks) {
+      if (task.paused === true || task.tags?.[CRON_SESSION_TAG] === undefined) continue;
+      next = Math.min(next, this.nextFireTime(task, now, cfg.noJitter));
+    }
+    if (!Number.isFinite(next)) return;
+    const delay = next <= now ? OVERDUE_RETRY_MS : Math.max(1, Math.min(next - now, MAX_TIMER_DELAY_MS));
+    this.dueTimer.cancelAndSet(() => {
+      void this.scheduleTick(false).catch((error: unknown) => this.debugError('due', error));
+    }, delay);
   }
 
   private async fireSession(sessionId: string): Promise<void> {
@@ -117,6 +192,10 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
   }
 
   private isDue(task: CronTask, now: number, noJitter: boolean): boolean {
+    return this.nextFireTime(task, now, noJitter) <= now;
+  }
+
+  private nextFireTime(task: CronTask, now: number, noJitter: boolean): number {
     try {
       const parsed = parseCronExpression(task.cron);
       const cursor =
@@ -127,14 +206,13 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
           : undefined;
       const base = cursor !== undefined && cursor > task.createdAt ? cursor : task.createdAt;
       const ideal = computeNextCronRun(parsed, base);
-      if (ideal === null) return false;
-      const next = task.recurring === false
+      if (ideal === null) return Infinity;
+      return task.recurring === false
         ? oneShotJitteredNextCronRunMs(task, ideal, undefined, noJitter)
         : jitteredNextCronRunMs(task, parsed, ideal, undefined, noJitter);
-      return next <= now;
     } catch (error) {
       this.debugError(`task ${task.id}`, error);
-      return false;
+      return Infinity;
     }
   }
 

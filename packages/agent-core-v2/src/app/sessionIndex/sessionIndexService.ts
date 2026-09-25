@@ -1,10 +1,13 @@
+import { join, relative, sep } from 'node:path';
+
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
-import { IntervalTimer } from '#/_base/utils/timer';
+import { IntervalTimer, TimeoutTimer } from '#/_base/utils/timer';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IFlagService } from '#/app/flag/flag';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
@@ -46,7 +49,7 @@ import {
 } from './sessionIndexSource';
 
 const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
-const RECONCILE_INTERVAL_MS = 60_000;
+const RECONCILE_INTERVAL_MS = 10 * 60_000;
 const DEGRADED_RETRY_MS = 5_000;
 const TIE_REPAIR_LIMIT = 1_000;
 const UNBOUNDED = Number.MAX_SAFE_INTEGER;
@@ -97,6 +100,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     degradedCount: 0,
   };
   private readonly reconcileTimer = this._register(new IntervalTimer({ unref: true }));
+  private readonly watchDebounce = this._register(new TimeoutTimer());
+  private watchStarted = false;
   private readonly projector: SessionIndexProjector;
 
   constructor(
@@ -107,6 +112,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     @IFlagService private readonly flags: IFlagService,
     @ISessionIndexMirror private readonly mirror: ISessionIndexMirror,
     @ILogService private readonly log: ILogService,
+    @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
   ) {
     super();
     this.projector = new SessionIndexProjector({
@@ -123,6 +129,45 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private ensureReconcileTimer(): void {
     if (!this.reconcileTimer.isSet()) {
       this.reconcileTimer.cancelAndSet(() => void this.tick(), RECONCILE_INTERVAL_MS);
+    }
+    if (this.watchStarted) return;
+    this.watchStarted = true;
+    const root = join(this.bootstrap.homeDir, this.bootstrap.scope('sessions'));
+    try {
+      const watch = this._register(this.fsWatch.watch(root, {
+        ignored: (path) => {
+          const entry = relative(root, path);
+          if (entry.startsWith('..')) return true;
+          const parts = entry === '' ? [] : entry.split(sep);
+          if (parts.length <= 2) return false;
+          if (parts.length === 3) return parts[2] !== 'session-meta' && parts[2] !== 'state.json';
+          return parts.length !== 4 || parts[2] !== 'session-meta' || parts[3] !== 'state.json';
+        },
+      }));
+      this._register(watch.onDidChange((change) => {
+        const path = relative(root, change.path);
+        if (path.startsWith('..')) return;
+        const parts = path === '' ? [] : path.split(sep);
+        if (parts.length >= 2 && (
+          change.kind === 'directory' || parts.at(-1) === 'state.json'
+        )) {
+          this.projector.invalidateFingerprint(parts[0], parts[1]);
+        } else if (change.kind === 'directory' && parts.length < 2) {
+          this.projector.invalidateFingerprint();
+        } else {
+          return;
+        }
+        this.watchDebounce.cancelAndSet(() => {
+          void this.reconcileNow({ reuseFingerprints: true }).catch((error: unknown) => {
+            this.log.warn('session index watched reconciliation failed', { error: String(error) });
+          });
+        }, 200);
+      }));
+      void watch.ready.catch((error: unknown) => {
+        this.log.warn('session index watch failed; relying on periodic reconciliation', { error: String(error) });
+      });
+    } catch (error) {
+      this.log.warn('session index watch failed; relying on periodic reconciliation', { error: String(error) });
     }
   }
 
@@ -280,13 +325,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   /** Test/ops hook: reconcile the published generation against disk now. */
-  async reconcileNow(): Promise<void> {
+  async reconcileNow(options?: { reuseFingerprints?: boolean }): Promise<void> {
     if (!this.readModelEnabled()) return;
     await this.mirror.runExclusive(async () => {
       const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (manifest === undefined) return;
       this.generation = manifest.seq;
-      await this.projector.reconcile(manifest.seq);
+      await this.projector.reconcile(manifest.seq, options);
     });
   }
 
@@ -318,7 +363,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           return;
         }
         this.generation = manifest.seq;
-        await this.projector.reconcile(manifest.seq);
+        await this.projector.reconcile(manifest.seq, { reuseFingerprints: true });
       });
     } catch (error) {
       this.log.warn('session index reconciliation failed', { error: String(error) });

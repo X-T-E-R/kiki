@@ -223,6 +223,8 @@ export interface SyncSessionInput {
   readonly workspaceId: string;
   readonly title?: string;
   readonly updatedAt: number;
+  readonly sourceMtimeMs?: number;
+  readonly forceSync?: boolean;
   /** Absolute session directory (the parent of wire.jsonl / agents/). */
   readonly dir: string;
 }
@@ -710,9 +712,11 @@ export class SearchIndexCore {
         break;
       }
       const sessionMeta = db.get(SESSION_META_PREFIX + summary.id);
-      const sourceMtimeMs = await sessionSourceMtime(summary.dir);
+      const sourceMtimeMs = summary.sourceMtimeMs ?? await sessionSourceMtime(summary.dir);
+      if (summary.forceSync) this.wireFileSnapshots.delete(summary.id);
       const wireSnapshot = this.wireFileSnapshots.get(summary.id);
       if (
+        !summary.forceSync &&
         sourceMtimeMs !== undefined &&
         wireSnapshot !== undefined &&
         Date.now() - wireSnapshot.capturedAt < WIRE_FILE_SNAPSHOT_TTL_MS &&

@@ -1,4 +1,5 @@
 import { Disposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -38,6 +39,8 @@ export class CronTaskPersistenceService extends Disposable implements ICronTaskP
   declare readonly _serviceBrand: undefined;
 
   private readonly cronScope: string;
+  private readonly changeEmitter = this._register(new Emitter<void>());
+  readonly onDidChange = this.changeEmitter.event;
 
   constructor(
     @IBootstrapService private readonly bootstrap: IBootstrapService,
@@ -80,11 +83,13 @@ export class CronTaskPersistenceService extends Disposable implements ICronTaskP
   async save(workspaceId: string, task: CronTask): Promise<void> {
     const scope = this.workspaceScope(workspaceId);
     await this.atomicDocs.set(scope, `${task.id}${JSON_SUFFIX}`, task);
+    this.changeEmitter.fire();
   }
 
   async delete(workspaceId: string, taskId: string): Promise<void> {
     const scope = this.workspaceScope(workspaceId);
     await this.atomicDocs.delete(scope, `${taskId}${JSON_SUFFIX}`);
+    this.changeEmitter.fire();
   }
 }
 

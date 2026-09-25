@@ -35,6 +35,7 @@ import {
 const WRITE_CHUNK = 500;
 const SCAN_CONCURRENCY = 16;
 const SHARED_SCAN_REUSE_MS = 30_000;
+const FINGERPRINT_REUSE_MS = 30 * 60_000;
 
 export interface SessionIndexProjectorDeps {
   readonly storage: IFileSystemStorageService;
@@ -71,8 +72,17 @@ interface ScanSlot {
 
 export class SessionIndexProjector {
   private scanSlot: ScanSlot | undefined;
+  private fingerprintCache = new Map<string, { fingerprint: SessionSourceFingerprint; checkedAt: number }>();
+  private fingerprintGeneration: number | undefined;
+  private fingerprintInvalidationEpoch = 0;
 
   constructor(private readonly deps: SessionIndexProjectorDeps) {}
+
+  invalidateFingerprint(workspaceId?: string, sessionId?: string): void {
+    this.fingerprintInvalidationEpoch += 1;
+    if (workspaceId === undefined || sessionId === undefined) this.fingerprintCache.clear();
+    else this.fingerprintCache.delete(`${workspaceId}/${sessionId}`);
+  }
 
   sharedScan(): Promise<AuthoritativeScan> {
     const slot = this.scanSlot;
@@ -183,8 +193,15 @@ export class SessionIndexProjector {
     return { generation, sessions: summaries.length };
   }
 
-  async reconcile(generation: number): Promise<ReconcileResult> {
+  async reconcile(generation: number, options?: { reuseFingerprints?: boolean }): Promise<ReconcileResult> {
     const { storage, docs, queryStore, log, sessionsScope } = this.deps;
+    if (this.fingerprintGeneration !== generation) {
+      this.fingerprintCache.clear();
+      this.fingerprintGeneration = generation;
+    }
+    const nextFingerprintCache = new Map<string, { fingerprint: SessionSourceFingerprint; checkedAt: number }>();
+    const invalidationEpoch = this.fingerprintInvalidationEpoch;
+    const checkedAt = Date.now();
     const collection = sessionCollection(generation);
     const counters = sessionCountersCollection(generation);
     const sources = sessionSourcesCollection(generation);
@@ -215,10 +232,19 @@ export class SessionIndexProjector {
       const previousSessionIds = previousWorkspace?.sessionIds ?? [];
       const previousSessionSet = new Set(previousSessionIds);
       const previousFingerprints = await queryStore.getMany<SessionSourceFingerprint>(sources, sessionIds);
-      const fingerprintEntries = await mapBounded(sessionIds, SCAN_CONCURRENCY, async (sessionId) => ({
-        sessionId,
-        fingerprint: await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log),
-      }));
+      const fingerprintEntries = await mapBounded(sessionIds, SCAN_CONCURRENCY, async (sessionId) => {
+        const key = `${workspaceId}/${sessionId}`;
+        const cached = this.fingerprintCache.get(key);
+        const reusable = options?.reuseFingerprints === true &&
+          cached !== undefined && checkedAt - cached.checkedAt < FINGERPRINT_REUSE_MS &&
+          previousSessionSet.has(sessionId) &&
+          fingerprintEquals(previousFingerprints.get(sessionId), cached.fingerprint);
+        const fingerprint = reusable
+          ? cached.fingerprint
+          : await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log);
+        nextFingerprintCache.set(key, { fingerprint, checkedAt: reusable ? cached.checkedAt : checkedAt });
+        return { sessionId, fingerprint };
+      });
       const changedCandidates: string[] = [];
       for (const { sessionId, fingerprint } of fingerprintEntries) {
         sourceMaxMtimeMs = Math.max(
@@ -244,7 +270,10 @@ export class SessionIndexProjector {
       const changedIds: string[] = [];
       const nextSummaries = new Map<string, SessionSummary>();
       for (const entry of changedResults) {
-        if (entry.result.kind === 'error') continue;
+        if (entry.result.kind === 'error') {
+          nextFingerprintCache.delete(`${workspaceId}/${entry.sessionId}`);
+          continue;
+        }
         changedIds.push(entry.sessionId);
         if (entry.result.kind === 'found') {
           nextSummaries.set(entry.sessionId, entry.result.summary);
@@ -367,6 +396,9 @@ export class SessionIndexProjector {
         sourceMaxMtimeMs,
       });
     }
+    this.fingerprintCache = invalidationEpoch === this.fingerprintInvalidationEpoch
+      ? nextFingerprintCache
+      : new Map();
     const result = { sessions, upserted, removed };
     if (upserted > 0 || removed > 0) {
       log.info('session index reconciliation repaired drift', { generation, ...result });

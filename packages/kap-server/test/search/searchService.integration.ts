@@ -580,6 +580,43 @@ describe('GlobalSearchService', () => {
     expect((await service.search({ query: '新标题' })).items.some((hit) => hit.role === 'title')).toBe(true);
   });
 
+  it('avoids a main-thread stat of every session on unchanged sync passes', async () => {
+    const sessions = [summary('old', 'old', T1), summary('new', 'new', T1 + 60_000)];
+    for (const session of sessions) {
+      await writeWire(home!, session.id, 'main', [userLine('body', T1)]);
+      await writeTitle(home!, session.id, session.title!);
+    }
+    const service = track(makeInlineService(home!, staticIndex(sessions)));
+    await service.reindex();
+    const stats = vi.spyOn(service as unknown as {
+      readSessionSourceMtimes: (items: readonly SessionSummary[]) => Promise<Map<string, number> | undefined>;
+    }, 'readSessionSourceMtimes');
+    await settleSync(service);
+    expect(stats).toHaveBeenCalledWith([]);
+  });
+
+  it('refreshes an old session outside the recency window after a watched metadata edit', async () => {
+    let old = summary('old', 'old title', T1);
+    const recent = summary('recent', 'recent title', T1 + 60_000);
+    for (const session of [old, recent]) {
+      await writeWire(home!, session.id, 'main', [userLine('body', T1)]);
+      await writeTitle(home!, session.id, session.title!);
+    }
+    const index = {
+      ...makeSessionIndex(async () => ({ items: [recent, old], nextCursor: undefined })),
+      count: async () => 2,
+      get: async (id: string) => id === old.id ? old : id === recent.id ? recent : undefined,
+    };
+    const service = track(makeInlineService(home!, index));
+    await service.reindex();
+    old = { ...old, title: 'changed title' };
+    await writeTitle(home!, old.id, old.title!);
+    await vi.waitFor(async () => {
+      await settleSync(service);
+      expect((await service.search({ query: 'changed title' })).items.some((hit) => hit.sessionId === old.id)).toBe(true);
+    }, { timeout: 3_000 });
+  });
+
   it('discovers a wire added to an existing warm-snapshot agent directory', async () => {
     const sessions = [summary('s1', 'directory sync', T1)];
     await writeWire(home!, 's1', 'main', [userLine('苹果 main', T1)]);

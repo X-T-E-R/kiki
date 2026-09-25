@@ -1,4 +1,5 @@
 import { createDecorator } from '#/_base/di/instantiation';
+import type { Event } from '#/_base/event';
 
 import type { CronTask } from './cronTask';
 
@@ -8,6 +9,7 @@ export interface CronTaskQuery {
 
 export interface ICronTaskPersistence {
   readonly _serviceBrand: undefined;
+  readonly onDidChange?: Event<void>;
 
   get(workspaceId: string, taskId: string): Promise<CronTask | undefined>;
   list(query: CronTaskQuery): Promise<readonly CronTask[]>;

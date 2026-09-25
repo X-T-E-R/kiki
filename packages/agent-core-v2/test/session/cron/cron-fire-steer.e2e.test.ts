@@ -15,6 +15,8 @@ import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IConfigService } from '#/app/config/config';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IHostFsWatchService, type HostFsChange } from '#/os/interface/hostFsWatch';
 import type { CronConfig } from '#/app/cron/configSection';
 import { ICronScheduler } from '#/app/cron/cronScheduler';
 import { CronSchedulerService } from '#/app/cron/cronSchedulerService';
@@ -108,6 +110,11 @@ function createAppScheduler(
   const services = createServices(disposables, {
     additionalServices: (reg) => {
       reg.defineInstance(IConfigService, config);
+      reg.defineInstance(IBootstrapService, ctx.get(IBootstrapService));
+      reg.defineInstance(IHostFsWatchService, {
+        _serviceBrand: undefined,
+        watch: () => ({ ready: Promise.resolve(), onDidChange: Event.None as Event<HostFsChange>, dispose: () => {} }),
+      });
       reg.defineInstance(ICronTaskPersistence, store);
       reg.defineInstance(ISessionManager, manager);
       reg.define(ICronScheduler, CronSchedulerService);

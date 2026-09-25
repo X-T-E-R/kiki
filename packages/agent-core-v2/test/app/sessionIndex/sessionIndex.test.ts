@@ -12,10 +12,12 @@ import {
   registerScopedService,
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
+import { Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { encodeWorkDirKey } from '#/_base/utils/workdir-slug';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
+import { IHostFsWatchService, type HostFsChange, type HostFsWatchOptions } from '#/os/interface/hostFsWatch';
 import { SessionIndexBuildingError } from '#/app/sessionIndex/errors';
 import {
   ISessionIndex,
@@ -64,6 +66,27 @@ import { stubLog } from '../../_base/log/stubs';
 import { stubQueryStore } from '../../persistence/interface/stubs';
 
 const WORK_DIR = '/home/user/repo';
+const sourceChanges = new Emitter<HostFsChange>();
+let indexWatchOptions: HostFsWatchOptions | undefined;
+
+class TestSessionIndexWatch implements IHostFsWatchService {
+  declare readonly _serviceBrand: undefined;
+
+  watch(_path: string, options?: HostFsWatchOptions) {
+    indexWatchOptions = options;
+    return { ready: Promise.resolve(), onDidChange: sourceChanges.event, dispose: () => {} };
+  }
+}
+
+function registerIndexWatch(): void {
+  registerScopedService(
+    LifecycleScope.App,
+    IHostFsWatchService,
+    TestSessionIndexWatch,
+    ScopeActivation.OnDemand,
+    'test',
+  );
+}
 
 function canonicalIds(summaries: readonly SessionSummary[]): string[] {
   return [...summaries]
@@ -79,6 +102,7 @@ describe('FileSessionIndex (legacy)', () => {
 
   beforeEach(async () => {
     _clearScopedRegistryForTests();
+    registerIndexWatch();
     registerScopedService(
       LifecycleScope.App,
       ISessionIndex,
@@ -601,6 +625,7 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
 
   beforeEach(async () => {
     _clearScopedRegistryForTests();
+    registerIndexWatch();
     registerScopedService(
       LifecycleScope.App,
       ISessionIndex,
@@ -2167,6 +2192,87 @@ describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
     expect(docs.gets).toBe(0);
     expect(Object.keys(counts).some((key) => key.startsWith('listKeys:'))).toBe(false);
     expect(counts[`getMany:${sessionCollection(1)}`]).toBeUndefined();
+  });
+
+  it('reuses periodic fingerprints but forced reconciliation still repairs external drift', async () => {
+    class CountingStorage extends FileStorageService {
+      stats = 0;
+      override async mtime(scope: string, key: string): Promise<number | undefined> {
+        this.stats += 1;
+        return super.mtime(scope, key);
+      }
+      override async size(scope: string, key: string): Promise<number | undefined> {
+        this.stats += 1;
+        return super.size(scope, key);
+      }
+    }
+    await seedSession('a', { title: 'before', createdAt: 1, updatedAt: 2 });
+    const storage = new CountingStorage(homeDir);
+    const store = build(storage);
+    await store.prepare();
+    await store.reconcileNow({ reuseFingerprints: true });
+    storage.stats = 0;
+    await store.reconcileNow({ reuseFingerprints: true });
+    expect(storage.stats).toBe(1);
+
+    await seedSession('a', { title: 'after', createdAt: 1, updatedAt: 3 });
+    await store.reconcileNow();
+    expect((await store.get('a'))?.title).toBe('after');
+    storage.stats = 0;
+    await store.reconcileNow({ reuseFingerprints: true });
+    expect(storage.stats).toBe(1);
+
+    await seedSession('a', { title: 'later', createdAt: 1, updatedAt: 4 });
+    const future = Date.now() + 31 * 60_000;
+    const date = vi.spyOn(Date, 'now').mockReturnValue(future);
+    try {
+      storage.stats = 0;
+      await store.reconcileNow({ reuseFingerprints: true });
+      expect(storage.stats).toBe(5);
+      expect((await store.get('a'))?.title).toBe('later');
+    } finally {
+      date.mockRestore();
+    }
+  });
+
+  it('reconciles a watched metadata edit and session deletion without statting unchanged sessions', async () => {
+    class CountingStorage extends FileStorageService {
+      stats = 0;
+      override async mtime(scope: string, key: string): Promise<number | undefined> {
+        this.stats += 1;
+        return super.mtime(scope, key);
+      }
+      override async size(scope: string, key: string): Promise<number | undefined> {
+        this.stats += 1;
+        return super.size(scope, key);
+      }
+    }
+    await seedSession('a', { title: 'before', createdAt: 1, updatedAt: 2 });
+    await seedSession('b', { title: 'unchanged', createdAt: 1, updatedAt: 1 });
+    const storage = new CountingStorage(homeDir);
+    const store = build(storage);
+    await store.prepare();
+    expect(indexWatchOptions?.ignored?.(join(sessionsDir, workspaceId, 'a', 'agents'))).toBe(true);
+    expect(indexWatchOptions?.ignored?.(join(sessionsDir, workspaceId, 'a', 'session-meta'))).toBe(false);
+    await store.reconcileNow({ reuseFingerprints: true });
+    storage.stats = 0;
+    await seedSession('a', { title: 'after', createdAt: 1, updatedAt: 3 });
+    sourceChanges.fire({
+      path: join(sessionsDir, workspaceId, 'a', 'session-meta', 'state.json'),
+      action: 'modified', kind: 'file',
+    });
+    await vi.waitFor(async () => {
+      expect((await store.get('a'))?.title).toBe('after');
+    });
+    expect(storage.stats).toBe(5);
+
+    await fsp.rm(join(sessionsDir, workspaceId, 'b'), { recursive: true, force: true });
+    sourceChanges.fire({
+      path: join(sessionsDir, workspaceId, 'b'), action: 'deleted', kind: 'directory',
+    });
+    await vi.waitFor(async () => {
+      expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+    });
   });
 
   it('returns building before a gated first projection without request-path source reads', async () => {
