@@ -446,6 +446,14 @@ export class TranscriptProjector {
           attachments: [...(seedSnapshot.attachments ?? [])],
           todos: [...(seedSnapshot.todos ?? [])],
           prompts: [...(seedSnapshot.prompts ?? [])],
+          // Mirror the transcript page's global tool-call counter. Without it a
+          // seeded agent has no supplied count and the client's initial 0 reads
+          // as a known "0 tools" (turn-grade resets strip the tool frames).
+          toolCallCount: seedSnapshot.toolCallCount ?? seedSnapshot.tool_call_count,
+          toolCallCountKnown:
+            seedSnapshot.toolCallCountKnown
+            ?? seedSnapshot.tool_call_count_known
+            ?? ((seedSnapshot.toolCallCount ?? seedSnapshot.tool_call_count) !== undefined ? true : undefined),
           meta: { ...(seedSnapshot.meta ?? {}) },
           hasMoreOlder: seedSnapshot.has_more === true || seedSnapshot.hasMoreOlder === true,
         };

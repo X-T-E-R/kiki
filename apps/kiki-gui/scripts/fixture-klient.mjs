@@ -515,6 +515,98 @@ export class FixtureKlient {
         if (!server.files.delete(fileId)) throw invalid('file.not_found', 40409);
         return undefined;
       }
+      // Contract-level task-board mock: a scenario seeds `taskBoard`
+      // ({ storage, cards, detail? }) and every board read is served from it in
+      // the real BoardResult / BoardPage / BoardCard shapes, so the production
+      // GlobalTaskBoard → TaskBoardContainer path renders without special
+      // casing. No board data seeded → the board reports an empty, valid page.
+      case 'taskBoardService.read': {
+        const [input] = args;
+        const board = server.scenario?.data.taskBoard ?? { storage: undefined, cards: [], detail: {} };
+        const ok = (value) => ({ ok: true, value });
+        const summary = (entry) => structuredClone(entry);
+        const cardsFor = (workspaceId) => (board.cards ?? []).filter((entry) => workspaceId === undefined || entry.workspaceId === workspaceId);
+        if (input.action === 'preview') {
+          return ok({
+            mode: 'auto',
+            workspaceId: input.workspaceId ?? cardsFor(undefined)[0]?.workspaceId ?? 'wd_unknown',
+            root: board.storage?.root ?? 'C:/fixture',
+            tasksDirectory: `${board.storage?.root ?? 'C:/fixture'}/.kiki/tasks`,
+            existing: true,
+            kind: board.storage?.kind ?? 'workspace',
+            storageId: board.storage?.storageId,
+            selectionOnly: true,
+          });
+        }
+        if (input.action === 'list') {
+          const workspaceId = input.workspaceId ?? board.cards?.[0]?.workspaceId ?? server.workspaces[0]?.id;
+          const cards = cardsFor(workspaceId).map(summary);
+          return ok({ workspaceId: workspaceId ?? 'wd_unknown', storage: structuredClone(board.storage), cards, issues: [] });
+        }
+        if (input.action === 'show') {
+          const entry = (board.cards ?? []).find((row) => row.id === input.id && row.workspaceId === input.workspaceId);
+          if (entry === undefined) return { ok: false, error: { code: 'BOARD_CARD_NOT_FOUND', message: `no card ${input.id}` } };
+          const detail = board.detail?.[input.id] ?? { description: '', prd: '' };
+          return ok({ ...summary(entry), description: detail.description ?? '', prd: detail.prd ?? '', handoff: detail.handoff });
+        }
+        if (input.action === 'overview') {
+          const workspaceIds = input.workspaceIds ?? [];
+          return ok(workspaceIds.map((workspaceId) => ({
+            workspaceId,
+            result: { ok: true, value: { workspaceId, storage: structuredClone(board.storage), cards: cardsFor(workspaceId).map(summary), issues: [] } },
+          })));
+        }
+        return { ok: false, error: { code: 'BOARD_UNSUPPORTED', message: `unsupported read action ${input.action}` } };
+      }
+      case 'taskBoardService.write': {
+        const [input] = args;
+        const board = server.scenario?.data.taskBoard ?? { cards: [], detail: {} };
+        board.cards ??= [];
+        const ok = (value) => ({ ok: true, value });
+        if (input.action === 'create') {
+          const entry = {
+            id: `board_fixture_${board.cards.length + 1}`,
+            workspaceId: input.workspaceId ?? board.cards[0]?.workspaceId ?? 'wd_unknown',
+            storage: structuredClone(board.storage),
+            title: input.title,
+            priority: input.priority ?? 'P2',
+            status: 'active',
+            revision: 1,
+            createdAt: now(),
+            updatedAt: now(),
+            completedAt: null,
+            archived: false,
+            category: input.category ?? '',
+            sessionIds: input.sessionIds ?? [],
+            executionIds: [],
+          };
+          board.cards.push(entry);
+          return ok(structuredClone(entry));
+        }
+        if (input.action === 'update') {
+          const entry = (board.cards ?? []).find((row) => row.id === input.id);
+          if (entry === undefined) return { ok: false, error: { code: 'BOARD_CARD_NOT_FOUND', message: `no card ${input.id}` } };
+          Object.assign(entry, { ...input.patch, revision: input.expectedRevision + 1, updatedAt: now() });
+          return ok(structuredClone(entry));
+        }
+        return { ok: false, error: { code: 'BOARD_UNSUPPORTED', message: `unsupported write action ${input.action}` } };
+      }
+      case 'taskBoardService.overview': {
+        const board = server.scenario?.data.taskBoard ?? { storage: undefined, cards: [] };
+        // Cover every registered workspace so a multi-workspace board reads as a
+        // healthy (possibly empty) overview instead of a per-workspace failure.
+        const workspaceIds = [...new Set([
+          ...(board.cards ?? []).map((entry) => entry.workspaceId),
+          ...server.workspaces.map((workspace) => workspace.id),
+        ])];
+        return {
+          ok: true,
+          value: workspaceIds.map((workspaceId) => ({
+            workspaceId,
+            result: { ok: true, value: { workspaceId, storage: structuredClone(board.storage), cards: (board.cards ?? []).filter((entry) => entry.workspaceId === workspaceId).map((entry) => structuredClone(entry)), issues: [] } },
+          })),
+        };
+      }
       default:
         throw invalid(`Unsupported fixture procedure: ${procedure.service}.${procedure.method}`, 40401);
     }

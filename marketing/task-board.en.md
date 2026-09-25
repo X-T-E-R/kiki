@@ -12,6 +12,8 @@ Chat history is where work gets discussed. It's a terrible place for work to *li
 
 Every card on the board can link to the session working on it. The board is not a passive to-do list the agent reads once — it's shared state between you and the fleet. You can see not just *what* is pending, but *who* is on it, and jump straight into that session to steer.
 
+![A card detail view: the linked execution sessions are one click away from the task.](shots/board-task-detail.en.light.png)
+
 ## Why a board at all?
 
 Because multi-agent work multiplies the bookkeeping problem. One agent on one task, you can hold in your head. A main agent with three subagents, a background job, and a cron-scheduled follow-up — that's when "wait, what was it doing again?" starts costing you sessions. The board is the answer: an always-visible, per-workspace inventory of commitments that survives compaction, restarts, and context windows.

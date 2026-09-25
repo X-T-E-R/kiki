@@ -1370,6 +1370,40 @@ class FixtureServer {
     if (path === '/config') {
       return this.envelope(res, this.config);
     }
+    // Scheduled tasks (the GlobalCronPanel's aggregate surface). Scenario-seeded
+    // via `cronTasks`; the wire shape is kap-server's `GET /api/cron` row, and
+    // paused plans carry `next_fire_at: null` and sort last, like the real
+    // route. Row actions mutate the seeded list so Pause/Resume/Run/Delete are
+    // exercisable without a second mock surface.
+    if (path === '/cron' && method === 'GET') {
+      const rows = [...(this.scenario?.data.cronTasks ?? [])];
+      rows.sort((left, right) => Number(left.next_fire_at === null) - Number(right.next_fire_at === null));
+      return this.envelope(res, { items: rows.map((task) => structuredClone(task)) });
+    }
+    const cronTaskMatch = /^\/cron\/([^/:]+)(?::([a-z]+))?$/.exec(path);
+    if (cronTaskMatch !== null) {
+      const rows = this.scenario?.data.cronTasks;
+      const task = (rows ?? []).find((entry) => entry.id === cronTaskMatch[1]);
+      if (task === undefined) return this.envelope(res, null, 40406, 'task.not_found');
+      const action = cronTaskMatch[2];
+      if (action === 'pause') {
+        task.paused = true;
+        task.next_fire_at = null;
+        return this.envelope(res, { task: structuredClone(task) });
+      }
+      if (action === 'resume') {
+        task.paused = false;
+        task.next_fire_at = new Date(Date.now() + 5 * 60_000).toISOString();
+        return this.envelope(res, { task: structuredClone(task) });
+      }
+      if (action === 'run') {
+        return this.envelope(res, { triggered: true });
+      }
+      if (action === undefined && method === 'DELETE' && rows !== undefined) {
+        rows.splice(rows.indexOf(task), 1);
+        return this.envelope(res, { deleted: true });
+      }
+    }
     // nb-search: secret-free capabilities + on-demand readiness, seeded per
     // scenario (`nbSearchCapabilities` / `nbSearchTest`). A seed shaped
     // `{ __error: 'message' }` makes the route fail so error states render.
@@ -2496,6 +2530,15 @@ class FixtureServer {
       task.status = 'cancelled';
       task.completed_at = now();
       return this.envelope(res, { cancelled: true });
+    }
+    // Task detail (`GET …/tasks/{id}?with_output=true`). The row already
+    // carries the list preview; `with_output` keeps it, matching what
+    // TasksPage/rail expanders read for the tail-of-log.
+    const taskDetail = /^\/tasks\/([^/:]+)$/.exec(tail);
+    if (taskDetail !== null && method === 'GET') {
+      const task = session.tasks.find((t) => t.id === taskDetail[1]);
+      if (task === undefined) return this.envelope(res, null, 40406, 'task.not_found');
+      return this.envelope(res, { ...task });
     }
     // Terminal lifecycle (kap-server's /sessions/{id}/terminals REST surface).
     if (tail === '/terminals' && body === undefined) {
