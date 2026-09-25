@@ -9,6 +9,8 @@ Kiki is a local agent workspace where every agent — the main one and each suba
 
 No cloud relay. No agent lock-in. No black-box prompts.
 
+**Spotlights:** [nb-search — web access with real key management](marketing/nb-search.en.md) · [Task board — work you can point at](marketing/task-board.en.md)
+
 Kiki began as a fork of [Kimi Code](https://github.com/MoonshotAI/kimi-code) and is now developed independently.
 
 ## Why Kiki

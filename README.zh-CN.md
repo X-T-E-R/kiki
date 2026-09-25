@@ -9,6 +9,8 @@ Kiki 是一个本地 agent 工作台：每一个 agent——无论是主 agent �
 
 无云端中转，无 agent 锁定，无黑盒提示词。
 
+**特色聚焦**：[nb-search —— 带真钥匙管理的联网能力](marketing/nb-search.zh-CN.md) · [任务看板 —— 看得见、指得着的工作](marketing/task-board.zh-CN.md)
+
 Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，现已独立发展。
 
 ## 为什么是 Kiki
