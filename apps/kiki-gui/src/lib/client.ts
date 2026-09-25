@@ -101,6 +101,12 @@ import type {
 
 import { RPCError, type HttpRestCronTask, type SessionViewFacade } from '@kiki/klient';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
+import {
+  fetchRemoteModels,
+  providerTemplateFor,
+  type ProviderModelDraft,
+  type RemoteModelsProbe,
+} from '@kiki/session-core/settings';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 import type { UsageResponseWire } from './usageV2';
@@ -1129,6 +1135,47 @@ export class KikiClient {
   /** Server-side model probe, optionally with an unsaved API key for this request only. */
   refreshProvider(providerId: string, apiKey?: string): Promise<RefreshProviderModelsResponse> {
     return this.run(this.klient.global.kosong.refreshProviders({ providerId, apiKey }));
+  }
+
+  /**
+   * Probe an UNSAVED provider draft — onboarding's "Test connection". The
+   * values checked are exactly what the form currently holds; nothing is
+   * persisted. Goes through kap-server's `POST /providers:probe` (a browser
+   * fetch to some providers dies on CORS); an older server without the route
+   * falls back to the browser-direct `/models` fetch. A structured
+   * `{ ok: false }` answer is definitive and never falls back.
+   */
+  async probeProviderDraft(probe: RemoteModelsProbe): Promise<ProviderModelDraft[]> {
+    const toDrafts = (remoteIds: readonly string[]): ProviderModelDraft[] => {
+      const contextSize = providerTemplateFor(probe.type).defaultContextSize;
+      return remoteIds.map((remoteId) => ({
+        id: '',
+        remoteId,
+        maxContextSize: contextSize,
+        displayName: '',
+        capabilities: [],
+        supportEfforts: [],
+        requestIdentityChoice: 'inherit' as const,
+        requestIdentityOverridesJson: '',
+        imageAcceptedTypes: null,
+        imageConvertUnsupported: null,
+      }));
+    };
+    try {
+      const result = await this.run(this.rest.providers.probe({
+        type: probe.type,
+        base_url: probe.baseUrl,
+        api_key: probe.apiKey,
+      }));
+      if (!result.ok) throw new Error(result.error.message);
+      return toDrafts(result.models);
+    } catch (error) {
+      // Only transport-level failures (route missing on an older server, or
+      // the server unreachable) fall back — the browser-direct fetch can
+      // still answer those. In-band errors above rethrow as plain Errors.
+      if (!(error instanceof ApiError)) throw error;
+      return fetchRemoteModels(probe);
+    }
   }
 
   /**

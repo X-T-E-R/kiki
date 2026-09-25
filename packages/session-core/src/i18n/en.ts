@@ -2733,28 +2733,45 @@ export const en = {
 
   // ---- First-run onboarding wizard ----
   'onboarding.title': 'Welcome to Kiki',
-  'onboarding.subtitle': 'A short setup to get you to your first conversation.',
+  'onboarding.subtitle': 'Three quick steps to your first conversation — everything can change later.',
   'onboarding.progress': 'Step {current} of {total}',
-  'onboarding.step.provider': 'Connect a model',
-  'onboarding.step.preferences': 'Preferences',
-  'onboarding.step.search': 'Search & retrieval',
-  'onboarding.skip': 'Skip setup',
+  'onboarding.step.welcome': 'Welcome',
+  'onboarding.step.model': 'Connect a model',
+  'onboarding.step.permissions': 'Permissions',
+  'onboarding.skip': 'Set up later',
   'onboarding.back': 'Back',
   'onboarding.next': 'Next',
+  'onboarding.saveNext': 'Save & continue',
   'onboarding.finish': 'Start chatting',
   'onboarding.close': 'Close setup',
-  'onboarding.provider.body':
-    'Kiki answers through a model provider. Sign in with your Kimi account, or add an API key — it stays on this machine.',
-  'onboarding.provider.signIn': 'Sign in with Kimi',
-  'onboarding.provider.ready': 'A model provider is connected — you can continue.',
-  'onboarding.provider.orApiKey': 'Or add an API key',
-  'onboarding.prefs.body':
-    'Only the defaults worth deciding now; everything else waits in Settings.',
-  'onboarding.search.body':
-    'Kiki can search the web and fetch pages when an answer needs fresh information. That needs a search provider — set one up now, or any time later in Settings.',
-  'onboarding.search.configure': 'Set up search & retrieval',
+  'onboarding.welcome.body':
+    'Pick your language and theme. Everything else already has a sensible default.',
+  'onboarding.model.body':
+    'Kiki answers through a model provider. Sign in with your Kimi account, or paste an API key — it never leaves this machine. You can also finish this later in Settings.',
+  'onboarding.model.signIn': 'Sign in with Kimi',
+  'onboarding.model.ready': 'A model provider is connected — you can continue.',
+  'onboarding.model.orApiKey': 'Or connect with an API key',
+  'onboarding.model.addAnother': 'Add another provider',
+  'onboarding.model.changeTemplate': '← Choose a different provider',
+  'onboarding.model.model': 'Model',
+  'onboarding.model.modelHint':
+    'Test the connection to pick from the provider’s list, or type a model id directly.',
+  'onboarding.model.test': 'Test connection',
+  'onboarding.model.testHint':
+    'Testing only checks the values in this form — nothing is saved until you choose “Save & continue”.',
+  'onboarding.model.testedOk': 'Connection works — {count} models available. Tap one to fill it in.',
+  'onboarding.model.advancedHint':
+    'Context size and capabilities use sensible defaults — fine-tune them later in Settings.',
+  'onboarding.permissions.body':
+    'How much should Kiki do before checking with you? This becomes the default for new sessions; change it any time in Settings.',
+  'onboarding.permissions.recommended': 'Recommended',
+  'onboarding.permissions.auto.line':
+    'Fully autonomous: approves its own actions and never stops to ask.',
+  'onboarding.permissions.manual.line': 'Asks you before every action.',
+  'onboarding.permissions.yolo.line':
+    'Approves its own actions, but may still ask you questions.',
   'onboarding.reenter': 'Replay setup wizard',
-  'onboarding.reenterHint': 'Runs the first-run setup again: provider, preferences, and search.',
+  'onboarding.reenterHint': 'Runs the first-run setup again: model connection and defaults.',
   'onboarding.sessionFallback':
     'Opened a new-session draft instead — pick a folder and send to begin.',
   'onboarding.welcomeDraft':

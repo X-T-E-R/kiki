@@ -149,7 +149,7 @@ describe('settings persistence and validation', () => {
     }));
     localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ notifications: false }));
     expect(readSettings().sendShortcut).toBe('enter');
-    expect(readSettings().defaultPermissionMode).toBe('manual');
+    expect(readSettings().defaultPermissionMode).toBe('auto');
     expect(readSettings().requestTimeoutSeconds).toBe(30);
     expect(readSettings().subagentPanelOpenMode).toBe('tab');
     expect(readSettings().defaultAppendTiming).toBe('agent_idle');

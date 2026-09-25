@@ -325,6 +325,15 @@ export class FixtureKlient {
           ];
           server.modelsDeclared = true;
         }
+        // Mirror kap-server's modelCatalogMutationService.createProvider: the
+        // first provider with models seeds the global default model (an empty
+        // string counts as unset); an existing default is never modified.
+        const firstEntry = (input.models ?? [])[0];
+        if ((server.config.default_model === undefined || server.config.default_model === '') && firstEntry !== undefined) {
+          server.config.default_model = provider.default_model ?? `${input.id}/${firstEntry.remote_id}`;
+          if (server.auth !== null) server.auth.default_model = server.config.default_model;
+        }
+        if (server.auth !== null) server.auth.providers_count = server.providers.length;
         return { ...provider, revision: revisionOf(provider) };
       }
       case 'modelCatalogMutation.deleteProvider': {

@@ -87,6 +87,79 @@ describe('KikiClient.refreshProvider', () => {
   });
 });
 
+describe('KikiClient.probeProviderDraft', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('probes the unsaved form values through the server endpoint', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/providers:probe');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(init?.body as string)).toEqual({
+        type: 'kimi',
+        base_url: 'https://api.kimi.com/coding/v1',
+        api_key: 'sk-draft',
+      });
+      return Response.json({ code: 0, msg: 'success', data: { ok: true, models: ['kimi-for-coding', 'kimi-k2-0711-preview'] } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+
+    const drafts = await client.probeProviderDraft({
+      type: 'kimi',
+      baseUrl: 'https://api.kimi.com/coding/v1',
+      apiKey: 'sk-draft',
+    });
+
+    expect(drafts.map((draft) => draft.remoteId)).toEqual(['kimi-for-coding', 'kimi-k2-0711-preview']);
+    expect(drafts[0]?.maxContextSize).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('surfaces a structured probe failure as-is, never falling back', async () => {
+    const fetchMock = vi.fn(async () => Response.json({
+      code: 0,
+      msg: 'success',
+      data: { ok: false, error: { kind: 'unauthorized', message: 'invalid API key', status: 401 } },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+
+    const failure = await client
+      .probeProviderDraft({ type: 'kimi', baseUrl: 'https://api.kimi.com/coding/v1', apiKey: 'sk-bad' })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe('invalid API key');
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to the browser-direct fetch when the server lacks the route', async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const href = String(url);
+      if (href === 'http://127.0.0.1:8080/api/providers:probe') {
+        return Response.json({ code: 40404, msg: 'no route', data: null });
+      }
+      if (href === 'https://provider.test/v1/models') {
+        return Response.json({ data: [{ id: 'kimi-for-coding' }] });
+      }
+      throw new Error(`unexpected fetch: ${href}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+
+    const drafts = await client.probeProviderDraft({
+      type: 'kimi',
+      baseUrl: 'https://provider.test/v1',
+      apiKey: 'sk-draft',
+    });
+
+    expect(drafts.map((draft) => draft.remoteId)).toEqual(['kimi-for-coding']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('KikiClient transport error mapping', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

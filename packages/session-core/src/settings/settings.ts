@@ -249,7 +249,7 @@ const DESKTOP_PREFS_KEY = 'kiki.desktopPrefs';
 const RESTART_REQUIRED_KEY = 'kiki.restartRequired';
 
 const DEFAULTS: DesktopSettings = {
-  defaultPermissionMode: 'manual',
+  defaultPermissionMode: 'auto',
   defaultPlanMode: false,
   sendShortcut: 'enter',
   draftPersistence: true,

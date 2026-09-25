@@ -1535,6 +1535,18 @@ class FixtureServer {
         managed_provider: null,
       });
     }
+    // kap-server `POST /providers:probe` — tests UNSAVED connection fields
+    // (onboarding's "Test connection") and answers bare remote ids; nothing is
+    // persisted. The wire shape is probeProviderResponseSchema's union.
+    if (path === '/providers:probe' && method === 'POST' && body !== undefined) {
+      if (typeof body.base_url !== 'string' || body.base_url.trim() === '') {
+        return this.envelope(res, { ok: false, error: { kind: 'endpoint', message: 'base_url is required' } });
+      }
+      const models = body.type === 'kimi'
+        ? ['kimi-for-coding', 'kimi-k2-0711-preview']
+        : ['fixture-probe-model'];
+      return this.envelope(res, { ok: true, models });
+    }
     if (path === '/providers' && method === 'POST' && body !== undefined) {
       const provider = fixtureProviderFromBody(body.id, body);
       this.providers.push(provider);
@@ -1545,6 +1557,14 @@ class FixtureServer {
         default_model: provider.default_model,
         has_api_key: provider.has_api_key,
       } };
+      // Mirror kap-server: a fresh setup seeds the global default model from
+      // the new provider's default (or first) model — already in alias form;
+      // an existing default is never modified.
+      const seededDefault = provider.default_model
+        ?? this.models.find((model) => model.provider_id === provider.id)?.id;
+      if ((this.config.default_model === undefined || this.config.default_model === '') && seededDefault !== undefined) {
+        this.config.default_model = seededDefault;
+      }
       if (this.auth !== null) this.auth.providers_count = this.providers.length;
       return this.envelope(res, provider);
     }

@@ -93,6 +93,16 @@ const STRINGS = {
     savedTick: '✓ Saved',
     planModeToggle: 'Default to entering plan mode',
     permissionModeAuto: 'auto',
+    onboardingTitle: 'Welcome to Kiki',
+    onboardingNext: 'Next',
+    onboardingBack: 'Back',
+    onboardingSaveNext: 'Save & continue',
+    onboardingFinish: 'Start chatting',
+    onboardingSkip: 'Set up later',
+    onboardingReady: 'A model provider is connected',
+    onboardingRecommended: 'Recommended',
+    onboardingTest: 'Test connection',
+    onboardingTestedOk: 'Connection works',
     fetchModelsButton: 'Test connection & pull models',
     providerBadgeKimiCode: 'Kimi',
     providerBadgeNone: 'None',
@@ -275,6 +285,16 @@ const STRINGS = {
     savedTick: '✓ 已保存',
     planModeToggle: '默认进入计划模式',
     permissionModeAuto: '自动',
+    onboardingTitle: '欢迎使用 Kiki',
+    onboardingNext: '下一步',
+    onboardingBack: '上一步',
+    onboardingSaveNext: '保存并继续',
+    onboardingFinish: '开始对话',
+    onboardingSkip: '稍后配置',
+    onboardingReady: '已连接模型供应商',
+    onboardingRecommended: '推荐',
+    onboardingTest: '测试连接',
+    onboardingTestedOk: '连接成功',
     fetchModelsButton: '测试连接并拉取模型',
     providerBadgeKimiCode: 'Kimi',
     providerBadgeNone: '无',
@@ -3966,6 +3986,115 @@ async function scenarioCapabilities() {
   await page.unroute('**/api/workspaces');
 }
 
+/**
+ * first-run — the onboarding wizard walk on a freshly installed kiki: the
+ * auto-popup opens on boot, "Save & continue" persists the API-key form
+ * before advancing, the permissions step preselects auto, finish lands on
+ * /new with the `/kiki-ops …` draft prefill, and a reload proves the run is
+ * marked completed (no second popup) with the provider still saved.
+ */
+async function scenarioFirstRun() {
+  const wizard = () => page.locator('[role="dialog"]');
+  const wizardButton = (name) => wizard().getByRole('button', { name, exact: true });
+
+  // First-run means a clean slate: the generic harness boots /new under the
+  // previous scenario, which persists a workspace draft that is meaningless
+  // here (and renders a stale "workspace unavailable" line in every shot).
+  await page.evaluate(() => {
+    try {
+      localStorage.removeItem('kiki.onboarding');
+      localStorage.removeItem('kiki.newSessionDraft');
+    } catch { /* ignore */ }
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
+  await page.waitForSelector('[role="dialog"]', { timeout: 15_000 });
+  if (!(await wizard().getAttribute('aria-label'))?.includes('Kiki')) {
+    throw new Error('first-run dialog did not auto-open');
+  }
+  // Let the dialog's entrance animation settle before the first shot.
+  await page.waitForTimeout(450);
+  await shot('onboarding-1-welcome');
+
+  await wizardButton(S.onboardingNext).click();
+  await wizard().locator('[data-provider-template="kimi"]').waitFor({ timeout: 5000 });
+  await shot('onboarding-2-model');
+
+  // API-key lane: template → key → server probe → pick a suggested model,
+  // then "Save & continue" persists.
+  await wizard().locator('[data-provider-template="kimi"]').click();
+  await wizard().locator('input[type="password"]').fill('sk-proof-key');
+  await wizardButton(S.onboardingTest).click();
+  const chip = wizard().locator('[data-model-suggestion="kimi-for-coding"]');
+  await chip.waitFor({ timeout: 5000 });
+  await waitForText(S.onboardingTestedOk);
+  await chip.click();
+  const modelId = await wizard().locator('input[placeholder="model-id"]').inputValue();
+  if (modelId !== 'kimi-for-coding') {
+    throw new Error(`suggestion chip must fill the model input, saw "${modelId}"`);
+  }
+  await shot('onboarding-3-model-form');
+
+  // Mobile width: the dialog stays single-column and inside the viewport.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(250);
+  const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  if (overflows) throw new Error('onboarding dialog overflows the mobile viewport');
+  await shot('onboarding-3-model-form-mobile');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(250);
+
+  await wizardButton(S.onboardingSaveNext).click();
+  await waitForText(S.onboardingRecommended);
+  // Saved + advanced: going Back shows the persisted connection read-out.
+  await wizardButton(S.onboardingBack).click();
+  await waitForText(S.onboardingReady);
+  await shot('onboarding-3-model-saved');
+  await wizardButton(S.onboardingNext).click();
+  await waitForText(S.onboardingRecommended);
+  // Fresh runs preselect auto.
+  const checked = await wizard().locator('[role="radio"][aria-checked="true"]').textContent();
+  if (!checked?.includes(S.permissionModeAuto)) {
+    throw new Error(`permissions step must preselect auto, saw "${checked}"`);
+  }
+  await shot('onboarding-4-permissions');
+
+  await wizardButton(S.onboardingFinish).click();
+  await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 15_000 });
+  await page.waitForSelector('textarea', { timeout: 15_000 });
+  await page.waitForTimeout(600);
+  const draft = await page.locator('textarea').first().inputValue();
+  if (!draft.includes('/kiki-ops')) {
+    throw new Error(`finish must prefill the /new composer draft, saw "${draft.slice(0, 80)}"`);
+  }
+  await shot('onboarding-5-finished');
+
+  // The saved provider seeds the server's default model; the composer must not
+  // greet the first session with a stale "model unavailable" diagnostic.
+  const serverDefault = await page.evaluate(async ([base, token]) => {
+    const res = await fetch(`${base}/api/config`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return (await res.json()).data?.default_model;
+  }, [FIXTURE_URL, FIXTURE_TOKEN]);
+  const diagnostics = await page.locator('[data-selection-diagnostic]').allTextContents();
+  console.log(`[first-run] server default_model=${JSON.stringify(serverDefault)} diagnostics=${JSON.stringify(diagnostics)}`);
+  if (diagnostics.length !== 0) {
+    throw new Error(`finish leaves a selection diagnostic on /new: ${diagnostics.join(' | ')}`);
+  }
+
+  // Reload: onboarding stays completed and the saved provider keeps the
+  // wizard from ever auto-opening again.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
+  await page.waitForTimeout(1200);
+  if ((await page.locator('[role="dialog"]').count()) !== 0) {
+    throw new Error('onboarding wizard reopened after completion');
+  }
+  const diagnosticsAfter = await page.locator('[data-selection-diagnostic]').allTextContents();
+  console.log(`[first-run] diagnostics after reload=${JSON.stringify(diagnosticsAfter)}`);
+}
+
 // ---------------------------------------------------------------------------
 
 const SCENARIOS = [
@@ -3996,6 +4125,7 @@ const SCENARIOS = [
   ['sidebar-organize', scenarioSidebarOrganize],
   ['empty-states', scenarioEmptyStates],
   ['new-no-workspace', scenarioNewNoWorkspace],
+  ['first-run', scenarioFirstRun],
   ['draft-flow', scenarioDraftFlow],
   ['hero-shell', scenarioHeroShell],
   ['settings', scenarioSettings],

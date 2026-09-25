@@ -2,8 +2,10 @@
 
 /**
  * OnboardingWizard — the first-run dialog: the auto-popup decision rule
- * (shouldOfferOnboarding), step navigation, the always-marks-completed exit
- * paths, and the finish hand-off (session + `/kiki-ops …` composer prefill).
+ * (shouldOfferOnboarding), the three-step walk, the save semantics of every
+ * advance ("Save & continue" persists the provider form; finish persists the
+ * permission default), exit-and-re-entry state, and the finish hand-off
+ * (session + `/kiki-ops …` composer prefill).
  */
 
 import { act } from 'react';
@@ -34,6 +36,8 @@ const getOAuthStatus = vi.fn();
 const patchConfig = vi.fn();
 const listWorkspaces = vi.fn();
 const createSession = vi.fn();
+const createProvider = vi.fn();
+const probeProviderDraft = vi.fn();
 const navigate = vi.fn();
 
 vi.mock('../state/connection', () => ({
@@ -49,6 +53,8 @@ vi.mock('../state/connection', () => ({
       patchConfig,
       listWorkspaces,
       createSession,
+      createProvider,
+      probeProviderDraft,
     },
   }),
 }));
@@ -65,6 +71,16 @@ const AUTH_EMPTY: AuthSummary = {
   providers_count: 0,
   default_model: null,
   managed_provider: null,
+};
+
+/** The provider row the fixture "server" holds after a create. */
+const SAVED_PROVIDER = {
+  id: 'kimi',
+  type: 'kimi',
+  base_url: 'https://api.moonshot.ai/v1',
+  status: 'connected',
+  has_api_key: true,
+  default_model: 'kimi-for-coding',
 };
 
 const containers: HTMLDivElement[] = [];
@@ -96,6 +112,8 @@ beforeEach(() => {
   }));
   listWorkspaces.mockReset().mockResolvedValue({ items: [] });
   createSession.mockReset().mockResolvedValue({ id: 's_onboarding_1' });
+  createProvider.mockReset().mockResolvedValue({ id: 'kimi', revision: 'r1' });
+  probeProviderDraft.mockReset().mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -136,6 +154,22 @@ async function click(element: Element): Promise<void> {
   });
 }
 
+/** Simulate the App shell closing the wizard: unmount the latest mount. */
+async function unmountLast(): Promise<void> {
+  const root = roots.pop();
+  const container = containers.pop();
+  if (root !== undefined) {
+    await act(async () => { root.unmount(); });
+  }
+  container?.remove();
+}
+
+async function flush(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 function dialog(): HTMLElement {
   const element = document.querySelector<HTMLElement>('[role="dialog"]');
   if (element === null) throw new Error('wizard dialog not mounted');
@@ -148,6 +182,34 @@ function buttonByText(text: string): HTMLElement {
   );
   if (button === undefined) throw new Error(`button "${text}" not found`);
   return button;
+}
+
+function inputByPlaceholder(placeholder: string): HTMLInputElement {
+  const input = [...dialog().querySelectorAll('input')].find(
+    (candidate) => candidate.placeholder === placeholder,
+  );
+  if (input === undefined) throw new Error(`input "${placeholder}" not found`);
+  return input;
+}
+
+async function typeInto(input: HTMLInputElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+  await act(async () => {
+    setter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/** Walk from the welcome step onto the model step. */
+async function toModelStep(): Promise<void> {
+  await click(buttonByText('Next'));
+}
+
+/** Fill the template → key → model id path on the model step. */
+async function fillProviderForm(): Promise<void> {
+  await click(dialog().querySelector('[data-provider-template="kimi"]')!);
+  await typeInto(inputByPlaceholder('Paste a new key'), 'sk-test-key');
+  await typeInto(inputByPlaceholder('model-id'), 'kimi-for-coding');
 }
 
 describe('shouldOfferOnboarding', () => {
@@ -189,43 +251,169 @@ describe('manual re-entry channel', () => {
 });
 
 describe('OnboardingWizard', () => {
-  it('opens on the provider step with sign-in and the API-key wizard', async () => {
+  it('opens on the welcome step with language and theme picks', async () => {
     await mount();
     expect(dialog().getAttribute('aria-label')).toBe('Welcome to Kiki');
     expect(dialog().textContent).toContain('Step 1 of 3');
-    expect(buttonByText('Sign in with Kimi')).toBeDefined();
-    expect(dialog().textContent).toContain('Or add an API key');
+    expect(dialog().textContent).toContain('Language');
+    expect(dialog().textContent).toContain('Theme');
   });
 
   it('walks forward and back through all three steps', async () => {
     await mount();
-    await click(buttonByText('Next'));
+    await toModelStep();
     expect(dialog().textContent).toContain('Step 2 of 3');
-    expect(dialog().textContent).toContain('Language');
-    expect(dialog().textContent).toContain('Theme');
-    expect(dialog().textContent).toContain('Default permission mode');
+    expect(buttonByText('Sign in with Kimi')).toBeDefined();
+    expect(dialog().textContent).toContain('Or connect with an API key');
 
     await click(buttonByText('Next'));
     expect(dialog().textContent).toContain('Step 3 of 3');
-    expect(buttonByText('Set up search & retrieval')).toBeDefined();
+    expect(dialog().textContent).toContain('Permissions');
 
     await click(buttonByText('Back'));
     expect(dialog().textContent).toContain('Step 2 of 3');
   });
 
-  it('marks completion and closes on skip', async () => {
-    const onClose = vi.fn();
-    await mount(onClose);
-    await click(buttonByText('Skip setup'));
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+  it('a pristine model step advances without saving anything', async () => {
+    await mount();
+    await toModelStep();
+    await click(buttonByText('Next'));
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('Step 3 of 3');
   });
 
-  it('writes the permission default through the server config', async () => {
+  it('Save & continue persists the filled provider form before advancing', async () => {
     await mount();
+    await toModelStep();
+    await fillProviderForm();
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body['id']).toBe('kimi');
+    expect(body['type']).toBe('kimi');
+    expect(body['api_key']).toBe('sk-test-key');
+    expect(body['default_model']).toBe('kimi-for-coding');
+    expect(body['models']).toEqual([
+      expect.objectContaining({ remote_id: 'kimi-for-coding' }),
+    ]);
+    expect(dialog().textContent).toContain('Step 3 of 3');
+  });
+
+  it('Test connection probes the unsaved form values and fills suggestions', async () => {
+    probeProviderDraft.mockResolvedValue([
+      {
+        id: '',
+        remoteId: 'kimi-for-coding',
+        maxContextSize: 131072,
+        displayName: '',
+        capabilities: ['thinking'],
+        supportEfforts: [],
+        requestIdentityChoice: 'inherit',
+        requestIdentityOverridesJson: '',
+        imageAcceptedTypes: null,
+        imageConvertUnsupported: null,
+      },
+    ]);
+    await mount();
+    await toModelStep();
+    await click(dialog().querySelector('[data-provider-template="kimi"]')!);
+    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-probe-me');
+    await click(buttonByText('Test connection'));
+    await flush();
+    expect(probeProviderDraft).toHaveBeenCalledWith({
+      type: 'kimi',
+      baseUrl: 'https://api.moonshot.ai/v1',
+      apiKey: 'sk-probe-me',
+    });
+    expect(createProvider).not.toHaveBeenCalled();
+    // Tapping a suggestion chip fills the model field.
+    await click(dialog().querySelector('[data-model-suggestion="kimi-for-coding"]')!);
+    expect(inputByPlaceholder('model-id').value).toBe('kimi-for-coding');
+  });
+
+  it('a started but invalid form blocks the advance with an inline error', async () => {
+    await mount();
+    await toModelStep();
+    // Template + key but no model id — the draft fails validation.
+    await click(dialog().querySelector('[data-provider-template="kimi"]')!);
+    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-test-key');
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('Model IDs cannot be empty.');
+    expect(dialog().textContent).toContain('Step 2 of 3');
+  });
+
+  it('keeps the unsubmitted form when going Back and returning', async () => {
+    await mount();
+    await toModelStep();
+    await click(dialog().querySelector('[data-provider-template="kimi"]')!);
+    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-kept');
+    await click(buttonByText('Back'));
     await click(buttonByText('Next'));
-    await click(buttonByText('auto'));
+    expect(inputByPlaceholder('Paste a new key').value).toBe('sk-kept');
+  });
+
+  it('a saved connection survives closing and reopening the wizard', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toModelStep();
+    await fillProviderForm();
+    await click(buttonByText('Save & continue'));
+    await flush();
+    expect(createProvider).toHaveBeenCalledTimes(1);
+
+    // Leave the wizard; the "server" now holds the created provider.
+    await click(buttonByText('Set up later'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await unmountLast();
+    listProviders.mockResolvedValue({ items: [SAVED_PROVIDER] });
+    getAuth.mockResolvedValue({ ...AUTH_EMPTY, ready: true, providers_count: 1 });
+
+    // Re-entry: the model step reads the persisted connection, and advancing
+    // saves nothing again.
+    await mount();
+    await toModelStep();
+    await flush();
+    expect(dialog().textContent).toContain('A model provider is connected');
+    await click(buttonByText('Next'));
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    expect(dialog().textContent).toContain('Step 3 of 3');
+  });
+
+  it('preselects auto on a fresh run and finish writes it to the server config', async () => {
+    await mount();
+    await toModelStep();
+    await click(buttonByText('Next'));
+    const autoOption = [...dialog().querySelectorAll('[role="radio"]')].find(
+      (candidate) => candidate.textContent?.includes('auto'),
+    );
+    expect(autoOption?.getAttribute('aria-checked')).toBe('true');
+    expect(dialog().textContent).toContain('Recommended');
+    await click(buttonByText('Start chatting'));
+    await flush();
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'auto' });
+  });
+
+  it('a replay shows the server’s explicit permission choice instead of forcing auto', async () => {
+    localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+    getConfig.mockResolvedValue({ default_permission_mode: 'yolo' });
+    await mount();
+    await toModelStep();
+    await click(buttonByText('Next'));
+    const yoloOption = [...dialog().querySelectorAll('[role="radio"]')].find(
+      (candidate) => candidate.textContent?.includes('yolo'),
+    );
+    expect(yoloOption?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('marks completion and closes on "Set up later"', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await click(buttonByText('Set up later'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
   it('finishes into a fresh session with the kiki-ops setup prompt prefilled when a workspace exists', async () => {
@@ -244,12 +432,10 @@ describe('OnboardingWizard', () => {
       ],
     });
     await mount(onClose);
-    await click(buttonByText('Next'));
+    await toModelStep();
     await click(buttonByText('Next'));
     await click(buttonByText('Start chatting'));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await flush();
     expect(createSession).toHaveBeenCalledWith({ workspace_id: 'wd_a' });
     expect(readDraft('s_onboarding_1')).toBe(WELCOME_DRAFT_EN);
     expect(navigate).toHaveBeenCalledWith('/s/s_onboarding_1');
@@ -260,12 +446,10 @@ describe('OnboardingWizard', () => {
   it('finishes onto the /new draft with the same prefill when no workspace exists', async () => {
     const onClose = vi.fn();
     await mount(onClose);
-    await click(buttonByText('Next'));
+    await toModelStep();
     await click(buttonByText('Next'));
     await click(buttonByText('Start chatting'));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await flush();
     expect(createSession).not.toHaveBeenCalled();
     expect(readDraft('new')).toBe(WELCOME_DRAFT_EN);
     expect(navigate).toHaveBeenCalledWith('/new');
@@ -278,9 +462,7 @@ describe('OnboardingWizard', () => {
     await click(buttonByText('下一步'));
     await click(buttonByText('下一步'));
     await click(buttonByText('开始对话'));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await flush();
     expect(readDraft('new')).toBe(WELCOME_DRAFT_ZH);
   });
 
@@ -288,12 +470,10 @@ describe('OnboardingWizard', () => {
     const { writeDraft } = await import('@kiki/session-core/composer');
     writeDraft('new', 'half-typed thought');
     await mount();
-    await click(buttonByText('Next'));
+    await toModelStep();
     await click(buttonByText('Next'));
     await click(buttonByText('Start chatting'));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await flush();
     expect(readDraft('new')).toBe('half-typed thought');
   });
 });
