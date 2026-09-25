@@ -65,7 +65,7 @@ function Get-Sha256([string]$Path) {
 
 function Get-ArtifactInfo([string]$Path, [string]$Label) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "$Label is missing: $Path. Build Kiki successfully so kiki.exe and kiki-server.exe are in the candidate directory, then retry."
+        throw "$Label is missing: $Path. Build Kiki successfully so kiki-desktop.exe and kiki-server.exe are in the candidate directory, then retry."
     }
     $item = Get-Item -LiteralPath $Path
     if ($item.Length -le 0) {
@@ -133,12 +133,12 @@ function Invoke-Promotion([string]$Root, [string]$Candidate) {
     $releasesPath = Join-Path $rootPath 'releases'
     [IO.Directory]::CreateDirectory($releasesPath) | Out-Null
 
-    $mainSource = Get-ArtifactInfo (Join-Path $candidatePath 'kiki.exe') 'Kiki GUI build artifact'
+    $mainSource = Get-ArtifactInfo (Join-Path $candidatePath 'kiki-desktop.exe') 'Kiki GUI build artifact'
     $sidecarSource = Get-ArtifactInfo (Join-Path $candidatePath 'kiki-server.exe') 'Kiki backend build artifact'
     $gitSha = Get-GitSha $candidatePath
     $releaseId = '{0}-{1}' -f $mainSource.Hash.Substring(0, 24), $sidecarSource.Hash.Substring(0, 24)
     $releasePath = Get-ReleasePath $rootPath $releaseId
-    $mainDestination = Join-Path $releasePath 'kiki.exe'
+    $mainDestination = Join-Path $releasePath 'kiki-desktop.exe'
     $sidecarDestination = Join-Path $releasePath 'kiki-server.exe'
     $buildInfoDestination = Join-Path $releasePath 'build-info.txt'
 
@@ -153,7 +153,7 @@ function Invoke-Promotion([string]$Root, [string]$Candidate) {
         $stagingPath = Join-Path $releasesPath ('.pending-{0}' -f [guid]::NewGuid().ToString('N'))
         [IO.Directory]::CreateDirectory($stagingPath) | Out-Null
         try {
-            $stagedMain = Join-Path $stagingPath 'kiki.exe'
+            $stagedMain = Join-Path $stagingPath 'kiki-desktop.exe'
             $stagedSidecar = Join-Path $stagingPath 'kiki-server.exe'
             Copy-Item -LiteralPath $mainSource.Path -Destination $stagedMain
             Copy-Item -LiteralPath $sidecarSource.Path -Destination $stagedSidecar
@@ -185,7 +185,7 @@ function Invoke-Promotion([string]$Root, [string]$Candidate) {
         gitSha = $gitSha
         promotedAtUtc = [DateTime]::UtcNow.ToString('o')
         files = [ordered]@{
-            'kiki.exe' = [ordered]@{ sha256 = $mainSource.Hash; bytes = $mainSource.Length }
+            'kiki-desktop.exe' = [ordered]@{ sha256 = $mainSource.Hash; bytes = $mainSource.Length }
             'kiki-server.exe' = [ordered]@{ sha256 = $sidecarSource.Hash; bytes = $sidecarSource.Length }
         }
     }
@@ -202,7 +202,7 @@ function Invoke-Launch([string]$Root) {
     $rootPath = Get-FullPath $Root
     $manifest = Read-CurrentManifest $rootPath
     $releasePath = Get-ReleasePath $rootPath $manifest.releaseId
-    $mainPath = Join-Path $releasePath 'kiki.exe'
+    $mainPath = Join-Path $releasePath 'kiki-desktop.exe'
     $sidecarPath = Join-Path $releasePath 'kiki-server.exe'
     Get-ArtifactInfo $mainPath 'Promoted Kiki GUI' | Out-Null
     Get-ArtifactInfo $sidecarPath 'Promoted Kiki backend' | Out-Null
