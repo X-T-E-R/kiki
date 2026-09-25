@@ -1,4 +1,5 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
+import type { ProbeProviderRequest, ProbeProviderResponse } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -72,6 +73,8 @@ export interface IProviderDiscoveryService {
   readonly _serviceBrand: undefined;
 
   listDiscoveredModels(): Promise<ListDiscoveredModelsResponse>;
+
+  probeProviderModels(draft: ProbeProviderRequest): Promise<ProbeProviderResponse>;
 
   refreshProviderModels(
     options?: RefreshProviderModelsOptions,

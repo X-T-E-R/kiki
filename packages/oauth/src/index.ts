@@ -180,6 +180,8 @@ export type {
 } from './toolkit';
 
 export { refreshProviderModels } from './refreshProviderModels';
+export { probeProviderModels } from './probeProviderModels';
+export type { DraftProviderProbe, DraftProviderProbeResult } from './probeProviderModels';
 export type {
   DiscoveredModel,
   DiscoveredProviderModels,

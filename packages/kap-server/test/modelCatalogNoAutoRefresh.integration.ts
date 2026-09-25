@@ -32,6 +32,7 @@ function discoveryStub(
     _serviceBrand: undefined,
     refreshProviderModels,
     listDiscoveredModels: async () => ({ items: [] }),
+    probeProviderModels: async () => { throw new Error('unused'); },
   };
 }
 

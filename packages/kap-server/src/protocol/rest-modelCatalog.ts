@@ -26,6 +26,8 @@ export {
   providerCollectionActionBodySchema,
   providerIdSchema,
   providerWireTypeSchema,
+  probeProviderRequestSchema,
+  probeProviderResponseSchema,
   refreshProviderRequestSchema,
   refreshOAuthProviderModelsResponseSchema,
   refreshProviderModelsResponseSchema,

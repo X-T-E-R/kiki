@@ -1597,11 +1597,25 @@ export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<Provi
     try { payload = await response.json(); }
     catch { throw new LocalizedError({ key: 'val.remoteModelsShape' }); }
   } catch (error) {
-    if (error instanceof LocalizedError || (error instanceof Error && /^HTTP \d+$/.test(error.message))) throw error;
-    // eslint-disable-next-line preserve-caught-error -- transport causes may echo credentials
-    throw new Error(error instanceof Error && error.name === 'AbortError'
-      ? 'Model probe timed out after 15000ms'
-      : 'Model probe failed. Check the endpoint and credentials.');
+    if (error instanceof LocalizedError) throw error;
+    const status = error instanceof Error ? /^HTTP (\d+)$/.exec(error.message)?.[1] : undefined;
+    if (status !== undefined) {
+      throw new Error(
+        status === '401' || status === '403'
+          ? `Model probe credentials were rejected (HTTP ${status}).`
+          : status === '404'
+            ? 'Model probe endpoint was not found (HTTP 404).'
+            : `Model probe request failed (HTTP ${status}).`,
+        { cause: error },
+      );
+    }
+    const timedOut = controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
+    const safeCause = new Error(timedOut ? 'Request timed out.' : 'Fetch failed (network or browser CORS).');
+    safeCause.name = timedOut ? 'AbortError' : error instanceof TypeError ? 'TypeError' : 'NetworkError';
+    throw new Error(timedOut
+      ? 'Model probe timed out after 15000ms.'
+      : 'Could not reach the model endpoint. Check the network or browser CORS settings.',
+    { cause: safeCause });
   } finally {
     clearTimeout(timeout);
   }

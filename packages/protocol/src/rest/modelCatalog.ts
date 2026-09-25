@@ -12,6 +12,7 @@ import {
   providerCatalogItemSchema,
   providerRefreshChangeSchema,
   providerRefreshFailureSchema,
+  providerWireTypeSchema,
 } from '../modelCatalog';
 
 export const listModelsResponseSchema = z.object({
@@ -73,6 +74,26 @@ export const refreshProviderModelsResponseSchema = z.object({
 export type RefreshProviderModelsResponse = z.infer<
   typeof refreshProviderModelsResponseSchema
 >;
+
+export const probeProviderRequestSchema = z.object({
+  type: providerWireTypeSchema,
+  base_url: z.string().trim().min(1),
+  api_key: z.string(),
+}).strict();
+export type ProbeProviderRequest = z.infer<typeof probeProviderRequestSchema>;
+
+export const probeProviderResponseSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), models: z.array(z.string().min(1)) }),
+  z.object({
+    ok: z.literal(false),
+    error: z.object({
+      kind: z.enum(['network', 'unauthorized', 'endpoint', 'other']),
+      message: z.string().min(1),
+      status: z.number().int().optional(),
+    }),
+  }),
+]);
+export type ProbeProviderResponse = z.infer<typeof probeProviderResponseSchema>;
 
 export {
   createModelRequestSchema,

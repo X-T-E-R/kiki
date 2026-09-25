@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 
+import type { ProbeProviderRequest, ProbeProviderResponse } from '@kiki/protocol';
 import {
+  probeProviderModels,
   refreshProviderModels,
   type ManagedKimiConfigShape,
   type ManagedKimiOAuthRef,
@@ -94,6 +96,10 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
       });
     }
     return structuredClone({ items });
+  }
+
+  probeProviderModels(draft: ProbeProviderRequest): Promise<ProbeProviderResponse> {
+    return probeProviderModels({ type: draft.type, baseUrl: draft.base_url, apiKey: draft.api_key });
   }
 
   refreshProviderModels(

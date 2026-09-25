@@ -80,6 +80,23 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('posts unsaved provider probes through the authenticated HTTP transport', async () => {
+    const draft = { type: 'anthropic' as const, base_url: 'https://api.example.test/v1', api_key: 'draft-key' };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(new URL(String(input)).pathname).toBe('/api/providers:probe');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual(draft);
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer server-token');
+      return envelope({ ok: true, models: ['claude-example'] });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'server-token', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.providers.probe(draft)).resolves.toEqual({ ok: true, models: ['claude-example'] });
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('routes cron list and task actions through /api/cron with the disambiguating session query', async () => {
     const seen: { pathname: string; method: string; sessionId: string | null }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

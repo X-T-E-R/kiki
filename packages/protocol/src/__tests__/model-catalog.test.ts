@@ -14,6 +14,8 @@ import {
   patchProviderRequestSchema,
   providerCatalogItemSchema,
   providerCatalogStatusSchema,
+  probeProviderRequestSchema,
+  probeProviderResponseSchema,
   refreshProviderRequestSchema,
   requestIdentityPolicySchema,
   setDefaultModelResponseSchema,
@@ -59,6 +61,17 @@ describe('model catalog schemas', () => {
     expect(refreshProviderRequestSchema.parse({ api_key: 'sk-draft' })).toEqual({ api_key: 'sk-draft' });
     expect(refreshProviderRequestSchema.safeParse({ api_key: '' }).success).toBe(false);
     expect(refreshProviderRequestSchema.safeParse({ provider_id: 'edge' }).success).toBe(false);
+  });
+
+  it('validates unsaved provider probes and structured error categories', () => {
+    const draft = { type: 'anthropic', base_url: 'https://api.example.test/v1', api_key: 'draft-key' };
+    expect(probeProviderRequestSchema.parse(draft)).toEqual(draft);
+    expect(probeProviderRequestSchema.safeParse({ ...draft, type: 'unknown' }).success).toBe(false);
+    expect(probeProviderRequestSchema.safeParse({ ...draft, persistent: true }).success).toBe(false);
+    expect(probeProviderResponseSchema.parse({ ok: true, models: ['claude-example'] })).toEqual({ ok: true, models: ['claude-example'] });
+    expect(probeProviderResponseSchema.parse({ ok: false, error: { kind: 'unauthorized', status: 401, message: 'Rejected.' } }))
+      .toEqual({ ok: false, error: { kind: 'unauthorized', status: 401, message: 'Rejected.' } });
+    expect(probeProviderResponseSchema.safeParse({ ok: false, error: { kind: 'unknown', message: 'Failed.' } }).success).toBe(false);
   });
 
   it('round-trips a model catalog item', () => {

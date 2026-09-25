@@ -34,6 +34,8 @@ import {
   patchProviderRequestSchema,
   patchProviderResponseSchema,
   providerCollectionActionBodySchema,
+  probeProviderRequestSchema,
+  probeProviderResponseSchema,
   refreshProviderRequestSchema,
   refreshProviderModelsResponseSchema,
   revisionConflictDetailsSchema,
@@ -443,6 +445,28 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
     patchProviderRoute.path,
     patchProviderRoute.options,
     patchProviderRoute.handler as Parameters<ModelCatalogRouteHost['patch']>[2],
+  );
+
+  const probeProviderRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/providers::probe',
+      body: probeProviderRequestSchema,
+      success: { data: probeProviderResponseSchema },
+      errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+      description: 'Test a draft provider connection and list remote model IDs. Does not save the provider, models, credentials or discovery state; failures carry a safe category and optional upstream HTTP status.',
+      tags: ['providers'],
+      operationId: 'probeProvider',
+    },
+    async (req, reply) => {
+      const result = await (await loadDiscovery(core)).probeProviderModels(req.body);
+      reply.send(okEnvelope(result, req.id));
+    },
+  );
+  app.post(
+    probeProviderRoute.path,
+    probeProviderRoute.options,
+    probeProviderRoute.handler as Parameters<ModelCatalogRouteHost['post']>[2],
   );
 
   const refreshProvidersRoute = defineRoute(

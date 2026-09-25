@@ -380,6 +380,44 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(body.data).toEqual({ changed: [], unchanged: [], failed: [] });
   });
 
+  it('probes unsaved provider drafts with structured failures and never persists them', async () => {
+    await boot(CATALOG_TOML);
+    const before = await readFile(join(home!, 'config.toml'), 'utf8');
+    const originalFetch = globalThis.fetch;
+    const providerFetch = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      if (!String(input).startsWith('https://draft.example.test/')) return originalFetch(input, init);
+      expect(String(input)).toBe('https://draft.example.test/v1/models');
+      const credential = new Headers(init?.headers).get('Authorization');
+      if (credential === 'Bearer draft-success') return Response.json({ data: [{ id: 'new-model' }] });
+      if (credential === 'Bearer draft-401') return Response.json({ error: 'draft-401' }, { status: 401 });
+      if (credential === 'Bearer draft-404') return new Response('missing', { status: 404 });
+      throw new TypeError('draft-network credential echoed');
+    });
+    vi.stubGlobal('fetch', providerFetch);
+    const draft = { type: 'openai', base_url: 'https://draft.example.test/v1', api_key: 'draft-success' };
+    const success = await postJson<unknown>('/api/providers:probe', draft);
+    expect(success.status).toBe(200);
+    expect(success.body.code).toBe(0);
+    expect(success.body.data).toEqual({ ok: true, models: ['new-model'] });
+    const unauthorized = await postJson<unknown>('/api/providers:probe', { ...draft, api_key: 'draft-401' });
+    expect(unauthorized.body.data).toEqual({ ok: false, error: {
+      kind: 'unauthorized', status: 401, message: 'Provider rejected the credentials (HTTP 401).',
+    } });
+    const missing = await postJson<unknown>('/api/providers:probe', { ...draft, api_key: 'draft-404' });
+    expect(missing.body.data).toEqual({ ok: false, error: {
+      kind: 'endpoint', status: 404, message: 'Provider models endpoint was not found (HTTP 404).',
+    } });
+    const network = await postJson<unknown>('/api/providers:probe', { ...draft, api_key: 'draft-network' });
+    expect(network.body.data).toEqual({ ok: false, error: {
+      kind: 'network', message: 'Could not reach the provider endpoint (or the request timed out).',
+    } });
+    expect(JSON.stringify(network.body)).not.toContain('draft-network');
+    expect(JSON.stringify(unauthorized.body)).not.toContain('draft-401');
+    expect(await readFile(join(home!, 'config.toml'), 'utf8')).toBe(before);
+    expect((await getJson<{ items: unknown[] }>('/api/discovered-models')).body.data.items).toEqual([]);
+    expect(providerFetch.mock.calls.filter(([input]) => String(input).startsWith('https://draft.example.test/'))).toHaveLength(4);
+  });
+
   it('forwards a draft key on single-provider refresh without adding it to collection refresh', async () => {
     const refreshProviderModels = vi.fn(async () => ({ changed: [], unchanged: ['kimi'], failed: [] }));
     const seeds = [[IProviderDiscoveryService, discoveryStub(refreshProviderModels)]] as unknown as ScopeSeed;
@@ -434,7 +472,12 @@ describe('server-v2 /api model/provider catalog', () => {
   function discoveryStub(
     refreshProviderModels: IProviderDiscoveryServiceType['refreshProviderModels'],
   ): IProviderDiscoveryServiceType {
-    return { _serviceBrand: undefined, refreshProviderModels, listDiscoveredModels: async () => ({ items: [] }) };
+    return {
+      _serviceBrand: undefined,
+      refreshProviderModels,
+      listDiscoveredModels: async () => ({ items: [] }),
+      probeProviderModels: async () => { throw new Error('unused'); },
+    };
   }
 
   function oauthStub(

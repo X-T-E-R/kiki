@@ -217,6 +217,15 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
     },
 
+    providers: {
+      probe: (draft, options) => transport.json('/providers:probe', {
+        method: 'POST',
+        body: draft,
+        signal: options?.signal,
+        timeoutMs: options?.timeoutMs,
+      }),
+    },
+
     nbSearch: {
       capabilities: () => transport.json('/nb-search/capabilities'),
       test: (options) => transport.json('/nb-search/test', {

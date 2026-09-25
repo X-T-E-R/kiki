@@ -880,11 +880,16 @@ describe('remote /models probe', () => {
       .rejects.toThrow(/line breaks|control characters/);
     expect(fetchMock).not.toHaveBeenCalled();
     fetchMock.mockResolvedValueOnce(new Response('secret-echo-value', { status: 401 }));
-    await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'secret-echo-value' }))
-      .rejects.toThrow(/^HTTP 401$/);
-    fetchMock.mockRejectedValueOnce(new Error('transport echoed secret-echo-value'));
-    await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'secret-echo-value' }))
-      .rejects.toThrow(/^Model probe failed\. Check the endpoint and credentials\.$/);
+    const rejected = await fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'secret-echo-value' }).catch((error: unknown) => error);
+    expect(rejected).toBeInstanceOf(Error);
+    expect((rejected as Error).message).toMatch(/credentials were rejected \(HTTP 401\)/);
+    expect((rejected as Error).cause).toEqual(new Error('HTTP 401'));
+    fetchMock.mockRejectedValueOnce(new TypeError('transport echoed secret-echo-value'));
+    const network = await fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'secret-echo-value' }).catch((error: unknown) => error);
+    expect(network).toBeInstanceOf(Error);
+    expect((network as Error).message).toMatch(/network or browser CORS/);
+    expect(((network as Error).cause as Error).name).toBe('TypeError');
+    expect(String(network) + String((network as Error).cause)).not.toContain('secret-echo-value');
   });
 
   it('rejects bad input and upstream failures with localized or HTTP errors', async () => {
@@ -897,7 +902,14 @@ describe('remote /models probe', () => {
       .rejects.toThrow(/did not return any models/);
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"nope"}', { status: 401 })));
     await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'bad' }))
-      .rejects.toThrow(/HTTP 401/);
+      .rejects.toThrow(/credentials were rejected \(HTTP 401\)/);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'bad' }))
+      .rejects.toThrow(/endpoint was not found \(HTTP 404\)/);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new DOMException('request aborted', 'AbortError'); }));
+    const timeout = await fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'bad' }).catch((error: unknown) => error);
+    expect((timeout as Error).message).toMatch(/timed out after 15000ms/);
+    expect(((timeout as Error).cause as Error).name).toBe('AbortError');
   });
 });
 

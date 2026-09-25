@@ -24,6 +24,8 @@ import type {
   NamedAgentProfile,
   PageResponse,
   PatchConfigRequest,
+  ProbeProviderRequest,
+  ProbeProviderResponse,
   PromptListResponse,
   RestoreSessionResponse,
   Session,
@@ -214,6 +216,11 @@ export interface HttpRestFacade {
 
   readonly catalog: {
     provider(providerId: string): Promise<GetCatalogProviderResponse>;
+  };
+
+  readonly providers: {
+    /** Test unsaved connection fields without writing configuration or discovery state. */
+    probe(draft: ProbeProviderRequest, options?: HttpRestRequestOptions): Promise<ProbeProviderResponse>;
   };
 
   readonly nbSearch: {
