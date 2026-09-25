@@ -148,7 +148,7 @@ describe('settings persistence and validation', () => {
       defaultAppendTiming: 'immediate',
     }));
     localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ notifications: false }));
-    expect(readSettings().sendShortcut).toBe('enter');
+    expect(readSettings().sendShortcut).toBe('cmd-enter');
     expect(readSettings().defaultPermissionMode).toBe('auto');
     expect(readSettings().requestTimeoutSeconds).toBe(30);
     expect(readSettings().subagentPanelOpenMode).toBe('tab');
@@ -1386,7 +1386,7 @@ describe('composer send shortcut and live settings', () => {
 
   it('serves a stable server snapshot for useSyncExternalStore', () => {
     expect(settingsServerSnapshot()).toBe(settingsServerSnapshot());
-    expect(settingsServerSnapshot().sendShortcut).toBe('enter');
+    expect(settingsServerSnapshot().sendShortcut).toBe('cmd-enter');
   });
 
   it('refreshes the snapshot from a cross-document storage event', () => {

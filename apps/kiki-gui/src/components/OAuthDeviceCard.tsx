@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 import type { OAuthFlowSnapshot } from '@kiki/protocol';
 
 import { useHost } from '../host';
+import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
 import { SECONDARY_BUTTON } from './ui';
 
@@ -30,7 +31,7 @@ export function OAuthDeviceCard({
   onDismiss,
 }: OAuthDeviceCardProps) {
   const { t, time } = useI18n();
-  const { openUrl } = useHost();
+  const host = useHost();
   const [copied, setCopied] = useState<'idle' | 'ok' | 'failed'>('idle');
   const [openFailed, setOpenFailed] = useState(false);
   // 1s tick drives the countdown text and the polling animation.
@@ -58,11 +59,7 @@ export function OAuthDeviceCard({
   const openVerificationPage = async () => {
     setOpenFailed(false);
     try {
-      if (typeof openUrl === 'function') {
-        await openUrl(snapshot.verification_uri_complete);
-      } else if (window.open(snapshot.verification_uri_complete, '_blank', 'noopener,noreferrer') === null) {
-        setOpenFailed(true);
-      }
+      await openExternalUrl(host, snapshot.verification_uri_complete, t('common.popupBlocked'));
     } catch {
       setOpenFailed(true);
     }

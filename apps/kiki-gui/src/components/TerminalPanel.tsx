@@ -21,6 +21,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal as XTerm } from '@xterm/xterm';
 
 import { clampTerminalPanelHeight } from '@kiki/session-core/settings';
+import { useHost } from '../host';
+import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { runToastAction } from '../lib/toasts';
@@ -69,6 +71,8 @@ function TerminalCanvas({
   active: boolean;
   copyLabel: string;
 }) {
+  const hostAdapter = useHost();
+  const { t } = useI18n();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -89,11 +93,7 @@ function TerminalCanvas({
     term.loadAddon(fit);
     term.loadAddon(
       new WebLinksAddon((_event, uri) => {
-        try {
-          window.open(uri, '_blank', 'noopener,noreferrer');
-        } catch {
-          // desktop webviews may block window.open — links stay selectable
-        }
+        runToastAction(t('link.open'), () => openExternalUrl(hostAdapter, uri, t('common.popupBlocked')));
       }),
     );
     term.open(host);
@@ -172,7 +172,7 @@ function TerminalCanvas({
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [manager, tabId, copyLabel]);
+  }, [manager, tabId, copyLabel, hostAdapter, t]);
 
   // Becoming visible (tab switch or panel reopen): fit to the revealed box
   // and take focus so typing lands immediately.

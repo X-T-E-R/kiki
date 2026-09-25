@@ -17,9 +17,11 @@ import { Markdown } from './Markdown';
 import { FilePathLink, MediaPreviewProvider } from './mediaPreview';
 import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
 
-const hostMocks = vi.hoisted(() => ({ revealPath: vi.fn(), openPath: vi.fn(), desktop: false }));
+const hostMocks = vi.hoisted(() => ({ revealPath: vi.fn(), openPath: vi.fn(), openUrl: vi.fn(), desktop: false }));
 vi.mock('../host', () => ({
-  useHost: () => hostMocks.desktop ? { kind: 'tauri', revealPath: hostMocks.revealPath, openPath: hostMocks.openPath } : { kind: 'browser' },
+  useHost: () => hostMocks.desktop
+    ? { kind: 'tauri', revealPath: hostMocks.revealPath, openPath: hostMocks.openPath, openUrl: hostMocks.openUrl }
+    : { kind: 'browser' },
 }));
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
@@ -70,6 +72,7 @@ afterAll(() => {
 beforeEach(() => {
   hostMocks.desktop = false;
   hostMocks.openPath.mockReset();
+  hostMocks.openUrl.mockReset();
   hostMocks.revealPath.mockReset();
   writeText.mockClear();
   Object.defineProperty(window.navigator, 'clipboard', {
@@ -195,6 +198,31 @@ describe('Markdown link menus', () => {
         .dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(writeText).toHaveBeenCalledWith('https://example.test/docs');
+  });
+
+  it('uses the native host opener for external clicks and context-menu opens', async () => {
+    hostMocks.desktop = true;
+    hostMocks.openUrl.mockResolvedValue(undefined);
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work/app">
+        <Markdown text={'[Docs](https://example.test/docs)'} />
+      </MediaPreviewProvider>,
+    );
+    const link = probe.container.querySelector<HTMLAnchorElement>('a')!;
+    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    await act(async () => { link.dispatchEvent(clickEvent); });
+    expect(clickEvent.defaultPrevented).toBe(true);
+    expect(hostMocks.openUrl).toHaveBeenCalledExactlyOnceWith('https://example.test/docs');
+
+    await rightClick(link);
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[data-menu-item="open-link"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(hostMocks.openUrl).toHaveBeenCalledTimes(2);
   });
 
   it('Escape closes the menu', async () => {

@@ -11,9 +11,10 @@ import { Link } from 'react-router-dom';
 import { Streamdown, defaultRemarkPlugins, defaultRehypePlugins, type Components } from 'streamdown';
 
 import { useHost } from '../host';
-import { isVscodeWebview, vscodeHost } from '../host/vscode';
+import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { runToastAction } from '../lib/toasts';
 import type { TimelineAnnotation } from '@kiki/session-core/composer';
 import {
   resolveFileReference,
@@ -49,16 +50,6 @@ const EXTERNAL_HREF = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i;
 
 export function isInAppHref(href: string | undefined): href is string {
   return href !== undefined && !EXTERNAL_HREF.test(href);
-}
-
-function openExternalLink(url: string, popupBlockedMessage: string): void {
-  if (isVscodeWebview()) {
-    void vscodeHost.openExternal(url);
-    return;
-  }
-  if (window.open(url, '_blank', 'noreferrer,noopener') === null) {
-    throw new Error(popupBlockedMessage);
-  }
 }
 
 /**
@@ -176,7 +167,7 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
   }
   const url = href ?? '';
   const entries: MiniMenuEntry[] = [
-    { key: 'open-link', label: t('link.open'), run: () => { openExternalLink(url, t('common.popupBlocked')); } },
+    { key: 'open-link', label: t('link.open'), run: () => openExternalUrl(host, url, t('common.popupBlocked')) },
     { key: 'copy-link', label: t('link.copyLink'), run: () => copyTextToClipboard(url) },
   ];
   return (
@@ -186,9 +177,11 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
         target="_blank"
         rel="noreferrer noopener"
         onClick={(event) => {
-          if (!isVscodeWebview()) return;
+          // Native hosts must bypass webview new-window handling; in a normal
+          // browser the trusted anchor click already opens the default browser.
+          if (host.openUrl === undefined) return;
           event.preventDefault();
-          openExternalLink(url, t('common.popupBlocked'));
+          runToastAction(t('link.open'), () => openExternalUrl(host, url, t('common.popupBlocked')));
         }}
         onContextMenu={openMenu}
       >

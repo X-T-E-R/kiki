@@ -10,6 +10,7 @@ const {
   pickDirectories: selectDirectoriesNative,
   pickDirectory: selectDirectoryNative,
   pickFiles: selectFilesNative,
+  openUrl: openExternalUrl,
 } = tauriHost;
 
 const { getCurrentWindow, invoke, listen, open, readFile, stat } = vi.hoisted(() => ({
@@ -56,6 +57,11 @@ describe('native desktop bridge', () => {
     await tauriHost.openPath(input);
     expect(invoke).toHaveBeenNthCalledWith(1, 'reveal_host_path', { path });
     expect(invoke).toHaveBeenNthCalledWith(2, 'open_host_path', { path });
+  });
+
+  it('routes external links through the native default-browser command', async () => {
+    await openExternalUrl('https://example.test/docs');
+    expect(invoke).toHaveBeenCalledWith('open_external_url', { url: 'https://example.test/docs' });
   });
 
   it('queries whether this distribution supports desktop updates', async () => {

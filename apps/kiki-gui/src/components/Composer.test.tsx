@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { pushInputHistory, readInputHistory, resetInputHistoryForTests } from '@kiki/session-core/composer';
 import { translate } from '@kiki/session-core/i18n';
+import { writeSettings } from '@kiki/session-core/settings';
 import { createViewState, projectAgentTranscriptView } from '@kiki/session-core/session';
 import { emptySnapshot, userTurnSnapshot } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import type { HostFileDrop } from '../host';
@@ -66,6 +67,8 @@ beforeAll(() => {
 beforeEach(() => {
   resetInputHistoryForTests();
   clearToasts();
+  // Keep the existing Enter-path coverage explicit; the default is covered below.
+  writeSettings({ sendShortcut: 'enter' });
   listModels.mockReset().mockResolvedValue({
     items: [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', max_context_size: 128000 }],
   });
@@ -260,6 +263,23 @@ describe('Composer host compatibility', () => {
 
     await expect(renderComposer({ sessionId: undefined })).resolves.toBeDefined();
     vi.stubGlobal('crypto', originalCrypto);
+  });
+
+  it('defaults to Ctrl/Cmd+Enter send with plain Enter reserved for newlines', async () => {
+    localStorage.clear();
+    writeSettings({});
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'default shortcut', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    await pressKey(textarea, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    await pressKey(textarea, { key: 'Enter', ctrlKey: true });
+    await settle();
+    expect(onSend).toHaveBeenCalledWith('default shortcut', []);
+    await pressKey(textarea, { key: 'Enter', metaKey: true });
+    await settle();
+    expect(onSend).toHaveBeenCalledTimes(2);
   });
 
   it('submits browser prompts synchronously without VS Code preflight state', async () => {

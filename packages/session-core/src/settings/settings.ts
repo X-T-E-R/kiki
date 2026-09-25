@@ -251,7 +251,7 @@ const RESTART_REQUIRED_KEY = 'kiki.restartRequired';
 const DEFAULTS: DesktopSettings = {
   defaultPermissionMode: 'auto',
   defaultPlanMode: false,
-  sendShortcut: 'enter',
+  sendShortcut: 'cmd-enter',
   draftPersistence: true,
   defaultModel: undefined,
   defaultEffort: undefined,
