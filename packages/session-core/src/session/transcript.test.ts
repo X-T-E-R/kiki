@@ -198,6 +198,41 @@ describe('classifyTranscriptText', () => {
     ]);
   });
 
+  it('carries peer-thread provenance onto the user block', () => {
+    const origin = {
+      kind: 'peer_thread',
+      source: { hostId: 'local', workspaceId: 'ws-a', sessionId: 'sess-source' },
+      messageId: 'thread-message-1',
+      acceptedAt: 1_700_000_000_000,
+    } as const;
+    expect(classifyTranscriptText({ text: 'ping', role: 'user', origin })).toMatchObject({
+      lane: 'peer',
+      origin,
+    });
+
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't0',
+          ordinal: 0,
+          state: 'running',
+          origin: { kind: 'other', payload: origin },
+          prompt: 'Message from thread "Design review" (sess-source):\n\nping',
+          steps: [],
+        },
+      ],
+    });
+    expect(blocks).toEqual([
+      expect.objectContaining({
+        kind: 'user',
+        text: 'Message from thread "Design review" (sess-source):\n\nping',
+        peerThread: { sessionId: 'sess-source' },
+      }),
+    ]);
+  });
+
   it('renders unanchored deliveries and uses acceptance times without reordering the timeline', () => {
     const transcript = new AgentTranscript('main');
     const origin = { kind: 'agent_message', senderAgentId: 'worker', senderTaskName: 'review' };

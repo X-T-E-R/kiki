@@ -949,6 +949,21 @@ describe('live and event chrome', () => {
     );
   });
 
+  it('labels a peer-thread bubble with its source thread', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'user',
+        id: 'user-peer-thread-1',
+        text: 'Message from thread "Design review" (sess-source):\n\nping',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        peerThread: { sessionId: 'sess-source' },
+      },
+    ]);
+    expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe(
+      'From thread sess-source',
+    );
+  });
+
   it('hides the working status while assistant text streams even when busy', async () => {
     const { root, container } = makeRoot();
     await renderSettled(

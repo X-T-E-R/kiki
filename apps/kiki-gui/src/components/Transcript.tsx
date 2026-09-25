@@ -246,6 +246,11 @@ const UserMessage = memo(function UserMessage({
               block.agentMessage.senderAgentId ??
               t('agentMessage.agent'),
           });
+  const peerThreadLabel =
+    block.peerThread === undefined
+      ? undefined
+      : t('agentMessage.fromThread', { id: block.peerThread.sessionId ?? '?' });
+  const senderLabel = agentMessageLabel ?? peerThreadLabel;
   return (
     <div className="anim-enter group/msg flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
       <span className="mb-1 flex items-baseline gap-1.5 pr-1">
@@ -261,9 +266,10 @@ const UserMessage = memo(function UserMessage({
         ) : null}
         <span
           data-agent-message-sender={block.agentMessage?.senderAgentId}
+          data-peer-thread={block.peerThread?.sessionId}
           className="text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase"
         >
-          {agentMessageLabel ?? t('transcript.you')}
+          {senderLabel ?? t('transcript.you')}
         </span>
         <span className="text-xs text-ink-faint"><RelativeTime at={block.createdAt} /></span>
       </span>

@@ -37,6 +37,9 @@ export interface UserBlock {
     readonly senderAgentId?: string;
     readonly senderTaskName?: string;
   };
+  readonly peerThread?: {
+    readonly sessionId?: string;
+  };
 }
 
 export interface SystemReminderBlock {

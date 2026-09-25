@@ -453,6 +453,12 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     return this.requestTargetDrain(message.target, message.messageId);
   }
 
+  private async threadLabel(ref: ThreadRef): Promise<string> {
+    const summary = await this.sessions.get(ref.sessionId).catch(() => undefined);
+    const title = summary?.workspaceId === ref.workspaceId ? summary.title : undefined;
+    return title === undefined || title === '' ? ref.sessionId : `"${title}" (${ref.sessionId})`;
+  }
+
   private requestTargetDrain(
     target: ThreadRef,
     observedMessageId?: string,
@@ -533,12 +539,17 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             acceptedAt: message.acceptedAt,
           } satisfies PeerThreadOrigin
         : USER_PROMPT_ORIGIN;
+      // Peer messages carry their provenance in the text itself, like agent
+      // mailbox deliveries, so the receiving model can attribute the sender.
+      const text = message.producer.kind === 'peer_thread'
+        ? `Message from thread ${await this.threadLabel(message.producer.source)}:\n\n${message.content}`
+        : message.content;
       handle = await prompt.enqueue({
         id: message.messageId,
         message: {
           id: message.messageId,
           role: 'user',
-          content: [{ type: 'text', text: message.content }],
+          content: [{ type: 'text', text }],
           toolCalls: [],
           origin,
         },

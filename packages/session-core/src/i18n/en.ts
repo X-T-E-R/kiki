@@ -2809,6 +2809,7 @@ export const en = {
   'agentMessage.fromMain': 'Main agent injected',
   'agentMessage.fromAgent': '{name} injected',
   'agentMessage.agent': 'Agent',
+  'agentMessage.fromThread': 'From thread {id}',
   'agentMessage.pending': 'Pending delivery',
   'agentMessage.delivered': 'Delivered',
 } as const;

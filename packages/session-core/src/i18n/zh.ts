@@ -2734,6 +2734,7 @@ export const zh: Record<I18nKey, string> = {
   'agentMessage.fromMain': '主代理注入',
   'agentMessage.fromAgent': '{name} 注入',
   'agentMessage.agent': '代理',
+  'agentMessage.fromThread': '来自线程 {id}',
   'agentMessage.pending': '待送达',
   'agentMessage.delivered': '已送达',
 };

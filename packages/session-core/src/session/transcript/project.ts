@@ -148,6 +148,10 @@ function classifiedTextToBlocks(input: {
                   senderTaskName: classified.origin.senderTaskName,
                 }
               : undefined,
+          peerThread:
+            classified.origin?.kind === 'peer_thread'
+              ? { sessionId: classified.origin.source?.sessionId }
+              : undefined,
         });
       }
       break;

@@ -57,6 +57,7 @@ const summaries: Record<string, SessionSummary> = {
     id: 'source',
     workspaceId: 'workspace-a',
     cwd: '/workspace-a',
+    title: 'Design review',
     createdAt: 1,
     updatedAt: 2,
     archived: false,
@@ -365,6 +366,7 @@ describe('ThreadCommunicationService', () => {
       id: 'message-1',
       message: expect.objectContaining({
         role: 'user',
+        content: [{ type: 'text', text: 'Message from thread "Design review" (source):\n\nhello' }],
         origin: {
           kind: 'peer_thread',
           source,
