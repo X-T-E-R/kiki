@@ -1,6 +1,6 @@
 # Spotlight: nb-search — web access with real key management
 
-*A feature spotlight for Kiki. These pages are promotional companions to the README; they describe shipped behavior.*
+*A Kiki feature spotlight.*
 
 Every coding agent can "search the web". Most stop at a single API key pasted into an env var, and fall over the moment that key rate-limits. Kiki's web access runs on **nb-search**, a standalone search and fetch library developed alongside Kiki and integrated directly into its `WebSearch` / `FetchURL` tools.
 
@@ -9,8 +9,6 @@ Every coding agent can "search the web". Most stop at a single API key pasted in
 nb-search organizes web access into named **lanes** — `tavily.search`, `exa.search`, `duckduckgo.search`, `github.repositories`, `context7.docs`, and more — each with its own provider, cost, and latency profile. The agent picks a lane per query, or combines several and gets deduplicated, provenance-tracked results back. Fetching works the same way: extraction chains (e.g. `tavily.extract → jina.reader → direct.fetch`) fall through automatically when one extractor fails or returns junk.
 
 ![Search lanes in Settings: ready keyless lanes, the current default, and an unavailable lane with the exact reasons.](shots/d06-search-lanes.en.light.png)
-
-*Example scene rendered by the real Kiki UI.*
 
 ## Keyless out of the box
 

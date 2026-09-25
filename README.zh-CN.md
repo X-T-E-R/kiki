@@ -9,7 +9,7 @@ Kiki 是一个本地 agent 工作台：每一个 agent——无论是主 agent �
 
 无云端中转，无 agent 锁定，无黑盒提示词。
 
-**特色聚焦**：[nb-search —— 带真钥匙管理的联网能力](marketing/nb-search.zh-CN.md) · [任务看板 —— 看得见、指得着的工作](marketing/task-board.zh-CN.md)
+**特色聚焦**：[nb-search —— 带真钥匙管理的联网能力](marketing/nb-search.zh-CN.md) · [任务看板 —— 看得见、指得着的工作](marketing/task-board.zh-CN.md) · [截图巡览](marketing/gallery.zh-CN.md)
 
 ![Kiki 工作台：实时子代理派发树、后台任务、进行中的目标和排队消息，同屏可见。](marketing/shots/h01-fleet-workbench.zh.light.png)
 
@@ -23,13 +23,15 @@ Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，�
 
 ![设置中的子代理 profile：来源路径、frontmatter 绑定和 Markdown 系统提示词原文，可就地编辑。](marketing/shots/r01-reviewer-profile.zh.light.png)
 
-**指挥你的机队。** 把子代理派进隔离上下文，每个角色可绑定各自模型；耗时任务转后台；agent 忙碌时消息排队、逐条调整时机；`/goal` 锁定一个跨轮持续推进的目标；cron 按计划往会话里注入 prompt；任务看板按工作区跟踪进展。
+**指挥你的机队。** 把子代理派进隔离上下文，**每个角色绑定各自的模型**——让前沿模型去思考，让快模型去执行，审阅者和实现者的上下文天然隔离。耗时任务转后台；agent 忙碌时消息排队、逐条调整时机；`/goal` 锁定一个跨轮持续推进的目标；cron 按计划往会话里注入 prompt；任务看板按工作区跟踪进展。
 
 **真正的 agent 工具链。** agent 操作的是和你同一套台面：`AgentRun` / `AgentSend` / `AgentList` 派发和联络子代理，`ThreadCreate` 直接开一条带独立工作区的全新会话线程，`CronCreate` 安排未来工作，`CreateGoal` 锁定长期目标，`TaskList` / `TaskOutput` / `TaskStop` 监督正在运行的一切。编排是 agent 自己动手做的事，不是要你接线的工程。
 
 ![进行中的目标带暂停/取消控制，消息队列逐条调整发送时机。](marketing/shots/r02-goal-queue.zh.light.png)
 
 **看见一切。** agent 面板实时展示派发树——谁在跑、谁完成了、带回了什么；会话时间线把工具步骤折叠成组，不占你的注意力。完成通知、提问、审批都是一等公民的界面，不是需要你去翻的日志。
+
+![打开任何一个派出的 agent，读它自己的会话记录：它收到了什么、做了什么、得出了什么结论。](marketing/shots/d01-agent-preview.zh.light.png)
 
 ## 功能一览
 

@@ -1,6 +1,6 @@
 # 特色聚焦：nb-search —— 带真钥匙管理的联网能力
 
-*Kiki 特色宣传页。这些页面是 README 之外的宣传配套，描述的均为已发布的行为。*
+*Kiki 特色宣传页。*
 
 每个编码 agent 都"能联网"。但大多数止步于把单个 API key 塞进环境变量，一旦这把 key 限流就整个趴窝。Kiki 的联网能力跑在 **nb-search** 上——一个与 Kiki 同步开发、深度集成的独立搜索/抓取库，直接支撑 Kiki 的 `WebSearch` / `FetchURL` 工具。
 
@@ -9,8 +9,6 @@
 nb-search 把联网组织成命名的**通道**——`tavily.search`、`exa.search`、`duckduckgo.search`、`github.repositories`、`context7.docs` 等等——每条通道有自己的供应商、成本和延迟特征。agent 按查询选择通道，也可以多通道并发，拿回带溯源信息的去重结果。抓取侧同理：提取链（如 `tavily.extract → jina.reader → direct.fetch`）在某个提取器失败或返回垃圾时自动回落。
 
 ![设置中的搜索通道：免密可用通道、当前默认项，以及一个不可用通道和它完整的原因说明。](shots/d06-search-lanes.zh.light.png)
-
-*示例场景；由真实 Kiki 界面渲染。*
 
 ## 零配置开箱即用
 

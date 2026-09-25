@@ -9,7 +9,7 @@ Kiki is a local agent workspace where every agent — the main one and each suba
 
 No cloud relay. No agent lock-in. No black-box prompts.
 
-**Spotlights:** [nb-search — web access with real key management](marketing/nb-search.en.md) · [Task board — work you can point at](marketing/task-board.en.md)
+**Spotlights:** [nb-search — web access with real key management](marketing/nb-search.en.md) · [Task board — work you can point at](marketing/task-board.en.md) · [Screenshot tour](marketing/gallery.en.md)
 
 ![The Kiki workbench: a live dispatch tree of subagents, a background task, an active goal, and a queued message — all in one window.](marketing/shots/h01-fleet-workbench.en.light.png)
 
@@ -23,13 +23,15 @@ Kiki began as a fork of [Kimi Code](https://github.com/MoonshotAI/kimi-code) and
 
 ![A subagent profile in Settings: source path, frontmatter bindings, and the raw Markdown system prompt, editable in place.](marketing/shots/r01-reviewer-profile.en.light.png)
 
-**Run the fleet.** Dispatch subagents into isolated contexts with per-role model bindings; detach long work into background tasks; queue messages while the agent is busy, with per-message timing; pin a `/goal` the agent pursues across turns; schedule cron prompts into sessions; track work on the per-workspace task board.
+**Run the fleet.** Dispatch subagents into isolated contexts with **per-role model bindings** — let a frontier model think, let fast models execute, and keep the reviewer's context separate from the implementer's by construction. Detach long work into background tasks; queue messages while the agent is busy, with per-message timing; pin a `/goal` the agent pursues across turns; schedule cron prompts into sessions; track work on the per-workspace task board.
 
 **A real agent toolchain.** The agent operates the same surface you do: `AgentRun` / `AgentSend` / `AgentList` to dispatch and message subagents, `ThreadCreate` to open an entirely new conversation thread with its own workspace, `CronCreate` to schedule future work, `CreateGoal` to pin a long-running objective, and `TaskList` / `TaskOutput` / `TaskStop` to supervise what is already running. Orchestration is something the agent *does*, not something you wire up.
 
 ![An active goal with pause/cancel controls and a message queue with per-message timing.](marketing/shots/r02-goal-queue.en.light.png)
 
 **See everything.** The agent panel shows the live dispatch tree — who is running, who is done, what came back — and the transcript folds tool-step groups out of your way. Completion notices, questions, and approvals are first-class UI, not log lines you have to tail.
+
+![Open any dispatched agent to read its own transcript: what it was asked, what it did, what it concluded.](marketing/shots/d01-agent-preview.en.light.png)
 
 ## Feature highlights
 
