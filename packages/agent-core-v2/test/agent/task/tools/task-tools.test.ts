@@ -37,7 +37,7 @@ import type { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifec
 import { executeTool } from '../../../tools/fixtures/execute-tool';
 import { recordingTelemetry, type TelemetryRecord } from '../../../app/telemetry/stubs';
 import { stubFlag } from '../../../app/flag/stubs';
-import { agentService, createTestAgent, telemetryServices } from '../../../harness';
+import { agentService, createTestAgent, permissionModeServices, telemetryServices } from '../../../harness';
 import { stubLoopWithHooks } from '../../loop/stubs';
 
 const signal = new AbortController().signal;
@@ -1433,7 +1433,7 @@ describe('TaskWait tool (harness)', () => {
   });
 
   it('does not include tasks registered after the wait started', async () => {
-    const ctx = createTestAgent();
+    const ctx = createTestAgent(permissionModeServices('manual'));
     try {
       const tasks = ctx.get(IAgentTaskService);
       const tool = ctx.get(IAgentToolRegistryService).resolve('TaskWait');

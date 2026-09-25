@@ -20,7 +20,7 @@ import {
   IAgentProfileService,
 } from '#/index';
 
-import { createTestAgent, type TestAgentContext } from '../../harness';
+import { createTestAgent, permissionModeServices, type TestAgentContext } from '../../harness';
 
 describe('Agent context', () => {
   let ctx: TestAgentContext;
@@ -30,7 +30,7 @@ describe('Agent context', () => {
   let wire: IWireService;
 
   beforeEach(() => {
-    ctx = createTestAgent();
+    ctx = createTestAgent(permissionModeServices('manual'));
     context = ctx.get(IAgentContextMemoryService);
     tokenCounting = ctx.get(IAgentTokenCountingService);
     profile = ctx.get(IAgentProfileService);

@@ -9,7 +9,12 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IWireService } from '#/wire/wire';
 
-import { createTestAgent, InMemoryWireRecordPersistence, type TestAgentContext } from '../../harness';
+import {
+  createTestAgent,
+  InMemoryWireRecordPersistence,
+  permissionModeServices,
+  type TestAgentContext,
+} from '../../harness';
 
 function totalOf(usage: TokenUsage | undefined): number {
   if (usage === undefined) return 0;
@@ -24,7 +29,7 @@ describe('Agent token counting', () => {
   let usage: IAgentUsageService;
 
   beforeEach(() => {
-    ctx = createTestAgent();
+    ctx = createTestAgent(permissionModeServices('manual'));
     context = ctx.get(IAgentContextMemoryService);
     tokenCounting = ctx.get(IAgentTokenCountingService);
     profile = ctx.get(IAgentProfileService);

@@ -14,9 +14,22 @@ import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 
-import { createTestAgent, llmGenerateServices, type TestAgentContext } from '../../harness';
+import {
+  createTestAgent,
+  llmGenerateServices,
+  permissionModeServices,
+  type TestAgentContext,
+  type TestAgentOptions,
+  type TestAgentServiceOverride,
+} from '../../harness';
 
 const realSetTimeout = globalThis.setTimeout;
+
+type RetryTestAgentInput = TestAgentOptions | TestAgentServiceOverride;
+
+function createRetryTestAgent(...inputs: readonly RetryTestAgentInput[]): TestAgentContext {
+  return createTestAgent(...inputs, permissionModeServices('manual'));
+}
 
 describe('stepRetry plugin', () => {
   let ctx: TestAgentContext;
@@ -73,7 +86,7 @@ describe('stepRetry plugin', () => {
   it('retries a body-less 520 and resumes the same step number', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         if (calls === 1) throw new APIStatusError(520, '520 status code (no body)');
@@ -128,7 +141,7 @@ describe('stepRetry plugin', () => {
   it('pairs every retried step.begin with a step.end in the wire', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         if (calls === 1) throw new APIConnectionError('terminated');
@@ -159,7 +172,7 @@ describe('stepRetry plugin', () => {
   it('surfaces a classified 520 after the default attempt budget is exhausted', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         throw new APIStatusError(520, '520 status code (no body)');
@@ -192,7 +205,7 @@ describe('stepRetry plugin', () => {
 
   it('honors the provider retry-after delay before retrying', async () => {
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         if (calls === 1) throw new APIProviderRateLimitError('slow down', null, 1);
@@ -226,7 +239,7 @@ describe('stepRetry plugin', () => {
   it('clamps an excessive relay retry-after to the 60s cap', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         if (calls === 1) throw new APIProviderOverloadedError(503, 'relay overloaded', null, 120_000);
@@ -257,7 +270,7 @@ describe('stepRetry plugin', () => {
   it('does not retry a non-retryable error', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         throw new APIStatusError(401, 'unauthorized');
@@ -274,7 +287,7 @@ describe('stepRetry plugin', () => {
   it('cancels the turn when aborted during the backoff wait', async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         throw new APIConnectionError('terminated');
       }),
@@ -291,7 +304,7 @@ describe('stepRetry plugin', () => {
   it('honors loop_control.max_attempts_per_step', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(llmGenerateServices(async () => {
+    ctx = createRetryTestAgent(llmGenerateServices(async () => {
       calls += 1;
       throw new APIConnectionError('terminated');
     }), {
@@ -309,7 +322,7 @@ describe('stepRetry plugin', () => {
     vi.useFakeTimers();
     let calls = 0;
     let failing = true;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         if (failing) {
           calls += 1;
@@ -342,7 +355,7 @@ describe('stepRetry plugin', () => {
     vi.useFakeTimers();
     vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         if (calls === 1) throw new APIStatusError(400, 'endpoint broken');
@@ -374,7 +387,7 @@ describe('stepRetry plugin', () => {
     vi.useFakeTimers();
     vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         if (calls <= 12) throw new APIStatusError(429, 'slow down');
@@ -404,7 +417,7 @@ describe('stepRetry plugin', () => {
     vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     const controller = new AbortController();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         throw new APIStatusError(400, 'endpoint broken');
@@ -421,7 +434,7 @@ describe('stepRetry plugin', () => {
   it('keeps the default attempt budget when no retry policy matches the error', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         throw new APIConnectionError('terminated');
@@ -444,7 +457,7 @@ describe('stepRetry plugin', () => {
   it('applies a matched policy attempt budget and flat backoff', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         if (calls === 1) throw new APIConnectionError('terminated');
@@ -489,7 +502,7 @@ describe('stepRetry plugin', () => {
   it('honors the retry section attempt budget when no policy matches', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         throw new APIConnectionError('terminated');
@@ -512,7 +525,7 @@ describe('stepRetry plugin', () => {
   it('lets a matched policy override the retry section attempt budget', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         throw new APIConnectionError('terminated');
@@ -539,7 +552,7 @@ describe('stepRetry plugin', () => {
   it('does not retry when a policy matches the error code with retry = false', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         throw new APIStatusError(429, 'slow down');
@@ -557,7 +570,7 @@ describe('stepRetry plugin', () => {
   it('does not retry when a policy matches the error name with retry = false', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         throw new APIConnectionError('terminated');
@@ -574,7 +587,7 @@ describe('stepRetry plugin', () => {
 
   it('keeps the provider retry-after delay ahead of a policy backoff', async () => {
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         if (calls === 1) throw new APIProviderRateLimitError('slow down', null, 1);
@@ -615,7 +628,7 @@ describe('stepRetry plugin', () => {
   it('skips a policy whose match is not a valid regular expression', async () => {
     vi.useFakeTimers();
     let calls = 0;
-    ctx = createTestAgent(
+    ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
         if (calls === 1) throw new APIConnectionError('terminated');

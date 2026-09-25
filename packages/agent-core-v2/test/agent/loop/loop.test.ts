@@ -44,7 +44,7 @@ describe('Agent loop', () => {
   let profile: IAgentProfileService;
 
   beforeEach(() => {
-    ctx = createTestAgent();
+    ctx = createTestAgent(permissionModeServices('manual'));
     loop = ctx.get(IAgentLoopService);
     profile = ctx.get(IAgentProfileService);
   });
@@ -1333,7 +1333,7 @@ describe('interruption reminder', () => {
   let loop: IAgentLoopService;
 
   beforeEach(() => {
-    ctx = createTestAgent();
+    ctx = createTestAgent(permissionModeServices('manual'));
     loop = ctx.get(IAgentLoopService);
   });
 
