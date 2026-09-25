@@ -288,6 +288,21 @@ async function shotR04() {
   await settle();
 }
 
+const R05_SID = 'sess_sample_prepare_release';
+
+/** R05 — rail close-up: five nodes, four role model bindings, mixed states. */
+async function shotR05() {
+  await page.goto(deepLink(`/s/${R05_SID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  const rail = page.locator('[data-session-rail]');
+  await rail.waitFor({ timeout: 30_000 });
+  for (const agentId of ['agent-thinker', 'agent-reviewer', 'agent-builder', 'agent-explorer']) {
+    await rail.locator(`[data-agent-id="${agentId}"]`).first().waitFor({ timeout: 20_000 });
+  }
+  // A little main-session context must be visible next to the rail.
+  await page.locator('[role="log"] [data-block-id^="user-"]').first().waitFor({ timeout: 20_000 });
+  await settle();
+}
+
 // --------------------------- post-run invariants ---------------------------
 // Each check asserts the concrete UI evidence is still on screen immediately
 // before the capture (guards against a concurrent HMR reload blanking the page).
@@ -325,6 +340,17 @@ async function checkR04() {
   if (cards < 7) throw new Error(`expected 7 board cards, saw ${cards}`);
 }
 
+async function checkR05() {
+  const rail = page.locator('[data-session-rail]');
+  for (const agentId of ['agent-thinker', 'agent-reviewer', 'agent-builder', 'agent-explorer']) {
+    if (await rail.locator(`[data-agent-id="${agentId}"]`).count() === 0) throw new Error(`dispatch tree missing ${agentId}`);
+  }
+  const text = await rail.innerText();
+  for (const model of ['Kimi K3', 'axon/gpt-6-astra', 'Claude Fable', 'DeepSeek V4 Flash', 'GLM 5.3 Flash']) {
+    if (!text.includes(model)) throw new Error(`rail is missing the ${model} binding`);
+  }
+}
+
 // ------------------------------- shot table --------------------------------
 
 /**
@@ -342,6 +368,8 @@ const SHOTS = [
   { name: 'r02-goal-queue.zh.light', scenario: 'marketing-r02-zh', locale: 'zh', theme: 'light', viewport: { width: 1200, height: 750 }, railWidth: 264, run: shotR02, check: checkR02 },
   { name: 'r04-task-board.en.light', scenario: 'marketing-r04-en', locale: 'en', theme: 'light', viewport: { width: 1440, height: 900 }, run: shotR04, check: checkR04 },
   { name: 'r04-task-board.zh.light', scenario: 'marketing-r04-zh', locale: 'zh', theme: 'light', viewport: { width: 1440, height: 900 }, run: shotR04, check: checkR04 },
+  { name: 'r05-multi-model-fleet.en.light', scenario: 'marketing-r05-en', locale: 'en', theme: 'light', viewport: { width: 1200, height: 900 }, sidebarWidth: 232, railWidth: 440, run: shotR05, check: checkR05 },
+  { name: 'r05-multi-model-fleet.zh.light', scenario: 'marketing-r05-zh', locale: 'zh', theme: 'light', viewport: { width: 1200, height: 900 }, sidebarWidth: 232, railWidth: 440, run: shotR05, check: checkR05 },
 ];
 
 function activeShots() {
@@ -353,7 +381,7 @@ function initScript({ locale, theme, railWidth }) {
     try {
       localStorage.setItem('kiki.locale', payload.locale);
       localStorage.setItem('kiki.settings', JSON.stringify({ theme: payload.theme }));
-      localStorage.setItem('kiki.layout', JSON.stringify({ groupBy: 'workspace', sortBy: 'updated-desc', sidebarWidth: 268, railWidth: payload.railWidth }));
+      localStorage.setItem('kiki.layout', JSON.stringify({ groupBy: 'workspace', sortBy: 'updated-desc', sidebarWidth: payload.sidebarWidth, railWidth: payload.railWidth }));
       localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
     } catch {
       // storage unavailable — nothing to seed
@@ -422,7 +450,12 @@ async function main() {
             colorScheme: def.theme,
             timezoneId: 'Asia/Shanghai',
           });
-          await context.addInitScript(initScript(def), { locale: def.locale, theme: def.theme, railWidth: def.railWidth ?? 322 });
+          await context.addInitScript(initScript(def), {
+            locale: def.locale,
+            theme: def.theme,
+            railWidth: def.railWidth ?? 322,
+            sidebarWidth: def.sidebarWidth ?? 268,
+          });
           const page_ = await context.newPage();
           page_.on('pageerror', (error) => console.error(`[pageerror] ${def.name}: ${error.message}`));
           page_.on('console', (message) => {

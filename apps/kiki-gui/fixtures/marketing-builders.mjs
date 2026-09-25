@@ -15,6 +15,7 @@ import { ts } from './helpers.mjs';
 import {
   AGENT,
   MODEL,
+  ROLE_BINDING,
   SAMPLE_ROOT,
   SESSION,
   WORKSPACE_ID,
@@ -57,8 +58,8 @@ function localizedSessions(locale, { busy = true } = {}) {
 }
 
 const AGENT_LABEL = {
-  en: { explorer: 'Explorer', builder: 'Builder', reviewer: 'Reviewer' },
-  zh: { explorer: '探索者', builder: '构建者', reviewer: '审阅者' },
+  en: { explorer: 'Explorer', builder: 'Builder', reviewer: 'Reviewer', thinker: 'Thinker' },
+  zh: { explorer: '探索者', builder: '构建者', reviewer: '审阅者', thinker: '思考者' },
 };
 
 function subagentsCopy(locale) {
@@ -66,9 +67,15 @@ function subagentsCopy(locale) {
   return {
     explorer: {
       label: label.explorer,
-      description: pick(locale, 'Map the docs and release scripts', '梳理文档与发布脚本'),
+      description: pick(locale, 'Isolate context and gather sources', '隔离上下文并收集来源'),
       summary: pick(locale, 'Docs tree and release scripts mapped; no version drift found.', '文档结构与发布脚本已梳理完毕，未发现版本漂移。'),
       prompt: pick(locale, 'Map the docs tree and the release scripts.', '梳理文档结构与发布脚本。'),
+    },
+    thinker: {
+      label: label.thinker,
+      description: pick(locale, 'Weigh the upgrade path and call the trade-offs', '评估升级路径并给出取舍结论'),
+      summary: pick(locale, 'Recommended a staged rollout; listed the two breaking changes to flag.', '建议分阶段发布，并列出需标注的两处破坏性变更。'),
+      prompt: pick(locale, 'Think through the upgrade path for 0.4 and name the trade-offs.', '思考 0.4 的升级路径，并指出取舍。'),
     },
     builder: {
       label: label.builder,
@@ -87,6 +94,17 @@ function subagentsCopy(locale) {
 function subagentTurns(locale) {
   const copy = subagentsCopy(locale);
   return {
+    thinker: turn({
+      turnId: 't1',
+      ordinal: 1,
+      prompt: copy.thinker.prompt,
+      minutesAgo: 11,
+      frames: [
+        toolFrame({ frameId: 'mk-th-read-releasing', toolCallId: 'call_th_releasing', name: 'Read', input: { path: 'docs/RELEASING.md' }, output: pick(locale, 'Staged-rollout checklist, 9 steps.', '分阶段发布清单，共 9 步。') }),
+        toolFrame({ frameId: 'mk-th-grep-breaking', toolCallId: 'call_th_breaking', name: 'Grep', input: { pattern: 'BREAKING' }, output: pick(locale, '2 breaking changes to flag.', '需标注 2 处破坏性变更。') }),
+        textFrame({ frameId: 'mk-th-summary', text: copy.thinker.summary }),
+      ],
+    }),
     explorer: turn({
       turnId: 't1',
       ordinal: 1,
@@ -126,58 +144,46 @@ function subagentTurns(locale) {
   };
 }
 
-function subagentRoster(locale) {
+/**
+ * Snapshot roster rows for the dispatch tree. Each row carries its role's
+ * model binding (the REAL wire field is a display-normalized alias, so the
+ * rail label is the alias and `thinking_effort` the role's effort).
+ */
+function subagentRoster(locale, rows = DEFAULT_ROSTER) {
   const copy = subagentsCopy(locale);
-  return [
-    {
-      id: 'task_mk_explorer',
-      session_id: SESSION.release,
-      kind: 'subagent',
-      status: 'completed',
-      description: copy.explorer.description,
-      agent_id: AGENT.explorer,
-      label: copy.explorer.label,
-      model: MODEL,
-      thinking_effort: 'low',
-      created_at: ts(10),
-      started_at: ts(9),
-      completed_at: ts(6),
-      output_preview: copy.explorer.summary,
-      tool_call_count: 4,
-      live: true,
-    },
-    {
-      id: 'task_mk_builder',
-      session_id: SESSION.release,
-      kind: 'subagent',
-      status: 'running',
-      description: copy.builder.description,
-      agent_id: AGENT.builder,
-      label: copy.builder.label,
-      model: MODEL,
-      thinking_effort: 'medium',
-      created_at: ts(6),
-      started_at: ts(5),
-      tool_call_count: 3,
-      live: true,
-    },
-    {
-      id: 'task_mk_reviewer',
-      session_id: SESSION.release,
-      kind: 'subagent',
-      status: 'running',
-      description: copy.reviewer.description,
-      agent_id: AGENT.reviewer,
-      label: copy.reviewer.label,
-      model: MODEL,
-      thinking_effort: 'high',
-      created_at: ts(5),
-      started_at: ts(4),
-      tool_call_count: 2,
-      live: true,
-    },
-  ];
+  return rows.map(({ role, status, created, started, completed, toolCalls }) => ({
+    id: `task_mk_${role}`,
+    session_id: SESSION.release,
+    kind: 'subagent',
+    status,
+    description: copy[role].description,
+    agent_id: AGENT[role],
+    label: copy[role].label,
+    model: ROLE_BINDING[role].rail,
+    thinking_effort: ROLE_BINDING[role].effort,
+    created_at: ts(created),
+    started_at: ts(started),
+    ...(completed === undefined ? {} : { completed_at: ts(completed) }),
+    ...(status === 'completed' ? { output_preview: copy[role].summary } : {}),
+    tool_call_count: toolCalls,
+    live: true,
+  }));
 }
+
+/** H01/R02 fleet: exploration done, execution + review still running. */
+const DEFAULT_ROSTER = [
+  { role: 'explorer', status: 'completed', created: 10, started: 9, completed: 6, toolCalls: 4 },
+  { role: 'builder', status: 'running', created: 6, started: 5, toolCalls: 3 },
+  { role: 'reviewer', status: 'running', created: 5, started: 4, toolCalls: 2 },
+];
+
+/** R05 fleet: judgement + execution landed, review and exploration in flight. */
+const R05_ROSTER = [
+  { role: 'thinker', status: 'completed', created: 14, started: 13, completed: 10, toolCalls: 5 },
+  { role: 'builder', status: 'completed', created: 11, started: 10, completed: 7, toolCalls: 4 },
+  { role: 'reviewer', status: 'running', created: 6, started: 5, toolCalls: 2 },
+  { role: 'explorer', status: 'running', created: 4, started: 3, toolCalls: 2 },
+];
 
 function runningBuildTask(locale, sessionId) {
   return {
@@ -237,9 +243,14 @@ function goalDocument(locale, tokensUsed) {
   };
 }
 
-/** Agent-panel metrics keyed by the (locale-independent) agent ids. */
-function agentPanel(locale) {
-  const metrics = ({ input, output, cacheRead, contextTokens, cost, compactions = 0 }) => ({
+/**
+ * Agent-panel metrics keyed by agent id. `metrics` MUST cover every rostered
+ * agent (main + the roles the shot shows) or the tree totals fall back to
+ * "Unknown"; `targets` must carry the same per-role model aliases the dispatch
+ * tree shows.
+ */
+function agentPanel(locale, roles) {
+  const metrics = ({ input, output, cacheRead, contextTokens, cost, compactions = 0, model }) => ({
     inputTokens: input,
     outputTokens: output,
     cacheReadTokens: cacheRead,
@@ -250,17 +261,18 @@ function agentPanel(locale) {
     contextLimit: 262_144,
     compactionCount: compactions,
     usageSource: 'live',
+    model,
   });
   const copy = subagentsCopy(locale);
   const label = AGENT_LABEL[locale] ?? AGENT_LABEL.en;
-  const target = (profile, description, thinking, status) => ({
-    profile,
-    route: profile,
-    description,
+  const target = (role, status) => ({
+    profile: role,
+    route: role,
+    description: `${copy[role].description}.`,
     executor: 'native',
-    model_alias: MODEL,
+    model_alias: ROLE_BINDING[role].rail,
     model_source: 'profile',
-    thinking_effort: thinking,
+    thinking_effort: ROLE_BINDING[role].effort,
     effort_source: 'profile',
     dispatch_policy: 'advisory',
     recommendation_status: status,
@@ -268,6 +280,18 @@ function agentPanel(locale) {
     defaults_available: true,
     launch_allowed: true,
   });
+  const perRoleUsage = {
+    thinker: { input: 54_200, output: 12_800, cacheRead: 38_000, contextTokens: 16_400, cost: 0.86 },
+    explorer: { input: 42_100, output: 5_200, cacheRead: 31_000, contextTokens: 12_400, cost: 0.31 },
+    builder: { input: 61_800, output: 9_400, cacheRead: 44_200, contextTokens: 18_900, cost: 0.58 },
+    reviewer: { input: 33_500, output: 4_100, cacheRead: 22_800, contextTokens: 9_600, cost: 0.24 },
+  };
+  const metricRows = {
+    main: metrics({ ...{ input: 128_400, output: 18_600, cacheRead: 96_400, contextTokens: 41_200, cost: 1.42, compactions: 1 }, model: ROLE_BINDING.main.rail }),
+  };
+  for (const role of roles) {
+    metricRows[AGENT[role]] = metrics({ ...perRoleUsage[role], model: ROLE_BINDING[role].rail });
+  }
   return {
     context: 'live',
     live: true,
@@ -275,20 +299,16 @@ function agentPanel(locale) {
     available: true,
     profile: {
       name: 'agent',
-      description: pick(locale, 'Coordinates the sample-app release work.', '统筹 sample-app 发布工作。'),
+      description: pick(locale, 'Coordinates the release and routes each role to a model.', '统筹发布，并为每个角色选择模型。'),
       source: 'builtin',
-      model: MODEL,
-      thinking_effort: 'high',
+      model: ROLE_BINDING.main.rail,
+      thinking_effort: ROLE_BINDING.main.effort,
       thinking_effort_source: 'forced',
       profile_source: 'registered',
       subagent_policy: 'advisory',
       tools: ['Read', 'Grep', 'Bash', 'Edit', 'AgentRun'],
     },
-    targets: [
-      target('explorer', copy.explorer.description + '.', 'low', 'preferred'),
-      target('builder', copy.builder.description + '.', 'medium', 'preferred'),
-      target('reviewer', copy.reviewer.description + '.', 'high', 'allowed_nonpreferred'),
-    ],
+    targets: roles.map((role) => target(role, role === 'reviewer' ? 'allowed_nonpreferred' : 'preferred')),
     tools: [
       { name: 'Read', source: 'builtin', category: 'filesystem', state: 'enabled' },
       { name: 'Grep', source: 'builtin', category: 'filesystem', state: 'enabled' },
@@ -297,22 +317,18 @@ function agentPanel(locale) {
       { name: 'AgentRun', source: 'builtin', category: 'orchestration', state: 'enabled' },
     ],
     skills: [],
-    metrics: {
-      main: metrics({ input: 128_400, output: 18_600, cacheRead: 96_400, contextTokens: 41_200, cost: 1.42, compactions: 1 }),
-      [AGENT.explorer]: metrics({ input: 42_100, output: 5_200, cacheRead: 31_000, contextTokens: 12_400, cost: 0.31 }),
-      [AGENT.builder]: metrics({ input: 61_800, output: 9_400, cacheRead: 44_200, contextTokens: 18_900, cost: 0.58 }),
-      [AGENT.reviewer]: metrics({ input: 33_500, output: 4_100, cacheRead: 22_800, contextTokens: 9_600, cost: 0.24 }),
-    },
+    metrics: metricRows,
     labels: label,
   };
 }
 
 function base(locale, options) {
+  const roles = options?.roles ?? ['explorer', 'builder', 'reviewer'];
   return {
     config: sampleConfig(),
     models: sampleModels(),
     providers: sampleProviders(),
-    agentPanel: agentPanel(locale),
+    agentPanel: agentPanel(locale, roles),
     workspaces: [sampleWorkspace()],
     sessions: localizedSessions(locale, options),
   };
@@ -359,7 +375,7 @@ export function buildH01(locale) {
                   toolFrame({ frameId: 'mk-h-grep-checklist', toolCallId: 'call_h_grep', name: 'Grep', input: { pattern: 'release checklist' }, output: pick(locale, '3 matches in docs/RELEASING.md.', 'docs/RELEASING.md 中 3 处匹配。') }),
                   toolFrame({ frameId: 'mk-h-read-pkg', toolCallId: 'call_h_pkg', name: 'Read', input: { path: 'package.json' }, output: pick(locale, 'version 0.4.0-rc.1; workspace scripts intact.', '版本 0.4.0-rc.1；工作区脚本完整。') }),
                   toolFrame({ frameId: 'mk-h-bash-docs', toolCallId: 'call_h_docs', name: 'Bash', input: { command: 'pnpm -r build docs' }, output: pick(locale, 'docs: build succeeded in 12.4s.', 'docs: 构建成功，用时 12.4s。') }),
-                  textFrame({ frameId: 'mk-h-note', text: pick(locale, 'Docs build is healthy. Drafting the changelog and the upgrade note now.', '文档构建正常。现在起草更新日志和升级说明。') }),
+                  textFrame({ frameId: 'mk-h-note', text: pick(locale, 'Docs build is healthy. Routing the judgement work to Fable and the mechanical passes to DeepSeek and GLM.', '文档构建正常。判断类工作交给 Fable，机械改动交给 DeepSeek 与 GLM。') }),
                 ],
               }),
               turn({
@@ -372,11 +388,11 @@ export function buildH01(locale) {
               }),
             ],
             prompts: [queued],
-            meta: { activity: 'turn', goal: goalMeta(locale), agent: runningMeta({ turnId: 2 }) },
+            meta: { activity: 'turn', goal: goalMeta(locale), agent: runningMeta({ turnId: 2, role: 'main' }) },
           },
-          [AGENT.explorer]: { agent_id: AGENT.explorer, has_more: false, tool_call_count: 4, items: [turns.explorer], meta: { activity: 'idle', agent: completedMeta({ turnId: 1 }) } },
-          [AGENT.builder]: { agent_id: AGENT.builder, has_more: false, tool_call_count: 3, items: [turns.builder], meta: { activity: 'turn', agent: runningMeta({ turnId: 1 }) } },
-          [AGENT.reviewer]: { agent_id: AGENT.reviewer, has_more: false, tool_call_count: 2, items: [turns.reviewer], meta: { activity: 'turn', agent: runningMeta({ turnId: 1 }) } },
+          [AGENT.explorer]: { agent_id: AGENT.explorer, has_more: false, tool_call_count: 4, items: [turns.explorer], meta: { activity: 'idle', agent: completedMeta({ turnId: 1, role: 'explorer' }) } },
+          [AGENT.builder]: { agent_id: AGENT.builder, has_more: false, tool_call_count: 3, items: [turns.builder], meta: { activity: 'turn', agent: runningMeta({ turnId: 1, role: 'builder' }) } },
+          [AGENT.reviewer]: { agent_id: AGENT.reviewer, has_more: false, tool_call_count: 2, items: [turns.reviewer], meta: { activity: 'turn', agent: runningMeta({ turnId: 1, role: 'reviewer' }) } },
         },
       },
     },
@@ -413,7 +429,7 @@ export function buildR02(locale) {
   ];
   const roster = subagentRoster(locale).filter((row) => row.agent_id !== AGENT.explorer);
   return {
-    ...base(locale),
+    ...base(locale, { roles: ['builder', 'reviewer'] }),
     snapshots: {
       [SESSION.release]: {
         messages: [],
@@ -435,7 +451,7 @@ export function buildR02(locale) {
                 frames: [
                   toolFrame({ frameId: 'mk-r2-read-readme', toolCallId: 'call_r2_read', name: 'Read', input: { path: 'docs/README.md' }, output: pick(locale, 'Docs landing page, 214 lines.', '文档首页，214 行。') }),
                   toolFrame({ frameId: 'mk-r2-bash-docs', toolCallId: 'call_r2_build', name: 'Bash', input: { command: 'pnpm -r build docs' }, output: pick(locale, 'docs: build succeeded in 12.4s.', 'docs: 构建成功，用时 12.4s。') }),
-                  textFrame({ frameId: 'mk-r2-note', text: pick(locale, 'Docs build is healthy. Dispatching the changelog and review work now.', '文档构建正常。现在派发更新日志与评审工作。') }),
+                  textFrame({ frameId: 'mk-r2-note', text: pick(locale, 'Docs build is healthy. Changelog runs on DeepSeek, review on Fable.', '文档构建正常。更新日志交给 DeepSeek，评审交给 Fable。') }),
                 ],
               }),
               turn({
@@ -448,10 +464,65 @@ export function buildR02(locale) {
               }),
             ],
             prompts: queued,
-            meta: { activity: 'turn', goal: goalMeta(locale, 9_600), agent: runningMeta({ turnId: 2 }) },
+            meta: { activity: 'turn', goal: goalMeta(locale, 9_600), agent: runningMeta({ turnId: 2, role: 'main' }) },
           },
-          [AGENT.builder]: { agent_id: AGENT.builder, has_more: false, tool_call_count: 3, items: [turns.builder], meta: { activity: 'turn', agent: runningMeta({ turnId: 1 }) } },
-          [AGENT.reviewer]: { agent_id: AGENT.reviewer, has_more: false, tool_call_count: 2, items: [turns.reviewer], meta: { activity: 'turn', agent: runningMeta({ turnId: 1 }) } },
+          [AGENT.builder]: { agent_id: AGENT.builder, has_more: false, tool_call_count: 3, items: [turns.builder], meta: { activity: 'turn', agent: runningMeta({ turnId: 1, role: 'builder' }) } },
+          [AGENT.reviewer]: { agent_id: AGENT.reviewer, has_more: false, tool_call_count: 2, items: [turns.reviewer], meta: { activity: 'turn', agent: runningMeta({ turnId: 1, role: 'reviewer' }) } },
+        },
+      },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// R05 — the multi-model fleet (dispatch tree close-up)
+// ---------------------------------------------------------------------------
+
+/**
+ * Five nodes, four roles, four model bindings: judgement on the strong models
+ * (Astra xhigh for thinking, Fable for review), execution/exploration on the
+ * fast ones (DeepSeek, GLM). Mixed states — two landed, two in flight.
+ */
+export function buildR05(locale) {
+  const turns = subagentTurns(locale);
+  const roster = subagentRoster(locale, R05_ROSTER);
+  return {
+    ...base(locale, { roles: ['thinker', 'reviewer', 'builder', 'explorer'] }),
+    snapshots: {
+      [SESSION.release]: {
+        messages: [],
+        has_more: false,
+        subagents: roster,
+        agent_transcripts: {
+          main: {
+            agent_id: 'main',
+            has_more: false,
+            items: [
+              turn({
+                turnId: 't1',
+                ordinal: 1,
+                prompt: pick(locale, 'Prepare the sample-app 0.4 release; give each role the model it deserves.', '准备 sample-app 0.4 发布，并为每个角色选好模型。'),
+                minutesAgo: 15,
+                frames: [
+                  toolFrame({ frameId: 'mk-r5-read', toolCallId: 'call_r5_read', name: 'Read', input: { path: 'docs/RELEASING.md' }, output: pick(locale, 'Release checklist with 9 steps.', '发布检查清单，共 9 步。') }),
+                  textFrame({ frameId: 'mk-r5-note', text: pick(locale, 'Routing the upgrade call to Astra at xhigh, review to Fable, and the mechanical passes to DeepSeek and GLM.', '升级取舍交给 xhigh 的 Astra，评审交给 Fable，机械改动交给 DeepSeek 与 GLM。') }),
+                ],
+              }),
+              turn({
+                turnId: 't2',
+                ordinal: 2,
+                prompt: pick(locale, 'Land the changelog, then have the reviewer confirm the tests.', '把更新日志落地，再让审阅者确认测试。'),
+                minutesAgo: 4,
+                state: 'running',
+                frames: [{ kind: 'thinking', frameId: 'mk-r5-think', text: pick(locale, 'Review and the source sweep are still running.', '评审与来源梳理仍在进行。') }],
+              }),
+            ],
+            meta: { activity: 'turn', agent: runningMeta({ turnId: 2, role: 'main' }) },
+          },
+          [AGENT.thinker]: { agent_id: AGENT.thinker, has_more: false, tool_call_count: 5, items: [turns.thinker], meta: { activity: 'idle', agent: completedMeta({ turnId: 1, role: 'thinker' }) } },
+          [AGENT.builder]: { agent_id: AGENT.builder, has_more: false, tool_call_count: 4, items: [turns.builder], meta: { activity: 'idle', agent: completedMeta({ turnId: 1, role: 'builder' }) } },
+          [AGENT.reviewer]: { agent_id: AGENT.reviewer, has_more: false, tool_call_count: 2, items: [turns.reviewer], meta: { activity: 'turn', agent: runningMeta({ turnId: 1, role: 'reviewer' }) } },
+          [AGENT.explorer]: { agent_id: AGENT.explorer, has_more: false, tool_call_count: 2, items: [turns.explorer], meta: { activity: 'turn', agent: runningMeta({ turnId: 1, role: 'explorer' }) } },
         },
       },
     },
@@ -483,7 +554,7 @@ function reviewerMarkdown(locale) {
       '- 未经操作者批准，不推送、不打标、不执行发布动作。',
     ].join('\n'),
   );
-  return `---\nname: reviewer\ndescription: ${description}\nmodel: ${MODEL}\nthinking_effort: high\ntools:\n  - Read\n  - Grep\n  - Bash\n---\n\n${body}\n`;
+  return `---\nname: reviewer\ndescription: ${description}\nmodel: ${ROLE_BINDING.reviewer.id}\nthinking_effort: ${ROLE_BINDING.reviewer.effort}\ntools:\n  - Read\n  - Grep\n  - Bash\n---\n\n${body}\n`;
 }
 
 export function buildR01(locale) {
@@ -503,6 +574,8 @@ export function buildR01(locale) {
         description: pick(locale, 'General-purpose built-in assistant.', '通用内置助手。'),
         main: true,
         subagent_policy: 'advisory',
+        pinned_model_alias: ROLE_BINDING.main.id,
+        thinking_effort: ROLE_BINDING.main.effort,
         subagents: ['explore', 'reviewer', 'builder'],
         routes: [],
       },
@@ -512,6 +585,8 @@ export function buildR01(locale) {
         description: pick(locale, 'Read-only codebase exploration agent.', '只读的代码库探索智能体。'),
         main: false,
         subagent_policy: 'advisory',
+        pinned_model_alias: ROLE_BINDING.explorer.id,
+        thinking_effort: ROLE_BINDING.explorer.effort,
         routes: [],
       },
       {
@@ -520,6 +595,8 @@ export function buildR01(locale) {
         description: pick(locale, 'Implements scoped changes and runs the build.', '实现范围内改动并运行构建。'),
         main: false,
         subagent_policy: 'advisory',
+        pinned_model_alias: ROLE_BINDING.builder.id,
+        thinking_effort: ROLE_BINDING.builder.effort,
         routes: [],
       },
       {
@@ -530,8 +607,8 @@ export function buildR01(locale) {
         description: reviewerDescription,
         main: false,
         subagent_policy: 'strict',
-        pinned_model_alias: MODEL,
-        thinking_effort: 'high',
+        pinned_model_alias: ROLE_BINDING.reviewer.id,
+        thinking_effort: ROLE_BINDING.reviewer.effort,
         routes: [],
       },
     ],

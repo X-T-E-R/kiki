@@ -27,11 +27,27 @@ export const AGENT = {
   explorer: 'agent-explorer',
   builder: 'agent-builder',
   reviewer: 'agent-reviewer',
+  thinker: 'agent-thinker',
 };
 
-/** One credible model binding so no surface falls back to "Unknown model". */
-export const MODEL = 'kimi-code/k3';
-export const MODEL_LABEL = 'Kimi K3';
+/**
+ * Role → model binding: the story every promotional image tells. Judgement
+ * roles (thinking, review/aesthetics) get the strongest models, mechanical and
+ * exploration roles get fast ones. `rail` is the label the dispatch tree shows;
+ * `id` is the catalog model id. main's rail label IS its catalog id so the
+ * session model resolves (otherwise the composer shows the product's
+ * "model is no longer available" banner — a real failure state).
+ */
+export const ROLE_BINDING = {
+  main: { id: 'Kimi K3', rail: 'Kimi K3', display: 'Kimi K3', effort: 'max' },
+  thinker: { id: 'axon/gpt-6-astra', rail: 'axon/gpt-6-astra', display: 'GPT-6 Astra', effort: 'xhigh' },
+  reviewer: { id: 'claude-fable-5', rail: 'Claude Fable', display: 'Claude Fable', effort: 'high' },
+  builder: { id: 'deepseek-v4-flash', rail: 'DeepSeek V4 Flash', display: 'DeepSeek V4 Flash', effort: 'max' },
+  explorer: { id: 'glm-5.3-flash', rail: 'GLM 5.3 Flash', display: 'GLM 5.3 Flash', effort: 'max' },
+};
+
+export const MODEL = ROLE_BINDING.main.id;
+export const MODEL_LABEL = ROLE_BINDING.main.display;
 
 export function sampleWorkspace() {
   return {
@@ -85,42 +101,58 @@ export function sampleConfig() {
     default_model: MODEL,
     default_permission_mode: 'manual',
     default_plan_mode: false,
-    thinking: { enabled: true, effort: 'high' },
+    thinking: { enabled: true, effort: ROLE_BINDING.main.effort },
   };
 }
 
+/**
+ * Five bindings so every visible model label tells the same role story:
+ * judgement on the strong models (Astra thinking, Fable review), execution and
+ * exploration on the fast ones (DeepSeek, GLM).
+ */
 export function sampleModels() {
+  const spec = (role, { provider, maxContextSize = 262_144, efforts, capabilities }) => ({
+    provider,
+    model: ROLE_BINDING[role].id,
+    display_name: ROLE_BINDING[role].display,
+    max_context_size: maxContextSize,
+    support_efforts: efforts,
+    default_effort: ROLE_BINDING[role].effort,
+    capabilities,
+  });
   return [
-    {
-      provider: 'kimi-code',
-      model: MODEL,
-      display_name: MODEL_LABEL,
-      max_context_size: 262144,
-      support_efforts: ['low', 'medium', 'high'],
-      default_effort: 'high',
-      capabilities: ['reasoning', 'tools', 'vision'],
-    },
+    spec('main', { provider: 'kimi-code', efforts: ['low', 'medium', 'high', 'max'], capabilities: ['reasoning', 'tools', 'vision'] }),
+    spec('thinker', { provider: 'axon', efforts: ['high', 'xhigh', 'max'], capabilities: ['reasoning'] }),
+    spec('reviewer', { provider: 'anthropic', maxContextSize: 200_000, efforts: ['low', 'medium', 'high', 'max'], capabilities: ['reasoning', 'vision'] }),
+    spec('builder', { provider: 'deepseek', efforts: ['low', 'medium', 'max'], capabilities: ['tools'] }),
+    spec('explorer', { provider: 'zhipu', maxContextSize: 131_072, efforts: ['low', 'max'], capabilities: ['tools'] }),
   ];
 }
 
 export function sampleProviders() {
+  const provider = (id, type, model) => ({
+    id,
+    type,
+    has_api_key: true,
+    status: 'connected',
+    default_model: model,
+    models: [model],
+  });
   return [
-    {
-      id: 'kimi-code',
-      type: 'openai',
-      has_api_key: true,
-      status: 'connected',
-      default_model: MODEL,
-      models: [MODEL],
-    },
+    provider('kimi-code', 'openai', ROLE_BINDING.main.id),
+    provider('axon', 'openai', ROLE_BINDING.thinker.id),
+    provider('anthropic', 'anthropic', ROLE_BINDING.reviewer.id),
+    provider('deepseek', 'openai', ROLE_BINDING.builder.id),
+    provider('zhipu', 'openai', ROLE_BINDING.explorer.id),
   ];
 }
 
-/** A running turn's meta block (agent phase `running`). */
-export function runningMeta({ turnId = 2, step = 1 } = {}) {
+/** A running turn's meta block (agent phase `running`) for one role binding. */
+export function runningMeta({ turnId = 2, step = 1, role = 'main' } = {}) {
+  const binding = ROLE_BINDING[role];
   return {
-    model: MODEL,
-    thinkingEffort: 'high',
+    model: binding.rail,
+    thinkingEffort: binding.effort,
     permission: 'manual',
     contextTokens: 41_200,
     maxContextTokens: 262_144,
@@ -129,10 +161,11 @@ export function runningMeta({ turnId = 2, step = 1 } = {}) {
 }
 
 /** A finished turn's meta block (agent phase `ended`/`completed`). */
-export function completedMeta({ turnId = 1 } = {}) {
+export function completedMeta({ turnId = 1, role = 'main' } = {}) {
+  const binding = ROLE_BINDING[role];
   return {
-    model: MODEL,
-    thinkingEffort: 'high',
+    model: binding.rail,
+    thinkingEffort: binding.effort,
     contextTokens: 12_400,
     maxContextTokens: 262_144,
     phase: { kind: 'ended', turnId, reason: 'completed', at: 0 },
