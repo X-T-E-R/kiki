@@ -266,7 +266,7 @@ const DEFAULTS: DesktopSettings = {
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
   notifications: true,
   closeToTray: true,
-  updateChannel: import.meta.env['VITE_UPDATE_CHANNEL'] === 'beta' ? 'beta' : 'stable',
+  updateChannel: (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.['VITE_UPDATE_CHANNEL'] === 'beta' ? 'beta' : 'stable',
   autoUpdate: 'notify',
   compatibility: {
     homeKind: 'kimi',

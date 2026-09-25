@@ -687,7 +687,7 @@ export class AcpProcessClient {
 
     const stream = ndJsonStream(
       Writable.toWeb(child.stdin),
-      Readable.toWeb(validatedInput),
+      Readable.toWeb(validatedInput) as unknown as ReadableStream<Uint8Array>,
     );
     const connection = app.connect(stream);
     this.#connection = connection;
