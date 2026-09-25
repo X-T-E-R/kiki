@@ -25,6 +25,8 @@ Kiki began as a fork of [Kimi Code](https://github.com/MoonshotAI/kimi-code) and
 
 **Run the fleet.** Dispatch subagents into isolated contexts with **per-role model bindings** — let a frontier model think, let fast models execute, and keep the reviewer's context separate from the implementer's by construction. Detach long work into background tasks; queue messages while the agent is busy, with per-message timing; pin a `/goal` the agent pursues across turns; schedule cron prompts into sessions; track work on the per-workspace task board.
 
+![One fleet, five models: thinking on Astra, review on Fable, execution on DeepSeek, exploration on GLM — coordinated by Kimi K3.](marketing/shots/r05-multi-model-fleet.en.light.png)
+
 **A real agent toolchain.** The agent operates the same surface you do: `AgentRun` / `AgentSend` / `AgentList` to dispatch and message subagents, `ThreadCreate` to open an entirely new conversation thread with its own workspace, `CronCreate` to schedule future work, `CreateGoal` to pin a long-running objective, and `TaskList` / `TaskOutput` / `TaskStop` to supervise what is already running. Orchestration is something the agent *does*, not something you wire up.
 
 ![An active goal with pause/cancel controls and a message queue with per-message timing.](marketing/shots/r02-goal-queue.en.light.png)

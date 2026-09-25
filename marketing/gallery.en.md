@@ -24,6 +24,10 @@ Every built-in prompt is overridable field by field, with a live preview of what
 
 ## Run the fleet
 
+One fleet, five models: the thinker runs Astra at xhigh, the reviewer runs Fable, the builders run DeepSeek, the scouts run GLM — each role bound to the model that fits it.
+
+![A dispatch tree with per-role model bindings.](shots/r05-multi-model-fleet.en.light.png)
+
 Pin a goal the agent pursues across turns, and queue follow-up messages with per-message timing while it works.
 
 ![An active goal and a message queue with timing controls.](shots/r02-goal-queue.en.light.png)

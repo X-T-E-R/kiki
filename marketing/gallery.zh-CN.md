@@ -20,6 +20,10 @@
 
 ## 指挥你的机队
 
+一支机队，五种模型：思考用 Astra xhigh、审阅用 Fable、执行用 DeepSeek、探查用 GLM——每个角色绑定最合适的模型。
+
+![按角色绑定模型的派发树。](shots/r05-multi-model-fleet.zh.light.png)
+
 锁定一个跨轮持续推进的目标；agent 忙碌时，后续消息排队并逐条调整时机。
 
 ![进行中的目标与带时机控制的消息队列。](shots/r02-goal-queue.zh.light.png)

@@ -25,6 +25,8 @@ Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，�
 
 **指挥你的机队。** 把子代理派进隔离上下文，**每个角色绑定各自的模型**——让前沿模型去思考，让快模型去执行，审阅者和实现者的上下文天然隔离。耗时任务转后台；agent 忙碌时消息排队、逐条调整时机；`/goal` 锁定一个跨轮持续推进的目标；cron 按计划往会话里注入 prompt；任务看板按工作区跟踪进展。
 
+![一支机队，五种模型：Astra 思考、Fable 审阅、DeepSeek 执行、GLM 探查，Kimi K3 统筹。](marketing/shots/r05-multi-model-fleet.zh.light.png)
+
 **真正的 agent 工具链。** agent 操作的是和你同一套台面：`AgentRun` / `AgentSend` / `AgentList` 派发和联络子代理，`ThreadCreate` 直接开一条带独立工作区的全新会话线程，`CronCreate` 安排未来工作，`CreateGoal` 锁定长期目标，`TaskList` / `TaskOutput` / `TaskStop` 监督正在运行的一切。编排是 agent 自己动手做的事，不是要你接线的工程。
 
 ![进行中的目标带暂停/取消控制，消息队列逐条调整发送时机。](marketing/shots/r02-goal-queue.zh.light.png)
