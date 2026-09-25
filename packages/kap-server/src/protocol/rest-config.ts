@@ -97,6 +97,7 @@ const replaceableConfigDomainSchema = z.enum([
   'tools',
   'prompt',
   'retry',
+  'session_title',
 ]);
 
 export const providerConfigResponseSchema = z.object({

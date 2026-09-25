@@ -539,8 +539,6 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             acceptedAt: message.acceptedAt,
           } satisfies PeerThreadOrigin
         : USER_PROMPT_ORIGIN;
-      // Peer messages carry their provenance in the text itself, like agent
-      // mailbox deliveries, so the receiving model can attribute the sender.
       const text = message.producer.kind === 'peer_thread'
         ? `Message from thread ${await this.threadLabel(message.producer.source)}:\n\n${message.content}`
         : message.content;

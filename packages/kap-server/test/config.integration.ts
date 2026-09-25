@@ -105,6 +105,16 @@ describe('server-v2 /api/config', () => {
     expect((await getConfig()).prompt).toEqual({});
   });
 
+  it('round trips the session_title model pin through its replace-domain', async () => {
+    await boot();
+    const pinned = await patchConfig({ session_title: { model: 'kimi-for-coding' }, replace_domains: ['session_title'] });
+    expect(pinned.session_title).toEqual({ model: 'kimi-for-coding' });
+    expect((await getConfig()).session_title).toEqual({ model: 'kimi-for-coding' });
+    const cleared = await patchConfig({ session_title: {}, replace_domains: ['session_title'] });
+    expect(cleared.session_title?.model).toBeUndefined();
+    expect((await getConfig()).session_title?.model).toBeUndefined();
+  });
+
   it('round trips board storage modes and subagent limits without retaining a stale fixed path', async () => {
     await boot();
     const fixed = await patchConfig({ task_board: { storage: { mode: 'fixed', path: 'ordinary/board-data' } }, subagent: { timeout_ms: 0, max_direct_children: 16, max_total_subagents: 0 } });
