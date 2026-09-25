@@ -714,9 +714,9 @@ describe('Composer mode dropdown', () => {
     expect(options).toHaveLength(3);
     // Each row carries its hint line; the current mode is aria-selected.
     expect(options.map((row) => row.textContent ?? '')).toEqual([
-      expect.stringContaining('Approve every action'),
-      expect.stringContaining('Approve reads, ask for writes'),
-      expect.stringContaining('Never ask'),
+      expect.stringContaining('Ask before every action'),
+      expect.stringContaining('Fully autonomous — never asks'),
+      expect.stringContaining('Approve everything, but may still ask'),
     ]);
     expect(options.map((row) => row.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false']);
     // Focus lands on the current option when the panel opens.

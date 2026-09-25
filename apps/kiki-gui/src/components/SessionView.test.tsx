@@ -1,6 +1,8 @@
-
+// @vitest-environment jsdom
 
 import { renderToStaticMarkup } from 'react-dom/server';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -1403,7 +1405,7 @@ describe('agent tree chrome', () => {
     expect(html).toContain('overflow-y-auto');
   });
 
-  it('adds subagent context to the shared rail: own task, needs-input badge, parent and sibling nav', () => {
+  it('adds subagent context to the shared rail: own task, needs-input badge, parent and sibling nav', async () => {
     const railForest = buildAgentForest(
       [],
       [
@@ -1436,25 +1438,34 @@ describe('agent tree chrome', () => {
       ...createViewState('sess-1'),
       todos: [{ title: 'child-only todo', status: 'in_progress' }],
     };
-    const html = renderToStaticMarkup(
-      <MemoryRouter>
-        <I18nProvider>
-          <RightRail
-            state={agentState}
-            forest={railForest}
-            selectedAgentId="agent-2"
-            subagent={{
-              agentId: 'agent-2',
-              block: subagentBlock,
-              pendingInteractionCount: 2,
-              onJumpToSpawn: () => {},
-            }}
-            onCancelTask={() => {}}
-            onOpenSubagent={() => {}}
-          />
-        </I18nProvider>
-      </MemoryRouter>,
-    );
+    // Live render: the rail defers mounting the agent panel behind an
+    // IntersectionObserver effect, which never fires under static markup.
+    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <RightRail
+              state={agentState}
+              forest={railForest}
+              selectedAgentId="agent-2"
+              subagent={{
+                agentId: 'agent-2',
+                block: subagentBlock,
+                pendingInteractionCount: 2,
+                onJumpToSpawn: () => {},
+              }}
+              onCancelTask={() => {}}
+              onOpenSubagent={() => {}}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+    const html = container.innerHTML;
     // Own task chapter stays focused on status and task description.
     expect(html).toContain('Review the presentation contract');
     expect(html).not.toContain('Presentation contract verified.');
@@ -1477,6 +1488,8 @@ describe('agent tree chrome', () => {
     // Focus ownership is explicit: the badge names the focused subagent.
     expect(html).toContain('data-rail-owner');
     expect(html).toContain('Researcher');
+    await act(async () => root.unmount());
+    container.remove();
   });
 
   it('omits the needs-input badge when nothing is pending on the subagent', () => {

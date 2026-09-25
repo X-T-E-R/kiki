@@ -11,6 +11,7 @@ import { SkillCard } from './rows';
 
 const client = vi.hoisted(() => ({
   readHostFile: vi.fn<(path: string) => Promise<string>>(),
+  previewHostFile: vi.fn<(path: string) => Promise<{ text: string; truncated: boolean }>>(),
   readBuiltinSkill: vi.fn<(name: string) => Promise<string>>(),
 }));
 vi.mock('../../state/connection', () => ({
@@ -36,6 +37,7 @@ const sampleSkill: SkillDescriptor = {
 
 beforeEach(() => {
   client.readHostFile.mockReset();
+  client.previewHostFile.mockReset();
   client.readBuiltinSkill.mockReset();
   localStorage.setItem('kiki.locale', 'zh');
   container = document.createElement('div');
@@ -70,7 +72,7 @@ async function viewSkill() {
 
 describe('SkillCard preview', () => {
   it('opens a file skill at its real path in the preview tab', async () => {
-    client.readHostFile.mockResolvedValue('# Code Review Instructions\n\nRun review checks.');
+    client.previewHostFile.mockResolvedValue({ text: '# Code Review Instructions\n\nRun review checks.', truncated: false });
     await renderSkill(sampleSkill);
     expect(container.textContent).toContain('code-review');
     expect(container.textContent).toContain('workflow');
@@ -80,7 +82,7 @@ describe('SkillCard preview', () => {
     expect(container.querySelector('[role="link"]')?.textContent).toContain(sampleSkill.path);
 
     await viewSkill();
-    expect(client.readHostFile).toHaveBeenCalledWith(sampleSkill.path);
+    expect(client.previewHostFile).toHaveBeenCalledWith(sampleSkill.path);
     expect(client.readBuiltinSkill).not.toHaveBeenCalled();
     expect(container.querySelector<HTMLElement>('[data-preview-tab]')?.dataset['previewTab']).toBe(sampleSkill.path);
     expect(container.querySelector('[data-preview-tabpanel] h1')?.textContent).toBe('Code Review Instructions');
