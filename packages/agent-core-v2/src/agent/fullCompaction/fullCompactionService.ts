@@ -131,6 +131,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private readonly strategy: CompactionStrategy;
   private _compacting: ActiveCompaction | null = null;
+  private compactedHistoryLength: number | null = null;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -457,6 +458,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   private resetForTurn(): void {
     this.compactionCountInTurn = 0;
     this.lastCompactedTokenCount = null;
+    this.compactedHistoryLength = null;
     this.consecutiveOverflowCompactions = 0;
   }
 
@@ -507,6 +509,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private checkAutoCompaction(throwOnLimit = true): boolean {
     if (this._compacting) return true;
+    this.foldReemittedRemindersIntoCompactionBaseline();
     if (
       this.lastCompactedTokenCount !== null &&
       this.tokenCountWithPending() <= this.lastCompactedTokenCount
@@ -515,6 +518,22 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     }
     if (!this.strategy.shouldCompact(this.tokenCountWithPending())) return false;
     return this.beginAutoCompaction(throwOnLimit);
+  }
+
+  private foldReemittedRemindersIntoCompactionBaseline(): void {
+    const baseline = this.lastCompactedTokenCount;
+    if (baseline === null) return;
+    if (!this.onlyRemindersAppendedSinceCompaction()) return;
+    const pending = this.tokenCountWithPending();
+    if (pending > baseline) this.lastCompactedTokenCount = pending;
+  }
+
+  private onlyRemindersAppendedSinceCompaction(): boolean {
+    const boundary = this.compactedHistoryLength;
+    if (boundary === null) return false;
+    const history = this.context.get();
+    if (history.length <= boundary) return false;
+    return history.slice(boundary).every((message) => message.origin?.kind === 'injection');
   }
 
   private beginAutoCompaction(throwOnLimit = true): boolean {
@@ -579,6 +598,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         this.log.error('failed to refresh system prompt after compaction', { error });
       }
       this.lastCompactedTokenCount = result.tokensAfter;
+      this.compactedHistoryLength = this.context.get().length;
       if (!this.markCompleted(active)) {
         throw compactionCancelledReason(active);
       }

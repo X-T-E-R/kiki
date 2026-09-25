@@ -2626,6 +2626,38 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   });
 
+  it('re-injects the reminder after an overflow compaction without compacting again', async () => {
+    let callCount = 0;
+    const inputs: string[][] = [];
+    const generate: GenerateFn = async (_provider, _system, _tools, history, callbacks) => {
+      callCount += 1;
+      inputs.push(inputHistorySnapshot(history));
+      if (callCount === 1) {
+        throw new APIContextOverflowError(400, 'Context length exceeded', 'req-reminder-recompact');
+      }
+      if (callCount === 2) {
+        return textResult('Reminder re-inject compacted summary.');
+      }
+      await callbacks?.onMessagePart?.({ type: 'text', text: 'Recovered without recompacting.' });
+      return textResult('Recovered without recompacting.');
+    };
+    const ctx = testAgent({ generate });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.newEvents();
+
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Retry after provider overflow' }] });
+    const events = await ctx.untilTurnEnd();
+
+    expect(callCount).toBe(3);
+    expect(countEvents(events, 'compaction.completed')).toBe(1);
+    expect(inputs).toHaveLength(3);
+    expect(inputs[2]!.some((line) => line.includes('Auto permission mode is active'))).toBe(true);
+  });
+
   it('recovers from compaction-request overflow under the measured token-counting strategy', async () => {
     let callCount = 0;
     const compactionInputLengths: number[] = [];
