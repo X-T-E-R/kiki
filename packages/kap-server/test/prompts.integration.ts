@@ -256,11 +256,14 @@ describe('server-v2 /api prompts', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
-  async function createSession(cwd: string): Promise<string> {
+  async function createSession(cwd: string, pinPermissionMode = true): Promise<string> {
     const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
-      body: JSON.stringify({ metadata: { cwd } }),
+      body: JSON.stringify({
+        metadata: { cwd },
+        ...(pinPermissionMode ? { agent_config: { permission_mode: 'manual' } } : {}),
+      }),
     } as never);
     const body = (await res.json()) as Envelope<{ id: string }>;
     expect(body.code).toBe(0);
@@ -954,7 +957,7 @@ describe('server-v2 /api prompts', () => {
   });
 
   it('rejects an unknown bundled skill without materializing the main agent', async () => {
-    const id = await createSession(home as string);
+    const id = await createSession(home as string, false);
 
     const submitted = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
@@ -967,7 +970,7 @@ describe('server-v2 /api prompts', () => {
   });
 
   it('rejects a bundled prompt_id combination before any override or agent materialization', async () => {
-    const id = await createSession(home as string);
+    const id = await createSession(home as string, false);
 
     const submitted = await call<null>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
@@ -1051,7 +1054,7 @@ describe('server-v2 /api prompts', () => {
   });
 
   it('rejects a stale file reference without creating the agent or mutating the model', async () => {
-    const id = await createSession(home as string);
+    const id = await createSession(home as string, false);
     const session = getLiveSessionById(server!.core.accessor, id);
 
     const { body } = await call<null>('POST', `/api/sessions/${id}/prompts`, {
@@ -1067,7 +1070,7 @@ describe('server-v2 /api prompts', () => {
   });
 
   it('rejects a mis-kinded file reference without creating the agent', async () => {
-    const id = await createSession(home as string);
+    const id = await createSession(home as string, false);
     const session = getLiveSessionById(server!.core.accessor, id);
 
     const form = new FormData();

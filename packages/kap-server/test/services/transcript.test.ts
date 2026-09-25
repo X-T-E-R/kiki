@@ -2108,7 +2108,7 @@ describe('TranscriptService live integration', () => {
   });
 
   describe('op journal', () => {
-    it('assigns consecutive per-agent seqs and serves catch-up from the journal', async () => {
+    it('assigns consecutive per-agent seqs and serves catch-up from the journal (b142f9aaa9 durable/live terminal batches)', async () => {
       const agents = new FakeAgents();
       const main = agents.add('main');
       const service = new TranscriptService({
@@ -2126,20 +2126,20 @@ describe('TranscriptService live integration', () => {
         ev({ type: 'turn.ended', time: 1_700_000_000_000, turnId: 0, reason: 'completed' }),
       );
 
-      expect(seen).toEqual([base + 1, base + 2]);
-      expect(service.getSeqWatermark('s1', 'main')).toBe(base + 2);
+      expect(seen).toEqual([base + 1, base + 2, base + 3]);
+      expect(service.getSeqWatermark('s1', 'main')).toBe(base + 3);
 
       const catchup = service.getOpsSince('s1', 'main', base);
       expect(catchup?.complete).toBe(true);
-      expect(catchup?.throughSeq).toBe(base + 2);
-      expect(catchup?.batches.map((batch) => batch.seq)).toEqual([base + 1, base + 2]);
+      expect(catchup?.throughSeq).toBe(base + 3);
+      expect(catchup?.batches.map((batch) => batch.seq)).toEqual([base + 1, base + 2, base + 3]);
 
-      expect(service.getOpsSince('s1', 'main', base + 2)).toMatchObject({
+      expect(service.getOpsSince('s1', 'main', base + 3)).toMatchObject({
         batches: [],
-        throughSeq: base + 2,
+        throughSeq: base + 3,
         complete: true,
       });
-      expect(service.getOpsSince('s1', 'main', base + 3)?.complete).toBe(false);
+      expect(service.getOpsSince('s1', 'main', base + 4)?.complete).toBe(false);
 
       const sub = agents.add('sub-1');
       sub.bus.emit(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' } }));

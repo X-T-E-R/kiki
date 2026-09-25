@@ -112,7 +112,10 @@ describe('GUI shared client against an isolated KAP host', () => {
   });
 
   async function session(): Promise<string> {
-    return (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    return (await client.createSession({
+      metadata: { cwd: join(home, 'workspace') },
+      agent_config: { permission_mode: 'manual' },
+    })).id;
   }
 
   async function settled(id: string, count: number): Promise<void> {

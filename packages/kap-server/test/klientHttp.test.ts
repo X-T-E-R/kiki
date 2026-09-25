@@ -141,6 +141,8 @@ describe('klient HTTP host', () => {
     const klient = createKlient({ endpoint, token: TOKEN });
     try {
       const created = await klient.global.sessions.create({ workDir: homeDir, title: 'Context rebuild' });
+      if (klient.rest === undefined) throw new Error('HTTP client must expose its REST facade');
+      await klient.rest.sessions.updateProfile(created.id, { agent_config: { permission_mode: 'manual' } });
       const agent = klient.session(created.id).agent('main');
       await agent.getUsage();
       await agent.appendContext({ role: 'user', content: [{ type: 'text', text: 'keep me' }], toolCalls: [] });

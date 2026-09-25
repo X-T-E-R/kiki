@@ -227,7 +227,7 @@ describe('server-v2 boot', () => {
     expect(oauthBody.data).toBeNull();
   });
 
-  it('warms session index, workspace catalog, then global search before resolving startup', async () => {
+  it('starts listening before async warmups and wires global search exactly once (869e17ae19)', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-background-warmup-'));
     const workspaceSync = deferred<readonly []>();
     const prepareGate = deferred<SessionIndexStatus>();
@@ -258,20 +258,19 @@ describe('server-v2 boot', () => {
 
     try {
       await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+      server = await withTimeout(starting, 10_000);
+      const base = `http://127.0.0.1:${server.port}`;
+      expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
+      expect(setLiveTranscriptSource).toHaveBeenCalledOnce();
       expect(workspaceList).not.toHaveBeenCalled();
-      expect(setLiveTranscriptSource).not.toHaveBeenCalled();
+      expect(order).toEqual(['search', 'index']);
 
       prepareGate.resolve({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
       await vi.waitFor(() => expect(workspaceList).toHaveBeenCalledOnce());
-      expect(setLiveTranscriptSource).not.toHaveBeenCalled();
+      expect(setLiveTranscriptSource).toHaveBeenCalledOnce();
+      expect(order).toEqual(['search', 'index', 'workspace']);
 
       workspaceSync.resolve([]);
-      server = await withTimeout(starting, 10_000);
-      expect(setLiveTranscriptSource).toHaveBeenCalledOnce();
-      expect(order).toEqual(['index', 'workspace', 'search']);
-
-      const base = `http://127.0.0.1:${server.port}`;
-      expect((await authedFetch(server, base, '/api/meta')).status).toBe(200);
     } finally {
       prepareGate.resolve({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
       workspaceSync.resolve([]);
@@ -402,6 +401,7 @@ describe('server-v2 boot', () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-background-prepare-failure-'));
     const prepareFailure = deferred<SessionIndexStatus>();
     const prepare = vi.fn(() => prepareFailure.promise);
+    const setLiveTranscriptSource = vi.fn();
     let prepareSettled = false;
     void prepareFailure.promise.then(
       () => {
@@ -420,6 +420,7 @@ describe('server-v2 boot', () => {
       seeds: [
         [IWorkspaceService, stubWorkspaceService(async () => [])],
         [ISessionIndex, stubSessionIndex(prepare)],
+        [IGlobalSearchService, stubGlobalSearchService(setLiveTranscriptSource)],
       ],
     });
 

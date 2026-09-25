@@ -78,6 +78,7 @@ describe('server-v2 /api skills', () => {
   async function createSession(cwd: string = home as string): Promise<string> {
     const { body } = await postJson<{ id: string }>('/api/sessions', {
       metadata: { cwd },
+      agent_config: { permission_mode: 'manual' },
     });
     expect(body.code).toBe(0);
     return body.data.id;

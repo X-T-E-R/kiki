@@ -143,7 +143,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     const res = await fetch(`${base}/api/sessions`, {
       method: 'POST',
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
-      body: JSON.stringify({ metadata: { cwd: home as string } }),
+      body: JSON.stringify({ metadata: { cwd: home as string }, agent_config: { permission_mode: 'manual' } }),
     } as never);
     const body = (await res.json()) as Envelope<{ id: string }>;
     expect(body.code).toBe(0);
