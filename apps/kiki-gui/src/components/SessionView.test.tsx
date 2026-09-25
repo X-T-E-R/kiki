@@ -62,6 +62,8 @@ import {
   resolvePlanGate,
   resolveProfileSwitchSubmission,
   sessionHasStartedConversation,
+  withOptimisticUserBlock,
+  recoverFailedSubmission,
   parseSessionCreateHandoff,
   promptGoalObjective,
   replaceQueuedPrompt,
@@ -661,6 +663,35 @@ describe('sessionHasStartedConversation', () => {
     expect(sessionHasStartedConversation([
       { kind: 'user', id: 'user-1', text: 'hello', createdAt: '2026-08-23T00:00:00.000Z' },
     ])).toBe(true);
+  });
+});
+
+describe('optimistic submission', () => {
+  it('shows a sending bubble immediately, changes to a still-sending status, and removes it on settle', () => {
+    const state = createViewState('session');
+    const pending = { id: 'local-1', text: 'New message', createdAt: '2026-08-23T00:00:00.000Z', slow: false };
+    const render = (slow: boolean) => renderToStaticMarkup(<MemoryRouter><I18nProvider>
+      <Transcript
+        state={{ ...state, loaded: true, blocks: withOptimisticUserBlock(state.blocks, { ...pending, slow }) }}
+        onLoadOlder={async () => false}
+        onResolveApproval={async () => {}}
+        onAnswerQuestion={async () => {}}
+        onDismissQuestion={async () => {}}
+      />
+    </I18nProvider></MemoryRouter>);
+    expect(render(false)).toContain('data-optimistic-status="sending"');
+    expect(render(false)).toContain('New message');
+    expect(render(true)).toContain('data-optimistic-status="slow"');
+    expect(withOptimisticUserBlock(state.blocks, undefined)).toBe(state.blocks);
+  });
+
+  it('restores a failed send only when the composer is still empty', () => {
+    const attachments = [{ kind: 'file', path: 'example.txt', name: 'example.txt', isDir: false }] as const;
+    expect(recoverFailedSubmission('', [], 'Original draft', attachments)).toEqual({
+      text: 'Original draft', attachments,
+    });
+    expect(recoverFailedSubmission('New follow-up', [], 'Original draft', attachments)).toBeUndefined();
+    expect(recoverFailedSubmission('', attachments, 'Original draft', attachments)).toBeUndefined();
   });
 });
 

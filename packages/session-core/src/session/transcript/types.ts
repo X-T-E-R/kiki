@@ -31,6 +31,7 @@ export interface UserBlock {
   readonly promptId?: string;
   readonly userMessageId?: string;
   readonly clientRequestId?: string;
+  readonly optimisticStatus?: 'sending' | 'slow';
   readonly promptStatus?: PromptStatus;
   readonly agentMessage?: {
     readonly senderAgentId?: string;

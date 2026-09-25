@@ -888,6 +888,8 @@ export const zh: Record<I18nKey, string> = {
   'transcript.opening': '正在打开会话…',
   'transcript.blank': '白纸一张。告诉 kiki 要做什么。',
   'transcript.blocked': '已阻塞',
+  'transcript.sending': '正在发送…',
+  'transcript.stillSending': '仍在发送…请勿重复发送此消息。',
   'transcript.approvalReadonly': '请求批准：{action}',
   'transcript.questionReadonly': '该子代理在运行中请求了输入。',
   'transcript.toolCalls.one': '{count} 次工具调用',

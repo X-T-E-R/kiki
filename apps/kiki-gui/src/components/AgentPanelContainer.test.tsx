@@ -259,6 +259,8 @@ it('polls on the tab agent own activity and stops once that agent settles', asyn
     await render('child', { routed: routedState({ busy: false }) });
     const initial = getAgentCapabilities.mock.calls.length;
     await act(async () => { await vi.advanceTimersByTimeAsync(5_001); });
+    expect(getAgentCapabilities).toHaveBeenCalledTimes(initial);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(getAgentCapabilities.mock.calls.length).toBeGreaterThan(initial);
     harness.agents['child'] = viewState({ busy: false });
     await act(async () => { harness.emit(); });
@@ -268,6 +270,27 @@ it('polls on the tab agent own activity and stops once that agent settles', asyn
   } finally {
     vi.useRealTimers();
   }
+});
+
+it('defers signature refresh while the metrics request is running instead of aborting and restarting it', async () => {
+  let resolve!: (value: unknown) => void;
+  getAgentCapabilities.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+  getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'child' }, available: true,
+    targets: [], tools: [], skills: [], metrics: { child: UNKNOWN_AGENT_PANEL_METRICS } });
+  harness.agents['child'] = viewState({ profile: 'first' });
+  await render('child');
+  const signal = getAgentCapabilities.mock.calls[0]?.[1] as AbortSignal;
+  harness.agents['child'] = viewState({ profile: 'second' });
+  await act(async () => { harness.emit(); });
+  harness.agents['child'] = viewState({ profile: 'third' });
+  await act(async () => { harness.emit(); });
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
+  expect(signal.aborted).toBe(false);
+  await act(async () => { resolve({ context: 'live', owner: { agent_id: 'child' }, available: true,
+    targets: [], tools: [], skills: [], metrics: { child: UNKNOWN_AGENT_PANEL_METRICS } }); });
+  await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(2);
+  expect(signal.aborted).toBe(false);
 });
 
 it('does not poll a settled tab agent just because the routed agent is busy', async () => {
@@ -351,6 +374,18 @@ it('localizes known capability-query API errors', async () => {
   await render('child');
   expect(element.querySelector('[role="alert"]')?.textContent).toContain('无法加载 Agent 能力：找不到 Agent 配置档。');
   expect(element.querySelector('[role="alert"]')?.textContent).not.toContain('profile missing from server');
+});
+
+it('does not label main-only persisted usage as a complete agent-tree total', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 120, totalCostUsd: 0.05,
+      inputTokens: 100, cacheReadTokens: 68 } },
+  });
+  await render('main', { forest: forestOf(['main', 'child']) });
+  expect(element.querySelector('[data-tree-metrics]')?.textContent).toContain('整树总 Tokens:未知');
+  expect(element.querySelector('[data-tree-metrics]')?.textContent).not.toContain('整树缓存率:68%');
+  expect(element.textContent).toContain('缓存率:68%');
 });
 
 it('renders cache hit rate percentage on single agent and aggregated on agent tree', async () => {

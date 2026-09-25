@@ -106,7 +106,7 @@ export function AgentPanelContainer({ state, forest, agentId }: {
     // Session-level gate only: this RPC needs the session open, and its payload
     // is already scoped by `agent_id`, so no agent data leaks through the flag.
     enabled: state.loaded && !state.resyncing,
-    refetchInterval: (current) => active && current.state.data?.metrics?.[agentId] !== undefined ? 5_000 : false,
+    refetchInterval: (current) => active && current.state.data?.metrics?.[agentId] !== undefined ? 15_000 : false,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: active,
     retry: false,
@@ -122,16 +122,17 @@ export function AgentPanelContainer({ state, forest, agentId }: {
   ]);
   const previousSignature = useRef(refreshSignature);
   useEffect(() => {
-    if (previousSignature.current === refreshSignature) return;
+    if (previousSignature.current === refreshSignature || !state.loaded || state.resyncing || capabilities.isFetching) return;
     previousSignature.current = refreshSignature;
-    if (state.loaded && !state.resyncing) void capabilities.refetch();
-  }, [refreshSignature, state.loaded, state.resyncing, capabilities.refetch]);
+    void capabilities.refetch({ cancelRefetch: false });
+  }, [refreshSignature, state.loaded, state.resyncing, capabilities.isFetching, capabilities.refetch]);
   const data = capabilities.data;
   const profile = data?.profile;
   const metrics = data?.metrics ?? {};
   const usage = metrics[agentId] ?? UNKNOWN_AGENT_PANEL_METRICS;
   const ids = [...new Set([MAIN_AGENT_ID, ...Object.keys(forest.byId), ...Object.keys(metrics)])];
-  const tree = sumAgentTreeMetrics(ids, metrics);
+  const treeComplete = ids.every((id) => metrics[id] !== undefined);
+  const tree = treeComplete ? sumAgentTreeMetrics(ids, metrics) : { totalTokens: null, totalCostUsd: null };
   const todos = (agentState?.todos ?? []).filter((todo): todo is typeof todo & { status: 'pending' | 'in_progress' | 'done' } =>
     todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'done');
   const loaded = agentState?.loaded === true;
@@ -178,9 +179,9 @@ export function AgentPanelContainer({ state, forest, agentId }: {
       draftScope={draftScope}
       usage={usage} treeMetrics={agentId === MAIN_AGENT_ID ? {
       ...tree,
-      cacheHitRate: aggregateTreeCacheHitRate(ids, metrics),
-      cacheReadTokens: aggregateTreeCacheReadTokens(ids, metrics),
-      cacheWriteTokens: aggregateTreeCacheWriteTokens(ids, metrics),
+      cacheHitRate: treeComplete ? aggregateTreeCacheHitRate(ids, metrics) : null,
+      cacheReadTokens: treeComplete ? aggregateTreeCacheReadTokens(ids, metrics) : null,
+      cacheWriteTokens: treeComplete ? aggregateTreeCacheWriteTokens(ids, metrics) : null,
       activeSubagentsCount: Object.values(forest.byId).filter((entry) => entry.agentId !== MAIN_AGENT_ID && entry.busy).length,
       totalSubagentsCount: ids.filter((id) => id !== MAIN_AGENT_ID).length,
     } : undefined} onOpenUsageDetail={() => { void navigate(usageSessionDeepLink(state.sessionId)); }} />

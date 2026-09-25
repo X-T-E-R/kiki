@@ -45,6 +45,7 @@ export class UserAgentProfileLoaderService
 
   private defaultProfile: AgentProfile;
   private lastGoodSystemMd: AgentProfile | undefined;
+  private duplicateWarnings = new Set<string>();
   private readonly watchDebounce = this._register(new TimeoutTimer());
   private readonly watchReady: Promise<void>;
 
@@ -110,9 +111,17 @@ export class UserAgentProfileLoaderService
     if (systemFailures.length > 0 && systemMd !== undefined) {
       this.log.warn(`agent profile loader "user" is keeping the last good SYSTEM.md profile at ${systemMd.sourcePath}`);
     }
-    const discovery = await discoverAgentFiles(this.fs, roots, (message) => { this.log.warn(message); }, {
+    const currentDuplicates = new Set<string>();
+    const discovery = await discoverAgentFiles(this.fs, roots, (message) => {
+      if (message.startsWith('Duplicate agent profile ')) {
+        currentDuplicates.add(message);
+        if (this.duplicateWarnings.has(message)) return;
+      }
+      this.log.warn(message);
+    }, {
       includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID),
     });
+    this.duplicateWarnings = currentDuplicates;
     this.lastGoodSystemMd = systemMd;
     this.defaultProfile = systemMd ?? this.builtin.getDefault();
     const contribution = profilesFromDiscovery(

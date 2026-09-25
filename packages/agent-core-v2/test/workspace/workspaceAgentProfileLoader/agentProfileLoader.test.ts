@@ -1862,6 +1862,27 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('warns once per unchanged duplicate across profile reloads and warns again if it reappears', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.homeDir, 'agents');
+      await writeAgent(join(root, 'based_on_model'), 'example.md', agentMd('example', 'older'));
+      const duplicate = await writeAgent(root, 'example.md', agentMd('example', 'newer'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const warnings = () => stack.warnings.filter((message) => message.includes('Duplicate agent profile "example"'));
+        expect(warnings()).toHaveLength(1);
+        await stack.userLoader.reload();
+        await stack.userLoader.reload();
+        expect(warnings()).toHaveLength(1);
+        await rm(duplicate);
+        await stack.userLoader.reload();
+        await writeAgent(root, 'example.md', agentMd('example', 'returned'));
+        await stack.userLoader.reload();
+        expect(warnings()).toHaveLength(2);
+      });
+    });
+  });
+
   it('keeps private aliases scoped to each winning parent while wildcard remains public-only', async () => {
     await withFixture(async (fixture) => {
       const userRoot = join(fixture.homeDir, 'agents');

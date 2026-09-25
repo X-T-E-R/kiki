@@ -308,6 +308,11 @@ const UserMessage = memo(function UserMessage({
           <span aria-hidden className="text-[9px]">{expanded ? '▴' : '▾'}</span>
         </button>
       ) : null}
+      {block.optimisticStatus !== undefined ? (
+        <span role="status" data-optimistic-status={block.optimisticStatus} className="mt-1 mr-1 text-[10.5px] text-ink-faint">
+          {t(block.optimisticStatus === 'slow' ? 'transcript.stillSending' : 'transcript.sending')}
+        </span>
+      ) : null}
       {block.promptStatus === 'blocked' ? (
         <span className="mt-1 mr-1 flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/5 px-2 py-0.5 text-[10.5px] font-medium text-danger">
           {t('transcript.blocked')}

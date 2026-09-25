@@ -6,6 +6,7 @@ import {
   IAgentToolPolicyService,
   IConfigService,
   IInstantiationService,
+  ILogService,
   IModelCatalog,
   IModelService,
   IProtocolAdapterRegistry,
@@ -44,31 +45,122 @@ import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistr
 import { toolGroupForName } from '@kiki/agent-core-v2/agent/toolRegistry/toolGroups';
 import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccounting';
 
+interface WorkspaceCatalogEntry {
+  readonly catalog: SessionAgentProfileCatalogService;
+  readonly dispose: () => void;
+  users: number;
+}
+
+const workspaceCatalogCaches = new WeakMap<Scope, Map<string, WorkspaceCatalogEntry>>();
+const MAX_WORKSPACE_CATALOGS = 32;
+
+function workspaceCatalogCache(core: Scope): Map<string, WorkspaceCatalogEntry> {
+  let entries = workspaceCatalogCaches.get(core);
+  if (entries !== undefined) return entries;
+  entries = new Map();
+  workspaceCatalogCaches.set(core, entries);
+  const cache = entries;
+  const manager = core.accessor.get(IWorkspaceInstanceManager);
+  const closeListener = manager.onDidChange(({ workspaceId, instance }) => {
+    if (instance !== undefined) return;
+    const entry = cache.get(workspaceId);
+    if (entry !== undefined) {
+      cache.delete(workspaceId);
+      entry.dispose();
+    }
+  });
+  core.accessor.get(IInstantiationService).onWillDispose(() => {
+    closeListener.dispose();
+    for (const entry of cache.values()) entry.dispose();
+    cache.clear();
+    workspaceCatalogCaches.delete(core);
+  });
+  return cache;
+}
+
+function trimWorkspaceCatalogCache(entries: Map<string, WorkspaceCatalogEntry>): void {
+  while (entries.size > MAX_WORKSPACE_CATALOGS) {
+    const oldest = [...entries].find(([, entry]) => entry.users === 0);
+    if (oldest === undefined) return;
+    entries.delete(oldest[0]);
+    oldest[1].dispose();
+  }
+}
+
 export async function acquireWorkspaceProfileCatalog(
   core: Scope,
   query: { workspace_id?: string; cwd?: string },
 ) {
-  if (query.workspace_id !== undefined && await core.accessor.get(IWorkspaceService).get(query.workspace_id) === undefined) return undefined;
-  const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire(
-    query.workspace_id !== undefined ? { workspaceId: query.workspace_id } : { root: query.cwd! },
-  );
-  let disposeCatalog: (() => void) | undefined;
+  const startedAt = Date.now();
+  const log = core.accessor.get(ILogService);
+  if (query.workspace_id !== undefined && await core.accessor.get(IWorkspaceService).get(query.workspace_id) === undefined) {
+    log.info('workspace profile catalog acquisition completed', {
+      outcome: 'workspace_not_found', duration_ms: Date.now() - startedAt,
+    });
+    return undefined;
+  }
+  let lease: Awaited<ReturnType<IWorkspaceInstanceManager['acquire']>>;
+  try {
+    lease = await core.accessor.get(IWorkspaceInstanceManager).acquire(
+      query.workspace_id !== undefined ? { workspaceId: query.workspace_id } : { root: query.cwd! },
+    );
+  } catch (error) {
+    log.warn('workspace profile catalog acquisition failed', {
+      cache_state: 'miss', duration_ms: Date.now() - startedAt,
+      error_type: error instanceof Error ? error.name : 'unknown',
+    });
+    throw error;
+  }
+  let entry: WorkspaceCatalogEntry | undefined;
+  let cacheState: 'hit' | 'miss' = 'miss';
   try {
     await lease.instance.program.ready;
     const workspaceId = lease.instance.id;
-    const container = core.accessor.get(IInstantiationService).createChild(new ServiceCollection([
-      ISessionAgentProfileCatalogSeed,
-      { _serviceBrand: undefined, workspaceKey: workspaceId },
-    ]));
-    disposeCatalog = () => container.dispose();
-    const catalog = container.createInstance(SessionAgentProfileCatalogService);
-    disposeCatalog = () => { catalog.dispose(); container.dispose(); };
-    await catalog.ready;
-    return { workspaceId, catalog, skills: lease.instance.program.skills.catalog,
-      dispose: () => { disposeCatalog?.(); lease.dispose(); } };
+    const entries = workspaceCatalogCache(core);
+    entry = entries.get(workspaceId);
+    if (entry !== undefined) {
+      cacheState = 'hit';
+      entries.delete(workspaceId);
+      entries.set(workspaceId, entry);
+    } else {
+      const container = core.accessor.get(IInstantiationService).createChild(new ServiceCollection([
+        ISessionAgentProfileCatalogSeed,
+        { _serviceBrand: undefined, workspaceKey: workspaceId },
+      ]));
+      try {
+        const catalog = container.createInstance(SessionAgentProfileCatalogService);
+        entry = { catalog, users: 0, dispose: () => { catalog.dispose(); container.dispose(); } };
+        entries.set(workspaceId, entry);
+      } catch (error) {
+        container.dispose();
+        throw error;
+      }
+    }
+    const acquired = entry;
+    acquired.users += 1;
+    try {
+      await acquired.catalog.ready;
+    } catch (error) {
+      if (entries.get(workspaceId) === acquired) {
+        entries.delete(workspaceId);
+        acquired.dispose();
+      }
+      throw error;
+    }
+    log.info('workspace profile catalog acquisition completed', {
+      workspace_id: workspaceId, cache_state: cacheState, outcome: 'ready',
+      complete: acquired.catalog.complete, duration_ms: Date.now() - startedAt,
+    });
+    trimWorkspaceCatalogCache(entries);
+    return { workspaceId, catalog: acquired.catalog, skills: lease.instance.program.skills.catalog,
+      dispose: () => { acquired.users -= 1; lease.dispose(); trimWorkspaceCatalogCache(entries); } };
   } catch (error) {
-    disposeCatalog?.();
+    if (entry !== undefined) entry.users -= 1;
     lease.dispose();
+    log.warn('workspace profile catalog acquisition failed', {
+      cache_state: cacheState, duration_ms: Date.now() - startedAt,
+      error_type: error instanceof Error ? error.name : 'unknown',
+    });
     throw error;
   }
 }
@@ -99,7 +191,7 @@ export async function agentCapabilities(
       pricing,
       {
         signal,
-        agentIds: query.agent_id === 'main' ? undefined : [query.agent_id],
+        agentIds: [query.agent_id],
         skipAgentIds,
         mutableAgentIds,
       },

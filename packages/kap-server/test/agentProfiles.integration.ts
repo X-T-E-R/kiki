@@ -3,13 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  AGENT_WIRE_RECORD_KEY,
   AgentProfileSourceDiagnosticCodes,
   IAgentExecutorRegistry,
   IAgentLifecycleService,
   IAgentProfileRegistry,
   IAgentProfileService,
   IAgentUsageService,
+  IAppendLogStore,
   IConfigService,
+  ILogService,
   ISessionAgentProfileCatalog,
   ISessionContext,
   ISessionInteractionService,
@@ -32,6 +35,7 @@ import { registerAgentProfilesRoute } from '../src/routes/agentProfiles';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { panelSkills } from '../src/routes/agentPanelCapabilities';
+import { acquireWorkspaceProfileCatalog } from '../src/routes/agentProfileCapabilities';
 
 interface Envelope<T> {
   code: number;
@@ -71,6 +75,29 @@ describe('GET /api/agents', () => {
   afterEach(async () => {
     if (server !== undefined) await server.close();
     if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('reuses draft catalog projections until workspace close without retaining a workspace lease', async () => {
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    const info = vi.spyOn(server.core.accessor.get(ILogService), 'info');
+    const [first, second] = await Promise.all([
+      acquireWorkspaceProfileCatalog(server.core, { cwd: home! }),
+      acquireWorkspaceProfileCatalog(server.core, { cwd: home! }),
+    ]);
+    const cached = await acquireWorkspaceProfileCatalog(server.core, { cwd: home! });
+    expect(first?.catalog).toBe(second?.catalog);
+    expect(first?.catalog).toBe(cached?.catalog);
+    expect(info).toHaveBeenCalledWith('workspace profile catalog acquisition completed',
+      expect.objectContaining({ cache_state: 'hit', outcome: 'ready', duration_ms: expect.any(Number) }));
+    first?.dispose();
+    second?.dispose();
+    cached?.dispose();
+    const manager = server.core.accessor.get(IWorkspaceInstanceManager);
+    expect(manager.referenceCount(first!.workspaceId)).toBe(0);
+    await manager.close(first!.workspaceId);
+    const reopened = await acquireWorkspaceProfileCatalog(server.core, { cwd: home! });
+    expect(reopened?.catalog).not.toBe(first?.catalog);
+    reopened?.dispose();
   });
 
   it.each(['---\ndescription: Custom default\nsubagents: [explore]\n---\nCustom upgraded prompt.'])('keeps SYSTEM main profiles available when subagent discovery is disabled: %s', async (text) => {
@@ -1492,7 +1519,7 @@ describe('GET /api/agents', () => {
     ]));
   });
 
-  it('restores persisted main and completed child usage with partial provenance after restart', async () => {
+  it('reads only the selected agent wire when restoring persisted usage after restart', async () => {
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -1531,10 +1558,19 @@ describe('GET /api/agents', () => {
       logLevel: 'silent',
     });
     base = `http://127.0.0.1:${server.port}`;
+    const wireRead = vi.spyOn(server.core.accessor.get(IAppendLogStore), 'read');
     const restored = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
     const data = agentCapabilitiesResponseSchema.parse((await restored.json() as Envelope<unknown>).data);
     expect(data.metrics?.['main']).toMatchObject({ totalTokens: 15, inputTokens: 10, outputTokens: 5, usagePartial: true, costPartial: true, usageSource: 'persisted' });
-    expect(data.metrics?.['agent-7']).toMatchObject({ totalTokens: 35, inputTokens: 25, outputTokens: 10, usagePartial: false, usageSource: 'persisted' });
+    expect(data.metrics?.['agent-7']).toBeUndefined();
+    const scannedScopes = wireRead.mock.calls.filter(([_scope, key]) => key === AGENT_WIRE_RECORD_KEY)
+      .map(([scope]) => scope);
+    expect(scannedScopes.length).toBeGreaterThan(0);
+    expect(scannedScopes.every((scope) => scope.includes('main'))).toBe(true);
+    wireRead.mockClear();
+    const childResponse = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=agent-7`);
+    const childData = agentCapabilitiesResponseSchema.parse((await childResponse.json() as Envelope<unknown>).data);
+    expect(childData.metrics?.['agent-7']).toMatchObject({ totalTokens: 35, inputTokens: 25, outputTokens: 10, usagePartial: false, usageSource: 'persisted' });
   });
 });
 

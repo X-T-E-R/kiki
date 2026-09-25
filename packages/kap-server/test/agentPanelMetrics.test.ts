@@ -684,18 +684,22 @@ describe('persisted agent panel metrics cache scope', () => {
     expect(scanSignal?.aborted).toBe(true);
   });
 
-  it('scans only the selected child without listing the session roster', async () => {
+  it.each(['main', 'child-1'])('scans only the requested %s wire instead of an 82-agent roster', async (agentId) => {
     const fixture = persistedFixture([record('model', usage(3, 0), true)], undefined, {
-      agentIds: ['main', 'child-1', 'child-2'],
+      agentIds: ['main', ...Array.from({ length: 81 }, (_, index) => `child-${index + 1}`)],
     });
-    const metrics = await persisted(fixture.core, pricing({ model: 1 }), 'targeted', {
-      agentIds: ['child-1'],
+    const metrics = await persisted(fixture.core, pricing({ model: 1 }), `targeted-${agentId}`, {
+      agentIds: [agentId],
     });
-    expect(Object.keys(metrics)).toEqual(['child-1']);
-    expect(metrics['child-1']?.totalTokens).toBe(3);
+    expect(Object.keys(metrics)).toEqual([agentId]);
+    expect(metrics[agentId]?.totalTokens).toBe(3);
     expect(fixture.lists()).toBe(0);
     expect(fixture.reads()).toBe(1);
-    expect(fixture.scopes()[0]).toContain('child-1');
+    expect(fixture.scopes()[0]).toContain(agentId);
+    expect(fixture.log.info).toHaveBeenCalledWith(
+      'agent panel persisted metrics scan completed',
+      expect.objectContaining({ targeted: true, files_count: 1 }),
+    );
   });
 
   it('invalidates cached entries when an agent goes live and when it dies', async () => {

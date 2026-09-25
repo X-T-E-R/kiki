@@ -781,6 +781,27 @@ export function resolveProfileSwitchSubmission(input: {
   };
 }
 
+export function withOptimisticUserBlock(
+  blocks: readonly Block[],
+  pending: { id: string; text: string; createdAt: string; slow: boolean } | undefined,
+): readonly Block[] {
+  if (pending === undefined) return blocks;
+  return [...blocks, {
+    kind: 'user', id: `optimistic-${pending.id}`, text: pending.text,
+    createdAt: pending.createdAt, optimisticStatus: pending.slow ? 'slow' : 'sending',
+  } satisfies UserBlock];
+}
+
+export function recoverFailedSubmission(
+  currentText: string,
+  currentAttachments: readonly ComposerAttachment[],
+  sentText: string,
+  sentAttachments: readonly ComposerAttachment[],
+): { text: string; attachments: readonly ComposerAttachment[] } | undefined {
+  if (currentText !== '' || currentAttachments.length !== 0) return undefined;
+  return { text: sentText, attachments: sentAttachments };
+}
+
 /**
  * A failed send clears the pending profile pick only when the SERVER answered
  * with a business rejection (e.g. route-locked) — the pick was definitively
@@ -1185,6 +1206,18 @@ export function SessionView({
     readonly savedDraft: string;
   } | null>(null);
   const [draft, setDraft] = useState('');
+  const [pendingSubmission, setPendingSubmission] = useState<{
+    id: string; text: string; createdAt: string; slow: boolean;
+  } | undefined>();
+  const pendingSendRef = useRef(false);
+  useEffect(() => {
+    if (pendingSubmission === undefined || pendingSubmission.slow) return;
+    const timer = setTimeout(() => {
+      setPendingSubmission((current) => current?.id === pendingSubmission.id
+        ? { ...current, slow: true } : current);
+    }, 10_000);
+    return () => { clearTimeout(timer); };
+  }, [pendingSubmission]);
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
     () =>
       initialOptionsRef.current.initialSkill?.attachments ??
@@ -1662,7 +1695,7 @@ export function SessionView({
         const prefix = `${buildAnnotationsPrefix(annotations)}${quote !== null ? buildQuotePrefix(quote) : ''}`;
         const quotedText = prefix === '' ? text : `${prefix}${text}`;
         const content = buildPromptContent(quotedText, composerAttachments);
-        if (content === null) return;
+        if (content === null || pendingSendRef.current) return;
         const textPart = content.find((part) => part.type === 'text');
         // Local echo shows the mention-folded text; a media-only message
         // echoes the same placeholder the transcript uses for those parts.
@@ -1679,6 +1712,11 @@ export function SessionView({
           model: effectiveModel,
           thinking: effectiveEffort,
         });
+        pendingSendRef.current = true;
+        const submissionId = crypto.randomUUID();
+        setPendingSubmission({ id: submissionId, text: echoText, createdAt: new Date().toISOString(), slow: false });
+        updateDraft('');
+        updateAttachments([]);
         // Returned to the composer: it holds its send latch until this round
         // settles, which is what blocks a rapid duplicate send (and releases
         // for a retry when the submit fails).
@@ -1699,9 +1737,6 @@ export function SessionView({
             appendTiming: liveSettings.defaultAppendTiming,
           })
           .then(() => {
-            writeDraft(sessionId, '');
-            setDraft('');
-            setAttachments([]);
             setQuote(null);
             setAnnotations([]);
             setGoalMode(false);
@@ -1714,6 +1749,11 @@ export function SessionView({
             }
           })
           .catch((error: unknown) => {
+            const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, text, composerAttachments);
+            if (recovery !== undefined) {
+              updateDraft(recovery.text);
+              updateAttachments(recovery.attachments);
+            }
             const isApi = error instanceof ApiError;
             pushToast({
               tone: 'error',
@@ -1737,6 +1777,10 @@ export function SessionView({
               setPendingProfile(undefined);
               setProfileModelTouched(false);
             }
+          })
+          .finally(() => {
+            pendingSendRef.current = false;
+            setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
           });
       },
       activateSkill: (
@@ -1898,6 +1942,8 @@ export function SessionView({
     annotations,
     sessionId,
     t,
+    updateDraft,
+    updateAttachments,
   ]);
 
   const handleCancelTask = useCallback(
@@ -2668,8 +2714,8 @@ export function SessionView({
   // the full block list; per-delta publishes reuse it when blocks/forest are
   // untouched.
   const mainTranscriptBlocks = useMemo(
-    () => filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID),
-    [state.blocks, forest],
+    () => withOptimisticUserBlock(filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID), pendingSubmission),
+    [state.blocks, forest, pendingSubmission],
   );
   // The subagent route branch: the shell resolves the target and navigation;
   // the workspace owns header, timeline, resync, details, and actions.

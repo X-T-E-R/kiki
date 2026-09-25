@@ -894,6 +894,8 @@ export const en = {
   'transcript.opening': 'Opening session…',
   'transcript.blank': 'A blank page. Tell kiki what to make.',
   'transcript.blocked': 'Blocked',
+  'transcript.sending': 'Sending…',
+  'transcript.stillSending': 'Still sending… Do not send this message again.',
   'transcript.approvalReadonly': 'Approval requested: {action}',
   'transcript.questionReadonly': 'This subagent requested input during its run.',
   'transcript.toolCalls.one': '{count} tool call',
