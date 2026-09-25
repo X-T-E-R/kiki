@@ -59,17 +59,43 @@ jobs:
     permissions:
       contents: read
 
-  desktop-windows:
-    name: Windows desktop installer
+  desktop-bundle:
+    name: Desktop (${{ matrix.name }})
     needs: validate
-    runs-on: windows-2025
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: dmg
 
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v6
+
+      - name: Install Tauri Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -80,6 +106,11 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
+      - name: Setup Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -88,14 +119,23 @@ jobs:
         run: |
           node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs
           pnpm --filter @kiki/gui run desktop:version:check
+          pnpm --filter @kiki/gui run desktop:prepare:test
 
-      - name: Build and smoke-test Windows x64 sidecar
+      - name: Generate built-in catalog
+        shell: bash
+        run: |
+          catalog="$RUNNER_TEMP/kiki-built-in-catalog.json"
+          node apps/kimi-code/scripts/update-catalog.mjs --out "$catalog"
+          echo "KIKI_BUILT_IN_CATALOG_FILE=$catalog" >> "$GITHUB_ENV"
+
+      - name: Build and smoke-test native sidecar
         shell: bash
         run: |
           pnpm --filter @kiki/cli run build:native:sea
           pnpm --filter @kiki/cli run test:native:smoke
 
-      - name: Generate temporary updater key
+      - name: Generate temporary updater key (Windows)
+        if: runner.os == 'Windows'
         shell: bash
         run: |
           password="$(node -e "console.log(require('crypto').randomUUID().replace(/-/g,''))")"
@@ -110,57 +150,93 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password"
           } >> "$GITHUB_ENV"
 
-      - name: Build versioned NSIS updater artifact
+      - name: Build and stage desktop bundles
         env:
           KIKI_VERSION: ${{ needs.validate.outputs.version }}
           KIKI_BUILD_SHA: ${{ github.sha }}
           KIKI_UPDATE_CHANNEL: ${{ needs.validate.outputs.channel }}
-          KIKI_DISTRIBUTION: github
           KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
           KIKI_TAURI_CONFIG_PATH: ${{ runner.temp }}/kiki-tauri-release-config.json
+          KIKI_RUST_TARGET: ${{ matrix.target }}
+          KIKI_BUNDLES: ${{ matrix.bundles }}
         shell: bash
         run: |
-          if [ -z "$KIKI_UPDATER_PUBLIC_KEY" ]; then
-            echo 'KIKI_UPDATER_PUBLIC_KEY repository variable is required.' >&2
-            exit 1
+          set -euo pipefail
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            export KIKI_DISTRIBUTION=github
+            if [ -z "$KIKI_UPDATER_PUBLIC_KEY" ]; then
+              echo 'KIKI_UPDATER_PUBLIC_KEY repository variable is required.' >&2
+              exit 1
+            fi
+          else
+            export KIKI_DISTRIBUTION=manual
+            unset KIKI_UPDATER_PUBLIC_KEY
           fi
           node -e '
             const fs = require("node:fs");
+            const windows = process.env.RUNNER_OS === "Windows";
             const config = {
               version: process.env.KIKI_VERSION,
               bundle: {
-                createUpdaterArtifacts: true,
+                createUpdaterArtifacts: windows,
                 resources: ["../THIRD_PARTY_NOTICES.md"],
               },
-              plugins: { updater: { pubkey: process.env.KIKI_UPDATER_PUBLIC_KEY } },
             };
+            if (windows) config.plugins = { updater: { pubkey: process.env.KIKI_UPDATER_PUBLIC_KEY } };
             fs.writeFileSync(process.env.KIKI_TAURI_CONFIG_PATH, JSON.stringify(config));
-            console.log("Wrote Tauri release config:", process.env.KIKI_TAURI_CONFIG_PATH);
           '
-          config="$KIKI_TAURI_CONFIG_PATH"
-          pnpm --filter @kiki/gui exec tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis --config "$config"
+          pnpm --filter @kiki/gui exec tauri build --ci --target "$KIKI_RUST_TARGET" --bundles "$KIKI_BUNDLES" --config "$KIKI_TAURI_CONFIG_PATH"
 
-          bundle_dir="apps/kiki-gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
-          shopt -s nullglob
-          installers=("$bundle_dir"/*-setup.exe)
-          shopt -u nullglob
-          if [ "${#installers[@]}" -ne 1 ]; then
-            echo "Expected one NSIS installer, found ${#installers[@]}." >&2
-            exit 1
-          fi
-          if [ ! -f "${installers[0]}.sig" ]; then
-            echo 'Tauri did not create the temporary updater signature.' >&2
-            exit 1
-          fi
+          bundle_dir="apps/kiki-gui/src-tauri/target/$KIKI_RUST_TARGET/release/bundle"
           stage="$RUNNER_TEMP/kiki-release-candidate"
           mkdir -p "$stage"
-          cp "${installers[0]}" "$stage/"
+          shopt -s nullglob
+          case "$RUNNER_OS" in
+            Windows)
+              bundles=("$bundle_dir"/nsis/*-setup.exe)
+              if [ "${#bundles[@]}" -ne 1 ] || [ ! -f "${bundles[0]}.sig" ]; then
+                echo 'Expected one NSIS installer and temporary updater signature.' >&2
+                exit 1
+              fi
+              cp "${bundles[0]}" "$stage/"
+              ;;
+            Linux)
+              appimages=("$bundle_dir"/appimage/*.AppImage)
+              debs=("$bundle_dir"/deb/*.deb)
+              if [ "${#appimages[@]}" -ne 1 ] || [ "${#debs[@]}" -ne 1 ]; then
+                echo 'Expected one AppImage and one deb bundle.' >&2
+                exit 1
+              fi
+              bundles=("${appimages[0]}" "${debs[0]}")
+              ;;
+            macOS)
+              bundles=("$bundle_dir"/dmg/*.dmg)
+              if [ "${#bundles[@]}" -ne 1 ]; then
+                echo 'Expected one dmg bundle.' >&2
+                exit 1
+              fi
+              ;;
+          esac
+          shopt -u nullglob
+          if [ "$RUNNER_OS" != 'Windows' ]; then
+            for bundle in "${bundles[@]}"; do
+              cp "$bundle" "$stage/"
+              node -e '
+                const fs = require("node:fs");
+                const crypto = require("node:crypto");
+                const path = require("node:path");
+                const file = process.argv[1];
+                const digest = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+                fs.writeFileSync(`${file}.sha256`, `${digest}  ${path.basename(file)}\n`);
+              ' "$stage/$(basename "$bundle")"
+            done
+          fi
 
       - name: Upload unsigned release candidate
         uses: actions/upload-artifact@v7
         with:
-          name: kiki-windows-x64-${{ needs.validate.outputs.version }}
-          path: ${{ runner.temp }}/kiki-release-candidate/*.exe
+          name: kiki-desktop-${{ matrix.name }}-${{ needs.validate.outputs.version }}
+          path: ${{ runner.temp }}/kiki-release-candidate/*
           if-no-files-found: error
           retention-days: 3
 
@@ -169,7 +245,7 @@ jobs:
     needs:
       - validate
       - cli-native
-      - desktop-windows
+      - desktop-bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -193,22 +269,51 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+          registry-url: https://registry.npmjs.org/
 
       - name: Install signing tool
         run: pnpm install --frozen-lockfile
 
-      - name: Download release candidate
+      - name: Download desktop release candidates
         uses: actions/download-artifact@v8
         with:
-          name: kiki-windows-x64-${{ needs.validate.outputs.version }}
+          pattern: kiki-desktop-*-${{ needs.validate.outputs.version }}
           path: release-candidate
+          merge-multiple: true
 
-      - name: Download CLI native bundles
+      - name: Download CLI native executables
         uses: actions/download-artifact@v8
         with:
           pattern: kiki-cli-*
           path: cli-native
           merge-multiple: true
+
+      - name: Validate downloaded build candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          installers=(release-candidate/*-setup.exe)
+          appimages=(release-candidate/*.AppImage)
+          debs=(release-candidate/*.deb)
+          arm_dmgs=(release-candidate/*aarch64*.dmg)
+          intel_dmgs=(release-candidate/*x64*.dmg)
+          if [ "${#installers[@]}" -ne 1 ] || [ "${#appimages[@]}" -ne 1 ] || [ "${#debs[@]}" -ne 1 ] || [ "${#arm_dmgs[@]}" -ne 1 ] || [ "${#intel_dmgs[@]}" -ne 1 ]; then
+            echo 'Expected one Windows installer, Linux AppImage/deb and two macOS dmg files.' >&2
+            exit 1
+          fi
+          for bundle in "${appimages[@]}" "${debs[@]}" "${arm_dmgs[@]}" "${intel_dmgs[@]}"; do
+            test -f "$bundle.sha256"
+            ( cd release-candidate && sha256sum -c "$(basename "$bundle").sha256" )
+          done
+          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+            extension=''
+            if [[ "$target" == win32-* ]]; then extension='.exe'; fi
+            binary="kiki-$target$extension"
+            test -f "cli-native/$binary"
+            test -f "cli-native/$binary.sha256"
+            ( cd cli-native && sha256sum -c "$binary.sha256" )
+          done
 
       - name: Create draft release
         shell: bash
@@ -223,8 +328,8 @@ jobs:
             args+=(--notes-file "$notes_file")
             echo "Using release notes from $notes_file"
           else
-            args+=(--generate-notes)
-            echo "No curated notes at $notes_file; generating notes from commits."
+            args+=(--generate-notes --notes "Desktop: Windows x64 NSIS (includes CLI), Linux x64 AppImage/deb, macOS Apple Silicon/Intel dmg (unsigned, not notarized). CLI: platform-named standalone Linux/macOS executables and .sha256 checksums; no archives. npm: kiki-cli (desktop + CLI) or kiki-cli-lite (CLI only), Node.js 24.15+. On macOS, see the installation guide for first-open and CLI linking: https://x-t-e-r.github.io/kiki/en/getting-started/installation")
+            echo "No curated notes at $notes_file; generating notes from commits with installation details."
           fi
           if [ "$KIKI_CHANNEL" = 'beta' ]; then
             args+=(--prerelease)
@@ -289,8 +394,8 @@ jobs:
             'apps/kiki-gui/THIRD_PARTY_NOTICES.md'
           )
           shopt -s nullglob
-          for archive in cli-native/*.zip cli-native/*.zip.sha256; do
-            assets+=("$archive")
+          for asset in release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-*; do
+            assets+=("$asset")
           done
           shopt -u nullglob
           gh release upload "$KIKI_TAG" "${assets[@]}"
@@ -333,27 +438,53 @@ jobs:
             fi
           done
 
-          # CLI zips carry their own .sha256 sidecars; verify each checksum file
-          # against the archive it describes.
+          # Compare every desktop bundle, CLI executable, and adjacent checksum
+          # with the exact bytes validated before the draft was created.
           shopt -s nullglob
-          for checksum in cli-native/*.zip.sha256; do
-            shopt -u nullglob
-            # The sidecar lists the bare archive name, so verify from cli-native/.
-            ( cd cli-native && sha256sum -c "$(basename "$checksum")" )
-            shopt -s nullglob
-          done
-          shopt -u nullglob
-
-          # And confirm every shipped zip actually arrived.
-          shopt -s nullglob
-          for archive in cli-native/*.zip; do
-            archive_name="$(basename "$archive")"
-            if [ ! -f "$download/$archive_name" ]; then
-              echo "Draft asset is missing: $archive_name" >&2
+          for asset in release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-*; do
+            name="$(basename "$asset")"
+            if [ ! -f "$download/$name" ] || ! cmp -s "$asset" "$download/$name"; then
+              echo "Draft asset is missing or differs: $name" >&2
               exit 1
             fi
           done
           shopt -u nullglob
 
+      - name: Build and stage npm distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @kiki/gui run desktop:version:check
+          export KIKI_BUILT_IN_CATALOG_FILE="$RUNNER_TEMP/kiki-npm-built-in-catalog.json"
+          node apps/kimi-code/scripts/update-catalog.mjs --out "$KIKI_BUILT_IN_CATALOG_FILE"
+          pnpm --filter @kiki/cli run build
+          node apps/kimi-code/scripts/npm/stage.mjs
+
+      - name: Smoke-test isolated npm CLI install
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$(realpath apps/kimi-code/dist-npm/lite)"
+          test_dir="$RUNNER_TEMP/kiki-npm-smoke"
+          mkdir -p "$test_dir"
+          tarball="$(cd "$stage" && npm pack --silent --pack-destination "$test_dir" --registry=https://registry.npmjs.org/)"
+          npm install --prefix "$test_dir/install" --omit=optional --no-audit --no-fund --registry=https://registry.npmjs.org/ "$test_dir/$tarball"
+          "$test_dir/install/node_modules/.bin/kiki" --version | grep -Fx "$KIKI_VERSION"
+          "$test_dir/install/node_modules/.bin/kiki" desktop --help
+
       - name: Publish validated release
         run: gh release edit "$KIKI_TAG" --draft=false
+
+      - name: Publish npm CLI/TUI and desktop distributions
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo 'NPM_TOKEN is required to publish npm packages.' >&2
+            exit 1
+          fi
+          for kind in lite full; do
+            npm publish "apps/kimi-code/dist-npm/$kind" --access public --registry=https://registry.npmjs.org/
+          done

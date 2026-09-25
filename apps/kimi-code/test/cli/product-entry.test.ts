@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { createProgram } from '../../src/cli/commands';
+import { findDesktop } from '../../src/cli/sub/desktop';
 
 describe('unified Kiki entry', () => {
   it('installs only kiki and does not run legacy executable takeover hooks', async () => {
@@ -15,7 +16,10 @@ describe('unified Kiki entry', () => {
     const onMain = vi.fn();
     const program = createProgram('0.0.0-test', onMain);
     expect(program.name()).toBe('kiki');
-    expect(program.commands.map((command) => command.name())).toEqual(expect.arrayContaining(['serve', 'seat', 'mcp', 'doctor']));
+    expect(program.commands.map((command) => command.name())).toEqual(expect.arrayContaining(['serve', 'seat', 'mcp', 'doctor', 'desktop']));
+    expect(findDesktop('linux', { PATH: '', HOME: '' })).toBeUndefined();
+    await expect(createProgram('0.0.0-test', vi.fn()).parseAsync(['node', 'kiki', 'desktop']))
+      .rejects.toThrow(/Kiki desktop is not installed.*installation/);
     await program.parseAsync(['node', 'kiki']);
     expect(onMain).toHaveBeenLastCalledWith(expect.objectContaining({ prompt: undefined }));
     const prompt = vi.fn();

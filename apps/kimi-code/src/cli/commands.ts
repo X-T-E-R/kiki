@@ -3,6 +3,7 @@ import { Command, InvalidArgumentError, Option } from 'commander';
 
 import type { CLIOptions } from './options';
 import { registerAcpCommand } from './sub/acp';
+import { registerDesktopCommand } from './sub/desktop';
 import { registerDoctorCommand } from '#/kiki/doctor';
 import { registerKikiCommands } from '#/kiki/register';
 import { registerExportCommand } from './sub/export';
@@ -118,6 +119,7 @@ export function createProgram(
   registerSessionCommand(program);
   registerProviderCommand(program);
   registerAcpCommand(program);
+  registerDesktopCommand(program);
   registerWebCommand(program);
   registerLoginCommand(program);
   registerDoctorCommand(program);

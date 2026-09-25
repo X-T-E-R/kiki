@@ -45,10 +45,9 @@ jobs:
       - name: Build packages
         run: pnpm build
 
-      # Kiki does not publish to npm. This only consumes pending changesets and
-      # opens a "ci: release packages" pull request that bumps @kiki/cli and
-      # regenerates its CHANGELOG; desktop installers ship from the
-      # kiki-v* tag pipeline instead.
+      # Version PR aligns CLI and desktop authorities. Once merged, tag the
+      # versioned commit as kiki-v<version>; the tag pipeline publishes desktop,
+      # standalone CLI and npm packages together after asset validation.
       - name: Create Release Pull Request
         id: changesets
         uses: changesets/action@v1

@@ -46,20 +46,23 @@ Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，�
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载对应构建：
+从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 的 `kiki-v<版本号>` 选择构建：
 
-- **桌面应用（推荐）**：Windows 安装包 `Kiki_*_x64-setup.exe`。
-- **CLI**：在 `kiki-v<版本号>` 的 Release 资产中选择对应平台的 `kiki` 可执行文件。
+| 平台 | 桌面应用 | 独立 CLI/TUI |
+| --- | --- | --- |
+| Windows x64 | `Kiki_*_x64-setup.exe`（同时把 `kiki` 加到用户 `PATH`） | 已包含在安装包里，不另发 Windows CLI 文件 |
+| Linux x64 | `Kiki_*_amd64.deb`（安装 `kiki` 命令）或 `Kiki_*_amd64.AppImage` | `kiki-linux-x64` |
+| Linux ARM64 | — | `kiki-linux-arm64` |
+| macOS Apple Silicon | `Kiki_*_aarch64.dmg` | `kiki-darwin-arm64` |
+| macOS Intel | `Kiki_*_x64.dmg` | `kiki-darwin-x64` |
+
+独立 CLI 文件附带对应的 `.sha256` 校验文件。macOS 的 dmg 未签名、未公证：先校验下载，拖入「应用程序」，首次启动用 **按住 Control 键点按 → 打开**。dmg 不会更改 `PATH`，CLI 需单独添加。
+
+也可在 Node.js 24.15.0+ 环境用 `npm install -g kiki-cli` 安装 CLI/TUI 和桌面应用，或用 `npm install -g kiki-cli-lite` 只装 CLI/TUI。完整版安装时从 GitHub 下载对应桌面构建并校验 SHA-256，需要联网。运行 `kiki desktop` 可打开已安装的桌面应用；未安装时会提示获取方式。
 
 > 在 Windows 上，首次启动前请先安装 [Git for Windows](https://gitforwindows.org/)，因为 Kiki CLI 使用自带的 Git Bash 作为 shell 环境。如果 Git Bash 安装在自定义位置，请将 `KIKI_SHELL_PATH` 设置为 `bash.exe` 的绝对路径。
 
-然后在一个新的终端会话中验证：
-
-```sh
-kiki --version
-```
-
-CLI 未发布到 npm；请使用 Release 产物，或在开发时从源码运行。更新渠道等细节见[安装](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)。
+新开终端运行 `kiki --version` 验证。校验命令、权限和更新通道见[安装](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)。
 
 ## 快速上手
 

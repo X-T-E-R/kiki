@@ -11,6 +11,7 @@ const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[
 
 const FILES = {
   package: resolve(GUI_ROOT, 'package.json'),
+  cli: resolve(REPO_ROOT, 'apps', 'kimi-code', 'package.json'),
   tauri: resolve(GUI_ROOT, 'src-tauri', 'tauri.conf.json'),
   cargo: resolve(GUI_ROOT, 'src-tauri', 'Cargo.toml'),
   system: resolve(REPO_ROOT, 'system.yaml'),
@@ -31,6 +32,7 @@ function parseSystemVersion(text) {
 export function readDesktopVersions(files = FILES) {
   return {
     package: JSON.parse(readFileSync(files.package, 'utf8')).version,
+    cli: files.cli ? JSON.parse(readFileSync(files.cli, 'utf8')).version : JSON.parse(readFileSync(files.package, 'utf8')).version,
     tauri: JSON.parse(readFileSync(files.tauri, 'utf8')).version,
     cargo: parseCargoVersion(readFileSync(files.cargo, 'utf8')),
     system: parseSystemVersion(readFileSync(files.system, 'utf8')),
@@ -56,7 +58,7 @@ export function assertDesktopVersions(versions, tag = process.env['GITHUB_REF_NA
 export function setDesktopVersion(version, files = FILES) {
   if (!SEMVER.test(version)) throw new Error(`Invalid semantic version: ${version}`);
 
-  for (const path of [files.package, files.tauri]) {
+  for (const path of [files.package, files.cli, files.tauri].filter(Boolean)) {
     const parsed = JSON.parse(readFileSync(path, 'utf8'));
     parsed.version = version;
     writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`);
@@ -78,6 +80,12 @@ export function setDesktopVersion(version, files = FILES) {
 function main() {
   const command = process.argv[2] ?? 'check';
   if (command === 'check') {
+    process.stdout.write(`${assertDesktopVersions(readDesktopVersions())}\n`);
+    return;
+  }
+  if (command === 'sync-from-cli') {
+    const version = JSON.parse(readFileSync(FILES.cli, 'utf8')).version;
+    setDesktopVersion(version);
     process.stdout.write(`${assertDesktopVersions(readDesktopVersions())}\n`);
     return;
   }

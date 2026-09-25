@@ -1,6 +1,6 @@
 # Kiki desktop
 
-Kiki desktop is the Windows desktop app of the Kiki product, distributed as an NSIS installer (a common Windows installer format) that installs for the current Windows user only, on 64-bit Windows. Official installers, updater signatures, SHA256 checksums, and versioned updater manifests are retained on [GitHub Releases](https://github.com/X-T-E-R/kiki/releases).
+Kiki desktop is available for Windows x64 (a per-user NSIS installer), Linux x64 (AppImage and deb), and macOS Apple Silicon or Intel (dmg). The Windows installer includes the CLI/TUI and adds `kiki` to your user `PATH`; Linux deb includes it too. This page explains the Windows-specific signed updater; Linux/macOS bundles use manual updates and their installation steps are in [Installation](./installation.md#install-the-desktop-app). Windows installers, updater signatures, SHA256 checksums, and versioned updater manifests are retained on [GitHub Releases](https://github.com/X-T-E-R/kiki/releases).
 
 ::: warning Note
 Kiki Windows installers are not Authenticode-signed (Windows' official code signing for verifying the publisher) in the first public release. Windows SmartScreen may therefore identify the publisher as unknown even when the file came from the official Release.

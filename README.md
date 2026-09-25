@@ -46,20 +46,23 @@ Kiki began as a fork of [Kimi Code](https://github.com/MoonshotAI/kimi-code) and
 
 ## Install
 
-Download the appropriate build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases):
+Choose a build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) under `kiki-v<version>`:
 
-- **Desktop app (recommended):** `Kiki_*_x64-setup.exe` for Windows.
-- **CLI:** the `kiki` executable for your platform, from the `kiki-v<version>` release assets.
+| Platform | Desktop app | Standalone CLI/TUI |
+| --- | --- | --- |
+| Windows x64 | `Kiki_*_x64-setup.exe` (also installs `kiki` on your user `PATH`) | Included in the installer; no separate Windows CLI asset |
+| Linux x64 | `Kiki_*_amd64.deb` (adds `kiki` to `PATH`) or `Kiki_*_amd64.AppImage` | `kiki-linux-x64` |
+| Linux ARM64 | — | `kiki-linux-arm64` |
+| macOS Apple Silicon | `Kiki_*_aarch64.dmg` | `kiki-darwin-arm64` |
+| macOS Intel | `Kiki_*_x64.dmg` | `kiki-darwin-x64` |
+
+Standalone CLI files have matching `.sha256` checksums. On macOS, the dmg is unsigned and not notarized: verify the download, drag Kiki to Applications, then use **Control-click → Open** on first launch. Add the CLI to your `PATH` separately; the dmg does not change it.
+
+Alternatively, with Node.js 24.15.0+ install the CLI/TUI and desktop with `npm install -g kiki-cli`, or only the CLI/TUI with `npm install -g kiki-cli-lite`. The full npm package downloads and checksum-verifies the matching desktop release at install time; it requires network access. Run `kiki desktop` to open the installed app (or get installation instructions if it is absent).
 
 > On Windows, install [Git for Windows](https://gitforwindows.org/) before first launch because the Kiki CLI uses the bundled Git Bash as its shell environment. If Git Bash is installed in a custom location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
 
-Then verify it with a new shell session:
-
-```sh
-kiki --version
-```
-
-The CLI is not published to npm; use the release artifacts, or run from source while developing. See [Installation](https://x-t-e-r.github.io/kiki/en/getting-started/installation) for update channels and details.
+In a new terminal session, verify with `kiki --version`. See [Installation](https://x-t-e-r.github.io/kiki/en/getting-started/installation) for checksum commands, permissions, and update channels.
 
 ## Quick Start
 

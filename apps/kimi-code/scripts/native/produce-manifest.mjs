@@ -1,11 +1,11 @@
 /**
- * Aggregate per-platform zip archive `.sha256` files into a single
+ * Aggregate per-platform executable `.sha256` files into a single
  * `manifest.json` written into the same input directory.
  *
  * Usage:
  *   node produce-manifest.mjs <input-dir> <release-tag>
  *
- * Input dir must contain files matching: kiki-<target>.zip.sha256
+ * Input dir must contain files matching: kiki-<target>[.exe].sha256
  * (produced by package.mjs across the 6 native-build matrix runners).
  *
  * Output:
@@ -26,25 +26,24 @@ if (!inputDir || !tag) {
 const version = tag.replace(/^@kiki\/cli@/, '').replace(/^v/, '');
 
 const entries = await readdir(inputDir);
-const sumFiles = entries.filter((f) => /^kiki-[a-z0-9-]+\.zip\.sha256$/.test(f));
+const sumFiles = entries.filter((f) => /^kiki-(linux|darwin)-(x64|arm64)\.sha256$|^kiki-win32-(x64|arm64)\.exe\.sha256$/.test(f));
 
 if (sumFiles.length === 0) {
-  console.error(`No kiki-<target>.zip.sha256 files found in ${inputDir}`);
+  console.error(`No native executable .sha256 files found in ${inputDir}`);
   process.exit(1);
 }
 
 const platforms = {};
 for (const sumFile of sumFiles.sort()) {
   const text = await readFile(resolve(inputDir, sumFile), 'utf-8');
-  const [checksum] = text.trim().split(/\s+/, 1);
-  if (!checksum || !/^[a-f0-9]{64}$/.test(checksum)) {
-    console.error(`Invalid checksum in ${sumFile}: ${checksum}`);
+  const filename = basename(sumFile, '.sha256');
+  const match = /^([a-f0-9]{64})  (\S+)\s*$/.exec(text);
+  if (!match || match[2] !== filename || !entries.includes(filename)) {
+    console.error(`Invalid or unmatched checksum in ${sumFile}`);
     process.exit(1);
   }
-  const filename = basename(sumFile, '.sha256');
-  // kiki-darwin-arm64.zip → darwin-arm64
-  const target = filename.replace(/^kiki-/, '').replace(/\.zip$/, '');
-  platforms[target] = { filename, checksum };
+  const target = filename.slice('kiki-'.length).replace(/\.exe$/, '');
+  platforms[target] = { filename, checksum: match[1] };
 }
 
 const manifest = { version, tag, platforms };

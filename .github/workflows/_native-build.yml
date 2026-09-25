@@ -43,16 +43,22 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: linux-x64
+            extension: ''
           - os: ubuntu-24.04-arm
             target: linux-arm64
+            extension: ''
           - os: macos-15-intel
             target: darwin-x64
+            extension: ''
           - os: macos-15
             target: darwin-arm64
+            extension: ''
           - os: windows-2025-vs2026
             target: win32-x64
+            extension: .exe
           - os: windows-11-arm
             target: win32-arm64
+            extension: .exe
 
     steps:
       - name: Checkout
@@ -78,7 +84,6 @@ jobs:
           certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Generate built-in catalog (release artifacts)
-        if: inputs.sign-macos
         shell: bash
         run: |
           CATALOG_FILE="$RUNNER_TEMP/kimi-code-built-in-catalog.json"
@@ -118,6 +123,6 @@ jobs:
           name: ${{ inputs.upload-artifact-prefix }}-${{ matrix.target }}
           retention-days: ${{ inputs.retention-days }}
           path: |
-            apps/kimi-code/dist-native/artifacts/kiki-${{ matrix.target }}.zip
-            apps/kimi-code/dist-native/artifacts/kiki-${{ matrix.target }}.zip.sha256
-          if-no-files-found: ignore
+            apps/kimi-code/dist-native/artifacts/kiki-${{ matrix.target }}${{ matrix.extension }}
+            apps/kimi-code/dist-native/artifacts/kiki-${{ matrix.target }}${{ matrix.extension }}.sha256
+          if-no-files-found: error

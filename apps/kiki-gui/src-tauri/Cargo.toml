@@ -1,11 +1,11 @@
 [package]
-name = "kiki"
+name = "kiki-desktop"
 version = "0.1.2"
 description = "Kiki desktop client"
 authors = ["Kiki contributors"]
 license = "MIT"
 edition = "2021"
-default-run = "kiki"
+default-run = "kiki-desktop"
 
 [lib]
 name = "kiki_lib"

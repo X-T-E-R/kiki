@@ -1,20 +1,16 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { chmod, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
-import { pipeline } from 'node:stream/promises';
 
-import { ZipFile } from 'yazl';
-
-import { executableName, nativeArtifactsDir, nativeBinPath, targetTriple } from './paths.mjs';
+import { nativeArtifactsDir, nativeBinPath, targetTriple } from './paths.mjs';
 
 const target = targetTriple();
-const execName = executableName();
 const sourceBinary = nativeBinPath(target);
 const artifactsDir = nativeArtifactsDir();
 
-// Flat-name archive for GH Release (GitHub Release assets do not support subdirectories).
-const artifactName = `kiki-${target}.zip`;
+// GitHub Release assets are flat; keep the target in each executable's name.
+const artifactName = `kiki-${target}${process.platform === 'win32' ? '.exe' : ''}`;
 const artifactPath = resolve(artifactsDir, artifactName);
 const checksumPath = `${artifactPath}.sha256`;
 
@@ -33,18 +29,17 @@ async function sha256(path) {
   });
 }
 
+let sourceStat;
 try {
-  await stat(sourceBinary);
+  sourceStat = await stat(sourceBinary);
 } catch {
   fail(`Native executable not found at ${sourceBinary}. Run build:native:sea first.`);
 }
+if (!sourceStat.isFile() || sourceStat.size === 0) fail(`Native executable is empty or not a file: ${sourceBinary}`);
 
 await mkdir(artifactsDir, { recursive: true });
-
-const zip = new ZipFile();
-zip.addFile(sourceBinary, execName, { mode: 0o100755 });
-zip.end();
-await pipeline(zip.outputStream, createWriteStream(artifactPath));
+await copyFile(sourceBinary, artifactPath);
+if (process.platform !== 'win32') await chmod(artifactPath, 0o755);
 
 const digest = await sha256(artifactPath);
 await writeFile(checksumPath, `${digest}  ${basename(artifactPath)}\n`);

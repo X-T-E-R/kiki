@@ -1,6 +1,6 @@
 # Kiki 桌面版
 
-Kiki 桌面版是 Kiki 的 Windows 桌面应用，通过 NSIS（一种常见的 Windows 安装程序格式）安装程序分发，只安装给当前 Windows 用户，支持 64 位 Windows。官方安装程序、更新签名、SHA256 校验和与版本化更新清单都会保留在 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 中。
+Kiki 桌面版支持 Windows x64（当前用户的 NSIS 安装包）、Linux x64（AppImage 与 deb）以及 macOS Apple Silicon 和 Intel（dmg）。Windows 安装包同时安装 CLI/TUI，并将 `kiki` 加入用户 `PATH`；Linux deb 也附带 CLI。本页主要说明 Windows 专属的签名更新器；Linux/macOS 使用手动更新，安装方法见[安装](./installation.md#安装桌面版)。Windows 安装程序、更新签名、SHA256 校验和与版本化更新清单会保留在 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 中。
 
 ::: warning 注意
 首个公开版本的 Kiki Windows 安装程序没有 Authenticode 签名（Windows 用来验证发布者身份的官方代码签名）。因此，即使文件来自官方 Release，Windows SmartScreen 也可能把发布者显示为未知。
