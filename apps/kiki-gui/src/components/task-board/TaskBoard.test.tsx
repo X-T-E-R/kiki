@@ -90,6 +90,7 @@ const sampleTasks: BoardTask[] = [
 ];
 
 beforeEach(() => {
+  localStorage.setItem('kiki.locale', 'en');
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -124,7 +125,7 @@ describe('TaskBoard Component Presentation', () => {
       );
     });
 
-    expect(container.textContent).toContain('需求与任务看板');
+    expect(container.textContent).toContain('Task Board');
     expect(document.body.querySelector('[data-board-column="backlog"]')).not.toBeNull();
     expect(document.body.querySelector('[data-board-column="todo"]')).not.toBeNull();
     expect(document.body.querySelector('[data-board-column="running"]')).not.toBeNull();
@@ -230,7 +231,7 @@ describe('TaskBoard Component Presentation', () => {
     });
 
     const newBtn = Array.from(document.body.querySelectorAll('button')).find((b) =>
-      b.textContent?.includes('+ 新建需求')
+      b.textContent?.includes('+ New Requirement')
     );
     expect(newBtn).toBeDefined();
     await act(async () => {
@@ -290,6 +291,70 @@ describe('TaskBoard Component Presentation', () => {
 
     const emptyPlaceholders = document.body.querySelectorAll('.border-dashed');
     expect(emptyPlaceholders.length).toBe(5); // Default 5 columns: backlog, todo, running, done, failed
-    expect(container.textContent).toContain('暂无需求卡片');
+    expect(container.textContent).toContain('No task cards yet');
+  });
+});
+
+describe('TaskBoard localized card facts', () => {
+  const localizedTasks: BoardTask[] = [
+    {
+      id: 'loc-priority-time',
+      title: 'Bilingual priority and relative time',
+      description: '',
+      status: 'backlog',
+      priority: 'urgent',
+      createdAt: Date.now() - 7 * 24 * 3600000,
+      updatedAt: Date.now() - 2 * 3600000,
+      executions: [],
+    },
+    {
+      id: 'loc-older',
+      title: 'Older card',
+      description: '',
+      status: 'todo',
+      priority: 'low',
+      createdAt: Date.now() - 7 * 24 * 3600000,
+      updatedAt: Date.now() - 3 * 24 * 3600000,
+      executions: [],
+    },
+  ];
+
+  function cardText(id: string): string {
+    return document.body.querySelector(`[data-board-task-card="${id}"]`)?.textContent ?? '';
+  }
+
+  async function renderLocalized(locale: 'en' | 'zh'): Promise<void> {
+    localStorage.setItem('kiki.locale', locale);
+    await act(async () => {
+      renderBoard(
+        <TaskBoard
+          tasks={localizedTasks}
+          workspaces={sampleWorkspaces}
+          sessions={sampleSessions}
+        />
+      );
+    });
+  }
+
+  it('renders priority chips and relative times in English', async () => {
+    await renderLocalized('en');
+
+    expect(container.textContent).toContain('Task Board');
+    expect(container.textContent).toContain('New Requirement');
+    expect(cardText('loc-priority-time')).toContain('P0 Urgent');
+    expect(cardText('loc-priority-time')).toContain('2h ago');
+    expect(cardText('loc-older')).toContain('P3 Low');
+    expect(cardText('loc-older')).toContain('3d ago');
+  });
+
+  it('renders priority chips and relative times in Chinese', async () => {
+    await renderLocalized('zh');
+
+    expect(container.textContent).toContain('需求与任务看板');
+    expect(container.textContent).toContain('新建需求');
+    expect(cardText('loc-priority-time')).toContain('P0 紧急');
+    expect(cardText('loc-priority-time')).toContain('2 小时前');
+    expect(cardText('loc-older')).toContain('P3 低');
+    expect(cardText('loc-older')).toContain('3 天前');
   });
 });

@@ -1,7 +1,10 @@
 import { memo } from 'react';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import { BoardAssociatedTodos } from './BoardAssociatedTodos';
 import { ClampText } from '../ClampText';
-import type { BoardTask, TaskPriority } from './types';
+import { RelativeTime } from '../RelativeTime';
+import { useI18n } from '../../i18n';
+import type { BoardTask, TaskExecution, TaskPriority } from './types';
 
 export interface TaskCardProps {
   readonly task: BoardTask;
@@ -11,28 +14,48 @@ export interface TaskCardProps {
   readonly sessionLabels?: Readonly<Record<string, string>>;
 }
 
-function priorityChip(priority?: TaskPriority): { label: string; className: string } {
+const PRIORITY_LABEL_KEYS: Record<TaskPriority, I18nKey> = {
+  urgent: 'taskBoard.priority.urgent',
+  high: 'taskBoard.priority.high',
+  medium: 'taskBoard.priority.medium',
+  low: 'taskBoard.priority.low',
+};
+
+function priorityChip(priority?: TaskPriority): { labelKey: I18nKey; className: string } {
   switch (priority) {
     case 'urgent':
-      return { label: 'P0 紧急', className: 'bg-danger/10 text-danger border-danger/25' };
+      return { labelKey: PRIORITY_LABEL_KEYS.urgent, className: 'bg-danger/10 text-danger border-danger/25' };
     case 'high':
-      return { label: 'P1 高', className: 'bg-accent-soft text-accent-deep border-accent/25' };
+      return { labelKey: PRIORITY_LABEL_KEYS.high, className: 'bg-accent-soft text-accent-deep border-accent/25' };
     case 'medium':
-      return { label: 'P2 中', className: 'bg-amber-card text-amber-ink border-amber-rule/40' };
+      return { labelKey: PRIORITY_LABEL_KEYS.medium, className: 'bg-amber-card text-amber-ink border-amber-rule/40' };
     case 'low':
-      return { label: 'P3 低', className: 'bg-paper text-ink-faint border-hairline' };
+      return { labelKey: PRIORITY_LABEL_KEYS.low, className: 'bg-paper text-ink-faint border-hairline' };
     default:
-      return { label: 'P2 中', className: 'bg-paper text-ink-faint border-hairline' };
+      return { labelKey: PRIORITY_LABEL_KEYS.medium, className: 'bg-paper text-ink-faint border-hairline' };
   }
 }
 
-function formatRelativeTime(ms: number): string {
-  const diffMinutes = Math.floor((Date.now() - ms) / 60000);
-  if (diffMinutes < 1) return '刚刚';
-  if (diffMinutes < 60) return `${diffMinutes}m 前`;
-  const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h 前`;
-  return `${Math.floor(diffHours / 24)}d 前`;
+/** Run-state chip: a locale-neutral glyph plus the localized result label. */
+function executionChip(result: TaskExecution['result']): {
+  symbol: string;
+  labelKey: I18nKey;
+  className: string;
+} {
+  if (result === 'succeeded') {
+    return { symbol: '✓', labelKey: 'taskBoard.result.succeeded', className: 'bg-success/10 text-success' };
+  }
+  if (result === 'failed') {
+    return { symbol: '✕', labelKey: 'taskBoard.result.failed', className: 'bg-danger/10 text-danger' };
+  }
+  return { symbol: '●', labelKey: 'taskBoard.result.running', className: 'bg-accent-soft text-accent' };
+}
+
+/** Millisecond timestamps become ISO for the shared relative-time formatter; an
+ * unparseable value renders as empty rather than throwing. */
+function toIso(ms: number): string {
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
 }
 
 export const TaskCard = memo(function TaskCard({
@@ -41,8 +64,10 @@ export const TaskCard = memo(function TaskCard({
   pending = false,
   sessionLabels,
 }: TaskCardProps) {
+  const { t, tp } = useI18n();
   const latestExecution = task.executions[task.executions.length - 1];
   const pChip = priorityChip(task.priority);
+  const runChip = latestExecution === undefined ? undefined : executionChip(latestExecution.result);
 
   return (
     <div
@@ -61,7 +86,7 @@ export const TaskCard = memo(function TaskCard({
         <span
           className={`shrink-0 rounded-sm border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${pChip.className}`}
         >
-          {pChip.label}
+          {t(pChip.labelKey)}
         </span>
 
         {task.workspaceTitle ? (
@@ -97,42 +122,30 @@ export const TaskCard = memo(function TaskCard({
       {/* Bottom Meta: execution facts, associations, and update time */}
       <div className={`mt-3.5 flex items-center justify-between gap-1.5 text-[11px] font-mono ${latestExecution || task.linkedExecutionIds?.length || task.associatedSessionIds?.length ? 'border-t border-hairline pt-2.5' : ''}`}>
         <div className="flex min-w-0 items-center gap-1.5">
-          {latestExecution ? (
+          {runChip ? (
             <span
-              className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-                latestExecution.result === 'succeeded'
-                  ? 'bg-success/10 text-success'
-                  : latestExecution.result === 'failed'
-                    ? 'bg-danger/10 text-danger'
-                    : 'bg-accent-soft text-accent'
-              }`}
-              title={`最近执行: ${latestExecution.result ?? '运行中'}`}
+              className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${runChip.className}`}
+              title={t('taskBoard.card.executionTitle', { result: t(runChip.labelKey) })}
             >
-              {latestExecution.result === 'succeeded'
-                ? '✓ 成功'
-                : latestExecution.result === 'failed'
-                  ? '✕ 失败'
-                  : '● 运行中'}
+              {runChip.symbol} {t(runChip.labelKey)}
             </span>
           ) : task.linkedExecutionIds?.length ? (
-            <span className="text-ink-faint text-[10.5px]" title="执行引用不表示运行状态">
-              {task.linkedExecutionIds.length} 个执行引用
+            <span className="text-ink-faint text-[10.5px]" title={t('taskBoard.card.executionRefsHint')}>
+              {tp('taskBoard.card.executionRefs', task.linkedExecutionIds.length)}
             </span>
           ) : null}
 
           {task.associatedSessionIds && task.associatedSessionIds.length > 0 ? (
             <span
               className="shrink-0 rounded border border-hairline bg-paper px-1.5 text-[10px] text-ink-soft"
-              title={`${task.associatedSessionIds.length} 个关联会话`}
+              title={tp('taskBoard.card.linkedSessions', task.associatedSessionIds.length)}
             >
               ⌁ {task.associatedSessionIds.length}
             </span>
           ) : null}
         </div>
 
-        <span className="shrink-0 text-ink-faint text-[10.5px]">
-          {formatRelativeTime(task.updatedAt)}
-        </span>
+        <RelativeTime at={toIso(task.updatedAt)} className="shrink-0 text-ink-faint text-[10.5px]" />
       </div>
 
       <BoardAssociatedTodos

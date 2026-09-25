@@ -17,7 +17,7 @@ vi.mock('../../state/connection', () => ({
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
 let container: HTMLDivElement;
-beforeEach(() => { container = document.createElement('div'); document.body.append(container); root = createRoot(container); });
+beforeEach(() => { localStorage.setItem('kiki.locale', 'en'); container = document.createElement('div'); document.body.append(container); root = createRoot(container); });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 const storage = { root: '/example-store', storageId: 'store-a', kind: 'embedded' } as const;
 const card: BoardCard = {
@@ -126,7 +126,7 @@ describe('board container and controlled forms (mock transport, no persistence c
     const client: BoardClient = { read, write };
     await act(async () => renderWithI18n(<TaskBoardContainer client={client} workspaceIds={['workspace-a']} currentWorkspaceId="workspace-a" workspaces={[{ id: 'workspace-a', title: 'Example' }]} sessions={[{ id: 'session-a', title: 'First' }, { id: 'session-b', title: 'Second' }]} />));
     expect(read.mock.calls.filter(([input]) => input.action === 'show')).toHaveLength(0);
-    await act(async () => button('+ 新建需求').click());
+    await act(async () => button('+ New Requirement').click());
     const form = document.body.querySelector('[data-new-task-modal] form') as HTMLFormElement;
     const title = form.querySelector('input[type=text]') as HTMLInputElement;
     await act(async () => change(title, 'An idea'));
@@ -209,7 +209,7 @@ describe('board container and controlled forms (mock transport, no persistence c
     const workspaceFilter = document.body.querySelector('select') as HTMLSelectElement;
     expect(workspaceFilter.value).toBe('all');
     expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(3);
-    const sessionFilter = [...document.body.querySelectorAll('select')].find((entry) => entry.textContent?.includes('全部会话关联')) as HTMLSelectElement;
+    const sessionFilter = [...document.body.querySelectorAll('select')].find((entry) => entry.textContent?.includes('All associated sessions')) as HTMLSelectElement;
     expect(sessionFilter.value).toBe('all');
     sessionFilter.value = 'session-a';
     await act(async () => sessionFilter.dispatchEvent(new Event('change', { bubbles: true })));

@@ -208,7 +208,7 @@ export const TaskBoard = memo(function TaskBoard({
             {issues.length > 0 ? tp('taskBoard.issues.partial', issues.length) : ''}
             {issues.length > 0 && cardIssues.length > 0 ? ' · ' : ''}
             {cardIssues.length > 0 ? tp('taskBoard.issues.cards', cardIssues.length) : ''}
-            {issueWorkspaceNames.length > 0 ? ` · ${issueWorkspaceNames.join('、')}` : ''}
+            {issueWorkspaceNames.length > 0 ? ` · ${issueWorkspaceNames.join(t('taskBoard.listSeparator'))}` : ''}
           </span>
         </div>
       ) : null}
@@ -224,23 +224,23 @@ export const TaskBoard = memo(function TaskBoard({
               className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink-soft hover:border-accent hover:text-accent transition-colors"
             >
               <span>‹</span>
-              <span>返回会话</span>
+              <span>{t('taskBoard.backToSession')}</span>
             </button>
           ) : null}
 
           <div>
             <div className="flex items-center gap-2">
               <h2 className="font-display text-[19px] font-semibold text-ink leading-none">
-                需求与任务看板
+                {t('taskBoard.title')}
               </h2>
               {loading ? (
                 <span className="font-mono text-[10.5px] text-accent animate-pulse">
-                  同步中...
+                  {t('taskBoard.syncing')}
                 </span>
               ) : null}
             </div>
             <span className="font-mono text-[11px] text-ink-faint">
-              共 {filteredTasks.length} / {tasks.length} 项需求
+              {t('taskBoard.summary', { shown: filteredTasks.length, total: tasks.length })}
             </span>
           </div>
         </div>
@@ -250,7 +250,7 @@ export const TaskBoard = memo(function TaskBoard({
           {/* Search Box */}
           <input
             type="search"
-            placeholder="搜索任务/提示词..."
+            placeholder={t('taskBoard.search.placeholder')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-60 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-3 py-1.5 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden"
@@ -282,7 +282,7 @@ export const TaskBoard = memo(function TaskBoard({
             onChange={(e) => setSelectedSessionFilter(e.target.value)}
             className="w-60 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink focus:border-accent focus:outline-hidden font-mono"
           >
-            <option value="all">全部会话关联</option>
+            <option value="all">{t('taskBoard.sessionFilter.all')}</option>
             {sessions.map((s) => (
               <option key={s.id} value={s.id}>
                 ⌁ {s.title}
@@ -308,7 +308,7 @@ export const TaskBoard = memo(function TaskBoard({
             onClick={() => setShowNewTaskModal(true)}
             className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-medium text-panel hover:bg-accent-deep transition-colors shadow-xs"
           >
-            + 新建需求
+            + {t('taskBoard.newTask')}
           </button>
         </div>
       </header>
@@ -427,7 +427,7 @@ export const TaskBoard = memo(function TaskBoard({
                 <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain pr-1">
                   {colTasks.length === 0 ? (
                     <div className="py-8 text-center text-[12px] text-ink-faint border border-dashed border-hairline rounded-xl">
-                      暂无需求卡片
+                      {t('taskBoard.column.empty')}
                     </div>
                   ) : (
                     colTasks.map((task) => (

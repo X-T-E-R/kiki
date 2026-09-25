@@ -259,7 +259,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                     </span>
                     {task.workspaceTitle ? (
                       <span className="font-mono text-[11.5px] text-ink-faint">
-                        📁 工作区: {task.workspaceTitle}
+                        📁 {t('taskBoard.detail.field.workspace')}: {task.workspaceTitle}
                       </span>
                     ) : null}
                   </div>
