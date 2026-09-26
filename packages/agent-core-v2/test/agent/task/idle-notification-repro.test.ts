@@ -345,6 +345,40 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(flatContext).toContain('busy-state bg result');
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+    it.each(['completed', 'cancelled'] as const)(
+      'replays a queued notification after %s turn exit exactly once at the next prompt', async (outcome) => {
+      ctx.mockNextResponse({ type: 'text', text: 'first ack' });
+      ctx.mockNextResponse({ type: 'text', text: 'second ack' });
+      ctx.mockNextResponse({ type: 'text', text: 'third ack' });
+      let taskId = '';
+      const enqueue = vi.spyOn(loop, 'enqueue');
+      const hook = loop.hooks.onDidFinishStep.register('test.exit-race', async (step, next) => {
+        hook.dispose();
+        taskId = background.registerTask(agentTask(Promise.resolve({ result: 'durable child report' }), 'exit race'));
+        await background.wait(taskId);
+        await vi.waitFor(() => expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true));
+        if (outcome === 'cancelled') loop.cancel();
+        else step.stopTurn = true;
+        await next();
+      });
+      try {
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first prompt' }] });
+        await ctx.untilTurnEnd();
+        await vi.waitFor(() => expect(loop.status().state).toBe('idle'));
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task')).toHaveLength(0);
+        expect(notifiedCount(ctx)).toBe(0);
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'next authorized prompt' }] });
+        await ctx.untilTurnEnd();
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === taskId)).toHaveLength(1);
+        expect(notifiedCount(ctx)).toBe(1);
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'another prompt' }] });
+        await ctx.untilTurnEnd();
+        expect(notifiedCount(ctx)).toBe(1);
+      } finally {
+        hook.dispose();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
     it('IDLE × N: a GROUP of bg agents completes — the first notification launches one turn, the rest fold in', async () => {
       ctx.mockNextResponse({ type: 'text', text: 'ack group 1' });
       ctx.mockNextResponse({ type: 'text', text: 'ack group 2' });
@@ -548,6 +582,7 @@ describe('task notification → main agent (real Agent instance)', () => {
         status: 'completed',
       });
       await backgroundPersistence.appendTaskOutput('bash-prev0000', 'previous bash output');
+      await backgroundPersistence.commitTerminalTask((await backgroundPersistence.readTask('bash-prev0000'))!);
 
       await backgroundPersistence.writeTask({
         taskId: 'agent-prev0000',
@@ -585,17 +620,19 @@ describe('task notification → main agent (real Agent instance)', () => {
           startedAt: 10 + i, endedAt: 20 + i, status: i === 4 ? 'failed' : 'completed',
           stopReason: i === 4 ? '错误 <failure> & reason' : undefined,
         });
-        await persistence.appendTaskOutput(taskId, output);
+        await persistence.commitTerminalTask((await persistence.readTask(taskId))!, output);
       }
       await persistence.writeTask({
         taskId: 'question-batch000', kind: 'question', questionCount: 1, description: 'restored answer',
         startedAt: 30, endedAt: 31, status: 'completed',
       });
       await persistence.appendTaskOutput('question-batch000', answer);
+      await persistence.commitTerminalTask((await persistence.readTask('question-batch000'))!);
       await persistence.writeTask({
         taskId: 'agent-nofile00', kind: 'agent', description: 'no receipt captured',
         startedAt: 32, endedAt: 33, status: 'failed', stopReason: 'no output exists',
       });
+      await persistence.commitTerminalTask((await persistence.readTask('agent-nofile00'))!);
       await background.loadFromDisk();
       await background.reconcile();
       const notifications = ctx.context.get().filter((m) => m.origin?.kind === 'task');

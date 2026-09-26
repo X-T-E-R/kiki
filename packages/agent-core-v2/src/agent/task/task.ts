@@ -13,6 +13,7 @@ export type {
   AgentTask,
   AgentTaskInfo,
   AgentTaskInfoBase,
+  AgentTaskReceipt,
   AgentTaskKind,
   AgentTaskStatus,
   TaskLifetime,
@@ -107,7 +108,7 @@ export interface IAgentTaskService {
    * permanently mutes every background-task notification for that scope.
    */
   suppressAllTerminalNotifications(): Promise<void>;
-  markTasksDeliveredViaWait(tasks: readonly AgentTaskWaitDelivery[]): void;
+  markTasksDeliveredViaWait(tasks: readonly AgentTaskWaitDelivery[], toolCallId?: string, signal?: AbortSignal): void;
   detach(taskId: string): AgentTaskInfo | undefined;
   stop(taskId: string, reason?: string): Promise<AgentTaskInfo | undefined>;
   stopByUser(taskId: string): Promise<AgentTaskInfo | undefined>;

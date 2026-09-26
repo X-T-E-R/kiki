@@ -104,7 +104,8 @@ export class SubagentTask implements AgentTask {
 
     try {
       const outcome = await this.handle.completion;
-      sink.appendOutput(outcome.result);
+      if (sink.setFinalOutput !== undefined) sink.setFinalOutput(outcome.result);
+      else sink.appendOutput(outcome.result);
       await sink.settle({ status: 'completed' });
     } catch (error: unknown) {
       if (sink.signal.aborted && (isAbortError(error) || error === sink.signal.reason)) {

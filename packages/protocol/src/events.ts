@@ -9,6 +9,7 @@ import {
   type SessionPendingInteraction,
 } from './session';
 import { isoDateTimeSchema } from './time';
+import { taskReceiptSchema, type TaskReceipt } from './task';
 import { configResponseSchema, type ConfigResponse } from './rest/config';
 import {
   deferredAppendTimingSchema,
@@ -394,6 +395,8 @@ export interface TaskInfoBase {
   readonly ownerAgentId?: string;
   readonly ownerTurnId?: number;
   readonly goalId?: string;
+  readonly receipt?: TaskReceipt;
+  readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
 }
 
 export interface ProcessTaskInfo extends TaskInfoBase {
@@ -1562,6 +1565,8 @@ export const taskInfoBaseSchema = z.object({
   ownerAgentId: z.string().optional(),
   ownerTurnId: z.number().int().nonnegative().optional(),
   goalId: z.string().optional(),
+  receipt: taskReceiptSchema.optional(),
+  receiptVerification: z.enum(['verified', 'legacy_unverified', 'invalid']).optional(),
 }) satisfies z.ZodType<TaskInfoBase>;
 
 export const processTaskInfoSchema = taskInfoBaseSchema.extend({

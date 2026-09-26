@@ -928,7 +928,7 @@ describe('AgentTaskService — notification delivery', () => {
     try {
       const persistence = createAgentTaskPersistence(sessionDir);
       await persistence.writeTask(persistedAgent());
-      await persistence.appendTaskOutput('agent-done0000', 'restored subagent summary');
+      await persistence.commitTerminalTask(persistedAgent(), 'restored subagent summary');
       fixture = createAgentTaskService({ sessionDir });
       const { agent, manager } = fixture;
 
@@ -964,6 +964,7 @@ describe('AgentTaskService — notification delivery', () => {
       const persistence = createAgentTaskPersistence(sessionDir);
       await persistence.writeTask(persistedProcess());
       await persistence.appendTaskOutput('bash-done0000', 'restored shell output');
+      await persistence.commitTerminalTask(persistedProcess());
       fixture = createAgentTaskService({ sessionDir });
       const { agent, manager } = fixture;
 
@@ -1000,6 +1001,7 @@ describe('AgentTaskService — notification delivery', () => {
       const persistence = createAgentTaskPersistence(sessionDir);
       await persistence.writeTask(persistedQuestion());
       await persistence.appendTaskOutput('question-done0000', answer);
+      await persistence.commitTerminalTask(persistedQuestion());
       fixture = createAgentTaskService({ sessionDir });
       const { agent, manager } = fixture;
 
@@ -1036,6 +1038,7 @@ describe('AgentTaskService — notification delivery', () => {
       const persistence = createAgentTaskPersistence(sessionDir);
       await persistence.writeTask(persistedProcess({ taskId }));
       await persistence.appendTaskOutput(taskId, largeOutput);
+      await persistence.commitTerminalTask(persistedProcess({ taskId }));
       fixture = createAgentTaskService({ sessionDir });
       const { agent, manager } = fixture;
 
@@ -1131,7 +1134,7 @@ describe('AgentTaskService — notification delivery', () => {
     try {
       const persistence = createAgentTaskPersistence(sessionDir);
       await persistence.writeTask(persistedAgent());
-      await persistence.appendTaskOutput('agent-done0000', 'restored subagent summary');
+      await persistence.commitTerminalTask(persistedAgent(), 'restored subagent summary');
       fixture = createAgentTaskService({ sessionDir });
       const { agent, ctx, manager } = fixture;
       ctx.appendUserTurn('start the background task');
@@ -1463,7 +1466,7 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     try {
       const persistence = createAgentTaskPersistence(sessionDir);
       await persistence.writeTask(persistedAgent());
-      await persistence.appendTaskOutput('agent-done0000', 'restored delivery summary');
+      await persistence.commitTerminalTask(persistedAgent(), 'restored delivery summary');
       fixture = createAgentTaskService({ sessionDir });
       const { agent, manager } = fixture;
 

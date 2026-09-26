@@ -411,6 +411,7 @@ describe('Agent loop', () => {
     });
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
+    expect(loop.status().lastTurnResult).toBe('cancelled');
     subscription.dispose();
 
     const begins = wireLoopEvents(ctx, 'step.begin');

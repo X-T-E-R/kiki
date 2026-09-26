@@ -42,6 +42,11 @@ export interface AfterStepContext extends BeforeStepContext {
   stopTurn: boolean;
 }
 
+export interface AppendedToolResultContext {
+  readonly toolCallId: string;
+  readonly isError?: boolean;
+}
+
 export interface LoopErrorContext {
   readonly currentStep?: Step;
   readonly turnId: number;
@@ -127,6 +132,7 @@ export interface EnqueueReceipt {
 export interface AgentLoopStatus {
   readonly state: 'idle' | 'running';
   readonly activeTurnId?: number;
+  readonly lastTurnResult?: TurnResult['type'];
   readonly pendingTurnIds: readonly number[];
   readonly hasPendingRequests: boolean;
   readonly pendingRequestKinds?: readonly string[];
@@ -164,6 +170,7 @@ export interface IAgentLoopService {
 
   readonly hooks: Hooks<{
     onWillBeginStep: BeforeStepContext;
+    onDidAppendToolResult: AppendedToolResultContext;
     onDidFinishStep: AfterStepContext;
   }>;
 }

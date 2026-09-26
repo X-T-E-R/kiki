@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
+import { taskReceiptSchema } from '@kiki/protocol';
 
 export const taskKindSchema = z.enum(['subagent', 'bash', 'tool']);
 export type TaskKind = z.infer<typeof taskKindSchema>;
@@ -25,6 +26,9 @@ export const taskSchema = z.object({
   completed_at: isoDateTimeSchema.optional(),
   output_preview: z.string().optional(),
   output_bytes: z.number().int().nonnegative().optional(),
+  total_bytes: z.number().int().nonnegative().optional(),
+  receipt: taskReceiptSchema.optional(),
+  receipt_verification: z.enum(['verified', 'legacy_unverified', 'invalid']).optional(),
   model: z.string().optional(),
   thinking_effort: z.string().optional(),
   agent_id: z.string().optional(),

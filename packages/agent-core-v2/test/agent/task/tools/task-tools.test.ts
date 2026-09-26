@@ -1421,6 +1421,8 @@ describe('TaskWait tool (harness)', () => {
       expect(output).toContain(`task_id: ${taskId}`);
       expect(output).toContain('[finished]');
       expect(output).toContain('[output]\nDONE-OUTPUT');
+      expect(ctx.allEvents.some((event) => event.event === 'task.waitDelivered')).toBe(false);
+      await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'wait_e2e', isError: false });
       expect(ctx.allEvents.some((event) => event.event === 'task.waitDelivered')).toBe(true);
 
       expect(loop.hasPendingRequests()).toBe(false);
@@ -1472,6 +1474,8 @@ describe('TaskWait tool (harness)', () => {
       expect(output).toContain(`task_id: ${taskA}`);
       expect(output).not.toContain(taskB);
       expect(output).not.toContain('[completed_during_wait]');
+      expect(ctx.allEvents.filter((event) => event.event === 'task.waitDelivered')).toHaveLength(0);
+      await ctx.get(IAgentLoopService).hooks.onDidAppendToolResult.run({ toolCallId: 'wait_race', isError: false });
       expect(ctx.allEvents.filter((event) => event.event === 'task.waitDelivered')).toHaveLength(1);
     } finally {
       await ctx.dispose();

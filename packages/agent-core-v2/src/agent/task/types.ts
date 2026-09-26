@@ -22,6 +22,17 @@ export interface AgentTaskSettlement {
 
 export type TaskLifetime = 'finite' | 'service';
 
+export interface AgentTaskReceipt {
+  readonly schemaVersion: 1;
+  readonly path: string;
+  readonly mediaType: 'text/plain; charset=utf-8';
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly contentState: 'final' | 'unavailable';
+  readonly committedAt: string;
+  readonly sourceTurnId?: number;
+}
+
 export interface AgentTaskInfoBase {
   readonly taskId: string;
   readonly description: string;
@@ -36,6 +47,8 @@ export interface AgentTaskInfoBase {
   readonly ownerAgentId?: string;
   readonly ownerTurnId?: number;
   readonly goalId?: string;
+  readonly receipt?: AgentTaskReceipt;
+  readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
 }
 
 export interface ProcessTaskInfo extends AgentTaskInfoBase {
@@ -75,6 +88,7 @@ export type AgentTaskInfo = AgentTaskInfoByKind[AgentTaskKind];
 export interface AgentTaskSink {
   readonly signal: AbortSignal;
   appendOutput(chunk: string): void;
+  setFinalOutput?(text: string): void;
   settle(settlement: AgentTaskSettlement): Promise<boolean>;
 }
 

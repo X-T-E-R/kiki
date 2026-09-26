@@ -2219,6 +2219,13 @@ describe('TranscriptWireAdapter', () => {
           detached: true,
           startedAt: 4_000,
           endedAt: 5_000,
+          receiptVerification: 'verified',
+          receipt: {
+            schemaVersion: 1, path: 'tasks/agent-task/output.log',
+            mediaType: 'text/plain; charset=utf-8', bytes: 16,
+            sha256: 'a'.repeat(64), contentState: 'final',
+            committedAt: '2026-06-04T10:01:00.000Z', sourceTurnId: 0,
+          },
         },
         outputTail: 'scanned 12 files',
         time: 5_000,
@@ -2279,6 +2286,8 @@ describe('TranscriptWireAdapter', () => {
       ],
     });
     expect(transcript.getTask('agent-task')).toMatchObject({
+      receiptVerification: 'verified',
+      receipt: { path: 'tasks/agent-task/output.log', bytes: 16, contentState: 'final' },
       kind: 'subagent',
       state: 'completed',
       detached: true,

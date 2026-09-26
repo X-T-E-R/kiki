@@ -11,6 +11,17 @@ export type TaskState =
   | 'killed'
   | 'lost';
 
+export interface TranscriptTaskReceipt {
+  readonly schemaVersion: 1;
+  readonly path: string;
+  readonly mediaType: string;
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly contentState: 'final' | 'unavailable';
+  readonly committedAt: string;
+  readonly sourceTurnId?: number;
+}
+
 export interface TranscriptTask {
   readonly taskId: TaskId;
   readonly kind: TaskKind;
@@ -21,6 +32,8 @@ export interface TranscriptTask {
   readonly ownerAgentId?: AgentId;
   readonly ownerTurnId?: number;
   readonly goalId?: string;
+  readonly receipt?: TranscriptTaskReceipt;
+  readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   readonly name?: string;
   readonly subagentName?: string;
   /** Human-readable one-liner (command line, agent description, …). */

@@ -35,6 +35,9 @@ interface TaskWire {
   completed_at?: string;
   output_preview?: string;
   output_bytes?: number;
+  total_bytes?: number;
+  receipt?: { schemaVersion: number; path: string; bytes: number; contentState: string };
+  receipt_verification?: string;
   agent_id?: string;
   profile?: string;
   parent_tool_call_id?: string;
@@ -238,6 +241,27 @@ describe('server-v2 /api/sessions/{sid}/tasks', () => {
     expect(byId.get(questionId)?.profile).toBeUndefined();
     expect(byId.get(processId)?.parent_tool_call_id).toBeUndefined();
     expect(byId.get(questionId)?.parent_tool_call_id).toBeUndefined();
+  });
+
+  it('returns a verified receipt reference without changing output_bytes preview semantics', async () => {
+    const id = await createSession();
+    const tasks = await mainAgentTasks(id);
+    const taskId = tasks.registerTask({
+      ...fakeTask('agent'),
+      async start(sink) {
+        sink.setFinalOutput?.('complete report');
+        await sink.settle({ status: 'completed' });
+      },
+    });
+    await tasks.wait(taskId);
+    const response = await getJson<TaskWire>(`/api/sessions/${id}/tasks/${taskId}?with_output=true`);
+    expect(response.body.code).toBe(0);
+    expect(response.body.data).toMatchObject({
+      receipt_verification: 'verified',
+      total_bytes: 15,
+      receipt: { schemaVersion: 1, path: `tasks/${taskId}/output.log`, bytes: 15, contentState: 'final' },
+    });
+    expect(response.body.data.output_bytes).toBeLessThanOrEqual(response.body.data.total_bytes ?? 0);
   });
 
   it('reports run_in_background from the task detached flag', async () => {

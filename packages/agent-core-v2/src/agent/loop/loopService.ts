@@ -104,6 +104,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   readonly hooks: IAgentLoopService['hooks'] = {
     onWillBeginStep: new OrderedHookSlot(),
+    onDidAppendToolResult: new OrderedHookSlot(),
     onDidFinishStep: new OrderedHookSlot(),
   };
 
@@ -113,6 +114,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private readonly pendingTurns: TurnJob[] = [];
   private readonly heldAdmissions: HeldAdmission[] = [];
   private activeTurnJob: TurnJob | undefined;
+  private lastTurnResult: TurnResult['type'] | undefined;
   private readonly settleWaiters: Array<() => void> = [];
   private quiescenceDepth = 0;
   private activeRequestTrace: LLMRequestTrace | undefined;
@@ -237,6 +239,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return {
       state: this.activeTurnJob === undefined ? 'idle' : 'running',
       activeTurnId: this.activeTurnJob?.turn.id,
+      lastTurnResult: this.lastTurnResult,
       pendingTurnIds: this.pendingTurns.map((job) => job.turn.id),
       hasPendingRequests: this.hasPendingRequests(),
       pendingRequestKinds: [
@@ -621,6 +624,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     for (const step of job.steps.values()) {
       if (step.state === 'queued' || step.state === 'running') step.cancel(reason);
     }
+    this.lastTurnResult = result?.type ?? 'failed';
     this.activeTurnJob = undefined;
     this.maybeSettle();
   }
@@ -1113,6 +1117,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           parentUuid: toolCallUuids.get(toolResult.toolCallId) ?? randomUUID(),
           toolCallId: toolResult.toolCallId,
           result: { output: result.output, isError: result.isError, note: result.note },
+        });
+        await this.hooks.onDidAppendToolResult.run({
+          toolCallId: toolResult.toolCallId,
+          isError: result.isError,
         });
         if (result.stopTurn === true) stopTurn = true;
       }

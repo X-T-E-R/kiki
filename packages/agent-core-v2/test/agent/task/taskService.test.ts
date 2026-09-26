@@ -690,10 +690,11 @@ describe('AgentTaskService', () => {
         await cleanupGate;
       },
     });
-    await svc.wait(taskId);
     const internals = svc as unknown as { tasks: Map<string, unknown> };
+    await vi.waitFor(() => expect(svc.getTask(taskId)?.status).toBe('completed'));
     expect(internals.tasks.has(taskId)).toBe(true);
     releaseWrite();
+    await svc.wait(taskId);
     expect(await svc.readOutput(taskId)).toBe('held output');
     expect(internals.tasks.has(taskId)).toBe(true);
     releaseCleanup();
@@ -743,6 +744,24 @@ describe('AgentTaskService', () => {
     await waitForCondition(() => loop.hasPendingRequests());
 
     expect(loop.hasPendingRequests()).toBe(true);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('does not mark a TaskWait delivery until its tool result is appended and flushed', async () => {
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask(outputtingTask('report'));
+    await svc.wait(taskId);
+    const loop = stubLoop();
+    await waitForCondition(() => loop.hasPendingRequests());
+    const deliveryKey = `${taskId}\0completed\0task:${taskId}:completed`;
+    svc.markTasksDeliveredViaWait([{ taskId, status: 'completed' }], 'tool-call-1');
+    expect(ix.get(IAgentStateService).get(taskNotificationDeliveryKey)).not.toContain(deliveryKey);
+    expect(loop.hasPendingRequests()).toBe(true);
+    await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'tool-call-1', isError: true });
+    expect(ix.get(IAgentStateService).get(taskNotificationDeliveryKey)).not.toContain(deliveryKey);
+    svc.markTasksDeliveredViaWait([{ taskId, status: 'completed' }], 'tool-call-2');
+    await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'tool-call-2', isError: false });
+    expect(ix.get(IAgentStateService).get(taskNotificationDeliveryKey)).toContain(deliveryKey);
+    expect(loop.hasPendingRequests()).toBe(false);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('markTasksDeliveredViaWait suppresses the automatic terminal notification', async () => {
@@ -1412,14 +1431,14 @@ describe('AgentTaskService', () => {
     await restoreHook.run({});
 
     expect(main.list(false)).toEqual([
-      expect.objectContaining({ taskId, description: 'legacy task', status: 'completed' }),
+      expect.objectContaining({ taskId, description: 'legacy task', status: 'completed', receiptVerification: 'legacy_unverified' }),
     ]);
     expect(await main.getOutputSnapshot(taskId, 100)).toEqual({
-      outputPath: `/tmp/test-session/tasks/${taskId}/output.log`,
+      outputPath: undefined,
       outputSizeBytes: 13,
       previewBytes: 13,
       truncated: false,
-      fullOutputAvailable: true,
+      fullOutputAvailable: false,
       preview: 'legacy output',
     });
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);

@@ -147,8 +147,8 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     const taskId = registerProcess(manager, immediateProcess(0, 'hello\n'), 'echo', 'demo');
 
     await waitForOutput(manager, taskId, 'hello');
-    const snapshot = await manager.getOutputSnapshot(taskId, 1_000);
     await manager.wait(taskId);
+    const snapshot = await manager.getOutputSnapshot(taskId, 1_000);
 
     expect(snapshot.outputPath).toBeDefined();
     expect(snapshot.outputPath).toContain(sessionDir);
@@ -175,14 +175,15 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     expect(snapshot.preview).not.toContain(head);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('getOutputSnapshot omits outputPath when no persisted log file exists', async () => {
+  it('getOutputSnapshot verifies an empty output log for a silent terminal task', async () => {
     const taskId = registerProcess(manager, immediateProcess(0), 'sleep 1', 'silent task');
 
     await manager.wait(taskId);
     const snapshot = await manager.getOutputSnapshot(taskId, 1_000);
 
-    expect(snapshot.outputPath).toBeUndefined();
-    expect(snapshot.fullOutputAvailable).toBe(false);
+    expect(snapshot.outputPath).toContain('output.log');
+    expect(snapshot.outputSizeBytes).toBe(0);
+    expect(snapshot.fullOutputAvailable).toBe(true);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('getOutputSnapshot returns an empty snapshot for unknown task ids', async () => {

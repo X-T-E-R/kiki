@@ -1150,11 +1150,20 @@ describe('AgentTranscriptLiveAdapter', () => {
           collaborationTaskName: 'inspect_files',
           startedAt: 1_700_000_000_000,
           endedAt: 1_700_000_001_000,
+          receiptVerification: 'verified',
+          receipt: {
+            schemaVersion: 1, path: 'tasks/task-9/output.log',
+            mediaType: 'text/plain; charset=utf-8', bytes: 200,
+            sha256: 'a'.repeat(64), contentState: 'final',
+            committedAt: '2026-06-04T10:01:00.000Z',
+          },
         },
       }),
     );
 
     expect(tx.getTask('task-9')).toMatchObject({
+      receiptVerification: 'verified',
+      receipt: { path: 'tasks/task-9/output.log', bytes: 200 },
       kind: 'subagent',
       state: 'completed',
       agentId: 'agent-1',

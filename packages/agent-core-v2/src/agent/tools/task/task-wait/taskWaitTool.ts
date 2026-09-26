@@ -188,6 +188,8 @@ export class TaskWaitTool implements ITaskWaitTool {
     const output = await this.formatCompleted(waited, extras, startedAt, timeoutMs);
     this.tasks.markTasksDeliveredViaWait(
       [waited, ...extras].map((info) => ({ taskId: info.taskId, status: info.status })),
+      ctx.toolCallId,
+      ctx.signal,
     );
     this.track(args, startedAt, timeoutMs, 'completed', extras.length);
     return { output, isError: false };

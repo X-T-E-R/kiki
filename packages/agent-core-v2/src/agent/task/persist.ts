@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto';
 import { join } from 'pathe';
 
 import { BugIndicatingError } from '#/errors';
 import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { IFileSystemStorageService } from '#/persistence/interface/storage';
 
-import type { AgentTaskInfo, AgentTaskStatus } from './types';
+import type { AgentTaskInfo, AgentTaskReceipt, AgentTaskStatus } from './types';
 
 const VALID_TASK_ID: RegExp = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{8}$/;
 
@@ -87,6 +88,32 @@ export class AgentTaskPersistence {
     await this.docs.set(this.tasksScope(), `${task.taskId}${JSON_SUFFIX}`, task);
   }
 
+  async commitTerminalTask(task: PersistedTask, finalOutput?: string): Promise<AgentTaskReceipt> {
+    const scope = this.taskOutputScope(task.taskId);
+    if (finalOutput !== undefined) {
+      await this.bytes.write(scope, OUTPUT_LOG_KEY, textEncoder.encode(finalOutput), { atomic: true });
+    }
+    let data = await this.bytes.read(scope, OUTPUT_LOG_KEY);
+    if (data === undefined) {
+      await this.bytes.write(scope, OUTPUT_LOG_KEY, new Uint8Array(), { atomic: true });
+      data = await this.bytes.read(scope, OUTPUT_LOG_KEY);
+      if (data === undefined) throw new Error('Task output was not persisted');
+    }
+    const receipt: AgentTaskReceipt = {
+      schemaVersion: 1,
+      path: `${TASKS_SCOPE}/${task.taskId}/${OUTPUT_LOG_KEY}`,
+      mediaType: 'text/plain; charset=utf-8',
+      bytes: data.byteLength,
+      sha256: createHash('sha256').update(data).digest('hex'),
+      contentState: task.kind === 'agent' && (task.status !== 'completed' || finalOutput === undefined)
+        ? 'unavailable' : 'final',
+      committedAt: new Date().toISOString(),
+      sourceTurnId: task.ownerTurnId,
+    };
+    await this.writeTask({ ...task, receipt, receiptVerification: 'verified' });
+    return receipt;
+  }
+
   async deleteTask(taskId: string): Promise<void> {
     validateTaskId(taskId);
     await Promise.all([
@@ -100,13 +127,14 @@ export class AgentTaskPersistence {
     const key = `${taskId}${JSON_SUFFIX}`;
     const task = await this.docs.get<DiskPersistedTask>(this.tasksScope(), key);
     if (task !== undefined) {
-      return isReadablePersistedTask(task) ? normalizePersistedTask(task) : undefined;
+      return isReadablePersistedTask(task)
+        ? this.verifyReceipt(normalizePersistedTask(task), this.primaryRoot()) : undefined;
     }
     const fallbackRoot = this.fallbackRoot;
     if (fallbackRoot === undefined) return undefined;
     const fallback = await this.docs.get<DiskPersistedTask>(this.tasksScope(fallbackRoot), key);
     if (fallback === undefined || !isReadablePersistedTask(fallback)) return undefined;
-    return normalizePersistedTask(fallback);
+    return this.verifyReceipt(normalizePersistedTask(fallback), fallbackRoot);
   }
 
   async appendTaskOutput(taskId: string, chunk: string): Promise<void> {
@@ -203,9 +231,43 @@ export class AgentTaskPersistence {
         continue;
       }
       if (task === undefined || !isReadablePersistedTask(task)) continue;
-      tasks.push({ keyId: id, task: normalizePersistedTask(task) });
+      tasks.push({ keyId: id, task: await this.verifyReceipt(normalizePersistedTask(task), root) });
     }
     return { reservedIds, tasks };
+  }
+
+  private async verifyReceipt(task: PersistedTask, root: AgentTaskPersistenceRoot): Promise<PersistedTask> {
+    if (task.endedAt === null) return task;
+    const receipt = task.receipt;
+    if (receipt === undefined) {
+      return { ...task, receiptVerification: task.receiptVerification === 'invalid' ? 'invalid' : 'legacy_unverified' };
+    }
+    if (!isRecord(receipt) || receipt.schemaVersion !== 1 ||
+        receipt.path !== `${TASKS_SCOPE}/${task.taskId}/${OUTPUT_LOG_KEY}` ||
+        receipt.mediaType !== 'text/plain; charset=utf-8' ||
+        !Number.isSafeInteger(receipt.bytes) || receipt.bytes < 0 ||
+        typeof receipt.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.sha256) ||
+        (receipt.contentState !== 'final' && receipt.contentState !== 'unavailable') ||
+        typeof receipt.committedAt !== 'string') {
+      return { ...task, receipt: undefined, receiptVerification: 'invalid' };
+    }
+    try {
+      const scope = this.taskOutputScope(task.taskId, root);
+      if (await this.bytes.size(scope, OUTPUT_LOG_KEY) !== receipt.bytes) {
+        return { ...task, receipt: undefined, receiptVerification: 'invalid' };
+      }
+      const hash = createHash('sha256');
+      let total = 0;
+      for await (const chunk of this.bytes.readStream(scope, OUTPUT_LOG_KEY)) {
+        total += chunk.byteLength;
+        if (total > receipt.bytes) break;
+        hash.update(chunk);
+      }
+      if (total === receipt.bytes && hash.digest('hex') === receipt.sha256) {
+        return { ...task, receiptVerification: 'verified' };
+      }
+    } catch {}
+    return { ...task, receipt: undefined, receiptVerification: 'invalid' };
   }
 
   private async readTaskOutputData(taskId: string): Promise<TaskOutputData | undefined> {
@@ -247,6 +309,8 @@ function normalizePersistedTask(task: DiskPersistedTask): PersistedTask {
     ownerAgentId: record.ownerAgentId,
     ownerTurnId: record.ownerTurnId,
     goalId: record.goalId,
+    receipt: record.receipt,
+    receiptVerification: record.receiptVerification,
     kind: 'agent',
     agentId: record.agentId,
     profile,

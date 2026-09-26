@@ -67,6 +67,22 @@ describe('taskSchema', () => {
     expect(taskSchema.parse(completed).output_bytes).toBe(4096);
   });
 
+  it('keeps the preview byte count distinct from the verified receipt total', () => {
+    const receipt = {
+      schemaVersion: 1 as const,
+      path: 'tasks/agent-12345678/output.log',
+      mediaType: 'text/plain; charset=utf-8',
+      bytes: 2_000_000,
+      sha256: 'a'.repeat(64),
+      contentState: 'final' as const,
+      committedAt: '2026-06-04T10:01:00.000Z',
+      sourceTurnId: 2,
+    };
+    expect(taskSchema.parse({ ...full, output_bytes: 128, total_bytes: receipt.bytes, receipt }))
+      .toMatchObject({ output_bytes: 128, total_bytes: 2_000_000, receipt });
+    expect(taskSchema.parse(full).receipt).toBeUndefined();
+  });
+
   it('rejects negative output_bytes', () => {
     const bad = { ...full, output_bytes: -1 };
     expect(taskSchema.safeParse(bad).success).toBe(false);

@@ -83,6 +83,90 @@ describe('AgentTaskPersistence', () => {
     expect(loaded).toEqual(sample());
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('commits and verifies an atomic UTF-8 agent receipt, rejecting a shortened log on recovery', async () => {
+    const task = {
+      taskId: 'agent-11111111', kind: 'agent' as const, description: 'large report',
+      status: 'completed' as const, detached: true, startedAt: 1, endedAt: 2, ownerTurnId: 7,
+    };
+    const text = '🙂'.repeat(270_000);
+    await persistence.writeTask({ ...task, status: 'running', endedAt: null });
+    const receipt = await persistence.commitTerminalTask(task, text);
+    expect(receipt).toMatchObject({
+      schemaVersion: 1, path: 'tasks/agent-11111111/output.log',
+      mediaType: 'text/plain; charset=utf-8', bytes: 1_080_000,
+      contentState: 'final', sourceTurnId: 7,
+    });
+    expect(receipt.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(await persistence.readTask(task.taskId)).toMatchObject({ receipt, receiptVerification: 'verified' });
+    await bytes.write(`${SESSION_SCOPE}/tasks/${task.taskId}`, 'output.log', new TextEncoder().encode('short'), { atomic: true });
+    expect(await persistence.readTask(task.taskId)).toMatchObject({ receipt: undefined, receiptVerification: 'invalid' });
+    expect((await persistence.listTasks())[0]).toMatchObject({ receipt: undefined, receiptVerification: 'invalid' });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('publishes the terminal manifest only after the complete output write succeeds', async () => {
+    const task = {
+      taskId: 'agent-22222222', kind: 'agent' as const, description: 'report',
+      status: 'completed' as const, detached: true, startedAt: 1, endedAt: 2,
+    };
+    await persistence.writeTask({ ...task, status: 'running', endedAt: null });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const write = bytes.write.bind(bytes);
+    vi.spyOn(bytes, 'write').mockImplementation(async (...args) => { await gate; await write(...args); });
+    const commit = persistence.commitTerminalTask(task, 'complete');
+    expect((await persistence.readTask(task.taskId))?.status).toBe('running');
+    release();
+    await commit;
+    expect(await persistence.readTask(task.taskId)).toMatchObject({ status: 'completed', receiptVerification: 'verified' });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('keeps the old manifest until the new terminal metadata write commits', async () => {
+    const task = {
+      taskId: 'agent-33333333', kind: 'agent' as const, description: 'report',
+      status: 'completed' as const, detached: true, startedAt: 1, endedAt: 2,
+    };
+    await persistence.writeTask({ ...task, status: 'running', endedAt: null });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const set = docs.set.bind(docs);
+    vi.spyOn(docs, 'set').mockImplementation(async (...args) => { await gate; await set(...args); });
+    const commit = persistence.commitTerminalTask(task, 'complete');
+    await vi.waitFor(async () => expect(await persistence.taskOutputSizeBytes(task.taskId)).toBe(8));
+    expect((await persistence.readTask(task.taskId))?.status).toBe('running');
+    release();
+    await commit;
+    expect(await persistence.readTask(task.taskId)).toMatchObject({ status: 'completed', receiptVerification: 'verified' });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('does not commit a receipt when the atomic output write fails', async () => {
+    const task = {
+      taskId: 'agent-44444444', kind: 'agent' as const, description: 'report',
+      status: 'completed' as const, detached: true, startedAt: 1, endedAt: 2,
+    };
+    await persistence.writeTask({ ...task, status: 'running', endedAt: null });
+    vi.spyOn(bytes, 'write').mockRejectedValueOnce(new Error('disk full'));
+    await expect(persistence.commitTerminalTask(task, 'complete')).rejects.toThrow('disk full');
+    expect(await persistence.readTask(task.taskId)).toMatchObject({ status: 'running' });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('does not claim a receipt when the terminal metadata write fails', async () => {
+    const task = {
+      taskId: 'agent-55555555', kind: 'agent' as const, description: 'report',
+      status: 'completed' as const, detached: true, startedAt: 1, endedAt: 2,
+    };
+    await persistence.writeTask({ ...task, status: 'running', endedAt: null });
+    vi.spyOn(docs, 'set').mockRejectedValueOnce(new Error('metadata unavailable'));
+    await expect(persistence.commitTerminalTask(task, 'complete')).rejects.toThrow('metadata unavailable');
+    expect(await persistence.readTask(task.taskId)).toMatchObject({ status: 'running', receipt: undefined });
+    expect(await persistence.taskOutputSizeBytes(task.taskId)).toBe(8);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('leaves old terminal logs legacy-unverified without a manifest', async () => {
+    await persistence.writeTask(sample({ status: 'completed', endedAt: 2 }));
+    await persistence.appendTaskOutput('bash-11111111', 'unverified');
+    expect(await persistence.readTask('bash-11111111')).toMatchObject({ receiptVerification: 'legacy_unverified' });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('returns undefined when task file is missing', async () => {
     expect(await persistence.readTask('bash-missing0')).toBeUndefined();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
@@ -249,8 +333,8 @@ describe('AgentTaskPersistence', () => {
       await legacy.writeTask(task);
       await legacy.appendTaskOutput(task.taskId, 'legacy output');
 
-      expect(await primary.readTask(task.taskId)).toEqual(task);
-      expect(await primary.listTasks()).toEqual([task]);
+      expect(await primary.readTask(task.taskId)).toEqual({ ...task, receiptVerification: 'legacy_unverified' });
+      expect(await primary.listTasks()).toEqual([{ ...task, receiptVerification: 'legacy_unverified' }]);
       expect(await primary.readTaskOutputSnapshot(task.taskId, 6)).toEqual({
         outputPath: join(sessionDir, SESSION_SCOPE, 'tasks', task.taskId, 'output.log'),
         outputSizeBytes: 13,

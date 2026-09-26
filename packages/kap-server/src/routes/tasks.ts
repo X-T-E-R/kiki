@@ -309,6 +309,9 @@ function toWireTask(
     created_at: createdIso,
     started_at: createdIso,
     run_in_background: info.detached ?? true,
+    receipt: info.receipt,
+    receipt_verification: info.receiptVerification,
+    total_bytes: info.receipt?.bytes,
   };
   if (info.endedAt !== null && info.endedAt !== undefined) {
     base.completed_at = new Date(info.endedAt).toISOString();

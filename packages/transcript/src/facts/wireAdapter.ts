@@ -1,5 +1,6 @@
 import type { TranscriptFact } from './reducer';
 import { projectTranscriptUserOrigin } from '../contract/origin';
+import { transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
 import type { MessageDelivery, ToolCallFrame } from '../model/frame';
 import { projectInteractionEndState, type TranscriptInteraction } from '../model/interaction';
@@ -624,6 +625,9 @@ export class TranscriptWireAdapter {
         ownerAgentId: stringOf(info?.['ownerAgentId']) ?? previous?.ownerAgentId,
         ownerTurnId: numberOf(info?.['ownerTurnId']) ?? previous?.ownerTurnId,
         goalId: stringOf(info?.['goalId']) ?? previous?.goalId,
+        receipt: info?.['receiptVerification'] === 'invalid' ? undefined :
+          transcriptTaskSchema.shape.receipt.safeParse(info?.['receipt']).data ?? previous?.receipt,
+        receiptVerification: transcriptTaskSchema.shape.receiptVerification.safeParse(info?.['receiptVerification']).data ?? previous?.receiptVerification,
         name: stringOf(info?.['collaborationTaskName']) ?? previous?.name,
         subagentName: stringOf(info?.['profile']) ?? previous?.subagentName,
         description: stringOf(info?.['description']) ?? previous?.description,

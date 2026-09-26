@@ -1075,6 +1075,8 @@ export class AgentTranscriptLiveAdapter {
       ownerAgentId?: string;
       ownerTurnId?: number;
       goalId?: string;
+      receipt?: TranscriptTask['receipt'];
+      receiptVerification?: TranscriptTask['receiptVerification'];
       agentId?: string;
       profile?: string;
       collaborationTaskName?: string;
@@ -1093,6 +1095,8 @@ export class AgentTranscriptLiveAdapter {
       ownerAgentId: info.ownerAgentId ?? prev?.ownerAgentId,
       ownerTurnId: info.ownerTurnId ?? prev?.ownerTurnId,
       goalId: info.goalId ?? prev?.goalId,
+      receipt: info.receiptVerification === 'invalid' ? undefined : info.receipt ?? prev?.receipt,
+      receiptVerification: info.receiptVerification ?? prev?.receiptVerification,
       name: info.collaborationTaskName ?? prev?.name,
       subagentName: info.profile ?? prev?.subagentName,
       description: info.description,

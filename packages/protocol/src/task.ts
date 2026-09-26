@@ -13,6 +13,18 @@ export const taskStatusSchema = z.enum([
 ]);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 
+export const taskReceiptSchema = z.object({
+  schemaVersion: z.literal(1),
+  path: z.string(),
+  mediaType: z.string(),
+  bytes: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  contentState: z.enum(['final', 'unavailable']),
+  committedAt: isoDateTimeSchema,
+  sourceTurnId: z.number().int().nonnegative().optional(),
+});
+export type TaskReceipt = z.infer<typeof taskReceiptSchema>;
+
 export const taskSchema = z.object({
   id: z.string().min(1),
   session_id: z.string().min(1),
@@ -25,6 +37,9 @@ export const taskSchema = z.object({
   completed_at: isoDateTimeSchema.optional(),
   output_preview: z.string().optional(),
   output_bytes: z.number().int().nonnegative().optional(),
+  total_bytes: z.number().int().nonnegative().optional(),
+  receipt: taskReceiptSchema.optional(),
+  receipt_verification: z.enum(['verified', 'legacy_unverified', 'invalid']).optional(),
   /** Subagent tasks only: the display-normalized model alias the child agent
    *  is bound to. */
   model: z.string().optional(),

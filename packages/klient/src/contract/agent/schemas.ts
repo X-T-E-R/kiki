@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { taskReceiptSchema } from '@kiki/protocol';
 
 // ── prompt parts ────────────────────────────────────────────────────────────
 
@@ -272,6 +273,8 @@ const taskInfoBaseFields = {
   stopReason: z.string().optional(),
   terminalNotificationSuppressed: z.boolean().optional(),
   timeoutMs: z.number().optional(),
+  receipt: taskReceiptSchema.optional(),
+  receiptVerification: z.enum(['verified', 'legacy_unverified', 'invalid']).optional(),
 } as const;
 
 /** Protocol `TaskInfo` union (`protocol/src/events.ts`). */
