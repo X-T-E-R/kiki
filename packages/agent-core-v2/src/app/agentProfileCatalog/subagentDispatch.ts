@@ -306,7 +306,5 @@ function callerNamesTarget(
 ): boolean {
   if (caller.subagentLeases?.[profileName] !== undefined) return true;
   if (caller.profileDefinitionId === undefined) return false;
-  // A frozen catalog is used to describe the caller's already-bound target set.
-  // Dispatch policy still decides whether an undeclared name is launchable below.
   return caller.subagentDeclaration?.kind === 'set' || caller.subagents !== undefined;
 }
