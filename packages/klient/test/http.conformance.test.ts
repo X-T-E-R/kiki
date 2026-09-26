@@ -51,6 +51,7 @@ it('converges interactions, metadata and providers changed in the HTTP black win
   const server = await startServer({
     hostIdentity: TEST_CLIENT_IDENTITY, host: '127.0.0.1', port: 0, homeDir, logLevel: 'silent',
   });
+  await server.core.accessor.get(ISessionIndex).prepare();
   const sockets: WebSocket[] = [];
   let reconnectBlocked = false;
   class ControlledWebSocket extends WebSocket {

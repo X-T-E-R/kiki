@@ -73,12 +73,18 @@ describe('stepRetry plugin', () => {
         settled = true;
       },
     );
-    for (let i = 0; i < 100; i += 1) {
+    const maxTimerRounds = 100;
+    for (let i = 0; i < maxTimerRounds; i += 1) {
       if (settled) break;
-      await vi.runAllTimersAsync();
+      await vi.runOnlyPendingTimersAsync();
       if (!settled) {
         await new Promise((resolve) => realSetTimeout(resolve, 1));
       }
+    }
+    if (!settled) {
+      throw new Error(
+        `stepRetry turn ${turnId} did not settle after ${maxTimerRounds} fake-timer rounds (pending timers: ${vi.getTimerCount()})`,
+      );
     }
     return resultPromise;
   }

@@ -480,6 +480,52 @@ function openAiMessages(callIndex: number): Record<string, unknown>[] {
   return body!.messages!;
 }
 
+function openAiUserMessages(callIndex: number): Record<string, unknown>[] {
+  return openAiMessages(callIndex).filter((message) => message['role'] === 'user');
+}
+
+function openAiContentParts(callIndex: number): unknown[] {
+  return openAiMessages(callIndex).flatMap((message) => {
+    const content = message['content'];
+    if (Array.isArray(content)) return content;
+    return typeof content === 'string' ? [{ type: 'text', text: content }] : [];
+  });
+}
+
+function openAiUserText(callIndex: number): string[] {
+  return openAiUserMessages(callIndex).flatMap((message) => {
+    const content = message['content'];
+    if (typeof content === 'string') return [content];
+    if (!Array.isArray(content)) return [];
+    return content.flatMap((part) => {
+      if (typeof part !== 'object' || part === null) return [];
+      const candidate = part as { type?: unknown; text?: unknown };
+      return candidate.type === 'text' && typeof candidate.text === 'string' ? [candidate.text] : [];
+    });
+  });
+}
+
+function isPermissionReminder(content: unknown): boolean {
+  return (
+    typeof content === 'string' &&
+    content.startsWith('<system-reminder>\nAuto permission mode is active.') &&
+    content.endsWith('\n</system-reminder>')
+  );
+}
+
+function expectOpenAiUserContentPresent(callIndex: number): void {
+  const userMessages = openAiUserMessages(callIndex);
+  expect(userMessages.length).toBeGreaterThan(0);
+  expect(
+    userMessages.every((message) => {
+      const content = message['content'];
+      if (typeof content === 'string') return content.length > 0;
+      if (Array.isArray(content)) return content.length > 0;
+      return content !== undefined && content !== null;
+    }),
+  ).toBe(true);
+}
+
 // ---------------------------------------------------------------------------
 // l1 — klient contract validation (never reaches the engine).
 // ---------------------------------------------------------------------------
@@ -520,11 +566,12 @@ describe('l1: klient input validation', () => {
     await promptAndWait(ctx, []);
 
     // klient's zod schema allows an empty array; the engine's prompt service
-    // only appends non-empty user messages, so the request leaves with the
-    // system prompt alone. The turn still completes.
+    // only appends non-empty user messages. The default permission-mode
+    // reminder is the sole allowed user-role message on the wire.
     expect(requests).toHaveLength(1);
-    const messages = openAiMessages(0);
-    expect(messages.every((message) => message['role'] === 'system')).toBe(true);
+    const userMessages = openAiUserMessages(0);
+    expect(userMessages.length).toBeGreaterThan(0);
+    expect(userMessages.every((message) => isPermissionReminder(message['content']))).toBe(true);
     expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
   }, 30_000);
 });
@@ -590,15 +637,17 @@ describe('image blocks with invalid data', () => {
     expect(requests).toHaveLength(2);
     // Ingestion accepts the declared mime (png) without validating the
     // payload; the OpenAI base forwards the data URL verbatim.
-    const firstContent = openAiMessages(0).at(-1)?.['content'] as unknown[];
+    const firstContent = openAiContentParts(0);
     expect(firstContent).toContainEqual({
       type: 'image_url',
       image_url: { url: IMAGE_BAD_BASE64_URL },
     });
     // The 400 + "invalid image" body classifies as an image-format error, so
     // llmRequester resends with the media stripped to a placeholder — and the
-    // turn succeeds.
-    const secondContent = openAiMessages(1).at(-1)?.['content'] as unknown[];
+    // turn succeeds without dropping the original prompt text.
+    expectOpenAiUserContentPresent(1);
+    const secondContent = openAiContentParts(1);
+    expect(openAiUserText(1).some((text) => text.includes('what is this?'))).toBe(true);
     expect(secondContent.some((part) => (part as { type?: string }).type === 'image_url')).toBe(
       false,
     );
@@ -616,15 +665,18 @@ describe('image blocks with invalid data', () => {
     ]);
 
     expect(requests).toHaveLength(2);
-    const firstContent = openAiMessages(0).at(-1)?.['content'] as unknown[];
+    const firstContent = openAiContentParts(0);
     expect(firstContent).toContainEqual({
       type: 'image_url',
       image_url: { url: IMAGE_BAD_BASE64_URL },
     });
-    const secondContent = openAiMessages(1).at(-1)?.['content'] as unknown[];
+    expectOpenAiUserContentPresent(1);
+    const secondContent = openAiContentParts(1);
+    expect(openAiUserText(1).some((text) => text.includes('what is this?'))).toBe(true);
     expect(secondContent.some((part) => (part as { type?: string }).type === 'image_url')).toBe(
       false,
     );
+    expect(JSON.stringify(secondContent)).toContain('image omitted for provider compatibility');
     expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
   }, 30_000);
 
@@ -717,7 +769,7 @@ describe('daemon file references (kimi-file://)', () => {
       ]);
       expect(requests, label).toHaveLength(1);
       expect(JSON.stringify(requests[0]?.json), label).not.toContain('kimi-file://');
-      const content = openAiMessages(0).at(-1)?.['content'] as unknown[];
+      const content = openAiContentParts(0);
       const imagePart = content.find(
         (part) => (part as { type?: string }).type === 'image_url',
       ) as { image_url?: { url?: string } } | undefined;
@@ -1050,14 +1102,20 @@ describe('tool exchange structure', () => {
 
     expect(requests).toHaveLength(2);
     const userMessages = openAiMessages(1).filter((message) => message['role'] === 'user');
+    const wireUserContent = userMessages.map((message) => JSON.stringify(message['content']));
     // A deliberate user cancel injects an interruption reminder between the
     // aborted turn's prompt and the next user message, so the two prompts no
-    // longer merge into one wire message.
-    expect(userMessages).toHaveLength(3);
-    expect(String(userMessages[0]?.['content'])).toContain('first message');
-    expect(String(userMessages[1]?.['content'])).toContain('<system-reminder>');
-    expect(String(userMessages[1]?.['content'])).toContain('interrupted by the user');
-    expect(String(userMessages[2]?.['content'])).toContain('second message');
+    // longer merge into one wire message. Automatic permission-mode reminders
+    // are also user-role messages, so locate the three semantic messages
+    // instead of relying on a fixed wire-message count.
+    const firstIndex = wireUserContent.findIndex((content) => content.includes('first message'));
+    const interruptionIndex = wireUserContent.findIndex(
+      (content) => content.includes('<system-reminder>') && content.includes('interrupted by the user'),
+    );
+    const secondIndex = wireUserContent.findIndex((content) => content.includes('second message'));
+    expect(firstIndex).toBeGreaterThanOrEqual(0);
+    expect(interruptionIndex).toBeGreaterThan(firstIndex);
+    expect(secondIndex).toBeGreaterThan(interruptionIndex);
     expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
   }, 60_000);
 });
