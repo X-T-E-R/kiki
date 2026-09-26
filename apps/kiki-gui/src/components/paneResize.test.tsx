@@ -44,7 +44,12 @@ beforeAll(() => {
   }
   Element.prototype.setPointerCapture ??= () => {};
   Element.prototype.releasePointerCapture ??= () => {};
-  vi.stubGlobal('navigator', { ...navigator, language: 'en-US' });
+  const navigatorWithLanguage = Object.create(navigator);
+  Object.defineProperty(navigatorWithLanguage, 'language', {
+    value: 'en-US',
+    configurable: true,
+  });
+  vi.stubGlobal('navigator', navigatorWithLanguage);
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 

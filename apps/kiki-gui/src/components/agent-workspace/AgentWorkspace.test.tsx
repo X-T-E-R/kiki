@@ -700,10 +700,10 @@ function renderWorkspace(overrides: Partial<ComponentProps<typeof AgentWorkspace
 it('releases per-agent transcript observation while an embedded tab is hidden', async () => {
   const release = vi.fn();
   const subscribeAgent = vi.fn(() => release);
-  const controller = {
-    ...controllerStub({ forest: testForest(), agentStates: {} }),
-    subscribeAgent,
-  } as unknown as SessionController;
+  const controller = Object.assign(
+    controllerStub({ forest: testForest(), agentStates: {} }),
+    { subscribeAgent },
+  );
   await renderWorkspace({ controller, transcriptVisible: true });
   expect(subscribeAgent).toHaveBeenCalledWith('child', expect.any(Function));
   expect(release).not.toHaveBeenCalled();

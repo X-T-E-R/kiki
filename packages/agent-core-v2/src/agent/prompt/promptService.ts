@@ -383,7 +383,7 @@ export const promptQueueKey = defineState<PersistedPromptQueueState>(
   },
 })
   .on(PromptEnqueued, (state, event) => {
-    state.entries.set(event.promptId, { ...event });
+    state.entries.set(event.promptId, Object.assign({}, event));
     const existing = state.order.indexOf(event.promptId);
     if (existing >= 0) state.order.splice(existing, 1);
     state.order.splice(Math.min(event.queueIndex, state.order.length), 0, event.promptId);

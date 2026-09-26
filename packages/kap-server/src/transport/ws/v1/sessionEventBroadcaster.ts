@@ -1303,7 +1303,7 @@ export class SessionEventBroadcaster {
         let projected: Event2<any> = event;
         const turnSummary = turnUsage.apply(event);
         if (event.type === 'turn.ended' && turnSummary !== undefined) {
-          projected = { ...event, ...turnSummary } as unknown as Event2<any>;
+          projected = Object.assign({}, event, turnSummary) as unknown as Event2<any>;
         }
         if (event.type === 'agent.status.updated') {
           const snapshot = readLegacyStatus(handle);

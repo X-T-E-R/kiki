@@ -259,7 +259,12 @@ describe('continuation stop control', () => {
 describe('Composer host compatibility', () => {
   it('renders a new-session composer without Web Crypto randomUUID', async () => {
     const originalCrypto = globalThis.crypto;
-    vi.stubGlobal('crypto', { ...originalCrypto, randomUUID: undefined });
+    const cryptoWithoutRandomUUID = Object.create(originalCrypto);
+    Object.defineProperty(cryptoWithoutRandomUUID, 'randomUUID', {
+      value: undefined,
+      configurable: true,
+    });
+    vi.stubGlobal('crypto', cryptoWithoutRandomUUID);
 
     await expect(renderComposer({ sessionId: undefined })).resolves.toBeDefined();
     vi.stubGlobal('crypto', originalCrypto);
