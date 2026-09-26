@@ -2308,7 +2308,7 @@ function executionOf(record: TranscriptWireRecord): TranscriptTurnExecution | un
     executorId === undefined ||
     protocol === undefined ||
     !['live', 'resume', 'load', 'new', 'handoff'].includes(resumeMode ?? '') ||
-    !['native', 'first_prompt_preamble'].includes(profileDelivery ?? '') ||
+    !['native', 'first_prompt_preamble', 'system_prompt_override'].includes(profileDelivery ?? '') ||
     (fidelity !== 'full' && fidelity !== 'degraded')
   ) {
     return undefined;

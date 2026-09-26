@@ -726,6 +726,21 @@ describe('TranscriptWireAdapter', () => {
       { title: 'Ship bridge', status: 'in_progress' },
     ]);
     expect(replay(records).getTurn('t0')?.execution).toBeUndefined();
+    const override = replay([
+      ...records.slice(0, -1),
+      {
+        type: 'executor.turn.metadata',
+        turnId: 0,
+        executorId: 'example-acp',
+        protocol: 'acp-v1',
+        resumeMode: 'new',
+        profileDelivery: 'system_prompt_override',
+        fidelity: 'degraded',
+        losses: ['acp_no_step_boundaries'],
+      },
+      records.at(-1)!,
+    ]);
+    expect(override.getTurn('t0')?.execution?.profileDelivery).toBe('system_prompt_override');
   });
 
   it('normalizes bundled skill prompts and gives media and markers stable identities', () => {

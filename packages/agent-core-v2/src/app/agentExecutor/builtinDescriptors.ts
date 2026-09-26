@@ -9,6 +9,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     shutdownGraceMs: 3_000,
     modelBinding: 'session_config',
     modelConfigCategory: 'model',
+    profileDelivery: 'system_prompt_override',
     revision: '2026-08-30.1',
   },
   'codex-app-server': {

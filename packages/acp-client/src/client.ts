@@ -837,8 +837,15 @@ export class AcpProcessClient {
     }
 
     this.#setOpeningMode('new');
+    const newSessionRequest: NewSessionRequest =
+      options.systemPromptOverride === undefined
+        ? common
+        : {
+            ...common,
+            _meta: { systemPromptOverride: options.systemPromptOverride },
+          };
     const response = await this.#requestDuringStartup(
-      connection.agent.request(methods.agent.session.new, common),
+      connection.agent.request(methods.agent.session.new, newSessionRequest),
       deadline,
       options.signal,
     );

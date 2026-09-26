@@ -1,5 +1,4 @@
-import { PassThrough } from 'node:stream';
-import { Readable, Writable } from 'node:stream';
+import { PassThrough, Readable, Writable } from 'node:stream';
 
 import { ndJsonStream } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
@@ -47,7 +46,11 @@ function scriptedChild(): {
 
 async function openWithScriptedAgent(
   script: InProcessAgentScript,
-  options: { additionalDirectories?: readonly string[]; sessionRef?: unknown },
+  options: {
+    additionalDirectories?: readonly string[];
+    sessionRef?: unknown;
+    systemPromptOverride?: string;
+  },
 ) {
   const { child, toAgent, fromAgent } = scriptedChild();
   const { app, history } = createInProcessScriptedAgent(script);
@@ -62,6 +65,7 @@ async function openWithScriptedAgent(
       cwd: 'C:/workspace',
       additionalDirectories: options.additionalDirectories,
       sessionRef: options.sessionRef as never,
+      systemPromptOverride: options.systemPromptOverride,
     });
     return { client, history, opened };
   } catch (error) {
@@ -144,6 +148,62 @@ describe('AcpProcessClient session capability negotiation', () => {
     try {
       expect(opened.mode).toBe('resume');
       expect(history.methods).toContain('session/resume');
+    } finally {
+      await client.shutdown();
+    }
+  });
+
+  it('attaches a system prompt override to session/new through _meta', async () => {
+    const { client, history, opened } = await openWithScriptedAgent(
+      {},
+      { systemPromptOverride: 'Frozen profile text' },
+    );
+    try {
+      expect(opened.mode).toBe('new');
+      expect(history.sessionNewParams[0]).toMatchObject({
+        _meta: { systemPromptOverride: 'Frozen profile text' },
+      });
+    } finally {
+      await client.shutdown();
+    }
+  });
+
+  it('omits _meta from session/new when no override is requested', async () => {
+    const { client, history } = await openWithScriptedAgent({}, {});
+    try {
+      expect(history.sessionNewParams[0]).not.toHaveProperty('_meta');
+    } finally {
+      await client.shutdown();
+    }
+  });
+
+  it.each([
+    [{}, 'resume'],
+    [{ resume: 'method_not_found' as const }, 'load'],
+    [{ resume: 'unknown_session' as const, load: 'unknown_session' as const }, 'new'],
+  ] as const)('attaches the override only when the fallback open mode is %s', async (script, expectedMode) => {
+    const { client, history, opened } = await openWithScriptedAgent(
+      { capabilities: { loadSession: true, sessionCapabilities: { resume: {} } }, ...script },
+      {
+        sessionRef: {
+          executorId: 'fixture',
+          version: 1,
+          ref: { sessionId: 'session-in-process' },
+        },
+        systemPromptOverride: 'Frozen profile text',
+      },
+    );
+    try {
+      expect(opened.mode).toBe(expectedMode);
+      expect(history.sessionResumeParams[0]).not.toHaveProperty('_meta');
+      if (expectedMode !== 'resume') expect(history.sessionLoadParams[0]).not.toHaveProperty('_meta');
+      if (expectedMode === 'new') {
+        expect(history.sessionNewParams[0]).toMatchObject({
+          _meta: { systemPromptOverride: 'Frozen profile text' },
+        });
+      } else {
+        expect(history.sessionNewParams).toHaveLength(0);
+      }
     } finally {
       await client.shutdown();
     }

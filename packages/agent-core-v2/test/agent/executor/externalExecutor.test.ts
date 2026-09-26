@@ -76,6 +76,7 @@ interface FakeHarnessOptions {
   readonly configureReadbackFailureId?: string;
   readonly permissionMode?: 'manual' | 'auto' | 'yolo';
   readonly permissionMapping?: AgentExecutorContext['descriptor']['permissionModeMapping'] | null;
+  readonly profileDelivery?: AgentExecutorContext['descriptor']['profileDelivery'];
   readonly modelConfigId?: string;
   readonly thoughtConfigId?: string;
   readonly completionUsage?: AcpTurnResult['response']['usage'];
@@ -145,6 +146,7 @@ function stateHarness(prior: {
   };
   readonly sessionEpoch?: number;
   readonly profileDeliveredSessionId?: string;
+  readonly profileDelivery?: 'native' | 'first_prompt_preamble' | 'system_prompt_override';
   readonly lastCumulativeUsage?: ExecutorCumulativeUsage;
 } = {}) {
   const values = new Map<unknown, unknown>([
@@ -191,6 +193,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
           sessionRef: event.sessionRef,
           sessionEpoch: event.sessionEpoch,
           profileDeliveredSessionId: event.profileDeliveredSessionId,
+          profileDelivery: event.profileDelivery,
         });
       }
     },
@@ -387,6 +390,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
             auto: false,
             yolo: true,
           },
+      profileDelivery: options.profileDelivery,
       revision: 'r1',
     },
     binding: {
@@ -873,6 +877,7 @@ describe('ACP external executor', () => {
     }) as AcpSessionConfigOption[];
     const harness = createHarness({
       executorId: 'grok-acp',
+      profileDelivery: BUILTIN_AGENT_EXECUTORS['grok-acp']?.profileDelivery,
       modelAlias: 'grok-4.6',
       thinkingEffort: 'xhigh',
       sessionConfigOptions,
@@ -887,6 +892,120 @@ describe('ACP external executor', () => {
 
     expect(harness.selections).toContainEqual({ configId: 'model-id', value: 'grok-4.6' });
     expect(harness.selections).toContainEqual({ configId: 'thought-id', value: 'xhigh' });
+  });
+
+  it('delivers an opted-in ACP profile in session/new instead of the user prompt', async () => {
+    const harness = createHarness({ profileDelivery: 'system_prompt_override' });
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.opens[0]?.systemPromptOverride).toBe('Frozen profile');
+    expect(harness.starts[0]?.prompt).toBe('work');
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+    expect(metadata?.profileDelivery).toBe('system_prompt_override');
+    expect(metadata?.losses).not.toContain('profile_as_user_preamble');
+    expect((harness.state.get(externalExecutorKey)).profileDelivery).toBe('system_prompt_override');
+  });
+
+  it('keeps the user-prompt preamble for harnesses without the override capability', async () => {
+    const harness = createHarness();
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.opens[0]?.systemPromptOverride).toBeUndefined();
+    expect(harness.starts[0]?.prompt).toContain('BEGIN KIKI FROZEN PROFILE INSTRUCTIONS');
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+    expect(metadata?.profileDelivery).toBe('first_prompt_preamble');
+    expect(metadata?.losses).toContain('profile_as_user_preamble');
+  });
+
+  it('reuses an existing override-backed session across process instances without repeating the profile', async () => {
+    const harness = createHarness({
+      mode: 'resume',
+      profileDelivery: 'system_prompt_override',
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+        profileDeliveredSessionId: 'remote-2',
+        profileDelivery: 'system_prompt_override',
+      },
+    });
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'continue' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.opens[0]?.sessionRef?.ref['sessionId']).toBe('remote-2');
+    expect(harness.starts[0]?.prompt).toBe('continue');
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+    expect(metadata).toMatchObject({ resumeMode: 'resume', profileDelivery: 'system_prompt_override' });
+    expect(metadata?.losses).not.toContain('profile_as_user_preamble');
+  });
+
+  it('keeps a legacy preamble session on resume when the descriptor enables overrides later', async () => {
+    const harness = createHarness({
+      mode: 'load',
+      profileDelivery: 'system_prompt_override',
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+        profileDeliveredSessionId: 'remote-2',
+      },
+    });
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'continue' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.starts[0]?.prompt).toBe('continue');
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+    expect(metadata?.profileDelivery).toBe('first_prompt_preamble');
+    expect(metadata?.losses).not.toContain('profile_as_user_preamble');
+  });
+
+  it('creates a new override-backed session when the frozen profile changes', async () => {
+    const harness = createHarness({
+      profileDelivery: 'system_prompt_override',
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-1' } },
+        profileDeliveredSessionId: 'remote-1',
+        profileDelivery: 'system_prompt_override',
+      },
+    });
+    const session = harness.createSession({
+      ...harness.executorContext,
+      binding: { ...harness.executorContext.binding, systemPrompt: 'Changed profile' },
+    });
+    const run = await session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.opens[0]?.sessionRef).toBeUndefined();
+    expect(harness.opens[0]?.systemPromptOverride).toBe('Changed profile');
+    expect(harness.starts[0]?.prompt).toContain('work');
+    expect(harness.starts[0]?.prompt).not.toContain('BEGIN KIKI FROZEN PROFILE INSTRUCTIONS');
   });
 
   it('opens a new ACP session when the persisted binding fingerprint differs', async () => {
@@ -1214,6 +1333,36 @@ describe('ACP external executor', () => {
       'resume_new_session_handoff',
       'handoff_truncated',
     ]));
+  });
+
+  it('retains the handoff but not the profile preamble when resume falls back to a new override session', async () => {
+    const harness = createHarness({
+      mode: 'new',
+      profileDelivery: 'system_prompt_override',
+      history: [{ role: 'user', content: [{ type: 'text', text: 'previous request' }], toolCalls: [] }],
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-1' } },
+        profileDeliveredSessionId: 'remote-1',
+        profileDelivery: 'first_prompt_preamble',
+      },
+    });
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'continue' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.opens[0]?.systemPromptOverride).toBe('Frozen profile');
+    expect(harness.starts[0]?.prompt).toContain('BEGIN KIKI PRIOR TRANSCRIPT HANDOFF');
+    expect(harness.starts[0]?.prompt).not.toContain('BEGIN KIKI FROZEN PROFILE INSTRUCTIONS');
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+    expect(metadata).toMatchObject({ resumeMode: 'handoff', profileDelivery: 'system_prompt_override' });
+    expect(metadata?.losses).toContain('resume_new_session_handoff');
+    expect(metadata?.losses).not.toContain('profile_as_user_preamble');
   });
 
   it.each([

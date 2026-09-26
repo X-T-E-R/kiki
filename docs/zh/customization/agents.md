@@ -78,6 +78,12 @@ GUI 的 main agent 选择器使用当前工作区或工作目录的有效 Agent 
 
 agent 文件会被监听并在变更时热刷新。热刷新不会打断进行中的会话：已在运行或恢复的 agent 继续使用其绑定时的提示词与约束快照，哪怕对应 profile 被编辑、设为 `private`、删除或失效。冻结的派遣列表会跳过失效目标，而不是让整段对话失败。变更只对**新的**派遣生效——向私有或已删除 profile 发起新派遣会得到明确报错。恢复缺少可恢复绑定快照且 profile 已不存在的旧记录时，降级到默认 profile 并给出警告；模型、effort 与执行器仍会被校验。
 
+### 外部 ACP profile 的投递
+
+对于对外派发使用的 ACP（Agent Client Protocol）执行器，只有配置表明 harness 支持 `session/new` 的 `_meta.systemPromptOverride` 扩展，Kiki 才会把冻结的 profile 作为系统提示词发送。内置 `grok-acp` 执行器默认启用；其他 ACP 执行器仍把 profile 放在第一条 User 消息的前言里。若自定义 harness 支持该扩展，可在 `config.toml` 的 `[agent_executors.<id>]` 中设置 `profile_delivery = "system_prompt_override"`。若 harness 会忽略该扩展，不要启用：配置后 Kiki 不再附加 User 消息前言作为后备。
+
+覆写只在创建**新的远端会话**时生效，不会在 `session/resume` 或 `session/load` 时重新发送。已有的远端会话保留最初的 profile 投递方式，即使之后更改执行器配置也一样。使用已变更的冻结 profile 重新派发会创建新的远端会话；若远端恢复失败，Kiki 会新建会话，重新发送覆写并附上有长度限制的对话交接。该设置不会发送 `_meta.rules` 或 `_meta.agentProfile`。系统提示词覆写可能替换 harness 原有的默认系统提示词，因此只应对适合这种替换方式的 harness 启用。
+
 ### 重建会话上下文
 
 修改提示词来源后，在会话作曲器中打开 profile 选择器并选择「重建上下文」。二次确认后，Kiki 会从磁盘重新加载当前 profile、提示字段覆写、Agent Skills、`AGENTS.md` 指令，以及 plugin 的提示词和 session-start 注入，重新协调其他运行时上下文注入，并让后续请求使用重建后的快照。对话消息会保留。轮次运行期间此操作不可用；请等待会话空闲后重试。

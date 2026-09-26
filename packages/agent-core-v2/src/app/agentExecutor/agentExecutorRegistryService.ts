@@ -224,6 +224,7 @@ function descriptorFromConfig(
     thoughtConfigCategory: config.thoughtConfigCategory,
     thoughtConfigId: config.thoughtConfigId,
     permissionModeMapping: config.permissionModeMapping,
+    profileDelivery: config.profileDelivery,
     revision: descriptorRevisionFromConfig(config),
   };
 }
@@ -244,6 +245,12 @@ export function resolvedExecutableRevision(input: {
     .digest('hex');
 }
 
+/**
+ * Hashes the session-shaping descriptor config into a stable revision.
+ * `profileDelivery` is deliberately excluded: it only shapes how newly
+ * created sessions receive the profile, so declaring or toggling it must not
+ * invalidate executor sessions that are still resumable.
+ */
 export function descriptorRevisionFromConfig(config: AgentExecutorConfig): string {
   const env = config.env === undefined
     ? undefined

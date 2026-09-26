@@ -11,11 +11,15 @@ import {
   IAgentExecutorRegistry,
   registerAgentExecutorProvider,
 } from '#/app/agentExecutor/agentExecutor';
-import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorRegistryService';
+import {
+  AgentExecutorRegistryService,
+  descriptorRevisionFromConfig,
+} from '#/app/agentExecutor/agentExecutorRegistryService';
 import { compareExecutorBinaryCandidates } from '#/app/agentExecutor/binaryDiscovery';
 import {
   AgentExecutorsConfigSchema,
   agentExecutorsFromToml,
+  agentExecutorsToToml,
 } from '#/app/agentExecutor/configSection';
 import type { IDisposable } from '#/_base/di/lifecycle';
 
@@ -355,6 +359,32 @@ describe('AgentExecutorRegistryService', () => {
     })).toThrow();
   });
 
+  it('gates the system prompt override per descriptor without invalidating resumable sessions', () => {
+    const parsed = AgentExecutorsConfigSchema.parse(agentExecutorsFromToml({
+      optedIn: {
+        protocol: 'acp-v1',
+        command: 'example-acp',
+        profile_delivery: 'system_prompt_override',
+      },
+    }));
+    const config = parsed['optedIn']!;
+    expect(config.profileDelivery).toBe('system_prompt_override');
+    expect(agentExecutorsToToml(parsed)).toMatchObject({
+      optedIn: { profile_delivery: 'system_prompt_override' },
+    });
+    expect(descriptorRevisionFromConfig(config)).toBe(descriptorRevisionFromConfig({
+      ...config,
+      profileDelivery: undefined,
+    }));
+    expect(() => AgentExecutorsConfigSchema.parse(agentExecutorsFromToml({
+      unsupported: {
+        protocol: 'acp-v1',
+        command: 'example-acp',
+        profile_delivery: 'unrecognized',
+      },
+    }))).toThrow();
+  });
+
   it('orders glob candidates by full probe semver and deterministic fallbacks', () => {
     const sorted = (
       candidates: readonly { readonly command: string; readonly output: string }[],
@@ -457,6 +487,7 @@ describe('AgentExecutorRegistryService', () => {
     expect(registry.get('grok-acp')).toMatchObject({
       args: ['--no-auto-update', 'agent', 'stdio'],
       startupTimeoutMs: 70_000,
+      profileDelivery: 'system_prompt_override',
       revision: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(registry.get('codex-acp')).toMatchObject({

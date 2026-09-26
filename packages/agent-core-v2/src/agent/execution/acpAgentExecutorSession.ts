@@ -47,6 +47,7 @@ import {
   externalExecutorKey,
   type ExecutorCumulativeUsage,
   type ExecutorLossCode,
+  type ExecutorProfileDelivery,
   type ExecutorResumeMode,
 } from './externalExecutorOps';
 import {
@@ -206,10 +207,21 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     const deliverProfile =
       !reusablePrior || prior.profileDeliveredSessionId !== configured.sessionId;
-    if (deliverProfile) losses.add('profile_as_user_preamble');
+    const profileOverrideDelivered =
+      deliverProfile &&
+      opened.mode === 'new' &&
+      sessionOptions.systemPromptOverride !== undefined;
+    if (deliverProfile && !profileOverrideDelivered) losses.add('profile_as_user_preamble');
+    const profileDelivery: ExecutorProfileDelivery = deliverProfile
+      ? profileOverrideDelivered
+        ? 'system_prompt_override'
+        : 'first_prompt_preamble'
+      : prior.profileDelivery ?? 'first_prompt_preamble';
     const remotePrompt = buildRemotePrompt({
       prompt,
-      systemPrompt: deliverProfile ? this.context.binding.systemPrompt : undefined,
+      systemPrompt: deliverProfile && !profileOverrideDelivered
+        ? this.context.binding.systemPrompt
+        : undefined,
       handoff: handoff?.text,
     });
     const resumeMode: ExecutorResumeMode = handoff === undefined
@@ -229,7 +241,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           this.context.binding.modelAlias,
         ),
         resumeMode,
-        profileDelivery: 'first_prompt_preamble',
+        profileDelivery,
         outboundPrompt: remotePrompt,
         initialLosses: [...losses],
       },
@@ -275,6 +287,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           profileDeliveredSessionId: deliverProfile
             ? configured.sessionId
             : prior.profileDeliveredSessionId,
+          profileDelivery: deliverProfile ? profileDelivery : prior.profileDelivery,
         }),
       );
       ready.resolve();
@@ -303,6 +316,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         profileDeliveredSessionId: deliverProfile
           ? configured.sessionId
           : prior.profileDeliveredSessionId,
+        profileDelivery: deliverProfile ? profileDelivery : prior.profileDelivery,
         priorCumulativeUsage: reusablePrior ? prior.lastCumulativeUsage : undefined,
         sameSession: priorSessionId !== undefined && priorSessionId === configured.sessionId,
       },
@@ -375,6 +389,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       readonly sessionRef: ExecutorSessionRefEnvelope;
       readonly sessionEpoch: number;
       readonly profileDeliveredSessionId: string | undefined;
+      readonly profileDelivery: ExecutorProfileDelivery | undefined;
       readonly priorCumulativeUsage: ExecutorCumulativeUsage | undefined;
       readonly sameSession: boolean;
     },
@@ -403,6 +418,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
               sessionRef: accounting.sessionRef,
               sessionEpoch: accounting.sessionEpoch,
               profileDeliveredSessionId: accounting.profileDeliveredSessionId,
+              profileDelivery: accounting.profileDelivery,
               lastCumulativeUsage: accounted.cumulative,
             }),
           );
@@ -469,6 +485,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         `Executor session state does not match descriptor "${this.context.descriptor.id}"`,
       );
     }
+    const systemPrompt = this.context.binding.systemPrompt;
     return {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
@@ -476,6 +493,11 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       sessionRef:
         state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding)
           ? state.sessionRef as ExecutorSessionRefEnvelope | undefined
+          : undefined,
+      systemPromptOverride:
+        this.context.descriptor.profileDelivery === 'system_prompt_override' &&
+          systemPrompt.length > 0
+          ? systemPrompt
           : undefined,
       signal,
     };

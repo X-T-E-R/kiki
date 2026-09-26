@@ -81,6 +81,7 @@
     # manual: string | boolean
     # auto: string | boolean
     # yolo: string | boolean
+  # profile_delivery: "system_prompt_override"
   # revision: string
 
 # ##########################################################################

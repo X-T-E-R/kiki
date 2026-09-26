@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
+import { PassThrough } from 'node:stream';
 
 import { afterAll, describe, it } from 'vitest';
 
@@ -9,6 +10,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import type { IHostProcessService } from '#/os/interface/hostProcess';
 
 import {
   appService,
@@ -63,6 +65,50 @@ const cases = [
 
 const prompt = 'Reply with exactly KIKI_EXTERNAL_SMOKE_OK. Do not call tools.';
 
+function captureSessionNewOverride(
+  runner: HostProcessService,
+  capture: (override: unknown) => void,
+): IHostProcessService {
+  return {
+    _serviceBrand: undefined,
+    spawn: async (command, args, options) => {
+      const child = await runner.spawn(command, args, options);
+      const stdin = new PassThrough();
+      let pending = '';
+      stdin.on('data', (chunk: Buffer) => {
+        pending += chunk.toString('utf8');
+        let end = pending.indexOf('\n');
+        while (end !== -1) {
+          const line = pending.slice(0, end);
+          pending = pending.slice(end + 1);
+          if (line.trim().length > 0) {
+            const message = JSON.parse(line) as {
+              method?: string;
+              params?: { _meta?: { systemPromptOverride?: unknown } };
+            };
+            if (message.method === 'session/new') {
+              capture(message.params?._meta?.systemPromptOverride);
+            }
+          }
+          end = pending.indexOf('\n');
+        }
+      });
+      stdin.pipe(child.stdin);
+      return {
+        _serviceBrand: undefined,
+        pid: child.pid,
+        get exitCode() { return child.exitCode; },
+        stdin,
+        stdout: child.stdout,
+        stderr: child.stderr,
+        wait: () => child.wait(),
+        kill: (signal) => child.kill(signal),
+        dispose: () => child.dispose(),
+      };
+    },
+  };
+}
+
 describe('external harness real smoke', () => {
   afterAll(async () => {
     await Promise.all(contexts.map((context) => context.close()));
@@ -71,8 +117,13 @@ describe('external harness real smoke', () => {
   for (const smokeCase of cases) {
     const run = enabled.has(smokeCase.id) ? it : it.skip;
     run(smokeCase.id, { timeout: 300_000 }, async () => {
+      let observedOverride: unknown;
+      const runner = new HostProcessService();
+      const processRunner = smokeCase.id === 'grok-acp'
+        ? captureSessionNewOverride(runner, (override) => { observedOverride = override; })
+        : runner;
       const context = createTestAgent(
-        execEnvServices({ processRunner: new HostProcessService() }),
+        execEnvServices({ processRunner }),
         appService(IHostEnvironment, {
           _serviceBrand: undefined,
           osKind: 'Windows',
@@ -112,6 +163,11 @@ describe('external harness real smoke', () => {
         const execution = records.find((record) => record.type === 'executor.turn.metadata');
         assert.equal(execution?.['executorId'], smokeCase.id);
         assert.equal(execution?.['protocol'], descriptor.protocol);
+        if (smokeCase.id === 'grok-acp') {
+          assert.equal(observedOverride, 'Return only the requested fixed text and do not call tools.');
+          assert.equal(execution?.['profileDelivery'], 'system_prompt_override');
+          assert.equal((execution?.['losses'] as string[]).includes('profile_as_user_preamble'), false);
+        }
         assert.equal(records.some((record) => record.type === 'turn.ended'), true);
 
         const outputDir = resolve(outputRoot, smokeCase.id);
@@ -132,6 +188,7 @@ describe('external harness real smoke', () => {
             summary: completion.summary,
             transcriptPath,
             execution,
+            systemPromptOverrideOnWire: smokeCase.id === 'grok-acp' ? true : undefined,
           }, null, 2)}\n`,
           'utf8',
         );

@@ -71,6 +71,7 @@ export const AgentExecutorConfigSchema = z
     thoughtConfigCategory: z.string().trim().min(1).optional(),
     thoughtConfigId: sourceId.optional(),
     permissionModeMapping: AgentExecutorPermissionModeMappingSchema.optional(),
+    profileDelivery: z.literal('system_prompt_override').optional(),
     revision: z.string().trim().min(1).optional(),
   })
   .strict()
@@ -108,6 +109,7 @@ const TOML_TO_RUNTIME = {
   thought_config_category: 'thoughtConfigCategory',
   thought_config_id: 'thoughtConfigId',
   permission_mode_mapping: 'permissionModeMapping',
+  profile_delivery: 'profileDelivery',
   version_probe: 'versionProbe',
 } as const;
 
@@ -121,6 +123,7 @@ const RUNTIME_TO_TOML = {
   thoughtConfigCategory: 'thought_config_category',
   thoughtConfigId: 'thought_config_id',
   permissionModeMapping: 'permission_mode_mapping',
+  profileDelivery: 'profile_delivery',
   versionProbe: 'version_probe',
 } as const;
 

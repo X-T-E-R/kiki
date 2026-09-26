@@ -82,7 +82,7 @@ export const transcriptTurnExecutionSchema = z.object({
   executorId: z.string(),
   protocol: z.string(),
   resumeMode: z.enum(['live', 'resume', 'load', 'new', 'handoff']),
-  profileDelivery: z.enum(['native', 'first_prompt_preamble']),
+  profileDelivery: z.enum(['native', 'first_prompt_preamble', 'system_prompt_override']),
   fidelity: z.enum(['full', 'degraded']),
   losses: z.array(z.string()).readonly(),
 });

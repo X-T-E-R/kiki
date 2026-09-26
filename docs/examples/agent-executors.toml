@@ -6,6 +6,7 @@ startup_timeout_ms = 70000
 shutdown_grace_ms = 3000
 model_binding = "session_config"
 model_config_category = "model"
+profile_delivery = "system_prompt_override"
 revision = "2026-08-30.1"
 
 [agent_executors.codex-app-server]

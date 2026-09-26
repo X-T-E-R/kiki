@@ -1341,6 +1341,7 @@ export interface AgentStateSnapshot {
     };
     readonly sessionEpoch?: number;
     readonly profileDeliveredSessionId?: string;
+    readonly profileDelivery?: 'native' | 'first_prompt_preamble' | 'system_prompt_override';
     readonly lastCumulativeUsage?: {
       inputTokens: number;
       outputTokens: number;

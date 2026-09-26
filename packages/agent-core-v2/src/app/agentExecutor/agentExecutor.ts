@@ -67,6 +67,8 @@ export interface AgentExecutorPermissionModeMapping {
   readonly yolo: string | boolean;
 }
 
+export type AgentExecutorProfileDelivery = 'system_prompt_override';
+
 export interface AgentExecutorDescriptor {
   readonly id: string;
   readonly protocol: AgentExecutorProtocol;
@@ -88,6 +90,14 @@ export interface AgentExecutorDescriptor {
   readonly thoughtConfigCategory?: string;
   readonly thoughtConfigId?: string;
   readonly permissionModeMapping?: AgentExecutorPermissionModeMapping;
+  /**
+   * Declares that the harness accepts the frozen profile as a real system
+   * prompt through the `session/new` `_meta.systemPromptOverride` extension.
+   * When absent, the profile rides inside the first user prompt instead.
+   * Revision-neutral: it shapes only newly created sessions, so toggling it
+   * must not invalidate persisted executor sessions.
+   */
+  readonly profileDelivery?: AgentExecutorProfileDelivery;
   readonly revision: string;
 }
 

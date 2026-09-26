@@ -24,7 +24,12 @@ export const EXECUTOR_LOSS_CODES = [
 
 export type ExecutorLossCode = (typeof EXECUTOR_LOSS_CODES)[number];
 export type ExecutorResumeMode = 'live' | 'resume' | 'load' | 'new' | 'handoff';
-export type ExecutorProfileDelivery = 'native' | 'first_prompt_preamble';
+export const EXECUTOR_PROFILE_DELIVERIES = [
+  'native',
+  'first_prompt_preamble',
+  'system_prompt_override',
+] as const;
+export type ExecutorProfileDelivery = (typeof EXECUTOR_PROFILE_DELIVERIES)[number];
 
 /**
  * ACP reports usage as session-cumulative counters, not per-turn deltas.
@@ -57,7 +62,7 @@ const executorTurnMetadataSchema = z.object({
   executorId: z.string().min(1),
   protocol: z.string().min(1),
   resumeMode: z.enum(['live', 'resume', 'load', 'new', 'handoff']),
-  profileDelivery: z.enum(['native', 'first_prompt_preamble']),
+  profileDelivery: z.enum(EXECUTOR_PROFILE_DELIVERIES),
   fidelity: z.enum(['full', 'degraded']),
   losses: z.array(z.enum(EXECUTOR_LOSS_CODES)).readonly(),
 });
@@ -81,6 +86,7 @@ const executorSessionUpdatedSchema = z.object({
   }),
   sessionEpoch: z.number().int().positive(),
   profileDeliveredSessionId: z.string().optional(),
+  profileDelivery: z.enum(EXECUTOR_PROFILE_DELIVERIES).optional(),
   lastCumulativeUsage: executorCumulativeUsageSchema.optional(),
 });
 
@@ -144,6 +150,7 @@ export interface ExternalExecutorState {
   };
   readonly sessionEpoch?: number;
   readonly profileDeliveredSessionId?: string;
+  readonly profileDelivery?: ExecutorProfileDelivery;
   readonly lastCumulativeUsage?: ExecutorCumulativeUsage;
 }
 
@@ -158,6 +165,7 @@ export const externalExecutorKey = defineState(
     sessionRef: event.sessionRef,
     sessionEpoch: event.sessionEpoch,
     profileDeliveredSessionId: event.profileDeliveredSessionId,
+    profileDelivery: event.profileDelivery,
     lastCumulativeUsage: event.lastCumulativeUsage ?? state.lastCumulativeUsage,
   }))
   .on(ExecutorTurnMetadata, () => {})

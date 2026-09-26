@@ -30,7 +30,7 @@ export interface TranscriptTurnExecution {
   readonly executorId: string;
   readonly protocol: string;
   readonly resumeMode: 'live' | 'resume' | 'load' | 'new' | 'handoff';
-  readonly profileDelivery: 'native' | 'first_prompt_preamble';
+  readonly profileDelivery: 'native' | 'first_prompt_preamble' | 'system_prompt_override';
   readonly fidelity: 'full' | 'degraded';
   readonly losses: readonly string[];
 }
