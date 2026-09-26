@@ -1,5 +1,15 @@
 # @moonshot-ai/klient
 
+## 0.1.3
+
+### Patch Changes
+
+- [`dd5cd6b`](https://github.com/X-T-E-R/kiki/commit/dd5cd6b510febafbf4e90d2e5561eb96546b0cca) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Open built-in skills as read-only SKILL.md preview tabs using their embedded content instead of treating `builtin://` URIs as host files. File-backed skills still open from their real paths.
+
+- Updated dependencies [[`dd5cd6b`](https://github.com/X-T-E-R/kiki/commit/dd5cd6b510febafbf4e90d2e5561eb96546b0cca), [`05e33fe`](https://github.com/X-T-E-R/kiki/commit/05e33fe90c5b330ae2925236d7355fb4b613bd8a), [`dc9cdbf`](https://github.com/X-T-E-R/kiki/commit/dc9cdbf9779d88ef74a8537fea23becae871b5f5), [`b80dd87`](https://github.com/X-T-E-R/kiki/commit/b80dd8779092b5bc7131a0747a0d9aa7ff908616), [`e341a61`](https://github.com/X-T-E-R/kiki/commit/e341a61db26f03a789dc76c98973b5e162b307e1), [`5b06589`](https://github.com/X-T-E-R/kiki/commit/5b065892ee55fbfef048983a46bebc549135de2b), [`cfcc6bb`](https://github.com/X-T-E-R/kiki/commit/cfcc6bb995157fe722af341cc4562f11ff806df3)]:
+  - @kiki/agent-core-v2@0.4.1
+  - @kiki/protocol@0.5.1
+
 ## 0.1.2
 
 ### Patch Changes

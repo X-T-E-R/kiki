@@ -1,5 +1,11 @@
 # @moonshot-ai/kimi-code-oauth
 
+## 0.4.1
+
+### Patch Changes
+
+- [`901f1c8`](https://github.com/X-T-E-R/kiki/commit/901f1c8c607d7640635c92c98eedead1848f1e25) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - The OAuth cross-process refresh lock raises `proper-lockfile`'s stale window from 5s to 60s, longer than the 30s HTTP refresh timeout, so a slow or paused holder can no longer be stolen mid-flight and have a 401 tombstone overwrite a peer's freshly rotated token (W1B-08).
+
 ## 0.4.0
 
 ### Minor Changes

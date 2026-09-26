@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2
+
+### Patch Changes
+
+- [`dc9cdbf`](https://github.com/X-T-E-R/kiki/commit/dc9cdbf9779d88ef74a8537fea23becae871b5f5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Harden launch-surface paths: quote `cmd /c start` targets so `&` cannot split the command, refuse executable-looking hosts with trailing dots/spaces and additional single-document extensions in `open_host_path`, allowlist external-open schemes in the VS Code host bridge, keep non-loopback deep-link servers out of persisted Web UI connections, tighten the CORS origin loopback check against `127.*`-prefixed domains, and strip trailing root dots from FetchURL hosts before the donor metadata allowlist.
+
 ## 0.7.1
 
 ### Patch Changes
