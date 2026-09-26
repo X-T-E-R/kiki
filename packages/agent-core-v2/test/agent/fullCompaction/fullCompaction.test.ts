@@ -50,6 +50,7 @@ type GenerateFn = NonNullable<TestAgentOptions['generate']>;
 
 const TWO_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'recent user two', 'recent assistant two'];
 const THREE_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'old user two', 'old assistant two', 'recent user three', 'recent assistant three'];
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 15_000;
 
 function fixtureRequestTokens(ctx: TestAgentContext, text: readonly string[]): number {
   const tools = ctx.get(IAgentToolSelectService).shapeTools(ctx.get(IAgentToolRegistryService).list());
@@ -864,7 +865,7 @@ describe('FullCompaction', () => {
     ]);
     vi.useRealTimers();
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reduces the compacted prefix and retries when the model returns only thinking content', async () => {
     vi.useFakeTimers();

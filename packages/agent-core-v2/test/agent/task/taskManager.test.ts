@@ -32,6 +32,7 @@ import {
 
 const MiB = 1024 * 1024;
 const LIMIT_BYTES = 16 * MiB;
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
 interface TaskServiceFixture {
   ctx: TestAgentContext;
@@ -703,7 +704,7 @@ describe('AgentTaskService', () => {
     } finally {
       await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stops appending persisted output once the output limit trips for a detached process task', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-limit-bg-'));
@@ -729,7 +730,7 @@ describe('AgentTaskService', () => {
     } finally {
       await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not cap a detached subagent result larger than the process output limit', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-limit-agent-'));
@@ -749,7 +750,7 @@ describe('AgentTaskService', () => {
     } finally {
       await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fails process tasks when output capture errors after successful exit', async () => {
     const { manager } = createAgentTaskService();
@@ -997,7 +998,7 @@ describe('AgentTaskService', () => {
 
     expect(info?.status).toBe('timed_out');
     expect(killSpy).toHaveBeenCalledWith('SIGKILL');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reports timed_out when a timed-out process exits to SIGTERM within the grace window', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -1264,7 +1265,7 @@ describe('AgentTaskService', () => {
 
     expect(manager.getTask(taskId)).toMatchObject({ status: 'completed' });
     await expect(manager.wait(taskId)).resolves.toMatchObject({ status: 'completed' });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns undefined or empty output for unknown task ids', async () => {
     const { manager } = createAgentTaskService();

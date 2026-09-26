@@ -45,6 +45,8 @@ import {
 
 type FireAndForgetTrigger = IExternalHooksRunnerService['fireAndForgetTrigger'];
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 15_000;
+
 function immediateProcess(exitCode: number, stdoutText = ''): IHostProcess {
   return {
     _serviceBrand: undefined,
@@ -446,7 +448,7 @@ describe('AgentTaskService — event emission', () => {
       event: 'background_task_completed',
       properties: expect.objectContaining({ agent_id: 'main', kind: 'agent', status: 'timed_out' }),
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('emits task.terminated on stop', async () => {
     const { agent, manager } = createAgentTaskService();
@@ -916,7 +918,7 @@ describe('AgentTaskService — notification delivery', () => {
       }
       await cleanupSessionDir(sessionDir, writerFixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('replays restored terminal agent task notifications when undelivered', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-replay-'));
@@ -951,7 +953,7 @@ describe('AgentTaskService — notification delivery', () => {
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('replays restored terminal process task notifications when undelivered', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-bash-replay-'));
