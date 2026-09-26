@@ -25,9 +25,8 @@ import type {
   QuestionResolveResult,
   RequestIdentityPolicyWire,
   Session,
-  SessionSnapshotResponse,
 } from '@kiki/protocol';
-import type { TranscriptCursor, TranscriptGradeSpec } from '@kiki/transcript';
+import type { TranscriptGradeSpec } from '@kiki/transcript';
 
 export class ApiError extends Error {
   readonly code: number;

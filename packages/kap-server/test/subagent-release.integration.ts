@@ -59,7 +59,7 @@ describe('released subagent scopes', () => {
     const session = getLiveSessionById(server.core.accessor, sessionId);
     if (session === undefined) throw new Error('session not live');
     const lifecycle = session.accessor.get(IAgentLifecycleService);
-    lifecycle.get('main') ?? (await lifecycle.create({ agentId: 'main' }));
+    if (lifecycle.get('main') === undefined) await lifecycle.create({ agentId: 'main' });
     const child = await lifecycle.create({
       agentId: 'agent-1',
       delegator: { kind: 'agent', agentId: 'main' },

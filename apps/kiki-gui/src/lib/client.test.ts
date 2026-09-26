@@ -707,7 +707,7 @@ function captureFetch(): { calls: URL[]; restore: () => void } {
   const calls: URL[] = [];
   const original = globalThis.fetch;
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
-    calls.push(input instanceof URL ? input : new URL(String(input)));
+    calls.push(input instanceof URL ? input : new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url));
     return envelope({ agent_id: 'main', items: [], has_more: false });
   }) as typeof fetch;
   return {
@@ -742,7 +742,7 @@ describe('KikiClient.renewLease', () => {
     const bodies: unknown[] = [];
     let call = 0;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(new URL(String(input)).pathname).toBe('/api/leases');
+      expect(new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).pathname).toBe('/api/leases');
       expect(init?.method).toBe('POST');
       bodies.push(JSON.parse(init?.body as string));
       call += 1;
@@ -795,7 +795,7 @@ describe('KikiClient.renewLease', () => {
   it('treats an older server 404 as unsupported after sending an empty body', async () => {
     const original = globalThis.fetch;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(new URL(String(input)).pathname).toBe('/api/leases');
+      expect(new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).pathname).toBe('/api/leases');
       expect(init?.method).toBe('POST');
       expect(init?.headers).toMatchObject({ authorization: 'Bearer home-token' });
       expect(JSON.parse(init?.body as string)).toEqual({});
@@ -826,7 +826,7 @@ describe('KikiClient workspace lifecycle', () => {
       pinned: false,
     };
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input));
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
       expect(url.pathname).toBe('/api/workspaces/wd_demo_000000000000');
       expect(init?.method).toBe('PATCH');
       expect(JSON.parse(init?.body as string)).toEqual({ name: 'Renamed' });
@@ -844,7 +844,7 @@ describe('KikiClient workspace lifecycle', () => {
   it('PATCHes only `pinned` when pinning a workspace', async () => {
     const original = globalThis.fetch;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input));
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
       expect(url.pathname).toBe('/api/workspaces/wd_demo_000000000000');
       expect(init?.method).toBe('PATCH');
       expect(JSON.parse(init?.body as string)).toEqual({ pinned: true });
@@ -870,7 +870,7 @@ describe('KikiClient workspace lifecycle', () => {
   it('DELETEs the unregister route', async () => {
     const original = globalThis.fetch;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input));
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
       expect(url.pathname).toBe('/api/workspaces/wd_demo_000000000000');
       expect(init?.method).toBe('DELETE');
       return envelope({ deleted: true });

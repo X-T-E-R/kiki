@@ -1715,8 +1715,8 @@ function StatefulHarness({
         setText('');
         // Keep the spy's arity faithful: plain sends assert on exactly
         // (text, attachments).
-        if (sentOptions === undefined) onSend?.(sentText, sentAttachments);
-        else onSend?.(sentText, sentAttachments, sentOptions);
+        if (sentOptions === undefined) void onSend?.(sentText, sentAttachments);
+        else void onSend?.(sentText, sentAttachments, sentOptions);
       }}
       {...props}
     />

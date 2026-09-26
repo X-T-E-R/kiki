@@ -17,7 +17,6 @@ import {
   mapPanelTools,
 } from './mapCapabilities';
 import type {
-  AgentIdentity,
   AgentSkillCapability,
   AgentSubagentTarget,
   AgentToolCapability,

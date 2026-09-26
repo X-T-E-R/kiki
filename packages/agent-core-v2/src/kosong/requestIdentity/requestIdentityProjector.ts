@@ -282,8 +282,6 @@ function hostUserAgent(headers: Readonly<Record<string, string>> | undefined): s
   return undefined;
 }
 
-const codexUserAgentTemplate = '{originator}/{version} ({os_type} {os_version}; {arch})';
-
 function codexUserAgent(
   input: Parameters<typeof projectRequestIdentity>[0],
 ): string {

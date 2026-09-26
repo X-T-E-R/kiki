@@ -1,3 +1,5 @@
+import assert from 'node:assert/strict';
+
 import { ISessionExternalDelegationService, resumeSessionById } from '@kiki/agent-core-v2';
 import Fastify from 'fastify';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,7 +51,7 @@ describe('ExternalDelegationProcedureHost', () => {
     vi.mocked(resumeSessionById).mockResolvedValue({
       accessor: {
         get(identifier: unknown) {
-          expect(identifier).toBe(ISessionExternalDelegationService);
+          assert.equal(identifier, ISessionExternalDelegationService);
           return service;
         },
       },

@@ -302,7 +302,7 @@ export function MediaPreviewProvider({
       onWidthChange={handleWidthChange}
       onOpenImage={(src, name) => { setImage({ src, name }); }}
       reportDirty={reportDirty}
-      overlay={shell?.slots.preview == null}
+      overlay={shell?.slots.preview === null || shell?.slots.preview === undefined}
       cwd={cwd}
       sessionId={sessionId}
     />
@@ -311,7 +311,7 @@ export function MediaPreviewProvider({
   return (
     <MediaPreviewContext.Provider value={api}>
       {children}
-      {panel !== null && shell?.slots.preview != null
+      {panel !== null && shell?.slots.preview !== null && shell?.slots.preview !== undefined
         ? createPortal(panel, shell.slots.preview)
         : panel}
       {confirmClose !== null ? (

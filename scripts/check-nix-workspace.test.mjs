@@ -50,17 +50,17 @@ function writeFixture({ omitLeaf = false, stale = false } = {}) {
   return root;
 }
 
-test("normalizes Windows workspace paths for Nix comparisons", () => {
+void test("normalizes Windows workspace paths for Nix comparisons", () => {
   assert.equal(normalizeWorkspaceDir(".\\apps\\leaf\\"), "apps/leaf");
 });
 
-test("accepts an exact flake workspace projection", () => {
+void test("accepts an exact flake workspace projection", () => {
   const result = checkNixWorkspace(writeFixture());
   assert.equal(result.ok, true);
   assert.equal(result.packages.length, 3);
 });
 
-test("rejects an omitted leaf workspace package", () => {
+void test("rejects an omitted leaf workspace package", () => {
   const result = checkNixWorkspace(writeFixture({ omitLeaf: true }));
   assert.equal(result.ok, false);
   assert.deepEqual(result.missingNames, ["@example/leaf"]);
@@ -69,7 +69,7 @@ test("rejects an omitted leaf workspace package", () => {
   ]);
 });
 
-test("rejects stale flake workspace entries", () => {
+void test("rejects stale flake workspace entries", () => {
   const result = checkNixWorkspace(writeFixture({ stale: true }));
   assert.equal(result.ok, false);
   assert.deepEqual(result.extraNames, ["@example/stale"]);

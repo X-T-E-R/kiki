@@ -1294,10 +1294,10 @@ describe('nb-search tool adapters', () => {
     expect(result.output).toContain('truncated');
     expect(result.output).toContain('incomplete');
     expect(result.output).not.toContain('full response body');
-    expect(String(result.output).split('FETCH_CONTENT_CHARS_LIMIT')).toHaveLength(2);
+    expect((result.output as string).split('FETCH_CONTENT_CHARS_LIMIT')).toHaveLength(2);
     expect(result.output).toContain('FETCH_BYTES_LIMIT');
     expect(result.output).toContain('max_content_chars');
-    expect(String(result.output).split('TRUNCATED BODY')).toHaveLength(2);
+    expect((result.output as string).split('TRUNCATED BODY')).toHaveLength(2);
   });
 
   it.each(['partial', 'empty', 'failed', 'timed_out', 'cancelled'] as const)(

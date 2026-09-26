@@ -4,7 +4,7 @@ import {
   logSeed,
   resolveBootstrapOptions,
   resolveLoggingConfig,
-} from '../src/index.ts';
+} from '../src/index';
 
 const args = new Set(process.argv.slice(2));
 const json = args.delete('--json');

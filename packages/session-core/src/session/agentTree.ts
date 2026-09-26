@@ -1159,8 +1159,8 @@ function mergeServerAndLive(
 export function isLiveLikeBlock(block: AgentTimelineBlock): boolean {
   return (
     /^(?:assistant|thinking)-live-/.test(block.id) ||
-    /^user-turn-/.test(block.id) ||
-    /^system-turn-/.test(block.id)
+    block.id.startsWith('user-turn-') ||
+    block.id.startsWith('system-turn-')
   );
 }
 

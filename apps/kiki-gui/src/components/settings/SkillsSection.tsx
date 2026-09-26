@@ -321,7 +321,6 @@ function SkillCatalogCard({
 /** Skills leaf: skill defaults plus the workspace skill catalog. */
 export function SkillsSection() {
   const { client } = useConnection();
-  const { t } = useI18n();
   const [searchParams] = useSearchParams();
   const requestedWorkspace = searchParams.get('workspace') ?? undefined;
   const [workspaceId, setWorkspaceId] = useState('');

@@ -261,7 +261,7 @@ function mergeRequestParams(
 ): AgentProfile['requestParams'] {
   if (overlay === undefined) return base;
   if (overlay === null) return undefined;
-  return { ...(base ?? {}), ...overlay };
+  return { ...base, ...overlay };
 }
 
 function ident(alias: string, resolveId?: AliasIdentity): string {

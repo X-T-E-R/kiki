@@ -77,7 +77,7 @@ export function NbSearchSection() {
     const params = new URLSearchParams(location.search);
     params.set('tab', nextTab);
     // Internal sub-page tab switching preserves draft and does not pop the global leave guard
-    navigate(`/settings/search?${params.toString()}`);
+    void navigate(`/settings/search?${params.toString()}`);
   };
 
   const configQuery = useQuery({

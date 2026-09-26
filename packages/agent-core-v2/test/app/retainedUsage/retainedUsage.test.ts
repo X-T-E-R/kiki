@@ -45,6 +45,7 @@ class BlockingFileStorageService extends FileStorageService {
     _range?: StorageReadRange,
     options: StorageReadOptions = {},
   ): AsyncIterable<Uint8Array> {
+    yield* [];
     this.markStarted();
     options.signal?.throwIfAborted();
     await new Promise<void>((_resolve, reject) => {

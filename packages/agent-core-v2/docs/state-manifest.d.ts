@@ -2069,7 +2069,7 @@ export interface AgentStateSnapshot {
       readonly allowParentNotify?: boolean;
       readonly main?: boolean;
       readonly tools?: readonly string[];
-      readonly toolAllowPolicies?: readonly readonly string[][];
+      readonly toolAllowPolicies?: readonly (readonly string[])[];
       readonly disallowedTools?: readonly string[];
       readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
       readonly subagentPolicy?: 'strict' | 'advisory';
@@ -2414,7 +2414,7 @@ export interface AgentStateSnapshot {
           readonly executorDescriptorRevision?: string;
           readonly agentsMdPaths?: readonly string[];
           readonly activeToolNames?: readonly string[];
-          readonly toolAllowPolicies?: readonly readonly string[][];
+          readonly toolAllowPolicies?: readonly (readonly string[])[];
           readonly disallowedTools?: readonly string[];
           readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
@@ -2976,7 +2976,7 @@ export interface AgentStateSnapshot {
         readonly promptVariablesRevision?: string;
       };
     };
-    readonly toolAllowPolicies?: readonly readonly string[][];
+    readonly toolAllowPolicies?: readonly (readonly string[])[];
   };
   // replayable · durable — folds: ToolsSetActiveTools, ToolsResetActiveTools, ProfileBind
   'profile.activeTools': /* ActiveToolsState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ readonly string[] | undefined;

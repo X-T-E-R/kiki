@@ -596,7 +596,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const initial = source.read();
     const trackedKeys =
       options.key === undefined
-        ? initial.filter((item) => !source.terminal(item)).map(source.key)
+        ? initial.filter((item) => !source.terminal(item)).map((item) => source.key(item))
         : [options.key];
     if (trackedKeys.length === 0) {
       return {

@@ -30,10 +30,14 @@ function clock(intervalMs: number) {
 
 const seconds = clock(1_000);
 const minutes = clock(60_000);
+const secondsSubscribe = (listener: () => void): (() => void) => seconds.subscribe(listener);
+const secondsSnapshot = (): number => seconds.getSnapshot();
+const minutesSubscribe = (listener: () => void): (() => void) => minutes.subscribe(listener);
+const minutesSnapshot = (): number => minutes.getSnapshot();
 
 /** Shared second clock for live elapsed-duration and countdown displays. */
 export function useNow(): number {
-  return useSyncExternalStore(seconds.subscribe, seconds.getSnapshot, seconds.getSnapshot);
+  return useSyncExternalStore(secondsSubscribe, secondsSnapshot, secondsSnapshot);
 }
 
 /**
@@ -44,9 +48,9 @@ export function RelativeTime({ at, className }: { readonly at: string; readonly 
   const { time } = useI18n();
   const recent = Date.now() - Date.parse(at) < 60_000;
   useSyncExternalStore(
-    recent ? seconds.subscribe : minutes.subscribe,
-    recent ? seconds.getSnapshot : minutes.getSnapshot,
-    recent ? seconds.getSnapshot : minutes.getSnapshot,
+    recent ? secondsSubscribe : minutesSubscribe,
+    recent ? secondsSnapshot : minutesSnapshot,
+    recent ? secondsSnapshot : minutesSnapshot,
   );
   return <span className={className}>{time.relativeTime(at)}</span>;
 }

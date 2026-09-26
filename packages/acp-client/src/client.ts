@@ -792,7 +792,8 @@ export class AcpProcessClient {
 
     if (
       priorSessionId !== undefined &&
-      this.#capabilities.sessionCapabilities?.resume != null
+      this.#capabilities.sessionCapabilities?.resume !== null &&
+      this.#capabilities.sessionCapabilities?.resume !== undefined
     ) {
       this.#setOpeningMode('resume');
       try {
@@ -854,7 +855,10 @@ export class AcpProcessClient {
     if (additionalDirectories === undefined || additionalDirectories.length === 0) {
       return undefined;
     }
-    if (this.#capabilities.sessionCapabilities?.additionalDirectories != null) {
+    if (
+      this.#capabilities.sessionCapabilities?.additionalDirectories !== null
+      && this.#capabilities.sessionCapabilities?.additionalDirectories !== undefined
+    ) {
       return [...additionalDirectories];
     }
     this.#options.logger?.debug?.(

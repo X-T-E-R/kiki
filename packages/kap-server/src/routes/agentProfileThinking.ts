@@ -25,7 +25,7 @@ export interface PersistedAgentThinkingProjection {
 export function projectPersistedAgentThinking(
   scope: Pick<Scope, 'accessor'>,
   snapshot: PersistedAgentProfileSnapshot,
-  profile: PanelProfileDefinition,
+  _profile: PanelProfileDefinition,
 ): PersistedAgentThinkingProjection {
   const stored = snapshot.thinkingLevel as ThinkingEffort | undefined;
   if (stored === undefined) return {};

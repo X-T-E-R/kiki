@@ -286,11 +286,11 @@ export async function runDelegationCommand(
     const input = command.canonicalInput(positionals, options);
     client = await createCliSeatKlient(options, dependencies);
     if (command.behavior === 'events' && options['follow'] === true) {
-      return followEvents(client, input as DelegationProcedureInput<'events'>, options, dependencies, stdout);
+      return await followEvents(client, input as DelegationProcedureInput<'events'>, options, dependencies, stdout);
     }
     const output = await callProcedure(client, procedureName, input);
     if (command.behavior === 'dispatch' && options['wait'] === true) {
-      return finishDispatch(client, output, options, stdout);
+      return await finishDispatch(client, output, options, stdout);
     }
     writeOutput(stdout, output, options['json'] === true);
     return exitCodeForOutput(procedureName, output);
@@ -312,7 +312,7 @@ function callProcedure(
 
 export async function canonicalWorkspace(
   workspace: string | undefined,
-  cwd: () => string = process.cwd,
+  cwd: () => string = () => process.cwd(),
 ): Promise<string> {
   return normalize(await realpath(resolve(workspace ?? cwd())));
 }

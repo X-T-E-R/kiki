@@ -457,7 +457,7 @@ describe('AgentExecutionService', () => {
     expect(service.status()).toEqual({ state: 'idle' });
     await service.shutdown('close');
     expect(shutdown).toHaveBeenCalledWith('close');
-    service.dispose();
+    void service.dispose();
     ix.dispose();
   });
 
@@ -556,7 +556,7 @@ describe('AgentExecutionService', () => {
     expect(binding.systemPrompt).toBe('');
     expect(shutdowns[0]).toHaveBeenCalledTimes(1);
     expect(shutdowns[1]).not.toHaveBeenCalled();
-    service.dispose();
+    void service.dispose();
     ix.dispose();
   });
 
@@ -609,7 +609,7 @@ describe('AgentExecutionService', () => {
       { signal: new AbortController().signal },
     )).rejects.toThrow(message);
     expect(create).not.toHaveBeenCalled();
-    service.dispose();
+    void service.dispose();
     ix.dispose();
   });
 
@@ -644,7 +644,7 @@ describe('AgentExecutionService', () => {
       { signal: new AbortController().signal },
     )).rejects.toThrow(/has no registered provider/);
     expect(service.status()).toEqual({ state: 'broken' });
-    service.dispose();
+    void service.dispose();
     ix.dispose();
   });
 });

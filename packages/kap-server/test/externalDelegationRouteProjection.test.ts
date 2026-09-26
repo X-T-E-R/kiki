@@ -6,7 +6,7 @@ import {
   type ExternalDispatchView,
   type ISessionExternalDelegationService as ExternalDelegationService,
 } from '@kiki/agent-core-v2';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { registerV2ExternalDelegationRoutes } from '../src/routes/v2/externalDelegation';
 
@@ -71,6 +71,8 @@ describe('external delegation route projection', () => {
   };
   let service: {
     [K in keyof ExternalDelegationService]: ReturnType<typeof vi.fn>;
+  } & {
+    wait: Mock<ExternalDelegationService['wait']>;
   };
 
   beforeEach(() => {
@@ -87,7 +89,7 @@ describe('external delegation route projection', () => {
       interactions: vi.fn(),
       respond: vi.fn(),
       status: vi.fn(),
-      wait: vi.fn(),
+      wait: vi.fn<ExternalDelegationService['wait']>(),
       result: vi.fn(),
       events: vi.fn(),
       transcript: vi.fn(),

@@ -95,6 +95,14 @@ export interface AcpOpenSessionOptions {
   readonly sessionRef?: ExecutorSessionRefEnvelope;
   readonly configOptions?: readonly AcpSessionConfigSelection[];
   readonly modeId?: string;
+  /**
+   * Replacement system prompt for the remote session, delivered through the
+   * `_meta.systemPromptOverride` extension. Attached to `session/new` only:
+   * resume/load keep the system prompt the remote session was created with, so
+   * callers must check the returned open mode and fall back when the session
+   * was not freshly created.
+   */
+  readonly systemPromptOverride?: string;
   readonly signal?: AbortSignal;
 }
 

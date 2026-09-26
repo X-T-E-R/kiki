@@ -143,7 +143,7 @@ export async function readPersistedAgentPanelMetrics(
       state.cache.delete(agentMetricsCacheKey(workspaceId, sessionId, agentId));
     }
   }
-  for (const agentId of [...liveSeen]) {
+  for (const agentId of liveSeen) {
     if (!liveNow.has(agentId)) {
       liveSeen.delete(agentId);
       state.cache.delete(agentMetricsCacheKey(workspaceId, sessionId, agentId));

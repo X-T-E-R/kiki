@@ -57,7 +57,7 @@ export function registerSeatKlientDelegationRoutes(
               host.call(authoritySeat, procedure.name, input as never, signal),
             )
           : await host.call(authoritySeat, procedure.name as DelegationProcedureName, input as never);
-        return reply.send(okEnvelope(data, req.id));
+        return await reply.send(okEnvelope(data, req.id));
       } catch (error) {
         const logFailure = externalDelegationLogFailure(error);
         const log = {

@@ -615,7 +615,7 @@ describe('FileSessionIndex (legacy)', () => {
   });
 });
 
-describe('FileSessionIndex (read model)', { timeout: 30_000 }, () => {
+describe('FileSessionIndex (read model)', () => {
   let homeDir: string;
   let sessionsDir: string;
   let workspaceId: string;

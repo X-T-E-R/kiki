@@ -184,7 +184,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const losses = new Set<ExecutorLossCode>(['acp_no_step_boundaries']);
     if (
       (sessionOptions.additionalDirectories?.length ?? 0) > 0 &&
-      opened.capabilities.sessionCapabilities?.additionalDirectories == null
+      (opened.capabilities.sessionCapabilities?.additionalDirectories === null
+        || opened.capabilities.sessionCapabilities?.additionalDirectories === undefined)
     ) {
       losses.add('additional_directories_dropped');
     }
@@ -778,7 +779,10 @@ function resolveSelectConfig(
     }
   } else {
     const categorized = selects.filter(
-      (option) => option.category != null && option.category === category,
+      (option) =>
+        option.category !== null
+        && option.category !== undefined
+        && option.category === category,
     );
     if (categorized.length > 0) {
       candidates = categorized;
@@ -805,7 +809,7 @@ function resolveSelectConfig(
 }
 
 function uncategorizedSelectOptions(option: AcpSessionConfigOption): boolean {
-  return option.category == null;
+  return option.category === null || option.category === undefined;
 }
 
 function selectValues(option: AcpSessionConfigOption): string[] {
@@ -991,5 +995,13 @@ function objectOf(value: unknown): Readonly<Record<string, unknown>> | undefined
 }
 
 function toError(value: unknown, fallback: string): Error {
-  return value instanceof Error ? value : new Error(value === undefined ? fallback : String(value));
+  return value instanceof Error
+    ? value
+    : new Error(
+      value === undefined
+        ? fallback
+        : typeof value === 'string'
+          ? value
+          : JSON.stringify(value) ?? Object.prototype.toString.call(value),
+    );
 }

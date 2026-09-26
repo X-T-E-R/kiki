@@ -24,7 +24,7 @@ export function CapabilitiesShim() {
     }
     if (cardId === undefined) params.set('from', 'capabilities');
     const query = params.toString();
-    navigate(
+    void navigate(
       `/settings/${section}${query === '' ? '' : `?${query}`}${cardId === undefined ? '' : `#${cardId}`}`,
       { replace: true },
     );

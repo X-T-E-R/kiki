@@ -415,7 +415,7 @@ function extractStatusErrorBodyDetail(body: unknown): string | null {
   }
 }
 
-function tryParseJsonValue(text: string): unknown | undefined {
+function tryParseJsonValue(text: string): unknown {
   const trimmed = text.trim();
   if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return undefined;
   try {

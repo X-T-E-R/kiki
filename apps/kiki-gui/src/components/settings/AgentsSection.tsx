@@ -404,7 +404,7 @@ function NamedAgentProfileRow({
             disabled={newSessionBlocked}
             title={newSessionTitle}
             data-new-session-href={sessionHref}
-            onClick={() => void navigate(sessionHref)}
+            onClick={() => navigate(sessionHref)}
           >
             {t('st.namedAgents.newSession')}
           </button>

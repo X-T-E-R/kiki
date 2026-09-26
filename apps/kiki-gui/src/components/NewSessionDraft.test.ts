@@ -229,7 +229,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
   const sentBody = async (state: NewSessionDraftState): Promise<SessionCreate> => {
     await act(async () => {
-      state.send('Start work', []);
+      void state.send('Start work', []);
     });
     await settleDraft(() => client.createSession.mock.calls.length > 0);
     return client.createSession.mock.calls.at(-1)?.[0] as SessionCreate;
@@ -268,7 +268,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 1
     );
     await act(async () => {
-      state.send('Too early', []);
+      void state.send('Too early', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
 
@@ -323,7 +323,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       expect(state.modelOverride).toBeUndefined();
       expect(readStoredDraft()).toMatchObject({ profile: initialProfile });
       await act(async () => {
-        state.send('Do not silently use agent', []);
+        void state.send('Do not silently use agent', []);
       });
       expect(client.createSession).not.toHaveBeenCalled();
 
@@ -353,7 +353,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 1
     );
     await act(async () => {
-      state.send('Still validating', []);
+      void state.send('Still validating', []);
       catalog.reject(new Error('catalog unavailable'));
     });
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
@@ -363,7 +363,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       profile: 'workspace-main', modelFromProfile: true, effortFromProfile: true,
     });
     await act(async () => {
-      state.send('An error is not permission to fall back', []);
+      void state.send('An error is not permission to fall back', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
 
@@ -376,7 +376,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 2
     );
     await act(async () => {
-      state.send('Retry is still pending', []);
+      void state.send('Retry is still pending', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
     retry.resolve({
@@ -418,7 +418,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = await settleDraft((value) => value.modelOverride === 'provider/alpha');
     await act(async () => {
       state.selectWorkspace('wd_beta');
-      state.send('Must not use Alpha in Beta', []);
+      void state.send('Must not use Alpha in Beta', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
     state = await settleDraft((value) =>
@@ -441,7 +441,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       effortFromProfile: true,
     });
     await act(async () => {
-      state.send('A rejected catalog must still block', []);
+      void state.send('A rejected catalog must still block', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
 
@@ -482,7 +482,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = await settleDraft((value) => value.modelOverride === 'provider/alpha');
     await act(async () => {
       state.selectWorkspace('wd_beta');
-      state.send('Must not use Alpha', []);
+      void state.send('Must not use Alpha', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
     state = await settleDraft((value) =>
@@ -495,7 +495,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       workspaceId: 'wd_beta', profile: 'alpha-only', modelOverride: 'provider/alpha', effortOverride: 'low',
     });
     await act(async () => {
-      state.send('Do not silently use agent', []);
+      void state.send('Do not silently use agent', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
 
@@ -546,7 +546,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.effectiveEffort).toBe('low');
     await act(async () => {
       state.selectWorkspace('wd_beta');
-      state.send('Must not use Alpha pins', []);
+      void state.send('Must not use Alpha pins', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
     state = await settleDraft((value) =>
@@ -611,7 +611,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.modelOverride).toBe('provider/alpha');
     expect(state.effectiveEffort).toBe('low');
     await act(async () => {
-      state.send('Restored pins are not yet validated', []);
+      void state.send('Restored pins are not yet validated', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
 
@@ -676,7 +676,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.effectiveEffort).toBe(selectedEffort);
     await act(async () => {
       state.selectWorkspace('wd_beta');
-      state.send('Do not send during the workspace transition', []);
+      void state.send('Do not send during the workspace transition', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
     state = await settleDraft((value) =>
@@ -778,14 +778,14 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = await settleDraft((value) => value.modelOverride === 'provider/alpha');
     await act(async () => {
       state.setCwd(' /workspace/custom ');
-      state.send('Do not use the old workspace catalog', []);
+      void state.send('Do not use the old workspace catalog', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
     state = await settleDraft((value) =>
       value.agentProfileCatalogMode.mode === 'cwd' && value.agentProfileCatalogPending
     );
     await act(async () => {
-      state.send('The directory catalog is still pending', []);
+      void state.send('The directory catalog is still pending', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
     catalog.resolve({ items: [profile('agent'), profile('directory-main', 'provider/custom', 'high')] });
@@ -794,7 +794,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.agentProfile).toBe('alpha-only');
     expect(state.modelOverride).toBe('provider/alpha');
     await act(async () => {
-      state.send('An absent directory profile must not fall back', []);
+      void state.send('An absent directory profile must not fall back', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
 
@@ -846,7 +846,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.effectiveEffort).toBe('low');
     expect(readStoredDraft()).toMatchObject({ modelOverride: 'provider/removed', effortOverride: 'low' });
     await act(async () => {
-      state.send('Do not silently substitute the default model', []);
+      void state.send('Do not silently substitute the default model', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
 
@@ -943,7 +943,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       [{ workspace_id: 'wd_alpha', effective: true }],
     ]);
     await act(async () => {
-      state.send('A deleted workspace must not become Beta', []);
+      void state.send('A deleted workspace must not become Beta', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
 

@@ -582,9 +582,9 @@ export function AgentWorkspace({
                 onChangePermissionMode={() => {}}
                 onChangePlanMode={() => {}}
                 onChangeSwarmMode={() => {}}
-                onChangeEffort={handleChangeAgentEffort}
+                onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
                 onSend={handleComposerSend}
-                onAbort={runningAgentTask !== undefined ? handleTerminateAgent : undefined}
+                onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
                 abortPending={stoppingTaskId !== null}
               />
               <ResyncStatusBanner

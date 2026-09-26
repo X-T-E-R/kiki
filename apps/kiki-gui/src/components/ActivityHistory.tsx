@@ -144,7 +144,7 @@ export const HistoryLine = memo(function HistoryLine({
   node: ApprovalBlock | QuestionBlock;
   originName?: string;
 }) {
-  const { t, time } = useI18n();
+  const { t } = useI18n();
   let glyph: string;
   let glyphClass: string;
   let text: string;

@@ -1,12 +1,10 @@
 import type {
-  ApprovalRequest,
   DeferredAppendTiming,
   GoalSnapshot,
   PermissionMode,
   PromptItem,
   PromptStatus,
   QuestionItem,
-  QuestionRequest,
   SessionPendingInteraction,
   SessionSnapshotResponse,
   SnapshotSubagent,
@@ -25,7 +23,6 @@ import type {
 } from '@kiki/transcript';
 
 import type {
-  AgentTranscriptAgent,
   AgentTranscriptAttachment,
   AgentTranscriptInteraction,
   AgentTranscriptResponse,
@@ -59,9 +56,6 @@ import {
   type SubagentEventBlock,
   type SystemBlock,
   type SystemReminderBlock,
-  type SystemVariant,
-  type TodoItem,
-  type ToolBlock,
   type TurnExecutionInfo,
   type TurnRetryInfo,
   type TurnTailInfo,
@@ -2095,7 +2089,14 @@ export function agentTranscriptToBlocks(
                 typeof frame.output === 'string'
                   ? frame.output
                   : typeof frame.output === 'object' && frame.output !== null && 'stdout' in (frame.output as object)
-                    ? String((frame.output as { stdout?: unknown }).stdout ?? '')
+                    ? (() => {
+                      const stdout = (frame.output as { stdout?: unknown }).stdout;
+                      return typeof stdout === 'string'
+                        ? stdout
+                        : stdout === undefined
+                          ? ''
+                          : JSON.stringify(stdout) ?? Object.prototype.toString.call(stdout);
+                    })()
                     : frame.error ?? '';
               const output =
                 shellTask?.outputTail === '' || shellTask?.outputTail === undefined

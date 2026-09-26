@@ -1252,21 +1252,23 @@ describe('server-v2 /api prompts', () => {
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    const provider = createHttpServer(async (request, response) => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of request) chunks.push(Buffer.from(chunk));
-      const body = Buffer.concat(chunks).toString('utf8');
-      if (body.length === 0) return;
-      requests.push(JSON.parse(body) as unknown);
-      if (requests.length === 1) await firstGate;
-      response.writeHead(200, { 'content-type': 'text/event-stream' });
-      response.end(
-        `data: ${JSON.stringify({
-          id: `chatcmpl-${String(requests.length)}`,
-          choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        })}\n\ndata: [DONE]\n\n`,
-      );
+    const provider = createHttpServer((request, response) => {
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const body = Buffer.concat(chunks).toString('utf8');
+        if (body.length === 0) return;
+        requests.push(JSON.parse(body) as unknown);
+        if (requests.length === 1) await firstGate;
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          `data: ${JSON.stringify({
+            id: `chatcmpl-${String(requests.length)}`,
+            choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          })}\n\ndata: [DONE]\n\n`,
+        );
+      })();
     });
     await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
     const address = provider.address();

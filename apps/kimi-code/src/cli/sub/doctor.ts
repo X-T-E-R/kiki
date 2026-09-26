@@ -293,7 +293,7 @@ interface ParsedAgentFile {
   readonly parserWarnings: readonly string[];
 }
 
-function createDoctorConfigContext(deps: ResolvedDoctorDeps): DoctorConfigContext {
+function createDoctorConfigContext(_deps: ResolvedDoctorDeps): DoctorConfigContext {
   return {
     models: {},
     extraAgentDirs: [],
@@ -303,7 +303,7 @@ function createDoctorConfigContext(deps: ResolvedDoctorDeps): DoctorConfigContex
 function updateDoctorConfigContext(
   context: DoctorConfigContext,
   text: string,
-  deps: ResolvedDoctorDeps,
+  _deps: ResolvedDoctorDeps,
 ): void {
   let data: Record<string, unknown>;
   try {
@@ -319,14 +319,6 @@ function updateDoctorConfigContext(
   context.extraAgentDirs = Array.isArray(extraAgentDirs)
     ? extraAgentDirs.filter((entry): entry is string => typeof entry === 'string')
     : [];
-}
-
-function parseBooleanEnv(value: string | undefined): boolean | undefined {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === undefined || normalized === '') return undefined;
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
-  return undefined;
 }
 
 async function checkAgentProfiles(

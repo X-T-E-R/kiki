@@ -85,7 +85,7 @@ describe('HTTP REST domains', () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       expect(new URL(String(input)).pathname).toBe('/api/providers:probe');
       expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toEqual(draft);
+      expect(JSON.parse(init?.body as string)).toEqual(draft);
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer server-token');
       return envelope({ ok: true, models: ['claude-example'] });
     });

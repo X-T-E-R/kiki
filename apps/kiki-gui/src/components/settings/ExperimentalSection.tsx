@@ -119,7 +119,7 @@ export function ExperimentalSection({
         ...(hasFlagChanges || latest.experimental !== undefined
           ? { experimental: merge(latest.experimental ?? {}) }
           : {}),
-        ...(extraPatch ?? {}),
+        ...extraPatch,
         replace_domains: replaceDomains.size > 0 ? [...replaceDomains] : undefined,
       };
 

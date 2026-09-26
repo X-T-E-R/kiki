@@ -338,7 +338,11 @@ class TypeRenderer {
       const rendered = this.renderType(element, location, depth + 1);
       const text =
         element.isUnion() || element.isIntersection() ? `(${rendered})[]` : `${rendered}[]`;
-      return type.getSymbol()?.getName() === 'ReadonlyArray' ? `readonly ${text}` : text;
+      if (type.getSymbol()?.getName() !== 'ReadonlyArray') return text;
+      const elementText = rendered.startsWith('readonly ') || element.isUnion() || element.isIntersection()
+        ? `(${rendered})`
+        : rendered;
+      return `readonly ${elementText}[]`;
     }
 
     if (type.isObject()) {

@@ -1032,7 +1032,7 @@ const SubagentEventRow = memo(function SubagentEventRow({
   block: SubagentEventBlock;
   onOpenAgent?: (agentId: string) => void;
 }) {
-  const { t, time } = useI18n();
+  const { t } = useI18n();
   const busy = block.status === 'running' || block.status === 'suspended';
   const isFailed = block.event === 'failed' || block.status === 'failed';
   const messageSummary = block.message === undefined ? undefined : agentMessageSummary(block.message);

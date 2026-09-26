@@ -9,7 +9,7 @@ import {
   isLoopbackBindHost,
   parseServerInstance,
   rankServerInstances,
-} from './localServer.ts';
+} from './localServer';
 
 const tempDirs: string[] = [];
 
@@ -18,8 +18,8 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-describe('local kap-server discovery', () => {
-  it('uses the home token and prefers a live instance serving the current workspace', async () => {
+void describe('local kap-server discovery', () => {
+  void it('uses the home token and prefers a live instance serving the current workspace', async () => {
     const home = await mkdtemp(join(tmpdir(), 'kiki-local-server-'));
     tempDirs.push(home);
     const instances = join(home, 'server', 'instances');
@@ -53,7 +53,10 @@ describe('local kap-server discovery', () => {
       globalThis,
       'fetch',
       async (input: string | URL | Request, init?: RequestInit) => {
-        assert.equal(String(input), 'http://127.0.0.1:41001/api/v1/meta');
+        assert.equal(
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+          'http://127.0.0.1:41001/api/v1/meta',
+        );
         assert.deepEqual(init?.headers, { authorization: 'Bearer local-secret' });
         return new Response(JSON.stringify({ data: { server_id: 'meta-may-differ', server_version: '0.40.0' } }), {
           status: 200,
@@ -82,7 +85,7 @@ describe('local kap-server discovery', () => {
     assert.equal(loopbackPayload.token, 'local-secret');
   });
 
-  it('parses both registry shapes and ranks by workspace then heartbeat', () => {
+  void it('parses both registry shapes and ranks by workspace then heartbeat', () => {
     const current = parseServerInstance(JSON.stringify({
       pid: 41,
       host: '127.0.0.1',
@@ -107,7 +110,7 @@ describe('local kap-server discovery', () => {
     assert.equal(parseServerInstance(JSON.stringify({ pid: 43, url: 'http://example.test:41003', startedAt: 1 })), undefined);
   });
 
-  it('treats only explicit loopback Vite binds as safe for token responses', () => {
+  void it('treats only explicit loopback Vite binds as safe for token responses', () => {
     assert.equal(isLoopbackBindHost(undefined), true);
     assert.equal(isLoopbackBindHost(false), true);
     assert.equal(isLoopbackBindHost('localhost'), true);

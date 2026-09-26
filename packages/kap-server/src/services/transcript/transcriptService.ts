@@ -1359,7 +1359,7 @@ export class TranscriptService {
     if (flags?.enabled(TRANSCRIPT_RESIDENT_WINDOW_FLAG_ID) !== true) return undefined;
     const configured = (this.deps.core.accessor.get(IConfigService) as IConfigService | undefined)
       ?.get<TranscriptMemoryConfig>(TRANSCRIPT_MEMORY_SECTION);
-    const config = { ...DEFAULT_TRANSCRIPT_MEMORY_CONFIG, ...(configured ?? {}) };
+    const config = { ...DEFAULT_TRANSCRIPT_MEMORY_CONFIG, ...configured };
     return { tailTurns: config.tailTurns, maxBytes: config.maxAgentBytes };
   }
 
@@ -1421,7 +1421,7 @@ export class TranscriptService {
 
   dispose(): void {
     this.eventLoopDelay.disable();
-    for (const sessionId of [...this.live.keys()]) this.dropSession(sessionId);
+    for (const sessionId of this.live.keys()) this.dropSession(sessionId);
   }
 
   /** Dispose the live store + binding for a session (session closed / server shutdown). */

@@ -357,7 +357,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const seatDelegationAuth = exposureClass === 'loopback'
     ? createSeatKlientDelegationAuth(() => seatResolver)
     : undefined;
-  if (seatDelegationAuth !== undefined) app.addHook('onRequest', seatDelegationAuth.onRequest);
+  if (seatDelegationAuth !== undefined) {
+    app.addHook('onRequest', (request, reply) => seatDelegationAuth.onRequest(request, reply));
+  }
   app.server.requestTimeout = 0;
   registerRequestLogging(app);
   app.setValidatorCompiler(() => () => true);

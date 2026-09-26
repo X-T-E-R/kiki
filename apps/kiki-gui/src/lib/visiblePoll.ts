@@ -46,12 +46,13 @@ export function startVisiblePoll(options: VisiblePollOptions): () => void {
       }
     } finally {
       running = false;
-      if (stopped || hidden()) return;
-      if (rerunRequested) {
-        rerunRequested = false;
-        schedule(0);
-      } else {
-        schedule(options.intervalMs);
+      if (!stopped && !hidden()) {
+        if (rerunRequested) {
+          rerunRequested = false;
+          schedule(0);
+        } else {
+          schedule(options.intervalMs);
+        }
       }
     }
   };

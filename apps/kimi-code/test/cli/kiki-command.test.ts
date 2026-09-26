@@ -86,7 +86,7 @@ describe('kiki command helpers', () => {
   it('sends only the seat API contract fields', async () => {
     let body = '';
     vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
-      body = String(init.body);
+      body = init.body as string;
       return new Response(JSON.stringify({
         code: 0,
         msg: 'success',

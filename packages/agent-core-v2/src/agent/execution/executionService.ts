@@ -82,7 +82,11 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     if (this.shuttingDown) {
       throw new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is shutting down`);
     }
-    if (this.broken !== undefined) throw this.broken;
+    if (this.broken !== undefined) {
+      throw this.broken instanceof Error
+        ? this.broken
+        : new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is broken`, { cause: this.broken });
+    }
     options.signal.throwIfAborted();
     const release = this.dispatch.reserveExecution(this.agent.id, this.scope.parentAgentId, options.capacityReservation);
     const controller = new AbortController();

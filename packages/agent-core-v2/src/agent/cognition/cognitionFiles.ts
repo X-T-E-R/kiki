@@ -169,7 +169,7 @@ export async function loadCognitionSlots(
       'mode',
       'overlay',
       overlayMode,
-      `cognition.overlay_mode "${overlayMode}" is not supported; use append, prepend, wrap, persona, or replace`,
+      `cognition.overlay_mode "${String(overlayMode)}" is not supported; use append, prepend, wrap, persona, or replace`,
     );
   }
   const overlay = await readCognitionSlot(

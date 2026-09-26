@@ -168,7 +168,7 @@ describe('Kiki external delegation MCP projector', () => {
       expect(href).toBe('http://127.0.0.1:58627/api/klient/delegation/dispatch');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer DELEGATION_SECRET');
       expect(new Headers(init?.headers).get('authorization')).not.toContain('DAEMON_SECRET');
-      expect(JSON.parse(String(init?.body))).toEqual({
+      expect(JSON.parse(init?.body as string)).toEqual({
         target: 'named',
         taskName: 'probe',
         dispatchKey: 'dispatch-key',

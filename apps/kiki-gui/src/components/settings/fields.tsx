@@ -15,7 +15,7 @@
  * ink / accent scale and the shared `Hint` help line.
  */
 
-import { Hint, Toggle } from '../controls';
+import { Hint } from '../controls';
 
 /**
  * A labelled step inside a card. Cards use these top-to-bottom in the order a

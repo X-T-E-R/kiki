@@ -208,12 +208,12 @@ export function checkDocsGovernance(repoRoot) {
     }
     for (const target of localeTargets.en) {
       if (!localeTargets.zh.has(target)) {
-        addError(errors, 'nav-mirror', 'docs/.vitepress/config.ts', `English navigation target has no Chinese mirror: /${target}`);
+        addError(errors, 'nav-mirror', 'docs/.vitepress/config.ts', `English navigation target has no Chinese mirror: /${String(target)}`);
       }
     }
     for (const target of localeTargets.zh) {
       if (!localeTargets.en.has(target)) {
-        addError(errors, 'nav-mirror', 'docs/.vitepress/config.ts', `Chinese navigation target has no English mirror: /${target}`);
+        addError(errors, 'nav-mirror', 'docs/.vitepress/config.ts', `Chinese navigation target has no English mirror: /${String(target)}`);
       }
     }
   }

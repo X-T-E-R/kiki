@@ -399,7 +399,7 @@ export function useNewSessionDraft({
         clearNewSessionDraft();
         // react-router's navigate returns a promise in data routers; the
         // navigation is fire-and-forget here (the catch below covers createSession).
-        void navigate(`/s/${session.id}`, {
+        navigate(`/s/${session.id}`, {
           state: {
             initialPrompt: handoff.initialPrompt,
             initialAttachments: handoff.initialAttachments,

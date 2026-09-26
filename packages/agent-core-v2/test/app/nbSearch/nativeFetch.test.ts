@@ -69,7 +69,7 @@ describe('native FetchURL donor boundaries', () => {
     await writeFile(target, 'APPROVED');
     const capture = vi.spyOn(ix.get(INbSearchService), 'captureFetchFileIdentity');
     const execution = await ix.get(IFetchURLTool).resolveExecution({ action: 'run', source: { kind: 'file', scope: 'fixture', path: 'document.txt' }, pipeline: 'direct.local' });
-    if (execution.isError) throw new Error(String(execution.output));
+    if (execution.isError) throw new Error(execution.output as string);
     const { rename } = await import('node:fs/promises');
     await writeFile(`${target}.replacement`, 'PRIVATE REPLACEMENT');
     await rename(`${target}.replacement`, target);
@@ -171,7 +171,7 @@ describe('native FetchURL donor boundaries', () => {
   it('strips a trailing root dot from the URL host before admission and approval', async () => {
     const fetch = vi.spyOn(ix.get(INbSearchService), 'fetch');
     const execution = await ix.get(IFetchURLTool).resolveExecution({ action: 'run', source: { kind: 'url', url: 'http://metadata.google.internal./' } });
-    if (execution.isError) throw new Error(String(execution.output));
+    if (execution.isError) throw new Error(execution.output as string);
     expect(execution.approvalRule).not.toContain('metadata.google.internal.');
     await execution.execute({ turnId: 0, toolCallId: 'fixture', signal: new AbortController().signal });
     const passed = fetch.mock.calls

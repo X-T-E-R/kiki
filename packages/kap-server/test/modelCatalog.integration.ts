@@ -384,9 +384,12 @@ describe('server-v2 /api model/provider catalog', () => {
     await boot(CATALOG_TOML);
     const before = await readFile(join(home!, 'config.toml'), 'utf8');
     const originalFetch = globalThis.fetch;
+    const hrefOf = (input: Parameters<typeof fetch>[0]): string =>
+      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const providerFetch = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      if (!String(input).startsWith('https://draft.example.test/')) return originalFetch(input, init);
-      expect(String(input)).toBe('https://draft.example.test/v1/models');
+      const href = hrefOf(input);
+      if (!href.startsWith('https://draft.example.test/')) return originalFetch(input, init);
+      expect(href).toBe('https://draft.example.test/v1/models');
       const credential = new Headers(init?.headers).get('Authorization');
       if (credential === 'Bearer draft-success') return Response.json({ data: [{ id: 'new-model' }] });
       if (credential === 'Bearer draft-401') return Response.json({ error: 'draft-401' }, { status: 401 });
@@ -415,7 +418,7 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(JSON.stringify(unauthorized.body)).not.toContain('draft-401');
     expect(await readFile(join(home!, 'config.toml'), 'utf8')).toBe(before);
     expect((await getJson<{ items: unknown[] }>('/api/discovered-models')).body.data.items).toEqual([]);
-    expect(providerFetch.mock.calls.filter(([input]) => String(input).startsWith('https://draft.example.test/'))).toHaveLength(4);
+    expect(providerFetch.mock.calls.filter(([input]) => hrefOf(input).startsWith('https://draft.example.test/'))).toHaveLength(4);
   });
 
   it('forwards a draft key on single-provider refresh without adding it to collection refresh', async () => {

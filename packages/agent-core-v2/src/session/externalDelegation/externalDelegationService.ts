@@ -1293,7 +1293,11 @@ export class SessionExternalDelegationService
       claimed.push(dispatch.dispatchId);
       await this.finish(dispatch.dispatchId, 'interrupted', undefined, message);
     }
-    await Promise.all(claimed.map((dispatchId) => this.terminalizations.get(dispatchId)));
+    await Promise.all(
+      claimed
+        .map((dispatchId) => this.terminalizations.get(dispatchId))
+        .filter((terminalization): terminalization is Promise<void> => terminalization !== undefined),
+    );
   }
 
   private appendEvent(

@@ -118,8 +118,8 @@ export function QuickSwitcher({
   const openItem = (item: SwitcherItem | undefined) => {
     if (item === undefined) return;
     onClose();
-    if (item.kind === 'action' || item.kind === 'setting') void navigate(item.route);
-    else void navigate(`/s/${item.sessionId}`);
+    if (item.kind === 'action' || item.kind === 'setting') navigate(item.route);
+    else navigate(`/s/${item.sessionId}`);
   };
 
   const onInputKeyDown = (event: React.KeyboardEvent) => {

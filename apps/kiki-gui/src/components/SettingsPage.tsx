@@ -136,7 +136,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     if (!sectionMoved && !tabMoved && !cardMoved) return;
     if (resolution.tab !== undefined) params.set('tab', resolution.tab);
     const query = params.toString();
-    rawNavigate(`/settings/${resolution.section}${query === '' ? '' : `?${query}`}${targetHash}`, { replace: true });
+    void rawNavigate(`/settings/${resolution.section}${query === '' ? '' : `?${query}`}${targetHash}`, { replace: true });
   }, [resolution, section, search, hash, rawNavigate]);
 
   // Ctrl+, arrives with this flag; clicking Settings in the sidebar does not,

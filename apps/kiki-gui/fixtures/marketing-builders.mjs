@@ -14,7 +14,6 @@
 import { ts } from './helpers.mjs';
 import {
   AGENT,
-  MODEL,
   ROLE_BINDING,
   SAMPLE_ROOT,
   SESSION,
@@ -287,7 +286,7 @@ function agentPanel(locale, roles) {
     reviewer: { input: 33_500, output: 4_100, cacheRead: 22_800, contextTokens: 9_600, cost: 0.24 },
   };
   const metricRows = {
-    main: metrics({ ...{ input: 128_400, output: 18_600, cacheRead: 96_400, contextTokens: 41_200, cost: 1.42, compactions: 1 }, model: ROLE_BINDING.main.rail }),
+    main: metrics({ input: 128_400, output: 18_600, cacheRead: 96_400, contextTokens: 41_200, cost: 1.42, compactions: 1, model: ROLE_BINDING.main.rail }),
   };
   for (const role of roles) {
     metricRows[AGENT[role]] = metrics({ ...perRoleUsage[role], model: ROLE_BINDING[role].rail });

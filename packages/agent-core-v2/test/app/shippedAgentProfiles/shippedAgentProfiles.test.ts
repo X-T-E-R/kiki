@@ -116,7 +116,7 @@ describe('ShippedAgentProfileManagerService', () => {
       const manifest = await fsp.readFile(join(home, 'agent-profile-state', 'manifest.json'), 'utf8').catch(() => 'NO MANIFEST');
       const builtinList = await fsp.readdir(join(home, 'agents', 'builtin')).catch(() => 'NO DIR');
       const statDir = await fsp.stat(join(home, 'agents', 'builtin')).catch((e) => String(e));
-      throw new Error('DBG2 manifest=' + manifest + ' builtinList=' + JSON.stringify(builtinList) + ' statDir=' + String(statDir) + ' warnings=' + JSON.stringify(capturedWarnings));
+      throw new Error('DBG2 manifest=' + manifest + ' builtinList=' + JSON.stringify(builtinList) + ' statDir=' + (typeof statDir === 'string' ? statDir : JSON.stringify(statDir)) + ' warnings=' + JSON.stringify(capturedWarnings));
     }
 
     for (const id of ['agent', 'explore', 'general']) {

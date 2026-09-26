@@ -85,7 +85,15 @@ export class NativeAgentExecutorSession implements AgentExecutorSession {
 
   async shutdown(reason?: unknown): Promise<void> {
     this.cancel(reason);
-    const promptReason = reason instanceof Error ? reason : new Error(String(reason ?? 'Agent executor shutdown'));
+    const promptReason = reason instanceof Error
+      ? reason
+      : new Error(
+        reason === undefined
+          ? 'Agent executor shutdown'
+          : typeof reason === 'string'
+            ? reason
+            : JSON.stringify(reason) ?? Object.prototype.toString.call(reason),
+      );
     await Promise.all([
       this.settled(),
       this.prompt.drain(promptReason),

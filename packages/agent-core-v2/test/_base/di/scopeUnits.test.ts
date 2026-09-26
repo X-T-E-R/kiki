@@ -141,7 +141,7 @@ describe('ScopeUnits — kernel materialization fold (D11/G2)', () => {
         'unit-2:second', 'unit-2:first',
         'provider:second', 'provider:first',
       ]);
-      book.teardown();
+      void book.teardown();
       first.dispose();
       second.dispose();
       app.dispose();

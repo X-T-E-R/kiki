@@ -44,7 +44,7 @@ function structural(value) {
   return value
 }
 
-test('both locales have the approved six-section nav and mirrored sidebars', () => {
+void test('both locales have the approved six-section nav and mirrored sidebars', () => {
   assert.deepEqual(structural(locales.en.themeConfig), structural(locales.zh.themeConfig))
   for (const locale of ['en', 'zh']) {
     const { nav, sidebar } = locales[locale].themeConfig
@@ -64,11 +64,12 @@ test('both locales have the approved six-section nav and mirrored sidebars', () 
     assert.match(html(`${locale}/reference/command`), new RegExp(`<footer[^>]*class="VPDocFooter"[\\s\\S]*?href="${base}${locale}/release-notes/changelog.html"`))
   }
   const pages = (locale) => readdirSync(path.join(root, locale), { recursive: true })
-    .map((file) => file.replaceAll('\\', '/')).filter((file) => file.endsWith('.md')).sort()
+    .map((file) => file.replaceAll('\\', '/')).filter((file) => file.endsWith('.md'))
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
   assert.deepEqual(pages('en'), pages('zh'))
 })
 
-test('all old URLs publish redirect pages and all canonical destinations publish content', () => {
+void test('all old URLs publish redirect pages and all canonical destinations publish content', () => {
   assert.equal(Object.keys(config.rewrites.map).length, 24)
   for (const locale of ['en', 'zh']) {
     for (const [from, to] of Object.entries(moves)) {
@@ -100,7 +101,7 @@ test('all old URLs publish redirect pages and all canonical destinations publish
   }
 })
 
-test('redirect script preserves query strings and fragments, including merged command anchors', () => {
+void test('redirect script preserves query strings and fragments, including merged command anchors', () => {
   const source = readFileSync(path.join(root, 'redirects/[locale]/[page].md'), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .+$/gm, '')
   for (const route of config.dynamicRoutes.routes) {
@@ -125,7 +126,7 @@ test('redirect script preserves query strings and fragments, including merged co
   }
 })
 
-test('every rendered local page link and anchor resolves, and examples are not published', () => {
+void test('every rendered local page link and anchor resolves, and examples are not published', () => {
   const files = readdirSync(config.outDir, { recursive: true }).map((file) => file.replaceAll('\\', '/'))
   assert.ok(!files.some((file) => file.startsWith('examples/') && file.endsWith('.html')))
   const headingIds = new Map()

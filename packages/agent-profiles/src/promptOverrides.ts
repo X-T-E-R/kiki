@@ -77,7 +77,7 @@ export function validatePromptOverridePath(ref: string): string {
   if (trimmed.length === 0) {
     throw new PromptOverrideParseError('Prompt override file path must not be empty');
   }
-  if (isAbsolute(trimmed) || /^[A-Za-z]:[\\/]/.test(trimmed) || /^\\\\/.test(trimmed)) {
+  if (isAbsolute(trimmed) || /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith('\\\\')) {
     throw new PromptOverrideParseError(`Prompt override file path "${trimmed}" must be relative to the Kiki home directory`);
   }
   if (trimmed.split(/[\\/]+/).includes('..')) {

@@ -514,7 +514,7 @@ export class ExternalTurnRecorder {
           step: 1,
           stepId: this.stepId,
           reason: reason === 'cancelled' ? 'aborted' : 'error',
-          message: error instanceof Error ? error.message : error === undefined ? undefined : String(error),
+          message: error instanceof Error ? error.message : error === undefined ? undefined : stringifyOutput(error),
         }),
       );
     }
@@ -585,11 +585,11 @@ function boundedUnknown(value: unknown): unknown {
   if (value === undefined) return undefined;
   try {
     const json = JSON.stringify(value);
-    if (json === undefined) return String(value);
+    if (json === undefined) return Object.prototype.toString.call(value);
     if (Buffer.byteLength(json, 'utf8') <= MAX_BOUNDED_JSON_BYTES) return JSON.parse(json) as unknown;
     return { truncated: true, preview: json.slice(0, MAX_BOUNDED_JSON_BYTES) };
   } catch {
-    return String(value);
+    return Object.prototype.toString.call(value);
   }
 }
 
@@ -610,9 +610,9 @@ function stringifyOutput(value: unknown): string {
   if (typeof value === 'string') return value;
   try {
     const json = JSON.stringify(value);
-    return json === undefined ? String(value) : json.slice(0, MAX_BOUNDED_JSON_BYTES);
+    return json === undefined ? Object.prototype.toString.call(value) : json.slice(0, MAX_BOUNDED_JSON_BYTES);
   } catch {
-    return String(value);
+    return Object.prototype.toString.call(value);
   }
 }
 

@@ -219,7 +219,7 @@ export function App() {
     void host.readDesktopPrefs().then((prefs) => {
       if (prefs !== null) writeDesktopPrefs(prefs);
     });
-    return host.onTrayNewSession(() => void navigate('/new'));
+    return host.onTrayNewSession(() => navigate('/new'));
   }, [host, navigate]);
 
   useEffect(() => {
@@ -373,7 +373,7 @@ export function App() {
         if (!desktop) return;
         event.preventDefault();
         setQuickSwitcherOpen(false);
-        void navigate('/new');
+        navigate('/new');
       } else if (key === 'k' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
         setQuickSwitcherOpen((open) => !open);
@@ -381,7 +381,7 @@ export function App() {
         event.preventDefault();
         // Land in the search field: Ctrl+, → type → Enter → Esc is the
         // shortest path to any setting, and shorter than the nav tree.
-        void navigate('/settings', { state: { focusSearch: true } });
+        navigate('/settings', { state: { focusSearch: true } });
       } else if (key === '/' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
         setQuickSwitcherOpen(false);
@@ -419,7 +419,7 @@ export function App() {
       if (!isSettingsRoute || sidebarOpen || quickSwitcherOpen || shortcutsOpen) return;
       if (isEditableTarget(event.target)) return;
       event.preventDefault();
-      void navigate(lastNonSettingsRef.current);
+      navigate(lastNonSettingsRef.current);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
@@ -439,7 +439,7 @@ export function App() {
       const next = sessions.find((session) => session.id !== activeSessionId);
       if (next !== undefined) {
         setQuickSwitcherOpen(false);
-        void navigate(`/s/${next.id}`);
+        navigate(`/s/${next.id}`);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -480,7 +480,7 @@ export function App() {
         onGroupBy={(groupBy) => { writeLayoutPreferences({ groupBy }); }}
         sortBy={layoutPrefs.sortBy}
         onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
-        onNewSession={() => { void navigate('/new'); }}
+        onNewSession={() => { navigate('/new'); }}
       />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">

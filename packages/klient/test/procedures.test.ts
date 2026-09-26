@@ -80,9 +80,11 @@ describe('external delegation procedures', () => {
 
   it('calls the seat endpoint with only canonical input and the seat bearer', async () => {
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe('http://127.0.0.1:58627/api/klient/delegation/dispatch');
+      expect(
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+      ).toBe('http://127.0.0.1:58627/api/klient/delegation/dispatch');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer SEAT_TOKEN');
-      expect(JSON.parse(String(init?.body))).toEqual({
+      expect(JSON.parse(init?.body as string)).toEqual({
         target: 'named',
         taskName: 'probe',
         message: 'inspect',

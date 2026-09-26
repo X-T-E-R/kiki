@@ -207,7 +207,7 @@ export function Sidebar({
   const host = useHost();
   const navigate = useGuardedNavigate();
   const { client, meta, wsStatus } = useConnection();
-  const { t, locale, time } = useI18n();
+  const { t, locale } = useI18n();
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
   const [menu, setMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
@@ -418,7 +418,7 @@ export function Sidebar({
           <button
             type="button"
             data-nav-usage
-            onClick={() => void navigate('/usage')}
+            onClick={() => navigate('/usage')}
             aria-label={t('usage.navAria')}
             title={t('usage.nav')}
             className={HEADER_ICON_BUTTON}
@@ -559,7 +559,7 @@ export function Sidebar({
                       type="button"
                       onClick={() => {
                         setSearchInput('');
-                        void navigate(`/s/${hit.session_id}`);
+                        navigate(`/s/${hit.session_id}`);
                       }}
                       className="flex w-full flex-col gap-0.5 rounded-lg border border-transparent px-2.5 py-1.5 text-left transition-colors hover:bg-paper"
                     >
@@ -686,7 +686,7 @@ export function Sidebar({
                 >
                   <button
                     type="button"
-                    onClick={() => void navigate(`/s/${session.id}`)}
+                    onClick={() => navigate(`/s/${session.id}`)}
                     aria-current={active ? 'page' : undefined}
                     className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
                       active
@@ -789,7 +789,7 @@ export function Sidebar({
         <PendingBadge sessions={sessions} />
         <button
           type="button"
-          onClick={() => void navigate('/settings')}
+          onClick={() => navigate('/settings')}
           className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
         >
           <span aria-hidden className="text-[13px]">⚙</span> {t('sidebar.settings')}
@@ -797,7 +797,7 @@ export function Sidebar({
         <button
           type="button"
           data-connection-status
-          onClick={() => void navigate('/settings/connection')}
+          onClick={() => navigate('/settings/connection')}
           aria-label={t('sidebar.connStatusAria')}
           title={t('sidebar.connTitle', {
             version: meta.server_version,
@@ -828,7 +828,7 @@ export function Sidebar({
           onToggleWorkspacePin={toggleWorkspacePin}
           onManageWorkspaces={() => {
             setViewMenuOpen(false);
-            void navigate('/settings/workspaces');
+            navigate('/settings/workspaces');
           }}
           groupBy={groupBy}
           onGroupBy={onGroupBy}

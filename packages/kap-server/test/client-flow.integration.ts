@@ -27,21 +27,23 @@ describe('GUI shared client against an isolated KAP host', () => {
   const held = new Set<ServerResponse>();
   const requests: ModelRequest[] = [];
   const responseFacts: (() => unknown)[] = [];
-  const provider = createServer(async (request, response) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as ModelRequest);
-    if (hold) {
-      held.add(response);
-      response.once('close', () => held.delete(response));
-      return;
-    }
-    response.writeHead(200, { 'content-type': 'text/event-stream' });
-    response.end(`data: ${JSON.stringify({
-      id: 'local-response',
-      choices: [{ index: 0, delta: { content: 'local model completed' }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 1, completion_tokens: 3, total_tokens: 4 },
-    })}\n\ndata: [DONE]\n\n`);
+  const provider = createServer((request, response) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as ModelRequest);
+      if (hold) {
+        held.add(response);
+        response.once('close', () => held.delete(response));
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(`data: ${JSON.stringify({
+        id: 'local-response',
+        choices: [{ index: 0, delta: { content: 'local model completed' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 3, total_tokens: 4 },
+      })}\n\ndata: [DONE]\n\n`);
+    })();
   });
 
   beforeEach(async () => {

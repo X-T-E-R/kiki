@@ -46,7 +46,7 @@ beforeEach(() => {
   client.patchConfig.mockReset().mockImplementation(async (patch) => {
     return {
       experimental: {
-        ...(patch.experimental ?? {}),
+        ...patch.experimental,
       },
     };
   });

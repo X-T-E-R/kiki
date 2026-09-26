@@ -267,7 +267,7 @@ export class WsConnectionV1 implements BroadcastTarget {
           try {
             this.socket.send(data.subarray(offset, end), { binary: false, fin: end === data.length }, (error) => {
               clearTimeout(timer);
-              if (error != null) reject(error);
+              if (error !== null && error !== undefined) reject(error);
               else {
                 this.lastFragmentProgressAt = Date.now();
                 resolve();

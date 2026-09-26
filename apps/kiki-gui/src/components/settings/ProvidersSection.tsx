@@ -18,7 +18,7 @@ import { SectionCard } from './SectionCard';
  * new-session defaults live on the sibling tabs.
  */
 export function ConnectionsTab() {
-  const { client, config: connection } = useConnection();
+  const { client } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();

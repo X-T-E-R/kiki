@@ -127,7 +127,7 @@ export class SessionManager implements ISessionManager {
       try {
         const target = await this.controllerForSession(sessionId);
         if (target === undefined) return undefined;
-        return this.runWorkspaceOperation(
+        return await this.runWorkspaceOperation(
           target.workspaceId,
           () => target.controller.resume(sessionId, options),
           target.release,
@@ -652,7 +652,7 @@ export class SessionManager implements ISessionManager {
     while (true) {
       const operations = this.workspaceOperations.get(workspaceId);
       if (operations === undefined || operations.size === 0) return;
-      await Promise.allSettled([...operations]);
+      await Promise.allSettled(operations);
     }
   }
 }

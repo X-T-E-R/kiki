@@ -87,7 +87,7 @@ export function WorkspacesSection() {
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              <button type="button" onClick={() => void navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>{t('st.workspaces.newSession')}</button>
+              <button type="button" onClick={() => navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>{t('st.workspaces.newSession')}</button>
               <button
                 type="button"
                 data-workspace-pin={workspace.id}
@@ -141,7 +141,7 @@ export function WorkspacesSection() {
             <button
               type="button"
               className={`${SECONDARY_BUTTON} mt-3`}
-              onClick={() => void navigate('/new')}
+              onClick={() => navigate('/new')}
             >
               {t('st.workspaces.newSession')}
             </button>

@@ -2448,7 +2448,7 @@ export function SessionView({
       const recovery = `/${submission.name}${submission.args === '' ? '' : ` ${submission.args}`}`;
       updateDraft(recovery);
       updateAttachments(submission.attachments);
-      actions.activateSkill(
+      void actions.activateSkill(
         submission.name,
         submission.args,
         submission.attachments,
@@ -2460,7 +2460,7 @@ export function SessionView({
     // recoverable in the composer (and in localStorage across reloads).
     updateDraft(submission.text);
     updateAttachments(submission.attachments);
-    actions.send(
+    void actions.send(
       submission.text,
       submission.attachments,
       submission.goalObjective === undefined

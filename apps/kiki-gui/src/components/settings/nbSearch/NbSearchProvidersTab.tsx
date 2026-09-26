@@ -211,7 +211,7 @@ export function NbSearchProvidersTab({
 }: {
   capabilities: NbSearchCapabilities;
   draftProviders: Record<string, NbSearchProviderDraft>;
-  credentialSlots: NbSearchCapabilities['providers']['instances'][number]['credential']['slot_id'] | unknown;
+  credentialSlots: unknown;
   onUpdateProvider: (id: string, patch: Partial<NbSearchProviderDraft>) => void;
   onUpdateCredentialEnv: (instanceId: string, providerId: string, credentialEnv: string) => void;
   saving?: boolean;

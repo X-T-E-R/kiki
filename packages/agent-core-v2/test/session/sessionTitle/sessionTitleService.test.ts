@@ -297,6 +297,7 @@ describe('SessionTitleService', () => {
       model: { id: 'title-model' } as ModelRequester['model'],
       request: () =>
         (async function* generate(): AsyncGenerator<ModelRequestEvent> {
+          yield* [];
           throw new Error('provider exploded');
         })(),
     } as unknown as ModelRequester;

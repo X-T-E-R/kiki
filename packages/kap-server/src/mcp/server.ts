@@ -106,7 +106,8 @@ export function createKikiMcpServer(
       readonly schema: z.ZodTypeAny;
       decode(value: unknown): unknown;
     };
-    const encodeOutput = procedure.mcp.encodeOutput as (value: unknown, input: unknown) => unknown;
+    const encodeOutput = (value: unknown, input: unknown): unknown =>
+      (procedure.mcp.encodeOutput as (value: unknown, input: unknown) => unknown)(value, input);
     const tool = registrar.registerTool(
       procedure.mcp.toolName,
       {

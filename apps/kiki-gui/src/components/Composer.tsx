@@ -28,7 +28,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEv
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
-import type { FsSearchHit, PermissionMode, PromptPlanGate, SessionUsage } from '@kiki/protocol';
+import type { FsSearchHit, PermissionMode, PromptPlanGate } from '@kiki/protocol';
 
 import {
   buildSlashItems,
@@ -1282,7 +1282,7 @@ export function Composer({
     if (!canSend) return;
     setSlashConfirm(null);
     setMenu(null);
-    void sendPrompt(text.trim());
+    sendPrompt(text.trim());
   };
 
   /** Recompute the trigger-driven menu after any text/caret change. */

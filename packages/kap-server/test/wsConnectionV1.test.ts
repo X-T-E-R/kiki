@@ -141,7 +141,12 @@ describe('large transcript transfers', () => {
     const client = new WebSocket(`ws://127.0.0.1:${address.port}`);
     const messages: Array<{ type: string; payload?: unknown }> = [];
     client.on('message', (data) => {
-      const message = JSON.parse(data.toString());
+      const text = Buffer.isBuffer(data)
+        ? data.toString()
+        : Array.isArray(data)
+          ? Buffer.concat(data).toString()
+          : Buffer.from(data).toString();
+      const message = JSON.parse(text);
       messages.push(message);
       if (message.type === 'ping') client.send(JSON.stringify({ type: 'pong' }));
     });

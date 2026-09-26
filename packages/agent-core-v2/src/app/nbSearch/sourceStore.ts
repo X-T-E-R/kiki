@@ -107,18 +107,18 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
       try {
         canonical = canonicalRaw === undefined ? undefined : parseConfigPatch(JSON.parse(canonicalRaw), 'local nb-search configuration');
       } catch (error) {
-        return this.#withoutInvalidLocalConfig(env, status, config, error);
+        return await this.#withoutInvalidLocalConfig(env, status, config, error);
       }
       let effective;
       try {
         effective = resolveNbSearchConfig(env, canonical, config);
       } catch (error) {
-        if (canonical !== undefined) return this.#withoutInvalidLocalConfig(env, status, config, error);
+        if (canonical !== undefined) return await this.#withoutInvalidLocalConfig(env, status, config, error);
         return this.unavailable(env, status, nbSearchConfigIssues(error, config));
       }
       if (raw === undefined) {
         status.local_credentials = 'missing';
-        return this.#readyWithCapturedConfig(env, status, effective);
+        return await this.#readyWithCapturedConfig(env, status, effective);
       }
       status.local_credentials = 'present';
       let secrets;
@@ -138,7 +138,7 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
       }
       await this.#credentialFiles.assertUnlocked(paths.home);
       status.credential_source = prepared.usedLocalCredentials ? 'environment+local' : 'environment';
-      return this.#readyWithCapturedConfig(prepared.env, status, prepared.config);
+      return await this.#readyWithCapturedConfig(prepared.env, status, prepared.config);
     } catch (error) {
       if (error instanceof LocalCredentialError) {
         status.local_credentials = 'rejected';

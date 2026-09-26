@@ -23,7 +23,7 @@
  * retargets the shared rail at the active panel tab's agent.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
 import { basenameOf, formatBytes, previewKindOf, type FileReference } from '@kiki/session-core/composer/media';
@@ -137,7 +137,7 @@ export function PreviewWorkspace({
   width,
   sessionViewState,
   agentForest,
-  onOpenSubagent,
+  onOpenSubagent: _onOpenSubagent,
   controller,
   workspaceNavigation,
   onCancelTask,
@@ -323,7 +323,7 @@ export function PreviewWorkspace({
         const isTabActive = key === active;
         if (tab.kind === 'panel') {
           const workspaceWired =
-            controller != null &&
+            controller !== null && controller !== undefined &&
             sessionViewState !== undefined &&
             agentForest !== undefined &&
             workspaceNavigation !== undefined &&

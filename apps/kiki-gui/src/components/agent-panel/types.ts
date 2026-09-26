@@ -18,7 +18,7 @@ export interface AgentIdentity {
   readonly description?: string;
   /** Config content (e.g. SYSTEM.md or profile body preview), not dynamic live leaked prompt */
   readonly configContentPreview?: string;
-  readonly source?: 'builtin' | 'workspace' | 'user' | 'custom' | string;
+  readonly source?: 'builtin' | 'workspace' | 'user' | 'custom' | (string & {});
   readonly sourceFile?: string;
   readonly context: 'live' | 'draft';
   readonly roleParameters?: Record<string, string | number | boolean>;

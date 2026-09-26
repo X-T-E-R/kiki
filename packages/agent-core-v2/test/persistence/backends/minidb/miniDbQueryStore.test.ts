@@ -23,7 +23,7 @@ import { stubLog } from '../../../_base/log/stubs';
 const COLLECTION = 'session';
 const SEP = String.fromCodePoint(0);
 
-describe('MiniDbQueryStore', { timeout: 30_000 }, () => {
+describe('MiniDbQueryStore', () => {
   let homeDir: string;
   let disposeHost: (() => void) | undefined;
 

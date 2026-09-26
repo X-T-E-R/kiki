@@ -69,7 +69,7 @@ export const TaskBoard = memo(function TaskBoard({
   workspaces = [],
   sessions = [],
   currentWorkspaceId,
-  currentSessionId,
+  currentSessionId: _currentSessionId,
   scopeSelection,
   onScopeSelectionChange,
   loading = false,
@@ -440,7 +440,9 @@ export const TaskBoard = memo(function TaskBoard({
                           setSelectedTask(t);
                           void Promise.resolve(onOpenTask?.(t.id)).catch(() => undefined);
                         }}
-                        onMoveStatus={onMoveTaskStatus}
+                        onMoveStatus={(taskId, newStatus) => {
+                          void onMoveTaskStatus?.(taskId, newStatus);
+                        }}
                       />
                     ))
                   )}

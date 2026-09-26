@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, it } from 'vitest';
 
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -87,7 +88,7 @@ describe('external harness real smoke', () => {
       );
       contexts.push(context);
       const descriptor = (await context.get(IAgentExecutorRegistry).resolveExecutable(smokeCase.id)).descriptor;
-      expect(descriptor.args.join(' ')).not.toMatch(/always-approve|\byolo\b|bypass/i);
+      assert.doesNotMatch(descriptor.args.join(' '), /always-approve|\byolo\b|bypass/i);
       context.get(IAgentProfileService).applyBindingSnapshot({
         modelAlias: smokeCase.model,
         thinkingLevel: 'off',
@@ -106,14 +107,12 @@ describe('external harness real smoke', () => {
           { signal: controller.signal },
         );
         const completion = await handle.completion;
-        expect(completion.summary.trim()).toBe('KIKI_EXTERNAL_SMOKE_OK');
+        assert.equal(completion.summary.trim(), 'KIKI_EXTERNAL_SMOKE_OK');
         const records = await context.persistedWireRecords();
         const execution = records.find((record) => record.type === 'executor.turn.metadata');
-        expect(execution).toMatchObject({
-          executorId: smokeCase.id,
-          protocol: descriptor.protocol,
-        });
-        expect(records.some((record) => record.type === 'turn.ended')).toBe(true);
+        assert.equal(execution?.['executorId'], smokeCase.id);
+        assert.equal(execution?.['protocol'], descriptor.protocol);
+        assert.equal(records.some((record) => record.type === 'turn.ended'), true);
 
         const outputDir = resolve(outputRoot, smokeCase.id);
         await mkdir(outputDir, { recursive: true });

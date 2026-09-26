@@ -66,7 +66,7 @@ export function registerKlientHttp(
       if (!(error instanceof RPCError)) {
         req.log.error({ err: error }, 'klient http call failed');
       }
-      return reply.send(errorEnvelope(error, req.id));
+      return await reply.send(errorEnvelope(error, req.id));
     } finally {
       reply.raw.off('close', abort);
     }

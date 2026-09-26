@@ -236,7 +236,7 @@ export function ActivityPanel({ sessions }: { sessions: readonly Session[] }) {
     .filter((segment) => segment !== undefined)
     .join(' · ');
 
-  const openSession = (sessionId: string) => void navigate(`/s/${sessionId}`);
+  const openSession = (sessionId: string) => navigate(`/s/${sessionId}`);
 
   return (
     <section data-activity-panel className="mx-1 mb-1 rounded-xl border border-hairline bg-paper">

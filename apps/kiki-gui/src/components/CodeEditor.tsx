@@ -152,7 +152,7 @@ export function CodeEditor({
     // Lazy language load: matched by filename, swapped in when ready.
     const description = LanguageDescription.matchFilename(languages, basenameOf(path));
     let cancelled = false;
-    if (description != null) {
+    if (description !== null && description !== undefined) {
       void Promise.resolve(description.load()).then((support) => {
         if (cancelled || viewRef.current !== view) return;
         view.dispatch({ effects: languageCompartment.current.reconfigure(support) });

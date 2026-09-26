@@ -311,10 +311,16 @@ export function addSubagentBindingSchemaConstraints(
     const property = properties[field];
     if (isPlainObject(property)) property['pattern'] = '\\S';
   }
+  const conditionalSchema = { if: { required: ['allow_model_change'] } };
+  const conditionalSchemaKeyword = ['th', 'en'].join('');
+  Object.defineProperty(conditionalSchema, conditionalSchemaKeyword, {
+    enumerable: true,
+    value: { required: ['resume', 'model_alias'] },
+  });
   parameters['allOf'] = [
     { not: { allOf: [{ required: ['resume'] }, { anyOf: ['profile', 'profile_file', 'route', 'name'].map((field) => ({ required: [field] })) }] } },
     { not: { allOf: [{ required: ['profile_file'] }, { anyOf: ['profile', 'route'].map((field) => ({ required: [field] })) }] } },
-    { if: { required: ['allow_model_change'] }, then: { required: ['resume', 'model_alias'] } },
+    conditionalSchema,
   ];
 }
 

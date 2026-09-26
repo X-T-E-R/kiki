@@ -63,14 +63,12 @@ export function defineKlientConformance(
       await target.cleanup();
     });
 
-    if (transport === 'memory' || transport === 'ipc') {
-      it('explicitly rejects the HTTP-only terminal capability', async () => {
-        await expect(target.klient.terminal.listTerminals('s1')).rejects.toThrow('unsupported');
-        await expect(target.klient.terminal.createTerminal('s1')).rejects.toThrow('unsupported');
-        await expect(target.klient.terminal.terminalAttach('s1', 't1')).rejects.toThrow('unsupported');
-        expect(() => target.klient.terminal.onTerminalSignal(() => undefined)).toThrow('unsupported');
-      });
-    }
+    it.skipIf(transport !== 'memory' && transport !== 'ipc')('explicitly rejects the HTTP-only terminal capability', async () => {
+      await expect(target.klient.terminal.listTerminals('s1')).rejects.toThrow('unsupported');
+      await expect(target.klient.terminal.createTerminal('s1')).rejects.toThrow('unsupported');
+      await expect(target.klient.terminal.terminalAttach('s1', 't1')).rejects.toThrow('unsupported');
+      expect(() => target.klient.terminal.onTerminalSignal(() => undefined)).toThrow('unsupported');
+    });
 
     it('env() aggregates the host snapshot', async () => {
       const env = await target.klient.global.env();

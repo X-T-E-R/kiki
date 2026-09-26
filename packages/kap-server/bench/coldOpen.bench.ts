@@ -149,7 +149,7 @@ class BenchBus {
     return { dispose: () => this.listeners.delete(listener) };
   }
   emit(event: unknown): void {
-    for (const listener of [...this.listeners]) listener(event);
+    for (const listener of this.listeners) listener(event);
   }
 }
 

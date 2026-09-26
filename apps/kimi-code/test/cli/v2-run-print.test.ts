@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
   IAgentGoalService,
@@ -249,7 +249,7 @@ describe('runV2Print', () => {
     index.get.mockResolvedValue({ id: 'ses_v2', cwd: process.cwd(), workspaceId: 'example', createdAt: 1, updatedAt: 1, archived: false });
     const permission = agentServices.get(IAgentPermissionModeService) as { mode: string; setMode: ReturnType<typeof vi.fn> };
     permission.mode = 'manual';
-    const prompts = agentServices.get(IAgentPromptService) as { submitAndWait: ReturnType<typeof vi.fn> };
+    const prompts = agentServices.get(IAgentPromptService) as { submitAndWait: Mock<IAgentPromptService['submitAndWait']> };
     let finish!: () => void;
     let started!: () => void;
     const entered = new Promise<void>((resolve) => { started = resolve; });
@@ -283,7 +283,7 @@ describe('runV2Print', () => {
   it.each(['blocked', 'failed'] as const)('finishes and disposes a %s terminal prompt', async (state) => {
     const { app, agent, agentServices } = makeFakeHarness();
     mocks.bootstrap.mockReturnValue({ app }); mocks.ensureMainAgent.mockResolvedValue(agent);
-    const prompts = agentServices.get(IAgentPromptService) as { submitAndWait: ReturnType<typeof vi.fn> };
+    const prompts = agentServices.get(IAgentPromptService) as { submitAndWait: Mock<IAgentPromptService['submitAndWait']> };
     prompts.submitAndWait.mockResolvedValueOnce(state === 'blocked'
       ? { promptId: 'blocked', state }
       : { promptId: 'failed', turnId: 1, state, result: { type: 'failed', steps: 1, error: { code: 'provider.filtered', message: 'filtered', retryable: false } } });
@@ -301,7 +301,7 @@ describe('runV2Print', () => {
 
     await runV2Print(opts() as never, '1.2.3-test', { stdout, stderr });
 
-    const promptService = agentServices.get(IAgentPromptService) as { submitAndWait: ReturnType<typeof vi.fn> };
+    const promptService = agentServices.get(IAgentPromptService) as { submitAndWait: Mock<IAgentPromptService['submitAndWait']> };
     expect(promptService.submitAndWait).toHaveBeenCalledWith({ input: [{ type: 'text', text: 'say hello' }] }, undefined);
     expect(stderr.write).toHaveBeenNthCalledWith(1, 'kimi version 1.2.3-test\n');
     expect(stdout.text()).toContain('hello world');
@@ -314,11 +314,11 @@ describe('runV2Print', () => {
     mocks.bootstrap.mockReturnValue({ app });
     mocks.ensureMainAgent.mockResolvedValue(agent);
 
-    const dispatcher = agentServices.get(IEventDispatcher) as { flush: ReturnType<typeof vi.fn> };
+    const dispatcher = agentServices.get(IEventDispatcher) as { flush: Mock<IEventDispatcher['flush']> };
     dispatcher.flush.mockImplementation(async () => {
       order.push('flush');
     });
-    const sessions = appServices.get(ISessionManager) as { close: ReturnType<typeof vi.fn> };
+    const sessions = appServices.get(ISessionManager) as { close: Mock<ISessionManager['close']> };
     sessions.close.mockImplementation(async () => {
       order.push('close');
     });

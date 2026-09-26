@@ -16,7 +16,6 @@ import type { IUserAgentProfileLoader } from './userAgentProfileLoader';
 import type { IWorkspaceAgentProfileLoader } from './workspaceAgentProfileLoader';
 import { AgentProfileWriteErrors } from './errors';
 import type {
-  AgentProfileRouteUpdate,
   AgentProfileWriteRequest,
   AgentProfileWriteResult,
   AgentProfileWriteScope,

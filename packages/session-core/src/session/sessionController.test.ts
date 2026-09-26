@@ -925,6 +925,7 @@ describe('SessionController message closure', () => {
     });
     await waitFor(() => calls() > before);
     await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    expect(controller.getState().resyncFailed).toBe(false);
     controller.close();
   });
 
@@ -2852,6 +2853,7 @@ describe('SessionController transcript authority', () => {
     await waitFor(() => socket.restartGeneration.mock.calls.length === 2);
     await waitFor(() => client.snapshot.mock.calls.length === 3);
     await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    expect(controller.getState().resyncFailed).toBe(false);
     controller.close();
   });
 

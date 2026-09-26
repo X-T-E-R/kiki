@@ -63,32 +63,32 @@ function codes(root) {
   return checkDocsGovernance(root).map((error) => error.code);
 }
 
-test('accepts a structurally consistent fixture without making semantic claims', () => {
+void test('accepts a structurally consistent fixture without making semantic claims', () => {
   withFixture((root) => assert.deepEqual(checkDocsGovernance(root), []));
 });
 
-test('detects a missing locale mirror', () => {
+void test('detects a missing locale mirror', () => {
   withFixture((root) => {
     rmSync(join(root, 'docs/zh/guide.md'));
     assert.ok(codes(root).includes('mirror-missing'));
   });
 });
 
-test('detects heading-level drift outside fenced code', () => {
+void test('detects heading-level drift outside fenced code', () => {
   withFixture((root) => {
     write(root, 'docs/zh/guide.md', '# Guide\n\n### Use it\n');
     assert.ok(codes(root).includes('heading-structure'));
   });
 });
 
-test('detects an unresolved locale navigation target', () => {
+void test('detects an unresolved locale navigation target', () => {
   withFixture((root) => {
     write(root, 'docs/.vitepress/config.ts', "export default { link: '/en/missing-page' };\n");
     assert.ok(codes(root).includes('nav-target'));
   });
 });
 
-test('detects locale navigation set drift even when every target page exists', () => {
+void test('detects locale navigation set drift even when every target page exists', () => {
   withFixture((root) => {
     write(
       root,
@@ -101,21 +101,21 @@ test('detects locale navigation set drift even when every target page exists', (
   });
 });
 
-test('detects an unresolved relative Markdown link', () => {
+void test('detects an unresolved relative Markdown link', () => {
   withFixture((root) => {
     write(root, 'docs/en/index.md', '# Home\n\n## Start\n\nRead [missing](./missing.md).\n');
     assert.ok(codes(root).includes('relative-link'));
   });
 });
 
-test('detects a missing required skill resource', () => {
+void test('detects a missing required skill resource', () => {
   withFixture((root) => {
     rmSync(join(root, `${skillRoot}/references/mechanical-packet.md`));
     assert.ok(codes(root).includes('required-resource'));
   });
 });
 
-test('detects missing skill frontmatter', () => {
+void test('detects missing skill frontmatter', () => {
   withFixture((root) => {
     write(root, `${skillRoot}/SKILL.md`, '# Catch up\n');
     assert.ok(codes(root).includes('skill-frontmatter'));

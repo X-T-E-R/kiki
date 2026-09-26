@@ -489,7 +489,7 @@ function MarketplaceTab() {
                 <MarketplaceAction
                   entry={entry}
                   installingId={installingId}
-                  onInstall={installEntry}
+                  onInstall={(entry) => { void installEntry(entry); }}
                 />
               </div>
             ))

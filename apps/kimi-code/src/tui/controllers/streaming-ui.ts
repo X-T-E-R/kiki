@@ -11,7 +11,7 @@ import { STREAMING_UI_FLUSH_MS } from '../constant/streaming';
 import { hasDispose } from '../utils/component-capabilities';
 import { appendStreamingArgsPreview, parseStreamingArgs } from '../utils/event-payload';
 import { notifyTerminalOnce } from '../utils/terminal-notification';
-import { AGENT_RUN_TOOL, isAgentRunTool } from '../tool-names';
+import { isAgentRunTool } from '../tool-names';
 import { nextTranscriptId } from '../utils/transcript-id';
 import type { TodoItem } from '../components/chrome/todo-panel';
 import type {
