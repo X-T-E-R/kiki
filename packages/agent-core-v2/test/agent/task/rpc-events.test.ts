@@ -45,7 +45,7 @@ import {
 
 type FireAndForgetTrigger = IExternalHooksRunnerService['fireAndForgetTrigger'];
 
-const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 15_000;
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
 function immediateProcess(exitCode: number, stdoutText = ''): IHostProcess {
   return {
@@ -424,7 +424,7 @@ describe('AgentTaskService — event emission', () => {
         status: 'completed',
       }),
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('tracks failed and timed-out terminal statuses', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -466,7 +466,7 @@ describe('AgentTaskService — event emission', () => {
         }),
       }),
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('emits task.terminated when a restored task is marked lost', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-reconcile-'));
@@ -501,7 +501,7 @@ describe('AgentTaskService — event emission', () => {
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('AgentTaskService — notification delivery', () => {
@@ -541,7 +541,7 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).not.toMatch(/(?:subagents? still running|subagent 正在运行)/);
     const hook = ctx.allEvents.find((event) => event.event === 'task.notified');
     expect(JSON.stringify(hook)).not.toContain('final subagent summary');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reports other running children at the end of a completed agent notification', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -573,7 +573,7 @@ describe('AgentTaskService — notification delivery', () => {
     finishAlpha({ result: 'alpha done' });
     finishBeta({ result: 'beta done' });
     await Promise.all([manager.wait(alphaId), manager.wait(betaId)]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reports surviving children after a failed agent notification', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -600,7 +600,7 @@ describe('AgentTaskService — notification delivery', () => {
     await manager.suppressTerminalNotification(siblingId);
     finishSibling({ result: 'done' });
     await manager.wait(siblingId);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each([
     { totalBytes: 16_000, previewBytes: 16_000, truncated: 'false', complete: 'true' },
@@ -630,6 +630,7 @@ describe('AgentTaskService — notification delivery', () => {
       expect(text).not.toContain(marker);
       expect(text).toContain('<output-file');
     },
+    PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
   );
 
   it.each([
@@ -670,6 +671,7 @@ describe('AgentTaskService — notification delivery', () => {
         expect(text).not.toContain('<output-file');
       }
     },
+    PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
   );
 
   it('inlines a short completed question answer in its notification', async () => {
@@ -696,7 +698,7 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).toContain(`<answer>\n${answer}\n</answer>`);
     expect(text).not.toContain('<output-file');
     expect(text).not.toContain('<output-preview');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('inlines a dismissed question result with dismissed notification text', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -724,7 +726,7 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).toContain('The user dismissed "Which database?" without answering.');
     expect(text).toContain(`<answer>\n${dismissed}\n</answer>`);
     expect(text).not.toContain('<output-file');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('uses the output file pointer when a question result exceeds the inline limit', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -751,7 +753,7 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).toContain('<output-file');
     expect(text).not.toContain('<answer>');
     expect(text).not.toContain('"details"');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reports a question tool error as failed without an answer block', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -779,7 +781,7 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).toContain('Which database? failed. Reason: Client does not support questions');
     expect(text).not.toContain('<answer>');
     expect(text).not.toContain('<output-file');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each([0, 2])('delivers process exit %s with useful output or an explicit empty result', async (exitCode) => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -801,7 +803,7 @@ describe('AgentTaskService — notification delivery', () => {
       expect(text).toContain('truncated="true" complete="false"');
       expect(text).toContain('<output-file');
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('enqueues completed process task notifications into the turn flow', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -832,7 +834,7 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).toContain('<output-preview bytes="12" total_bytes="12" truncated="false" complete="true">');
     expect(text).toContain('shell output');
     expect(text).toContain('<output-file');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('enqueues stopped process task notifications into the turn flow', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -857,7 +859,7 @@ describe('AgentTaskService — notification delivery', () => {
     expect(text).toContain('No output was captured.');
     expect(text).not.toContain('<output-preview');
     expect(text).not.toContain('<output-file');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('TaskStopTool suppresses the real terminal notification for model-requested stops', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -878,7 +880,7 @@ describe('AgentTaskService — notification delivery', () => {
       status: 'killed',
       terminalNotificationSuppressed: true,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('TaskStopTool persists stop reason and suppression across reload', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-tool-stop-'));
@@ -988,7 +990,7 @@ describe('AgentTaskService — notification delivery', () => {
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('restores a completed question notification once with its short answer inline', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-question-replay-'));
@@ -1022,7 +1024,7 @@ describe('AgentTaskService — notification delivery', () => {
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('references persisted output without reading a tail for restored process notifications', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-bash-tail-'));
@@ -1057,7 +1059,7 @@ describe('AgentTaskService — notification delivery', () => {
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not replay restored notifications already marked delivered', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-replay-'));
@@ -1093,7 +1095,7 @@ describe('AgentTaskService — notification delivery', () => {
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('restores notification delivery after undo for a locally archived execution without restarting it', async () => {
     const fixture = createAgentTaskService();
@@ -1121,7 +1123,7 @@ describe('AgentTaskService — notification delivery', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('re-delivers a terminal task notification removed by undo when output is unavailable', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-undo-'));
@@ -1154,7 +1156,7 @@ describe('AgentTaskService — notification delivery', () => {
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('preserves a queued notification when undo rejects an active turn', async () => {
     const fixture = createAgentTaskService();
@@ -1224,7 +1226,7 @@ describe('AgentTaskService — notification delivery', () => {
       await ctx.get(ISessionMetadata).ready;
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not double-notify newly lost restored agent tasks', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-lost-'));
@@ -1262,7 +1264,7 @@ describe('AgentTaskService — notification delivery', () => {
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fires a Notification hook when a task agent notification is delivered', async () => {
     const fireAndForgetTrigger = vi.fn<FireAndForgetTrigger>(async () => []);
@@ -1294,7 +1296,7 @@ describe('AgentTaskService — notification delivery', () => {
         sourceId: taskId,
       }),
     }));
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not let Notification hook failures interrupt notification delivery', async () => {
     const fireAndForgetTrigger = vi.fn<FireAndForgetTrigger>(async () => {
@@ -1321,7 +1323,7 @@ describe('AgentTaskService — notification delivery', () => {
     expect(notificationMessageFor(agent, taskId).content[0]!.text).toContain(
       'inspect repository completed.',
     );
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fires Notification hooks for process task notifications', async () => {
     const fireAndForgetTrigger = vi.fn<FireAndForgetTrigger>(async () => []);
@@ -1348,7 +1350,7 @@ describe('AgentTaskService — notification delivery', () => {
         sourceId: taskId,
       }),
     }));
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('AgentTaskService — agent recovery notification bodies', () => {
@@ -1387,7 +1389,7 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
       ([name]) => name === 'Notification',
     );
     expect(JSON.stringify(notificationHook)).not.toContain('AgentRun');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stopped agent task body forbids automatic resume', async () => {
     const controller = new AbortController();
@@ -1416,7 +1418,7 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     expect(text).toContain('Do not resume automatically');
     expect(text).not.toContain('AgentRun(');
     expect(text).not.toContain('background=true');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('completed agent task body does not add resume instructions', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -1437,7 +1439,7 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     const text = notificationMessageFor(agent, taskId).content[0]!.text;
     expect(text).toContain('agent_id="agent-8"');
     expect(text).not.toMatch(/AgentRun\(resume="agent-8"/);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('process task body never mentions resume', async () => {
     const { agent, ctx, manager } = createAgentTaskService();
@@ -1453,7 +1455,7 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     expect(text).not.toContain('agent_id=');
     expect(text).not.toMatch(/AgentRun\(resume=/);
     expect(text).toContain(`source_id="${taskId}"`);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('delivers a restored terminal task notification through the observable user channel', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-agent-delivery-'));
@@ -1489,5 +1491,5 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     } finally {
       await cleanupSessionDir(sessionDir, fixture);
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

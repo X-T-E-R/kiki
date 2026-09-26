@@ -17,6 +17,8 @@ import {
   type TaskServiceTestManager,
 } from './stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 let sessionDir: string;
 
 beforeEach(async () => {
@@ -49,7 +51,7 @@ describe('AgentTaskPersistence legacy compatibility', () => {
     await expect(createAgentTaskPersistence(sessionDir).readTask('agent-named001')).resolves.toMatchObject({
       taskId: 'agent-named001', collaborationTaskName: 'build_api', collaborationAgentType: 'coder',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('normalizes legacy snake_case process task records', async () => {
     await writeLegacyTask('bash-legacy01', {
@@ -76,7 +78,7 @@ describe('AgentTaskPersistence legacy compatibility', () => {
       exitCode: null,
       status: 'running',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('normalizes legacy timed-out agent records', async () => {
     await writeLegacyTask('agent-timeout1', {
@@ -109,7 +111,7 @@ describe('AgentTaskPersistence legacy compatibility', () => {
       agentId: 'agent-session-id',
       profile: 'reviewer',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('migrates legacy records through load/reconcile writeback', async () => {
     const ctx: TestAgentContext = createTestAgent(homeDirServices(sessionDir), taskServices());
@@ -148,5 +150,5 @@ describe('AgentTaskPersistence legacy compatibility', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

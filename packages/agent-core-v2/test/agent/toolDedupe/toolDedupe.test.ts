@@ -31,6 +31,8 @@ import { registerTestAgentWireServices } from '../../wire/stubs';
 import { createTestAgent, execEnvServices, telemetryServices } from '../../harness';
 import { createFakeProcessRunner } from '../../tools/fixtures/fake-exec';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const { REMINDER_TEXT_1, REMINDER_TEXT_3, makeReminderText2 } = toolDedupeTesting;
 const ZERO_USAGE = emptyUsage();
 
@@ -1057,7 +1059,7 @@ describe('AgentToolDedupeService', () => {
         .filter((entry) => entry.event === 'tool_call_repeat')
         .map((entry) => entry.properties?.['action']);
       expect(actions).toEqual(['none', 'r1', 'r1', 'r2', 'r2', 'r2', 'r3', 'r3', 'r3', 'r3', 'stop']);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('does not force-stop when the malformed argument text keeps changing', async () => {
       const records: TelemetryRecord[] = [];

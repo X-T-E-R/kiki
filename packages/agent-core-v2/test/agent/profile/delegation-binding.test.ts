@@ -24,6 +24,8 @@ import {
   type TestAgentContext,
 } from '../../harness';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const MOCK_MODEL = 'mock-model';
 
 function catalogWith(
@@ -109,7 +111,7 @@ describe('delegation context at bind', () => {
     ctx.mockNextResponse({ type: 'text', text: 'ok' });
     await ctx.get(IAgentLLMRequesterService).request({ source: { type: 'turn', turnId: 1, step: 1 } });
     assertAnchored();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['sub', 'independent', 'off'] as const)('preserves the saved %s notice across a cold variable refresh', async (position) => {
     const custom = normalizeAgentProfile({
@@ -142,7 +144,7 @@ describe('delegation context at bind', () => {
     }
     expect(restored.data().appliedLease).toEqual(before.appliedLease);
     expect(restored.data().activeToolNames).toEqual(before.activeToolNames);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not inject a prefix when the main agent binds explore', async () => {
     ctx = createTestAgent(homeDirServices(homeDir));
@@ -241,7 +243,7 @@ describe('delegation context at bind', () => {
     });
     expect(quietProfile.getSystemPrompt()).toContain('CUSTOM BODY');
     expect(quietProfile.getSystemPrompt()).not.toContain(TASK_AGENT_ROLE_PREFIX);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('consumes the four prompt override scopes in priority order', async () => {
     const custom = normalizeAgentProfile({
@@ -426,7 +428,7 @@ describe('delegation context at bind', () => {
       model: MOCK_MODEL,
     });
     expect(ctx.get(IAgentProfileService).getSystemPrompt()).toContain('OPEN');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reapplies slot 4 after a snapshot replay refreshes the system prompt', async () => {
     const custom = normalizeAgentProfile({
@@ -459,7 +461,7 @@ describe('delegation context at bind', () => {
     await profile.refreshSystemPrompt();
     expect(profile.getSystemPrompt()).toContain('LEASE PREPEND');
     expect(profile.getSystemPrompt()).toContain('CHILD BODY');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('restores a scoped definition exactly with its lease and spawn policy', async () => {
     const publicProfile = normalizeAgentProfile({

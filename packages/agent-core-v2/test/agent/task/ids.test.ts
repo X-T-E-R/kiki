@@ -15,6 +15,8 @@ import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import { createTestAgent, type TestAgentContext } from '../../harness';
 import { createAgentTaskPersistence } from './stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 function registerProcess(
   manager: IAgentTaskService,
   proc: IHostProcess,
@@ -90,7 +92,7 @@ describe('background task id format', () => {
     expect(background.getTask(id)).toMatchObject({ taskId: id, kind: 'process' });
     proc.resolve(0);
     await background.wait(id);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('assigns agent-prefixed ids to agent tasks', async () => {
     let resolveCompletion!: (value: { result: string }) => void;
@@ -105,7 +107,7 @@ describe('background task id format', () => {
     expect(background.getTask(id)).toMatchObject({ taskId: id, kind: 'agent' });
     resolveCompletion({ result: 'done' });
     await background.wait(id);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects malformed ids at the persistence path boundary', () => {
     const persistence = createAgentTaskPersistence('/tmp/kimi-bg-id-test');

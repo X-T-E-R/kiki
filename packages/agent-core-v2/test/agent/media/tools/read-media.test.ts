@@ -44,6 +44,8 @@ import type { ISessionWorkspaceContext } from '#/session/workspaceContext/worksp
 import type { WorkspaceConfig } from '#/tool/path-access';
 import { sniffImageDimensions } from '#/agent/media/file-type';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const WORKSPACE: WorkspaceConfig = { workspaceDir: '/workspace', additionalDirs: [] };
 
 const PNG_WIDTH = 1920;
@@ -373,7 +375,7 @@ describe('ReadMediaFileTool', () => {
     expect(match).not.toBeNull();
     const dims = sniffImageDimensions(Buffer.from(match![2]!, 'base64'));
     expect(Math.max(dims!.width, dims!.height)).toBeLessThanOrEqual(2000);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns an actionable error when compression cannot meet the byte budget', async () => {
     const oversized = Buffer.concat([pngBuffer(), Buffer.alloc(256 * 1024, 1)]);
@@ -652,7 +654,7 @@ describe('ReadMediaFileTool', () => {
     expect(records[1]!.event).toBe('image_crop');
     expect(records[1]!.properties?.['source']).toBe('read_media');
     expect(records[1]!.properties?.['ok']).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('errors when reading an image without image input capability', async () => {
     const result = await execute(

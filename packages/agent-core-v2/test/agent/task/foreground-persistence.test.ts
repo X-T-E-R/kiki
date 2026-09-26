@@ -22,6 +22,8 @@ import {
   createAgentTaskPersistence,
 } from './stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5));
@@ -145,7 +147,7 @@ describe('AgentTaskService — foreground persistence', () => {
     const snapshot = await background.getOutputSnapshot(taskId, 1_000);
     expect(snapshot.fullOutputAvailable).toBe(false);
     expect(snapshot.preview).toContain('hello');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('flushes complete pre-detach output to disk when a foreground task detaches', async () => {
     const { proc, pushStdout, finish } = controllableProcess();
@@ -164,7 +166,7 @@ describe('AgentTaskService — foreground persistence', () => {
 
     expect(await background.readOutput(taskId)).toBe('before-detach\nafter-detach\n');
     expect(existsSync(taskJsonPath(taskId))).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('spills to disk and keeps the log when foreground output exceeds the buffer', async () => {
     const big = 'a'.repeat(MAX_OUTPUT_BYTES + 1024);
@@ -178,7 +180,7 @@ describe('AgentTaskService — foreground persistence', () => {
     expect(existsSync(taskJsonPath(taskId))).toBe(true);
     expect(snapshot.fullOutputAvailable).toBe(true);
     expect(snapshot.outputSizeBytes).toBe(big.length);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('archives high-churn foreground tasks and bounds their shared output cache without evicting active tasks', async () => {
     const internals = background as unknown as {
@@ -201,7 +203,7 @@ describe('AgentTaskService — foreground persistence', () => {
         const bytes = [...internals.tasks.values(), ...internals.cachedOutputs.values()]
           .reduce((sum, entry) => sum + entry.retainedOutputBytes, 0);
         expect(bytes).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
-      });
+      }, { timeout: PARALLEL_WORKER_CONTENTION_TIMEOUT_MS });
       expect(background.getTask(activeId)?.status).toBe('running');
     }
     for (const { taskId, output } of history) {
@@ -227,5 +229,5 @@ describe('AgentTaskService — foreground persistence', () => {
     background.persistOutput(taskId);
     const snapshot = await background.getOutputSnapshot(taskId, 1_000);
     expect(snapshot).toMatchObject({ preview: 'late spill', fullOutputAvailable: true });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

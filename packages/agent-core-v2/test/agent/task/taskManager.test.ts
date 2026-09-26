@@ -452,7 +452,7 @@ describe('AgentTaskService', () => {
       detached: true,
     });
     await expect(waiting).resolves.toBe('detached');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('releases foreground waiters when a foreground task completes', async () => {
     const { manager } = createAgentTaskService();
@@ -466,7 +466,7 @@ describe('AgentTaskService', () => {
       detached: false,
       status: 'completed',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stops foreground tasks from their register-time signal', async () => {
     const { manager } = createAgentTaskService();
@@ -489,7 +489,7 @@ describe('AgentTaskService', () => {
       status: 'killed',
       stopReason: 'Aborted by the user',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('forwards foreground signal abort reasons to agent task controllers', async () => {
     const { manager } = createAgentTaskService();
@@ -520,7 +520,7 @@ describe('AgentTaskService', () => {
       stopReason: 'Aborted by the user',
     });
     expect(isUserCancellation(subagentController.signal.reason)).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not count foreground tasks against the detached task limit', () => {
     const { manager } = createAgentTaskService({ maxRunningTasks: 1 });
@@ -574,7 +574,7 @@ describe('AgentTaskService', () => {
         exitCode: 0,
       }),
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('honours the list limit parameter', () => {
     const { manager } = createAgentTaskService();
@@ -630,7 +630,7 @@ describe('AgentTaskService', () => {
     await waitForOutput(manager, taskId, 'captured output');
 
     expect(await manager.readOutput(taskId)).toContain('captured output');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('terminates a foreground process task that exceeds the output limit', async () => {
     const { manager } = createAgentTaskService();
@@ -661,7 +661,7 @@ describe('AgentTaskService', () => {
     expect(info?.stopReason ?? '').toMatch(/output limit/i);
     expect(killSpy).toHaveBeenCalledWith('SIGTERM');
     expect(forwardedChars).toBeLessThanOrEqual(LIMIT_BYTES);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('also terminates a detached process task that exceeds the output limit', async () => {
     const { manager } = createAgentTaskService();
@@ -678,7 +678,7 @@ describe('AgentTaskService', () => {
     expect(info).toMatchObject({ status: 'killed' });
     expect(info?.stopReason ?? '').toMatch(/output limit/i);
     expect(killSpy).toHaveBeenCalledWith('SIGTERM');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stops appending persisted foreground output once the output limit trips', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-limit-fg-'));
@@ -767,7 +767,7 @@ describe('AgentTaskService', () => {
       exitCode: 0,
       stopReason: 'stdout read failed',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fails the process task once wait settles after an earlier stream error', async () => {
     const { manager } = createAgentTaskService();
@@ -797,7 +797,7 @@ describe('AgentTaskService', () => {
       exitCode: 0,
       stopReason: 'stdout read failed',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('disposes process resources after a process task completes', async () => {
     const { manager } = createAgentTaskService();
@@ -813,7 +813,7 @@ describe('AgentTaskService', () => {
     await vi.waitFor(() => {
       expect(dispose).toHaveBeenCalledTimes(1);
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('transitions process status from exit code', async () => {
     const { manager } = createAgentTaskService();
@@ -830,7 +830,7 @@ describe('AgentTaskService', () => {
       status: 'failed',
       exitCode: 42,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('records failed runtime when proc.wait rejects', async () => {
     const { manager } = createAgentTaskService();
@@ -848,7 +848,7 @@ describe('AgentTaskService', () => {
       stopReason: 'launch failed',
     });
     expect(info?.endedAt).not.toBeNull();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not finalize from a visible process exit code before wait settles', async () => {
     const { manager } = createAgentTaskService();
@@ -868,7 +868,7 @@ describe('AgentTaskService', () => {
       status: 'running',
       exitCode: null,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stop kills a running process and records the stop reason', async () => {
     const { manager } = createAgentTaskService();
@@ -883,7 +883,7 @@ describe('AgentTaskService', () => {
       exitCode: 143,
     });
     expect(killSpy).toHaveBeenCalledWith('SIGTERM');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('includes stopReason for stopped tasks in all-task listings', async () => {
     const { manager } = createAgentTaskService();
@@ -898,7 +898,7 @@ describe('AgentTaskService', () => {
         stopReason: 'superseded by newer task',
       }),
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('disposes process resources after a stopped process task settles', async () => {
     const { manager } = createAgentTaskService();
@@ -914,7 +914,7 @@ describe('AgentTaskService', () => {
 
     expect(killSpy).toHaveBeenCalledWith('SIGTERM');
     expect(dispose).toHaveBeenCalledTimes(1);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stop normalizes blank reasons', async () => {
     const { manager } = createAgentTaskService();
@@ -927,7 +927,7 @@ describe('AgentTaskService', () => {
 
     expect(result).toMatchObject({ status: 'killed' });
     expect(result?.stopReason).toBeUndefined();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stop keeps graceful process shutdown classified as killed', async () => {
     const { manager } = createAgentTaskService();
@@ -945,7 +945,7 @@ describe('AgentTaskService', () => {
     });
     expect(killSpy).toHaveBeenCalledWith('SIGTERM');
     expect(killSpy).not.toHaveBeenCalledWith('SIGKILL');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   function sigtermOnlyKillProcess(pid: number): {
     proc: IHostProcess;
@@ -1015,7 +1015,7 @@ describe('AgentTaskService', () => {
     expect(info?.status).toBe('timed_out');
     expect(killSpy).toHaveBeenCalledWith('SIGTERM');
     expect(killSpy).not.toHaveBeenCalledWith('SIGKILL');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('applies the SIGTERM grace + SIGKILL escalation to a detachTimeout deadline', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -1035,7 +1035,7 @@ describe('AgentTaskService', () => {
     expect(info?.status).toBe('timed_out');
     expect(killSpy).toHaveBeenCalledWith('SIGTERM');
     expect(killSpy).toHaveBeenCalledWith('SIGKILL');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('auto-backgrounds a foreground task instead of killing it when its deadline fires', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -1059,7 +1059,7 @@ describe('AgentTaskService', () => {
     await vi.advanceTimersByTimeAsync(4_000);
     expect(manager.getTask(taskId)?.status).toBe('timed_out');
     expect(killSpy).toHaveBeenCalled();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('kills a foreground task on timeout when auto-background is not enabled', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -1076,7 +1076,7 @@ describe('AgentTaskService', () => {
     await expect(waiting).resolves.toBe('terminal');
     expect(killSpy).toHaveBeenCalled();
     expect(manager.getTask(taskId)?.status).toBe('timed_out');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('persists graceful process shutdown as killed when stop was requested', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-stop-race-'));
@@ -1101,7 +1101,7 @@ describe('AgentTaskService', () => {
     } finally {
       await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stop preserves agent completion when it wins the stop race', async () => {
     const { manager } = createAgentTaskService();
@@ -1123,7 +1123,7 @@ describe('AgentTaskService', () => {
     expect(result?.stopReason).toBeUndefined();
     expect(await manager.readOutput(taskId)).toContain('finished naturally');
     expect(abort).toHaveBeenCalled();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stop preserves agent failure when a non-abort rejection wins', async () => {
     const { manager } = createAgentTaskService();
@@ -1146,7 +1146,7 @@ describe('AgentTaskService', () => {
       stopReason: 'model failed',
     });
     expect(abort).toHaveBeenCalled();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stop marks agent task killed when abort rejection wins', async () => {
     const { manager } = createAgentTaskService();
@@ -1172,7 +1172,7 @@ describe('AgentTaskService', () => {
       stopReason: 'user requested',
     });
     expect(abort).toHaveBeenCalled();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stop finalizes a never-settling agent task after the grace window', async () => {
     vi.useFakeTimers();
@@ -1193,7 +1193,7 @@ describe('AgentTaskService', () => {
       stopReason: 'user requested',
     });
     expect(abort).toHaveBeenCalled();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('wait resolves on completion and returns the current snapshot on timeout', async () => {
     const { manager } = createAgentTaskService();
@@ -1203,7 +1203,7 @@ describe('AgentTaskService', () => {
 
     const runningId = registerProcess(manager, pendingProcess().proc, 'sleep 60', 'timeout');
     expect(await manager.wait(runningId, 0)).toMatchObject({ status: 'running' });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects a cancelled wait without stopping the running task', async () => {
     const { ctx, manager } = createAgentTaskService();
@@ -1223,7 +1223,7 @@ describe('AgentTaskService', () => {
     expect(manager.getTask(taskId)).toMatchObject({ status: 'running' });
     await manager.stop(taskId, 'test cleanup');
     await ctx.dispose();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('wait with a zero timeout returns the immediate snapshot before next-tick completion', async () => {
     const { manager } = createAgentTaskService();
@@ -1248,7 +1248,7 @@ describe('AgentTaskService', () => {
       status: 'completed',
       exitCode: 0,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('clears task deadline timers when completion wins the race', async () => {
     vi.useFakeTimers();
@@ -1273,7 +1273,7 @@ describe('AgentTaskService', () => {
     expect(manager.getTask('bash-nonexist')).toBeUndefined();
     expect(await manager.readOutput('bash-nonexist')).toBe('');
     expect(await manager.stop('bash-nonexist')).toBeUndefined();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stop returns terminal info for an already-exited task', async () => {
     const { manager } = createAgentTaskService();
@@ -1285,7 +1285,7 @@ describe('AgentTaskService', () => {
       status: 'completed',
       stopReason: undefined,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('getTask on an unknown id does not create persisted state', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-bg-mgr-missing-'));
@@ -1299,7 +1299,7 @@ describe('AgentTaskService', () => {
     } finally {
       await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('launches a real process and waits to completion', async () => {
     const { spawn } = await import('node:child_process');

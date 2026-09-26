@@ -34,6 +34,8 @@ import {
   type TaskServiceTestManager,
 } from './stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 function agentTask(
   completion: Promise<{ result: string }>,
   description: string,
@@ -138,7 +140,7 @@ describe('task notification dispatch capacity', () => {
       release.resolve();
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   it.each(['completed', 'failed', 'cancelled'])('holds an admitted automatic turn until %s settlement', async (outcome) => {
     const entered = createControlledPromise<void>();
     const finish = createControlledPromise<AgentLLMRequestFinish>();
@@ -180,7 +182,7 @@ describe('task notification dispatch capacity', () => {
       finish.reject(new Error('cleanup'));
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   it.each([1, 0])('rejects a child wakeup before consumption with direct limit %s and tree limit 1', async (maxDirectChildren) => {
     const childScope = (agentId: string) => agentService(IAgentScopeContext, makeAgentScopeContext({
       agentId, agentScope: `agents/${agentId}`, parentAgentId: 'main',
@@ -242,7 +244,7 @@ describe('task notification dispatch capacity', () => {
       await b.dispose();
       await a.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('task notification → main agent (real Agent instance)', () => {
@@ -297,7 +299,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(flatHistoryText).toContain('idle-state repro completed.');
       expect(flatHistoryText).toContain('<output-file');
       expect(flatHistoryText).toContain('background agent finished its job');
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('BUSY: completed bg agent during an active turn is flushed into an LLM call', async () => {
       ctx.mockNextResponse({ type: 'text', text: 'first turn ack' });
@@ -341,7 +343,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(flatContext).toContain('busy-state repro completed.');
       expect(flatContext).toContain('<output-file');
       expect(flatContext).toContain('busy-state bg result');
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('IDLE × N: a GROUP of bg agents completes — the first notification launches one turn, the rest fold in', async () => {
       ctx.mockNextResponse({ type: 'text', text: 'ack group 1' });
@@ -393,7 +395,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(flatHistoryText).toContain('bg #1 result');
       expect(flatHistoryText).toContain('bg #2 result');
       expect(flatHistoryText).toContain('bg #3 result');
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('RACE: bg completion right after turn end launches its own turn', async () => {
       ctx.mockNextResponse({ type: 'text', text: 'first user-prompted ack' });
@@ -426,7 +428,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(flatHistoryText).toContain('race-after-turn completed.');
       expect(flatHistoryText).toContain('<output-file');
       expect(flatHistoryText).toContain('post-turn bg result');
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   });
 
   describe('kill ordering vs child loop unwind', () => {
@@ -522,7 +524,7 @@ describe('task notification → main agent (real Agent instance)', () => {
         await main.dispose();
         await child.dispose();
       }
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   });
 
   describe('resumed notifications', () => {
@@ -626,7 +628,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       await background.reconcile();
       expect(notifiedCount(ctx)).toBe(before);
       expect(ctx.context.get().filter((m) => m.origin?.kind === 'task')).toHaveLength(9);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('RESUME: terminal bg tasks discovered on reconcile are SILENTLY injected (no auto-turn)', async () => {
 
@@ -653,6 +655,6 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(flatContext).toContain('Exit code: 0. Duration: 5 ms.');
       expect(flatContext).toMatch(/task\.completed/);
       expect(flatContext).toMatch(/task\.lost/);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   });
 });

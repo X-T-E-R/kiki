@@ -27,6 +27,8 @@ import {
 } from '#/agent/media/image-format-policy';
 import { buildDaemonFileUrl } from '#/agent/media/mediaRef';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 async function solidPng(width: number, height: number, color = 0x3366ccff): Promise<Uint8Array> {
   const image = new Jimp({ width, height, color });
   return new Uint8Array(await image.getBuffer('image/png'));
@@ -182,7 +184,7 @@ describe('compressImageForModel — fast path', () => {
     expect(result.mimeType).toBe('image/png');
     expect(result.width).toBe(64);
     expect(result.height).toBe(64);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('treats image/jpg as image/jpeg', async () => {
     const jpeg = await solidJpeg(32, 32);
@@ -202,7 +204,7 @@ describe('compressImageForModel — dimension cap', () => {
     expect(result.height).toBe(1000);
     const dims = sniffImageDimensions(result.data);
     expect(dims).toEqual({ width: 2000, height: 1000 });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('respects a custom maxEdge', async () => {
     const png = await solidPng(1000, 500);
@@ -277,7 +279,7 @@ describe('compressImageForModel — byte budget', () => {
     expect(result.changed).toBe(true);
     expect(result.mimeType).toBe('image/png');
     expect(Math.max(result.width, result.height)).toBe(2000);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it(
     're-runs the JPEG quality ladder at fallback sizes instead of jumping to q20',
@@ -900,7 +902,7 @@ describe('compressImageForModel — original dimensions metadata', () => {
     expect(result.originalHeight).toBe(1050);
     expect(result.width).toBe(2000);
     expect(result.height).toBe(1000);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('cropImageForModel', () => {
@@ -952,7 +954,7 @@ describe('cropImageForModel', () => {
     expect(result.region).toEqual({ x: 2500, y: 1000, width: 500, height: 500 });
     expect(result.width).toBe(500);
     expect(result.height).toBe(500);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects a region fully outside the image, naming the original size', async () => {
     const png = await solidPng(2100, 1050);
@@ -980,7 +982,7 @@ describe('cropImageForModel', () => {
     expect(result.resized).toBe(true);
     expect(Math.max(result.width, result.height)).toBeLessThanOrEqual(MAX_IMAGE_EDGE_PX);
     expect(result.region).toEqual({ x: 0, y: 0, width: 2400, height: 1200 });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps native resolution with skipResize', async () => {
     const png = await solidPng(3000, 1500);
@@ -995,7 +997,7 @@ describe('cropImageForModel', () => {
     expect(result.resized).toBe(false);
     expect(result.width).toBe(2500);
     expect(result.height).toBe(1200);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fails explicitly when a skipResize crop exceeds the byte budget', async () => {
     const png = await noisePng(400, 400);
@@ -1189,7 +1191,7 @@ describe('compressImageContentParts — annotate', () => {
     expect(out.parts).toHaveLength(1);
     expect(out.captions).toHaveLength(1);
     expect(out.captions[0]).toMatch(/not preserved/i);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 async function checkerboardPng(size: number): Promise<Uint8Array> {
@@ -1309,7 +1311,7 @@ describe('compressImageForModel — downscale quality guards', () => {
     const second = await compressImageForModel(first.data, first.mimeType);
     expect(second.changed).toBe(false);
     expect(second.data).toBe(first.data);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps a degenerate aspect ratio at least 1px tall (no zero-size collapse)', async () => {
     const png = await solidPng(9000, 2);
@@ -1358,7 +1360,7 @@ describe('compressImageForModel — telemetry', () => {
     expect(props['final_height']).toBe(1000);
     expect(props['exif_transposed']).toBe(false);
     expect(typeof props['duration_ms']).toBe('number');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reports the fast path as passthrough_fast', async () => {
     const { client, events } = captureTelemetry();
@@ -1469,7 +1471,7 @@ describe('compressImageForModel — telemetry', () => {
       telemetry: { client: throwing, source: 'read_media' },
     });
     expect(result.changed).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('cropImageForModel — telemetry', () => {

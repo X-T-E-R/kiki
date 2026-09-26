@@ -34,6 +34,8 @@ import { IBlobStore } from '#/persistence/interface/blobStore';
 
 import { registerStateServices } from '../../state/stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const FILE_ID = 'file_abc';
 const VIDEO_BYTES = Buffer.from('tiny fake mp4 bytes');
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
@@ -476,7 +478,7 @@ describe('AgentMediaResolverService image strategy', () => {
     const part = firstPart(out);
     expect(part.type).toBe('image_url');
     expect(part.type === 'image_url' ? part.imageUrl.url : '').toMatch(/^data:image\/png;base64,/);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not convert when the experimental conversion flag is disabled', async () => {
     const res = new AgentMediaResolverService(

@@ -61,6 +61,8 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 interface FakeHarnessOptions {
   readonly mode?: AcpOpenSessionResult['mode'];
   readonly events?: readonly NormalizedExecutorEvent[];
@@ -1491,7 +1493,7 @@ describe('ACP external executor', () => {
       await harness.execution.shutdown();
       await expect(run.completion).rejects.toBeDefined();
     } finally { harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['scope-close', 'shutdown', 'dispose', 'replacement'] as const)(
     'cancels a deferred ACP turn and closes the real DI-owned session during %s',

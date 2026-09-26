@@ -21,6 +21,8 @@ import type { MCPClient, MCPContentBlock, MCPToolResult } from '#/mcpCore/types'
 import type { ToolExecution } from '#/tool/toolContract';
 import { sniffImageDimensions } from '#/agent/media/file-type';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 function isPromiseLike(value: ToolExecution | Promise<ToolExecution>): value is Promise<ToolExecution> {
   return typeof (value as Promise<ToolExecution>).then === 'function';
 }
@@ -606,7 +608,7 @@ describe('mcpResultToExecutableOutput', () => {
     expect(Math.max(dims!.width, dims!.height)).toBeLessThanOrEqual(3000);
     const joined = parts.map((p) => (p.type === 'text' ? p.text : '')).join('');
     expect(joined).not.toContain('image_url dropped');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   test('annotates a downsampled image with a caption and a readable original', async () => {
     const bigBytes = Buffer.from(
@@ -629,7 +631,7 @@ describe('mcpResultToExecutableOutput', () => {
     const persisted = await readFile(pathMatch![1]!);
     expect(persisted.equals(bigBytes)).toBe(true);
     await unlink(pathMatch![1]!).catch(() => undefined);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   test('adds no caption for an image that passes through unchanged', async () => {
     const small = Buffer.from(
@@ -673,7 +675,7 @@ describe('mcpResultToExecutableOutput', () => {
     expect(properties?.['final_width']).toBeLessThanOrEqual(3000);
     expect(properties?.['final_height']).toBeLessThanOrEqual(3000);
     expect(properties?.['duration_ms']).toEqual(expect.any(Number));
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   test('persists originals into the provided session originals dir', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'mcp-originals-'));
@@ -695,7 +697,7 @@ describe('mcpResultToExecutableOutput', () => {
     const persisted = await readFile(pathMatch![1]!);
     expect(persisted.equals(bigBytes)).toBe(true);
     await rm(dir, { recursive: true, force: true });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   test('keeps the caption and the full text alongside the compressed image', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'mcp-originals-'));
@@ -721,7 +723,7 @@ describe('mcpResultToExecutableOutput', () => {
     expect(out.note).toMatch(/<\/system>$/);
     expect(out.note).toContain('saved at');
     await rm(dir, { recursive: true, force: true });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   test('does not slice the caption for large text output', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'mcp-originals-'));
@@ -746,7 +748,7 @@ describe('mcpResultToExecutableOutput', () => {
     const joined = parts.map((p) => (p.type === 'text' ? p.text : '')).join('');
     expect(joined).not.toContain('Output truncated');
     await rm(dir, { recursive: true, force: true });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('createMcpTool', () => {

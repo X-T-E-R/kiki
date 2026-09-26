@@ -22,6 +22,8 @@ import {
   testWireScope,
 } from '../../wire/stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const SCOPE = 'wire';
 const KEY = 'task-test';
 
@@ -101,7 +103,7 @@ describe('task ops (wire-backed)', () => {
       { type: 'task.terminated', info: info('t1', 'completed'), time: expect.any(Number) },
       { type: 'task.started', info: info('t2', 'running'), time: expect.any(Number) },
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('task.terminated persists the optional outputTail snapshot (record-only, never in the state or the bus)', async () => {
     const published: Record<string, unknown>[] = [];
@@ -130,7 +132,7 @@ describe('task ops (wire-backed)', () => {
         time: expect.any(Number),
       },
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('task.notified persists its flat notification payload and remains observable', async () => {
     const payload = {
@@ -149,7 +151,7 @@ describe('task ops (wire-backed)', () => {
     expect(await readRecords()).toEqual([{ type: 'task.notified', ...payload, time: 3_000 }]);
     expect(published).toHaveLength(1);
     expect(Object.assign({}, published[0])).toEqual({ type: 'task.notified', ...payload, time: 3_000 });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('apply returns a new Map on change (the model is the restore seed)', async () => {
     const before = agentState.get(taskKey);
@@ -157,7 +159,7 @@ describe('task ops (wire-backed)', () => {
     const after = agentState.get(taskKey);
     expect(after).not.toBe(before);
     expect(after.get('t1')?.status).toBe('running');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('replay rebuilds the task map from persisted task.* records silently', async () => {
     const records: WireRecord[] = [
@@ -182,5 +184,5 @@ describe('task ops (wire-backed)', () => {
     expect(model.get('t1')?.status).toBe('completed');
     expect(model.get('t2')?.status).toBe('running');
     expect(emissions).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

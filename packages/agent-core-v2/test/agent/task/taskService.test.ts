@@ -63,6 +63,8 @@ import { stubFlag } from '../../app/flag/stubs';
 import { executeTool } from '../../tools/fixtures/execute-tool';
 import type { TaskServiceTestManager } from './stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 function fakeProcessTask(): AgentTask {
   return {
     idPrefix: 'test',
@@ -189,7 +191,7 @@ describe('AgentTaskService', () => {
     expect(listed[0]?.kind).toBe('process');
     expect(await svc.readOutput(id)).toBe('');
     await svc.stop(id);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['TaskStop', 'stopByUser'] as const)(
     '%s stops grandchild tasks and executions before the parent task, retaining resumable scopes',
@@ -281,6 +283,7 @@ describe('AgentTaskService', () => {
       expect(agentHandles.has('agent-child')).toBe(true);
       expect(agentHandles.has('agent-grandchild')).toBe(true);
     },
+    PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
   );
 
   it('shares concurrent stops and cancels only the task-owned run without child tasks', async () => {
@@ -320,7 +323,7 @@ describe('AgentTaskService', () => {
     expect(second).toEqual(first);
     expect(controller.signal.aborted).toBe(true);
     expect(cancel).not.toHaveBeenCalled();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stops one prompt-owned subagent task without cancelling another run on its child scope', async () => {
     const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
@@ -354,7 +357,7 @@ describe('AgentTaskService', () => {
     expect(second.controller.signal.aborted).toBe(false);
     expect(cancelScope).not.toHaveBeenCalled();
     expect(await rootTasks.stopByUser(second.taskId)).toMatchObject({ status: 'killed' });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('wait with a timeout beyond the timer ceiling does not resolve immediately', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -369,7 +372,7 @@ describe('AgentTaskService', () => {
     expect(early).toBe('waiting');
     await svc.stop(taskId);
     await expect(waited).resolves.toMatchObject({ taskId });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   function capturingWire(): { records: Record<string, unknown>[] } {
     const records: Record<string, unknown>[] = [];
@@ -405,7 +408,7 @@ describe('AgentTaskService', () => {
       info: { taskId, status: 'completed' },
       outputTail: 'line one\nline two\n',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('task.terminated outputTail is bounded to the last 4 KiB of retained output', async () => {
     const { records } = capturingWire();
@@ -416,7 +419,7 @@ describe('AgentTaskService', () => {
 
     const terminated = records.find((record) => record['type'] === 'task.terminated');
     expect(terminated?.['outputTail']).toBe('x'.repeat(4 * 1024));
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('task.terminated dispatch omits outputTail when the task produced no output', async () => {
     const { records } = capturingWire();
@@ -432,7 +435,7 @@ describe('AgentTaskService', () => {
 
     const terminated = records.find((record) => record['type'] === 'task.terminated');
     expect(terminated?.['outputTail']).toBeUndefined();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   function stubLoop(): StubLoop {
     return ix.get(IAgentLoopService) as unknown as StubLoop;
@@ -466,7 +469,7 @@ describe('AgentTaskService', () => {
     }
     await svc.stopAll();
     await vi.waitFor(() => expect(internals.tasks.size).toBe(0));
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('archives process, subagent, question and tracked executions while preserving output and notification deduplication', async () => {
     ix.set(IFileSystemStorageService, new InMemoryStorageService());
@@ -516,7 +519,7 @@ describe('AgentTaskService', () => {
     await (svc as TaskServiceTestManager).reconcile();
     expect(requests.every((request) => request.aborted)).toBe(true);
     expect(stubLoop().hasPendingRequests()).toBe(false);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('retains all unpersisted output after an append failure rather than advertising a partial file as complete', async () => {
     const storage = new InMemoryStorageService();
@@ -554,7 +557,7 @@ describe('AgentTaskService', () => {
       truncated: true,
       fullOutputAvailable: false,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('retains ownership when a spill replaces the output queue after archive has read the old queue', async () => {
     const storage = new InMemoryStorageService();
@@ -606,7 +609,7 @@ describe('AgentTaskService', () => {
       fullOutputAvailable: false,
       truncated: false,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['commit', 'rollback'] as const)('keeps pressure-spilled private metadata unpublished through settlement until %s', async (action) => {
     const docs = mapBackedDocs();
@@ -664,7 +667,7 @@ describe('AgentTaskService', () => {
       expect(fresh.getTask(taskId)).toBeUndefined();
     }
     await svc.stop(otherId);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps the execution record until lifecycle cleanup and output persistence have both finished', async () => {
     const storage = new InMemoryStorageService();
@@ -695,7 +698,7 @@ describe('AgentTaskService', () => {
     expect(internals.tasks.has(taskId)).toBe(true);
     releaseCleanup();
     await vi.waitFor(() => expect(internals.tasks.has(taskId)).toBe(false));
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps a completed private registration invisible until commit and then archives it once', async () => {
     ix.set(IFileSystemStorageService, new InMemoryStorageService());
@@ -713,7 +716,7 @@ describe('AgentTaskService', () => {
     expect(stubLoop().queue.drain()).toHaveLength(1);
     svc.commitTaskRegistration!(taskId);
     expect(stubLoop().hasPendingRequests()).toBe(false);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rolls back a completed private registration without leaving an output cache or notification', async () => {
     const storage = new InMemoryStorageService();
@@ -729,7 +732,7 @@ describe('AgentTaskService', () => {
     const internals = svc as unknown as { tasks: Map<string, unknown>; cachedOutputs: Map<string, unknown> };
     expect(internals.tasks.size).toBe(0);
     expect(internals.cachedOutputs.size).toBe(0);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('enqueues a terminal notification for a finished detached task', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -740,7 +743,7 @@ describe('AgentTaskService', () => {
     await waitForCondition(() => loop.hasPendingRequests());
 
     expect(loop.hasPendingRequests()).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('markTasksDeliveredViaWait suppresses the automatic terminal notification', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -759,7 +762,7 @@ describe('AgentTaskService', () => {
     const states = ix.get(IAgentStateService);
     await waitForCondition(() => states.get(taskNotificationDeliveryKey).length > 0);
     expect(states.get(taskNotificationDeliveryKey)).toContain(deliveryKey);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('aborts an already-enqueued terminal notification when the task is marked delivered via wait', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -773,7 +776,7 @@ describe('AgentTaskService', () => {
     svc.markTasksDeliveredViaWait([{ taskId, status: 'completed' }]);
 
     expect(loop.hasPendingRequests()).toBe(false);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('suppresses only the notification whose status was reported via wait', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -785,7 +788,7 @@ describe('AgentTaskService', () => {
     await waitForCondition(() => loop.hasPendingRequests());
 
     expect(loop.hasPendingRequests()).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps the automatic notification of tasks that were not reported via wait', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -803,7 +806,7 @@ describe('AgentTaskService', () => {
 
     const delivered = context.messages.filter((message) => message.origin?.kind === 'task');
     expect(delivered.map((message) => (message.origin as TaskOrigin).taskId)).toEqual([taskB]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   function waitContext(toolCallId: string, args: TaskWaitInput) {
     return { turnId: 0, toolCallId, args, signal: new AbortController().signal };
@@ -880,7 +883,7 @@ describe('AgentTaskService', () => {
     expect(mainResult).toContain('wait_status: completed');
     expect(mainResult).toContain('parent done after child');
     expect(order).toEqual(['childWait', 'taskM', 'mainWait']);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects waiting on a task owned by another agent, so a wait cycle cannot form', async () => {
     const docs = mapBackedDocs();
@@ -911,7 +914,7 @@ describe('AgentTaskService', () => {
 
     parent.settle({ result: 'parent done' });
     leaf.settle({ result: 'leaf done' });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   function stubTaskConfig(value: unknown): void {
     ix.stub(IConfigService, {
@@ -971,7 +974,7 @@ describe('AgentTaskService', () => {
       });
     }
     expect(records.filter((record) => record['type'] === 'task.terminated')).toHaveLength(3);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stopAllOnExit does not persist a foreground-only task', async () => {
     const writes = stubTaskWrites();
@@ -986,7 +989,7 @@ describe('AgentTaskService', () => {
       detached: false,
       terminalNotificationSuppressed: undefined,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stopAllOnExit leaves tasks running when keepAliveOnExit is set', async () => {
     stubTaskConfig({ keepAliveOnExit: true });
@@ -999,7 +1002,7 @@ describe('AgentTaskService', () => {
     expect(svc.getTask(taskId)?.status).toBe('running');
 
     await svc.stop(taskId);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('silences a settlement that lands after suppression armed while still recording the terminal state', async () => {
     const { records } = capturingWire();
@@ -1028,7 +1031,7 @@ describe('AgentTaskService', () => {
 
     expect(records.filter((record) => record['type'] === 'task.terminated')).toHaveLength(1);
     expect(loop.hasPendingRequests()).toBe(false);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('suppresses in-flight terminal notifications on exit even when tasks stay alive', async () => {
     stubTaskConfig({ keepAliveOnExit: true });
@@ -1060,7 +1063,7 @@ describe('AgentTaskService', () => {
 
     expect(svc.getTask(taskId)?.terminalNotificationSuppressed).toBeUndefined();
     expect(loop.hasPendingRequests()).toBe(false);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('dispose aborts live tasks as a last resort', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -1073,7 +1076,7 @@ describe('AgentTaskService', () => {
     await Promise.resolve();
 
     expect(abortReason).toBe('Session closed');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('scope disposal requests SIGKILL when a process ignores SIGTERM', async () => {
     const stdout = new Readable({ read() {} });
@@ -1107,7 +1110,7 @@ describe('AgentTaskService', () => {
 
     expect(kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
     expect(kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('dispose leaves tasks running when keepAliveOnExit is set', async () => {
     stubTaskConfig({ keepAliveOnExit: true });
@@ -1124,7 +1127,7 @@ describe('AgentTaskService', () => {
 
     expect(aborted).toBe(false);
     expect(forceStop).not.toHaveBeenCalled();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('scope disposal leaves a process running when keepAliveOnExit is set', async () => {
     stubTaskConfig({ keepAliveOnExit: true });
@@ -1158,7 +1161,7 @@ describe('AgentTaskService', () => {
     stderr.push(null);
     resolveWait(0);
     await Promise.resolve();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stop requests force-stop when killGracePeriodMs is zero', async () => {
     stubTaskConfig({ killGracePeriodMs: 0 });
@@ -1176,7 +1179,7 @@ describe('AgentTaskService', () => {
 
     expect(forceStopped).toBe(true);
     expect(info?.status).toBe('killed');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   function mapBackedDocs(): IAtomicDocumentStore {
     const map = new Map<string, unknown>();
@@ -1337,7 +1340,7 @@ describe('AgentTaskService', () => {
     expect(two.get(IAgentStateService).get(taskNotificationDeliveryKey)).toContain(keyA);
     const redelivered = context2.messages.filter((message) => message.origin?.kind === 'task');
     expect(redelivered.map((message) => (message.origin as TaskOrigin).taskId)).toEqual([taskB]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('restore touches only the agent own task records', async () => {
     const docs = mapBackedDocs();
@@ -1377,7 +1380,7 @@ describe('AgentTaskService', () => {
     const subLost = await sub.reconcile();
     expect(subLost.map((info) => info.taskId)).toEqual(['bash-abcdef01']);
     expect(subLost[0]?.status).toBe('lost');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('main restore claims a previous v2 session task with its legacy output path', async () => {
     const docs = mapBackedDocs();
@@ -1419,7 +1422,7 @@ describe('AgentTaskService', () => {
       fullOutputAvailable: true,
       preview: 'legacy output',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps a buffered UTF-8 tail within the byte limit without splitting a character', async () => {
     ix.set(IFileSystemStorageService, new InMemoryStorageService());
@@ -1432,7 +1435,7 @@ describe('AgentTaskService', () => {
       truncated: true,
       fullOutputAvailable: false,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('subagent restore does not claim previous v2 session tasks', async () => {
     const docs = mapBackedDocs();
@@ -1459,7 +1462,7 @@ describe('AgentTaskService', () => {
     await restoreHook.run({});
 
     expect(subagent.list(false)).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   function compactionSummary(text: string): ContextMessage {
     return {
@@ -1507,7 +1510,7 @@ describe('AgentTaskService', () => {
     expect(await backgroundTaskReminder()).toBeUndefined();
 
     await svc.stop(taskId);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not carry post-compaction task reminder eligibility forward when no task is active', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -1519,7 +1522,7 @@ describe('AgentTaskService', () => {
     expect(await backgroundTaskReminder()).toBeUndefined();
 
     await svc.stop(taskId);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   const MiB = 1024 * 1024;
   const LIMIT_BYTES = 16 * MiB;
@@ -1663,7 +1666,7 @@ describe('AgentTaskService', () => {
     expect(info?.stopReason ?? '').toMatch(/output limit/i);
     expect(kill).toHaveBeenCalledWith('SIGTERM');
     expect(forwardedChars).toBeLessThanOrEqual(LIMIT_BYTES);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('also terminates a detached (background) task for the same output', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -1680,7 +1683,7 @@ describe('AgentTaskService', () => {
     expect(info?.status).toBe('killed');
     expect(info?.stopReason ?? '').toMatch(/output limit/i);
     expect(kill).toHaveBeenCalledWith('SIGTERM');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stops enqueuing output to disk once the foreground cap trips', async () => {
     const { svc, persistedChars } = serviceWithAppendCounter();
@@ -1698,7 +1701,7 @@ describe('AgentTaskService', () => {
 
     expect(info?.status).toBe('killed');
     expect(persistedChars()).toBeLessThanOrEqual(17 * MiB);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stops appending persisted output once the output limit trips for a detached process task', async () => {
     const { svc, persistedChars } = serviceWithAppendCounter();
@@ -1716,7 +1719,7 @@ describe('AgentTaskService', () => {
 
     expect(info?.status).toBe('killed');
     expect(persistedChars()).toBeLessThanOrEqual(17 * MiB);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not cap or drop a detached subagent result larger than the limit', async () => {
     const { svc, persistedChars } = serviceWithAppendCounter();
@@ -1731,7 +1734,7 @@ describe('AgentTaskService', () => {
 
     expect(info?.status).toBe('completed');
     expect(persistedChars()).toBeGreaterThanOrEqual(bigResult.length);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('Agent task notification XML', () => {

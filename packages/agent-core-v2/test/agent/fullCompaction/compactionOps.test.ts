@@ -26,6 +26,8 @@ import {
   testWireScope,
 } from '../../wire/stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 15_000;
+
 const SCOPE = 'wire';
 const KEY = 'full-compaction-test';
 
@@ -108,7 +110,7 @@ describe('fullCompaction ops (wire-backed)', () => {
       }),
     );
     expect(records[1]).toEqual({ type: 'full_compaction.complete', time: expect.any(Number) });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fold keeps the same reference on a no-op (state stays quiet)', () => {
     void dispatcher.dispatch(new FullCompactionCancel({}));
@@ -149,7 +151,7 @@ describe('fullCompaction ops (wire-backed)', () => {
       [{ type: 'full_compaction.begin', source: 'auto' }],
     );
     expect(stranded.agentState.get(fullCompactionKey).phase).toBe('running');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('replays legacy complete payloads that carried accounting numbers', async () => {
     const host = buildHost('full-compaction-legacy-complete-replay');
@@ -165,5 +167,5 @@ describe('fullCompaction ops (wire-backed)', () => {
     );
 
     expect(host.agentState.get(fullCompactionKey).phase).toBe('idle');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

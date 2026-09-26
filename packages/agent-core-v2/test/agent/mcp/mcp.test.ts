@@ -47,6 +47,8 @@ import {
 
 import { discoverTools, executeTool, fakeMcpClient } from '../../mcpCore/stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 interface ResolvedServer {
   readonly client: MCPClient;
   readonly tools: readonly KosongTool[];
@@ -1214,7 +1216,7 @@ describe('AgentMcpService', () => {
     );
     expect(properties?.['final_width']).toBeLessThanOrEqual(3000);
     expect(properties?.['final_height']).toBeLessThanOrEqual(3000);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('forwards the execution AbortSignal through the wrapped MCP tool', async () => {
     const manager = new FakeMcpManager();

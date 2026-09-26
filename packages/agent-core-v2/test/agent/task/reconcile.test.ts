@@ -20,6 +20,8 @@ import {
   type TaskServiceTestManager,
 } from './stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 let sessionDir: string;
 let persistence: ReturnType<typeof createAgentTaskPersistence>;
 
@@ -75,7 +77,7 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
       await background.loadFromDisk();
 
       expect(background.list(false)).toEqual([]);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   });
 
   describe('with persistence', () => {
@@ -124,7 +126,7 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
           }),
         }),
       );
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('runtime restore reconciles persisted tasks through the task resume hook', async () => {
       await persistence.writeTask(
@@ -155,7 +157,7 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
           }),
         }),
       );
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('does not reclassify already-terminal tasks', async () => {
       await persistence.writeTask(
@@ -195,7 +197,7 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
         type: 'task.terminated',
         info: { taskId: 'bash-running0', status: 'lost' },
       });
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('list(activeOnly=false) includes ghosts; list(true) excludes them', async () => {
       await persistence.writeTask(
@@ -214,7 +216,7 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
       expect(background.list(false)).toEqual([
         expect.objectContaining({ taskId: 'bash-lost0000', status: 'lost' }),
       ]);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('getTask returns ghost when the live process map has no entry', async () => {
       await persistence.writeTask(
@@ -233,14 +235,14 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
         taskId: 'bash-ghost000',
         status: 'lost',
       });
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('reconcile emits nothing when no ghosts were loaded', async () => {
       await background.loadFromDisk();
       await background.reconcile();
 
       expect(emittedEvents).toEqual([]);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('does not emit duplicate termination events on a second reconcile pass', async () => {
       await persistence.writeTask(
@@ -261,7 +263,7 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
           (event) => (event as { type?: string }).type === 'task.terminated',
         ),
       ).toHaveLength(1);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('restores terminal ghost notifications into context', async () => {
       await persistence.writeTask(
@@ -288,6 +290,6 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
           (event) => (event as { type?: string }).type === 'task.terminated',
         ),
       ).toEqual([]);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   });
 });

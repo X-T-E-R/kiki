@@ -4,6 +4,8 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import { createTestAgent, type TestAgentContext } from '../../harness';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 function agentTask(
   completion: Promise<{ result: string }>,
   description: string,
@@ -46,7 +48,7 @@ describe('SubagentTask — timeoutMs', () => {
 
     expect(info?.status).toBe('timed_out');
     expect(info?.stopReason).toBeUndefined();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('omitting timeoutMs lets the task run to completion without a manager deadline', async () => {
     let resolveFn!: (r: { result: string }) => void;
@@ -59,7 +61,7 @@ describe('SubagentTask — timeoutMs', () => {
     const info = await background.wait(taskId);
     expect(info?.status).toBe('completed');
     expect(info?.stopReason).toBeUndefined();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('internal TimeoutError rejection = generic failure with error reason', async () => {
     const internalErr = new Error('aiohttp sock_read timeout');
@@ -72,7 +74,7 @@ describe('SubagentTask — timeoutMs', () => {
     const info = await background.wait(taskId);
     expect(info?.status).toBe('failed');
     expect(info?.stopReason).toBe('aiohttp sock_read timeout');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('explicit timeoutMs is persisted on the task info', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -88,7 +90,7 @@ describe('SubagentTask — timeoutMs', () => {
     expect((info as unknown as { timeoutMs?: number }).timeoutMs).toBe(1_800_000);
     resolveFn({ result: 'finished' });
     await expect(background.wait(taskId)).resolves.toMatchObject({ status: 'completed' });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('omitted timeoutMs leaves the task info field undefined', async () => {
     let resolveFn!: (r: { result: string }) => void;
@@ -100,7 +102,7 @@ describe('SubagentTask — timeoutMs', () => {
     expect((info as unknown as { timeoutMs?: number }).timeoutMs).toBeUndefined();
     resolveFn({ result: 'finished' });
     await expect(background.wait(taskId)).resolves.toMatchObject({ status: 'completed' });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('timeoutMs=0 is preserved on the task info and does not arm a deadline', async () => {
     let resolveFn!: (r: { result: string }) => void;
@@ -122,5 +124,5 @@ describe('SubagentTask — timeoutMs', () => {
     expect(raced?.stopReason).toBeUndefined();
     resolveFn({ result: 'finished' });
     await expect(background.wait(taskId)).resolves.toMatchObject({ status: 'completed' });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

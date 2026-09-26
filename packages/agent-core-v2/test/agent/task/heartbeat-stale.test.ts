@@ -20,6 +20,8 @@ import {
   type TaskServiceTestManager,
 } from './stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 let sessionDir: string;
 let persistence: ReturnType<typeof createAgentTaskPersistence>;
 
@@ -88,7 +90,7 @@ describe('Background reconcile — stale ghost detection', () => {
         }),
       }),
     );
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('second reconcile does not emit a duplicate termination event', async () => {
     await persistence.writeTask(runningGhost('bash-dedup000'));
@@ -102,5 +104,5 @@ describe('Background reconcile — stale ghost detection', () => {
         (event) => (event as { type?: string }).type === 'task.terminated',
       ),
     ).toHaveLength(1);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

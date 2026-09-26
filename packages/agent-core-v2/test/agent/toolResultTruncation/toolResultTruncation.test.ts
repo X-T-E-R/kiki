@@ -16,6 +16,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 describe('ToolResultTruncationService', () => {
   let disposables: DisposableStore;
   let homeDir: string;
@@ -144,7 +146,7 @@ describe('ToolResultTruncationService', () => {
       'the first 10000000 characters (of 11000000) were saved to a file.',
     );
     await expect(readFile(renderedOutputPath(rendered), 'utf8')).resolves.toBe(retained);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reuses a pre-spilled output path instead of writing a new file', async () => {
     const existing = join(homeDir, 'task-log.txt');

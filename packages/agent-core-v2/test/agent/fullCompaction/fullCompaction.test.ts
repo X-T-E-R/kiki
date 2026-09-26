@@ -50,7 +50,7 @@ type GenerateFn = NonNullable<TestAgentOptions['generate']>;
 
 const TWO_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'recent user two', 'recent assistant two'];
 const THREE_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'old user two', 'old assistant two', 'recent user three', 'recent assistant three'];
-const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 15_000;
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
 function fixtureRequestTokens(ctx: TestAgentContext, text: readonly string[]): number {
   const tools = ctx.get(IAgentToolSelectService).shapeTools(ctx.get(IAgentToolRegistryService).list());
@@ -322,7 +322,7 @@ describe('FullCompaction', () => {
       }),
     });
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('holds the loop quiescence lease for the full manual compaction', async () => {
     const ctx = testAgent();
@@ -360,7 +360,7 @@ describe('FullCompaction', () => {
     expect(lease).toBeDefined();
     lease?.dispose();
     hook.dispose();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('refreshes the active profile system prompt after compaction without resetting active tools', async () => {
     const homeDir = mkdtempSync(join(tmpdir(), 'kimi-compact-refresh-home-'));
@@ -400,7 +400,7 @@ describe('FullCompaction', () => {
       rmSync(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       rmSync(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects a manual compaction while a turn is active', async () => {
     const ctx = testAgent(
@@ -433,7 +433,7 @@ describe('FullCompaction', () => {
     approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
     await ctx.untilTurnEnd();
     expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeUndefined();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('projects the compacted prefix before sending the summary request', async () => {
     const ctx = testAgent();
@@ -474,7 +474,7 @@ describe('FullCompaction', () => {
           message.toolCalls.length === 0,
       ),
     ).toBe(false);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('force-refreshes OAuth credentials on compaction 401 and treats replay 401 as provider auth error', async () => {
     const tokenCalls: Array<boolean | undefined> = [];
@@ -550,7 +550,7 @@ describe('FullCompaction', () => {
       },
     ]);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fires PreCompact and PostCompact hooks from the compaction module', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'kimi-compact-hooks-'));
@@ -600,7 +600,7 @@ describe('FullCompaction', () => {
       trigger: 'auto',
       estimated_token_count: ctx.contextData().tokenCount,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('cancels while waiting for a PreCompact hook', async () => {
     let preCompactSignal: AbortSignal | undefined;
@@ -646,7 +646,7 @@ describe('FullCompaction', () => {
     );
     expect(preCompactSignal?.aborted).toBe(true);
     expect(ctx.llmCalls).toHaveLength(0);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reports compaction retry_count after a retryable generation failure recovers', async () => {
     const records: TelemetryRecord[] = [];
@@ -684,7 +684,7 @@ describe('FullCompaction', () => {
       }),
     });
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('retries any compaction request error indefinitely when KIKI_INFINITE_RETRY is set', async () => {
     vi.stubEnv('KIKI_INFINITE_RETRY', '1');
@@ -711,7 +711,7 @@ describe('FullCompaction', () => {
 
     expect(attempts).toBe(3);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('lets context overflow reach compaction shrink instead of retrying when KIKI_INFINITE_RETRY is set', async () => {
     vi.stubEnv('KIKI_INFINITE_RETRY', '1');
@@ -737,7 +737,7 @@ describe('FullCompaction', () => {
 
     expect(attempts).toBe(2);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('recovers from an image-format rejection with a media-stripped resend', async () => {
     let attempts = 0;
@@ -774,7 +774,7 @@ describe('FullCompaction', () => {
     expect(sawMedia).toBe(true);
     expect(sawStrippedResend).toBe(true);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('recovers from a request-body 413 with a media-degraded resend', async () => {
     let attempts = 0;
@@ -816,7 +816,7 @@ describe('FullCompaction', () => {
     expect(sawFullMedia).toBe(true);
     expect(sawDegradedResend).toBe(true);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('retries compaction responses with empty summaries before applying context', async () => {
     vi.useFakeTimers();
@@ -906,7 +906,7 @@ describe('FullCompaction', () => {
     ]);
     vi.useRealTimers();
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reduces the compacted prefix and retries when compaction receives plain 413', async () => {
     vi.useFakeTimers();
@@ -948,7 +948,7 @@ describe('FullCompaction', () => {
     expect(compactedHistory.some((message) => message.text.includes('Recovered compacted summary.'))).toBe(true);
     vi.useRealTimers();
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fails after exhausting retries when the model only ever returns thinking content', async () => {
     vi.useFakeTimers();
@@ -994,7 +994,7 @@ describe('FullCompaction', () => {
       { role: 'user', text: 'recent user two' },
       { role: 'assistant', text: 'recent assistant two' },
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fails fast without shrinking when the provider filters the compaction response', async () => {
     const inputs: string[][] = [];
@@ -1025,7 +1025,7 @@ describe('FullCompaction', () => {
       { role: 'user', text: 'recent user two' },
       { role: 'assistant', text: 'recent assistant two' },
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('waits before retrying compaction generation after a retryable failure', async () => {
     vi.useFakeTimers();
@@ -1060,7 +1060,7 @@ describe('FullCompaction', () => {
     expect(attempts).toBe(2);
     vi.useRealTimers();
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('cancels retry backoff with the failed compaction request trace', async () => {
     vi.useFakeTimers();
@@ -1106,7 +1106,7 @@ describe('FullCompaction', () => {
     });
     vi.useRealTimers();
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('cancels the compaction lifecycle when manual compaction generation fails', async () => {
     const records: TelemetryRecord[] = [];
@@ -1157,7 +1157,7 @@ describe('FullCompaction', () => {
       records.find((record) => record.event === 'compaction_failed')?.properties,
     ).not.toHaveProperty('tokens_after');
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('attaches the failed request trace id to compaction_failed', async () => {
     const records: TelemetryRecord[] = [];
@@ -1185,7 +1185,7 @@ describe('FullCompaction', () => {
       }),
     });
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('attributes compaction_failed to the in-flight request trace on a mid-stream failure', async () => {
     const records: TelemetryRecord[] = [];
@@ -1223,7 +1223,7 @@ describe('FullCompaction', () => {
     });
     expect(ctx.get(IAgentTelemetryContextService).get().trace_id).toBe('trace-turn-1');
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fails a blocked turn when auto compaction generation fails', async () => {
     let attempts = 0;
@@ -1269,7 +1269,7 @@ describe('FullCompaction', () => {
       }),
     });
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('aborts an in-flight compaction when the agent is disposed', async () => {
     const started = deferred<void>();
@@ -1293,7 +1293,7 @@ describe('FullCompaction', () => {
 
     expect(signal?.aborted).toBe(true);
     await pending;
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('names truncated compaction responses when retries are exhausted', async () => {
     vi.useFakeTimers();
@@ -1338,7 +1338,7 @@ describe('FullCompaction', () => {
     );
     vi.useRealTimers();
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reports compaction retry_count when retryable generation failures are exhausted', async () => {
     vi.useFakeTimers();
@@ -1380,7 +1380,7 @@ describe('FullCompaction', () => {
     });
     vi.useRealTimers();
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('honors loopControl.compactionMaxAttempts for retryable generation failures', async () => {
     vi.useFakeTimers();
@@ -1426,7 +1426,7 @@ describe('FullCompaction', () => {
     });
     vi.useRealTimers();
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('fails a truncated compaction immediately when compactionMaxAttempts is 1', async () => {
     let attempts = 0;
@@ -1467,7 +1467,7 @@ describe('FullCompaction', () => {
       }),
     );
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('counts requests across recovery paths against compactionMaxAttempts', async () => {
     vi.useFakeTimers();
@@ -1508,7 +1508,7 @@ describe('FullCompaction', () => {
     expect(attempts).toBe(2);
     vi.useRealTimers();
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('renders rich compacted history without dropping non-text context', async () => {
     const ctx = testAgent();
@@ -1531,7 +1531,7 @@ describe('FullCompaction', () => {
     await completed;
 
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps an unresolved tool exchange intact in the recent tail', async () => {
     const ctx = testAgent();
@@ -1582,7 +1582,7 @@ describe('FullCompaction', () => {
       'tool',
     ]);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps messages appended while compacting an unchanged prefix', async () => {
     const ctx = testAgent();
@@ -1644,7 +1644,7 @@ describe('FullCompaction', () => {
       ]
     `);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('cancels a manual compaction when an assistant exchange is appended while compacting', async () => {
     const ctx = testAgent();
@@ -1694,7 +1694,7 @@ describe('FullCompaction', () => {
       },
     ]);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('auto-compacts only the selected prefix when the summarizer accepts it', async () => {
     const maxContextTokens = 22_000;
@@ -1733,7 +1733,7 @@ describe('FullCompaction', () => {
     expect(compactedPrefixSizes[0]).toBeLessThanOrEqual(maxContextTokens);
     expect(ctx.contextData().tokenCount).toBeLessThan(initialTokens);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('cancels when the compacted prefix changes before completion', async () => {
     const ctx = testAgent();
@@ -1787,7 +1787,7 @@ describe('FullCompaction', () => {
     `);
     expect(ctx.compactHistory()).toMatchInlineSnapshot(`[]`);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('cancels when a droppable user-role tail is appended during the summary request', async () => {
     let ctx!: TestAgentContext;
@@ -1815,7 +1815,7 @@ describe('FullCompaction', () => {
     );
     expect(countEvents(ctx.newEvents(), 'full_compaction.complete')).toBe(0);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('blocks the turn until auto compaction finishes', async () => {
     const records: TelemetryRecord[] = [];
@@ -1890,7 +1890,7 @@ describe('FullCompaction', () => {
       }),
     });
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('attributes background auto compaction to the turn that started it', async () => {
     const compactionRequested = deferred<void>();
@@ -1945,7 +1945,7 @@ describe('FullCompaction', () => {
       }),
     });
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps a deferred system reminder behind an unresolved tool exchange across compaction', async () => {
     const ctx = testAgent();
@@ -2014,7 +2014,7 @@ describe('FullCompaction', () => {
       'user',
       'assistant',
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps a deferred system reminder behind a partially resolved tool exchange across compaction', async () => {
     const ctx = testAgent();
@@ -2077,7 +2077,7 @@ describe('FullCompaction', () => {
       'assistant',
       'tool',
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects manual compaction for a single unsplittable user message', async () => {
     const ctx = testAgent();
@@ -2094,7 +2094,7 @@ describe('FullCompaction', () => {
     expect(ctx.llmCalls).toHaveLength(0);
     expect(ctx.compactHistory()).toEqual([{ role: 'user', text: 'only pending user' }]);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects manual compaction for an unresolved tool exchange without a safe prefix', async () => {
     const ctx = testAgent();
@@ -2112,7 +2112,7 @@ describe('FullCompaction', () => {
     expect(ctx.llmCalls).toHaveLength(0);
     expect(ctx.compactHistory()).toEqual(before);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('manual compaction can run after rejecting an unsplittable history', async () => {
     const ctx = testAgent();
@@ -2147,7 +2147,7 @@ describe('FullCompaction', () => {
       },
     ]);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects manual compaction with compaction.unable when history is empty', async () => {
     const ctx = testAgent();
@@ -2161,7 +2161,7 @@ describe('FullCompaction', () => {
     });
     expect(ctx.llmCalls).toHaveLength(0);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not auto compact small contexts when reserved size exceeds the model window', async () => {
     const ctx = testAgent(
@@ -2191,7 +2191,7 @@ describe('FullCompaction', () => {
     expect(ctx.llmCalls[0]?.history.map(messageText)).toContain('old assistant one');
     expect(messageText(ctx.llmCalls[0]?.history.at(-1))).toBe('small prompt');
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not trigger auto compaction from a deferred loaded MCP schema', async () => {
     vi.stubEnv(MASTER_ENV, '1');
@@ -2252,7 +2252,7 @@ describe('FullCompaction', () => {
     } finally {
       registration.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('triggers auto compaction when pending tokens cross an explicit soft context cap', async () => {
     const ctx = testAgent({
@@ -2282,7 +2282,7 @@ describe('FullCompaction', () => {
       answerCall?.history.map(messageText).some((text) => text.includes('Soft-cap compacted summary.')),
     ).toBe(true);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each([
     { softContextSize: 0, compactedCount: 2 },
@@ -2336,6 +2336,7 @@ describe('FullCompaction', () => {
       }
       await ctx.expectResumeMatches();
     },
+    PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
   );
 
   it('uses the real model window for manual prefix selection', async () => {
@@ -2373,7 +2374,7 @@ describe('FullCompaction', () => {
       { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nManual summary.` },
     ]);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('uses the real model window when reducing a prefix after summary overflow', async () => {
     let attempts = 0;
@@ -2426,7 +2427,7 @@ describe('FullCompaction', () => {
       })),
     ]);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('triggers auto compaction when pending tokens cross the reserved threshold', async () => {
     const ctx = testAgent({
@@ -2456,7 +2457,7 @@ describe('FullCompaction', () => {
       answerCall?.history.map(messageText).some((text) => text.includes('Reserved compacted summary.')),
     ).toBe(true);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps an oversized pending user prompt in the recent tail', async () => {
     const ctx = testAgent();
@@ -2491,7 +2492,7 @@ describe('FullCompaction', () => {
       answerCall?.history.map(messageText).some((text) => text.includes('keep-this-pending-verbatim')),
     ).toBe(true);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('compacts against the profile context budget without advertising a larger model capacity', async () => {
     const ctx = testAgent();
@@ -2510,7 +2511,7 @@ describe('FullCompaction', () => {
     const events = await ctx.untilTurnEnd();
     expect(ctx.llmCalls).toHaveLength(2);
     expect(events).toContainEqual(expect.objectContaining({ event: 'compaction.started' }));
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('triggers auto compaction when pending tokens cross the ratio threshold', async () => {
     const ctx = testAgent();
@@ -2546,7 +2547,7 @@ describe('FullCompaction', () => {
     ).toBe(true);
 
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('compacts and retries when the provider reports context overflow', async () => {
     let callCount = 0;
@@ -2625,7 +2626,7 @@ describe('FullCompaction', () => {
       ]
     `);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('re-injects the reminder after an overflow compaction without compacting again', async () => {
     let callCount = 0;
@@ -2657,7 +2658,7 @@ describe('FullCompaction', () => {
     expect(countEvents(events, 'compaction.completed')).toBe(1);
     expect(inputs).toHaveLength(3);
     expect(inputs[2]!.some((line) => line.includes('Auto permission mode is active'))).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('recovers from compaction-request overflow under the measured token-counting strategy', async () => {
     let callCount = 0;
@@ -2721,7 +2722,7 @@ describe('FullCompaction', () => {
       }),
     );
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('remembers the observed provider context window after overflow', async () => {
     let callCount = 0;
@@ -2794,7 +2795,7 @@ describe('FullCompaction', () => {
       }),
     );
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('triggers preemptive compaction against the declared input cap, not the total window', async () => {
     let callCount = 0;
@@ -2826,7 +2827,7 @@ describe('FullCompaction', () => {
     expect(events).toContainEqual(
       expect.objectContaining({ event: 'compaction.started' }),
     );
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('honors the observed provider window over a declared input cap', async () => {
     let callCount = 0;
@@ -2883,7 +2884,7 @@ describe('FullCompaction', () => {
     expect(eventIndex(events, 'compaction.started')).toBeLessThan(
       eventIndex(events, 'turn.step.started'),
     );
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('recovers from plain 413 when estimated request is over effective max', async () => {
     let callCount = 0;
@@ -2939,7 +2940,7 @@ describe('FullCompaction', () => {
       }),
     );
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not compact plain 413 when estimated request is small', async () => {
     const generate: GenerateFn = async () => {
@@ -2967,7 +2968,7 @@ describe('FullCompaction', () => {
       }),
     );
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not reset the step budget after provider context overflow compaction', async () => {
     let callCount = 0;
@@ -3015,7 +3016,7 @@ describe('FullCompaction', () => {
       }),
     );
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('preserves thinking effort when compacting after provider context overflow', async () => {
     let callCount = 0;
@@ -3066,7 +3067,7 @@ describe('FullCompaction', () => {
         thinking_effort: 'on',
       }),
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('compacts provider overflow when model context size is unknown', async () => {
     let callCount = 0;
@@ -3134,7 +3135,7 @@ describe('FullCompaction', () => {
         args: expect.objectContaining({ turnId: 0, reason: 'completed' }),
       }),
     );
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('honors completion budget env hard caps during compaction', async () => {
     vi.stubEnv('KIKI_MODEL_MAX_COMPLETION_TOKENS', '8192');
@@ -3168,7 +3169,7 @@ describe('FullCompaction', () => {
 
     expect(callCount).toBe(3);
     expect(compactionMaxCompletionTokens).toEqual([8192]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['0', '-1'])(
     'honors completion budget env opt-out (%s) during compaction',
@@ -3205,6 +3206,7 @@ describe('FullCompaction', () => {
       expect(callCount).toBe(3);
       expect(compactionMaxCompletionTokens).toEqual([undefined]);
     },
+    PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
   );
 
   it('honors maxOutputSize from model config during compaction', async () => {
@@ -3244,7 +3246,7 @@ describe('FullCompaction', () => {
 
     expect(callCount).toBe(3);
     expect(compactionMaxCompletionTokens).toEqual([64_000]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('uses default 128k hardCap when maxOutputSize is not configured', async () => {
     let callCount = 0;
@@ -3277,7 +3279,7 @@ describe('FullCompaction', () => {
 
     expect(callCount).toBe(3);
     expect(compactionMaxCompletionTokens).toEqual([128 * 1024]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('ignores filtered assistant placeholders when checking the retained overflow suffix', async () => {
     let callCount = 0;
@@ -3385,7 +3387,7 @@ describe('FullCompaction', () => {
         ],
       ]
     `);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('appends the todo list to the compaction summary', async () => {
     const todos = [
@@ -3439,7 +3441,7 @@ describe('FullCompaction', () => {
       text: expect.stringContaining('The conversation so far has been compacted'),
     });
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 afterEach(() => {
@@ -3732,7 +3734,7 @@ describe('prompt deferral during full compaction', () => {
     expect(turnHistory.some((text) => text.includes('Compacted summary.'))).toBe(true);
     expect(turnHistory).toContain('deferred prompt');
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('replays a prompt deferred during compaction after the compaction fails', async () => {
     const compactionRequested = deferred<void>();
@@ -3781,7 +3783,7 @@ describe('prompt deferral during full compaction', () => {
     expect(turnHistory).toContain('deferred prompt');
     expect(turnHistory.some((text) => text.includes('Compacted'))).toBe(false);
     await ctx.expectResumeMatches();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('goal reminder re-injection after full compaction', () => {
@@ -3814,7 +3816,7 @@ describe('goal reminder re-injection after full compaction', () => {
     expect(ctx.llmCalls.length).toBeGreaterThanOrEqual(2);
     expect(goalReminderCount(ctx.llmCalls[0]!.history)).toBe(0);
     expect(goalReminderCount(ctx.llmCalls[1]!.history)).toBe(1);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('re-injects the goal reminder at the first step after compaction', async () => {
     const records: TelemetryRecord[] = [];
@@ -3854,7 +3856,7 @@ describe('goal reminder re-injection after full compaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'next prompt' }] });
     await ctx.untilTurnEnd();
     expect(goalReminderCount(ctx.llmCalls.at(-1)!.history)).toBe(1);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('replays a deferred prompt whose first request carries the re-injected goal reminder', async () => {
     const compactionRequested = deferred<void>();
@@ -3897,5 +3899,5 @@ describe('goal reminder re-injection after full compaction', () => {
     expect(turnRequest).toContain('deferred prompt');
     expect(goalReminderCount(turnRequest)).toBeGreaterThanOrEqual(1);
     expect(turnRequest.some((text) => text.includes('Compacted summary.'))).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

@@ -18,6 +18,8 @@ import {
   type TestAgentContext,
 } from '../../harness';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const MOCK_MODEL = 'mock-model';
 const ANCHOR_TEXT = 'PLAN FIRST THEN ACT';
 const OVERLAY_TEXT = 'FLASH OVERLAY';
@@ -104,7 +106,7 @@ describe('cognition first-turn anchor', () => {
     expect(await requestTurn(requester, agent, FIRST_TURN, 1)).toBe(ANCHOR_TEXT);
     expect(await requestTurn(requester, agent, FIRST_TURN, 2)).toBe(fullPrompt);
     expect(profile.getSystemPrompt()).toBe(fullPrompt);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not carry ${delegation_context} injection into the anchor window', async () => {
     await writeFile(

@@ -40,6 +40,8 @@ import { stubFlag } from '../../../app/flag/stubs';
 import { agentService, createTestAgent, permissionModeServices, telemetryServices } from '../../../harness';
 import { stubLoopWithHooks } from '../../loop/stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const signal = new AbortController().signal;
 
 function context<Input>(
@@ -293,7 +295,7 @@ describe('TaskListTool', () => {
     expect(outputString(result)).toContain(
       'active_background_tasks: 0\nNo background tasks found.',
     );
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('lists active process tasks', async () => {
     const tasks = new FakeTaskService();
@@ -316,7 +318,7 @@ describe('TaskListTool', () => {
     expect(output).toContain('task_id: bash-running1');
     expect(output).toContain('command: sleep 60');
     expect(output).toContain('description: running list');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it(
     'excludes terminal tasks from active_only=true and includes them when all tasks are listed',
@@ -352,6 +354,7 @@ describe('TaskListTool', () => {
       expect(output).toContain('status: failed');
       expect(output).toContain('exit_code: 7');
     },
+    PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
   );
 
   it('honours the limit parameter', async () => {
@@ -368,7 +371,7 @@ describe('TaskListTool', () => {
     expect(output).toContain('active_background_tasks: 1');
     expect(output).toContain('bash-first001');
     expect(output).not.toContain('bash-second01');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('includes stop_reason for stopped tasks in all-tasks view', async () => {
     const tasks = new FakeTaskService();
@@ -387,7 +390,7 @@ describe('TaskListTool', () => {
     );
 
     expect(outputString(result)).toContain('stop_reason: superseded by newer task');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not wait when listing a running task', async () => {
     const tasks = new FakeTaskService();
@@ -401,7 +404,7 @@ describe('TaskListTool', () => {
 
     expect(outputString(result)).toContain('running task');
     expect(wait).not.toHaveBeenCalled();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('TaskOutputTool', () => {
@@ -420,7 +423,7 @@ describe('TaskOutputTool', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('has name and accepts the current schema', () => {
     const tool = new TaskOutputTool(new FakeTaskService());
@@ -447,7 +450,7 @@ describe('TaskOutputTool', () => {
 
     expect(result.isError).toBe(true);
     expect(outputString(result)).toContain('Task not found: bash-unknown0');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns live output when no persisted log is available', async () => {
     const tasks = new FakeTaskService();
@@ -474,7 +477,7 @@ describe('TaskOutputTool', () => {
     expect(output).toContain('[output]\nDETACHED-PAYLOAD-LINE');
     expect(output).toContain(`output_size_bytes: ${Buffer.byteLength(payload).toString()}`);
     expect(output).not.toContain('output_path:');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns persisted output path and guidance when a log is available', async () => {
     const tasks = new FakeTaskService();
@@ -503,7 +506,7 @@ describe('TaskOutputTool', () => {
     expect(output).toContain('full_output_tool: Read');
     expect(output).not.toContain('full_output_hint:');
     expect(output).toContain('[output]\nSTDOUT-PAYLOAD-LINE');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns agent metadata and final summary without process fields', async () => {
     const tasks = new FakeTaskService();
@@ -522,7 +525,7 @@ describe('TaskOutputTool', () => {
     expect(output).not.toMatch(/^pid:/m);
     expect(output).not.toMatch(/^command:/m);
     expect(output).not.toMatch(/^exit_code:/m);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns not_ready for non-blocking running tasks', async () => {
     const tasks = new FakeTaskService();
@@ -538,7 +541,7 @@ describe('TaskOutputTool', () => {
     expect(output).toContain('status: running');
     expect(output).not.toContain('next_step');
     expect(tasks.waitCalls).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects stale block/timeout args at the validator instead of waiting', () => {
     const validator = compileToolArgsValidator(new TaskOutputTool(new FakeTaskService()).parameters);
@@ -568,7 +571,7 @@ describe('TaskOutputTool', () => {
     expect(output).toContain('status: timed_out');
     expect(output).not.toContain('stop_reason:');
     expect(output).toContain('terminal_reason: timed_out');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('surfaces stopped terminal metadata', async () => {
     const tasks = new FakeTaskService();
@@ -590,7 +593,7 @@ describe('TaskOutputTool', () => {
     expect(output).toContain('status: killed');
     expect(output).toContain('stop_reason: operator cancelled');
     expect(output).toContain('terminal_reason: stopped');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not advertise output_path when the persisted log file does not exist', async () => {
     const tasks = new FakeTaskService();
@@ -613,7 +616,7 @@ describe('TaskOutputTool', () => {
     expect(output).toContain('output_size_bytes: 0');
     expect(output).toContain('full_output_available: false');
     expect(output).toContain('[output]\n[no output available]');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['output', 'wait'] as const)('only adds retrieval guidance for an available truncated log via %s', async (kind) => {
     for (const truncated of [false, true]) {
@@ -633,7 +636,7 @@ describe('TaskOutputTool', () => {
         if (truncated && fullOutputAvailable) expect(output).toContain('Truncated tail; Read output_path for the full log.');
       }
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('renders a truncation banner and tail preview when the snapshot is truncated', async () => {
     const tasks = new FakeTaskService();
@@ -667,7 +670,7 @@ describe('TaskOutputTool', () => {
       '[Truncated. Full output: /tmp/session/tasks/bash-trunc001/output.log]',
     );
     expect(output).toContain('TAIL-MARKER');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('TaskStopTool', () => {
@@ -698,7 +701,7 @@ describe('TaskStopTool', () => {
 
     expect(result.isError).toBe(true);
     expect(outputString(result)).toContain('Task not found: bash-unknown0');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('stops a running task, records the reason, and suppresses terminal notification', async () => {
     const tasks = new FakeTaskService();
@@ -721,7 +724,7 @@ describe('TaskStopTool', () => {
       stopReason: 'custom stop reason',
       terminalNotificationSuppressed: true,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each([
     { label: 'an empty-string reason', reason: '' },
@@ -740,7 +743,7 @@ describe('TaskStopTool', () => {
     expect(outputString(result)).toContain('reason: Stopped by TaskStop');
     expect(tasks.stopCalls).toEqual([{ taskId, reason: 'Stopped by TaskStop' }]);
     expect(tasks.getTask(taskId)?.stopReason).toBe('Stopped by TaskStop');
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns info when task is already terminal without suppressing notification', async () => {
     const tasks = new FakeTaskService();
@@ -766,7 +769,7 @@ describe('TaskStopTool', () => {
     ]);
     expect(tasks.suppressCalls).toEqual([]);
     expect(tasks.getTask(taskId)?.terminalNotificationSuppressed).not.toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('falls back to the placeholder when a terminal task has a blank stored reason', async () => {
     const tasks = new FakeTaskService();
@@ -788,7 +791,7 @@ describe('TaskStopTool', () => {
     expect(outputString(result).trim().split('\n')[2]).toBe(
       'reason: Task already in terminal state',
     );
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reports other running subagents after stopping an agent task', async () => {
     const tasks = new FakeTaskService();
@@ -806,7 +809,7 @@ describe('TaskStopTool', () => {
     );
 
     expect(outputString(result).trimEnd()).toMatch(/reason: Stopped by TaskStop\n(?:1 subagent still running: other|还有 1 个 subagent 正在运行：other)$/);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('omits a running-agent status when stopping the last agent task', async () => {
     const tasks = new FakeTaskService();
@@ -824,7 +827,7 @@ describe('TaskStopTool', () => {
       'status: killed',
       'reason: Stopped by TaskStop',
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('TaskWait tool', () => {
@@ -844,7 +847,7 @@ describe('TaskWait tool', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   function waitTelemetry(): { records: TelemetryRecord[]; telemetry: ReturnType<typeof recordingTelemetry> } {
     const records: TelemetryRecord[] = [];
@@ -893,7 +896,7 @@ describe('TaskWait tool', () => {
       has_task_id: true,
       extra_completed_count: 0,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns immediately without waiting when no background tasks are running', async () => {
     const tasks = new FakeTaskService();
@@ -908,7 +911,7 @@ describe('TaskWait tool', () => {
     expect(output).toContain('No background tasks are running');
     expect(tasks.waitCalls).toEqual([]);
     expect(tasks.waitDeliveries).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns a finished task immediately and marks it delivered via wait', async () => {
     const tasks = new FakeTaskService();
@@ -940,7 +943,7 @@ describe('TaskWait tool', () => {
       has_task_id: true,
       extra_completed_count: 0,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('reports tasks that finished during the wait and marks all of them delivered', async () => {
     const tasks = new FakeTaskService();
@@ -974,7 +977,7 @@ describe('TaskWait tool', () => {
       outcome: 'completed',
       extra_completed_count: 1,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('waits for any running task when task_id is omitted', async () => {
     const tasks = new FakeTaskService();
@@ -1005,7 +1008,7 @@ describe('TaskWait tool', () => {
       has_task_id: false,
       extra_completed_count: 0,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns the still-running list on timeout without marking anything delivered', async () => {
     const tasks = new FakeTaskService();
@@ -1032,7 +1035,7 @@ describe('TaskWait tool', () => {
       timeout_ms: 10_000,
       has_task_id: true,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('propagates an abort of the execution signal and tracks the aborted outcome', async () => {
     const tasks = new FakeTaskService();
@@ -1053,7 +1056,7 @@ describe('TaskWait tool', () => {
     await expect(pending).rejects.toThrow('Aborted');
     expect(tasks.waitDeliveries).toEqual([]);
     expect(lastEvent(records)?.properties).toMatchObject({ outcome: 'aborted' });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('propagates an abort from a general wait and leaves tasks running', async () => {
     const tasks = new FakeTaskService();
@@ -1075,7 +1078,7 @@ describe('TaskWait tool', () => {
     expect(tasks.getTask('bash-abort02')?.status).toBe('running');
     expect(tasks.getTask('bash-abort03')?.status).toBe('running');
     expect(tasks.waitDeliveries).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not mark tasks delivered when formatting the result fails', async () => {
     const tasks = new FakeTaskService();
@@ -1096,7 +1099,7 @@ describe('TaskWait tool', () => {
       ),
     ).rejects.toThrow('snapshot read failed');
     expect(tasks.waitDeliveries).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('aborts the losing waits once the race resolves', async () => {
     const tasks = new FakeTaskService();
@@ -1119,7 +1122,7 @@ describe('TaskWait tool', () => {
 
     expect(outputString(result)).toContain('wait_status: completed');
     expect(signals.get('bash-lose001')?.aborted).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('rejects execution when the task_wait flag is off', async () => {
     const tasks = new FakeTaskService();
@@ -1133,7 +1136,7 @@ describe('TaskWait tool', () => {
     expect(result.isError).toBe(true);
     expect(outputString(result)).toContain('task_wait experimental flag is off');
     expect(tasks.waitCalls).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('emits status progress updates while the wait is pending', async () => {
     const update = taskWaitProgressUpdate({ timeout: 600 }, 2, 1_000, 31_000);
@@ -1154,7 +1157,7 @@ describe('TaskWait tool', () => {
     expect(taskWaitProgressUpdate({ timeout: 180 }, 1, 1_000, 61_000).text).toContain(
       'Waiting 1m / 3m',
     );
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('routes the composed progress update through onUpdate on a manual tick', () => {
     const tasks = new FakeTaskService();
@@ -1276,6 +1279,7 @@ describe('TaskWait tool (harness)', () => {
         await ctx.dispose();
       }
     },
+    PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
   );
 
   it('interrupts a multi-task waitAny fan-out when the production steer reason aborts it', async () => {
@@ -1310,7 +1314,7 @@ describe('TaskWait tool (harness)', () => {
       second.resolveWait(0);
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps aborting the wait when the execution signal and the steer signal abort together', async () => {
     const ctx = createTestAgent();
@@ -1336,7 +1340,7 @@ describe('TaskWait tool (harness)', () => {
       slow.resolveWait(0);
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('ends an in-flight wait with interrupted when a prompt steers into the active turn', async () => {
     const ctx = createTestAgent();
@@ -1388,7 +1392,7 @@ describe('TaskWait tool (harness)', () => {
       slow.resolveWait(0);
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('waits for a real registered task end-to-end and suppresses its notification', async () => {
     const records: TelemetryRecord[] = [];
@@ -1430,7 +1434,7 @@ describe('TaskWait tool (harness)', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not include tasks registered after the wait started', async () => {
     const ctx = createTestAgent(permissionModeServices('manual'));
@@ -1472,7 +1476,7 @@ describe('TaskWait tool (harness)', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns from a wait on a task that never settles once the timeout elapses', async () => {
     const ctx = createTestAgent();
@@ -1501,5 +1505,5 @@ describe('TaskWait tool (harness)', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

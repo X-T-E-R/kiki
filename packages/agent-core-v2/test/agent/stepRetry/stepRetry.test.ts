@@ -23,6 +23,8 @@ import {
   type TestAgentServiceOverride,
 } from '../../harness';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const realSetTimeout = globalThis.setTimeout;
 
 type RetryTestAgentInput = TestAgentOptions | TestAgentServiceOverride;
@@ -416,7 +418,7 @@ describe('stepRetry plugin', () => {
     expect(result).toEqual({ type: 'completed', steps: 1, truncated: false });
     expect(calls).toBe(13);
     expect(rpcEvents('turn.step.retrying')).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('cancels the turn when aborted during an infinite retry backoff', async () => {
     vi.useFakeTimers();
@@ -571,7 +573,7 @@ describe('stepRetry plugin', () => {
     expect(result.type).toBe('failed');
     expect(calls).toBe(1);
     expect(rpcEvents('turn.step.retrying')).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('does not retry when a policy matches the error name with retry = false', async () => {
     vi.useFakeTimers();

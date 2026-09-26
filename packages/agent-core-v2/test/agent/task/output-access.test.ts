@@ -14,6 +14,8 @@ import { createAgentTaskPersistence, type TaskServiceTestManager } from './stubs
 import { taskServices, createTestAgent, homeDirServices, type TestAgentContext } from '../../harness';
 import { executeTool, type TestExecutableToolContext } from '../../tools/fixtures/execute-tool';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 interface TaskServiceFixture {
   readonly ctx: TestAgentContext;
   readonly manager: TaskServiceTestManager;
@@ -153,7 +155,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     expect(snapshot.outputPath).toContain(taskId);
     expect(snapshot.outputPath!.endsWith('output.log')).toBe(true);
     expect(snapshot.fullOutputAvailable).toBe(true);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('getOutputSnapshot truncates large persisted output to a tail preview with paging metadata', async () => {
     const head = 'HEAD-MARKER\n';
@@ -171,7 +173,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     expect(snapshot.fullOutputAvailable).toBe(true);
     expect(snapshot.preview).toContain(tail);
     expect(snapshot.preview).not.toContain(head);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('getOutputSnapshot omits outputPath when no persisted log file exists', async () => {
     const taskId = registerProcess(manager, immediateProcess(0), 'sleep 1', 'silent task');
@@ -181,7 +183,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
 
     expect(snapshot.outputPath).toBeUndefined();
     expect(snapshot.fullOutputAvailable).toBe(false);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('getOutputSnapshot returns an empty snapshot for unknown task ids', async () => {
     await expect(manager.getOutputSnapshot('bash-deadbeef', 1_000)).resolves.toEqual({
@@ -191,7 +193,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
       fullOutputAvailable: false,
       preview: '',
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('readOutput returns live ring-buffer content while task is in memory', async () => {
     const taskId = registerProcess(
@@ -205,7 +207,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
 
     expect(await manager.readOutput(taskId)).toContain('live content');
     await manager.wait(taskId);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('readOutput prefers disk over the live ring buffer when persisted output exists', async () => {
     const taskId = registerProcess(manager, immediateProcess(0, 'ring-only\n'), 'echo', 'demo');
@@ -215,7 +217,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
 
     expect(await manager.readOutput(taskId)).toContain('disk-only');
     await manager.wait(taskId);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('readOutput falls back to disk for ghost tasks', async () => {
     const taskId = registerProcess(
@@ -238,7 +240,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     } finally {
       await freshFixture.ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('TaskOutputTool reads persisted output for a ghost task loaded after restart', async () => {
     const taskId = registerProcess(
@@ -270,7 +272,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     } finally {
       await freshFixture.ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('readOutput respects tail length', async () => {
     const taskId = registerProcess(
@@ -284,5 +286,5 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
 
     expect(await manager.readOutput(taskId, 5)).toBe('ddddd');
     await manager.wait(taskId);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

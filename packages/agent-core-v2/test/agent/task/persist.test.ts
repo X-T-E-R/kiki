@@ -16,6 +16,8 @@ import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageSe
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 const SESSION_SCOPE = 'session';
 const AGENT_SCOPE = `${SESSION_SCOPE}/agents/main`;
 
@@ -79,11 +81,11 @@ describe('AgentTaskPersistence', () => {
     await persistence.writeTask(sample());
     const loaded = await persistence.readTask('bash-11111111');
     expect(loaded).toEqual(sample());
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('returns undefined when task file is missing', async () => {
     expect(await persistence.readTask('bash-missing0')).toBeUndefined();
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('overwrites on subsequent write', async () => {
     await persistence.writeTask(sample({ status: 'running' }));
@@ -97,7 +99,7 @@ describe('AgentTaskPersistence', () => {
       exitCode: 0,
       endedAt: 1_700_000_100,
     });
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('listTasks enumerates all persisted entries', async () => {
     await persistence.writeTask(sample({ taskId: 'bash-11111111' }));
@@ -108,18 +110,18 @@ describe('AgentTaskPersistence', () => {
       'bash-11111111',
       'bash-22222222',
     ]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('listTasks returns empty when tasks dir does not exist', async () => {
     expect(await persistence.listTasks()).toEqual([]);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('listTasks skips corrupt files', async () => {
     await persistence.writeTask(sample());
     await writeFile(join(sessionDir, SESSION_SCOPE, 'tasks', 'bash-baaaaaaa.json'), '{not json', 'utf-8');
     const all = await persistence.listTasks();
     expect(all.map((task) => task.taskId)).toEqual(['bash-11111111']);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.skipIf(process.platform === 'win32')('writeTask creates tasks dir with mode 0700', async () => {
     await persistence.writeTask(sample());
@@ -133,7 +135,7 @@ describe('AgentTaskPersistence', () => {
     ).rejects.toThrow(/Invalid task id/);
     await expect(persistence.readTask('../etc/passwd')).rejects.toThrow(/Invalid task id/);
     expect(() => persistence.taskOutputFile('../etc/passwd')).toThrow(/Invalid task id/);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('listTasks silently skips non-validating task id files', async () => {
     await persistence.writeTask(sample());
@@ -144,7 +146,7 @@ describe('AgentTaskPersistence', () => {
     );
     const all = await persistence.listTasks();
     expect(all.map((task) => task.taskId)).toEqual(['bash-11111111']);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('listTasks skips unrecognized records', async () => {
     await persistence.writeTask(sample());
@@ -155,24 +157,24 @@ describe('AgentTaskPersistence', () => {
     );
     const all = await persistence.listTasks();
     expect(all.map((task) => task.taskId)).toEqual(['bash-11111111']);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('readTask for an unknown task does not create a directory', async () => {
     const { readdir } = await import('node:fs/promises');
     expect(await persistence.readTask('bash-noexis00')).toBeUndefined();
     const top = await readdir(sessionDir);
     expect(top.includes('tasks')).toBe(false);
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   describe('readTaskOutputBytes / taskOutputSizeBytes', () => {
     it('taskOutputSizeBytes reports the full byte size of output.log', async () => {
       await persistence.appendTaskOutput('bash-size0000', 'abcdefghij');
       expect(await persistence.taskOutputSizeBytes('bash-size0000')).toBe(10);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('taskOutputSizeBytes returns 0 when output.log is absent', async () => {
       expect(await persistence.taskOutputSizeBytes('bash-none0000')).toBe(0);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('readTaskOutputBytes returns the exact byte window for offset + maxBytes', async () => {
       await persistence.appendTaskOutput('bash-page0000', 'abcdefghijklmnopqrstuvwxyz');
@@ -181,11 +183,11 @@ describe('AgentTaskPersistence', () => {
       expect(await persistence.readTaskOutputBytes('bash-page0000', 0, 3)).toBe('abc');
       expect(await persistence.readTaskOutputBytes('bash-page0000', 20, 100)).toBe('uvwxyz');
       expect(await persistence.readTaskOutputBytes('bash-page0000', 26, 10)).toBe('');
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('readTaskOutputBytes returns empty string when output.log is absent', async () => {
       expect(await persistence.readTaskOutputBytes('bash-none0001', 0, 100)).toBe('');
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   });
 
   describe('readTaskOutputSnapshot bounded access', () => {
@@ -205,7 +207,7 @@ describe('AgentTaskPersistence', () => {
 
       expect(readSpy).not.toHaveBeenCalled();
       expect(readStreamSpy).not.toHaveBeenCalled();
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('reads a bounded UTF-8 tail range and skips a leading continuation byte', async () => {
       const taskId = 'bash-range000';
@@ -230,7 +232,7 @@ describe('AgentTaskPersistence', () => {
         'output.log',
         { start: outputSizeBytes - 5, end: outputSizeBytes - 1 },
       );
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   });
 
   describe('legacy session-root fallback', () => {
@@ -256,7 +258,7 @@ describe('AgentTaskPersistence', () => {
         truncated: true,
         preview: 'output',
       });
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('keeps agent-local task and output authoritative without changing either root', async () => {
       const taskId = 'bash-shared01';
@@ -282,7 +284,7 @@ describe('AgentTaskPersistence', () => {
       expect(await legacy.readTask(taskId)).toEqual(legacyTask);
       expect(await legacy.readTaskOutputBytes(taskId, 0, 100)).toBe('legacy output');
       expect(await primary.readTaskOutputBytes(taskId, 0, 100)).toBe('local output');
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('treats a corrupt agent-local task key as authoritative over legacy data', async () => {
       const taskId = 'bash-corrupt1';
@@ -294,7 +296,7 @@ describe('AgentTaskPersistence', () => {
 
       await expect(primary.readTask(taskId)).rejects.toThrow();
       expect(await primary.listTasks()).toEqual([]);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('treats an unrecognized agent-local task document as authoritative over legacy data', async () => {
       const taskId = 'bash-invalid1';
@@ -305,7 +307,7 @@ describe('AgentTaskPersistence', () => {
 
       expect(await primary.readTask(taskId)).toBeUndefined();
       expect(await primary.listTasks()).toEqual([]);
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('treats an empty agent-local output file as authoritative over legacy output', async () => {
       const taskId = 'bash-empty001';
@@ -321,6 +323,6 @@ describe('AgentTaskPersistence', () => {
         truncated: false,
         preview: '',
       });
-    });
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   });
 });

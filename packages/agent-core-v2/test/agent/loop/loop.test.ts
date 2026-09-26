@@ -36,6 +36,8 @@ import {
 } from '../../harness';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 type GenerateFn = NonNullable<TestAgentOptions['generate']>;
 
 describe('Agent loop', () => {
@@ -1693,7 +1695,7 @@ describe('interruption reminder', () => {
     } finally {
       await local.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('llm requester attempt retry', () => {

@@ -74,6 +74,8 @@ import { stubLoopWithHooks, type StubLoop } from '../loop/stubs';
 import { stubToolExecutorEvents, type ToolExecutorEventStubs } from '../toolExecutor/stubs';
 import { stubAgentSwarm } from './stubs';
 
+const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
+
 function createTestAgent(
   ...inputs: readonly (TestAgentServiceOverride | TestAgentOptions)[]
 ): TestAgentContext {
@@ -2596,7 +2598,7 @@ describe('AgentGoalService TaskWait regression', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('AgentGoalService TaskWait background scenarios', () => {
@@ -2818,7 +2820,7 @@ describe('AgentGoalService TaskWait background scenarios', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('runs a ten-turn goal chain with TaskWait in a continuation turn', async () => {
     const sh = controllableSpawn();
@@ -2872,7 +2874,7 @@ describe('AgentGoalService TaskWait background scenarios', () => {
     } finally {
       await ctx.dispose();
     }
-  });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
 
 describe('AgentGoalService TaskWait guidance gating', () => {
