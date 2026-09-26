@@ -206,8 +206,8 @@ describe('WorkspaceFsWatchService', () => {
   it('rejects paths that escape the workspace', () => {
     const { svc } = makeWorkspace();
     const sub = svc.subscribe();
-    expect(() => sub.setWatchedPaths(['../x'])).toThrowError(/escapes workspace|rejected/);
-    expect(() => sub.setWatchedPaths(['/abs'])).toThrowError(/rejected/);
+    expect(() => sub.setWatchedPaths(['../x'])).toThrowError(/Choose a path within the GUI workspace/);
+    expect(() => sub.setWatchedPaths(['/abs'])).toThrowError(/Use a non-empty workspace-relative path/);
   });
 
   it('disposes the os handle when the last watched path set becomes empty', () => {

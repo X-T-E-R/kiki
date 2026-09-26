@@ -35,18 +35,18 @@ export class RuntimeWorkspaceView {
       ? this.runtime.path.resolve(bridged)
       : this.runtime.path.resolve(cwd, bridged);
     if (!(allowExternalAbsolutePath && absolute && this.runtime.workspace.supportsExternalPaths === true)) {
-      this.assertAllowed(resolved);
+      this.assertAllowed(resolved, path);
     }
     return resolved;
   }
 
-  assertAllowed(path: string): void {
+  assertAllowed(path: string, rawPath = path): void {
     const resolved = this.runtime.path.resolve(path);
     if (this.roots.some((root) => contains(this.runtime, root, resolved))) return;
     throw new Error2(
       ErrorCodes.FS_PATH_ESCAPES,
-      `path ${path} is outside runtime workspace ${this.binding.runtimeId}`,
-      { details: { path: resolved } },
+      `[external_target_approval] Path "${rawPath}" resolves to external target "${resolved}" outside runtime workspace ${this.binding.runtimeId}. Use an explicit absolute path in an agent file tool and obtain approval, or choose a workspace path for this operation.`,
+      { details: { path: resolved, rawPath, target: resolved, reason: 'external_target_approval' } },
     );
   }
 }

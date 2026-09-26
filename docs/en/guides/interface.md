@@ -16,7 +16,7 @@ In a subagent's input box, the stop button is disabled while its stop request is
 
 ## Approvals
 
-Shell commands appear as approval requests in the timeline; each request names the operation before it runs, and you approve once or for the session. Read-only operations run automatically by default. File writes follow the workspace trust model: in a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval, while writes outside the workspace and sensitive-file access are blocked or require approval. Tool calls interrupted by `Esc` stop before execution.
+Shell commands appear as approval requests in the timeline; each request names the operation before it runs, and you approve once or for the session. Read-only operations run automatically by default. File writes follow the workspace trust model: in a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval, while external writes require approval and sensitive-file access asks in manual mode, is refused in Auto, and skips prompts in YOLO unless explicitly denied. Tool calls interrupted by `Esc` stop before execution.
 
 ## Right rail
 

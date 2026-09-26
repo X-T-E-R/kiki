@@ -99,7 +99,7 @@ Analyze the access logs in logs/ from the past 7 days. For each API path, comput
 Research the main dependency injection options for TypeScript (tsyringe, inversify, awilix). Compare them across three dimensions: API style, decorator requirements, and runtime overhead. Give me a recommendation that fits on one page.
 ```
 
-For batch tasks you know are safe, skip the per-call approval prompts: start the CLI with `--yolo` (the whole session runs in YOLO mode; it still asks about sensitive operations), or type `/yolo` in a session to toggle it — both turn on the same YOLO mode. Alternatively, add pre-approved allowlist rules for specific tools in [Configuration files](../configuration/config-files.md#permission).
+For batch tasks you know are safe, skip the per-call approval prompts: start the CLI with `--yolo` (the whole session runs in YOLO mode, including approval-free access to sensitive files unless explicitly denied; Plan mode exit review still applies), or type `/yolo` in a session to toggle it — both turn on the same YOLO mode. Alternatively, add pre-approved allowlist rules for specific tools in [Configuration files](../configuration/config-files.md#permission).
 
 ## Scheduled tasks and reminders
 

@@ -1311,7 +1311,20 @@ describe('WorkspaceFsService symlink confinement', () => {
     const fs = escapeSession();
     await expect(
       fs.read({ path: 'docs/secret.txt', offset: 0, length: 1024, encoding: 'utf-8' }),
-    ).rejects.toMatchObject({ code: 'fs.path_escapes' });
+    ).rejects.toMatchObject({
+      code: 'fs.path_escapes',
+      message: expect.stringContaining('/outside/secret.txt'),
+      details: { path: 'docs/secret.txt', target: '/outside/secret.txt', reason: 'gui_workspace_escape', legacyReason: 'symlink_outside' },
+    });
+  });
+
+  it('rejects absolute paths with a stable invalid-path reason and recovery', async () => {
+    const fs = escapeSession();
+    await expect(fs.stat({ path: '/outside/file.txt' })).rejects.toMatchObject({
+      code: 'fs.path_escapes',
+      message: expect.stringContaining('Use a non-empty workspace-relative path'),
+      details: { path: '/outside/file.txt', reason: 'invalid_path', legacyReason: 'absolute' },
+    });
   });
 
   it('rejects list through a symlinked directory', async () => {

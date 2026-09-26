@@ -263,8 +263,10 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 | `GET /api/sessions/{session_id}/fs/{path}:download` | 下载会话文件（二进制，见下文） |
 | `GET /api/fs:browse` | 列出本机目录（文件夹选择器用） |
 | `GET /api/fs:home` | 用户主目录与最近工作区 |
-| `GET /api/fs:content` | 读取本机任意文件原始字节（仅受 token 保护，谨慎暴露端口） |
+| `GET /api/fs:content` | 按绝对路径预览用户指定的本机文件（包括敏感文件；需要 bearer token，不走 Agent 工具审批） |
 | `POST /api/fs:mkdir` | 按绝对路径创建目录 |
+
+会话 `fs:{action}` 工作区 API 只接受工作区相对路径，拒绝绝对路径及符号链接逃逸。这条 GUI 边界不限制另一路 Agent `Read` 工具显式指定的绝对路径。`/api/fs:content` 供已认证用户主动预览，不走 Agent 文件工具审批；不要泄露 bearer token，也不要在不可信网络上关闭认证。
 
 ### 文件上传
 
@@ -401,7 +403,7 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 | `GET /api/files/{file_id}` | 下载已上传文件 | 支持 | 不支持（会发送 `etag` 头，但不处理 `If-None-Match`） |
 | `GET /api/sessions/{session_id}/fs/{path}:download` | 下载会话工作区文件 | 支持 | 支持 |
 | `GET /api/sessions/{session_id}/media/{file_id}` | 读取会话媒体文件，包括已保存的工具结果 blob | 支持 | 支持 |
-| `GET /api/fs:content` | 读取本机任意文件（仅受 token 保护，谨慎暴露端口） | 支持 | 支持 |
+| `GET /api/fs:content` | 按绝对路径预览用户指定的本机文件（包括敏感文件；需要 bearer token，不走 Agent 工具审批） | 支持 | 支持 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流） | 不支持 | 不支持 |
 
 错误语义也不相同：`GET /api/files/{file_id}` 和会话媒体下载对查找和存储失败返回真实 404 / 500 状态码（文件端点的参数校验失败仍走 HTTP 200 信封），其余三个端点的失败走标准[响应信封](#响应信封)——客户端仍需检查信封中的 `code`。

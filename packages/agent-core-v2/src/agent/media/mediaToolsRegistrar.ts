@@ -15,7 +15,6 @@ import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
-import { extendWorkspaceWithSkillRoots } from '#/tool/path-access';
 
 import { IAgentMediaToolsRegistrar } from './mediaTools';
 import { createVideoUploader, registerMediaTools } from './registerMediaTools';
@@ -118,7 +117,6 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     const workspaceCtx = this.workspaceCtx;
     const skillCatalog = this.skillCatalog;
     const runtime = this.runtime;
-    const pathClass = inspected.environment.pathClass;
     let requester: ModelRequester | undefined;
     if (model !== undefined) {
       try {
@@ -134,11 +132,10 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
           return workspaceCtx.workDir;
         },
         get additionalDirs() {
-          return extendWorkspaceWithSkillRoots(
-            { workspaceDir: workspaceCtx.workDir, additionalDirs: workspaceCtx.additionalDirs },
-            skillCatalog?.catalog.getSkillRoots() ?? [],
-            pathClass,
-          ).additionalDirs;
+          return workspaceCtx.additionalDirs;
+        },
+        get definitionReadRoots() {
+          return skillCatalog?.catalog.getSkillRoots() ?? [];
         },
       },
       capabilities,

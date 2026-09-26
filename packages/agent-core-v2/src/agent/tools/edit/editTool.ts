@@ -9,7 +9,6 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { Runtime } from '#/runtime/runtime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
-import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
   ToolAccesses,
@@ -31,16 +30,12 @@ export class EditTool implements IEditTool {
     @IFileEditService private readonly editor: IFileEditService,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
-    @ISessionSkillCatalog private readonly skillCatalog?: ISessionSkillCatalog,
   ) {}
 
   private workspaceConfig(runtime: Runtime): WorkspaceConfig {
     const view = new RuntimeWorkspaceView(runtime, {
       workDir: this.workspaceCtx.workDir,
-      additionalDirs: [
-        ...this.workspaceCtx.additionalDirs,
-        ...(this.skillCatalog?.catalog.getSkillRoots() ?? []),
-      ],
+      additionalDirs: this.workspaceCtx.additionalDirs,
     });
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }

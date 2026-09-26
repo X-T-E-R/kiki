@@ -15,7 +15,7 @@ import {
   type ExecutableToolResult,
   type ToolExecution,
 } from '#/tool/toolContract';
-import { resolveRealPathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
+import { resolveRealPathAccess, resolveRealPathAccessPath, withDefinitionReadRoots, type WorkspaceConfig } from '#/tool/path-access';
 import {
   MEDIA_SNIFF_BYTES,
   detectFileType,
@@ -231,20 +231,26 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       workDir: this.workspace.workspaceDir,
       additionalDirs: this.workspace.additionalDirs,
     });
-    const workspace = { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
+    const workspace = withDefinitionReadRoots(
+      { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
+      this.workspace.definitionReadRoots ?? [], env.homeDir,
+    );
     const pathOptions = { env, workspace, operation: 'read' as const };
     const preparation = this.runtime.acquire(['fs']);
     let path: string;
+    let implicitExternal: boolean;
     try {
       if (preparation.runtime.identity.generation !== inspected.identity.generation) {
         return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
       }
-      path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+      const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
+      path = admitted.path;
+      implicitExternal = admitted.implicitExternal === true;
     } finally {
       preparation.dispose();
     }
     return {
-      accesses: ToolAccesses.readFile(path),
+      accesses: ToolAccesses.readFile(path, implicitExternal),
       description: `Reading media: ${args.path}`,
       display: { kind: 'file_io', operation: 'read', path },
       approvalRule: literalRulePattern(this.name, path),

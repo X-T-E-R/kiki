@@ -1,4 +1,5 @@
 import { registerErrorDomain, type ErrorDomain } from '#/_base/errors/codes';
+import { Error2 } from '#/_base/errors/errors';
 
 export const FsErrors = {
   codes: {
@@ -16,3 +17,21 @@ export const FsErrors = {
 } as const satisfies ErrorDomain;
 
 registerErrorDomain(FsErrors);
+
+export function guiWorkspacePathError(
+  path: string,
+  target: string,
+  legacyReason: string,
+): Error2 {
+  const reason = legacyReason === 'empty' || legacyReason === 'absolute'
+    ? 'invalid_path'
+    : 'gui_workspace_escape';
+  const recovery = reason === 'invalid_path'
+    ? 'Use a non-empty workspace-relative path (absolute paths are not accepted by the GUI workspace API).'
+    : 'Choose a path within the GUI workspace; use the agent file tools with an explicit absolute path for external files.';
+  return new Error2(
+    FsErrors.codes.FS_PATH_ESCAPES,
+    `[${reason}] Path "${path}" resolves to "${target}". ${recovery}`,
+    { details: { path, target, reason, legacyReason, recovery } },
+  );
+}

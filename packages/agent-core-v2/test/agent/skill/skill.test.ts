@@ -438,10 +438,11 @@ describe('SkillTool', () => {
     await expect(makeTool(ix).resolveExecution({ path: '/outside/skill.md' })).rejects.toThrow();
   });
 
-  it('rejects a sensitive canonical symlink target before reading skill content', async () => {
+  it('declares a sensitive canonical symlink target before reading skill content', async () => {
     const readText = vi.fn(async () => '# forbidden');
     const tool = makeTool(ix, undefined, '', { realpath: async () => '/workspace/.env', readText });
-    await expect(tool.resolveExecution({ path: 'safe.md' })).rejects.toMatchObject({ code: 'PATH_SENSITIVE' });
+    const resolved = await tool.resolveExecution({ path: 'safe.md' });
+    expect(resolved).toMatchObject({ accesses: [{ path: '/workspace/.env' }] });
     expect(readText).not.toHaveBeenCalled();
   });
 

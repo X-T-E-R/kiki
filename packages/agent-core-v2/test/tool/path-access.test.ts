@@ -7,9 +7,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ShellPathBridge } from '#/_base/execEnv/shellPathBridge';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import {
-  DEFAULT_WORKSPACE_ACCESS_POLICY,
-  extendWorkspaceWithSkillRoots,
   isSensitiveFile,
+  resolveRealPathAccess,
+  withDefinitionReadRoots,
   resolvePathAccess,
   resolvePathAccessPath,
   resolveRealPathAccessPath,
@@ -79,40 +79,18 @@ describe('isSensitiveFile', () => {
   });
 });
 
-describe('extendWorkspaceWithSkillRoots', () => {
+describe('withDefinitionReadRoots', () => {
   const workspace = { workspaceDir: '/repo', additionalDirs: ['/extra'] };
 
-  it('returns the workspace unchanged when there are no skill roots', () => {
-    expect(extendWorkspaceWithSkillRoots(workspace, [])).toBe(workspace);
-  });
-
-  it('appends roots outside the workspace and existing additional dirs', () => {
-    expect(extendWorkspaceWithSkillRoots(workspace, ['/home/user/.kiki/skills'])).toEqual({
-      workspaceDir: '/repo',
-      additionalDirs: ['/extra', '/home/user/.kiki/skills'],
-    });
-  });
-
-  it('skips roots already inside the workspace dir or an additional dir', () => {
-    expect(
-      extendWorkspaceWithSkillRoots(workspace, ['/repo/.agents/skills', '/extra/skills']),
-    ).toBe(workspace);
-  });
-
-  it('dedupes roots that repeat or nest inside a just-added root', () => {
-    expect(
-      extendWorkspaceWithSkillRoots(workspace, ['/skills', '/skills', '/skills/sub']),
-    ).toEqual({ workspaceDir: '/repo', additionalDirs: ['/extra', '/skills'] });
-  });
-
-  it('compares case-insensitively on win32 path class', () => {
-    expect(
-      extendWorkspaceWithSkillRoots(
-        { workspaceDir: 'C:/repo', additionalDirs: [] },
-        ['c:/Repo/skills'],
-        'win32',
-      ).additionalDirs,
-    ).toEqual([]);
+  it('keeps project write roots separate from registered user definitions and docs', () => {
+    const configured = withDefinitionReadRoots(workspace, ['/other/skills'], '/home/user');
+    expect(configured.additionalDirs).toEqual(['/extra']);
+    expect(configured.definitionReadRoots).toEqual(expect.arrayContaining([
+      '/other/skills', '/home/user/.agents/skills', '/home/user/.agents/agents',
+      '/home/user/.kiki/agents', '/home/user/.kiki/skills', '/home/user/.kiki/commands',
+      '/home/user/.kiki/docs',
+    ]));
+    expect(configured.definitionReadRoots).not.toContain('/home/user/.kiki');
   });
 });
 
@@ -132,6 +110,12 @@ describe('resolvePathAccess shell path bridge', () => {
       operation: 'read',
     });
     expect(result).toBe('C:/workspace/file.txt');
+  });
+
+  it('reports the raw path, target, and recovery for relative external intent', () => {
+    expect(() => resolvePathAccess('..\\outside.txt', 'C:/workspace', {
+      workspaceDir: 'C:/workspace', additionalDirs: [],
+    }, { operation: 'read', pathClass: 'win32' })).toThrow(/external target.*absolute path.*approval/);
   });
 
   it('passes root-relative POSIX paths through when cygpath is unavailable', () => {
@@ -155,7 +139,6 @@ describe('resolvePathAccess shell path bridge', () => {
       {
         operation: 'read',
         pathClass: 'win32',
-        policy: DEFAULT_WORKSPACE_ACCESS_POLICY,
         shellPathBridge: bridge,
       },
     );
@@ -197,19 +180,18 @@ describe('resolveRealPathAccessPath', () => {
     };
   }
 
-  it('rejects symlinked file and directory escapes before read, edit, or write approval', async () => {
+  it('classifies workspace links by their actual external target for approval', async () => {
     const externalFile = join(outsideDir, 'notes.txt');
     await writeFile(externalFile, 'outside');
     const linkDir = join(workspaceDir, 'escape');
     await symlink(outsideDir, linkDir, process.platform === 'win32' ? 'junction' : 'dir');
     for (const operation of ['read', 'write'] as const) {
       for (const candidate of ['escape/notes.txt', join(linkDir, 'notes.txt')]) {
-        await expect(resolveRealPathAccessPath(candidate, options(operation), fs))
-          .rejects.toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE' });
+        await expect(resolveRealPathAccess(candidate, options(operation), fs))
+          .resolves.toMatchObject({ path: (await realpath(externalFile)).replaceAll('\\', '/'), implicitExternal: true });
       }
     }
-    await expect(resolveRealPathAccessPath('escape/new/sub.txt', options('write'), fs))
-      .rejects.toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE' });
+    expect((await resolveRealPathAccess('escape/new/sub.txt', options('write'), fs)).implicitExternal).toBe(true);
     expect(await readFile(externalFile, 'utf8')).toBe('outside');
   });
 
@@ -226,13 +208,43 @@ describe('resolveRealPathAccessPath', () => {
       .toBe((await realpath(join(additionalDir, 'extra.txt'))).replaceAll('\\', '/'));
   });
 
+  it('admits linked skill definitions as reads and sends external writes to target approval', async () => {
+    const skillRoot = join(root, '.agents', 'skills');
+    const installed = join(skillRoot, 'example');
+    const actual = join(outsideDir, 'example');
+    await mkdir(skillRoot, { recursive: true });
+    await mkdir(actual);
+    await writeFile(join(actual, 'SKILL.md'), 'name: example');
+    await symlink(actual, installed, process.platform === 'win32' ? 'junction' : 'dir');
+    const workspace = withDefinitionReadRoots(options().workspace, [skillRoot], root);
+    const requested = join(installed, 'SKILL.md');
+    const admitted = await resolveRealPathAccess(requested, { env, workspace, operation: 'read' }, fs);
+    expect(await fs.readText(admitted.path)).toBe('name: example');
+    expect(admitted.implicitExternal).toBe(false);
+    const write = await resolveRealPathAccess(requested, { env, workspace, operation: 'write' }, fs);
+    expect(write.path).toBe(admitted.path);
+    expect(write.outsideWorkspace).toBe(true);
+    expect(write.implicitExternal).toBe(false);
+  });
+
+  it('resolves an innocuous alias to a sensitive target before permission evaluation', async () => {
+    const sensitive = join(outsideDir, '.env');
+    await writeFile(sensitive, 'SECRET=example');
+    const aliasDir = join(workspaceDir, 'linked');
+    await symlink(outsideDir, aliasDir, process.platform === 'win32' ? 'junction' : 'dir');
+    const alias = join(aliasDir, '.env');
+    const access = await resolveRealPathAccess(alias, options(), fs);
+    expect(access.path).toBe((await realpath(sensitive)).replaceAll('\\', '/'));
+    expect(isSensitiveFile(access.path)).toBe(true);
+  });
+
   it.skipIf(process.platform === 'win32')('does not follow a dangling file symlink when creating a file', async () => {
     await symlink(join(outsideDir, 'new.txt'), join(workspaceDir, 'alias.txt'));
     await expect(resolveRealPathAccessPath('alias.txt', options('write'), fs))
       .rejects.toMatchObject({ code: 'PATH_INVALID' });
   });
 
-  it.skipIf(process.platform !== 'win32')('rejects Windows default-stream and 8.3 aliases of sensitive names', async () => {
+  it.skipIf(process.platform !== 'win32')('recognizes Windows default-stream and 8.3 aliases after resolution', async () => {
     const keyPath = join(workspaceDir, 'id_rsa');
     const longPath = join(workspaceDir, 'id_ed25519');
     await writeFile(keyPath, 'private-key');
@@ -246,8 +258,7 @@ describe('resolveRealPathAccessPath', () => {
     expect(basename(shortPath).toLowerCase()).not.toBe('id_ed25519');
     for (const operation of ['read', 'write'] as const) {
       for (const alias of [`${keyPath}::$DATA`, shortPath]) {
-        await expect(resolveRealPathAccessPath(alias, options(operation), fs))
-          .rejects.toMatchObject({ code: 'PATH_SENSITIVE' });
+        expect(isSensitiveFile(await resolveRealPathAccessPath(alias, options(operation), fs))).toBe(true);
       }
     }
     expect(await readFile(`${keyPath}::$DATA`, 'utf8')).toBe('private-key');

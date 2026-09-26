@@ -87,7 +87,7 @@ export class SkillTool implements ISkillTool {
         const lease = this.runtime.acquire(['fs']);
         try {
           if (lease.runtime.identity.generation !== inspected.identity.generation) return errorResult('Runtime changed before execution. Retry the tool call.');
-          const actualPath = resolvePathAccessPath(await lease.runtime.fs!.realpath(path), pathOptions);
+          const actualPath = resolvePathAccessPath(await lease.runtime.fs!.realpath(lexicalPath), pathOptions);
           view.resolve(actualPath, view.workDir, true);
           if (actualPath !== path) return errorResult('Skill file target changed after path admission. Retry the tool call.');
           await this.catalog.ready;

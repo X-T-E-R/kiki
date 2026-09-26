@@ -226,7 +226,6 @@ import {
 import type { IHostProcess } from '#/os/interface/hostProcess';
 import { ISessionQuestionService, type QuestionResult } from '#/session/question/question';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
-import type { PathAccessOperation } from '#/session/workspaceContext/workspaceContext';
 
 import { stubAgentIdentity } from '../app/agentIdentity/stubs';
 import { stubClientIdentity } from '../app/bootstrap/stubs';
@@ -2318,13 +2317,6 @@ function createWorkspaceContextStub(
     additionalDirs,
     resolve: (path) => (isAbsolute(path) ? resolve(path) : resolve(workDir, path)),
     isWithin,
-    assertAllowed: (absPath: string, op: PathAccessOperation) => {
-      const target = isAbsolute(absPath) ? resolve(absPath) : resolve(workDir, absPath);
-      if (!isWithin(target)) {
-        throw new Error(`Path outside workspace (${op}): ${target}`);
-      }
-      return target;
-    },
   };
 }
 

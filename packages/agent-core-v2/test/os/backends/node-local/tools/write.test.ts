@@ -322,14 +322,13 @@ describe('WriteTool', () => {
     expect(writeText).toHaveBeenCalledWith('/tmp/pwned.txt', 'x');
   });
 
-  it('does not auto-admit a symlinked write outside the workspace', async () => {
+  it('adjudicates a symlinked write against the actual external target', async () => {
     const { tool, fs, writeText } = makeTool({}, stubWorkspaceContext('/workspace'));
     fs.realpath = vi.fn(async (path: string) =>
       path === '/workspace/alias.txt' ? '/outside/notes.txt' : path,
     );
-    const result = await execute(tool, { path: 'alias.txt', content: 'x' });
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('resolves outside');
+    const resolved = await tool.resolveExecution({ path: 'alias.txt', content: 'x' });
+    expect(resolved).toMatchObject({ accesses: [{ operation: 'write', path: '/outside/notes.txt' }] });
     expect(writeText).not.toHaveBeenCalled();
   });
 
@@ -359,13 +358,10 @@ describe('WriteTool', () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it('blocks sensitive file writes', async () => {
+  it('declares sensitive file writes for permission evaluation before execution', async () => {
     const { tool, writeText } = makeTool({}, stubWorkspaceContext('/workspace'));
-
-    const result = await execute(tool, { path: '/workspace/id_rsa', content: 'key' });
-
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('sensitive-file pattern');
+    const resolved = await tool.resolveExecution({ path: '/workspace/id_rsa', content: 'key' });
+    expect(resolved).toMatchObject({ accesses: [{ path: '/workspace/id_rsa', operation: 'write' }] });
     expect(writeText).not.toHaveBeenCalled();
   });
 

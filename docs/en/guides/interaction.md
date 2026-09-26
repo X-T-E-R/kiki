@@ -39,7 +39,7 @@ Type `@` to trigger file-path completion. Selecting a path inserts its relative 
 
 ## Approval flow
 
-When the agent calls a tool with side effects — running commands, modifying files outside the workspace trust boundary — the TUI displays an approval panel for your confirmation. In a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval; shell commands, workspace-external writes, and sensitive-file access still prompt. Approvals are not triggered for regular tool calls in YOLO mode, nor for writes to plan files in Plan mode.
+When the agent calls a tool with side effects — running commands, modifying files outside the workspace trust boundary — the TUI displays an approval panel for your confirmation. In a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval; shell commands, workspace-external writes, workspace links to external targets, and sensitive-file access prompt in manual mode. Approvals are not triggered for regular tool calls in YOLO mode, nor for writes to plan files in Plan mode.
 
 Use the arrow keys to select an option and press `Enter` to confirm, or press `1` / `2` / `3` to select by number directly. `Esc`, `Ctrl-C`, and `Ctrl-D` are all equivalent to rejecting.
 
@@ -58,9 +58,9 @@ After producing a plan the agent pauses for your review — you can approve it, 
 
 ### YOLO / Auto mode
 
-**YOLO mode** (`/yolo`) auto-approves regular tool calls, making it suitable for batch tasks you know are safe. It still asks before sensitive actions — accessing sensitive files such as `.env` or SSH keys, or exiting Plan mode — and the agent can still ask you questions.
+**YOLO mode** (`/yolo`) auto-approves agent file access, including sensitive targets such as `.env` or SSH keys; an explicit deny rule still wins. Exiting Plan mode still requires review, and the agent can still ask you questions.
 
-**Auto mode** (`/auto`) is the fully unattended mode: every tool approval is handled automatically, including sensitive files and plan exits, and the agent never asks you questions — it decides everything on its own.
+**Auto mode** (`/auto`) handles ordinary tool approval and plan exits without asking you questions. It refuses agent file access to sensitive targets and workspace links to external targets because nobody is present to approve them. Switch to manual mode to approve the specific target; do not expect Auto mode to silently read a secret.
 
 ::: warning
 YOLO mode skips confirmation for file writes and command execution. Only use it in working directories you trust.

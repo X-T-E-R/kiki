@@ -56,6 +56,7 @@ import { IWorkspaceGitService } from '#/workspace/workspaceGit/workspaceGit';
 
 import { type FsDownloadResolved, type FsPathResolved, IWorkspaceFsService } from './fs';
 import { readStream, runCommand } from './internal/fsProcess';
+import { guiWorkspacePathError } from './internal/errors';
 import { ensureRgPath, type RgProbe, type RgResolution } from './internal/rgLocator';
 import {
   compileGrepPattern,
@@ -995,35 +996,23 @@ export class WorkspaceFsService implements IWorkspaceFsService {
 
   private async resolveWithin(inputPath: string): Promise<string> {
     if (inputPath === '' || inputPath === '/') {
-      throw new Error2(ErrorCodes.FS_PATH_ESCAPES, `path "${inputPath}" rejected (empty)`, {
-        details: { path: inputPath, reason: 'empty' },
-      });
+      throw guiWorkspacePathError(inputPath, this.workDir, 'empty');
     }
     if (this.path.isAbsolute(inputPath)) {
-      throw new Error2(ErrorCodes.FS_PATH_ESCAPES, `path "${inputPath}" rejected (absolute)`, {
-        details: { path: inputPath, reason: 'absolute' },
-      });
+      throw guiWorkspacePathError(inputPath, this.path.resolve(inputPath), 'absolute');
     }
     const segments = inputPath.split(/[/\\]+/);
     if (segments.some((s) => s === '..')) {
-      throw new Error2(ErrorCodes.FS_PATH_ESCAPES, `path "${inputPath}" rejected (dotdot segment)`, {
-        details: { path: inputPath, reason: 'dotdot_segment' },
-      });
+      throw guiWorkspacePathError(inputPath, this.resolvePathInput(inputPath), 'dotdot_segment');
     }
     const abs = this.resolvePathInput(inputPath);
     if (!this.isWithinWorkspace(abs)) {
-      throw new Error2(ErrorCodes.FS_PATH_ESCAPES, `path "${inputPath}" escapes workspace`, {
-        details: { path: inputPath, reason: 'resolved_outside' },
-      });
+      throw guiWorkspacePathError(inputPath, abs, 'resolved_outside');
     }
     const resolved = await this.realpathExistingPrefix(abs);
     const roots = await this.realRoots();
     if (!roots.some((root) => isInsideOrEqual(this.path, resolved, root))) {
-      throw new Error2(
-        ErrorCodes.FS_PATH_ESCAPES,
-        `path "${inputPath}" escapes workspace through a symlink`,
-        { details: { path: inputPath, reason: 'symlink_outside' } },
-      );
+      throw guiWorkspacePathError(inputPath, resolved, 'symlink_outside');
     }
     return abs;
   }

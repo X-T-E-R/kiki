@@ -25,7 +25,9 @@ import {
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import {
   isWithinDirectory,
+  resolveRealPathAccess,
   resolveRealPathAccessPath,
+  withDefinitionReadRoots,
   type PathClass,
   isSensitiveFile,
   SENSITIVE_DOT_VARIANT_SUFFIXES,
@@ -83,22 +85,22 @@ export class GlobTool implements IGlobTool {
     const inspected = inspectAgentRuntime(this.runtime);
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
-      additionalDirs: [
-        ...this.workspaceCtx.additionalDirs,
-        ...(this.skillCatalog?.catalog.getSkillRoots() ?? []),
-      ],
+      additionalDirs: this.workspaceCtx.additionalDirs,
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
-    const workspace = this.workspaceConfig(view);
+    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), this.skillCatalog?.catalog.getSkillRoots() ?? [], env.homeDir);
     const pathOptions = { env, workspace, operation: 'search' as const };
     let path: string | undefined;
+    let implicitExternal = false;
     if (args.path !== undefined) {
       const preparation = this.runtime.acquire(['fs']);
       try {
         if (preparation.runtime.identity.generation !== inspected.identity.generation) {
           return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
         }
-        path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+        const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
+        path = admitted.path;
+        implicitExternal = admitted.implicitExternal === true;
       } finally {
         preparation.dispose();
       }
@@ -114,7 +116,7 @@ export class GlobTool implements IGlobTool {
     }
 
     return {
-      accesses: ToolAccesses.searchTree(searchRoots[0]!),
+      accesses: ToolAccesses.searchTree(searchRoots[0]!, implicitExternal),
       description: `Searching ${args.pattern}`,
       display: {
         kind: 'file_io',

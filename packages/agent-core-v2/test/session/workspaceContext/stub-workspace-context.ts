@@ -10,6 +10,5 @@ export function stubWorkspaceContext(
     additionalDirs,
     resolve: (rel) => `${workDir}/${rel}`,
     isWithin: () => true,
-    assertAllowed: (absPath) => absPath,
   };
 }

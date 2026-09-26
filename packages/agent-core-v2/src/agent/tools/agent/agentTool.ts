@@ -299,6 +299,7 @@ export class SubagentTool implements ISubagentTool {
     if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
     const snapshot = this.catalog.snapshot?.();
     let filePath: string | undefined;
+    let lexicalProfilePath: string | undefined;
     let generation: string | undefined;
     if (args.profile_file !== undefined) {
       const runtime = this.runtime.inspect();
@@ -309,6 +310,7 @@ export class SubagentTool implements ISubagentTool {
         operation: 'read' as const,
       };
       filePath = resolvePathAccessPath(args.profile_file, pathOptions);
+      lexicalProfilePath = filePath;
       view.resolve(filePath, view.workDir, true);
       generation = runtime.identity.generation;
       const preparation = this.runtime.acquire(['fs']);
@@ -334,6 +336,17 @@ export class SubagentTool implements ISubagentTool {
       execute: async (ctx) => {
         if (generation !== undefined && this.runtime.inspect().identity.generation !== generation) {
           return { output: 'Runtime changed before execution. Retry the tool call.', isError: true };
+        }
+        if (lexicalProfilePath !== undefined) {
+          const lease = this.runtime.acquire(['fs']);
+          try {
+            if (lease.runtime.identity.generation !== generation ||
+              await lease.runtime.fs!.realpath(lexicalProfilePath) !== filePath) {
+              return { output: 'Profile file target changed after path admission. Retry the tool call.', isError: true };
+            }
+          } finally {
+            lease.dispose();
+          }
         }
         return this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy);
       },

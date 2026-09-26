@@ -438,7 +438,7 @@ describe('EditTool', () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it('rejects edits through an external directory symlink before reading', async () => {
+  it('declares the actual external edit target for approval before reading', async () => {
     const readText = vi.fn().mockResolvedValue('outside');
     const writeText = vi.fn().mockResolvedValue(undefined);
     const { fs } = createSpiedEditFs({ readText, writeText });
@@ -446,10 +446,10 @@ describe('EditTool', () => {
       path === '/workspace/link/notes.txt' ? '/outside/notes.txt' : path,
     );
     const tool = buildTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
-    const result = await execute(tool, {
+    const resolved = await tool.resolveExecution({
       path: 'link/notes.txt', old_string: 'outside', new_string: 'changed',
     });
-    expect(result).toMatchObject({ isError: true });
+    expect(resolved).toMatchObject({ accesses: [{ path: '/outside/notes.txt', operation: 'readwrite' }] });
     expect(readText).not.toHaveBeenCalled();
     expect(writeText).not.toHaveBeenCalled();
   });

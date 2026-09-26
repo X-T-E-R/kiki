@@ -4,7 +4,6 @@ import ignore, { type Ignore } from 'ignore';
 
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
-import { ErrorCodes, Error2 } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import {
   type HostFsChange,
@@ -20,6 +19,7 @@ import {
   IWorkspaceFsWatchService,
   type IWorkspaceFsWatchSubscription,
 } from './fsWatch';
+import { guiWorkspacePathError } from './internal/errors';
 
 const DEFAULT_DEBOUNCE_MS = 200;
 const DEFAULT_MAX_CHANGES_PER_WINDOW = 500;
@@ -128,28 +128,18 @@ export class WorkspaceFsWatchService extends Disposable implements IWorkspaceFsW
 
   private resolveWithin(inputPath: string): string {
     if (inputPath === '' || inputPath === '/') {
-      throw new Error2(ErrorCodes.FS_PATH_ESCAPES, `path "${inputPath}" rejected (empty)`, {
-        details: { path: inputPath, reason: 'empty' },
-      });
+      throw guiWorkspacePathError(inputPath, this.workDir, 'empty');
     }
     if (isAbsolute(inputPath)) {
-      throw new Error2(ErrorCodes.FS_PATH_ESCAPES, `path "${inputPath}" rejected (absolute)`, {
-        details: { path: inputPath, reason: 'absolute' },
-      });
+      throw guiWorkspacePathError(inputPath, resolve(inputPath), 'absolute');
     }
     const segments = inputPath.split(/[/\\]+/);
     if (segments.some((s) => s === '..')) {
-      throw new Error2(
-        ErrorCodes.FS_PATH_ESCAPES,
-        `path "${inputPath}" rejected (dotdot segment)`,
-        { details: { path: inputPath, reason: 'dotdot_segment' } },
-      );
+      throw guiWorkspacePathError(inputPath, resolve(this.workDir, inputPath), 'dotdot_segment');
     }
-    const abs = isAbsolute(inputPath) ? resolve(inputPath) : resolve(this.workDir, inputPath);
+    const abs = resolve(this.workDir, inputPath);
     if (!this.isWithinWorkspace(abs)) {
-      throw new Error2(ErrorCodes.FS_PATH_ESCAPES, `path "${inputPath}" escapes workspace`, {
-        details: { path: inputPath, reason: 'resolved_outside' },
-      });
+      throw guiWorkspacePathError(inputPath, abs, 'resolved_outside');
     }
     return abs;
   }

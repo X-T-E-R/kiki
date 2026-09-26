@@ -99,7 +99,7 @@ src/parser/markdown.ts 目前几乎没有测试。请补一组单元测试，覆
 帮我调研一下 TypeScript 里几种主流的依赖注入方案（tsyringe、inversify、awilix），从 API 风格、装饰器依赖、运行时开销三个维度对比，给一份不超过一页的建议。
 ```
 
-对于确定安全的批处理任务，可以跳过逐条审批：启动 CLI 时加 `--yolo` 参数（整个会话进入 YOLO 模式，仍会就敏感操作提问），或在会话中输入 `/yolo` 切换——两种方式开启的是同一个 YOLO 模式。也可以在[配置文件](../configuration/config-files.md#permission)里给特定工具预置白名单规则。
+对于确定安全的批处理任务，可以跳过逐条审批：启动 CLI 时加 `--yolo` 参数（整个会话进入 YOLO 模式，敏感文件访问也免询问，除非显式 deny；退出 Plan 模式仍需审核），或在会话中输入 `/yolo` 切换——两种方式开启的是同一个 YOLO 模式。也可以在[配置文件](../configuration/config-files.md#permission)里给特定工具预置白名单规则。
 
 ## 定时任务与提醒
 

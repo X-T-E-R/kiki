@@ -8,6 +8,12 @@ The target design for the agent-core permission system. Read this when touching 
 >
 > **Do not introduce Casbin** — the hard part here is *decision behavior* (continuations, side effects, RPC, state machines), not "match + scalar decision".
 
+## Current file-path gate (v2)
+
+`src/tool/path-access.ts` admits an agent file-tool path before `ToolAccesses` enters the permission chain. Relative paths resolve against the workspace; an explicit absolute path may refer outside it. Realpath resolution is required before policy evaluation, including for links in registered skill and agent definition roots. Project workspace and additional directories are write roots; definition roots (`~/.agents/skills`, `~/.agents/agents`, registered skill roots, and the explicitly listed user documentation roots) are read roots only. Do not add definition roots to `additionalDirs` to make a linked definition readable. A link into a sensitive target carries the target path into the sensitive-file policy. A workspace link into an ordinary external target carries `implicitExternal` on its read/search access for manual approval; write/edit evaluates the actual target against workspace write roots. Re-resolve the original path at execution and reject changed targets before I/O.
+
+Sensitive files are not unconditionally blocked at resolution: `sensitive-file-access-ask` asks in manual, denies with a manual-mode recovery instruction in Auto, and approves in YOLO; explicit user deny is evaluated first. `git-cwd-write-approve` examines only actual workspace/additional-directory write roots. The GUI workspace-relative FS API retains its separate no-absolute/no-escape boundary (`FS_PATH_ESCAPES`), while the bearer-protected GUI `/fs:content` endpoint is user-directed host preview and is not an agent tool approval channel.
+
 ## 1. Problem definition
 
 The permission system answers one question: **for each tool call, in the current agent and current mode — allow / deny / ask the user?** Three traits shape the architecture:

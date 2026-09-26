@@ -124,6 +124,7 @@ export interface ToolFileAccess {
   readonly operation: ToolFileAccessOperation;
   readonly path: string;
   readonly recursive?: boolean;
+  readonly implicitExternal?: boolean;
 }
 
 export interface ToolResourceAccessAll {
@@ -145,13 +146,13 @@ export const ToolAccesses = {
   file(
     operation: ToolFileAccessOperation,
     path: string,
-    options: { readonly recursive?: boolean } = {},
+    options: { readonly recursive?: boolean; readonly implicitExternal?: boolean } = {},
   ): ToolAccesses {
-    return [{ kind: 'file', operation, path, recursive: options.recursive }];
+    return [{ kind: 'file', operation, path, recursive: options.recursive, implicitExternal: options.implicitExternal }];
   },
 
-  readFile(path: string): ToolAccesses {
-    return ToolAccesses.file('read', path);
+  readFile(path: string, implicitExternal = false): ToolAccesses {
+    return ToolAccesses.file('read', path, { implicitExternal });
   },
 
   readTree(path: string): ToolAccesses {
@@ -174,8 +175,8 @@ export const ToolAccesses = {
     return ToolAccesses.file('readwrite', path, { recursive: true });
   },
 
-  searchTree(path: string): ToolAccesses {
-    return ToolAccesses.file('search', path, { recursive: true });
+  searchTree(path: string, implicitExternal = false): ToolAccesses {
+    return ToolAccesses.file('search', path, { recursive: true, implicitExternal });
   },
 
   conflict(left: ToolAccesses, right: ToolAccesses): boolean {

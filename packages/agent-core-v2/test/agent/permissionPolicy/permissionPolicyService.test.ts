@@ -270,6 +270,37 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
+  it('asks before reading an alias whose resolved target is sensitive', async () => {
+    await expect(evaluate({
+      toolName: 'Read', args: { path: '/workspace/safe.txt' },
+      accesses: ToolAccesses.readFile('/outside/.env'),
+    })).resolves.toMatchObject({
+      policyName: 'sensitive-file-access-ask',
+      result: { kind: 'ask' },
+    });
+  });
+
+  it('permits sensitive reads in yolo, but explicit deny still wins', async () => {
+    mode = 'yolo';
+    const input = { toolName: 'Read', args: { path: '/workspace/.env' } };
+    await expect(evaluate(input)).resolves.toMatchObject({
+      policyName: 'sensitive-file-access-ask', result: { kind: 'approve' },
+    });
+    rules.push({ decision: 'deny', scope: 'user', pattern: 'Read' });
+    await expect(evaluate(input)).resolves.toMatchObject({
+      policyName: 'user-configured-deny', result: { kind: 'deny' },
+    });
+  });
+
+  it('asks for external symlink reads rather than using the read allowlist', async () => {
+    await expect(evaluate({
+      toolName: 'Read', args: { path: '/workspace/alias.txt' },
+      accesses: ToolAccesses.readFile('/outside/notes.txt', true),
+    })).resolves.toMatchObject({
+      policyName: 'external-link-access-ask', result: { kind: 'ask' },
+    });
+  });
+
   it.each(['EnterPlanMode', 'ExitPlanMode', 'CreateGoal'] as const)(
     'approves %s through the default tool allowlist in manual mode',
     async (toolName) => {
@@ -531,6 +562,14 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
     });
   });
 
+  it('does not approve writing to a linked skill outside the Git workspace', async () => {
+    const linkedSkillTarget = join(tmpdir(), 'installed-skill', 'SKILL.md');
+    await expect(evaluate({
+      toolName: 'Write', args: { path: join(workspaceDir, '.agents/skills/example/SKILL.md'), content: 'x' },
+      accesses: ToolAccesses.writeFile(linkedSkillTarget),
+    })).resolves.toMatchObject({ policyName: 'fallback-ask', result: { kind: 'ask' } });
+  });
+
   it('asks for paths outside cwd and additionalDirs', async () => {
     const extraDir = await mkdtemp(join(tmpdir(), 'kimi-permission-extra-'));
     cleanupDirs.push(extraDir);
@@ -568,18 +607,24 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
     });
   });
 
-  it.each([
-    { path: '.env', policyName: 'sensitive-file-access-ask' },
-    { path: '.git/config', policyName: 'git-control-path-access-ask' },
-  ])('asks for $path before auto-mode approval', async ({ path, policyName }) => {
+  it('denies sensitive targets in auto mode with a recovery action', async () => {
     mode = 'auto';
     await expect(evaluate({
-      toolName: 'Write',
-      args: { path, content: 'x' },
-      accesses: ToolAccesses.writeFile(join(workspaceDir, path)),
+      toolName: 'Write', args: { path: '.env', content: 'x' },
+      accesses: ToolAccesses.writeFile(join(workspaceDir, '.env')),
     })).resolves.toMatchObject({
-      policyName,
-      result: { kind: 'ask' },
+      policyName: 'sensitive-file-access-ask',
+      result: { kind: 'deny', message: expect.stringContaining('switch to manual mode') },
+    });
+  });
+
+  it('keeps git control review in auto mode', async () => {
+    mode = 'auto';
+    await expect(evaluate({
+      toolName: 'Write', args: { path: '.git/config', content: 'x' },
+      accesses: ToolAccesses.writeFile(join(workspaceDir, '.git/config')),
+    })).resolves.toMatchObject({
+      policyName: 'git-control-path-access-ask', result: { kind: 'ask' },
     });
   });
 
@@ -782,7 +827,6 @@ function workspaceStub(initialWorkDir: string): {
     },
     resolve: (path) => path,
     isWithin: () => true,
-    assertAllowed: (path) => path,
   };
   return {
     stub,

@@ -17,7 +17,9 @@ import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
+  resolveRealPathAccess,
   resolveRealPathAccessPath,
+  withDefinitionReadRoots,
   type PathClass,
   isSensitiveFile,
   SENSITIVE_DOT_VARIANT_SUFFIXES,
@@ -82,22 +84,22 @@ export class GrepTool implements IGrepTool {
     const inspected = inspectAgentRuntime(this.runtime);
     const view = new RuntimeWorkspaceView(inspected, {
       workDir: this.workspaceCtx.workDir,
-      additionalDirs: [
-        ...this.workspaceCtx.additionalDirs,
-        ...(this.skillCatalog?.catalog.getSkillRoots() ?? []),
-      ],
+      additionalDirs: this.workspaceCtx.additionalDirs,
     });
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
-    const workspace = this.workspace(view);
+    const workspace = withDefinitionReadRoots(this.workspace(view), this.skillCatalog?.catalog.getSkillRoots() ?? [], env.homeDir);
     const pathOptions = { env, workspace, operation: 'search' as const };
     let path: string | undefined;
+    let implicitExternal = false;
     if (args.path !== undefined) {
       const preparation = this.runtime.acquire(['fs']);
       try {
         if (preparation.runtime.identity.generation !== inspected.identity.generation) {
           return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
         }
-        path = await resolveRealPathAccessPath(args.path, pathOptions, preparation.runtime.fs!);
+        const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
+        path = admitted.path;
+        implicitExternal = admitted.implicitExternal === true;
       } finally {
         preparation.dispose();
       }
@@ -105,7 +107,7 @@ export class GrepTool implements IGrepTool {
     const searchPaths = [path ?? workspace.workspaceDir];
     const searchPath = args.path ?? workspace.workspaceDir;
     return {
-      accesses: ToolAccesses.searchTree(searchPaths[0]!),
+      accesses: ToolAccesses.searchTree(searchPaths[0]!, implicitExternal),
       description: `Searching for '${args.pattern}' in ${searchPath}`,
       display: { kind: 'file_io', operation: 'grep', path: searchPaths[0]! },
       approvalRule: literalRulePattern(this.name, args.pattern),

@@ -73,7 +73,6 @@ describe('native Windows terminal lifecycle', () => {
             additionalDirs: [],
             resolve: (rel) => resolve(cwd, rel),
             isWithin: () => true,
-            assertAllowed: (path) => resolve(cwd, path),
           });
           reg.defineInstance(
             ISessionContext,

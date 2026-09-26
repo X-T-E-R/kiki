@@ -263,8 +263,10 @@ In-session file operations go through `POST /api/sessions/{session_id}/fs:{actio
 | `GET /api/sessions/{session_id}/fs/{path}:download` | Download a session file (binary, see below) |
 | `GET /api/fs:browse` | List host directories (folder picker) |
 | `GET /api/fs:home` | The user's home directory and recent workspaces |
-| `GET /api/fs:content` | Raw bytes of any host file (gated only by the token — be careful when exposing the port) |
+| `GET /api/fs:content` | User-directed host-file preview by absolute path, including sensitive files (bearer token required; not an agent tool permission endpoint) |
 | `POST /api/fs:mkdir` | Create a directory by absolute path |
+
+The session `fs:{action}` workspace API accepts workspace-relative paths only and rejects absolute paths and symlink escapes. This GUI boundary does not restrict the separate agent `Read` tool's explicit absolute paths. `/api/fs:content` is for an authenticated user's preview, not an agent file tool: do not expose the bearer token or disable authentication on an untrusted network.
 
 ### File uploads
 
@@ -401,7 +403,7 @@ The following endpoints stream binary bodies instead of a JSON payload. Their HT
 | `GET /api/files/{file_id}` | Download an uploaded file | Yes | No (sends an `etag` header but ignores `If-None-Match`) |
 | `GET /api/sessions/{session_id}/fs/{path}:download` | Download a session workspace file | Yes | Yes |
 | `GET /api/sessions/{session_id}/media/{file_id}` | Read session media, including saved tool-result blobs | Yes | Yes |
-| `GET /api/fs:content` | Raw bytes of any host file (gated only by the token — be careful when exposing the port) | Yes | Yes |
+| `GET /api/fs:content` | User-directed host-file preview by absolute path, including sensitive files (bearer token required; not an agent tool permission endpoint) | Yes | Yes |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream) | No | No |
 
 Error semantics differ as well: `GET /api/files/{file_id}` and session media downloads answer lookup and storage failures with real 404 / 500 statuses (file parameter validation still uses the HTTP 200 envelope), while the other three report failures through the standard [response envelope](#response-envelope) — clients must keep checking the envelope `code` on those endpoints.

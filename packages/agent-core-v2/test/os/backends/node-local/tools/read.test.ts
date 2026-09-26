@@ -334,6 +334,22 @@ describe('ReadTool', () => {
     expect(result.output).toBe('1\tskill body');
   });
 
+  it('reads a linked SKILL.md by absolute path from a registered definition root', async () => {
+    const { fs, readBytes } = createSpiedFs('skill body');
+    fs.realpath = vi.fn(async (path: string) =>
+      path === '/skills/linked/SKILL.md' ? '/installed/skill/SKILL.md' : path,
+    );
+    const skillCatalog = {
+      _serviceBrand: undefined,
+      catalog: { getSkillRoots: () => ['/skills'] },
+    } as unknown as ISessionSkillCatalog;
+    const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'), skillCatalog);
+    const result = await execute(tool, { path: '/skills/linked/SKILL.md' });
+    expect(result.isError ?? false).toBe(false);
+    expect(result.output).toBe('1\tskill body');
+    expect(readBytes).toHaveBeenCalledWith('/installed/skill/SKILL.md', MEDIA_SNIFF_BYTES);
+  });
+
   it('allows explicit absolute paths outside the workspace', async () => {
     const { fs, readBytes, readLines } = createSpiedFs('external');
     const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
@@ -350,19 +366,29 @@ describe('ReadTool', () => {
     expect(readLines).toHaveBeenCalledWith('/tmp/external.txt', { errors: 'strict' });
   });
 
-  it('rejects a symlink escape before reading any bytes', async () => {
+  it('marks a workspace symlink to an external target for approval before reading', async () => {
     const { fs, readBytes, readLines } = createSpiedFs('outside');
     fs.realpath = vi.fn(async (path: string) =>
       path === '/workspace/alias.txt' ? '/outside/notes.txt' : path,
     );
     const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
-
-    const result = await execute(tool, { path: 'alias.txt' });
-
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('resolves outside');
+    const resolved = await tool.resolveExecution({ path: 'alias.txt' });
+    expect(resolved).toMatchObject({ accesses: [{ path: '/outside/notes.txt', implicitExternal: true }] });
     expect(readBytes).not.toHaveBeenCalled();
     expect(readLines).not.toHaveBeenCalled();
+  });
+
+  it('does not read a link retargeted to a sensitive file after approval', async () => {
+    const { fs, readBytes } = createSpiedFs('secret');
+    let target = '/workspace/ordinary.txt';
+    fs.realpath = vi.fn(async (path: string) => path === '/workspace/alias.txt' ? target : path);
+    const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
+    const resolved = await tool.resolveExecution({ path: 'alias.txt' });
+    if (resolved.isError === true) throw new Error('Expected runnable Read tool');
+    target = '/workspace/.env';
+    const result = await resolved.execute({ turnId: 0, toolCallId: 'call_read', signal });
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining('target changed') });
+    expect(readBytes).not.toHaveBeenCalled();
   });
 
   it('returns a friendly error for missing files before sniffing bytes', async () => {
@@ -440,15 +466,12 @@ describe('ReadTool', () => {
     expect(readLines).toHaveBeenCalledWith('/home/test/notes/today.txt', { errors: 'strict' });
   });
 
-  it('blocks sensitive files independently from workspace access', async () => {
-    const { fs, readText } = createSpiedFs('SECRET=value');
+  it('declares sensitive targets for permission evaluation before reading', async () => {
+    const { fs, readBytes } = createSpiedFs('SECRET=value');
     const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
-
-    const result = await execute(tool, { path: '/workspace/.env' });
-
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('sensitive-file pattern');
-    expect(readText).not.toHaveBeenCalled();
+    const resolved = await tool.resolveExecution({ path: '/workspace/.env' });
+    expect(resolved).toMatchObject({ accesses: [{ path: '/workspace/.env', operation: 'read' }] });
+    expect(readBytes).not.toHaveBeenCalled();
   });
 
   it('rejects image files before text decoding', async () => {

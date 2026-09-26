@@ -4,12 +4,11 @@ import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
-import { ErrorCodes, Error2 } from '#/errors';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
 
-import { ISessionWorkspaceContext, type PathAccessOperation } from './workspaceContext';
+import { ISessionWorkspaceContext } from './workspaceContext';
 
 export const workspaceContextWorkDirKey = defineState<string>('workspaceContext.workDir', () => '');
 export const workspaceContextAdditionalDirsKey = defineState<string[]>(
@@ -70,16 +69,6 @@ export class SessionWorkspaceContextService extends Service implements ISessionW
       const r = relative(dir, target);
       return r === '' || (!r.startsWith('..') && !isAbsolute(r));
     });
-  }
-
-  assertAllowed(absPath: string, op: PathAccessOperation): string {
-    const target = this.resolve(absPath);
-    if (!this.isWithin(target)) {
-      throw new Error2(ErrorCodes.FS_PATH_ESCAPES, `Path outside workspace (${op}): ${target}`, {
-        details: { op, path: target },
-      });
-    }
-    return target;
   }
 }
 

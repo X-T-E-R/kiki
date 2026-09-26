@@ -13,6 +13,7 @@ import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
 export interface WorkspaceConfig {
   readonly workspaceDir: string;
   readonly additionalDirs: readonly string[];
+  readonly definitionReadRoots?: readonly string[];
 }
 
 const SENSITIVE_BASENAMES = new Set<string>([
@@ -53,8 +54,8 @@ function comparable(path: string): string {
 
 export function isSensitiveFile(path: string): boolean {
   const name = pathe.basename(path);
-  const comparableName = comparable(name);
-  const comparablePath = comparable(path);
+  const comparableName = comparable(name).replace(/::\$data$/, '');
+  const comparablePath = comparable(path).replace(/::\$data$/, '');
 
   if (ENV_EXEMPTIONS.has(comparableName)) return false;
   if (PUBLIC_KEY_BASENAMES.has(comparableName)) return false;
@@ -86,23 +87,12 @@ export function isSensitiveFile(path: string): boolean {
 }
 
 export type PathClass = 'posix' | 'win32';
-export type PathSecurityCode = 'PATH_OUTSIDE_WORKSPACE' | 'PATH_SENSITIVE' | 'PATH_INVALID';
+export type PathSecurityCode = 'PATH_OUTSIDE_WORKSPACE' | 'PATH_INVALID';
 export type PathAccessOperation = 'read' | 'write' | 'search';
-export type WorkspaceGuardMode = 'absolute-outside-allowed' | 'disabled';
-
-export interface WorkspaceAccessPolicy {
-  readonly guardMode: WorkspaceGuardMode;
-  readonly checkSensitive: boolean;
-}
-
-export const DEFAULT_WORKSPACE_ACCESS_POLICY: WorkspaceAccessPolicy = {
-  guardMode: 'absolute-outside-allowed',
-  checkSensitive: true,
-};
-
 export interface PathAccess {
   readonly path: string;
   readonly outsideWorkspace: boolean;
+  readonly implicitExternal?: boolean;
 }
 
 export class PathSecurityError extends Error {
@@ -144,7 +134,7 @@ export function canonicalizePath(
   pathClass: PathClass = DEFAULT_PATH_CLASS,
 ): string {
   if (path === '') {
-    throw new PathSecurityError('PATH_INVALID', path, path, 'Path cannot be empty');
+    throw new PathSecurityError('PATH_INVALID', path, path, '[invalid_path] Path cannot be empty. Provide a workspace-relative or explicit absolute path.');
   }
   const normalizedPath = normalizeUserPath(path, pathClass);
   if (pathClass === 'win32' && isWin32DriveRelative(normalizedPath)) {
@@ -152,7 +142,7 @@ export function canonicalizePath(
       'PATH_INVALID',
       path,
       normalizedPath,
-      `"${path}" is a drive-relative Windows path. Use an absolute path like C:\\path or a path relative to the working directory.`,
+      `[invalid_path] Path "${path}" resolves ambiguously to "${normalizedPath}". Use an absolute path like C:\\path or a path relative to the working directory.`,
     );
   }
   if (!pathe.isAbsolute(normalizedPath) && !pathe.isAbsolute(cwd)) {
@@ -160,7 +150,7 @@ export function canonicalizePath(
       'PATH_INVALID',
       path,
       normalizedPath,
-      `Cannot resolve "${path}" against non-absolute cwd "${cwd}".`,
+      `[invalid_path] Cannot resolve path "${path}" against non-absolute cwd "${cwd}". Use an absolute working directory or explicit absolute path.`,
     );
   }
   const abs = pathe.isAbsolute(normalizedPath) ? normalizedPath : pathe.resolve(cwd, normalizedPath);
@@ -193,30 +183,26 @@ export function isWithinWorkspace(
   return false;
 }
 
-export function extendWorkspaceWithSkillRoots<T extends WorkspaceConfig>(
+export function withDefinitionReadRoots<T extends WorkspaceConfig>(
   workspace: T,
   skillRoots: readonly string[],
-  pathClass: PathClass = DEFAULT_PATH_CLASS,
-): T {
-  const additionalDirs = [...workspace.additionalDirs];
-  for (const root of skillRoots) {
-    if (isWithinDirectory(root, workspace.workspaceDir, pathClass)) continue;
-    if (additionalDirs.some((dir) => isWithinDirectory(root, dir, pathClass))) continue;
-    additionalDirs.push(root);
-  }
-  if (additionalDirs.length === workspace.additionalDirs.length) return workspace;
-  return { ...workspace, additionalDirs };
-}
-
-export interface AssertPathOptions {
-  readonly mode: PathAccessOperation;
-  readonly checkSensitive?: boolean | undefined;
-  readonly pathClass?: PathClass | undefined;
+  homeDir: string,
+): T & { readonly definitionReadRoots: readonly string[] } {
+  const definitionReadRoots = [...new Set([
+    ...workspace.definitionReadRoots ?? [],
+    ...skillRoots,
+    pathe.join(homeDir, '.agents/skills'),
+    pathe.join(homeDir, '.agents/agents'),
+    pathe.join(homeDir, '.kiki/agents'),
+    pathe.join(homeDir, '.kiki/skills'),
+    pathe.join(homeDir, '.kiki/commands'),
+    pathe.join(homeDir, '.kiki/docs'),
+  ])];
+  return { ...workspace, definitionReadRoots };
 }
 
 export interface ResolvePathAccessOptions {
   readonly operation: PathAccessOperation;
-  readonly policy?: WorkspaceAccessPolicy | undefined;
   readonly pathClass?: PathClass | undefined;
   readonly homeDir?: string;
   readonly shellPathBridge?: ShellPathBridge;
@@ -229,21 +215,11 @@ export interface ResolvePathAccessPathOptions {
   >;
   readonly workspace: WorkspaceConfig;
   readonly operation: PathAccessOperation;
-  readonly policy?: WorkspaceAccessPolicy;
   readonly expandHome?: boolean;
 }
 
-function relativeOutsideMessage(path: string, operation: PathAccessOperation): string {
-  const verb =
-    operation === 'write'
-      ? 'write or edit a file'
-      : operation === 'search'
-        ? 'search'
-        : 'read a file';
-  return (
-    `"${path}" is not an absolute path. ` +
-    `You must provide an absolute path to ${verb} outside the working directory.`
-  );
+function relativeOutsideMessage(path: string, target: string): string {
+  return `[external_target_approval] Path "${path}" resolves to external target "${target}". Use an explicit absolute path and obtain approval for access to the target.`;
 }
 
 export function resolvePathAccess(
@@ -259,33 +235,12 @@ export function resolvePathAccess(
   const rawIsAbsolute = pathe.isAbsolute(expandedPath);
   const canonical = canonicalizePath(expandedPath, cwd, pathClass);
   const outsideWorkspace = !isWithinWorkspace(canonical, config, pathClass);
-  const policy = options.policy ?? DEFAULT_WORKSPACE_ACCESS_POLICY;
-
-  if (policy.checkSensitive && isSensitiveFile(canonical)) {
+  if (outsideWorkspace && !rawIsAbsolute &&
+    !(options.operation !== 'write' && config.definitionReadRoots?.some((root) =>
+      isWithinDirectory(canonical, root, pathClass)))) {
     throw new PathSecurityError(
-      'PATH_SENSITIVE',
-      path,
-      canonical,
-      `"${path}" matches a sensitive-file pattern (env / credential / SSH key). ` +
-        `Access is blocked to protect secrets.`,
+      'PATH_OUTSIDE_WORKSPACE', path, canonical, relativeOutsideMessage(path, canonical),
     );
-  }
-
-  if (outsideWorkspace) {
-    switch (policy.guardMode) {
-      case 'absolute-outside-allowed':
-        if (!rawIsAbsolute) {
-          throw new PathSecurityError(
-            'PATH_OUTSIDE_WORKSPACE',
-            path,
-            canonical,
-            relativeOutsideMessage(path, options.operation),
-          );
-        }
-        break;
-      case 'disabled':
-        break;
-    }
   }
 
   return { path: canonical, outsideWorkspace };
@@ -295,10 +250,9 @@ export function resolvePathAccessPath(
   path: string,
   options: ResolvePathAccessPathOptions,
 ): string {
-  const { env, workspace, operation, policy, expandHome = true } = options;
+  const { env, workspace, operation, expandHome = true } = options;
   return resolvePathAccess(path, workspace.workspaceDir, workspace, {
     operation,
-    policy,
     pathClass: env.pathClass,
     homeDir: expandHome ? env.homeDir : undefined,
     shellPathBridge: env.pathClass === 'win32' ? getShellPathBridge(env) : undefined,
@@ -318,7 +272,7 @@ async function realPathOrMissingChild(fs: IHostFileSystem, path: string): Promis
     if (!isMissingPath(error)) throw error;
     try {
       await fs.lstat(path);
-      throw new PathSecurityError('PATH_INVALID', path, path, `Cannot resolve target of "${path}".`);
+      throw new PathSecurityError('PATH_INVALID', path, path, `[invalid_path] Path "${path}" has an unresolved link target "${path}". Repair the link or provide the actual existing target path.`);
     } catch (lstatError) {
       if (!isMissingPath(lstatError)) throw lstatError;
     }
@@ -328,45 +282,40 @@ async function realPathOrMissingChild(fs: IHostFileSystem, path: string): Promis
   }
 }
 
+export async function resolveRealPathAccess(
+  path: string,
+  options: ResolvePathAccessPathOptions,
+  fs: IHostFileSystem,
+): Promise<PathAccess> {
+  const lexicalPath = resolvePathAccessPath(path, options);
+  const [target, workspaceDir, ...additionalDirs] = await Promise.all([
+    realPathOrMissingChild(fs, lexicalPath).catch((error: unknown) => {
+      if (error instanceof PathSecurityError && error.code === 'PATH_INVALID') {
+        throw new PathSecurityError('PATH_INVALID', path, error.canonicalPath,
+          `[invalid_path] Path "${path}" resolves to invalid target "${error.canonicalPath}". Repair the link or provide the actual existing target path.`);
+      }
+      throw error;
+    }),
+    fs.realpath(options.workspace.workspaceDir),
+    ...options.workspace.additionalDirs.map((dir) => fs.realpath(dir)),
+  ]);
+  const realWorkspace = { workspaceDir, additionalDirs };
+  const realPath = canonicalizePath(target, workspaceDir, options.env.pathClass);
+  const outsideWorkspace = !isWithinWorkspace(realPath, realWorkspace, options.env.pathClass);
+  const inDefinitionRoot = options.workspace.definitionReadRoots?.some((root) =>
+    isWithinDirectory(lexicalPath, root, options.env.pathClass));
+  return {
+    path: realPath,
+    outsideWorkspace,
+    implicitExternal: outsideWorkspace && lexicalPath !== realPath &&
+      !inDefinitionRoot && isWithinWorkspace(lexicalPath, options.workspace, options.env.pathClass),
+  };
+}
+
 export async function resolveRealPathAccessPath(
   path: string,
   options: ResolvePathAccessPathOptions,
   fs: IHostFileSystem,
 ): Promise<string> {
-  const lexicalPath = resolvePathAccessPath(path, options);
-  const [target, workspaceDir, ...additionalDirs] = await Promise.all([
-    realPathOrMissingChild(fs, lexicalPath),
-    fs.realpath(options.workspace.workspaceDir),
-    ...options.workspace.additionalDirs.map((dir) => fs.realpath(dir)),
-  ]);
-  const realWorkspace = { workspaceDir, additionalDirs };
-  const realPath = resolvePathAccessPath(target, { ...options, workspace: realWorkspace });
-  if (
-    isWithinWorkspace(lexicalPath, options.workspace, options.env.pathClass) &&
-    !isWithinWorkspace(realPath, realWorkspace, options.env.pathClass)
-  ) {
-    throw new PathSecurityError(
-      'PATH_OUTSIDE_WORKSPACE',
-      path,
-      realPath,
-      `"${path}" resolves outside the working directory. Use an explicit path to access external files.`,
-    );
-  }
-  return realPath;
-}
-
-export function assertPathAllowed(
-  path: string,
-  cwd: string,
-  config: WorkspaceConfig,
-  options: AssertPathOptions,
-): string {
-  return resolvePathAccess(path, cwd, config, {
-    operation: options.mode,
-    pathClass: options.pathClass,
-    policy: {
-      guardMode: 'absolute-outside-allowed',
-      checkSensitive: options.checkSensitive ?? DEFAULT_WORKSPACE_ACCESS_POLICY.checkSensitive,
-    },
-  }).path;
+  return (await resolveRealPathAccess(path, options, fs)).path;
 }

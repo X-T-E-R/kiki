@@ -19,6 +19,7 @@ describe('RuntimeWorkspaceView', () => {
     expect(() => view.resolve('/outside')).toThrow('outside runtime workspace');
     expect(view.resolve('/outside', view.workDir, true)).toBe('/outside');
     expect(() => view.resolve('../outside', view.workDir, true)).toThrow('outside runtime workspace');
+    expect(() => view.resolve('../outside')).toThrow(/external_target_approval.*\.\.\/outside.*\/outside.*explicit absolute path/);
     expect(() => { view.assertAllowed('/outside'); }).toThrow('outside runtime workspace');
   });
 
