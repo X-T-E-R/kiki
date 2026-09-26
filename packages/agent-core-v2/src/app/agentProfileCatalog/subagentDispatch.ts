@@ -166,9 +166,13 @@ export function resolveSubagentDispatch(
         snapshot === undefined
           ? catalog.get(profileName)
           : (snapshot.resolvableProfiles ?? snapshot.publicProfiles).get(profileName);
-      if (profile === undefined || (input.selectionKind !== 'profile_file' && !catalog.list().some((item) => item.name === profileName))) {
+      const current = catalog.get(profileName);
+      const frozenBound = profile !== undefined && snapshot !== undefined &&
+        profile.private !== true && current?.private !== true && callerNamesTarget(caller, profileName);
+      if (profile === undefined || (input.selectionKind !== 'profile_file' &&
+        !catalog.list().some((item) => item.name === profileName) && !frozenBound)) {
         const available = catalog.list().map((item) => item.name).join(', ');
-        const hidden = catalog.get(profileName)?.private === true;
+        const hidden = current?.private === true;
         throw new Error2(
           ErrorCodes.PROFILE_UNKNOWN,
           hidden
@@ -220,19 +224,24 @@ export function resolveSubagentDispatch(
       route,
     };
   }
-  if (selection.route !== undefined && (
-    !catalog.list().some((profile) => profile.name === selection.baseProfile.name)
-    || (catalog.listRoutes !== undefined && !catalog.listRoutes().some((route) => route.id === selection.route?.id))
-  )) {
+  if (selection.route !== undefined) {
     const profileName = selection.baseProfile.name;
-    const hidden = catalog.get(profileName)?.private === true;
-    throw new Error2(
-      hidden ? ErrorCodes.PROFILE_UNKNOWN : ErrorCodes.ROUTE_UNKNOWN,
-      hidden
-        ? `Agent profile "${profileName}" is private and cannot be dispatched through route "${selection.route.id}".`
-        : `Agent profile route "${selection.route.id}" is no longer available for dispatch.`,
-      { details: { profileName, route: selection.route.id, private: hidden } },
-    );
+    const current = catalog.get(profileName);
+    const staleProfile = !catalog.list().some((profile) => profile.name === profileName);
+    const staleRoute = catalog.listRoutes !== undefined &&
+      !catalog.listRoutes().some((route) => route.id === selection.route?.id);
+    const frozenBound = selection.baseProfile.private !== true && current?.private !== true &&
+      callerNamesTarget(caller, profileName);
+    if ((staleProfile || staleRoute) && !frozenBound) {
+      const hidden = current?.private === true;
+      throw new Error2(
+        hidden ? ErrorCodes.PROFILE_UNKNOWN : ErrorCodes.ROUTE_UNKNOWN,
+        hidden
+          ? `Agent profile "${profileName}" is private and cannot be dispatched through route "${selection.route.id}".`
+          : `Agent profile route "${selection.route.id}" is no longer available for dispatch.`,
+        { details: { profileName, route: selection.route.id, private: hidden } },
+      );
+    }
   }
   const decision = evaluateSubagentDispatchDecision(
     catalog,
@@ -289,4 +298,15 @@ export function listAvailableSubagentTargets(
   models: IModelService,
 ): AvailableSubagentTargets {
   return listTargets(catalog, caller, input, models);
+}
+
+function callerNamesTarget(
+  caller: SubagentDispatchCaller & Partial<CallerLeaseOwner>,
+  profileName: string,
+): boolean {
+  if (caller.subagentLeases?.[profileName] !== undefined) return true;
+  if (caller.profileDefinitionId === undefined) return false;
+  // A frozen catalog is used to describe the caller's already-bound target set.
+  // Dispatch policy still decides whether an undeclared name is launchable below.
+  return caller.subagentDeclaration?.kind === 'set' || caller.subagents !== undefined;
 }

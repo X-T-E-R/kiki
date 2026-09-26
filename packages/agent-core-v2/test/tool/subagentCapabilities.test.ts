@@ -243,6 +243,44 @@ describe('subagent capability final bindings', () => {
     });
   });
 
+  it('keeps a caller-declared frozen target and fills its lease pins after the live profile is removed', () => {
+    services.models.list = () => ({ example: {} });
+    const live = helper({ name: 'live' });
+    const leased = helper({ name: 'leased', modelAlias: undefined });
+    const snapshot = {
+      publicProfiles: new Map([[leased.name, leased]]),
+      resolvableProfiles: new Map([[leased.name, leased]]),
+      defaultProfile: live,
+      routes: new Map(),
+      scopedBindings: new Map(),
+      sourceDefinitions: new Map(),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    const catalog = {
+      get: (name: string) => (name === live.name ? live : undefined),
+      list: () => [live],
+      getDefault: () => live,
+      resolveSelection: ({ profile }: { readonly profile?: string }) => {
+        if (profile !== live.name) throw new Error('unknown profile');
+        return { profile: live, baseProfile: live };
+      },
+    };
+    const caller = {
+      profileName: 'lead',
+      defaultPolicy: 'advisory' as const,
+      subagents: ['leased'],
+      subagentLeases: { leased: { name: 'leased', modelAlias: 'example', thinkingEffort: 'high' } },
+    };
+    const input = { catalog, caller, profiles: [leased], routes: [], snapshot };
+    expect(projectSubagentCapabilities(input, services)[0]).toMatchObject({
+      profile: 'leased', modelAlias: 'example', modelSource: 'caller-lease',
+      thinkingEffort: 'high', effortSource: 'caller-lease', defaultsAvailable: true,
+    });
+    expect(projectSubagentModelCatalog(catalog, caller, input, services.models, services.config)
+      .profiles[0]).toMatchObject({ modelAlias: 'example', thinkingEffort: 'high' });
+  });
+
   it('skips a stale frozen-catalog target whose profile vanished from the snapshot', () => {
     services.models.list = () => ({ example: {} });
     const live = helper({ name: 'live' });
