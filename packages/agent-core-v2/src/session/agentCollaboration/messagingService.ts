@@ -64,9 +64,31 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     void this.discardUnregisteredTargetMessages().catch(() => {});
   }
 
+  async sendUserMessage(input: {
+    readonly targetAgentId: string;
+    readonly content: string;
+    readonly idempotencyKey: string;
+  }): Promise<AgentMessageAcceptance> {
+    const meta = (await this.metadata.read()).agents?.[input.targetAgentId];
+    const ownerId = meta?.parentAgentId ?? (meta?.delegator?.kind === 'agent' ? meta.delegator.agentId : undefined);
+    if (meta?.type !== 'sub' || (meta.executor ?? 'native') === 'native' || !ownerId) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, `Agent "${input.targetAgentId}" is not an external subagent`);
+    }
+    return this.send({
+      ...input,
+      sourceAgentId: ownerId,
+      sourceTaskName: 'user',
+      senderKind: 'user',
+      targetTaskName: meta.displayName ?? input.targetAgentId,
+      idleWake: 'owned-child',
+      waitForRunningDelivery: true,
+    });
+  }
+
   async send(input: {
     readonly sourceAgentId: string;
     readonly sourceTaskName: string;
+    readonly senderKind?: 'user';
     readonly targetAgentId: string;
     readonly targetTaskName: string;
     readonly content: string;
@@ -250,7 +272,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         { kind: 'mailbox', prompt: visibleAgentMessage(message), message: contextMessage },
         { signal: new AbortController().signal },
       );
-      if (idleWake === 'owned-child') {
+      if (idleWake === 'owned-child' && message.senderKind !== 'user') {
         this.dispatch.recordDelegatedRun(sourceAgentId, handle.id);
       }
       const started = await run.started;
@@ -290,7 +312,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
 
   private hasMessage(handle: IAgentScopeHandle, messageId: string): boolean {
     return handle.accessor.get(IAgentContextMemoryService).get().some((entry) =>
-      entry.origin?.kind === 'agent_message' && entry.origin.messageId === messageId,
+      (entry.origin?.kind === 'agent_message' && entry.origin.messageId === messageId) ||
+      (entry.origin?.kind === 'user' && entry.id === messageId),
     );
   }
 
@@ -415,6 +438,8 @@ function withExternalMailboxMessage(
       messageOrigin?.kind === 'agent_message' &&
       requestOrigin.messageId === messageOrigin.messageId
     ) return request;
+    if (requestOrigin?.kind === 'user' && messageOrigin?.kind === 'user' &&
+      request.message.id === message.id) return request;
     return { kind: 'mailbox', prompt, message };
   }
   return { ...request, prompt: `${prompt}\n\n${request.prompt}` };
@@ -424,14 +449,17 @@ function toContextMessage(message: {
   readonly messageId: string;
   readonly sourceAgentId: string;
   readonly sourceTaskName: string;
+  readonly senderKind?: 'user';
   readonly content: string;
 }): ContextMessage {
-  const origin: AgentMessageOrigin = {
-    kind: 'agent_message',
-    messageId: message.messageId,
-    senderAgentId: message.sourceAgentId,
-    senderTaskName: message.sourceTaskName,
-  };
+  const origin: AgentMessageOrigin | { kind: 'user' } = message.senderKind === 'user'
+    ? { kind: 'user' }
+    : {
+        kind: 'agent_message',
+        messageId: message.messageId,
+        senderAgentId: message.sourceAgentId,
+        senderTaskName: message.sourceTaskName,
+      };
   return {
     id: message.messageId,
     role: 'user',
@@ -444,8 +472,10 @@ function toContextMessage(message: {
 function visibleAgentMessage(message: {
   readonly sourceAgentId: string;
   readonly sourceTaskName: string;
+  readonly senderKind?: 'user';
   readonly content: string;
 }): string {
+  if (message.senderKind === 'user') return message.content;
   const sender = message.sourceAgentId.startsWith('external:')
     ? `external agent "${message.sourceTaskName}" (${message.sourceAgentId})`
     : `agent "${message.sourceTaskName}" (${message.sourceAgentId})`;

@@ -8,6 +8,7 @@
  */
 
 import type { SessionActivityState } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
+import type { IAgentCollaborationMessagingService } from '@kiki/agent-core-v2/session/agentCollaboration/messageMailbox';
 import type { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
 import type { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
 import type { ISessionCronService } from '@kiki/agent-core-v2/session/cron/sessionCronService';
@@ -145,6 +146,8 @@ export interface SessionFacade {
   readonly skills: SessionSkillsFacade;
   /** Agent id → metadata for every agent registered in this session. */
   agents(): Promise<Readonly<Record<string, AgentMeta>>>;
+  sendUserAgentMessage(input: Parameters<IAgentCollaborationMessagingService['sendUserMessage']>[0]):
+    ReturnType<IAgentCollaborationMessagingService['sendUserMessage']>;
 }
 
 export function createSessionFacade(call: ScopedCaller, sessionId: string): SessionFacade {
@@ -259,5 +262,8 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
       const meta = await read();
       return meta.agents ?? {};
     },
+    sendUserAgentMessage: (input) =>
+      call(scope, 'agentCollaborationMessagingService', 'sendUserMessage', [input], { timeoutMs: 0 }) as
+        ReturnType<IAgentCollaborationMessagingService['sendUserMessage']>,
   };
 }

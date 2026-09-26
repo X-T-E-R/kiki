@@ -993,18 +993,26 @@ export class KikiClient {
     return this.run(this.klient.session(sessionId).agent(agentId).stopTask({ taskId }));
   }
 
-  /**
-   * User → subagent message; the prompt route's `agent_id` targets any agent
-   * the session still knows — a closed child is restored from its persisted
-   * binding and prompted again.
-   */
-  sendAgentMessage(
+  async sendAgentMessage(
     sessionId: string,
     agentId: string,
     text: string,
     content?: readonly MessageContent[],
-  ): Promise<PromptSubmitResult> {
-    return this.submitPrompt(sessionId, {
+  ): Promise<void> {
+    const session = this.klient.session(sessionId);
+    const agents = await this.run(() => session.agents());
+    if (agents[agentId] !== undefined && (agents[agentId].executor ?? 'native') !== 'native') {
+      if (content?.some((part) => part.type !== 'text')) {
+        throw new Error('External agent messages support text only. Remove attachments and retry.');
+      }
+      await this.run(() => session.sendUserAgentMessage({
+        targetAgentId: agentId,
+        content: text,
+        idempotencyKey: crypto.randomUUID(),
+      }));
+      return;
+    }
+    await this.submitPrompt(sessionId, {
       content: content === undefined ? [{ type: 'text', text }] : [...content],
       agent_id: agentId,
     });

@@ -734,6 +734,22 @@ describe('session domain routing', () => {
 });
 
 describe('session lifecycle routing', () => {
+  it('routes a user-authored external message through the session mailbox', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const input = { targetAgentId: 'child', content: 'continue', idempotencyKey: 'message-1' };
+    channel.results.set('agentCollaborationMessagingService.sendUserMessage', {
+      message: { messageId: 'message-1', sessionId: 's1', sourceAgentId: 'main', sourceTaskName: 'user',
+        senderKind: 'user', targetAgentId: 'child', targetTaskName: 'child', content: 'continue',
+        acceptedAt: 1, targetSeq: 1 },
+      deduplicated: false, delivery: 'delivered', payloadConflict: false,
+    });
+
+    await expect(klient.session('s1').sendUserAgentMessage(input)).resolves.toMatchObject({ delivery: 'delivered' });
+    expect(channel.calls).toEqual([{ scope: { sessionId: 's1' }, service: 'agentCollaborationMessagingService',
+      method: 'sendUserMessage', args: [input] }]);
+  });
+
   it('delete calls the App session manager', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);

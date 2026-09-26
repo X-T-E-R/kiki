@@ -30,6 +30,7 @@ import { IHostFolderBrowser } from '@kiki/agent-core-v2/app/hostFolderBrowser/ho
 import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
 import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { IAgentCollaborationMessagingService } from '@kiki/agent-core-v2/session/agentCollaboration/messageMailbox';
 import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionApprovalService } from '@kiki/agent-core-v2/session/approval/approval';
@@ -97,6 +98,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   workspaceInstanceManager: IWorkspaceInstanceManager,
   sessionManager: ISessionManager,
   sessionMetadata: ISessionMetadata,
+  agentCollaborationMessagingService: IAgentCollaborationMessagingService,
   sessionActivityView: ISessionActivityView,
   sessionBtwService: ISessionBtwService,
   sessionInitService: ISessionInitService,

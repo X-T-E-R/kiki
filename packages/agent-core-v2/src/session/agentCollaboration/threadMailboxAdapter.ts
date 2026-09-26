@@ -29,6 +29,7 @@ interface AgentMailboxEnvelopeV1 {
   readonly v: 1;
   readonly kind: 'agent_collaboration_message';
   readonly sourceTaskName: string;
+  readonly senderKind?: 'user';
   readonly targetTaskName: string;
   readonly content: string;
 }
@@ -51,6 +52,7 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
     readonly sessionId: string;
     readonly sourceAgentId: string;
     readonly sourceTaskName: string;
+    readonly senderKind?: 'user';
     readonly targetAgentId: string;
     readonly targetTaskName: string;
     readonly content: string;
@@ -60,6 +62,7 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
       v: 1,
       kind: 'agent_collaboration_message',
       sourceTaskName: input.sourceTaskName,
+      senderKind: input.senderKind,
       targetTaskName: input.targetTaskName,
       content: input.content,
     };
@@ -245,6 +248,7 @@ function toAgentMessage(message: AcceptedThreadMessage): AcceptedAgentMessage {
     sessionId: message.target.workspaceId,
     sourceAgentId: source.sessionId,
     sourceTaskName: envelope.sourceTaskName,
+    senderKind: envelope.senderKind,
     targetAgentId: message.target.sessionId,
     targetTaskName: envelope.targetTaskName,
     content: envelope.content,
@@ -268,6 +272,7 @@ function parseEnvelope(messageId: string, value: string): AgentMailboxEnvelopeV1
     envelope.v !== 1 ||
     envelope.kind !== 'agent_collaboration_message' ||
     typeof envelope.sourceTaskName !== 'string' ||
+    (envelope.senderKind !== undefined && envelope.senderKind !== 'user') ||
     typeof envelope.targetTaskName !== 'string' ||
     typeof envelope.content !== 'string'
   ) {

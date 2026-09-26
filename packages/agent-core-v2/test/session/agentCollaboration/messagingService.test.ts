@@ -716,6 +716,72 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
+  it('delivers a user-authored mailbox message to a cold external child without entering the native loop', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', { executorId: 'grok-acp' });
+    const lifecycle = lifecycleHarness([]);
+    const meta = { type: 'sub' as const, parentAgentId: 'main', displayName: 'external', executor: 'grok-acp' };
+    const child: DispatchChild = {
+      agent: target.handle, agentId: 'agent-target', profileName: 'external', thinkingEffort: 'off', meta,
+    };
+    const dispatch = dispatchHarness(
+      async (_child, request, options) => ({
+        child,
+        request: request as AgentRunRequest,
+        started: target.execution.run(request as AgentRunRequest, options),
+      }),
+      async (delegator, ref) => {
+        expect(delegator).toEqual({ kind: 'agent', agentId: 'main' });
+        expect(ref).toBe('agent-target');
+        lifecycle.add(target.handle);
+        return child;
+      },
+    );
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': meta }), dispatch);
+    const result = await service.sendUserMessage({ targetAgentId: 'agent-target', content: 'continue', idempotencyKey: 'user-message' });
+    expect(result).toMatchObject({ delivery: 'delivered', resumed: true });
+    expect(target.remoteRequests).toMatchObject([{ kind: 'mailbox', prompt: 'continue', message: { origin: { kind: 'user' } } }]);
+    expect(target.messages).toMatchObject([{ role: 'user', content: [{ type: 'text', text: 'continue' }], origin: { kind: 'user' } }]);
+    expect(dispatch.recordDelegatedRun).not.toHaveBeenCalled();
+    await expect(service.sendUserMessage({ targetAgentId: 'agent-target', content: 'continue', idempotencyKey: 'user-message' }))
+      .resolves.toMatchObject({ deduplicated: true, delivery: 'delivered' });
+    service.dispose();
+  });
+
+  it('rejects user-authored mailbox messages to native, main, and unknown agents before storage', async () => {
+    const store = mailboxStore(tempDir());
+    const service = messagingService(store, lifecycleHarness([]).service, sessionContext(), metadataHarness({
+      native: { type: 'sub', parentAgentId: 'main', executor: 'native' },
+      main: { type: 'main', executor: 'grok-acp' },
+    }));
+    for (const targetAgentId of ['native', 'main', 'missing']) {
+      await expect(service.sendUserMessage({ targetAgentId, content: 'continue', idempotencyKey: targetAgentId }))
+        .rejects.toMatchObject({ code: 'request.invalid' });
+      expect(await store.nextQueued('session-1', targetAgentId)).toBeUndefined();
+    }
+    service.dispose();
+  });
+
+  it('queues user-authored mail to a running external child until its next run', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', { executorId: 'grok-acp' });
+    target.setRunning(true);
+    const dispatch = dispatchHarness();
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': { type: 'sub', parentAgentId: 'main', executor: 'grok-acp' } }), dispatch);
+
+    await expect(service.sendUserMessage({ targetAgentId: 'agent-target', content: 'next step', idempotencyKey: 'running-user' }))
+      .resolves.toMatchObject({ delivery: 'queued' });
+    expect(target.pendingSteers()).toBe(0);
+    expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+    target.setRunning(false);
+    await target.execution.run({ kind: 'prompt', prompt: 'ordinary resume' }, { signal });
+    expect(target.remoteRequests).toEqual([{ kind: 'prompt', prompt: 'next step\n\nordinary resume' }]);
+    expect(target.messages).toMatchObject([{ origin: { kind: 'user' } }]);
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    service.dispose();
+  });
+
   it('fails meaningfully when an idle child executor is permanently broken', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
@@ -1673,7 +1739,7 @@ function agentHandle(
             ? { state: 'broken' as const }
             : { state: 'idle' as const },
     steer: (message: ContextMessage) => {
-      if (state !== 'running') return Promise.resolve(false);
+      if (state !== 'running' || options.executorId !== undefined) return Promise.resolve(false);
       return new Promise<boolean>((resolve) => pendingSteers.push({ message, resolve }));
     },
     cancel: () => false,

@@ -1008,7 +1008,7 @@ describe('GET /api/agents', () => {
     expect(((await mixedResponse.json()) as Envelope<null>).code).toBe(40001);
   });
 
-  it('loads and isolates workspace profiles for scoped requests without live sessions', async () => {
+  it('isolates workspace dispatch targets for drafts and live sessions', async () => {
     const workspaceA = join(home as string, 'workspace-a');
     const workspaceB = join(home as string, 'workspace-b');
     const agentsA = join(workspaceA, '.kiki', 'agents');
@@ -1025,6 +1025,11 @@ describe('GET /api/agents', () => {
     await writeFile(
       join(agentsB, 'workspace-choice.md'),
       '---\nname: workspace-choice\ndescription: Workspace B helper\nmain: false\n---\n\nUse workspace B.\n',
+      'utf-8',
+    );
+    await writeFile(
+      join(agentsB, 'workspace-main.md'),
+      '---\nname: workspace-main\ndescription: Workspace B main\nmain: true\n---\n\nUse workspace B.\n',
       'utf-8',
     );
 
@@ -1095,10 +1100,16 @@ describe('GET /api/agents', () => {
         .toMatchObject([{ main: true, description: 'Workspace A choice', disabled: false }]);
       const capabilities = await authedFetch(runningServer, base,
         `/api/agents/capabilities?${query}&profile=workspace-choice`);
-      const capabilityBody = await capabilities.json() as Envelope<{ context: string; owner: { profile: string }; targets: unknown[] }>;
+      const capabilityBody = await capabilities.json() as Envelope<{ context: string; owner: { profile: string }; targets: { profile: string }[] }>;
       expect(capabilityBody.code).toBe(0);
       expect(capabilityBody.data).toMatchObject({ context: 'draft', owner: { profile: 'workspace-choice' } });
+      expect(capabilityBody.data.targets.some((target) => target.profile === 'workspace-choice')).toBe(false);
     }
+    const capabilitiesB = await authedFetch(runningServer, base,
+      `/api/agents/capabilities?workspace_id=${encodeURIComponent(workspaceBId)}&profile=workspace-main`);
+    const scopedTargetsB = await capabilitiesB.json() as Envelope<{ targets: { profile: string }[] }>;
+    expect(scopedTargetsB.code).toBe(0);
+    expect(scopedTargetsB.data.targets.some((target) => target.profile === 'workspace-choice')).toBe(true);
 
     const scopedAAgain = await listScoped(workspaceAId);
     expect(scopedAAgain.items.find((profile) =>
@@ -1108,6 +1119,20 @@ describe('GET /api/agents', () => {
     const instances = server.core.accessor.get(IWorkspaceInstanceManager);
     expect(instances.referenceCount(workspaceAId)).toBe(0);
     expect(instances.referenceCount(workspaceBId)).toBe(0);
+
+    const createdResponse = await authedFetch(runningServer, base, '/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: workspaceA } }),
+    });
+    const created = await createdResponse.json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const liveCapabilities = await authedFetch(runningServer, base,
+      `/api/agents/capabilities?session_id=${encodeURIComponent(created.data.id)}&agent_id=main`);
+    const live = await liveCapabilities.json() as Envelope<{ context: string; targets: { profile: string }[] }>;
+    expect(live.code).toBe(0);
+    expect(live.data.context).toBe('live');
+    expect(live.data.targets.some((target) => target.profile === 'workspace-choice')).toBe(false);
 
     const missingResponse = await authedFetch(
       runningServer,

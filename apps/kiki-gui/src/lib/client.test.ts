@@ -160,6 +160,64 @@ describe('KikiClient.probeProviderDraft', () => {
   });
 });
 
+describe('KikiClient.sendAgentMessage', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses the user mailbox for a persisted external agent and refuses to silently drop attachments', async () => {
+    const calls: Array<{ service: string; method: string; params: unknown[] }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/klient/call');
+      const body = JSON.parse(init?.body as string) as { procedure: { service: string; method: string }; params: unknown[] };
+      calls.push({ service: body.procedure.service, method: body.procedure.method, params: body.params });
+      if (body.procedure.method === 'read') return Response.json({
+        code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
+          agents: { child: { type: 'sub', executor: 'grok-acp' } } },
+      });
+      if (body.procedure.method === 'sendUserMessage') return Response.json({
+        code: 0, msg: 'success', data: {
+          message: { messageId: 'message-1', sessionId: 's1', sourceAgentId: 'main', sourceTaskName: 'user',
+            senderKind: 'user', targetAgentId: 'child', targetTaskName: 'child', content: 'next step',
+            acceptedAt: 1, targetSeq: 1 },
+          deduplicated: false, delivery: 'delivered', payloadConflict: false,
+        },
+      });
+      throw new Error(`unexpected procedure: ${body.procedure.method}`);
+    }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    await client.sendAgentMessage('s1', 'child', 'next step', [{ type: 'text', text: 'next step' }]);
+    expect(calls.map((call) => [call.service, call.method])).toEqual([
+      ['sessionMetadata', 'read'], ['agentCollaborationMessagingService', 'sendUserMessage'],
+    ]);
+    expect(calls[1]?.params[0]).toMatchObject({ targetAgentId: 'child', content: 'next step',
+      idempotencyKey: expect.any(String) });
+    await expect(client.sendAgentMessage('s1', 'child', 'next step', [
+      { type: 'text', text: 'next step' },
+      { type: 'file', file_id: 'file-1', name: 'file.txt', media_type: 'text/plain', size: 1 },
+    ])).rejects.toThrow('External agent messages support text only');
+    expect(calls.map((call) => call.method)).toEqual(['read', 'sendUserMessage', 'read']);
+  });
+
+  it('retains the prompt route and attachments for a native child', async () => {
+    const content = [{ type: 'text' as const, text: 'look' },
+      { type: 'file' as const, file_id: 'file-1', name: 'file.txt', media_type: 'text/plain', size: 1 }];
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      urls.push(String(url));
+      if (String(url).endsWith('/api/klient/call')) return Response.json({
+        code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
+          agents: { child: { type: 'sub', executor: 'native' } } },
+      });
+      expect(JSON.parse(init?.body as string)).toMatchObject({ agent_id: 'child', content });
+      return Response.json({ code: 0, msg: 'success', data: {
+        prompt_id: 'p1', user_message_id: 'p1', status: 'running', content,
+        created_at: '2026-01-01T00:00:00.000Z',
+      } });
+    }));
+    await new KikiClient({ baseUrl: 'http://127.0.0.1:8080' }).sendAgentMessage('s1', 'child', 'look', content);
+    expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts']);
+  });
+});
+
 describe('KikiClient transport error mapping', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

@@ -593,7 +593,18 @@ export class AgentPromptService implements IAgentPromptService {
     return this.profile.getModelProviderType();
   }
 
+  private assertNativePromptExecutor(): void {
+    const executorId = this.profile.data().executorId;
+    if (executorId !== undefined && executorId !== 'native') {
+      throw new Error2(
+        ErrorCodes.REQUEST_INVALID,
+        `Direct prompts and steering are unsupported for external executor "${executorId}"; use AgentSend to deliver a mailbox message instead`,
+      );
+    }
+  }
+
   [promptAdmission](promptId?: string): PromptReservation {
+    this.assertNativePromptExecutor();
     if (promptId !== undefined && promptId.length === 0) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_id must not be empty');
     }
@@ -625,6 +636,7 @@ export class AgentPromptService implements IAgentPromptService {
       id,
       submit: async (message, execution, deferredDisabledTools, appendTiming, signal) => {
         if (submitted) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt reservation already submitted');
+        this.assertNativePromptExecutor();
         this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, execution));
         submitted = true;
         reservation.commit(id);
@@ -644,6 +656,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async enqueueNow(input: PromptInput): Promise<PromptHandle> {
+    this.assertNativePromptExecutor();
     const peerMessageId =
       input.message.origin?.kind === 'peer_thread' ? input.message.origin.messageId : undefined;
     if (peerMessageId !== undefined) {
@@ -1013,6 +1026,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   async steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {
+    this.assertNativePromptExecutor();
     if (promptIds.length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
     const targetTurnId = this.active?.turn.id ?? this.loop.status().activeTurnId;
     const ids = new Set(promptIds);
@@ -1253,6 +1267,7 @@ export class AgentPromptService implements IAgentPromptService {
       this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, item.execution));
       await this.applyExecutionBinding(item.execution);
       controller.signal.throwIfAborted();
+      this.assertNativePromptExecutor();
       if (item.deferredDisabledTools !== undefined) {
         await this.toolPolicy.setSessionDisabledTools(item.deferredDisabledTools);
         controller.signal.throwIfAborted();

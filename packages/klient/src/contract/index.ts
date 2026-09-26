@@ -53,6 +53,7 @@ import { sessionsContract } from './global/sessions.js';
 import { workspacesContract } from './global/workspaces.js';
 import { threadsContract } from './global/threads.js';
 import { sessionActivityViewContract } from './session/activity.js';
+import { agentCollaborationMessagingContract } from './session/agentMessage.js';
 import { sessionApprovalContract } from './session/approval.js';
 import { sessionInteractionContract } from './session/interaction.js';
 import { agentLifecycleContract, sessionManagerContract } from './session/lifecycle.js';
@@ -95,6 +96,7 @@ export const globalContract: KlientContract = {
   sessionManager: sessionManagerContract,
   // session scope
   sessionMetadata: sessionMetadataContract,
+  agentCollaborationMessagingService: agentCollaborationMessagingContract,
   sessionActivityView: sessionActivityViewContract,
   sessionInteractionService: sessionInteractionContract,
   sessionApprovalService: sessionApprovalContract,

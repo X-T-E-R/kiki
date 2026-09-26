@@ -180,6 +180,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     data: vi.fn(() => profileState),
     bind: vi.fn(async (input: BindAgentInput) => {
       profileState = boundProfileData(input.profile ?? profileState.profileName ?? 'initial');
+      if (input.profile === 'external-profile') profileState = { ...profileState, executorId: 'grok-acp' };
       if (input.model !== undefined) profileState = { ...profileState, modelAlias: input.model };
       if (input.thinking !== undefined) {
         profileState = { ...profileState, thinkingLevel: input.thinking };
@@ -287,10 +288,48 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     setProviderType: (value: string | undefined) => {
       providerTypeOverride = value;
     },
+    setExecutor: (executorId: string | undefined) => {
+      profileState = { ...profileState, executorId };
+    },
   };
 }
 
 describe('AgentPromptService', () => {
+  it('rejects direct prompts and steering for an external executor before accepting or starting a native turn', async () => {
+    const { prompt, loop, setExecutor } = harness({ manualTurnResult: true });
+    const reservation = reservePrompt(prompt, 'reserved-before-switch');
+    setExecutor('grok-acp');
+    expect(() => reservePrompt(prompt, 'external')).toThrow(expect.objectContaining({
+      code: ErrorCodes.REQUEST_INVALID,
+      message: expect.stringContaining('use AgentSend'),
+    }));
+    await expect(reservation.submit(message('work'))).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    reservation.dispose();
+    await expect(prompt.enqueue({ message: message('work') })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    await expect(prompt.steer(['queued'])).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    expect(prompt.list().pending).toEqual([]);
+    expect(loop.launches).toEqual([]);
+    setExecutor(undefined);
+    const native = await prompt.enqueue({ message: message('native work') });
+    expect((await native.launched)?.id).toBeDefined();
+    loop.settleActive();
+    await native.completion;
+  });
+
+  it('does not enter the native loop when a queued prompt selects an external profile at launch', async () => {
+    const { prompt, loop } = harness();
+    const queued = await prompt.enqueue({
+      message: message('work'),
+      execution: { profile: 'external-profile' },
+    });
+    expect((await queued.completion).state).toBe('failed');
+    expect((await queued.completion).result).toMatchObject({
+      type: 'failed',
+      error: { code: ErrorCodes.REQUEST_INVALID },
+    });
+    expect(loop.launches).toEqual([]);
+  });
+
   it.each(['prompt', 'mailbox'] as const)('cancels a queued native %s run without cancelling another active turn', async (kind) => {
     const { prompt, loop, target } = harness({ manualTurnResult: true });
     const active = await prompt.enqueue({ id: 'active', message: message('other work') });

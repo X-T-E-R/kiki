@@ -8,6 +8,7 @@ export interface AcceptedAgentMessage {
   readonly sessionId: string;
   readonly sourceAgentId: string;
   readonly sourceTaskName: string;
+  readonly senderKind?: 'user';
   readonly targetAgentId: string;
   readonly targetTaskName: string;
   readonly content: string;
@@ -45,6 +46,7 @@ export interface IAgentCollaborationMessageStore {
     readonly sessionId: string;
     readonly sourceAgentId: string;
     readonly sourceTaskName: string;
+    readonly senderKind?: 'user';
     readonly targetAgentId: string;
     readonly targetTaskName: string;
     readonly content: string;
@@ -65,9 +67,15 @@ export const IAgentCollaborationMessageStore: ServiceIdentifier<IAgentCollaborat
 export interface IAgentCollaborationMessagingService {
   readonly _serviceBrand: undefined;
 
+  sendUserMessage(input: {
+    readonly targetAgentId: string;
+    readonly content: string;
+    readonly idempotencyKey: string;
+  }): Promise<AgentMessageAcceptance>;
   send(input: {
     readonly sourceAgentId: string;
     readonly sourceTaskName: string;
+    readonly senderKind?: 'user';
     readonly targetAgentId: string;
     readonly targetTaskName: string;
     readonly content: string;
