@@ -310,12 +310,25 @@ for (const indexGenerations of [false, true]) {
       // overwrite everything to create tombstones, then add more (delta grows)
       for (let i = 0; i < 50; i++) await db.set('k' + i, { bio: 'goodbye world ' + i });
       for (let i = 50; i < 80; i++) await db.set('k' + i, { bio: 'hello again ' + i });
+      const ti = (db as unknown as { text: Map<string, TextIndex> }).text.get('bio')!;
+      const before = new Map([
+        ['hello', db.search('bio', 'hello').map((hit) => hit.key).toSorted()],
+        ['goodbye', db.search('bio', 'goodbye').map((hit) => hit.key).toSorted()],
+      ]);
 
       await db.compact(); // should rebuild postings from the live store
 
       // after compaction the postings reflect the latest values only
       assert.equal(db.search('bio', 'hello').length, 30); // k50..k79
       assert.equal(db.search('bio', 'goodbye').length, 50); // k0..k49
+      const readPostingKeys = (term: string): string[] => {
+        const entry = ti.postings.get(term);
+        assert.ok(entry, `missing ${term} posting entry`);
+        assert.ok(ti.pf, 'compaction must leave a readable postings base');
+        return ti.pf.read(entry).map(([docID]) => ti.keys[docID]).filter((key): key is string => key !== undefined).toSorted();
+      };
+      assert.deepEqual(readPostingKeys('hello'), before.get('hello'));
+      assert.deepEqual(readPostingKeys('goodbye'), before.get('goodbye'));
       if (indexGenerations) {
         // The base moved into the published generation: the legacy root file
         // is reclaimed and CURRENT's generation carries the fresh postings.
