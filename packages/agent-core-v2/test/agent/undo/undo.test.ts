@@ -12,6 +12,7 @@ import { IAgentPlanService } from '#/features/plan/plan';
 import { planKey } from '#/features/plan/planOps';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService, type AgentTask } from '#/agent/task/task';
+import { TaskSettlementReady } from '#/agent/task/taskOps';
 import { taskNotificationDeliveryKey } from '#/agent/task/taskService';
 import { IAgentConversationUndoService } from '#/agent/undo/undo';
 import { ContextUndone } from '#/agent/undo/undoService';
@@ -629,4 +630,98 @@ describe('AgentConversationUndoService', () => {
       [taskA, taskB].sort(),
     );
   });
+
+  it('restores a wait-reported task while its earlier notification is still preparing', async () => {
+    setup();
+    const tasks = ctx.get(IAgentTaskService);
+    const undo = ctx.get(IAgentConversationUndoService);
+    ctx.appendTurnExchange('u1', 'a1');
+    const entered = deferred();
+    const release = deferred();
+    const settled = deferred();
+    const getOutputSnapshot = tasks.getOutputSnapshot.bind(tasks);
+    let blocked = false;
+    const outputSnapshot = vi.spyOn(tasks, 'getOutputSnapshot').mockImplementation(async (id, bytes) => {
+      if (!blocked) {
+        blocked = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return getOutputSnapshot(id, bytes);
+    });
+    const taskId = tasks.registerTask({
+      idPrefix: 'test', kind: 'process', description: 'delayed notification',
+      start: async (sink) => { await sink.settle({ status: 'completed' }); },
+      toInfo: (base) => ({ ...base, kind: 'process', command: 'echo', pid: 0, exitCode: null }),
+    });
+    const subscription = ctx.get(IEventBus).subscribe(TaskSettlementReady, ({ info }) => {
+      if (info.taskId === taskId) settled.resolve();
+    });
+    try {
+      await tasks.wait(taskId, 1000);
+      await entered.promise;
+      tasks.markTasksDeliveredViaWait([{ taskId, status: 'completed' }]);
+      await ctx.dispatcher.flush();
+      expect(ctx.agentState.get(taskNotificationDeliveryKey)).toHaveLength(1);
+
+      await undo.undo(1);
+      expect(ctx.context.get().filter((message) => (message.origin as TaskOrigin | undefined)?.taskId === taskId)).toHaveLength(1);
+      release.resolve();
+      await settled.promise;
+      expect(ctx.context.get().filter((message) => (message.origin as TaskOrigin | undefined)?.taskId === taskId)).toHaveLength(1);
+    } finally {
+      release.resolve();
+      subscription.dispose();
+      outputSnapshot.mockRestore();
+    }
+  });
+
+  it('does not wait for an unrelated notification producer when undo retains its delivery', async () => {
+    setup();
+    const tasks = ctx.get(IAgentTaskService);
+    const undo = ctx.get(IAgentConversationUndoService);
+    const entered = deferred();
+    const release = deferred();
+    const settled = deferred();
+    const getSnapshot = tasks.getTaskSnapshot.bind(tasks);
+    let blocked = false;
+    const snapshot = vi.spyOn(tasks, 'getTaskSnapshot').mockImplementation(async (id) => {
+      if (!blocked) {
+        blocked = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return getSnapshot(id);
+    });
+    const taskId = tasks.registerTask({
+      idPrefix: 'test', kind: 'process', description: 'unrelated notification',
+      start: async (sink) => { await sink.settle({ status: 'completed' }); },
+      toInfo: (base) => ({ ...base, kind: 'process', command: 'echo', pid: 0, exitCode: null }),
+    });
+    const subscription = ctx.get(IEventBus).subscribe(TaskSettlementReady, ({ info }) => {
+      if (info.taskId === taskId) settled.resolve();
+    });
+    try {
+      await tasks.wait(taskId, 1000);
+      await entered.promise;
+      tasks.markTasksDeliveredViaWait([{ taskId, status: 'completed' }]);
+      await ctx.dispatcher.flush();
+      ctx.appendTurnExchange('u1', 'a1');
+      await undo.undo(1);
+      expect(ctx.agentState.get(taskNotificationDeliveryKey)).toHaveLength(1);
+      release.resolve();
+      await settled.promise;
+      expect(ctx.context.get().some((message) => (message.origin as TaskOrigin | undefined)?.taskId === taskId)).toBe(false);
+    } finally {
+      release.resolve();
+      subscription.dispose();
+      snapshot.mockRestore();
+    }
+  });
 });
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}

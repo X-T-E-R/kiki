@@ -268,6 +268,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private outputCacheTrim: Promise<void> | undefined;
   private outputCacheTrimPending = false;
   private readonly buildingNotificationKeys = new Set<string>();
+  private notificationUndoGeneration = 0;
   private readonly pendingNotificationRequests = new Map<string, TaskNotificationStepRequest>();
   private readonly pendingWaitDeliveries = new Map<string, {
     tasks: readonly AgentTaskWaitDelivery[];
@@ -668,6 +669,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private async reconcileNotificationDeliveryAfterUndo(): Promise<void> {
+    this.notificationUndoGeneration += 1;
+    this.buildingNotificationKeys.clear();
     const restoredKeys = new Set(this.states.get(taskNotificationDeliveryKey));
     for (const [key, request] of this.pendingNotificationRequests) {
       if (request.aborted || restoredKeys.has(key)) {
@@ -1493,8 +1496,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private async notifyAgentTask(info: AgentTaskInfo): Promise<void> {
+    const generation = this.notificationUndoGeneration;
     const context = await this.buildAgentTaskNotificationContext(info);
-    if (context === undefined) return;
+    if (generation !== this.notificationUndoGeneration || context === undefined) return;
     if (this.isTerminalNotificationSuppressed(info.taskId)) return;
     const key = notificationKey(context.origin);
     if (this.deliveredNotificationKeys.has(key)) return;
@@ -1602,7 +1606,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async buildAgentTaskNotificationContext(
     info: AgentTaskInfo,
   ): Promise<AgentTaskNotificationBuildContext | undefined> {
+    const generation = this.notificationUndoGeneration;
     info = (await this.getTaskSnapshot(info.taskId)) ?? info;
+    if (generation !== this.notificationUndoGeneration) return undefined;
     if (info.detached === false) return undefined;
     if (info.terminalNotificationSuppressed === true) return undefined;
     const origin: TaskOrigin = {
@@ -1627,6 +1633,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
           error,
         });
       }
+      if (generation !== this.notificationUndoGeneration) return undefined;
       if (this.isTerminalNotificationSuppressed(info.taskId)) return undefined;
       if (this.scheduledNotificationKeys.has(key)) return undefined;
       if (this.deliveredNotificationKeys.has(key)) return undefined;
@@ -1654,7 +1661,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       };
       return { content: renderContent({}), renderContent, origin, notification };
     } finally {
-      this.buildingNotificationKeys.delete(key);
+      if (generation === this.notificationUndoGeneration) this.buildingNotificationKeys.delete(key);
     }
   }
 
