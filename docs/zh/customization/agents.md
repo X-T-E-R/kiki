@@ -221,7 +221,7 @@ allowed_models: [fast-model]
 
 正文即 Agent 的系统提示词，每次构建提示词时都会作为模板渲染：`${var}` 占位符替换为实时上下文值——未知变量保持原样，单独的 `$` 没有特殊含义，上下文中缺失的变量渲染为空字符串。`${parent_prompt}`（别名 `${base_prompt}`）嵌入这份文件的隐式父提示词：Agent 文件里是有效默认提示词，`SYSTEM.md` 里是内置默认，route 里是基础 profile。`${builtin_prompt}` 始终是内置默认，即使存在 `SYSTEM.md`。如果文件会替换默认提示词、但仍要保留已启用 plugin 提供的指令，请把 `${plugin_sections}` 放在希望出现这些指令的位置。可用变量见下文 SYSTEM.md 变量表。
 
-未知字段会被忽略，新版本写的文件在旧版本上仍可读取。其他 Agent 工具的字段（如 Claude Code 的 `model`、OpenCode 的 `mode`）同样会被忽略；加上 `tools` 的逗号分隔写法和 `name` 缺省回退到文件名，Claude Code 与 OpenCode 风格的 Agent 文件一般可直接加载 —— 只含 `description` 和正文的最小文件可跨工具通用。
+Frontmatter 字段是封闭的：出现 Kiki 不认识的字段时，该文件会加载失败，并给出点名该字段的诊断；请删除或迁移不支持的字段（例如 Claude Code 的 `model`、OpenCode 的 `mode`）。`tools` 的逗号分隔写法可以使用，`name` 缺省时回退到文件名，因此只含 `description` 和正文的最小文件可以加载。
 
 ### 具名 profile route（实验功能）
 

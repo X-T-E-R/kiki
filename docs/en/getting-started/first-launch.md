@@ -42,7 +42,7 @@ To sign out, enter `/logout` to clear the current credentials.
 If you want to connect Anthropic, OpenAI, Google, or other providers, edit `~/.kiki/config.toml` directly to configure the API key. See [Providers and models](../configuration/providers.md) for details. For the full reference of all config options, see [Configuration files](../configuration/config-files.md), [Environment variables](../configuration/env-vars.md), and [Configuration overrides](../configuration/overrides.md).
 :::
 
-In the GUI, the optional first-run wizard covers provider, preferences, and search setup. Finishing it opens a draft with `/kiki-ops`; Kiki waits for you to send it. The guided conversation explains what subagent profiles do and asks what kind of role you want to create, with `implementer` and `reviewer` as examples. No profile is created without your approval; see [Agents and Sub-Agents](../customization/agents.md#built-in-sub-agents) for how profiles select models.
+In the desktop app and browser UI, an optional setup wizard opens on first run. It has four steps: pick your language and theme, connect a model (sign in with Kimi or paste an API key), choose where Kiki works (a folder, a workspace Kiki creates, or just chat), and choose the default permission mode for new sessions (Auto is recommended). Any step can be skipped and finished later in Settings, and **Replay setup wizard** runs it again. Finishing opens a new session with an empty input box; starter suggestions below it fill in a first prompt, and nothing is sent until you send it. To set up search, MCP, or your own agent roles later, ask Kiki with `/kiki-ops`; see [Agents and Sub-Agents](../customization/agents.md#built-in-sub-agents) for how profiles select models.
 
 ## Your first conversation
 
@@ -54,7 +54,7 @@ Take a look at this project's directory structure and briefly describe what each
 
 Kiki automatically calls file-reading, search, and other tools (tools are built-in capabilities the agent can invoke — reading files, searching code, running commands) to browse the relevant content before responding. Read-only operations are executed automatically by default without requiring confirmation.
 
-File writes follow the workspace trust model rather than prompting on every call: in a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval; writes outside the workspace, and access to sensitive files such as `.env` files and private keys, are blocked or require approval. Shell commands always ask for your confirmation first.
+New sessions default to Auto mode: ordinary tool calls, including shell commands, run without asking. Access to sensitive files such as `.env` files and private keys requires approval, as do dangerous Bash commands by default. In manual mode, `Write` / `Edit` inside a trusted working directory run without per-file approval; shell commands and workspace-external writes ask first. Use `/permission` to pick one of the four modes: `manual`, `auto`, `review` ("Approve for me", where a reviewer you configure decides first and anything uncertain comes back to you), or `yolo`. See [Permission modes](../guides/interaction.md#permission-modes) for the differences.
 
 You can also describe a more concrete task directly:
 

@@ -23,7 +23,7 @@ kiki <subcommand> [options]
 | `--prompt <prompt>` | `-p` | 非交互执行单次 prompt，并把 Assistant 输出流式写到 stdout。该模式不会打开 TUI |
 | `--output-format <format>` | | 设置非交互输出格式，支持 `text` 与 `stream-json`。仅可与 `--prompt` 一起使用，默认 `text` |
 | `--yolo` | `-y` | 自动批准普通工具调用，跳过审批请求 |
-| `--auto` | | 以 auto 权限模式启动；工具审批自动处理，Agent 不会向用户提问 |
+| `--auto` | | 以 Auto 权限模式启动；普通工具调用自动放行，受保护的操作和 Agent 提问仍可能询问你 |
 | `--plan` | | 以 Plan 模式启动新会话，AI 会优先使用只读工具进行探索和规划 |
 | `--skills-dir <dir>` | | 从指定目录加载 Skills，替换自动发现的用户和项目目录。可重复传入 |
 | `--agent <name>` | | 以指定 Agent 作为 main agent 启动新会话。不能与 `--session`/`--continue` 同时使用 |
@@ -74,7 +74,7 @@ kiki --session 01HZ...XYZ
 kiki --yolo
 ```
 
-让 Agent 自行处理一切，不再向用户提问：
+自动放行普通操作，同时保留受保护操作的审批：
 
 ```sh
 kiki --auto

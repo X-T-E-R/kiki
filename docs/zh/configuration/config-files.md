@@ -123,7 +123,7 @@ api_key = "YOUR_API_KEY"
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | 默认模型别名，必须在 `models` 中定义 |
-| `default_permission_mode` | `string` | `auto` | 新会话的默认权限模式，可选 `manual`（逐次询问）、`yolo`（自动批准工具操作，Agent 仍可能提问）、`auto`（完全自主，Agent 自己做决定，不再提问） |
+| `default_permission_mode` | `string` | `auto` | 新会话默认权限模式：`manual` 询问未经批准的操作；`auto` 自动批准普通操作、询问受保护操作；`review` 先交给审查者；`yolo` 批准大部分工具操作，但 Git 控制路径仍可能询问 |
 | `default_plan_mode` | `boolean` | `false` | 新会话是否默认以 Plan 模式（先出计划再执行）启动 |
 | `merge_all_available_skills` | `boolean` | `true` | 是否合并所有目录中的 Agent Skills |
 | `extra_skill_dirs` | `array<string>` | — | 额外 Skill 搜索目录，叠加到默认目录之上 |
@@ -148,12 +148,13 @@ api_key = "YOUR_API_KEY"
 | `experimental` | `table` | — | 实验功能 flag 的持久化覆盖 → [`experimental`](#experimental) |
 | `nb_search_source` | `table` | — | 宿主选项：内置搜索模块是否复用服务器本机的 nb-search 配置 → [`nb_search`](#nb-search) |
 | `nb_search` | `table` | — | `WebSearch` 与 `FetchURL` 背后的内置搜索与抓取模块 → [`nb_search`](#nb-search) |
-| `permission` | `table` | — | 初始权限规则 → [`permission`](#permission) |
+| `permission` | `table` | — | 权限规则与审查者 → [`permission`](#permission) |
+| `interaction` | `table` | — | Agent 提问是否阻塞当前轮 → [`interaction`](#interaction) |
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`retry`、`token_counting`、`background`、`subagent`、`agents`、`thread_communication`、`mcp`、`tools`、`image`、`session_title`、`experimental`、`nb_search`、`permission`、`prompt` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`thinking`、`loop_control`、`retry`、`token_counting`、`background`、`subagent`、`agents`、`thread_communication`、`mcp`、`tools`、`image`、`session_title`、`experimental`、`nb_search`、`permission`、`interaction`、`prompt` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -675,7 +676,7 @@ pattern = "Bash"
 
 | 取值 | 效果 |
 | --- | --- |
-| `default`（未设置） | `manual` / `auto` 开启，`yolo` 关闭 |
+| `default`（未设置） | `manual` / `auto` / `review` 开启，`yolo` 关闭 |
 | `on` | 始终把危险 Bash 升级为 `ask`，包括 `yolo` |
 | `off` | 不介入 |
 
@@ -686,9 +687,55 @@ pattern = "Bash"
 dangerous_bash = "default"
 ```
 
+### 审查者审批
+
+`review`（「替我审批」）沿用 Auto 模式对普通操作的自动批准，但先把策略产生的审批请求交给审查者。显式配置的 `ask` 规则始终询问你，显式 `deny` 规则直接拦截。审查者高置信批准会继续执行，高置信拒绝会阻止工具；结果不确定、格式错误、超时、凭证缺失或服务不可用时，改为询问你。同一轮连续三次被审查者拒绝后，这轮余下的请求直接询问你。审查者的批准不会写入「本会话始终批准」规则。
+
+审查者只看到最多四条最近的真实 User 文本消息、完整的 Bash 命令或解析后的文件目标、策略名称和原因，以及工作目录。输入过长时仅裁剪较早的 User 消息，不截断操作、策略和工作目录；也不会收到 Assistant 消息、工具输出、文件内容或 Diff。命令或目标列表超过各自上限、固定的操作或策略内容超出总长度上限，或操作没有明确命令或解析后目标时，改为询问你。使用模型后端时，`model` 必须是已配置的模型别名：
+
+```toml
+# ~/.kiki/config.toml
+default_permission_mode = "review"
+
+[permission.reviewer]
+backend = "model"
+model = "k3-review"
+allow_threshold = 0.9
+deny_threshold = 0.9
+timeout_ms = 8000
+categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
+```
+
+`backend` 可选 `model` 或 `jev`，模型后端必须配置 `model`。`allow_threshold` 和 `deny_threshold` 的范围都是 0.5–1；置信度低于对应阈值时会询问你。`categories` 从上面五个名称中选择 Jev 的是非检查项。默认超时：模型 8 秒、Jev 4 秒；`timeout_ms` 可覆盖为 100–30,000 毫秒。使用 TypeSafe Jev 时，须明确同意将上述有限审查内容发送给 TypeSafe，并单独保存密钥：
+
+```toml
+# ~/.kiki/config.toml
+[permission.reviewer]
+backend = "jev"
+jev_consent = true
+model = "jev-latest"
+```
+
+```toml
+# ~/.kiki/credentials.toml
+[permission.reviewer]
+api_key = "YOUR_TYPESAFE_API_KEY"
+```
+
+配置写入器把 `api_key` 保存在 `credentials.toml` 而不是 `config.toml`。未保存密钥时，可从服务器进程的 `TYPESAFE_API_KEY` 环境变量读取。没有同时设置 `jev_consent = true` 和可用密钥，就不会调用 Jev，而是询问你。
+
 ::: tip
 MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径不会读取。交互式配置入口是内置的 `kiki-ops` Skill（负责 Kiki 产品使用与配置的内置 Skill）：输入 `/kiki-ops 帮我配置 MCP`，详见 [Model Context Protocol](../server/mcp.md)。
 :::
+
+## `interaction`
+
+`interaction.ask_user_question` 决定 `AskUserQuestion` 是否阻塞 Agent 当前轮。默认 `background` 允许 Agent 在后台提问后继续工作；设为 `blocking` 时，即使工具调用传了 `background = true`，也要等你回答。在阻塞模式中，工具说明和输入参数不会展示后台选项。没有已连接的交互客户端时，问题会被关闭，而不会无限等待。
+
+```toml
+[interaction]
+ask_user_question = "blocking" # 或默认值 "background"
+```
 
 ## `prompt`
 

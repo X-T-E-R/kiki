@@ -221,7 +221,7 @@ Built-in and user tools match by exact, case-sensitive name; entries starting wi
 
 The body is the agent's system prompt, and it is rendered as a template each time the prompt is built: `${var}` placeholders substitute live context values — unknown variables stay verbatim, a bare `$` is never special, and a variable with no context value renders as an empty string. `${parent_prompt}` (alias `${base_prompt}`) embeds the implicit parent for this file: the effective default system prompt in an agent file, the built-in default inside `SYSTEM.md`, or the base profile in a route. `${builtin_prompt}` is always the built-in default, even when `SYSTEM.md` exists. If the file replaces the default prompt but should still honor instructions contributed by enabled plugins, place `${plugin_sections}` where those instructions should appear. The available variables are listed in the SYSTEM.md section below.
 
-Unknown fields are ignored, so newer files stay readable by older versions. Fields from other agent tools (such as Claude Code's `model` or OpenCode's `mode`) are ignored the same way, the comma-separated `tools` form keeps Claude Code-style agent files loadable, and a missing `name` falls back to the file name so OpenCode-style files load too — a minimal file with `description` and a body works across tools.
+Frontmatter keys are closed: a field Kiki does not recognize makes that file fail to load with a diagnostic naming the key, so remove or migrate unsupported keys (for example Claude Code's `model` or OpenCode's `mode`). The comma-separated `tools` form is accepted, and a missing `name` falls back to the file name, so a minimal file with `description` and a body loads.
 
 ### Named profile routes (experimental)
 

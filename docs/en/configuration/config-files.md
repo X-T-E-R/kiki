@@ -123,7 +123,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | Default model alias; must be defined in `models` |
-| `default_permission_mode` | `string` | `auto` | Default permission mode for new sessions; one of `manual` (prompt each time), `yolo` (auto-approve tool actions, but the agent may still ask questions), or `auto` (fully autonomous — the agent decides everything without asking) |
+| `default_permission_mode` | `string` | `auto` | Default for new sessions: `manual` asks for unapproved actions; `auto` approves routine work but asks for protected actions; `review` routes those requests to a reviewer first; `yolo` approves most tool actions, though Git-control paths may still ask |
 | `default_plan_mode` | `boolean` | `false` | Whether new sessions start in Plan mode (produce a plan before executing) by default |
 | `merge_all_available_skills` | `boolean` | `true` | Whether to merge Agent Skills from all available directories |
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |
@@ -148,12 +148,13 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `experimental` | `table` | — | Persistent overrides for experimental-feature flags → [`experimental`](#experimental) |
 | `nb_search_source` | `table` | — | Host option controlling whether the built-in search module reuses the server's local nb-search configuration → [`nb_search`](#nb-search) |
 | `nb_search` | `table` | — | Built-in search and retrieval module behind `WebSearch` and `FetchURL` → [`nb_search`](#nb-search) |
-| `permission` | `table` | — | Initial permission rules → [`permission`](#permission) |
+| `permission` | `table` | — | Permission rules and reviewer → [`permission`](#permission) |
+| `interaction` | `table` | — | Whether agent questions block the turn → [`interaction`](#interaction) |
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `retry`, `token_counting`, `background`, `subagent`, `agents`, `thread_communication`, `mcp`, `tools`, `image`, `session_title`, `experimental`, `nb_search`, `permission`, and `prompt`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `retry`, `token_counting`, `background`, `subagent`, `agents`, `thread_communication`, `mcp`, `tools`, `image`, `session_title`, `experimental`, `nb_search`, `permission`, `interaction`, and `prompt`.
 
 ## `providers`
 
@@ -686,7 +687,7 @@ pattern = "Bash"
 
 | Value | Effect |
 | --- | --- |
-| `default` (unset) | On in `manual` and `auto`; off in `yolo` |
+| `default` (unset) | On in `manual`, `auto`, and `review`; off in `yolo` |
 | `on` | Always upgrade dangerous Bash to `ask`, including `yolo` |
 | `off` | Never intervene |
 
@@ -697,9 +698,55 @@ YOLO stays hands-off by default so an explicit Never Ask / yolo session is not r
 dangerous_bash = "default"
 ```
 
+### Reviewer approval
+
+`review` ("Approve for me") keeps Auto's routine approvals but sends policy-generated approval requests to a reviewer first. An explicit configured `ask` rule always prompts you instead; an explicit `deny` rule always blocks the call. A confident reviewer approval proceeds without a user prompt; a confident denial stops the tool. Uncertain answers, invalid responses, timeouts, missing credentials, and unavailable reviewers ask you instead. After three consecutive reviewer denials in one turn, later requests in that turn go directly to you. Reviewer decisions do not create an "approve for session" rule.
+
+The reviewer receives up to four recent user-origin text messages, the complete Bash command or resolved file targets, the policy name and reason, and the workspace directory. When the input exceeds its size limit, older user-message text is trimmed; the action, policy and directory are never truncated. It does not receive assistant messages, tool output, file contents, or diffs. Commands or target lists beyond their input bounds, fixed action/policy data beyond the size limit, and actions without an exact command or resolved file target go to user approval instead. Choose a configured model alias for the model backend:
+
+```toml
+# ~/.kiki/config.toml
+default_permission_mode = "review"
+
+[permission.reviewer]
+backend = "model"
+model = "k3-review"
+allow_threshold = 0.9
+deny_threshold = 0.9
+timeout_ms = 8000
+categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
+```
+
+`backend` accepts `model` or `jev`; the model backend requires `model`. `allow_threshold` and `deny_threshold` each accept 0.5–1; lower confidence asks you. `categories` selects Jev yes/no checks from the five names above. The default timeout is 8 seconds for a model and 4 seconds for Jev (`timeout_ms` overrides either; accepted range 100–30,000). To use TypeSafe Jev, explicitly permit sending this limited reviewer input to TypeSafe and store the key separately:
+
+```toml
+# ~/.kiki/config.toml
+[permission.reviewer]
+backend = "jev"
+jev_consent = true
+model = "jev-latest"
+```
+
+```toml
+# ~/.kiki/credentials.toml
+[permission.reviewer]
+api_key = "YOUR_TYPESAFE_API_KEY"
+```
+
+The config writer keeps `api_key` in `credentials.toml` rather than `config.toml`; `TYPESAFE_API_KEY` in the server environment is a fallback when no stored key is present. Without `jev_consent = true` and an available key, Jev is not called and approval goes to you.
+
 ::: tip
 MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is not read. The interactive configuration entry point is the built-in `kiki-ops` skill (Kiki's product-usage and configuration Skill): type `/kiki-ops help me configure MCP`; see [Model Context Protocol](../server/mcp.md).
 :::
+
+## `interaction`
+
+`interaction.ask_user_question` controls whether `AskUserQuestion` blocks the agent's current turn. The default, `background`, lets the agent request a background question and continue working; `blocking` makes every question wait for your answer, even if a tool call passes `background = true`. In blocking mode the tool description and input schema do not advertise the background option. If there is no connected interaction consumer, the question is dismissed instead of waiting indefinitely.
+
+```toml
+[interaction]
+ask_user_question = "blocking" # or "background" (default)
+```
 
 ## `prompt`
 

@@ -47,11 +47,9 @@ Some commands are only available in the idle state. Executing these commands whi
 | Command | Alias | Description | Always available |
 | --- | --- | --- | --- |
 | `/yolo [on\|off]` | `/yes` | Toggle YOLO mode. Without arguments, flips the current state; explicitly passing `on`/`off` forces the setting. When enabled, skips approval for regular tool calls; Plan mode exit approval is not affected | Yes |
-| `/auto [on\|off]` | — | Toggle auto permission mode. When enabled, tool approvals are handled automatically and the Agent will not ask the user questions | Yes |
+| `/auto [on\|off]` | — | Toggle Auto mode. Routine tools are approved automatically; protected actions still ask, and the agent can still ask questions. Select "Approve for me" through `/permission` to route protected approvals to a reviewer first | Yes |
 | `/plan [on\|off]` | — | Toggle Plan mode. Without arguments, flips the current state; explicitly passing `on`/`off` forces the setting. Simply toggling does not create an empty plan file | Yes |
 | `/plan clear` | — | Clear the current plan | No |
-| `/swarm on\|off` | — | Turn swarm mode on or off without sending a prompt. | Yes |
-| `/swarm <task>` | — | Turn swarm mode on, then send `<task>` as a normal prompt. If the turn completes normally, swarm mode turns off automatically. In `manual` permission mode, Kiki asks whether to switch to `auto` or `yolo` before starting. | No |
 | `/goal [...]` | — | Start or manage an autonomous goal | See below |
 
 ::: warning
@@ -120,7 +118,7 @@ Kiki ships with a set of built-in Skills that appear directly as `/<name>` slash
 
 | Command | Description |
 | --- | --- |
-| `/kiki-ops [<request>]` | Configure, operate, or troubleshoot Kiki itself: product questions, first-run provider/model setup, search and retrieval, sessions, subagents, tasks, MCP, themes, and imports |
+| `/kiki-ops [<request>]` | Configure, operate, or troubleshoot Kiki itself: product questions, first-run provider/model setup, search and retrieval, sessions, subagents, tasks, MCP, permission modes, scheduled tasks, plugins, and themes |
 | `/kiki-profile [<request>]` | Create or modify agent profile files and `SYSTEM.md`. See [Agents and Sub-Agents](../customization/agents.md) |
 
 All built-in Skill commands are only available in the idle state.

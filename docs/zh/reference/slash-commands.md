@@ -47,11 +47,9 @@
 | 命令 | 别名 | 说明 | 随时可用 |
 | --- | --- | --- | --- |
 | `/yolo [on\|off]` | `/yes` | 切换 YOLO 模式。不带参数时翻转；显式传 `on`/`off` 时强制设置。开启后跳过普通工具调用审批；Plan 模式的退出审批不受影响 | 是 |
-| `/auto [on\|off]` | — | 切换 auto 权限模式。开启后工具审批自动处理，Agent 不会向用户提问 | 是 |
+| `/auto [on\|off]` | — | 切换 Auto 模式。普通工具调用自动批准，受保护操作仍会询问，Agent 也仍可提问。要先交由审查者审批受保护操作，可在 `/permission` 中选择「替我审批」 | 是 |
 | `/plan [on\|off]` | — | 切换 Plan 模式。不带参数时翻转；显式传 `on`/`off` 时强制设置。单纯切换不会创建空计划文件 | 是 |
 | `/plan clear` | — | 清除当前 plan 方案 | 否 |
-| `/swarm on\|off` | — | 开启或关闭 swarm mode，但不发送提示词。 | 是 |
-| `/swarm <task>` | — | 先开启 swarm mode，再把 `<task>` 作为普通提示词发送。如果该轮次正常完成，swarm mode 会自动关闭。若当前是 `manual` 权限模式，启动前 Kiki 会提示是否切换到 `auto` 或 `yolo`。 | 否 |
 | `/goal [...]` | — | 开始或管理目标模式 | 见下文 |
 
 ::: warning 注意
@@ -120,7 +118,7 @@ Kiki 随包内置了一组 Skill，直接以 `/<name>` 形式出现在斜杠命�
 
 | 命令 | 说明 |
 | --- | --- |
-| `/kiki-ops [<请求>]` | 配置、操作或排查 Kiki 本身：产品答疑、首次运行的供应商与模型配置、搜索与抓取、会话、subagent、任务、MCP、主题和导入 |
+| `/kiki-ops [<请求>]` | 配置、操作或排查 Kiki 本身：产品答疑、首次运行的供应商与模型配置、搜索与抓取、会话、subagent、任务、MCP、权限模式、定时任务、插件和主题 |
 | `/kiki-profile [<请求>]` | 创建或修改 agent profile 文件与 `SYSTEM.md`。详见 [Agent 与子 Agent](../customization/agents.md) |
 
 所有内置 Skill 命令仅在空闲状态下可用。

@@ -42,7 +42,7 @@ kiki -c
 如果想连接 Anthropic、OpenAI、Google 等平台，直接编辑 `~/.kiki/config.toml` 配置 API 密钥。详见[平台与模型](../configuration/providers.md)。全部配置项的完整参考见[配置文件](../configuration/config-files.md)、[环境变量](../configuration/env-vars.md)和[配置覆盖](../configuration/overrides.md)。
 :::
 
-在 GUI 中，可选的首次启动引导会协助配置供应商、偏好设置和搜索。完成后，Kiki 会打开预填 `/kiki-ops` 的草稿，等你发送。引导对话会先解释 subagent profile 是什么，再问你想创建什么样的角色；`implementer` 和 `reviewer` 只是示例。未经你同意不会创建任何 profile。模型选择方式见 [Agent 与 subagent](../customization/agents.md#内置-subagent)。
+在桌面应用和浏览器界面中，首次启动会打开一个可选的设置向导，共四步：选择语言与主题；连接模型（用 Kimi 账号登录或粘贴 API 密钥）；选择 Kiki 在哪里工作（选一个文件夹、让 Kiki 新建工作区，或只聊天）；选择新会话的默认权限模式（推荐「自动」）。每一步都可以跳过，之后在设置中补完；设置中的 **重新进入引导** 可以再走一遍。完成后会打开一个输入框为空的新会话，下方的起步建议可以帮你填入第一条消息，你发送之前什么都不会发出。之后想配置搜索、MCP 或自己的智能体角色，用 `/kiki-ops` 问 Kiki 即可；模型选择方式见 [Agent 与 subagent](../customization/agents.md#内置-subagent)。
 
 ## 你的第一次对话
 
@@ -54,7 +54,7 @@ Take a look at this project's directory structure and briefly describe what each
 
 Kiki 会自动调用文件读取、搜索等工具（工具是 Agent 可以调用的内置能力，例如读文件、搜索代码、运行命令）浏览相关内容，然后再回答。默认情况下，只读操作自动执行、无需确认。
 
-文件写入遵循工作区信任模型，而不是逐次弹窗：在已信任的工作目录内，落在该目录下的 `Write` / `Edit` 不再逐项询问；工作区外的写入，以及 `.env` 文件、私钥这类敏感文件的访问，会被拦截或需要确认。Shell 命令始终会先请求你的确认。
+新会话默认使用 Auto 模式：普通工具调用（包括 Shell 命令）会直接运行。访问 `.env` 文件、私钥等敏感文件仍需审批；危险 Bash 命令默认也会请求审批。manual 模式下，已信任工作目录内的 `Write` / `Edit` 不再逐项询问，Shell 命令和工作区外写入则先请求审批。用 `/permission` 可在四种模式间切换：`manual`、`auto`、`review`（「替我审批」：先交给你配置的审查者判断，拿不准再问你）和 `yolo`。模式区别见[权限模式](../guides/interaction.md#权限模式)。
 
 也可以直接描述一个更具体的任务：
 

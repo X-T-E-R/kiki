@@ -54,13 +54,17 @@ In Plan mode the agent first outputs an action plan and waits for your approval 
 - Toggle: `Shift-Tab` or `/plan`
 - Clear the current plan: `/plan clear` (only while idle)
 
-After producing a plan the agent pauses for your review — you can approve it, reject it, or ask for revisions. Exiting Plan mode requires your confirmation even if YOLO mode is also active. Auto mode is the exception: plan exits are approved automatically and marked as "Auto-approved" in the transcript.
+After producing a plan the agent pauses for your review — you can approve it, reject it, or ask for revisions. Exiting Plan mode requires your confirmation even if YOLO mode is also active. Auto and Approve for me are the exceptions: plan exits are approved automatically and marked as "Auto-approved" in the transcript.
 
-### YOLO / Auto mode
+### Permission modes
 
-**YOLO mode** (`/yolo`) auto-approves agent file access, including sensitive targets such as `.env` or SSH keys; an explicit deny rule still wins. Exiting Plan mode still requires review, and the agent can still ask you questions.
+Select among Manual, Auto, Approve for me, and YOLO with `/permission`. **YOLO mode** (`/yolo`) auto-approves agent file access, including sensitive targets such as `.env` or SSH keys; an explicit deny rule still wins. Git-control paths may still prompt. Exiting Plan mode still requires review, and the agent can still ask you questions.
 
-**Auto mode** (`/auto`) handles ordinary tool approval and plan exits without asking you questions. It refuses agent file access to sensitive targets and workspace links to external targets because nobody is present to approve them. Switch to manual mode to approve the specific target; do not expect Auto mode to silently read a secret.
+**Auto mode** (`/auto`) approves ordinary tool actions and plan exits without prompting. It asks you before accessing sensitive files or workspace links to external targets, and the agent can still ask you questions. Explicit deny rules still block matching calls; dangerous Bash commands also request approval unless that guard is disabled.
+
+**Approve for me** (`review`) behaves like Auto but routes policy-generated approval requests to a [configured reviewer](../configuration/config-files.md#reviewer-approval) first. An explicit `ask` rule always goes to you instead. A confident reviewer approval or denial is recorded with reviewer attribution. Uncertain or unavailable review goes to your ordinary approval panel; after three consecutive reviewer denials in a turn, later requests in that turn come directly to you. Agent questions remain separate from reviewer decisions; [the interaction setting](../configuration/config-files.md#interaction) controls whether questions block the turn.
+
+If no approval client is attached (for example, during an unattended scheduled run), a request needing your approval is cancelled instead of granting access. Questions without an attached client are dismissed rather than waiting indefinitely.
 
 ::: warning
 YOLO mode skips confirmation for file writes and command execution. Only use it in working directories you trust.
