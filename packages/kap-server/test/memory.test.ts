@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { MemoryConfigSchema, IConfigService, IMemoryStore, IWorkspaceService, type MemoryConfig, type Scope } from '@kiki/agent-core-v2';
@@ -28,7 +28,8 @@ function setup() {
   };
   const workspaces = { get: async (id: string) => id === 'wd_example_0123456789ab' ? { id } : undefined };
   const services = new Map<unknown, unknown>([[IMemoryStore, store], [IConfigService, config], [IWorkspaceService, workspaces]]);
-  const core = { accessor: { get: (key: unknown) => services.get(key) } } as Scope;
+  const getService = vi.fn((key: unknown) => services.get(key));
+  const core = { accessor: { get: getService } } as unknown as Scope;
   const host = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map((method) => [method, (path: string, _options: unknown, handler: CapturedRoute['handler']) => routes.push({ method, path, handler })]));
   registerMemoryRoutes(host as never, core);
   async function request(method: string, path: string, extras: { params?: object; body?: object; query?: object } = {}) {
@@ -38,13 +39,14 @@ function setup() {
     await route!.handler({ id: 'request-memory', params: extras.params ?? {}, body: extras.body ?? {}, query: extras.query ?? {} }, { send: (payload) => { response = payload; } });
     return response as { code: number; data: any };
   }
-  return { request, getSettings: () => settings };
+  return { request, getSettings: () => settings, getService };
 }
 
 describe('memory REST', () => {
   it('reads and writes global and workspace switches without enabling workspace memory when global is off', async () => {
     const api = setup();
     const id = 'wd_example_0123456789ab';
+    expect(api.getService).not.toHaveBeenCalledWith(IMemoryStore);
     expect((await api.request('get', '/memory/settings')).data.enabled).toBe(false);
     expect((await api.request('patch', '/memory/workspaces/:workspace_id/settings', { params: { workspace_id: id }, body: { enabled: true } })).data.effective_enabled).toBe(false);
     expect((await api.request('patch', '/memory/settings', { body: { enabled: true } })).data.enabled).toBe(true);
@@ -53,13 +55,16 @@ describe('memory REST', () => {
     expect((await api.request('patch', '/memory/workspaces/:workspace_id/settings', { params: { workspace_id: id }, body: { enabled: null } })).data.enabled).toBe(null);
     expect(api.getSettings().workspaces[id]).toBeUndefined();
     expect((await api.request('patch', '/memory/workspaces/:workspace_id/settings', { params: { workspace_id: 'missing' }, body: { enabled: true } })).code).toBe(40410);
+    expect(api.getService).not.toHaveBeenCalledWith(IMemoryStore);
   });
 
   it('exposes list/get/put/delete/journal/undo/inbox and passes user-sourced writes', async () => {
     const api = setup();
+    expect(api.getService).not.toHaveBeenCalledWith(IMemoryStore);
     const scope = { scope: 'global' };
     const write = await api.request('put', '/memory/:scope/:id', { params: { ...scope, id: 'new' }, body: { action: 'create', type: 'user', title: 'Style', body: 'Reply in Chinese', reason: 'User preference' } });
     expect(write.code).toBe(0);
+    expect(api.getService).toHaveBeenCalledWith(IMemoryStore);
     expect(write.data.entry.source.writer).toBe('user');
     expect(write.data.operationId).toBe('receipt-id');
     for (const path of ['/memory/:scope', '/memory/:scope/:id', '/memory/:scope/journal', '/memory/:scope/inbox']) {

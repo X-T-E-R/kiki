@@ -50,6 +50,25 @@ describe('permission reviewer', () => {
     expect(input?.length).toBeLessThanOrEqual(1800);
   });
 
+  it('redacts PEM blocks and common keys in user messages and policy fields before serialization', () => {
+    const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-data\n-----END OPENSSH PRIVATE KEY-----';
+    const key = `ghp_${'a'.repeat(30)}`;
+    const user = { get: () => [{ role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: `${pem}\n${key}` }] }] } as unknown as IAgentContextMemoryService;
+    const input = buildReviewerInput(user, workspace, context, 'ask', { detail: pem, key });
+    expect(input).toContain('[redacted]');
+    expect(input).not.toContain('private-data');
+    expect(input).not.toContain(key);
+    expect(input).not.toContain('BEGIN OPENSSH PRIVATE KEY');
+  });
+
+  it('sends at most the latest three genuine user messages', () => {
+    const four = { get: () => Array.from({ length: 4 }, (_, index) => ({
+      role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: `message ${index}` }],
+    })) } as unknown as IAgentContextMemoryService;
+    const input = buildReviewerInput(four, workspace, context, 'ask', {});
+    expect(JSON.parse(input!).userMessages).toEqual(['message 1', 'message 2', 'message 3']);
+  });
+
   it('trims only user history, preserving the complete action, policy and cwd', () => {
     const longMemory = { get: () => Array.from({ length: 4 }, (_, index) => ({
       role: 'user', origin: { kind: 'user' },
@@ -98,20 +117,41 @@ describe('permission reviewer', () => {
     expect(await reviewPermission(dependencies(config, { output: '```json\n{}\n```' }), context, 'dangerous-bash', {})).toBeUndefined();
   });
 
-  it('includes exact Write content and falls back when content is missing or too large', async () => {
-    const reviewer = { backend: 'model', model: 'reviewer', allowThreshold: 0.9, denyThreshold: 0.9 };
-    const deps = dependencies(reviewer, { output: JSON.stringify({ outcome: 'allow', confidence: 0.98 }) });
+  it('sends metadata, not Write/Edit content or PEM keys, to both reviewer backends', async () => {
+    const secret = '-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----';
+    const file = '/workspace/config/secrets.example.env';
     const write = { ...context, toolCall: { ...context.toolCall, name: 'Write' },
-      args: { path: '/workspace/config/secrets.example.env', content: 'EXAMPLE_API_KEY=YOUR_API_KEY' },
-      execution: { accesses: [{ kind: 'file', path: '/workspace/config/secrets.example.env', operation: 'write' }] },
+      args: { path: file, content: secret },
+      execution: { accesses: [{ kind: 'file', path: file, operation: 'write' }] },
     } as unknown as ResolvedToolExecutionHookContext;
-    expect(await reviewPermission(deps, write, 'sensitive-file', {})).toMatchObject({ outcome: 'allow' });
-    const input = deps.request.mock.calls[0]![0] as { messages: { content: { text: string }[] }[] };
-    expect(input.messages[0]!.content[0]!.text).toContain('EXAMPLE_API_KEY=[redacted]');
-    expect(input.messages[0]!.content[0]!.text).not.toContain('YOUR_API_KEY');
-    expect(await reviewPermission(deps, { ...write, args: { path: '/workspace/config/secrets.example.env' } }, 'sensitive-file', {})).toBeUndefined();
-    expect(await reviewPermission(deps, { ...write, args: { path: '/workspace/config/secrets.example.env', content: 'X'.repeat(2000) } }, 'sensitive-file', {})).toBeUndefined();
-    expect(deps.request).toHaveBeenCalledOnce();
+    const edit = { ...write, toolCall: { ...write.toolCall, name: 'Edit' },
+      args: { path: file, old_string: 'before', new_string: secret },
+    } as ResolvedToolExecutionHookContext;
+    const input = buildReviewerInput(memory, workspace, write, 'sensitive-file', {});
+    expect(JSON.parse(input!).action).toMatchObject({ tool: 'Write', targets: [{ path: file, operation: 'write' }],
+      contents: { content: { bytes: Buffer.byteLength(secret), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+    });
+    expect(buildReviewerInput(memory, workspace, edit, 'sensitive-file', {})).toContain('replacement');
+    const model = dependencies({ backend: 'model', model: 'reviewer', allowThreshold: 0.9, denyThreshold: 0.9 },
+      { output: JSON.stringify({ outcome: 'allow', confidence: 0.98 }) });
+    expect(await reviewPermission(model, write, 'sensitive-file', {})).toMatchObject({ backend: 'model' });
+    const modelPayload = JSON.stringify(model.request.mock.calls[0]![0]);
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(init?.body as string) as { state: { value: string } };
+      expect(JSON.parse(payload.state.value).action.contents.replacement.bytes).toBe(Buffer.byteLength(secret));
+      expect(init?.body).not.toContain(secret);
+      return { ok: true, json: async () => ({ answers: { policy_compliance: { type: 'noul', noul: 0.99 } } }) } as Response;
+    }) as unknown as typeof fetch;
+    const jev = dependencies({ backend: 'jev', jevConsent: true, categories: ['policy_compliance'], allowThreshold: 0.9, denyThreshold: 0.9 }, { fetcher, apiKey: 'test-key' });
+    expect(await reviewPermission(jev, edit, 'sensitive-file', {})).toMatchObject({ backend: 'jev' });
+    expect(modelPayload).not.toContain(secret);
+    expect(modelPayload).not.toContain('abc123');
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(await reviewPermission(model, { ...write, args: { path: file } }, 'sensitive-file', {})).toBeUndefined();
+    expect(await reviewPermission(model, write, 'sensitive-file-access-ask', {})).toBeUndefined();
+    expect(await reviewPermission(jev, edit, 'sensitive-file-access-ask', {})).toBeUndefined();
+    expect(model.request).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it('falls back on an unavailable backend, missing exact target, or timeout', async () => {

@@ -1,5 +1,6 @@
 import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import { matchPermissionRule } from '#/agent/permissionRules/matchesRule';
+import { literalRulePattern } from '#/tool/rule-match';
 import { IAgentPermissionRulesService } from '#/agent/permissionRules/permissionRules';
 import type {
   PermissionPolicy,
@@ -14,7 +15,10 @@ export class SessionApprovalHistoryPermissionPolicyService implements Permission
   ) {}
 
   evaluate(context: ResolvedToolExecutionHookContext): PermissionPolicyResult | undefined {
+    const command = (context.args as { command?: unknown } | null)?.command;
     for (const pattern of this.rulesService.sessionApprovalRulePatterns) {
+      if (context.toolCall.name === 'Bash' &&
+        (typeof command !== 'string' || pattern !== literalRulePattern('Bash', command))) continue;
       const match = matchPermissionRule({
         rule: {
           decision: 'allow',

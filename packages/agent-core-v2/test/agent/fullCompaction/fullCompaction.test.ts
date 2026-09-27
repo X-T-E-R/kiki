@@ -22,6 +22,7 @@ import { COMPACTION_SUMMARY_PREFIX } from '#/agent/contextMemory/compactionHando
 import { makeHookRunner } from '../../features/externalHooks/runner-stub';
 import type { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { MASTER_ENV } from '#/app/flag/flagService';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 import type { TestAgentContext, TestAgentOptions, TestAgentServiceOverride } from '../../harness';
@@ -382,6 +383,8 @@ describe('FullCompaction', () => {
       );
 
       const refreshSpy = vi.spyOn(profile, 'refreshSystemPrompt');
+      const memory = ctx.get(IAgentMemorySnapshot);
+      const memoryInvalidation = vi.spyOn(memory, 'invalidate');
       writeFileSync(join(workDir, 'AGENTS.md'), 'new project instructions', 'utf-8');
       ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
       ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
@@ -392,6 +395,7 @@ describe('FullCompaction', () => {
       await completed;
 
       expect(refreshSpy).toHaveBeenCalledTimes(1);
+      expect(memoryInvalidation).not.toHaveBeenCalled();
       expect(profile.data().systemPrompt).toBe(
         exactCompactionRefreshPrompt(workDir, 'new project instructions'),
       );

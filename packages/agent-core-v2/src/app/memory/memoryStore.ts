@@ -181,13 +181,26 @@ export class MemoryStore implements IMemoryStore {
         supersedes_revision: input.action === 'supersede' && input.pending ? input.expectedRevision : undefined,
       };
       const key = entryKey(id, entry.status === 'pending');
-      const op = await this.commit(base, key, isCreate ? undefined : target, encode(entry), input.action, id, input.source.writer);
-      if (!isCreate && target!.key !== key) await this.storage.delete(base, target!.key);
+      const encoded = encode(entry);
+      const op = randomUUID();
       if (superseded !== undefined && !input.pending) {
         const previous = decode(superseded.text);
         const oldEntry = { ...previous, revision: undefined, status: 'superseded' as const, superseded_by: id, updated: now };
         await this.commit(base, superseded.key, superseded, encode(oldEntry), 'supersede_previous', previous.id, input.source.writer, op);
       }
+      try {
+        await this.commit(base, key, isCreate ? undefined : target, encoded, input.action, id, input.source.writer, op);
+      } catch (error) {
+        if (superseded !== undefined && !input.pending && (await this.raw(base, id))?.text !== encoded) {
+          const current = await this.raw(base, superseded.key.slice(superseded.key.lastIndexOf('/') + 1, -3));
+          if (current !== undefined && decode(current.text).superseded_by === id) {
+            await this.commit(base, superseded.key, current, superseded.text, 'supersede_rollback', decode(superseded.text).id, input.source.writer);
+            await this.rebuildCatalog(base);
+          }
+        }
+        throw error;
+      }
+      if (!isCreate && target!.key !== key) await this.storage.delete(base, target!.key);
       await this.rebuildCatalog(base);
       return { entry: decode(encode(entry)), operationId: op };
     } finally {
@@ -226,19 +239,25 @@ export class MemoryStore implements IMemoryStore {
       const events = (await this.journal(scope)).filter((item) => item.operationId === operationId);
       if (events.length === 0) throw new Error('Memory operation not found');
       const targets = await Promise.all(events.map((event) => this.raw(base, event.id)));
+      const currentRevisions = targets.map((target) => target === undefined ? null : revision(target.text));
+      const hasSupersede = events.some((event) => event.action === 'supersede_previous');
+      const changed = events.some((event, index) => currentRevisions[index] === event.afterRevision);
+      if (!changed) throw new Error('Memory revision conflict');
       for (const [index, event] of events.entries()) {
-        const target = targets[index];
-        if ((target === undefined ? null : revision(target.text)) !== event.afterRevision) throw new Error('Memory revision conflict');
+        if (currentRevisions[index] === event.afterRevision) continue;
+        if (!hasSupersede || currentRevisions[index] !== event.beforeRevision) throw new Error('Memory revision conflict');
       }
       for (let index = events.length - 1; index >= 0; index--) {
         const event = events[index]!;
+        if (currentRevisions[index] === event.beforeRevision) continue;
         const target = targets[index];
         const key = event.before === null ? target?.key ?? entryKey(event.id, false) : entryKey(event.id, decode(event.before).status === 'pending');
         await this.commit(base, key, target, event.before ?? undefined, 'undo', event.id, 'user');
         if (target !== undefined && target.key !== key) await this.storage.delete(base, target.key);
       }
       await this.rebuildCatalog(base);
-      return events[0]!.before === null ? undefined : decode(events[0]!.before);
+      const primary = events.find((event) => event.action !== 'supersede_previous') ?? events[0]!;
+      return primary.before === null ? undefined : decode(primary.before);
     } finally { await lock.release(); }
   }
 

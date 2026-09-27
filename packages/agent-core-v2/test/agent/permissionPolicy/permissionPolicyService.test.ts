@@ -225,20 +225,16 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  it('applies matching ask rules before approve-for-session history', async () => {
-    rules.push({
-      decision: 'ask',
-      scope: 'user',
-      pattern: 'Bash',
-    });
+  it('applies exact session approval before configured ask, but never before explicit deny', async () => {
+    rules.push({ decision: 'ask', scope: 'user', pattern: 'Bash' });
     sessionApprovalRulePatterns.push('Bash(printf first)');
-
-    await expect(evaluate({
-      toolName: 'Bash',
-      args: { command: 'printf first', timeout: 60 },
-    })).resolves.toMatchObject({
-      policyName: 'user-configured-ask',
-      result: { kind: 'ask' },
+    const input = { toolName: 'Bash', args: { command: 'printf first', timeout: 60 } };
+    await expect(evaluate(input)).resolves.toMatchObject({
+      policyName: 'session-approval-history', result: { kind: 'approve' },
+    });
+    rules.push({ decision: 'deny', scope: 'user', pattern: 'Bash' });
+    await expect(evaluate(input)).resolves.toMatchObject({
+      policyName: 'user-configured-deny', result: { kind: 'deny' },
     });
   });
 
@@ -260,15 +256,13 @@ describe('AgentPermissionPolicyService chain', () => {
   it.each([
     { path: '/workspace/.env', policyName: 'sensitive-file-access-ask' },
     { path: '/workspace/.git/config', policyName: 'git-control-path-access-ask' },
-  ])('applies $policyName before session approval history', async ({ path, policyName }) => {
-    sessionApprovalRulePatterns.push('Write');
-
-    await expect(evaluate({
-      toolName: 'Write',
-      args: { path, content: 'x' },
-    })).resolves.toMatchObject({
-      policyName,
-      result: { kind: 'ask' },
+  ])('applies session approval before $policyName, but asks again on a nonmatching call', async ({ path, policyName }) => {
+    sessionApprovalRulePatterns.push(`Write(${path})`);
+    await expect(evaluate({ toolName: 'Write', args: { path, content: 'x' } })).resolves.toMatchObject({
+      policyName: 'session-approval-history', result: { kind: 'approve' },
+    });
+    await expect(evaluate({ toolName: 'Write', args: { path: `${path}.other`, content: 'x' } })).resolves.toMatchObject({
+      policyName, result: { kind: 'ask' },
     });
   });
 
@@ -279,6 +273,18 @@ describe('AgentPermissionPolicyService chain', () => {
     })).resolves.toMatchObject({
       policyName: 'sensitive-file-access-ask',
       result: { kind: 'ask' },
+    });
+  });
+
+  it('honors matching session approval for external symlink access', async () => {
+    sessionApprovalRulePatterns.push('Read(/workspace/alias.txt)');
+    await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/alias.txt' },
+      accesses: ToolAccesses.readFile('/outside/notes.txt', true) })).resolves.toMatchObject({
+      policyName: 'session-approval-history', result: { kind: 'approve' },
+    });
+    await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/other.txt' },
+      accesses: ToolAccesses.readFile('/outside/notes.txt', true) })).resolves.toMatchObject({
+      policyName: 'external-link-access-ask', result: { kind: 'ask' },
     });
   });
 
@@ -458,15 +464,17 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  it('does not let session approval history exempt dangerous bash', async () => {
-    sessionApprovalRulePatterns.push('Bash(shutdown -h now)');
-
-    await expect(evaluate({
-      toolName: 'Bash',
-      args: { command: 'shutdown -h now', timeout: 60 },
-    })).resolves.toMatchObject({
-      policyName: 'dangerous-bash',
-      result: { kind: 'ask', reason: { dangerous_command: 'shutdown' } },
+  it('exempts dangerous Bash only for the exact previously approved command', async () => {
+    sessionApprovalRulePatterns.push('Bash', 'Bash(rm -rf /tmp/*)', 'Bash(rm -rf /tmp/build)');
+    await expect(evaluate({ toolName: 'Bash', args: { command: 'rm -rf /tmp/build', timeout: 60 } })).resolves.toMatchObject({
+      policyName: 'session-approval-history', result: { kind: 'approve' },
+    });
+    await expect(evaluate({ toolName: 'Bash', args: { command: 'rm -rf /tmp/other', timeout: 60 } })).resolves.toMatchObject({
+      policyName: 'dangerous-bash', result: { kind: 'ask' },
+    });
+    sessionApprovalRulePatterns.splice(2);
+    await expect(evaluate({ toolName: 'Bash', args: { command: 'rm -rf /tmp/build', timeout: 60 } })).resolves.toMatchObject({
+      policyName: 'dangerous-bash', result: { kind: 'ask' },
     });
   });
 

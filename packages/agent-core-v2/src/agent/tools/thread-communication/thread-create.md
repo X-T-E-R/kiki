@@ -6,7 +6,7 @@ A thread is a separate session the user owns and works in directly: it does not 
 - `cwd` is optional and must be an absolute path to an existing directory. It may be outside the current workspace; without it, the current session's workspace root is used.
 - `profile` is optional and must name an enabled main-agent profile. Without it, the default main agent is used.
 - `model_alias` and `effort` optionally bind a configured model and supported thinking effort; omit either to use the profile/default setting, and do not use `inherit` for a main agent.
-- `permission_mode` (`manual`, `auto`, `review`, or `yolo`) and `plan_mode` optionally set the new main agent's initial controls before its first prompt.
+- `permission_mode` (`manual`, `auto`, `review`, or `yolo`) may request an initial mode no higher than your current effective mode; otherwise creation is rejected. When omitted, the new thread inherits your effective mode. `plan_mode` optionally sets the new main agent's initial plan state before its first prompt.
 - `prompt` is optional. When present, it starts the new thread immediately as its first user message. Without it, the thread stays empty until the user sends a message.
 
 If creation fails before the prompt is accepted, the new thread is removed. Only creates a new thread; it does not change the current thread. To keep talking to it, get its full thread reference from ThreadList, then use ThreadSend and ThreadWait; those tools return an error unless thread communication is enabled.

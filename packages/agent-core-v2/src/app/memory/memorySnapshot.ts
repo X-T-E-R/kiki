@@ -1,4 +1,4 @@
-import { createDecorator } from '#/_base/di/instantiation';
+import { createDecorator, IInstantiationService } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IConfigService } from '#/app/config/config';
@@ -20,16 +20,17 @@ export class AgentMemorySnapshot implements IAgentMemorySnapshot {
   private frozen?: Promise<string>;
   constructor(
     @IConfigService private readonly config: IConfigService,
-    @IMemoryStore private readonly store: IMemoryStore,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
     @ISessionContext private readonly session: ISessionContext,
     @IAgentScopeContext private readonly agent: IAgentScopeContext,
   ) {}
 
   get(): Promise<string> {
-    if (this.agent.agentId !== 'main') return Promise.resolve('');
+    if (this.frozen !== undefined) return this.frozen;
+    if (this.agent.agentId !== 'main') return this.frozen = Promise.resolve('');
     const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
-    if (!memoryEnabled(settings, this.session.workspaceId) || settings.approval === 'off') return Promise.resolve('');
-    this.frozen ??= this.render(settings).catch(() => '');
+    this.frozen = !memoryEnabled(settings, this.session.workspaceId) || settings.approval === 'off'
+      ? Promise.resolve('') : this.render(settings).catch(() => '');
     return this.frozen;
   }
 
@@ -40,7 +41,8 @@ export class AgentMemorySnapshot implements IAgentMemorySnapshot {
     if (budget === 0) return '';
     const global: MemoryScope = { kind: 'global' };
     const workspace: MemoryScope = { kind: 'workspace', workspaceId: this.session.workspaceId };
-    const [globalEntries, workspaceEntries] = await Promise.all([this.store.list(global), this.store.list(workspace)]);
+    const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
+    const [globalEntries, workspaceEntries] = await Promise.all([store.list(global), store.list(workspace)]);
     const lines: string[] = [];
     const globalShare = Math.min(600, Math.floor(budget * 0.3));
     for (const [scope, entries, share] of [['global', globalEntries, globalShare], ['workspace', workspaceEntries, budget - globalShare]] as const) {

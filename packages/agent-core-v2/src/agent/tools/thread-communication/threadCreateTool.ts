@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { constrainPermissionMode, IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentPlanService } from '#/features/plan/plan';
@@ -51,6 +52,7 @@ export class ThreadCreateTool implements IThreadCreateTool {
     @ISessionManager private readonly sessions: ISessionManager,
     @ISessionContext private readonly session: ISessionContext,
     @IAgentScopeContext private readonly caller: IAgentScopeContext,
+    @IAgentPermissionModeService private readonly callerPermission: IAgentPermissionModeService,
   ) {}
 
   resolveExecution(input: ThreadCreateToolInput): ToolExecution {
@@ -64,6 +66,11 @@ export class ThreadCreateTool implements IThreadCreateTool {
       approvalRule: this.name,
       description: 'Creating a new thread',
       execute: async () => {
+        const callerMode = this.callerPermission.mode;
+        const requestedMode = input.permission_mode ?? callerMode;
+        if (constrainPermissionMode(requestedMode, callerMode) !== requestedMode) {
+          return { output: `permission_mode ${requestedMode} exceeds the caller's effective ${callerMode} mode. Ask the user to change the caller's mode first.`, isError: true };
+        }
         const model = normalizeSubagentBindingValue(input.model_alias, 'model_alias');
         const thinking = normalizeSubagentBindingValue(input.effort, 'effort');
         const handle = await this.sessions.create({
@@ -105,22 +112,18 @@ export class ThreadCreateTool implements IThreadCreateTool {
               [CREATED_BY_AGENT_ID_KEY]: this.caller.agentId,
             },
           }, { touchUpdatedAt: false });
-          if (input.permission_mode !== undefined || input.plan_mode !== undefined) {
-            const main = await ensureMainAgent(handle);
-            if (input.permission_mode !== undefined) {
-              main.accessor.get(IAgentLifecycleService).broadcastPermissionMode(input.permission_mode);
-            }
-            if (input.plan_mode !== undefined) {
-              const plan = main.accessor.get(IAgentPlanService);
-              const active = (await plan.status()) !== null;
-              if (active !== input.plan_mode) {
-                if (input.plan_mode) await plan.enter();
-                else plan.exit();
-              }
+          const main = await ensureMainAgent(handle);
+          main.accessor.get(IAgentPermissionModeService).setModeCeiling(callerMode);
+          main.accessor.get(IAgentLifecycleService).broadcastPermissionMode(requestedMode);
+          if (input.plan_mode !== undefined) {
+            const plan = main.accessor.get(IAgentPlanService);
+            const active = (await plan.status()) !== null;
+            if (active !== input.plan_mode) {
+              if (input.plan_mode) await plan.enter();
+              else plan.exit();
             }
           }
           if (input.prompt !== undefined) {
-            const main = await ensureMainAgent(handle);
             const submitted = await main.accessor.get(IAgentPromptService).enqueue({
               message: {
                 role: 'user',

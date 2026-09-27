@@ -21,7 +21,7 @@ const errors = { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.MEMORY_NOT_FOUND]
 
 export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
   const config = core.accessor.get(IConfigService);
-  const store = core.accessor.get(IMemoryStore);
+  const store = () => core.accessor.get(IMemoryStore);
   const add = (method: keyof MemoryRouteHost, route: ReturnType<typeof defineRoute>): void => {
     app[method](route.path, route.options, route.handler);
   };
@@ -65,29 +65,29 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/inbox', params: scopeParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => (await store.list(await resolve(req.params.scope, req.query.workspace_id), true)).filter((entry) => entry.status === 'pending'));
+    await handle(req.id, reply, async () => (await store().list(await resolve(req.params.scope, req.query.workspace_id), true)).filter((entry) => entry.status === 'pending'));
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/journal', params: scopeParams, querystring: scopeQuery.extend({ id: z.string().optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => store.journal(await resolve(req.params.scope, req.query.workspace_id), req.query.id));
+    await handle(req.id, reply, async () => store().journal(await resolve(req.params.scope, req.query.workspace_id), req.query.id));
   }));
   add('post', defineRoute({ method: 'POST', path: '/memory/{scope}/undo', params: scopeParams, querystring: scopeQuery, body: z.object({ operation_id: z.string().uuid() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => ({ entry: await store.undo(await resolve(req.params.scope, req.query.workspace_id), req.body.operation_id) ?? null }));
+    await handle(req.id, reply, async () => ({ entry: await store().undo(await resolve(req.params.scope, req.query.workspace_id), req.body.operation_id) ?? null }));
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}', params: scopeParams, querystring: scopeQuery.extend({ query: z.string().optional(), type: z.enum(['user', 'feedback', 'project', 'reference']).optional(), include_inactive: z.enum(['true', 'false']).transform((value) => value === 'true').optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {
       const target = await resolve(req.params.scope, req.query.workspace_id);
-      return { items: req.query.query ? await store.search([target], req.query.query, req.query.type as MemoryType | undefined, req.query.include_inactive) : await store.list(target, req.query.include_inactive) };
+      return { items: req.query.query ? await store().search([target], req.query.query, req.query.type as MemoryType | undefined, req.query.include_inactive) : await store().list(target, req.query.include_inactive) };
     });
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}', params: entryParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {
-      const entry = await store.get(await resolve(req.params.scope, req.query.workspace_id), req.params.id);
+      const entry = await store().get(await resolve(req.params.scope, req.query.workspace_id), req.params.id);
       if (entry === undefined) throw new Error('Memory not found');
       return entry;
     });
   }));
   add('put', defineRoute({ method: 'PUT', path: '/memory/{scope}/{id}', params: z.object({ scope: scopeParams.shape.scope, id: z.union([z.literal('new'), entryParams.shape.id]) }), querystring: scopeQuery, body, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => store.put({
+    await handle(req.id, reply, async () => store().put({
       scope: await resolve(req.params.scope, req.query.workspace_id),
       action: req.params.id === 'new' ? 'create' : req.body.action, id: req.params.id === 'new' ? undefined : req.params.id,
       type: req.body.type, title: req.body.title, body: req.body.body, reason: req.body.reason,
@@ -95,6 +95,6 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     }));
   }));
   add('delete', defineRoute({ method: 'DELETE', path: '/memory/{scope}/{id}', params: entryParams, querystring: entryQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => ({ operation_id: await store.delete(await resolve(req.params.scope, req.query.workspace_id), req.params.id, req.query.expected_revision ?? '') }));
+    await handle(req.id, reply, async () => ({ operation_id: await store().delete(await resolve(req.params.scope, req.query.workspace_id), req.params.id, req.query.expected_revision ?? '') }));
   }));
 }

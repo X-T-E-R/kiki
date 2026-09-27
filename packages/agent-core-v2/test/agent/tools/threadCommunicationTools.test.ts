@@ -9,6 +9,8 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
@@ -32,8 +34,6 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
-
-import { createTestAgent } from '../../harness/agent';
 
 describe('thread communication tools', () => {
   it('registers exactly five main-only tools', () => {
@@ -161,7 +161,8 @@ describe('thread communication tools', () => {
     }, { touchUpdatedAt: false });
     expect((await metadata.read()).custom).not.toHaveProperty('parent_session_id');
     expect((await metadata.read()).custom).not.toHaveProperty('child_session_kind');
-    expect(lifecycle.create).not.toHaveBeenCalled();
+    expect(lifecycle.create).toHaveBeenCalledExactlyOnceWith({ agentId: 'main' });
+    expect(lifecycle.broadcastPermissionMode).toHaveBeenCalledExactlyOnceWith('review');
     expect(prompt.enqueue).not.toHaveBeenCalled();
     expect(JSON.parse(result.output as string)).toMatchObject({
       id: 'session-new', title: 'Untitled session', cwd: '/ambient/workspace', profile: 'agent', prompt_started: false,
@@ -175,7 +176,7 @@ describe('thread communication tools', () => {
     expect(create).toHaveBeenCalledExactlyOnceWith({
       workDir: '/ambient/workspace', mainAgentBinding: binding,
     });
-    expect(lifecycle.create).toHaveBeenCalledExactlyOnceWith({ agentId: 'main', binding });
+    expect(lifecycle.create).toHaveBeenCalledWith({ agentId: 'main', binding });
     expect(JSON.parse(result.output as string)).toMatchObject({ profile: 'main-alt', prompt_started: false });
   });
 
@@ -208,6 +209,30 @@ describe('thread communication tools', () => {
     expect(plan.enter).toHaveBeenCalledOnce();
     expect(calls).toEqual(['permission', 'plan', 'prompt']);
     expect(prompt.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an auto caller requesting yolo before creating a thread or launching a prompt', async () => {
+    const { tool, create, prompt, lifecycle } = createThreadFixture({ callerMode: 'auto' });
+    const result = await executeThreadCreate(tool, { permission_mode: 'yolo', prompt: 'Start' });
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining('exceeds') });
+    expect(create).not.toHaveBeenCalled();
+    expect(lifecycle.broadcastPermissionMode).not.toHaveBeenCalled();
+    expect(prompt.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('inherits the effective mode even if the thread default would be higher', async () => {
+    const { tool, lifecycle, targetPermission } = createThreadFixture({ callerMode: 'manual' });
+    await executeThreadCreate(tool, {});
+    expect(targetPermission.setModeCeiling).toHaveBeenCalledExactlyOnceWith('manual');
+    expect(lifecycle.broadcastPermissionMode).toHaveBeenCalledExactlyOnceWith('manual');
+  });
+
+  it('rejects review for an auto caller but allows auto for a review caller', async () => {
+    const auto = createThreadFixture({ callerMode: 'auto' });
+    expect(await executeThreadCreate(auto.tool, { permission_mode: 'review' })).toMatchObject({ isError: true });
+    const review = createThreadFixture({ callerMode: 'review' });
+    await executeThreadCreate(review.tool, { permission_mode: 'auto' });
+    expect(review.lifecycle.broadcastPermissionMode).toHaveBeenCalledExactlyOnceWith('auto');
   });
 
   it('keeps initial plan state when it already matches the requested state', async () => {
@@ -265,6 +290,7 @@ describe('thread communication tools', () => {
   });
 
   it('delivers a new thread prompt to a real agent loop and starts its turn', async () => {
+    const { createTestAgent } = await import('../../harness/agent');
     const target = createTestAgent();
     try {
       target.mockNextResponse({ type: 'text', text: 'new thread answered' });
@@ -284,6 +310,7 @@ describe('thread communication tools', () => {
       const ix = disposables.add(new TestInstantiationService());
       ix.stub(ISessionContext, { cwd: '/ambient/workspace', sessionId: 'ambient-a' });
       ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.stub(IAgentPermissionModeService, { mode: 'auto' });
       ix.stub(ISessionManager, { create: async () => session, delete: async () => {} });
       ix.set(IThreadCreateTool, new SyncDescriptor(ThreadCreateTool));
 
@@ -300,7 +327,7 @@ describe('thread communication tools', () => {
     } finally {
       await target.dispose();
     }
-  });
+  }, 30_000);
 
   it('prefers an explicit title when launching a prompt', async () => {
     const { tool, metadata } = createThreadFixture();
@@ -368,6 +395,7 @@ function createThreadFixture(options: {
   launched?: Promise<{ id: number }>;
   planActive?: boolean;
   custom?: Record<string, unknown>;
+  callerMode?: PermissionMode;
 } = {}) {
   const ix = disposables.add(new TestInstantiationService());
   let title: string | undefined;
@@ -394,6 +422,7 @@ function createThreadFixture(options: {
     enter: vi.fn(async () => { calls.push('plan'); }),
     exit: vi.fn(),
   };
+  const targetPermission = { setModeCeiling: vi.fn() };
   const lifecycle = {
     create: vi.fn<IAgentLifecycleService['create']>(async () => agent),
     broadcastPermissionMode: vi.fn(() => { calls.push('permission'); }),
@@ -405,6 +434,7 @@ function createThreadFixture(options: {
         if (id === IAgentPromptService) return prompt;
         if (id === IAgentLifecycleService) return lifecycle;
         if (id === IAgentPlanService) return plan;
+        if (id === IAgentPermissionModeService) return targetPermission;
         throw new Error(`Unexpected agent service: ${String(id)}`);
       },
     },
@@ -441,8 +471,9 @@ function createThreadFixture(options: {
   ix.stub(ISessionManager, { create, delete: remove });
   ix.stub(ISessionContext, { cwd: '/ambient/workspace', sessionId: 'ambient-a' });
   ix.stub(IAgentScopeContext, { agentId: 'main' });
+  ix.stub(IAgentPermissionModeService, { mode: options.callerMode ?? 'review' });
   ix.set(IThreadCreateTool, new SyncDescriptor(ThreadCreateTool));
-  return { tool: ix.get(IThreadCreateTool), create, remove, metadata, lifecycle, plan, prompt, calls };
+  return { tool: ix.get(IThreadCreateTool), create, remove, metadata, lifecycle, targetPermission, plan, prompt, calls };
 }
 
 async function executeThreadCreate(tool: IThreadCreateTool, input: Parameters<IThreadCreateTool['resolveExecution']>[0]) {

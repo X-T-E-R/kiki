@@ -43,6 +43,7 @@ export class AgentPermissionPolicyService
     super();
     this.adjudicationPolicies = [
       this.instantiation.createInstance(UserConfiguredDenyPermissionPolicyService),
+      this.instantiation.createInstance(SessionApprovalHistoryPermissionPolicyService),
       this.instantiation.createInstance(UserConfiguredAskPermissionPolicyService),
       this.instantiation.createInstance(SensitiveFileAccessAskPermissionPolicyService),
       this.instantiation.createInstance(ExternalLinkAccessAskPermissionPolicyService),
@@ -51,7 +52,6 @@ export class AgentPermissionPolicyService
       this.instantiation.createInstance(YoloModeApprovePermissionPolicyService),
     ];
     this.allowlistPolicies = [
-      this.instantiation.createInstance(SessionApprovalHistoryPermissionPolicyService),
       this.instantiation.createInstance(UserConfiguredAllowPermissionPolicyService),
       this.instantiation.createInstance(DefaultToolApprovePermissionPolicyService),
       this.instantiation.createInstance(GitCwdWriteApprovePermissionPolicyService),
@@ -67,7 +67,8 @@ export class AgentPermissionPolicyService
   ): Promise<PermissionPolicyEvaluation | undefined> {
     const adjudication = await evaluatePolicies(this.adjudicationPolicies, context);
     if (adjudication !== undefined) {
-      return this.dangerousBashPolicy.upgradeApprove(adjudication, context);
+      return adjudication.policyName === 'session-approval-history'
+        ? adjudication : this.dangerousBashPolicy.upgradeApprove(adjudication, context);
     }
 
     const allowlist = await evaluatePolicies(this.allowlistPolicies, context);
@@ -86,6 +87,8 @@ export class AgentPermissionPolicyService
       }
     }
 
+    const dangerous = this.dangerousBashPolicy.evaluate(context);
+    if (dangerous !== undefined) return { policyName: this.dangerousBashPolicy.name, result: dangerous };
     return evaluatePolicies([this.fallbackPolicy], context);
   }
 }
