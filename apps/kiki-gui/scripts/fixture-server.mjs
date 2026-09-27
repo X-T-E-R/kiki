@@ -1839,10 +1839,12 @@ class FixtureServer {
     if (path === '/search' && method === 'POST') {
       const q = String(body?.query ?? '').toLowerCase();
       this.lastSearchBody = body ?? null;
+      const workspaceId = body?.workspace_id;
       let hits = (this.scenario?.data.searchHits ?? []).filter((hit) =>
-        q === '' ||
-        hit.snippet.toLowerCase().includes(q) ||
-        hit.session_title.toLowerCase().includes(q));
+        (q === '' ||
+          hit.snippet.toLowerCase().includes(q) ||
+          hit.session_title.toLowerCase().includes(q)) &&
+        (workspaceId === undefined || hit.workspace_id === workspaceId));
       // Optional cursor "pagination": `SEARCH_PAGE_SIZE` controls the page, and
       // `page_token` (any non-empty string) advances to the following page.
       const pageSize = this.scenario?.data.searchPageSize ?? hits.length;

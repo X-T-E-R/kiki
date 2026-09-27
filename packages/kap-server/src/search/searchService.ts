@@ -189,6 +189,7 @@ function normalizeQuery(input: GlobalSearchQuery, maxQueryTerms: number): Normal
     termsQuery,
     op: input.op ?? 'AND',
     container: input.container,
+    workspaceId: input.workspaceId,
     role: input.role,
     startTime: input.startTime,
     endTime: input.endTime,

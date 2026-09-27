@@ -30,6 +30,8 @@ export interface NormalizedQuery {
   readonly termsQuery?: readonly string[];
   readonly op: 'AND' | 'OR';
   readonly container?: { readonly sessionId?: string; readonly agentId?: string };
+  /** Restrict to one workspace. */
+  readonly workspaceId?: string;
   readonly role?: 'user' | 'assistant' | 'title';
   readonly startTime?: number;
   readonly endTime?: number;
@@ -204,6 +206,7 @@ export function matchDocs(
     if (doc === undefined || (doc.kind !== 'message' && doc.kind !== 'title')) continue;
     if (q.container?.sessionId !== undefined && doc.sessionId !== q.container.sessionId) continue;
     if (q.container?.agentId !== undefined && doc.agentId !== q.container.agentId) continue;
+    if (q.workspaceId !== undefined && doc.workspaceId !== q.workspaceId) continue;
     if (q.role !== undefined && doc.role !== q.role) continue;
     if (q.startTime !== undefined && doc.time < q.startTime) continue;
     if (q.endTime !== undefined && doc.time > q.endTime) continue;
@@ -266,6 +269,7 @@ export function tokenFingerprint(q: NormalizedQuery, source: GlobalSearchSource)
     q.op,
     q.container?.sessionId,
     q.container?.agentId,
+    q.workspaceId,
     q.role,
     q.startTime,
     q.endTime,

@@ -36,6 +36,7 @@ function toServiceQuery(body: SearchMessagesBody): GlobalSearchQuery {
       body.container === undefined
         ? undefined
         : { sessionId: body.container.session_id, agentId: body.container.agent_id },
+    workspaceId: body.workspace_id,
     role: body.role,
     startTime: body.start_time,
     endTime: body.end_time,

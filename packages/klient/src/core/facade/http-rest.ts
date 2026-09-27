@@ -53,6 +53,7 @@ export interface HttpRestSearchMessagesBody {
   readonly mode?: 'terms' | 'literal';
   readonly op?: 'AND' | 'OR';
   readonly container?: { readonly session_id?: string; readonly agent_id?: string };
+  readonly workspace_id?: string;
   readonly role?: 'user' | 'assistant' | 'title';
   readonly start_time?: number;
   readonly end_time?: number;

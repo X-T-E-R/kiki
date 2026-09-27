@@ -40,8 +40,8 @@ const T1 = 1_700_000_000_000;
 const T2 = 1_700_000_100_000;
 const T3 = 1_700_000_200_000;
 
-function summary(id: string, title: string, updatedAt = T1): SessionSummary {
-  return { id, workspaceId: WS, title, createdAt: updatedAt, updatedAt, archived: false };
+function summary(id: string, title: string, updatedAt = T1, workspaceId = WS): SessionSummary {
+  return { id, workspaceId, title, createdAt: updatedAt, updatedAt, archived: false };
 }
 
 function makeBootstrap(home: string): IBootstrapService {
@@ -124,16 +124,22 @@ async function writeWire(
   sessionId: string,
   agentId: string,
   lines: string[],
+  workspaceId = WS,
 ): Promise<string> {
-  const dir = join(home, 'sessions', WS, sessionId, 'agents', agentId);
+  const dir = join(home, 'sessions', workspaceId, sessionId, 'agents', agentId);
   await mkdir(dir, { recursive: true });
   const file = join(dir, 'wire.jsonl');
   await writeFile(file, lines.map((l) => `${l}\n`).join(''), 'utf8');
   return file;
 }
 
-async function writeTitle(home: string, sessionId: string, title: string): Promise<void> {
-  const dir = join(home, 'sessions', WS, sessionId);
+async function writeTitle(
+  home: string,
+  sessionId: string,
+  title: string,
+  workspaceId = WS,
+): Promise<void> {
+  const dir = join(home, 'sessions', workspaceId, sessionId);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'state.json'), JSON.stringify({ title }), 'utf8');
 }
@@ -671,6 +677,102 @@ describe('GlobalSearchService', () => {
     expect(inSub.items.length).toBe(1);
     expect(inSub.items[0]?.agentId).toBe('agent-1');
   });
+
+  it.each([makeService, makeInlineService])(
+    'filters hits to one workspace (%#)',
+    async (make) => {
+      const WS_B = 'ws_other';
+      const s1 = summary('s1', 'one', T1);
+      const s2 = summary('s2', 'two', T1, WS_B);
+      await writeWire(home!, 's1', 'main', [userLine('苹果 from ws_a', T1)]);
+      await writeWire(home!, 's2', 'main', [userLine('苹果 from ws_b', T1)], WS_B);
+      const service = track(make(home!, staticIndex([s1, s2])));
+      await service.reindex();
+
+      const all = await service.search({ query: '苹果' });
+      expect(all.items.length).toBe(2);
+      expect(new Set(all.items.map((h) => h.workspaceId))).toEqual(new Set([WS, WS_B]));
+
+      const scoped = await service.search({ query: '苹果', workspaceId: WS });
+      expect(scoped.items.length).toBe(1);
+      expect(scoped.items.every((h) => h.workspaceId === WS)).toBe(true);
+      expect(scoped.items[0]?.sessionId).toBe('s1');
+
+      const other = await service.search({ query: '苹果', workspaceId: WS_B });
+      expect(other.items.length).toBe(1);
+      expect(other.items[0]?.sessionId).toBe('s2');
+
+      const absent = await service.search({ query: '苹果', workspaceId: 'ws_absent' });
+      expect(absent.items).toEqual([]);
+    },
+  );
+
+  it.each([makeService, makeInlineService])(
+    'paginates under a workspace filter and rejects a token from a different scope (%#)',
+    async (make) => {
+      const WS_B = 'ws_other';
+      const s1 = summary('s1', 'one', T1);
+      const s2 = summary('s2', 'two', T1, WS_B);
+      await writeWire(home!, 's1', 'main', [
+        userLine('苹果 a1', T1),
+        userLine('苹果 a2', T2),
+        userLine('苹果 a3', T3),
+      ]);
+      await writeWire(
+        home!,
+        's2',
+        'main',
+        [
+          userLine('苹果 b1', T3 + 1000),
+          userLine('苹果 b2', T3 + 2000),
+          userLine('苹果 b3', T3 + 3000),
+        ],
+        WS_B,
+      );
+      const service = track(make(home!, staticIndex([s1, s2])));
+      await service.reindex();
+
+      const unscoped = await service.search({ query: '苹果', sort: 'time_asc', pageSize: 2 });
+      expect(unscoped.items.length).toBe(2);
+      expect(unscoped.hasMore).toBe(true);
+
+      // The filter is applied before paging: WS alone still fills the page.
+      const scoped1 = await service.search({
+        query: '苹果',
+        workspaceId: WS,
+        sort: 'time_asc',
+        pageSize: 2,
+      });
+      expect(scoped1.items.length).toBe(2);
+      expect(scoped1.items.every((h) => h.workspaceId === WS)).toBe(true);
+      expect(scoped1.hasMore).toBe(true);
+
+      const scoped2 = await service.search({
+        query: '苹果',
+        workspaceId: WS,
+        sort: 'time_asc',
+        pageSize: 2,
+        pageToken: scoped1.pageToken,
+      });
+      expect(scoped2.items.map((h) => h.time)).toEqual([T3]);
+      expect(scoped2.hasMore).toBe(false);
+
+      // The token fingerprint covers workspace_id, so a token issued under one
+      // scope can never be replayed under another.
+      await expect(
+        service.search({
+          query: '苹果',
+          workspaceId: WS,
+          sort: 'time_asc',
+          pageSize: 2,
+          pageToken: unscoped.pageToken,
+        }),
+      ).rejects.toMatchObject({ reason: 'invalid_page_token' });
+      await expect(
+        service.search({ query: '苹果', sort: 'time_asc', pageSize: 2, pageToken: scoped1.pageToken }),
+      ).rejects.toMatchObject({ reason: 'invalid_page_token' });
+    },
+  );
 
   it('filters by role and time range', async () => {
     const s1 = summary('s1', 'roles', T1);
@@ -2432,6 +2534,28 @@ describe('GlobalSearchService', () => {
       expect(asc.items.map((h) => h.time)).toEqual([T1, T2, T3]);
       const desc = await service.search({ ...base, sort: 'time_desc' });
       expect(desc.items.map((h) => h.time)).toEqual([T3, T2, T1]);
+    });
+
+    it('yields no hits for a live container session in another workspace', async () => {
+      const s1 = summary('s1', '苹果标题', T1);
+      const service = track(makeService(home!, gettableIndex([s1])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', makeLiveStore('s1')]])));
+
+      const matching = await service.search({
+        query: '苹果',
+        container: { sessionId: 's1' },
+        workspaceId: WS,
+      });
+      expect(matching.source).toBe('live');
+      expect(matching.items.length).toBeGreaterThan(0);
+
+      const foreign = await service.search({
+        query: '苹果',
+        container: { sessionId: 's1' },
+        workspaceId: 'ws_other',
+      });
+      expect(foreign.source).toBe('live');
+      expect(foreign.items).toEqual([]);
     });
 
     it('hits the session title doc on the live route (terms mode)', async () => {

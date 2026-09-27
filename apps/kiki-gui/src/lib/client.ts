@@ -139,6 +139,7 @@ export interface SearchMessagesBody {
   mode?: 'terms' | 'literal';
   op?: 'AND' | 'OR';
   container?: { session_id?: string; agent_id?: string };
+  workspace_id?: string;
   role?: 'user' | 'assistant' | 'title';
   start_time?: number;
   end_time?: number;

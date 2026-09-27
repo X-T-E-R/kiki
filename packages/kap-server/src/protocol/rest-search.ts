@@ -10,6 +10,7 @@ export const searchMessagesBodySchema = z.object({
       agent_id: z.string().min(1).optional(),
     })
     .optional(),
+  workspace_id: z.string().min(1).optional(),
   role: z.enum(['user', 'assistant', 'title']).optional(),
   start_time: z.number().int().nonnegative().optional(),
   end_time: z.number().int().nonnegative().optional(),

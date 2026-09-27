@@ -15,6 +15,8 @@ export interface GlobalSearchQuery {
     readonly sessionId?: string;
     readonly agentId?: string;
   };
+  /** Restrict to one workspace. Omit to search across every workspace. */
+  readonly workspaceId?: string;
   /** Restrict to one document role. */
   readonly role?: 'user' | 'assistant' | 'title';
   /** Epoch ms, inclusive bounds. */

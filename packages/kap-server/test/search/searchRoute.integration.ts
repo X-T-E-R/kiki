@@ -186,6 +186,9 @@ describe('server-v2 /api/search', () => {
     const badMode = await postSearch({ query: '苹果', mode: 'exact' });
     expect(badMode.code).toBe(40001);
 
+    const emptyWorkspace = await postSearch({ query: '苹果', workspace_id: '' });
+    expect(emptyWorkspace.code).toBe(40001);
+
     const shortLiteral = await postSearch({ query: '苹', mode: 'literal' });
     expect(shortLiteral.code).toBe(40001);
     expect(shortLiteral.msg).toContain('at least 2 characters');
@@ -195,6 +198,23 @@ describe('server-v2 /api/search', () => {
       page_token: Buffer.from('null').toString('base64url'),
     });
     expect(nullToken.code).toBe(40001);
+  });
+
+  it('scopes results to a workspace_id', { timeout: 20_000 }, async () => {
+    let body: Envelope<SearchPageWire> | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      body = await postSearch({ query: '苹果', workspace_id: WS });
+      expect(body.code).toBe(0);
+      if (body.data.items.length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(body).toBeDefined();
+    expect(body!.data.items.length).toBeGreaterThan(0);
+    expect(body!.data.items.every((h) => h.workspace_id === WS)).toBe(true);
+
+    const foreign = await postSearch({ query: '苹果', workspace_id: 'ws_other' });
+    expect(foreign.code).toBe(0);
+    expect(foreign.data.items).toEqual([]);
   });
 
   it('serves literal mode through the wire', { timeout: 20_000 }, async () => {
