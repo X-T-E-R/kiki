@@ -53,6 +53,8 @@ export interface ModelRequestParams {
   readonly thinkingKeep?: string;
   readonly maxCompletionTokens?: number;
   readonly usedContextTokens?: number;
+  /** False when the used total is an estimate, not a measurement of this request's context. Defaults to true for direct callers. */
+  readonly usedContextTokensTrusted?: boolean;
   readonly maxContextTokens?: number;
   readonly onTraceId?: (traceId: string | null) => void;
   readonly requestIdentity?: RequestIdentityWireOptions;

@@ -65,6 +65,13 @@ export class AgentTokenCountingService extends Disposable implements IAgentToken
     return { size: measured + estimated, measured, estimated };
   }
 
+  isCurrentContextMeasured(): boolean {
+    const length = this.context().length;
+    const anchors = this.agentState.get(tokenCountingKey).anchors;
+    const anchor = anchors.findLast((candidate) => candidate.length <= length);
+    return anchor?.measured === true && anchor.length === length;
+  }
+
   measured(input: readonly Message[], _output: readonly Message[], usage: TokenUsage): void {
     const context = this.context();
     if (!matchesContext(input, context)) return;

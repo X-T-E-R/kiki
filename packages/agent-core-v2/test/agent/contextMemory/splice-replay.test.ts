@@ -155,6 +155,7 @@ const noopTokenCounting: IAgentTokenCountingService = {
   _serviceBrand: undefined,
   strategy: 'measured+estimated',
   get: () => ({ size: 0, measured: 0, estimated: 0 }),
+  isCurrentContextMeasured: () => false,
   measured: () => {},
   latestMeasured: () => 0,
   statusSize: () => 0,

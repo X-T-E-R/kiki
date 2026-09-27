@@ -207,6 +207,7 @@ function createService(
     | undefined,
   options: {
     readonly thinkingLevel?: ThinkingEffort;
+    readonly tokenMeasurementTrusted?: boolean;
     readonly mediaResolver?: Partial<IAgentMediaResolverService>;
     readonly contextMessages?: Message[];
     readonly sessionId?: string;
@@ -281,6 +282,7 @@ function createService(
   const measuredCalls: { readonly messages: number; readonly usage: TokenUsage }[] = [];
   const tokenCounting = {
     get: () => ({ size: 0, measured: 0, estimated: 0 }),
+    isCurrentContextMeasured: () => options.tokenMeasurementTrusted ?? false,
     measured: (input: readonly Message[], _output: readonly Message[], usage: TokenUsage) => {
       measuredCalls.push({ messages: input.length, usage });
     },
@@ -513,7 +515,39 @@ describe('AgentLLMRequesterService parameter budgets', () => {
     const captured = captureRequestParams(requester);
     const { service } = createService(requester, undefined, { requestParams: { maxCompletionTokens: 300 } });
     await service.request({ maxOutputSize: 900 });
-    expect(captured[0]).toMatchObject({ maxCompletionTokens: 300, maxContextTokens: 1000, usedContextTokens: 0 });
+    expect(captured[0]).toMatchObject({ maxCompletionTokens: 300, maxContextTokens: 1000, usedContextTokens: 0, usedContextTokensTrusted: false });
+  });
+
+  it('only marks a current measured context as safe for a hard output clamp', async () => {
+    const requester = createRequester({ value: 0 }, null);
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { tokenMeasurementTrusted: true });
+    await service.request({});
+    await service.request({ messages: history });
+    expect(captured[0]?.usedContextTokensTrusted).toBe(true);
+    expect(captured[1]?.usedContextTokensTrusted).toBe(false);
+    expect(captured[1]?.usedContextTokens).toBeUndefined();
+  });
+
+  it('does not trust a measured source when projection or media resolution changes the provider history', async () => {
+    const projectedRequester = createRequester({ value: 0 }, null);
+    const projectedParams = captureRequestParams(projectedRequester);
+    const projected = createService(projectedRequester, {
+      project: (messages) => [{ ...messages[0]!, content: [{ type: 'text', text: 'replaced' }] }],
+    }, { tokenMeasurementTrusted: true });
+    await projected.service.request({});
+    expect(projectedParams[0]?.usedContextTokensTrusted).toBe(false);
+
+    const mediaRequester = createRequester({ value: 0 }, null);
+    const mediaParams = captureRequestParams(mediaRequester);
+    const media = createService(mediaRequester, undefined, {
+      tokenMeasurementTrusted: true,
+      mediaResolver: { resolve: async (messages) => messages.map((message) => ({
+        ...message, content: [{ type: 'text', text: 'resolved' }],
+      })) },
+    });
+    await media.service.request({});
+    expect(mediaParams[0]?.usedContextTokensTrusted).toBe(false);
   });
 });
 

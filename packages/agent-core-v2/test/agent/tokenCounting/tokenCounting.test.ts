@@ -64,6 +64,7 @@ describe('Agent token counting', () => {
     expect(size.measured).toBe(exchangeTotal);
     expect(size.estimated).toBe(0);
     expect(size.size).toBe(exchangeTotal);
+    expect(tokenCounting.isCurrentContextMeasured()).toBe(true);
     expect((await ctx.rpc.getContext({})).tokenCount).toBe(exchangeTotal);
   });
 
@@ -99,6 +100,7 @@ describe('Agent token counting', () => {
     expect(size.measured).toBe(0);
     expect(size.estimated).toBeGreaterThan(0);
     expect(size.size).toBe(size.estimated);
+    expect(tokenCounting.isCurrentContextMeasured()).toBe(false);
   });
 
   it('ignores a stored anchor that overshoots the live context', async () => {
@@ -108,6 +110,7 @@ describe('Agent token counting', () => {
     const size = tokenCounting.get();
     expect(size.measured).toBe(0);
     expect(size.size).toBe(estimateTokensForMessages(context.get()));
+    expect(tokenCounting.isCurrentContextMeasured()).toBe(false);
   });
 
   it('restores the REAL size of the surviving prefix when undo truncates the ledger', async () => {
@@ -139,6 +142,7 @@ describe('Agent token counting', () => {
       { length: history.length, tokens: expected, measured: false },
     ]);
     expect(tokenCounting.get()).toEqual({ size: expected, measured: expected, estimated: 0 });
+    expect(tokenCounting.isCurrentContextMeasured()).toBe(false);
   });
 
   it('resets the ledger when the context is cleared', () => {

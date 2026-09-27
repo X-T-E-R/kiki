@@ -16,6 +16,8 @@ export interface CompletionBudgetConfig {
 export interface CompletionBudgetParams {
   readonly maxCompletionTokens: number;
   readonly usedContextTokens?: number;
+  /** False for estimated/rebased context totals; only measured totals may enforce a hard window clamp. */
+  readonly usedContextTokensTrusted?: boolean;
   readonly maxContextTokens?: number;
 }
 

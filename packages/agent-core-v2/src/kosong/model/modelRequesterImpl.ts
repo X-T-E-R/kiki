@@ -102,12 +102,14 @@ export class ModelRequesterImpl implements ModelRequester {
     const requestedTokens = params?.maxCompletionTokens;
     const limit = Math.min(preferredTokens ?? Infinity, requestedTokens ?? Infinity, this.model.maxOutputSize ?? Infinity);
     const maxContextTokens = params?.maxContextTokens ?? this.model.maxContextSize;
-    const available = maxContextTokens - (params?.usedContextTokens ?? 0);
+    const canClampToWindow = maxContextTokens > 0 && params?.usedContextTokensTrusted !== false;
+    const usedContextTokens = canClampToWindow ? params?.usedContextTokens : undefined;
+    const available = canClampToWindow ? maxContextTokens - (usedContextTokens ?? 0) : Infinity;
     if (available <= 0) {
       throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model "${this.model.id}" has no remaining context for output`);
     }
     const cap = Math.min(limit, available);
-    const hasBudget = Number.isFinite(limit) || params?.maxContextTokens !== undefined || (params?.usedContextTokens ?? 0) > 0;
+    const hasBudget = Number.isFinite(limit) || (canClampToWindow && (params?.maxContextTokens !== undefined || (usedContextTokens ?? 0) > 0));
     const modelRequestParams = { ...this.model.requestParams };
     if (isApiDefault(configured?.temperature)) delete modelRequestParams['temperature'];
     if (isApiDefault(configured?.topP)) delete modelRequestParams['top_p'];
@@ -134,7 +136,7 @@ export class ModelRequesterImpl implements ModelRequester {
         ? this.model.preferredThinkingEffort === undefined ? undefined : { effort: this.model.preferredThinkingEffort }
         : { effort: params.thinkingEffort, keep: params.thinkingKeep },
       maxCompletionTokens: hasBudget ? cap : undefined,
-      usedContextTokens: params?.usedContextTokens,
+      usedContextTokens,
       maxContextTokens,
       onRequestStart: () => {
         requestStartedAt = Date.now();

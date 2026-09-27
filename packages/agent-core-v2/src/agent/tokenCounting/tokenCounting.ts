@@ -23,6 +23,8 @@ export interface IAgentTokenCountingService {
   readonly strategy: TokenCountingStrategy;
 
   get(start?: number, end?: number): ContextSize;
+  /** Whether the latest anchor is an actual measurement of the entire live context. */
+  isCurrentContextMeasured(): boolean;
   measured(input: readonly Message[], output: readonly Message[], usage: TokenUsage): void;
   /** Tokens of the most recent measured anchor (0 when none) — a real reading
    *  that stays valid across transient uncascaded context rewrites. */

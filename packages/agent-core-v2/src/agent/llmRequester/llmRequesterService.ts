@@ -456,6 +456,10 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       try {
         for await (const event of request.requester.request(input, signal, {
           ...params,
+          usedContextTokensTrusted: params.usedContextTokensTrusted === true &&
+            this.tokenCounting.isCurrentContextMeasured() &&
+            isUnchangedModelHistory(this.context.get(), request.messages) &&
+            isUnchangedModelHistory(request.messages, input.messages),
           onTraceId: setTraceId,
         })) {
           switch (event.type) {
@@ -848,6 +852,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           stripKikiReservedRequestParams(baseParams.requestParams),
         ),
         ...budgetParams,
+        usedContextTokensTrusted: overrides.messages === undefined && this.tokenCounting.isCurrentContextMeasured(),
         headers: identityProjection.headers,
         requestIdentity: identityProjection.wire,
       },
@@ -1146,6 +1151,18 @@ function requestKindForRecord(fields: AgentLLMRequestLogFields): LlmRequestPaylo
   if (fields['kind'] === 'compaction') return 'compaction';
   if (fields['requestKind'] === 'full_compaction') return 'compaction';
   return 'loop';
+}
+
+function isUnchangedModelHistory(before: readonly Message[], after: readonly Message[]): boolean {
+  if (before.length !== after.length) return false;
+  return before.every((message, index) => {
+    const sent = after[index];
+    return sent !== undefined && message.role === sent.role && message.name === sent.name &&
+      message.toolCallId === sent.toolCallId && message.partial === sent.partial &&
+      message.toolCalls === sent.toolCalls && message.tools === sent.tools &&
+      message.content.length === sent.content.length &&
+      message.content.every((part, partIndex) => part === sent.content[partIndex]);
+  });
 }
 
 function stringField(fields: AgentLLMRequestLogFields, key: string): string | undefined {

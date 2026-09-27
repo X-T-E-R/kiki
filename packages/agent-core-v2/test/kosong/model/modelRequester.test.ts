@@ -178,6 +178,29 @@ describe('ModelRequesterImpl request execution', () => {
     expect(provider.calls[2]?.options?.maxCompletionTokens).toBe(2000);
   });
 
+  it('lets unknown windows and unverified estimates reach the provider but rejects a measured full window', async () => {
+    const provider = new FakeChatProvider();
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider));
+    await collect(requester.request(INPUT, undefined, {
+      maxContextTokens: 0, usedContextTokens: 20, maxCompletionTokens: 500,
+    }));
+    expect(provider.calls[0]?.options?.maxCompletionTokens).toBe(500);
+
+    await collect(requester.request(INPUT, undefined, {
+      maxContextTokens: 2000, usedContextTokens: 21000,
+      usedContextTokensTrusted: false, maxCompletionTokens: 500,
+    }));
+    expect(provider.calls[1]?.options?.maxCompletionTokens).toBe(500);
+    expect(provider.calls[1]?.options?.usedContextTokens).toBeUndefined();
+    expect(provider.calls[1]?.options?.maxContextTokens).toBe(2000);
+
+    await expect(collect(requester.request(INPUT, undefined, {
+      maxContextTokens: 2000, usedContextTokens: 2000,
+      usedContextTokensTrusted: true, maxCompletionTokens: 500,
+    }))).rejects.toThrow('no remaining context');
+    expect(provider.calls).toHaveLength(2);
+  });
+
   it('sends resolved sampling and tier while clamping the final Responses output to remaining context', async () => {
     let payload: unknown;
     const provider = new OpenAIResponsesChatProvider({
