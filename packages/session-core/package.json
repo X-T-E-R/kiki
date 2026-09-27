@@ -1,6 +1,6 @@
 {
   "name": "@kiki/session-core",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Framework-free session state and command logic for Kiki clients.",
   "homepage": "https://github.com/X-T-E-R/kiki/releases",

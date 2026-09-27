@@ -1,5 +1,32 @@
 # @moonshot-ai/agent-core-v2
 
+## 0.4.1
+
+### Patch Changes
+
+- [`dd5cd6b`](https://github.com/X-T-E-R/kiki/commit/dd5cd6b510febafbf4e90d2e5561eb96546b0cca) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Open built-in skills as read-only SKILL.md preview tabs using their embedded content instead of treating `builtin://` URIs as host files. File-backed skills still open from their real paths.
+
+- [`05e33fe`](https://github.com/X-T-E-R/kiki/commit/05e33fe90c5b330ae2925236d7355fb4b613bd8a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Replace the remaining "Kimi Code" product strings with Kiki across the TUI banner, dialogs, CLI help and doctor output, web/server API titles, plugin descriptions, and the Nix package (which now installs `kiki`), keeping Kimi only for the provider platform and upstream credits.
+
+- [`dc9cdbf`](https://github.com/X-T-E-R/kiki/commit/dc9cdbf9779d88ef74a8537fea23becae871b5f5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Harden launch-surface paths: quote `cmd /c start` targets so `&` cannot split the command, refuse executable-looking hosts with trailing dots/spaces and additional single-document extensions in `open_host_path`, allowlist external-open schemes in the VS Code host bridge, keep non-loopback deep-link servers out of persisted Web UI connections, tighten the CORS origin loopback check against `127.*`-prefixed domains, and strip trailing root dots from FetchURL hosts before the donor metadata allowlist.
+
+- [`b80dd87`](https://github.com/X-T-E-R/kiki/commit/b80dd8779092b5bc7131a0747a0d9aa7ff908616) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - `kimi -p` fills unset `bash_task_timeout_s`, `max_steps_per_turn`, and `subagent.timeout_ms` with finite values (10 minutes, 200 steps, and the 2-hour interactive default) instead of 0, so a headless run no longer turns an unlimited loop into an unbounded one (W4B-04). The print cron wait also respects the wall-clock ceiling deadline: a recurring cron task can no longer keep the process alive past `PRINT_WAIT_CEILING_S_DEFAULT` without a warning.
+
+- [`e341a61`](https://github.com/X-T-E-R/kiki/commit/e341a61db26f03a789dc76c98973b5e162b307e1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Session durability batch: the agent loop awaits the wire flush before a turn exits so the streamed step's `content.part` / `step.end` records land in `wire.jsonl` instead of dying with the process (W1B-01). `AppendLogStore` retries a failed durable append once so queued turns persist after a disk-full or lock conflict instead of living only in memory until the next append (W1B-02). The session event journal fsyncs every flush, requeues lines after a failed write, and `getBufferedSince` returns the new `resync_required(journal_gap)` reason when the durable tail has a seq hole, so clients resync from the snapshot instead of silently skipping events (W1B-06). `resyncRequired` gains the `journal_gap` reason in the protocol catalog and client types.
+
+- [`5b06589`](https://github.com/X-T-E-R/kiki/commit/5b065892ee55fbfef048983a46bebc549135de2b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve the owner-only mode across config rewrites, close the Windows unlink window in atomic writes, and recover orphaned temp documents at startup.
+
+  - `atomicWrite` (node-sdk and agent-core-v2) re-applies the requested mode after replacing an existing target, so a rewrite of `config.toml` / `credentials.toml` created with a drifted (looser) mode no longer widens it.
+  - Windows atomic writes rename over the target first and fall back to unlink+rename only on `EPERM`, so a crash between unlink and rename no longer opens on every write.
+  - `FileStorageService.read` promotes a surviving `*.tmp.<pid>.<hex>` sibling when the target is missing, so a config or session document killed mid-replace is recovered on next load instead of being lost.
+
+- [`cfcc6bb`](https://github.com/X-T-E-R/kiki/commit/cfcc6bb995157fe722af341cc4562f11ff806df3) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Prevent recursive file watchers from retrying indefinitely on persistent filesystem errors.
+
+- Updated dependencies [[`dd5cd6b`](https://github.com/X-T-E-R/kiki/commit/dd5cd6b510febafbf4e90d2e5561eb96546b0cca), [`05e33fe`](https://github.com/X-T-E-R/kiki/commit/05e33fe90c5b330ae2925236d7355fb4b613bd8a), [`901f1c8`](https://github.com/X-T-E-R/kiki/commit/901f1c8c607d7640635c92c98eedead1848f1e25), [`e341a61`](https://github.com/X-T-E-R/kiki/commit/e341a61db26f03a789dc76c98973b5e162b307e1), [`ed55547`](https://github.com/X-T-E-R/kiki/commit/ed55547da4d8af6e85aa5ce9da2f7c0c28a9bad7)]:
+  - @kiki/protocol@0.5.1
+  - @kiki/oauth@0.4.1
+  - @kiki/acp-client@0.0.2
+
 ## 0.4.0
 
 ### Minor Changes
