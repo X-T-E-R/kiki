@@ -1,6 +1,12 @@
 import { AsyncEventQueue } from '#/_base/asyncEventQueue';
+import { Error2 } from '#/_base/errors/errors';
+import {
+  APIStatusError,
+  CONFIG_INVALID_ERROR_CODE,
+  isAbortError,
+  VideoUploadUnsupportedError,
+} from '#/kosong/contract/errors';
 import type { VideoURLPart } from '#/kosong/contract/message';
-import { APIStatusError, isAbortError, VideoUploadUnsupportedError } from '#/kosong/contract/errors';
 import { generate, type GenerateResult } from '#/kosong/contract/generate';
 import type {
   ChatProvider,
@@ -21,6 +27,7 @@ import {
   type ModelRequester,
   type ModelRequestTiming,
 } from './modelRequester';
+import { isApiDefault } from './parameters';
 
 /** The request executor — the only production code that calls
  *  `IProtocolAdapterRegistry.createChatProvider`: it lazily composes exactly one immutable
@@ -46,6 +53,7 @@ export class ModelRequesterImpl implements ModelRequester {
       providerType: model.providerType,
       baseUrl: model.baseUrl,
       modelName: model.name,
+      apiKey: '',
       defaultHeaders: model.headers,
       providerOptions: model.providerOptions,
     });
@@ -76,8 +84,9 @@ export class ModelRequesterImpl implements ModelRequester {
       );
     }
     const uploadVideo = provider.uploadVideo.bind(provider);
-    return this.runWithAuthRefresh((auth) =>
-      uploadVideo(input, { signal: options?.signal, auth }),
+    return this.runWithAuthRefresh(
+      (auth, signal) => uploadVideo(input, { signal, auth }),
+      options?.signal,
     );
   }
 
@@ -88,6 +97,21 @@ export class ModelRequesterImpl implements ModelRequester {
     params?: ModelRequestParams,
   ): Promise<void> {
     signal?.throwIfAborted();
+    const configured = this.model.generationParameters;
+    const preferredTokens = this.model.maxCompletionTokens;
+    const requestedTokens = params?.maxCompletionTokens;
+    const limit = Math.min(preferredTokens ?? Infinity, requestedTokens ?? Infinity, this.model.maxOutputSize ?? Infinity);
+    const maxContextTokens = params?.maxContextTokens ?? this.model.maxContextSize;
+    const available = maxContextTokens - (params?.usedContextTokens ?? 0);
+    if (available <= 0) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model "${this.model.id}" has no remaining context for output`);
+    }
+    const cap = Math.min(limit, available);
+    const hasBudget = Number.isFinite(limit) || params?.maxContextTokens !== undefined || (params?.usedContextTokens ?? 0) > 0;
+    const modelRequestParams = { ...this.model.requestParams };
+    if (isApiDefault(configured?.temperature)) delete modelRequestParams['temperature'];
+    if (isApiDefault(configured?.topP)) delete modelRequestParams['top_p'];
+    const rawRequestParams = { ...modelRequestParams, ...params?.requestParams };
     const provider = this.resolveChatProvider();
 
     let requestStartedAt = Date.now();
@@ -99,17 +123,19 @@ export class ModelRequesterImpl implements ModelRequester {
     const options: GenerateOptions = {
       signal,
       cacheKey: params?.cacheKey,
-      serviceTier: params?.serviceTier ?? this.model.serviceTier,
+      serviceTier: params?.serviceTier ?? (isApiDefault(configured?.serviceTier) ? undefined : this.model.serviceTier),
       headers: params?.headers,
-      requestParams: stripKikiReservedRequestParams(params?.requestParams),
-      sampling: params?.sampling,
-      thinking:
-        params?.thinkingEffort === undefined
-          ? undefined
-          : { effort: params.thinkingEffort, keep: params.thinkingKeep },
-      maxCompletionTokens: params?.maxCompletionTokens,
+      requestParams: stripKikiReservedRequestParams(rawRequestParams),
+      sampling: {
+        temperature: params?.sampling?.temperature ?? (typeof configured?.temperature === 'number' ? configured.temperature : undefined),
+        topP: params?.sampling?.topP ?? (typeof configured?.topP === 'number' ? configured.topP : undefined),
+      },
+      thinking: params?.thinkingEffort === undefined
+        ? this.model.preferredThinkingEffort === undefined ? undefined : { effort: this.model.preferredThinkingEffort }
+        : { effort: params.thinkingEffort, keep: params.thinkingKeep },
+      maxCompletionTokens: hasBudget ? cap : undefined,
       usedContextTokens: params?.usedContextTokens,
-      maxContextTokens: params?.maxContextTokens,
+      maxContextTokens,
       onRequestStart: () => {
         requestStartedAt = Date.now();
       },
@@ -127,22 +153,25 @@ export class ModelRequesterImpl implements ModelRequester {
 
     let result: GenerateResult;
     try {
-      result = await this.runWithAuthRefresh((auth) => {
-        requestStartedAt = Date.now();
-        return generate(
-          provider,
-          input.systemPrompt,
-          [...input.tools],
-          [...input.messages],
-          {
-            onMessagePart: (part) => {
-              firstChunkAt ??= Date.now();
-              queue.push({ type: 'part', part });
+      result = await this.runWithAuthRefresh(
+        (auth, requestSignal) => {
+          requestStartedAt = Date.now();
+          return generate(
+            provider,
+            input.systemPrompt,
+            [...input.tools],
+            [...input.messages],
+            {
+              onMessagePart: (part) => {
+                firstChunkAt ??= Date.now();
+                queue.push({ type: 'part', part });
+              },
             },
-          },
-          { ...options, auth },
-        );
-      });
+            { ...options, signal: requestSignal, auth },
+          );
+        },
+        signal,
+      );
     } catch (error) {
       if (isAbortError(error) || signal?.aborted === true) throw error;
       throw translateProviderError(error);
@@ -174,18 +203,19 @@ export class ModelRequesterImpl implements ModelRequester {
   }
 
   private async runWithAuthRefresh<T>(
-    run: (auth: ProviderRequestAuth | undefined) => Promise<T>,
+    run: (auth: ProviderRequestAuth | undefined, signal: AbortSignal | undefined) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
     const auth = await this.authProvider.getAuth();
     try {
-      return await run(auth);
+      return await run(auth, signal);
     } catch (error) {
       if (!this.shouldForceRefresh(error)) throw error;
     }
 
     const refreshedAuth = await this.authProvider.getAuth({ force: true });
     try {
-      return await run(refreshedAuth);
+      return await run(refreshedAuth, signal);
     } catch (error) {
       if (isUnauthorizedStatusError(error)) throw translateProviderError(error);
       throw error;

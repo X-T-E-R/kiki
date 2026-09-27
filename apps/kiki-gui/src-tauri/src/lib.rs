@@ -9,6 +9,8 @@
  * Registry peers are attached only when their exact build identity matches;
  * every attached peer remains externally owned and is never stopped by Kiki.
  */
+mod ssh_remote;
+mod ssh_tunnel;
 include!("app_commands.rs");
 
 macro_rules! command_handlers {
@@ -1087,6 +1089,52 @@ async fn desktop_connection(
         .map_err(|error| {
             DesktopStartupFailure::plain(format!("Kiki backend startup task failed: {error}"))
         })?
+}
+
+#[tauri::command]
+async fn list_ssh_profiles() -> Result<Vec<ssh_remote::SshProfile>, String> {
+    tauri::async_runtime::spawn_blocking(|| ssh_remote::read_profiles(&ssh_remote::config_path()?))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn save_ssh_profile(profile: ssh_remote::SshProfile) -> Result<Vec<ssh_remote::SshProfile>, String> {
+    tauri::async_runtime::spawn_blocking(move || ssh_remote::save_profile(&ssh_remote::config_path()?, profile))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn remove_ssh_profile(id: String) -> Result<Vec<ssh_remote::SshProfile>, String> {
+    tauri::async_runtime::spawn_blocking(move || ssh_remote::remove_profile(&ssh_remote::config_path()?, &id))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn connect_ssh_profile(
+    id: String,
+    token: String,
+    manager: State<'_, ssh_tunnel::TunnelManager>,
+) -> Result<ssh_tunnel::SshResolvedConnection, String> {
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let profiles = ssh_remote::read_profiles(&ssh_remote::config_path()?)?;
+        let profile = profiles.iter().find(|profile| profile.id == id)
+            .ok_or_else(|| "SSH profile no longer exists".to_string())?;
+        manager.connect(profile, &token)
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn ssh_tunnel_running(id: String, tunnel_id: String, manager: State<'_, ssh_tunnel::TunnelManager>) -> Result<bool, String> {
+    let manager = manager.inner().clone();
+    Ok(tauri::async_runtime::spawn_blocking(move || manager.is_running(&id, &tunnel_id)).await.unwrap_or(false))
+}
+
+#[tauri::command]
+async fn disconnect_ssh_profile(id: String, tunnel_id: String, manager: State<'_, ssh_tunnel::TunnelManager>) -> Result<(), String> {
+    let manager = manager.inner().clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || manager.disconnect(&id, &tunnel_id)).await;
+    Ok(())
 }
 
 /// Kill a spawned-but-not-ready backend: the user cancelled the boot wait.
@@ -2175,6 +2223,8 @@ fn build_tray(app: &AppHandle) -> Result<(), String> {
 pub fn run() {
     let manager = BackendManager::default();
     let shutdown_manager = manager.clone();
+    let tunnel_manager = ssh_tunnel::TunnelManager::default();
+    let shutdown_tunnels = tunnel_manager.clone();
 
     let app = tauri::Builder::default()
         // Register first so a second launch focuses the original window
@@ -2220,6 +2270,7 @@ pub fn run() {
 
     let app = app
         .manage(manager)
+        .manage(tunnel_manager)
         .invoke_handler(app_commands!(command_handlers))
         .on_window_event(move |window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -2251,6 +2302,7 @@ pub fn run() {
 
     app.run(move |app_handle, event| {
         if matches!(event, RunEvent::ExitRequested { .. }) {
+            shutdown_tunnels.shutdown();
             shutdown_manager.shutdown();
         }
         if let RunEvent::TrayIconEvent(TrayIconEvent::Click { button, .. }) = &event {

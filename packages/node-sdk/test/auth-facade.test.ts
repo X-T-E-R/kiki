@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +18,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, ErrorCodes, KimiError } from '#/index';
+import { readConfigFile, readConfigWriteSnapshot, writeConfigFile } from '#/config';
 
 import { TEST_IDENTITY } from './test-identity';
 
@@ -44,30 +46,46 @@ function freshToken(): TokenInfo {
   };
 }
 
+const activeHarnesses: Array<ReturnType<typeof createKimiHarness>> = [];
+
+function createTrackedHarness(options: Parameters<typeof createKimiHarness>[0]) {
+  const harness = createKimiHarness(options);
+  activeHarnesses.push(harness);
+  return harness;
+}
+
 beforeEach(async () => {
   homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-auth-'));
+  if (process.platform === 'win32') {
+    const sid = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { encoding: 'utf8', windowsHide: true }).trim();
+    if (!/^S-1-[0-9-]+$/u.test(sid)) throw new Error('Windows test SID is invalid');
+    execFileSync('icacls.exe', [homeDir, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '*S-1-5-18:(OI)(CI)F'],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
 });
 
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  for (const harness of activeHarnesses.splice(0)) await harness.close();
   await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 describe('KimiHarness.auth', () => {
   it('can construct auth facade without host identity', () => {
-    expect(() => createKimiHarness({ homeDir })).not.toThrow();
+    expect(() => createTrackedHarness({ homeDir })).not.toThrow();
   });
 
   it('exposes a cached access token without refreshing auth state', async () => {
     await new FileTokenStorage(join(homeDir, 'credentials')).save('kimi-code', freshToken());
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.getCachedAccessToken()).resolves.toBe('oauth-access-token');
   });
 
   it('maps missing runtime OAuth tokens to login-required errors', async () => {
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(
       harness.auth.resolveOAuthTokenProvider(KIMI_CODE_PROVIDER_NAME).getAccessToken(),
@@ -91,7 +109,7 @@ describe('KimiHarness.auth', () => {
           },
         });
       try {
-        const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+        const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
         const error = await harness.auth
           .resolveOAuthTokenProvider(KIMI_CODE_PROVIDER_NAME)
@@ -120,7 +138,7 @@ describe('KimiHarness.auth', () => {
         },
       });
     try {
-      const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+      const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
       await expect(
         harness.auth.resolveOAuthTokenProvider(KIMI_CODE_PROVIDER_NAME).getAccessToken(),
@@ -143,7 +161,7 @@ api_key = ""
 max_steps_per_turn = "abc"
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     // Token resolution is a read path: a broken section elsewhere in
     // config.toml must degrade, not break OAuth-backed sessions.
@@ -172,7 +190,7 @@ api_key = ""
 oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.example.test" }
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.getCachedAccessToken()).resolves.toBe('dev-access-token');
   });
@@ -196,7 +214,7 @@ api_key = ""
 oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.example.test" }
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.status()).resolves.toEqual({
       providers: [{ providerName: KIMI_CODE_PROVIDER_NAME, hasToken: true }],
@@ -225,7 +243,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
     const result = await harness.auth.login();
     const config = await harness.getConfig({ reload: true });
 
@@ -316,7 +334,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "${oauthHost}" }
       throw new Error(`unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.login()).resolves.toMatchObject({
       providerName: KIMI_CODE_PROVIDER_NAME,
@@ -381,7 +399,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "${oauthHost}" }
       throw new Error(`unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.login(undefined, { region: 'global' })).resolves.toMatchObject({
       providerName: KIMI_CODE_PROVIDER_NAME,
@@ -454,7 +472,7 @@ oauth = { storage = "file", key = "${globalKey}", oauth_host = "${globalOauthHos
       throw new Error(`unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.login(undefined, { region: 'mainland-cn' })).resolves.toMatchObject({
       providerName: KIMI_CODE_PROVIDER_NAME,
@@ -508,7 +526,7 @@ oauth = { storage = "file", key = "oauth/kimi-code" }
       );
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.login()).resolves.toMatchObject({
       providerName: KIMI_CODE_PROVIDER_NAME,
@@ -568,7 +586,7 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
       );
     });
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.login()).resolves.toMatchObject({
       providerName: KIMI_CODE_PROVIDER_NAME,
@@ -626,7 +644,7 @@ model = "kimi-for-coding"
     // in v2 — the config layer keeps the alias and stays silent, and the model
     // catalog refuses it when a turn tries to resolve it, so the failure
     // arrives at the point of use instead of as a load-time warning.
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
     try {
       const config = await harness.getConfig();
       expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toBeDefined();
@@ -645,6 +663,7 @@ model = "kimi-for-coding"
         message: expect.stringContaining('max_context_size'),
       } satisfies Partial<KimiError>);
     } finally {
+      activeHarnesses.splice(activeHarnesses.indexOf(harness), 1);
       await harness.close();
     }
   });
@@ -677,7 +696,7 @@ max_context_size = 1000
 `,
     );
 
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.logout()).resolves.toMatchObject({
       providerName: KIMI_CODE_PROVIDER_NAME,
@@ -725,7 +744,7 @@ model = "kimi-for-coding"
 max_context_size = 262144
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.logout()).resolves.toMatchObject({
       providerName: KIMI_CODE_PROVIDER_NAME,
@@ -765,7 +784,7 @@ model = "kimi-for-coding"
 max_context_size = 262144
 `,
     );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.auth.logout()).resolves.toMatchObject({
       providerName: KIMI_CODE_PROVIDER_NAME,
@@ -791,7 +810,7 @@ max_context_size = 262144
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const harness = createKimiHarness({ homeDir });
+    const harness = createTrackedHarness({ homeDir });
     const result = await harness.auth.getManagedUsage();
 
     expect(result).toMatchObject({
@@ -834,7 +853,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
       ),
     );
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir });
+    const harness = createTrackedHarness({ homeDir });
 
     await expect(harness.auth.getManagedUsage()).resolves.toMatchObject({
       kind: 'ok',
@@ -884,7 +903,7 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
       ),
     );
     vi.stubGlobal('fetch', fetchMock);
-    const harness = createKimiHarness({ homeDir });
+    const harness = createTrackedHarness({ homeDir });
 
     await expect(harness.auth.status()).resolves.toEqual({
       providers: [{ providerName: KIMI_CODE_PROVIDER_NAME, hasToken: true }],
@@ -912,5 +931,28 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
     }
   });
 
+  it('rejects an auth write based on a stale pair snapshot and preserves a rotated key', async () => {
+    const path = join(homeDir, 'config.toml');
+    await writeFile(path, '[providers.acme]\ntype = "openai"\napi_key = "sk-old"\n', 'utf-8');
+    const loaded = readConfigFile(path);
+    const expected = readConfigWriteSnapshot(path);
+    await writeFile(path, '[providers.acme]\ntype = "openai"\napi_key = "sk-new"\n', 'utf-8');
+    await expect(writeConfigFile(path, loaded, { ...expected, loaded })).rejects.toThrow('changed during login');
+    expect(await readFile(path, 'utf-8')).toContain('sk-new');
+  });
 
+  it('does not erase another provider credential while updating managed auth', async () => {
+    const path = join(homeDir, 'config.toml');
+    await writeConfigFile(path, {
+      ...readConfigFile(path),
+      providers: { acme: { type: 'openai', apiKey: 'sk-other', baseUrl: 'https://api.example.test/v1' } },
+    });
+    const loaded = readConfigFile(path);
+    const snapshot = readConfigWriteSnapshot(path);
+    const next = structuredClone(loaded);
+    next.providers['managed:kimi-code'] = { type: 'kimi', baseUrl: 'https://api.example.test/v1' };
+    await writeConfigFile(path, next, { ...snapshot, loaded });
+    expect(readConfigFile(path).providers['acme']?.apiKey).toBe('sk-other');
+    expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toContain('sk-other');
+  });
 });

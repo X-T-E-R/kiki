@@ -42,7 +42,7 @@ import type { ExternalDelegationState } from './protocol/rest-meta';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { installErrorHandler } from './error-handler';
-import { createInstanceRegistry, type InstanceRegistration } from './instanceRegistry';
+import { createInstanceRegistry, loadOrCreateServerHomeId, type InstanceRegistration } from './instanceRegistry';
 import { transformOpenApiDocument } from './openapi/transforms';
 import { registerRequestLogging } from './requestLogging';
 import { resolveRequestId } from './request-id';
@@ -90,7 +90,7 @@ import {
 } from './services/auth/authTokenService';
 import { createCredentialValidator } from './services/auth/credentials';
 import { resolvePasswordHash } from './services/auth/password';
-import { createTokenStore } from './services/auth/tokenStore';
+import { createTokenStore, type TokenStore } from './services/auth/tokenStore';
 import { LeaseRegistry } from './services/leaseRegistry';
 import {
   ensureExternalDelegationSession,
@@ -128,6 +128,7 @@ export interface ServerStartOptions {
   readonly host?: string;
   readonly port?: number;
   readonly homeDir?: string;
+  readonly sshManaged?: boolean;
   /**
    * Environment bag handed to the engine bootstrap (`IBootstrapService.getEnv`).
    * Defaults to `process.env`; hosts that need to override engine-level env
@@ -238,6 +239,18 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const host = opts.host ?? DEFAULT_HOST;
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKikiHome(opts.homeDir);
+  if (opts.sshManaged === true && (
+    process.platform !== 'linux' || host !== '127.0.0.1' ||
+    opts.disableAuth === true || opts.disableHostCheck === true ||
+    opts.debugEndpoints === true || opts.authTokenService !== undefined ||
+    opts.rpcToken !== undefined || opts.allowRemoteShutdown === true || opts.idleExitMs !== undefined
+  )) {
+    throw new Error('SSH-managed servers require loopback, persistent bearer authentication, and no debug or idle shutdown');
+  }
+  const serverHomeId = host === '127.0.0.1' && opts.disableAuth !== true &&
+    opts.authTokenService === undefined && opts.rpcToken === undefined
+    ? await loadOrCreateServerHomeId(homeDir, opts.sshManaged === true)
+    : undefined;
   const serverVersion = opts.serverVersion ?? getServerVersion();
   const buildId = opts.buildId ?? process.env['KIKI_BUILD_ID'];
   const buildChannel = opts.buildChannel ?? process.env['KIKI_BUILD_CHANNEL'];
@@ -277,12 +290,14 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const configPath = resolveConfigPath({ homeDir, configPath: opts.configPath });
   const guiStore = new GuiStoreService(homeDir, logger);
   let authTokenService: IAuthTokenService;
+  let managedTokenStore: TokenStore | undefined;
   let passwordConfigured = false;
   if (opts.authTokenService !== undefined) {
     authTokenService = opts.authTokenService;
   } else {
-    const tokenStore = await createTokenStore(homeDir);
-    const passwordHash = await resolvePasswordHash();
+    const tokenStore = await createTokenStore(homeDir, { managed: opts.sshManaged === true });
+    managedTokenStore = opts.sshManaged === true ? tokenStore : undefined;
+    const passwordHash = opts.sshManaged === true ? undefined : await resolvePasswordHash();
     passwordConfigured = passwordHash !== undefined;
     authTokenService = createAuthTokenService({ tokenStore, passwordHash });
   }
@@ -367,10 +382,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   installErrorHandler(app);
   const hostCheck = createHostCheck({
     boundHost: host,
-    extra: [...parseAllowedHosts(process.env), ...(opts.allowedHosts ?? [])],
-    disable: opts.disableHostCheck ?? isHostCheckDisabled(),
+    extra: opts.sshManaged === true ? [] : [...parseAllowedHosts(process.env), ...(opts.allowedHosts ?? [])],
+    disable: opts.sshManaged === true ? false : opts.disableHostCheck ?? isHostCheckDisabled(),
   });
-  const allowedOrigins = opts.corsOrigins ?? parseCorsOrigins();
+  const allowedOrigins = opts.sshManaged === true ? [] : opts.corsOrigins ?? parseCorsOrigins();
   app.addHook('onRequest', hostCheck.onRequest);
   app.addHook('onRequest', createOriginHook({ allowedOrigins }));
   if (opts.disableAuth !== true) {
@@ -400,6 +415,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     logger.warn({ err: error }, 'lease resource expiry cleanup failed');
   });
   let idleTimer: NodeJS.Timeout | undefined;
+  let authMonitor: NodeJS.Timeout | undefined;
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
@@ -407,6 +423,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const doClose = async (): Promise<void> => {
     shutdownController.abort();
     if (idleTimer !== undefined) clearInterval(idleTimer);
+    if (authMonitor !== undefined) clearInterval(authMonitor);
     const closeErrors: unknown[] = [];
     try {
       leaseRegistry.dispose();
@@ -616,6 +633,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     buildId,
     buildChannel,
     serverId: registration.serverId,
+    serverHomeId,
     startedAt: new Date(startedAt).toISOString(),
     hostIdentity: opts.hostIdentity,
     debugEndpoints,
@@ -694,6 +712,19 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableTerminals,
     logger,
   });
+  const wsAuthGeneration = new WeakMap<object, number>();
+  if (managedTokenStore !== undefined) {
+    let authGeneration = managedTokenStore.generation();
+    authMonitor = setInterval(() => {
+      const next = managedTokenStore.generation();
+      if (next === authGeneration) return;
+      authGeneration = next;
+      for (const socket of [...wssV1.clients, ...wssKlient.clients]) {
+        if (wsAuthGeneration.get(socket) !== next) socket.close(4001, 'server authentication changed');
+      }
+    }, 250);
+    authMonitor.unref();
+  }
 
   const handleUpgrade = async (
     req: IncomingMessage,
@@ -727,6 +758,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       return;
     }
 
+    const admittedGeneration = managedTokenStore?.generation();
     if (opts.disableAuth !== true) {
       const authHeader = req.headers.authorization;
       const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : null;
@@ -749,7 +781,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           ok = false;
         }
       }
-      if (!ok) {
+      if (!ok || (admittedGeneration !== undefined && admittedGeneration !== managedTokenStore?.generation())) {
         logger.warn(
           {
             remoteAddress: req.socket.remoteAddress,
@@ -766,7 +798,16 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
     (socket as Socket).setNoDelay(true);
     const wss = isV1 ? wssV1 : wssKlient;
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (admittedGeneration !== undefined) {
+        wsAuthGeneration.set(ws, admittedGeneration);
+        if (admittedGeneration !== managedTokenStore?.generation()) {
+          ws.close(4001, 'server authentication changed');
+          return;
+        }
+      }
+      wss.emit('connection', ws, req);
+    });
   };
   app.server.on('upgrade', (req, socket, head) => {
     void handleUpgrade(req, socket, head).catch((error: unknown) =>

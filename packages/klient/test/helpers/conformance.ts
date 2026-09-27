@@ -723,6 +723,23 @@ export function defineKlientConformance(
       }
     });
 
+    it('global mcp binds an expected OAuth URL and rejects an absent exact saved identity', async () => {
+      const mcp = target.klient.global.mcp;
+      await mcp.add({ server: { name: 'conf-oauth-identity', transport: 'http', url: 'https://example.com/b' } });
+      try {
+        await expect(mcp.resetAuth({
+          locator: { source: 'global', name: 'conf-oauth-identity' },
+          expectedCanonicalUrl: 'https://example.com/a',
+        })).rejects.toMatchObject({ name: 'RPCError', code: 40001 });
+        expect(await mcp.listStoredOAuthCredentials()).toEqual([]);
+        const absent = { credentialId: 'a'.repeat(64) };
+        await expect(mcp.revealStoredOAuthCredential(absent)).rejects.toMatchObject({ name: 'RPCError', code: 40408 });
+        await expect(mcp.revokeStoredOAuthCredential(absent)).rejects.toMatchObject({ name: 'RPCError', code: 40408 });
+      } finally {
+        await mcp.remove({ name: 'conf-oauth-identity' });
+      }
+    });
+
     it('global mcp resetAuth rejects a stdio locator with 40001', async () => {
       const mcp = target.klient.global.mcp;
       await mcp.add({

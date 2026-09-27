@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { NbSearchCapabilities } from '@kiki/protocol';
@@ -48,7 +48,9 @@ function resolveTabFromLocation(
 }
 
 export function NbSearchSection() {
-  const { client } = useConnection();
+  const { client, scopeId } = useConnection();
+  const readCredential = useCallback((id: string, reveal: boolean) => client.readNbSearchCredential(id, reveal), [client]);
+  const writeCredential = useCallback((id: string, value: string | null, version: string, binding: string) => client.writeNbSearchCredential(id, value, version, binding), [client]);
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const location = useLocation();
@@ -420,11 +422,15 @@ export function NbSearchSection() {
         className={activeTab === 'providers' ? 'space-y-4' : 'hidden'}
       >
         <NbSearchProvidersTab
+          key={scopeId}
           capabilities={capabilities}
           draftProviders={draft.nbSearch.providers}
           credentialSlots={draft.nbSearch.credentialSlots}
           onUpdateProvider={updateProviders}
           onUpdateCredentialEnv={updateCredentialEnv}
+          readCredential={readCredential}
+          writeCredential={writeCredential}
+          credentialDisabled={dirty || saving}
           saving={saving}
         />
       </div>

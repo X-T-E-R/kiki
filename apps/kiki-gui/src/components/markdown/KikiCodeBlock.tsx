@@ -11,10 +11,11 @@
  * duplicated. kiki shows 12 lines before collapsing (aionui shows 3).
  */
 
-import { useState, type ComponentProps, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useState, type ComponentProps, type ReactElement, type ReactNode } from 'react';
 import { CodeBlock } from 'streamdown';
 
 import { useI18n } from '../../i18n';
+import { useMermaidEngine } from './streamdown-plugins';
 
 /** Lines shown before a fence collapses behind "View more". */
 const PREVIEW_LINES = 12;
@@ -39,6 +40,43 @@ function extractCode(children: ReactNode): { code: string; language: string } {
 }
 
 type PreProps = ComponentProps<'pre'> & { isIncomplete?: boolean; node?: unknown };
+let nextDiagramId = 0;
+
+function KikiMermaidBlock({ children, isIncomplete }: PreProps) {
+  const { code } = extractCode(children);
+  const engine = useMermaidEngine();
+  const [rendered, setRendered] = useState<{ source: string; url: string } | null>(null);
+
+  useEffect(() => {
+    if (engine === null || isIncomplete === true || code === '') return;
+    let active = true;
+    let url: string | undefined;
+    const id = `kiki-mermaid-${++nextDiagramId}`;
+    void engine.getMermaid().render(id, code).then(({ svg }) => {
+      if (!active) return;
+      url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+      setRendered({ source: code, url });
+    }).catch(() => { if (active) setRendered(null); });
+    return () => {
+      active = false;
+      if (url !== undefined) URL.revokeObjectURL(url);
+    };
+  }, [code, engine, isIncomplete]);
+
+  if (rendered?.source !== code || isIncomplete === true) {
+    return <KikiCodeBlock isIncomplete={isIncomplete}>{children}</KikiCodeBlock>;
+  }
+  return (
+    <div className="my-2 overflow-x-auto rounded-lg border border-hairline bg-paper p-3">
+      <img src={rendered.url} alt={code} className="mx-auto h-auto max-w-full" />
+    </div>
+  );
+}
+
+export function KikiMarkdownPre(props: PreProps) {
+  const { language } = extractCode(props.children);
+  return language === 'mermaid' ? <KikiMermaidBlock {...props} /> : <KikiCodeBlock {...props} />;
+}
 
 export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   const { t } = useI18n();

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { HTTP_TRANSPORT_TIMEOUT_REASON, HttpChannel } from '../src/transports/http/channel.js';
 import { createKlient } from '../src/transports/http/index.js';
@@ -116,6 +117,11 @@ function jsonResponse(envelope: Record<string, unknown>): Response {
 function okEnvelope(data: unknown): Record<string, unknown> {
   return { code: 0, msg: 'success', data, request_id: 'r1' };
 }
+
+const frozenOldCoverageDecoder = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('full'), hasMoreOlder: z.literal(false) }),
+  z.object({ kind: z.literal('tail'), hasMoreOlder: z.boolean() }),
+]);
 
 function hangingJsonResponse(signal: AbortSignal, message: string, contentType = 'application/json'): Response {
   const body = new ReadableStream<Uint8Array>({
@@ -319,7 +325,7 @@ describe('http transport', () => {
     const sendMalformed = () => {
       const attach = server.frames.filter((frame) => frame['type'] === 'view_attach').at(-1)!;
       server.push({ type: 'view_signal', id: attach['id'], data: {
-        type: 'transcript', generation: 1,
+        type: 'transcript', generation: 1, transcript_coverage_version: 2,
         event: { type: 'transcript.reset', privateContent: 'DO_NOT_ECHO_PAYLOAD' },
       } });
     };
@@ -335,6 +341,141 @@ describe('http transport', () => {
     expect(JSON.stringify(signals)).not.toContain('DO_NOT_ECHO_PAYLOAD');
     subscription.close();
     await klient.close();
+  });
+
+  it('degrades a missing coverage echo from an old REST server without keeping an untrusted complete tool-call count', async () => {
+    const pageWithoutCoverage = {
+      session_id: 's1', agent_id: 'main', items: [], has_more: true, tasks: [], meta: {},
+      agents: [], pending_interactions: [], tool_call_count: 7,
+    };
+    const pageWithCoverage = { ...pageWithoutCoverage, has_more: false, coverage: { kind: 'full', hasMoreOlder: false }, tool_call_count: 9 };
+    const catchUp = {
+      session_id: 's1', agent_id: 'main', epoch: 'e', through_seq: 2, complete: true,
+      batches: [{ seq: 1, ops: [
+        { op: 'reset', agentId: 'main', snapshot: { items: [], tasks: [], meta: {}, toolCallCount: 12, toolCallCountKnown: true }, coverage: { kind: 'full', hasMoreOlder: false } },
+        { op: 'tool.count.set', count: 12 },
+        { op: 'meta.merge', meta: { activity: 'idle' } },
+      ] }],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(okEnvelope(pageWithoutCoverage)))
+      .mockResolvedValueOnce(jsonResponse(okEnvelope(pageWithCoverage)))
+      .mockResolvedValueOnce(jsonResponse(okEnvelope(catchUp)));
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.sessionView.transcriptPage('s1', { agentId: 'main' })).resolves.toMatchObject({
+        coverage: { kind: 'unknown', hasMoreOlder: true }, tool_call_count: undefined,
+      });
+      await expect(channel.sessionView.transcriptPage('s1', { agentId: 'main' })).resolves.toMatchObject({
+        coverage: { kind: 'unknown', hasMoreOlder: true }, tool_call_count: undefined,
+      });
+      const resolved = await channel.sessionView.transcriptCatchUp('s1', { agentId: 'main', since: { seq: 0 } }) as {
+        batches: Array<{ ops: Array<{ op: string; coverage?: unknown; count?: number; snapshot?: { toolCallCount?: number; toolCallCountKnown?: boolean } }> }>;
+      };
+      const [resetOp, countOp, mergeOp] = resolved.batches[0]!.ops;
+      expect(resetOp!.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+      expect(resetOp!.snapshot?.toolCallCount).toBeUndefined();
+      expect(resetOp!.snapshot?.toolCallCountKnown).toBe(false);
+      expect(countOp!.op).toBe('tool.count.set');
+      expect(countOp!.count).toBeUndefined();
+      expect(mergeOp).toEqual({ op: 'meta.merge', meta: { activity: 'idle' } });
+      for (const [url] of fetchMock.mock.calls) {
+        expect(String(url)).toContain('transcript_coverage_version=2');
+      }
+      expect(frozenOldCoverageDecoder.safeParse({ kind: 'full', hasMoreOlder: false }).success).toBe(true);
+      expect(frozenOldCoverageDecoder.safeParse({ kind: 'unknown', hasMoreOlder: true }).success).toBe(false);
+    } finally { await channel.close(); }
+  });
+
+  it('degrades unconfirmed transcript resets to unknown coverage and keeps the view across reconnects', async () => {
+    const server = new FakeWebSocketServer();
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
+    const signals: unknown[] = [];
+    const subscription = klient.session('s1').view.subscribe({
+      sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' },
+    }, (signal) => signals.push(signal));
+    try {
+      await tick(10);
+      const first = server.frames.find((frame) => frame['type'] === 'view_attach')!;
+      expect(first).toMatchObject({ data: { transcript_coverage_version: 2 } });
+      const reset = { type: 'transcript.reset', session_id: 's1', agent_id: 'main',
+        snapshot: { items: [], tasks: [], meta: {}, toolCallCount: 42, toolCallCountKnown: true }, grade: 'delta',
+        coverage: { kind: 'full', hasMoreOlder: false }, cursor: { seq: 0 } };
+      server.push({ type: 'view_signal', id: first['id'], data: {
+        type: 'transcript', generation: 1, event: reset,
+      } });
+      await tick(10);
+      const firstDegraded = signals.at(-1) as { type: string; event: { coverage: unknown; snapshot: { toolCallCount?: number; toolCallCountKnown?: boolean } } };
+      expect(firstDegraded.event.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+      expect(firstDegraded.event.snapshot.toolCallCount).toBeUndefined();
+      expect(firstDegraded.event.snapshot.toolCallCountKnown).toBe(false);
+      server.disconnect();
+      await tick(550);
+      const second = server.frames.findLast((frame) => frame['type'] === 'view_attach')!;
+      expect(second).toMatchObject({ data: { reconnected: true, generation: 2, transcript_coverage_version: 2 } });
+      const transcriptCount = () => signals.filter((signal) => (signal as { type?: string }).type === 'transcript').length;
+      const count = transcriptCount();
+      server.push({ type: 'view_signal', id: second['id'], data: {
+        type: 'transcript', generation: 2, event: { ...reset, coverage: { kind: 'tail', hasMoreOlder: true } },
+      } });
+      await tick(10);
+      expect(transcriptCount()).toBe(count + 1);
+      const secondDegraded = signals.at(-1) as { type: string; event: { coverage: unknown; snapshot: { toolCallCount?: number; toolCallCountKnown?: boolean } } };
+      expect(secondDegraded.event.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+      expect(secondDegraded.event.snapshot.toolCallCount).toBeUndefined();
+      expect(secondDegraded.event.snapshot.toolCallCountKnown).toBe(false);
+      expect(signals.some((signal) => (signal as { type?: string }).type === 'protocolError')).toBe(false);
+      expect(server.frames.some((frame) => frame['type'] === 'view_detach')).toBe(false);
+    } finally { subscription.close(); await klient.close(); }
+  });
+
+  it('delivers marker-less non-transcript signals and confirmed coverage unchanged, degrading only unconfirmed resets', async () => {
+    const server = new FakeWebSocketServer();
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
+    const signals: unknown[] = [];
+    const subscription = klient.session('s1').view.subscribe({
+      sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' },
+    }, (signal) => signals.push(signal));
+    try {
+      await tick(10);
+      const attach = server.frames.find((frame) => frame['type'] === 'view_attach')!;
+      server.push({ type: 'view_signal', id: attach['id'], data: {
+        type: 'sessionCursorAdvanced', cursor: { seq: 3 }, generation: 1,
+      } });
+      await tick(10);
+      expect(signals.at(-1)).toMatchObject({ type: 'sessionCursorAdvanced', cursor: { seq: 3 } });
+      server.push({ type: 'view_signal', id: attach['id'], data: {
+        type: 'transcript', generation: 1, transcript_coverage_version: 2,
+        event: { type: 'transcript.reset', session_id: 's1', agent_id: 'main',
+          snapshot: { items: [], tasks: [], meta: {}, toolCallCount: 5, toolCallCountKnown: true }, grade: 'delta',
+          coverage: { kind: 'tail', hasMoreOlder: true }, cursor: { seq: 1 } },
+      } });
+      await tick(10);
+      const confirmed = signals.at(-1) as { type: string; event: { coverage: unknown; snapshot: { toolCallCount?: number; toolCallCountKnown?: boolean } } };
+      expect(confirmed.event.coverage).toEqual({ kind: 'tail', hasMoreOlder: true });
+      expect(confirmed.event.snapshot.toolCallCount).toBe(5);
+      expect(confirmed.event.snapshot.toolCallCountKnown).toBe(true);
+      server.push({ type: 'view_signal', id: attach['id'], data: {
+        type: 'transcript', generation: 1,
+        event: { type: 'transcript.ops', session_id: 's1', agent_id: 'main', cursor: { seq: 2 }, through_seq: 2,
+          ops: [
+            { op: 'reset', agentId: 'main', snapshot: { items: [], tasks: [], meta: {}, toolCallCount: 3, toolCallCountKnown: true }, coverage: { kind: 'full', hasMoreOlder: false } },
+            { op: 'tool.count.set', count: 3 },
+            { op: 'meta.merge', meta: { activity: 'idle' } },
+          ] },
+      } });
+      await tick(10);
+      const opsSignal = signals.at(-1) as { type: string; event: { ops: Array<{ op: string; coverage?: unknown; count?: number; snapshot?: { toolCallCount?: number; toolCallCountKnown?: boolean } }> } };
+      expect(opsSignal).toMatchObject({ type: 'transcript' });
+      const [resetOp, countOp, mergeOp] = opsSignal.event.ops;
+      expect(resetOp!.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+      expect(resetOp!.snapshot?.toolCallCount).toBeUndefined();
+      expect(resetOp!.snapshot?.toolCallCountKnown).toBe(false);
+      expect(countOp!.op).toBe('tool.count.set');
+      expect(countOp!.count).toBeUndefined();
+      expect(mergeOp).toEqual({ op: 'meta.merge', meta: { activity: 'idle' } });
+      expect(signals.some((signal) => (signal as { type?: string }).type === 'protocolError')).toBe(false);
+    } finally { subscription.close(); await klient.close(); }
   });
 
   it('projects named session approvals and idempotent cancellation without losing errors', async () => {

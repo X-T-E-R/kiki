@@ -2,13 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { ISessionManager } from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ExternalDelegationSeatManager } from '../src/mcp/externalDelegationSeats';
 
 const mocks = vi.hoisted(() => ({
   provision: vi.fn(),
-  resume: vi.fn(),
+  acquire: vi.fn(),
+  release: vi.fn(),
   documents: new Map<string, {
     version: 2;
     ownership: 'dedicated';
@@ -16,11 +18,6 @@ const mocks = vi.hoisted(() => ({
     delegationToken: string;
   }>(),
 }));
-
-vi.mock('@kiki/agent-core-v2', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@kiki/agent-core-v2')>();
-  return { ...actual, resumeSessionById: mocks.resume };
-});
 
 vi.mock('../src/mcp/externalDelegationAuthority', () => ({
   ensureExternalDelegationSeatSession: mocks.provision,
@@ -47,15 +44,16 @@ beforeEach(() => {
       permissionMode: input.permissionMode,
     };
   });
-  mocks.resume.mockImplementation(async (_accessor, sessionId) => ({
-    accessor: {
-      get: () => ({
-        read: async () => mocks.documents.get(sessionId),
-        revoke: async () => {
-          mocks.documents.delete(sessionId);
-        },
-      }),
+  mocks.acquire.mockImplementation(async (sessionId) => ({
+    handle: {
+      accessor: {
+        get: () => ({
+          read: async () => mocks.documents.get(sessionId),
+          revoke: async () => { mocks.documents.delete(sessionId); },
+        }),
+      },
     },
+    dispose: mocks.release,
   }));
 });
 
@@ -68,7 +66,8 @@ afterEach(() => {
 describe('ExternalDelegationSeatManager', () => {
   it('creates, persists, reuses, resolves, and revokes a seat', async () => {
     const onWorkspaceServed = vi.fn();
-    const manager = new ExternalDelegationSeatManager({} as never, homeDir, onWorkspaceServed);
+    const core = { accessor: { get: (id: unknown) => id === ISessionManager ? { acquire: mocks.acquire } : undefined } } as never;
+    const manager = new ExternalDelegationSeatManager(core, homeDir, onWorkspaceServed);
 
     const first = await manager.create({ workspace, principal: 'cursor', mode: 'auto' });
     const second = await manager.create({
@@ -108,9 +107,10 @@ describe('ExternalDelegationSeatManager', () => {
     expect(await manager.resolveBearer(`${first.delegationToken}x`)).toBeUndefined();
     expect(onWorkspaceServed).toHaveBeenCalledTimes(2);
 
-    const restored = new ExternalDelegationSeatManager({} as never, homeDir, vi.fn());
+    const restored = new ExternalDelegationSeatManager(core, homeDir, vi.fn());
     expect(await restored.list()).toHaveLength(1);
     expect(await restored.revoke(first.seatId)).toMatchObject({ seatId: first.seatId });
     expect(await restored.resolve(first.sessionId, first.delegationToken)).toBeUndefined();
+    expect(mocks.acquire.mock.calls.length).toBe(mocks.release.mock.calls.length);
   });
 });

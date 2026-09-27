@@ -70,7 +70,7 @@ export function resolveAuthBackedClient<TClient>(
 }
 
 export const requestIdentityFetch: typeof fetch = async (input, init) => {
-  const request = new Request(input, init);
+  const request = new Request(input, { ...init, redirect: 'error' });
   const suppressIdentity = request.headers.has(SUPPRESS_REQUEST_IDENTITY_HEADER);
   if (!suppressIdentity && !request.headers.has(SUPPRESS_USER_AGENT_HEADER)) {
     return globalThis.fetch(request);
@@ -87,5 +87,5 @@ export const requestIdentityFetch: typeof fetch = async (input, init) => {
       if (name.startsWith('x-msh-')) headers.delete(name);
     }
   }
-  return globalThis.fetch(new Request(request, { headers }));
+  return globalThis.fetch(new Request(request, { headers, redirect: 'error' }));
 };

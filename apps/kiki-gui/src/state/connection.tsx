@@ -29,7 +29,7 @@ import {
 
 import type { Klient, TerminalFacade, TerminalConnectionStatus as WsStatus } from '@kiki/klient';
 import type { MetaResponse } from '@kiki/protocol';
-import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ConnectScreen } from '../components/ConnectScreen';
 import { useHost } from '../host';
@@ -94,6 +94,10 @@ export function handleGlobalConnectionFrame(
 }
 
 interface ConnectionValue {
+  readonly scopeId: string;
+  readonly sshLabel: string | null;
+  readonly activateSshProfile: (id: string, token: string) => Promise<void>;
+  readonly activateLocal: () => void;
   readonly config: ConnectionConfig;
   readonly client: KikiClient;
   readonly klient: Klient;
@@ -221,7 +225,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const desktopRuntime = host.kind === 'tauri';
   const vscodeRuntime = isVscodeWebview();
   const { locale, t } = useI18n();
-  const queryClient = useQueryClient();
+  const scopesRef = useRef(new Map<string, QueryClient>());
   const localSettings = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
@@ -237,6 +241,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         }),
   );
   const config = selection?.config ?? null;
+  const scopeId = selection?.scopeId ?? (desktopRuntime ? 'local' : `direct:${config?.url.trim().replace(/\/+$/, '') ?? ''}`);
+  let queryClient = scopesRef.current.get(scopeId);
+  if (queryClient === undefined) {
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: 1, staleTime: 0, refetchOnWindowFocus: false } },
+    });
+    scopesRef.current.set(scopeId, queryClient);
+  }
   const [meta, setMeta] = useState<MetaResponse | null>(null);
   const [connectError, setConnectError] = useState<ConnectError | null>(null);
   const [desktopBoot, setDesktopBoot] = useState<DesktopBootStatus | null>(() =>
@@ -250,7 +262,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
   const controllersRef = useRef(new LiveControllerRegistry());
   const connectionEpochRef = useRef(0);
+  const sshAttemptRef = useRef(0);
+  const localSelectionRef = useRef<ConnectionSelection | null>(null);
+  const boundHomeIdsRef = useRef(new Map<string, string>());
+  const connectedSshProfileRef = useRef<{ id: string; tunnelId: string } | null>(null);
+  const routesRef = useRef(new Map<string, string>());
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
   const leaseClientIdRef = useRef(nextGuiLeaseClientId());
+
+  useEffect(() => {
+    host.connection.setWorkspaceScope?.(selection?.source === 'ssh' ? 'ssh' : 'local');
+    return () => host.connection.setWorkspaceScope?.('local');
+  }, [host, selection?.source]);
 
   useEffect(() => {
     if (!vscodeRuntime) return;
@@ -299,15 +323,20 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
             setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
             return;
           }
-          connectionEpochRef.current += 1;
-          setSelection({
+          const local: ConnectionSelection = {
             config: connection.config,
             persist: false,
             source: 'desktop',
-          });
+            scopeId: 'local',
+          };
+          localSelectionRef.current = local;
+          if (selectionRef.current?.source === 'ssh') return;
+          connectionEpochRef.current += 1;
+          setSelection(local);
         },
         (error: unknown) => {
           if (cancelled || generation !== resolveGeneration) return;
+          if (selectionRef.current?.source === 'ssh') return;
           connectionEpochRef.current += 1;
           setDesktopBoot(null);
           setMeta(null);
@@ -322,6 +351,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // the newly spawned sidecar connection because its random port may change.
     void host.connection.onBackendStage((payload) => {
       if (payload === 'waiting') {
+        if (selectionRef.current?.source === 'ssh') {
+          resolveDesktopConnection();
+          return;
+        }
         connectionEpochRef.current += 1;
         setDesktopFailure(null);
         setConnectError(null);
@@ -344,6 +377,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         return;
       }
       resolveGeneration += 1;
+      localSelectionRef.current = null;
+      if (selectionRef.current?.source === 'ssh') return;
       connectionEpochRef.current += 1;
       setMeta(null);
       setSelection(null);
@@ -389,19 +424,20 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [clients, setClients] = useState<{
     endpoint: string;
     token: string;
+    scopeId: string;
     client: KikiClient;
   } | null>(null);
-  const client = clients?.endpoint === endpoint && clients.token === token ? clients.client : null;
+  const client = clients?.endpoint === endpoint && clients.token === token && clients.scopeId === scopeId ? clients.client : null;
   const klient = client?.klient ?? null;
 
   useEffect(() => {
     if (endpoint === null || token === null) return;
     const instance = new KikiClient({ baseUrl: endpoint, token, timeoutMs: requestTimeoutMs });
-    setClients({ endpoint, token, client: instance });
+    setClients({ endpoint, token, scopeId, client: instance });
     return () => {
       void instance.klient.close();
     };
-  }, [endpoint, token, requestTimeoutMs]);
+  }, [endpoint, token, scopeId, requestTimeoutMs]);
 
   // Validate the config against /meta before entering the app.
   useEffect(() => {
@@ -413,9 +449,23 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       (value) => {
         if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
         scrubUrl();
-        if (selection?.persist === true && config !== null) {
-          writeStoredConfig(config);
+        if (selection?.source === 'ssh') {
+          const claimedHomeId = selection.serverHomeId;
+          const priorHomeId = boundHomeIdsRef.current.get(scopeId);
+          if (!claimedHomeId || !selection.serverInstanceId || !selection.serverVersion ||
+              value.server_home_id !== claimedHomeId || value.server_id !== selection.serverInstanceId ||
+              value.server_version !== selection.serverVersion ||
+              value.dangerous_bypass_auth !== false ||
+              (value.build_id ?? null) !== selection.buildId ||
+              (value.build_channel ?? null) !== selection.buildChannel ||
+              (priorHomeId !== undefined && priorHomeId !== claimedHomeId)) {
+            setMeta(null);
+            setConnectError({ kind: 'raw', text: 'SSH server identity changed or could not be verified. This connection is blocked.' });
+            return;
+          }
+          boundHomeIdsRef.current.set(scopeId, claimedHomeId);
         }
+        if (selection?.persist === true && config !== null) writeStoredConfig(config);
         setMeta(value);
       },
       (error: unknown) => {
@@ -455,6 +505,36 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     };
   }, [client, connected]);
 
+  useEffect(() => {
+    if (!connected || selection?.source !== 'ssh' || !host.connection.sshTunnelRunning) return;
+    const profileId = selection.profile?.id;
+    const tunnelId = selection.tunnelId;
+    if (!profileId || !tunnelId) return;
+    let active = true;
+    let pending = false;
+    const check = () => {
+      if (pending) return;
+      pending = true;
+      void host.connection.sshTunnelRunning!(profileId, tunnelId).then(
+        (running) => {
+          if (!active || running) return;
+          connectionEpochRef.current += 1;
+          setMeta(null);
+          setConnectError({ kind: 'raw', text: 'SSH tunnel disconnected. Check the remote service and connect again.' });
+        },
+        (error: unknown) => {
+          if (!active) return;
+          connectionEpochRef.current += 1;
+          setMeta(null);
+          setConnectError({ kind: 'raw', text: `Cannot check the SSH tunnel: ${String(error)}` });
+        },
+      ).finally(() => { pending = false; });
+    };
+    check();
+    const interval = window.setInterval(check, 2_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [connected, selection?.source, selection?.profile?.id, selection?.tunnelId, host]);
+
   const socket = connected ? klient?.terminal ?? null : null;
 
   useEffect(() => {
@@ -491,24 +571,93 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     };
   }, [socket]);
 
+  const activateLocal = useCallback(() => {
+    sshAttemptRef.current += 1;
+    connectionEpochRef.current += 1;
+    const ssh = connectedSshProfileRef.current;
+    connectedSshProfileRef.current = null;
+    if (ssh !== null) void host.connection.disconnectSshProfile?.(ssh.id, ssh.tunnelId).catch(() => undefined);
+    if (selectionRef.current?.source === 'ssh') {
+      routesRef.current.set(selectionRef.current.scopeId ?? '', `${window.location.pathname}${window.location.search}`);
+      window.history.replaceState(null, '', routesRef.current.get('local') ?? '/new');
+    }
+    setMeta(null);
+    setConnectError(null);
+    setSelection(localSelectionRef.current);
+    if (localSelectionRef.current === null && desktopRuntime) retryDesktopBoot();
+  }, [desktopRuntime, host, retryDesktopBoot]);
+
+  const activateSshProfile = useCallback(async (id: string, token: string) => {
+    if (!host.connection.connectSshProfile || !host.connection.listSshProfiles) {
+      throw new Error('SSH connections are available only in the desktop application.');
+    }
+    const attempt = ++sshAttemptRef.current;
+    const profiles = await host.connection.listSshProfiles();
+    const profile = profiles.find((entry) => entry.id === id);
+    if (!profile) throw new Error('SSH profile no longer exists.');
+    if (!profile.serverHomeId || !profile.remotePort || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
+      throw new Error('Set the remote Kiki port, expected home ID and bearer token first.');
+    }
+    const resolved = await host.connection.connectSshProfile(id, token);
+    if (attempt !== sshAttemptRef.current) {
+      if (resolved.tunnelId) void host.connection.disconnectSshProfile?.(id, resolved.tunnelId).catch(() => undefined);
+      return;
+    }
+    let url: URL | null;
+    try { url = new URL(resolved.config.url); } catch { url = null; }
+    if (url?.protocol !== 'http:' || url.hostname !== '127.0.0.1' ||
+        url.username || url.password || !url.port || !resolved.tunnelId ||
+        resolved.config.token !== token || resolved.serverHomeId !== profile.serverHomeId) {
+      if (resolved.tunnelId) void host.connection.disconnectSshProfile?.(id, resolved.tunnelId).catch(() => undefined);
+      throw new Error('SSH tunnel endpoint or server home ID could not be verified.');
+    }
+    connectedSshProfileRef.current = { id, tunnelId: resolved.tunnelId };
+    routesRef.current.set(selectionRef.current?.scopeId ?? 'local', `${window.location.pathname}${window.location.search}`);
+    window.history.replaceState(null, '', routesRef.current.get(`ssh:${id}`) ?? '/new');
+    connectionEpochRef.current += 1;
+    setMeta(null);
+    setConnectError(null);
+    setSelection({
+      config: resolved.config,
+      persist: false,
+      source: 'ssh',
+      scopeId: `ssh:${id}`,
+      profile,
+      tunnelId: resolved.tunnelId,
+      serverHomeId: resolved.serverHomeId,
+      serverInstanceId: resolved.serverInstanceId,
+      serverVersion: resolved.serverVersion,
+      buildId: resolved.buildId,
+      buildChannel: resolved.buildChannel,
+    });
+  }, [host]);
+
   const disconnect = useCallback(() => {
+    if (selectionRef.current?.source === 'ssh') {
+      activateLocal();
+      return;
+    }
     connectionEpochRef.current += 1;
     clearStoredConfig();
     setMeta(null);
     setSelection(null);
     setConnectError(null);
-    // Abandoning the screen counts as giving up on the credential handoff.
     scrubUrl();
-  }, []);
+  }, [activateLocal]);
 
   const connect = useCallback((next: ConnectionConfig, persist = true) => {
-    connectionEpochRef.current += 1;
+    const generation = ++connectionEpochRef.current;
+    const prior = selectionRef.current;
+    const equivalent = prior !== null &&
+      prior.config.url.trim().replace(/\/+$/, '') === next.url.trim().replace(/\/+$/, '') &&
+      prior.config.token.trim() === next.token.trim();
     setConnectError(null);
     setMeta(null);
     setSelection({
       config: next,
       persist,
       source: persist ? 'manual' : 'local-detection',
+      scopeId: equivalent ? prior.scopeId : `direct:${next.url.trim().replace(/\/+$/, '')}:${generation}`,
     });
   }, []);
 
@@ -516,6 +665,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   // is an explicit choice, the same as one typed into the connect screen.
   const applyConnection = useCallback(
     (next: ConnectionConfig) => {
+      if (selectionRef.current?.source === 'ssh') return;
       connect(next, true);
     },
     [connect],
@@ -523,8 +673,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ConnectionValue | null>(() => {
     if (config === null || client === null || klient === null || socket === null || meta === null) return null;
-    return { config, client, klient, socket, meta, wsStatus, disconnect, applyConnection };
-  }, [config, client, klient, socket, meta, wsStatus, disconnect, applyConnection]);
+    return {
+      scopeId, sshLabel: selection?.profile?.label ?? null,
+      activateSshProfile, activateLocal,
+      config, client, klient, socket, meta, wsStatus, disconnect, applyConnection,
+    };
+  }, [scopeId, selection?.profile?.label, activateSshProfile, activateLocal, config, client, klient, socket, meta, wsStatus, disconnect, applyConnection]);
 
   const connectErrorText =
     connectError === null
@@ -535,18 +689,21 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   // In desktop mode every failure (attach, spawn, early exit, timeout, /meta)
   // goes to the dedicated failure card; the browser URL/token form is not an
   // actionable recovery path for the native shell.
-  const desktopFailureView =
-    desktopFailure ??
-    (desktopRuntime && connectErrorText !== null
-      ? { message: connectErrorText, stderrTail: [] as string[], logPath: null }
-      : null);
+  const desktopFailureView = selection?.source === 'ssh'
+    ? connectErrorText === null ? null : { message: connectErrorText, stderrTail: [], logPath: null }
+    : desktopFailure ??
+      (desktopRuntime && connectErrorText !== null
+        ? { message: connectErrorText, stderrTail: [], logPath: null }
+        : null);
 
   return (
     <ConnectionContext.Provider value={value}>
       {value !== null ? (
-        <ControllerRegistryContext.Provider value={controllersRef.current}>
-          {children}
-        </ControllerRegistryContext.Provider>
+        <QueryClientProvider key={scopeId} client={queryClient}>
+          <ControllerRegistryContext.Provider value={controllersRef.current}>
+            {children}
+          </ControllerRegistryContext.Provider>
+        </QueryClientProvider>
       ) : (
         <ConnectScreen
           initial={config ?? { url: '', token: '' }}
@@ -558,6 +715,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           desktopFailure={desktopFailureView}
           onRetryDesktop={retryDesktopBoot}
           onCancelDesktopBoot={cancelDesktopBoot}
+          onConnectSsh={activateSshProfile}
+          onSwitchLocal={selection?.source === 'ssh' ? activateLocal : undefined}
+          sshProfile={selection?.source === 'ssh' ? selection.profile : undefined}
         />
       )}
     </ConnectionContext.Provider>

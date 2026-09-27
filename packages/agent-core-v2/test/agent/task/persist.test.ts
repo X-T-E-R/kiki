@@ -103,6 +103,23 @@ describe('AgentTaskPersistence', () => {
     expect((await persistence.listTasks())[0]).toMatchObject({ receipt: undefined, receiptVerification: 'invalid' });
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it.each([
+    { committedAt: 'not-a-date' },
+    { committedAt: '2024-13-01T01:00:00Z' },
+    { sourceTurnId: -1 },
+    { sourceTurnId: 1.5 },
+    { sourceTurnId: 'wrong' },
+  ])('rejects malformed receipt metadata %j before exposing a verified receipt', async (invalid) => {
+    const task = sample({ status: 'completed', endedAt: 2 });
+    const receipt = await persistence.commitTerminalTask(task, 'trusted output');
+    await docs.set(`${SESSION_SCOPE}/tasks`, `${task.taskId}.json`, {
+      ...task, receipt: { ...receipt, ...invalid }, receiptVerification: 'verified',
+    });
+    expect(await persistence.readTask(task.taskId)).toMatchObject({
+      receipt: undefined, receiptVerification: 'invalid',
+    });
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('publishes the terminal manifest only after the complete output write succeeds', async () => {
     const task = {
       taskId: 'agent-22222222', kind: 'agent' as const, description: 'report',
@@ -320,6 +337,21 @@ describe('AgentTaskPersistence', () => {
   });
 
   describe('legacy session-root fallback', () => {
+    it('binds receipt-backed output pages to the metadata root, not an orphan primary log', async () => {
+      const task = sample({ taskId: 'bash-receipt1', status: 'completed', endedAt: 2 });
+      const legacy = rootedPersistence(SESSION_SCOPE);
+      const primary = rootedPersistence(AGENT_SCOPE, sessionRoot());
+      const receipt = await legacy.commitTerminalTask(task, 'fallback text');
+      const fallbackPath = join(sessionDir, SESSION_SCOPE, receipt.path);
+      expect(await primary.readTask(task.taskId)).toMatchObject({ receiptVerification: 'verified' });
+      expect((await primary.readTaskOutputSnapshot(task.taskId, 100))?.outputPath).toBe(fallbackPath);
+      expect((await primary.readTaskOutputPage(task.taskId, 0, 100))?.text).toBe('fallback text');
+      await bytes.write(`${AGENT_SCOPE}/tasks/${task.taskId}`, 'output.log', new TextEncoder().encode('primary decoy'), { atomic: true });
+      expect(Buffer.byteLength('primary decoy')).toBe(receipt.bytes);
+      expect((await primary.readTaskOutputSnapshot(task.taskId, 100))?.outputPath).toBe(fallbackPath);
+      expect((await primary.readTaskOutputPage(task.taskId, 0, 100))?.text).toBe('fallback text');
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
     it('reads a legacy task and reports its real output path when the agent root is empty', async () => {
       const task = sample({
         taskId: 'bash-legacy01',

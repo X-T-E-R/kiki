@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 
-import { parseTraceId, type ChatProviderError } from '#/kosong/contract/errors';
+import { ChatProviderError, parseTraceId } from '#/kosong/contract/errors';
 import type {
   ContentPart,
   Message,
@@ -51,6 +51,7 @@ import {
 import { ReasoningKeyDialect } from './reasoning-key';
 import {
   mergeProviderRequestAuth,
+  requestIdentityFetch,
   mergeRequestHeaders,
   requireProviderApiKey,
   resolveAuthBackedClient,
@@ -754,6 +755,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       apiKey,
       baseURL: this._baseUrl,
       maxRetries: 0,
+      fetch: requestIdentityFetch,
     };
     const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {

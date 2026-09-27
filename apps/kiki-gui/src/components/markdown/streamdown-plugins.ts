@@ -1,30 +1,24 @@
 /**
- * Lazy loader for Streamdown's shiki code-highlighting engine.
- *
- * Ported from codeg (https://github.com/codeg-vn/codeg —
- * `src/components/ai-elements/streamdown-plugins.ts`, Apache-2.0), trimmed to
- * the single engine kiki ships: `@streamdown/code` (shiki). kiki does not load
- * the math/mermaid/cjk plugins (explicit non-goals), so only the fence
- * detection and the at-most-once lazy import remain.
- *
- * Why: `@streamdown/code` pulls in shiki + its grammar/theme index (multi-MB
- * unpacked). Statically importing it pins the engine into the first-paint
- * chunk; this module loads it the first time rendered markdown actually
- * contains a code block, and at most once process-wide. Mounted consumers
- * re-render via a version counter when the engine resolves, upgrading the
- * already-rendered plaintext fallback in place. Detection errs LOOSE on
- * purpose — a false positive merely pre-loads an engine that then no-ops.
+ * Lazy loader for Streamdown's code, math, and Mermaid engines, adapted from
+ * codeg's Apache-2.0 `src/components/ai-elements/streamdown-plugins.ts`.
+ * CJK syntax is lightweight; the three heavy engines load only when their
+ * syntax appears, keeping the first paint independent of Shiki and Mermaid.
+ * Mounted consumers re-render when an engine resolves.
  */
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import type { ComponentProps } from 'react';
+import { cjk } from '@streamdown/cjk';
 import type { Streamdown } from 'streamdown';
 
 type PluginConfig = NonNullable<ComponentProps<typeof Streamdown>['plugins']>;
 type CodePlugin = NonNullable<PluginConfig['code']>;
+type MathPlugin = NonNullable<PluginConfig['math']>;
+type MermaidPlugin = NonNullable<PluginConfig['mermaid']>;
+type HeavyKind = 'code' | 'math' | 'mermaid';
 
-const loaded: { code?: CodePlugin } = {};
-let inflight = false;
+const loaded: { code?: CodePlugin; math?: MathPlugin; mermaid?: MermaidPlugin } = {};
+const inflight = new Set<HeavyKind>();
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -62,62 +56,73 @@ function makeSafeCode(codePlugin: CodePlugin): CodePlugin {
   };
 }
 
-function ensureCode(): void {
-  if (loaded.code !== undefined || inflight) return;
-  inflight = true;
-  import('@streamdown/code')
-    .then((mod) => {
-      // Shiki dual-theme: github-light supplies the resolved colors and
-      // github-dark rides along as `--shiki-dark*` custom properties.
-      // Streamdown reads those under its own `dark:` classes, and index.css
-      // points Tailwind's `dark` variant at `[data-theme='dark']`, so the dark
-      // slot activates from the same attribute as the rest of the palette.
-      // Baseline mismatch: `@streamdown/code` ships shiki 3 while `streamdown`'s
-      // CodePlugin type is still keyed to shiki 2. Runtime themes/highlight are
-      // unchanged; the assertion is the local type-compat seam.
-      loaded.code = makeSafeCode(
-        mod.createCodePlugin({ themes: ['github-light', 'github-dark'] }) as CodePlugin,
-      );
-    })
-    .catch(() => {
-      // engine stays unloaded — fences render as plaintext
-    })
-    .finally(() => {
-      inflight = false;
-      emit();
-    });
+function ensure(kind: HeavyKind): void {
+  if (loaded[kind] !== undefined || inflight.has(kind)) return;
+  inflight.add(kind);
+  const settle = () => {
+    inflight.delete(kind);
+    emit();
+  };
+  if (kind === 'code') {
+    import('@streamdown/code')
+      .then((mod) => {
+        loaded.code = makeSafeCode(
+          mod.createCodePlugin({ themes: ['github-light', 'github-dark'] }) as CodePlugin,
+        );
+      })
+      .catch(() => undefined)
+      .finally(settle);
+  } else if (kind === 'math') {
+    import('@streamdown/math')
+      .then((mod) => { loaded.math = mod.createMathPlugin({ singleDollarTextMath: false }); })
+      .catch(() => undefined)
+      .finally(settle);
+  } else {
+    import('@streamdown/mermaid')
+      .then((mod) => { loaded.mermaid = mod.mermaid; })
+      .catch(() => undefined)
+      .finally(settle);
+  }
 }
 
-/**
- * Cheap detection of whether a (possibly still-streaming) markdown text needs
- * the code engine: any fenced block, or any run of ≥4 spaces / a tab that may
- * be an indented code block (a guaranteed superset — over-loading shiki once
- * per session is safe, missing a real block would stay unhighlighted).
- */
+/** A superset of fenced and indented code; false positives only trigger a lazy import. */
 export function needsCodeEngine(text: string): boolean {
   return text.includes('```') || text.includes('~~~') || / {4}|\t/.test(text);
 }
 
-const EMPTY_PLUGINS: PluginConfig = {};
+const CJK_PLUGINS: PluginConfig = { cjk };
 
-/**
- * Returns the Streamdown `plugins` config for `text`, lazy-loading the code
- * engine on first use. Pass `null`/`undefined` for the light config.
- */
+export function useMermaidEngine(): MermaidPlugin | null {
+  useSyncExternalStore(subscribe, getVersion, getVersion);
+  useEffect(() => { ensure('mermaid'); }, []);
+  return loaded.mermaid ?? null;
+}
+
 export function useStreamdownPlugins(text: string | null | undefined): PluginConfig {
-  const needCode = useMemo(() => typeof text === 'string' && needsCodeEngine(text), [text]);
-  // Re-render when the engine resolves so the plaintext fallback upgrades.
+  const needs = useMemo(() => ({
+    code: typeof text === 'string' && needsCodeEngine(text),
+    math: typeof text === 'string' && (
+      text.includes('$$') || text.includes('\\(') || text.includes('\\[') ||
+      /(?:```|~~~)[^\S\r\n]*math\b/i.test(text)
+    ),
+    mermaid: typeof text === 'string' && /(?:```|~~~)[^\S\r\n]*mermaid\b/i.test(text),
+  }), [text]);
+  const { code, math, mermaid } = needs;
   const currentVersion = useSyncExternalStore(subscribe, getVersion, getVersion);
 
   useEffect(() => {
-    if (needCode) ensureCode();
-  }, [needCode]);
+    if (code) ensure('code');
+    if (math) ensure('math');
+    if (mermaid) ensure('mermaid');
+  }, [code, math, mermaid]);
 
   return useMemo(() => {
-    if (!needCode || loaded.code === undefined) return EMPTY_PLUGINS;
-    return { code: loaded.code };
-    // `currentVersion` is the load signal: a resolved ensure() mutates the
-    // module cache and bumps the version; `loaded` is read untracked on purpose.
+    if (!code && !math && !mermaid) return CJK_PLUGINS;
+    const plugins: PluginConfig = { cjk };
+    if (code && loaded.code !== undefined) plugins.code = loaded.code;
+    if (math && loaded.math !== undefined) plugins.math = loaded.math;
+    if (mermaid && loaded.mermaid !== undefined) plugins.mermaid = loaded.mermaid;
+    return plugins;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [needCode, currentVersion]);
+  }, [code, math, mermaid, currentVersion]);
 }

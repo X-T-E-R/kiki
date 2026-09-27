@@ -2,6 +2,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import type { Event, IWaitUntil } from '#/_base/event';
 import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
+import type { GenerationParameters } from '#/kosong/contract/generationParameters';
 
 export type ProviderType = string;
 
@@ -21,6 +22,7 @@ export interface ProviderConfig {
   baseUrl?: string;
   customHeaders?: Record<string, string>;
   defaultModel?: string;
+  defaults?: GenerationParameters;
   requestIdentity?: RequestIdentityPolicy;
   images?: ImagePolicyConfig;
 

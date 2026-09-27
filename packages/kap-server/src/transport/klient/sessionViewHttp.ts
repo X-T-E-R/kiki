@@ -6,6 +6,12 @@ import {
 } from '@kiki/klient';
 import { RPCError, type KlientFrame } from '@kiki/klient/host';
 import type { FastifyInstance } from 'fastify';
+import {
+  acceptsTranscriptCoverage,
+  requestsTranscript,
+  TRANSCRIPT_CLIENT_UPGRADE_MESSAGE,
+  TRANSCRIPT_COVERAGE_VERSION,
+} from '@kiki/transcript';
 import { okEnvelope } from '../../protocol/envelope';
 import { withReplyCloseSignal } from '../../procedures/requestSignal';
 import { assembleSnapshot, SnapshotNotFoundError } from '../../routes/snapshot';
@@ -38,6 +44,9 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
     const service = opts.sessionViewTranscriptService;
     if (service === undefined) throw new RPCError(50001, 'session view unavailable');
     const query = req.query as Record<string, unknown>;
+    if (query['transcript_coverage_version'] !== String(TRANSCRIPT_COVERAGE_VERSION)) {
+      return reply.send({ code: 40001, msg: TRANSCRIPT_CLIENT_UPGRADE_MESSAGE, data: null, request_id: req.id });
+    }
     const parsed = sessionViewTranscriptPageInputSchema.safeParse({
       agentId: query['agent_id'], beforeTurn: query['before_turn'], afterTurn: query['after_turn'],
       pageSize: query['page_size'] === undefined ? undefined : Number(query['page_size']),
@@ -49,13 +58,16 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
     );
     return reply.send(data === undefined
       ? { code: 40401, msg: `session not found: ${sessionId}`, data: null, request_id: req.id }
-      : okEnvelope(data, req.id));
+      : okEnvelope({ ...data, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, req.id));
   });
 
   app.get(`${KLIENT_SESSION_VIEW_PATH}/:sessionId/transcript/catch-up`, async (req, reply) => {
     const service = opts.sessionViewTranscriptService;
     if (service === undefined) throw new RPCError(50001, 'session view unavailable');
     const query = req.query as Record<string, unknown>;
+    if (query['transcript_coverage_version'] !== String(TRANSCRIPT_COVERAGE_VERSION)) {
+      return reply.send({ code: 40001, msg: TRANSCRIPT_CLIENT_UPGRADE_MESSAGE, data: null, request_id: req.id });
+    }
     const parsed = sessionViewTranscriptCatchUpInputSchema.safeParse({
       agentId: query['agent_id'], since: { seq: Number(query['since_seq']), epoch: query['epoch'] }, grade: query['grade'],
     });
@@ -64,12 +76,12 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
     const data = await readSessionViewTranscriptCatchUp(service, sessionId, parsed.data);
     return reply.send(data === undefined
       ? { code: 40401, msg: `session not found: ${sessionId}`, data: null, request_id: req.id }
-      : okEnvelope(data, req.id));
+      : okEnvelope({ ...data, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, req.id));
   });
 }
 
 export class SessionViewHttpConnection {
-  private readonly views = new Map<string, { sessionId: string; target: SessionViewTarget }>();
+  private readonly views = new Map<string, { sessionId: string; target: SessionViewTarget; coverage: boolean }>();
   private readonly tasks = new Map<string, Promise<void>>();
   private readonly detached = new Set<string>();
   private closed = false;
@@ -105,17 +117,26 @@ export class SessionViewHttpConnection {
     if (broadcaster === undefined) throw new RPCError(50001, 'session view unavailable');
     if (typeof frame.sessionId !== 'string' || frame.sessionId.length === 0) throw new RPCError(40001, 'session view requires sessionId');
     if (frame.data === null || typeof frame.data !== 'object') throw new RPCError(40001, 'invalid session view attach');
-    const data = frame.data as { input?: unknown; generation?: unknown; reconnected?: unknown };
+    const data = frame.data as { input?: unknown; generation?: unknown; reconnected?: unknown; transcript_coverage_version?: unknown };
     const parsed = sessionViewSubscribeInputSchema.safeParse(data.input);
     if (!parsed.success || typeof data.generation !== 'number' || !Number.isInteger(data.generation) || data.generation < 0) throw new RPCError(40001, 'invalid session view attach');
+    const input = parsed.data;
+    const coverage = requestsTranscript(input.transcriptGrades);
+    if (coverage && !acceptsTranscriptCoverage(data.transcript_coverage_version)) {
+      throw new RPCError(40001, TRANSCRIPT_CLIENT_UPGRADE_MESSAGE);
+    }
     const previous = this.views.get(id);
     if (previous !== undefined && previous.sessionId !== frame.sessionId) this.detach(id);
     const target = this.views.get(id)?.target ?? new SessionViewTarget(frame.sessionId, (signal) => {
-      if (!this.closed && !this.detached.has(id)) this.send({ type: 'view_signal', id, data: signal });
+      if (this.closed || this.detached.has(id)) return;
+      const active = this.views.get(id);
+      if (active?.target !== target) return;
+      this.send({ type: 'view_signal', id, data: active.coverage
+        ? { ...signal, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }
+        : signal });
     });
     target.begin(data.generation);
-    this.views.set(id, { sessionId: frame.sessionId, target });
-    const input = parsed.data;
+    this.views.set(id, { sessionId: frame.sessionId, target, coverage });
     const attached = await broadcaster.subscribe(frame.sessionId, target, undefined, input.transcriptGrades, {
       deferTranscriptReset: true, transcriptSince: input.transcriptSince,
     });

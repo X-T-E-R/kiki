@@ -12,7 +12,6 @@ import {
   oneShotJitteredNextCronRunMs,
   parseCronExpression,
   resolveClockSources,
-  resumeSessionById,
   SYSTEM_CLOCKS,
   type CronConfig,
   type CronTask,
@@ -22,6 +21,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
+import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
@@ -191,30 +191,22 @@ export function registerCronRoutes(app: CronRouteHost, core: Scope): void {
           );
           return;
         }
-        const handle = await resumeSessionById(core.accessor, resolved.task.sessionId);
-        if (handle === undefined) {
-          reply.send(
-            errEnvelope(
-              ErrorCode.SESSION_NOT_FOUND,
-              `session ${resolved.task.sessionId} does not exist`,
-              req.id,
-            ),
-          );
-          return;
-        }
-        const cron = handle.accessor.get(ISessionCronService);
-        if (cron.getTask(parsed.id) === undefined) {
-          reply.send(taskNotFound(parsed.id, req.id));
-          return;
-        }
-        if (!(await cron.fireTaskNow(parsed.id))) {
-          throw new Error(`cron task ${parsed.id} could not be triggered`);
-        }
-        requestLog(req)?.info(
-          { task_id: parsed.id, session_id: resolved.task.sessionId },
-          'cron task triggered',
-        );
-        reply.send(okEnvelope({ triggered: true as const }, req.id));
+        await withSessionOperation(core, resolved.task.sessionId, async (handle) => {
+          if (handle === undefined) {
+            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${resolved.task.sessionId} does not exist`, req.id));
+            return;
+          }
+          const cron = handle.accessor.get(ISessionCronService);
+          if (cron.getTask(parsed.id) === undefined) {
+            reply.send(taskNotFound(parsed.id, req.id));
+            return;
+          }
+          if (!(await cron.fireTaskNow(parsed.id))) {
+            throw new Error(`cron task ${parsed.id} could not be triggered`);
+          }
+          requestLog(req)?.info({ task_id: parsed.id, session_id: resolved.task.sessionId }, 'cron task triggered');
+          reply.send(okEnvelope({ triggered: true as const }, req.id));
+        });
         return;
       }
 

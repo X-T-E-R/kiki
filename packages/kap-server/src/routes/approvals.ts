@@ -1,7 +1,8 @@
 import {
   ISessionApprovalService,
   ISessionInteractionService,
-  resumeSessionById,
+  ISessionIndex,
+  getLiveSessionById,
   type SessionApprovalRequest as ApprovalRequest,
   type SessionApprovalResponse as ApprovalResponse,
   type Interaction,
@@ -18,6 +19,7 @@ import {
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { withSessionOperation } from '../lib/sessionOperationLease';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
 
@@ -70,16 +72,24 @@ export function registerApprovalsRoutes(app: ApprovalRouteHost, core: Scope): vo
     },
     async (req, reply) => {
       const { session_id } = req.params;
-      const handle = await resumeSessionById(core.accessor, session_id);
-      if (handle === undefined) {
-        reply.send(
-          errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
-        );
-        return;
+      if (getLiveSessionById(core.accessor, session_id) === undefined) {
+        const summary = await core.accessor.get(ISessionIndex).get(session_id);
+        if (getLiveSessionById(core.accessor, session_id) === undefined) {
+          reply.send(summary === undefined
+            ? errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id)
+            : okEnvelope({ items: [] }, req.id));
+          return;
+        }
       }
-      const pending = handle.accessor.get(ISessionInteractionService).listPending('approval');
-      const items = pending.map((i) => toWireApproval(i, session_id));
-      reply.send(okEnvelope({ items }, req.id));
+      await withSessionOperation(core, session_id, async (handle) => {
+        if (handle === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+          return;
+        }
+        const pending = handle.accessor.get(ISessionInteractionService).listPending('approval');
+        const items = pending.map((i) => toWireApproval(i, session_id));
+        reply.send(okEnvelope({ items }, req.id));
+      });
     },
   );
   app.get(listRoute.path, listRoute.options, listRoute.handler as Parameters<ApprovalRouteHost['get']>[2]);
@@ -104,50 +114,58 @@ export function registerApprovalsRoutes(app: ApprovalRouteHost, core: Scope): vo
     },
     async (req, reply) => {
       const { session_id, approval_id } = req.params;
-      const handle = await resumeSessionById(core.accessor, session_id);
-      if (handle === undefined) {
-        reply.send(
-          errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
-        );
-        return;
-      }
-      const interaction = handle.accessor.get(ISessionInteractionService);
-      const isPending = interaction
-        .listPending('approval')
-        .some((i) => i.id === approval_id);
-
-      if (!isPending) {
-        if (interaction.isRecentlyResolved(approval_id)) {
-          reply.send({
-            code: ErrorCode.APPROVAL_ALREADY_RESOLVED,
-            msg: `approval ${approval_id} already resolved`,
-            data: { resolved: false as const },
-            request_id: req.id,
-          });
+      if (getLiveSessionById(core.accessor, session_id) === undefined) {
+        const summary = await core.accessor.get(ISessionIndex).get(session_id);
+        if (getLiveSessionById(core.accessor, session_id) === undefined) {
+          reply.send(summary === undefined
+            ? errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id)
+            : errEnvelope(ErrorCode.APPROVAL_NOT_FOUND, `approval ${approval_id} not found`, req.id));
           return;
         }
-        reply.send(
-          errEnvelope(ErrorCode.APPROVAL_NOT_FOUND, `approval ${approval_id} not found`, req.id),
-        );
-        return;
       }
+      await withSessionOperation(core, session_id, async (handle) => {
+        if (handle === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+          return;
+        }
+        const interaction = handle.accessor.get(ISessionInteractionService);
+        const isPending = interaction
+          .listPending('approval')
+          .some((i) => i.id === approval_id);
 
-      const body = req.body;
-      const response: ApprovalResponse = {
-        decision: body.decision,
-        scope: body.scope,
-        feedback: body.feedback,
-        selectedLabel: body.selected_label,
-        selectedOptionId: body.selected_option_id,
-      };
-      handle.accessor.get(ISessionApprovalService).decide(approval_id, response);
-      requestLog(req)?.info(
-        { session_id, approval_id, decision: response.decision, scope: response.scope },
-        'approval decided',
-      );
-      reply.send(
-        okEnvelope({ resolved: true as const, resolved_at: new Date().toISOString() }, req.id),
-      );
+        if (!isPending) {
+          if (interaction.isRecentlyResolved(approval_id)) {
+            reply.send({
+              code: ErrorCode.APPROVAL_ALREADY_RESOLVED,
+              msg: `approval ${approval_id} already resolved`,
+              data: { resolved: false as const },
+              request_id: req.id,
+            });
+            return;
+          }
+          reply.send(
+            errEnvelope(ErrorCode.APPROVAL_NOT_FOUND, `approval ${approval_id} not found`, req.id),
+          );
+          return;
+        }
+
+        const body = req.body;
+        const response: ApprovalResponse = {
+          decision: body.decision,
+          scope: body.scope,
+          feedback: body.feedback,
+          selectedLabel: body.selected_label,
+          selectedOptionId: body.selected_option_id,
+        };
+        handle.accessor.get(ISessionApprovalService).decide(approval_id, response);
+        requestLog(req)?.info(
+          { session_id, approval_id, decision: response.decision, scope: response.scope },
+          'approval decided',
+        );
+        reply.send(
+          okEnvelope({ resolved: true as const, resolved_at: new Date().toISOString() }, req.id),
+        );
+      });
     },
   );
   app.post(

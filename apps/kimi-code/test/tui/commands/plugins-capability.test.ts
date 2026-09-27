@@ -351,13 +351,42 @@ describe('plugins command capability surface', () => {
     expect(statuses).toContain('Fix the reported error, then install again from /plugins.');
   });
 
+  it('distinguishes a pinned WebBridge binary from unauthenticated daemon readiness without suggesting infinite reinstall', async () => {
+    const { host, statuses } = fakeHost({ engineV2: true,
+      capabilityStatus: () => Promise.resolve({ state: 'partial', install: { running: false }, steps: [
+        { id: 'daemon-binary', state: 'ok' },
+        { id: 'daemon', state: 'missing', detail: 'Unverified: loopback status self-reports v2.0.22; responding process identity is not authenticated' },
+        { id: 'skill', state: 'missing' },
+      ] }),
+    });
+    await installCapabilityFromPanel(host, fakePanel().panel,
+      { id: 'kimi-webbridge', displayName: 'WebBridge', source: 'capability:kimi-webbridge' } as never);
+    expect(statuses.some((status) => status.includes('Pinned WebBridge binary is present'))).toBe(true);
+    expect(statuses.some((status) => status.includes('Plugin ZIP compatibility'))).toBe(true);
+    expect(statuses.some((status) => status.includes('installation did not complete'))).toBe(false);
+    expect(statuses.some((status) => status.includes('install again from /plugins'))).toBe(false);
+  });
+
+  it('does not claim a pinned binary was prepared when only an untrusted loopback process responds', async () => {
+    const { host, statuses } = fakeHost({ engineV2: true,
+      capabilityStatus: () => Promise.resolve({ state: 'not_installed', install: { running: false }, steps: [
+        { id: 'daemon-binary', state: 'missing' },
+        { id: 'daemon', state: 'missing', detail: 'Unverified: loopback status self-reports 1.11.3; responding process identity is not authenticated' },
+      ] }),
+    });
+    await installCapabilityFromPanel(host, fakePanel().panel,
+      { id: 'kimi-webbridge', displayName: 'WebBridge', source: 'capability:kimi-webbridge' } as never);
+    expect(statuses.some((status) => status.includes('no pinned binary was prepared'))).toBe(true);
+    expect(statuses.some((status) => status.includes('installation did not complete'))).toBe(false);
+  });
+
   it('shows required permissions once after installation instead of exposing step details', async () => {
     const { host, statuses } = fakeHost({
       engineV2: true,
       capabilityStatus: () => Promise.resolve({
         id: 'kimi-cu',
         state: 'partial',
-        steps: [{ id: 'permissions', state: 'missing', detail: 'screenRecording' }],
+        steps: [{ id: 'app', state: 'ok' }, { id: 'permissions', state: 'missing', detail: 'screenRecording' }],
         install: { running: false },
       }),
     });
@@ -374,7 +403,7 @@ describe('plugins command capability surface', () => {
       'capability needs attention',
       expect.objectContaining({
         capabilityId: 'kimi-cu',
-        steps: [expect.objectContaining({ detail: 'screenRecording' })],
+        steps: [expect.objectContaining({ id: 'app', state: 'ok' }), expect.objectContaining({ detail: 'screenRecording' })],
       }),
     );
   });

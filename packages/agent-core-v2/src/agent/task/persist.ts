@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'pathe';
 
 import { BugIndicatingError } from '#/errors';
+import { isoDateTimeSchema } from '#/_base/utils/isoDateTime';
 import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { IFileSystemStorageService } from '#/persistence/interface/storage';
 
@@ -31,6 +32,15 @@ export interface AgentTaskStoredOutputSnapshot {
   readonly previewBytes: number;
   readonly truncated: boolean;
   readonly preview: string;
+}
+
+export interface AgentTaskStoredOutputPage {
+  readonly outputPath: string;
+  readonly offset: number;
+  readonly nextOffset: number;
+  readonly totalBytes: number;
+  readonly hasMore: boolean;
+  readonly text: string;
 }
 
 interface ListedTask {
@@ -161,13 +171,66 @@ export class AgentTaskPersistence {
     return textDecoder.decode(output.data.subarray(start, end));
   }
 
+  private async outputRootsForTask(taskId: string): Promise<readonly AgentTaskPersistenceRoot[]> {
+    const primary = this.primaryRoot();
+    const fallback = this.fallbackRoot;
+    if (fallback === undefined) return [primary];
+    const key = `${taskId}${JSON_SUFFIX}`;
+    if (await this.docs.get<DiskPersistedTask>(this.tasksScope(primary), key) !== undefined) return [primary];
+    if (await this.docs.get<DiskPersistedTask>(this.tasksScope(fallback), key) !== undefined) return [fallback];
+    return [primary, fallback];
+  }
+
+  async readTaskOutputPage(
+    taskId: string,
+    offset: number,
+    maxBytes: number,
+  ): Promise<AgentTaskStoredOutputPage | undefined> {
+    for (const root of await this.outputRootsForTask(taskId)) {
+      if (root === undefined) continue;
+      const scope = this.taskOutputScope(taskId, root);
+      const totalBytes = await this.bytes.size(scope, OUTPUT_LOG_KEY);
+      if (totalBytes === undefined) continue;
+      const requested = Math.min(offset, totalBytes);
+      if (requested === totalBytes) {
+        return { outputPath: this.taskOutputFileAt(taskId, root), offset: requested, nextOffset: requested, totalBytes, hasMore: false, text: '' };
+      }
+      const length = Math.min(totalBytes - requested, maxBytes + 4);
+      const data = new Uint8Array(length);
+      let read = 0;
+      for await (const chunk of this.bytes.readStream(scope, OUTPUT_LOG_KEY, {
+        start: requested, end: requested + length - 1,
+      })) {
+        const retained = chunk.subarray(0, length - read);
+        data.set(retained, read);
+        read += retained.byteLength;
+        if (read === length) break;
+      }
+      if (read !== length) return undefined;
+      let start = 0;
+      while (start < read && (data[start]! & 0xc0) === 0x80) start++;
+      let end = Math.min(read, start + maxBytes);
+      if (requested + end < totalBytes) {
+        while (end > start && end < read && (data[end]! & 0xc0) === 0x80) end--;
+      }
+      const nextOffset = requested + end;
+      return {
+        outputPath: this.taskOutputFileAt(taskId, root),
+        offset: requested + start,
+        nextOffset,
+        totalBytes,
+        hasMore: nextOffset < totalBytes,
+        text: new TextDecoder('utf-8', { fatal: true }).decode(data.subarray(start, end)),
+      };
+    }
+    return undefined;
+  }
+
   async readTaskOutputSnapshot(
     taskId: string,
     maxPreviewBytes: number,
   ): Promise<AgentTaskStoredOutputSnapshot | undefined> {
-    const roots = [this.primaryRoot(), this.fallbackRoot];
-    for (const root of roots) {
-      if (root === undefined) continue;
+    for (const root of await this.outputRootsForTask(taskId)) {
       const scope = this.taskOutputScope(taskId, root);
       const size = await this.bytes.size(scope, OUTPUT_LOG_KEY);
       if (size === undefined) continue;
@@ -248,7 +311,9 @@ export class AgentTaskPersistence {
         !Number.isSafeInteger(receipt.bytes) || receipt.bytes < 0 ||
         typeof receipt.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.sha256) ||
         (receipt.contentState !== 'final' && receipt.contentState !== 'unavailable') ||
-        typeof receipt.committedAt !== 'string') {
+        !isoDateTimeSchema.safeParse(receipt.committedAt).success ||
+        (receipt.sourceTurnId !== undefined &&
+          (!Number.isSafeInteger(receipt.sourceTurnId) || receipt.sourceTurnId < 0))) {
       return { ...task, receipt: undefined, receiptVerification: 'invalid' };
     }
     try {

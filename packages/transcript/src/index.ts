@@ -23,6 +23,7 @@ export * from './granularity/filterOps';
 export * from './view/registry';
 export * from './pagination/paginate';
 export * from './contract/schema';
+export * from './contract/coverageNegotiation';
 export * from './contract/events';
 export * from './contract/mediaRef';
 export * from './contract/origin';

@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { resolveKikiHome } from '@kiki/agent-core-v2';
@@ -288,6 +288,38 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
       return listLiveInternal(instancesDir);
     },
   };
+}
+
+export async function loadOrCreateServerHomeId(homeDir: string, privateDirectory = true): Promise<string> {
+  const directory = join(homeDir, 'server');
+  const path = join(directory, 'home-id');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32' && ((await stat(directory)).mode & (privateDirectory ? 0o077 : 0o022)) !== 0) {
+    throw new Error('Server identity directory has unsafe permissions');
+  }
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, 'wx', 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  if (handle !== undefined) {
+    try {
+      await handle.writeFile(randomUUID());
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+  const info = await stat(path);
+  if (!info.isFile() || (process.platform !== 'win32' && (info.mode & 0o077) !== 0)) {
+    throw new Error('Server home identity file must be private and regular');
+  }
+  const id = (await readFile(path, 'utf8')).trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) {
+    throw new Error('Server home identity file is incomplete or invalid');
+  }
+  return id;
 }
 
 /** Resolve the instances directory for a given home (or the default kimi home). */

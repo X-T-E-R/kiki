@@ -51,6 +51,7 @@ export function ConnectionsTab() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['providers'] }),
       queryClient.invalidateQueries({ queryKey: ['models'] }),
+      queryClient.invalidateQueries({ queryKey: ['generation-entity'] }),
       queryClient.invalidateQueries({ queryKey: ['auth'] }),
       queryClient.invalidateQueries({ queryKey: ['config'] }),
     ]);

@@ -212,6 +212,13 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         method: 'POST',
         body,
       }),
+      previewModelGenerationMigration: () => transport.json('/config/model-generation-migration'),
+      applyModelGenerationMigration: (revision) => transport.json('/config/model-generation-migration/apply', {
+        method: 'POST', body: { revision, confirmed: true },
+      }),
+      restoreModelGenerationMigration: (backupKey, revision) => transport.json('/config/model-generation-migration/restore', {
+        method: 'POST', body: { backup_key: backupKey, revision, confirmed: true },
+      }),
     },
 
     catalog: {
@@ -234,6 +241,12 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       test: (options) => transport.json('/nb-search/test', {
         signal: options?.signal,
         timeoutMs: options?.timeoutMs,
+      }),
+      readCredential: (instanceId, reveal) => transport.json('/nb-search/credentials/read', {
+        method: 'POST', body: { instance_id: instanceId, reveal },
+      }),
+      writeCredential: (instanceId, value, expectedVersion, expectedBinding) => transport.json('/nb-search/credentials/write', {
+        method: 'POST', body: { instance_id: instanceId, value, expected_version: expectedVersion, expected_binding: expectedBinding },
       }),
     },
 

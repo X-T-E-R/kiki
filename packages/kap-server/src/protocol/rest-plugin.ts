@@ -91,6 +91,14 @@ export const pluginInfoSchema = pluginSummarySchema.extend({
   manifestKind: z.enum(['kimi-plugin-root', 'kimi-plugin-dir']).optional(),
   manifestPath: z.string().optional(),
   manifest: z.unknown().optional(),
+  prerequisites: z.object({
+    origin: z.enum(['kiki-compatibility', 'plugin-declared']),
+    items: z.object({ schemaVersion: z.literal(1), items: z.array(z.object({
+      id: z.string(), kind: z.enum(['host-capability', 'daemon', 'browser-extension', 'executable', 'configuration']),
+      required: z.boolean(), provider: z.string().optional(), executionHost: z.string().optional(),
+      dependsOn: z.array(z.string()).optional(), capabilityImpact: z.array(z.string()).optional(),
+    })) }),
+  }).optional(),
   mcpServers: z.array(pluginMcpServerInfoSchema),
   shadowedManifestPath: z.string().optional(),
   diagnostics: z.array(pluginDiagnosticSchema),

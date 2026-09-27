@@ -13,6 +13,7 @@ import {
   SESSION_PIN_META_KEY,
   type SessionGroup,
 } from '@kiki/session-core/sessions';
+import { HostProvider, browserHost, type HostAdapter } from '../host';
 import { I18nProvider } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
 import {
@@ -23,11 +24,13 @@ import {
 
 const searchMessages = vi.fn();
 const setWorkspacePinned = vi.fn(async () => {});
+const connectionScope = vi.hoisted(() => ({ id: 'local' }));
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
   useConnection: () => ({
     client: { searchMessages, setWorkspacePinned },
+    scopeId: connectionScope.id,
     meta: {
       server_version: '1.0.0',
       capabilities: {
@@ -122,6 +125,7 @@ beforeAll(() => {
 beforeEach(() => {
   searchMessages.mockReset();
   setWorkspacePinned.mockClear();
+  connectionScope.id = 'local';
 });
 
 afterEach(() => {
@@ -143,6 +147,7 @@ type SidebarProps = ComponentProps<typeof Sidebar>;
 
 async function mount(
   overrides: Partial<SidebarProps> = {},
+  host: HostAdapter = browserHost,
 ): Promise<{ container: HTMLDivElement; root: Root }> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -153,32 +158,34 @@ async function mount(
     root.render(
       <QueryClientProvider client={client}>
         <I18nProvider>
-          <MemoryRouter>
-            <Sidebar
-              activeSessionId={undefined}
-              sessions={[]}
-              sessionGroups={[]}
-              sessionsQuery={{
-                isLoading: false,
-                isError: false,
-                error: null,
-                hasNextPage: false,
-                isFetchingNextPage: false,
-                fetchNextPage: async () => {},
-              }}
-              workspaceOptions={[]}
-              workspaceFilter={undefined}
-              onWorkspaceFilter={() => {}}
-              showArchived={false}
-              onToggleArchived={() => {}}
-              onNewSession={() => {}}
-              groupBy="time"
-              onGroupBy={() => {}}
-              sortBy="updated-desc"
-              onSortBy={() => {}}
-              {...overrides}
-            />
-          </MemoryRouter>
+          <HostProvider host={host}>
+            <MemoryRouter>
+              <Sidebar
+                activeSessionId={undefined}
+                sessions={[]}
+                sessionGroups={[]}
+                sessionsQuery={{
+                  isLoading: false,
+                  isError: false,
+                  error: null,
+                  hasNextPage: false,
+                  isFetchingNextPage: false,
+                  fetchNextPage: async () => {},
+                }}
+                workspaceOptions={[]}
+                workspaceFilter={undefined}
+                onWorkspaceFilter={() => {}}
+                showArchived={false}
+                onToggleArchived={() => {}}
+                onNewSession={() => {}}
+                groupBy="time"
+                onGroupBy={() => {}}
+                sortBy="updated-desc"
+                onSortBy={() => {}}
+                {...overrides}
+              />
+            </MemoryRouter>
+          </HostProvider>
         </I18nProvider>
       </QueryClientProvider>,
     );
@@ -743,6 +750,40 @@ describe('Sidebar session menu location & link group', () => {
     const menu = await openSessionMenu(container);
     expect(menu.querySelector('[data-menu-item="open-folder"]')).toBeNull();
     expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+  });
+
+  it('shows host path actions for a local scope with native openers', async () => {
+    const revealPath = vi.fn(async () => {});
+    const openPath = vi.fn(async () => {});
+    const { container } = await mount(listed(), { ...browserHost, revealPath, openPath });
+    let menu = await openSessionMenu(container);
+    expect(menu.querySelector('[data-menu-item="open-folder"]')?.textContent).toBe('Open containing folder');
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')?.textContent).toBe('Open with default app');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="open-folder"]')!.click(); });
+    expect(revealPath).toHaveBeenCalledWith('C:/tmp');
+    menu = await openSessionMenu(container);
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="open-default-app"]')!.click(); });
+    expect(openPath).toHaveBeenCalledWith('C:/tmp');
+  });
+
+  it('hides host path actions for SSH even when native openers exist, while keeping copy actions', async () => {
+    connectionScope.id = 'ssh:host-1';
+    const revealPath = vi.fn(async () => {});
+    const openPath = vi.fn(async () => {});
+    const remote = { ...session('one'), metadata: { cwd: '/home/dev/project' } };
+    const { container } = await mount({
+      sessions: [remote],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [remote] }],
+    }, { ...browserHost, revealPath, openPath });
+    const menu = await openSessionMenu(container);
+    expect(menu.querySelector('[data-menu-item="copy-link"]')).not.toBeNull();
+    expect(menu.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    expect(menu.querySelector('[data-menu-item="open-folder"]')).toBeNull();
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="copy-path"]')!.click(); });
+    expect(writeText).toHaveBeenCalledWith('/home/dev/project');
+    expect(revealPath).not.toHaveBeenCalled();
+    expect(openPath).not.toHaveBeenCalled();
   });
 
   it('keeps the link entries below the action group and above pin/rename', async () => {

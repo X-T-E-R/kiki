@@ -31,10 +31,10 @@ import {
   toProtocolProvider,
 } from '#/kosong/model/catalog';
 import { ModelCatalog } from '#/kosong/model/catalogService';
+import '#/kosong/model/modelService';
 import '#/kosong/model/errors';
 import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
 import { IModelService, type ModelRecord, type ModelsSection } from '#/kosong/model/model';
-import '#/kosong/model/modelService';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 
 import { HostRequestHeadersAdapter } from '#/app/kosongConfig/hostRequestHeadersAdapter';
@@ -119,6 +119,49 @@ afterEach(() => {
 });
 
 describe('Model assembly (pure data)', () => {
+  it('uses an inline configured static key through the normal model request sink', async () => {
+    const sections = {
+      providers: { gateway: { type: 'openai', baseUrl: 'https://gateway.example.test/v1', apiKey: 'sk-stored' } },
+      models: { m1: { provider: 'gateway', model: 'remote', maxContextSize: 4096 } },
+    };
+    const { host, catalog } = createHost(sections);
+    const generate = vi.fn(async (..._args: unknown[]) => { throw new Error('fake network sink'); });
+    const factory = vi.spyOn(host.app.accessor.get(IProtocolAdapterRegistry), 'createChatProvider').mockReturnValue({
+      name: 'fake', modelName: 'remote', thinkingEffort: null, generate,
+    } as unknown as ChatProvider);
+    try {
+      const requester = catalog.getRequester('m1');
+      await expect(async () => {
+        for await (const _event of requester.request({ systemPrompt: '', tools: [], messages: [] })) { void _event; }
+      }).rejects.toThrow('fake network sink');
+      expect(generate).toHaveBeenCalledOnce();
+      expect(generate.mock.calls[0]?.[3]).toMatchObject({ auth: { apiKey: 'sk-stored' } });
+    } finally { factory.mockRestore(); host.dispose(); }
+  });
+
+  it('suppresses process environment API keys when composing a model without configured auth', async () => {
+    const previous = process.env['OPENAI_API_KEY'];
+    process.env['OPENAI_API_KEY'] = 'sk-process-env-must-not-leak';
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { host, catalog } = createHost({
+      providers: { gateway: { type: 'openai', baseUrl: 'https://api.example.test/v1' } },
+      models: { m1: { provider: 'gateway', model: 'gpt-4o', maxContextSize: 4096 } },
+    });
+    try {
+      const requester = catalog.getRequester('m1');
+      await expect(async () => {
+        for await (const _event of requester.request({ systemPrompt: '', tools: [], messages: [] })) { void _event; }
+      }).rejects.toThrow(/apiKey is required/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      host.dispose();
+      vi.unstubAllGlobals();
+      if (previous === undefined) delete process.env['OPENAI_API_KEY'];
+      else process.env['OPENAI_API_KEY'] = previous;
+    }
+  });
+
   it('preserves the model service tier in assembly and catalog wire projections', async () => {
     const record: ModelRecord = { provider: 'kimi', model: 'example', maxContextSize: 1000, serviceTier: 'priority' };
     const { host, catalog } = createHost({ ...kimiSections, models: { tiered: record } });
@@ -131,6 +174,91 @@ describe('Model assembly (pure data)', () => {
     } finally {
       host.dispose();
     }
+  });
+
+  it('resolves provider defaults beneath model preferences with traceable per-field sources', async () => {
+    const { host, catalog } = createHost({
+      providers: { gateway: { type: 'openai', baseUrl: 'https://example.test/v1', defaults: {
+        temperature: 0, topP: 0.8, maxCompletionTokens: 8192, thinkingEffort: 'low', serviceTier: 'priority',
+      } } },
+      models: {
+        custom: { provider: 'gateway', model: 'same-remote', maxContextSize: 200000,
+          parameters: { maxCompletionTokens: 16384, topP: { kind: 'api_default' }, thinkingEffort: 'high' } },
+        inherited: { provider: 'gateway', model: 'same-remote', maxContextSize: 200000 },
+      },
+    });
+    try {
+      const custom = catalog.get('custom');
+      expect(custom.maxCompletionTokens).toBe(16384);
+      expect(custom.generationParameters).toMatchObject({ temperature: 0, topP: { kind: 'api_default' }, thinkingEffort: 'high' });
+      expect(custom.preferredThinkingEffort).toBe('high');
+      expect(catalog.get('inherited').maxCompletionTokens).toBe(8192);
+      expect(catalog.get('inherited').preferredThinkingEffort).toBe('low');
+      const inspection = catalog.inspect('custom');
+      expect(inspection.resolved.generationParameters).toEqual(custom.generationParameters);
+      expect(inspection.sources['resolved.generationParameters.temperature']?.detail).toBe('[providers.*.defaults]');
+      expect(inspection.sources['resolved.generationParameters.maxCompletionTokens']?.detail).toBe('[models.*.parameters]');
+      expect((await catalog.listProviders())[0]?.defaults?.temperature).toBe(0);
+    } finally { host.dispose(); }
+  });
+
+  it('keeps explicit legacy model preferences above new provider defaults until migrated', () => {
+    const { host, catalog } = createHost({
+      providers: { gateway: { type: 'openai', baseUrl: 'https://example.test/v1', defaults: {
+        temperature: 0.9, topP: 0.8, maxCompletionTokens: 8192,
+      } } },
+      models: { legacy: { provider: 'gateway', model: 'legacy', maxContextSize: 200000,
+        maxCompletionTokens: 4096, requestParams: { temperature: 0.3 },
+        overrides: { maxCompletionTokens: 6144, requestParams: { temperature: 0.4 } },
+        parameters: { topP: { kind: 'api_default' } },
+      } },
+    });
+    try {
+      const model = catalog.get('legacy');
+      expect(model.maxCompletionTokens).toBe(6144);
+      expect(model.generationParameters?.temperature).toBe(0.4);
+      expect(model.generationParameters?.topP).toEqual({ kind: 'api_default' });
+      expect(catalog.inspect('legacy').sources['resolved.generationParameters.temperature']?.detail)
+        .toBe('[models.*.overrides] legacy generation fields');
+    } finally { host.dispose(); }
+  });
+
+  it('drops an old effort invalidated by override support without forgiving a new explicit invalid effort', () => {
+    const { host, catalog } = createHost({
+      providers: { gateway: { type: 'openai', baseUrl: 'https://example.test/v1' } },
+      models: {
+        legacy: { provider: 'gateway', model: 'plain', maxContextSize: 20000,
+          capabilities: ['thinking'], defaultEffort: 'high', supportEfforts: ['low', 'high'],
+          overrides: { supportEfforts: ['low'] } },
+        explicit: { provider: 'gateway', model: 'plain', maxContextSize: 20000,
+          capabilities: ['thinking'], defaultEffort: 'high', supportEfforts: ['low', 'high'],
+          overrides: { supportEfforts: ['low'] }, parameters: { thinkingEffort: 'high' } },
+      },
+    });
+    try {
+      expect(catalog.get('legacy').generationParameters?.thinkingEffort).toBeUndefined();
+      expect(catalog.get('legacy').preferredThinkingEffort).toBeUndefined();
+      expect(() => catalog.get('explicit')).toThrow('does not support thinking effort');
+    } finally { host.dispose(); }
+  });
+
+  it('rejects known unsupported or forced-off thinking preferences but leaves unknown effort claims unverified', () => {
+    const { host, catalog } = createHost({
+      providers: { gateway: { type: 'openai', baseUrl: 'https://example.test/v1' } },
+      models: {
+        forced: { provider: 'gateway', model: 'forced', maxContextSize: 20000,
+          capabilities: ['always_thinking'], parameters: { thinkingEffort: 'off' } },
+        known: { provider: 'gateway', model: 'known', maxContextSize: 20000,
+          capabilities: ['thinking'], supportEfforts: ['low'], parameters: { thinkingEffort: 'high' } },
+        unknown: { provider: 'gateway', model: 'unknown', maxContextSize: 20000,
+          capabilities: ['thinking'], parameters: { thinkingEffort: 'custom' } },
+      },
+    });
+    try {
+      expect(() => catalog.get('forced')).toThrow('requires thinking');
+      expect(() => catalog.get('known')).toThrow('does not support thinking effort');
+      expect(catalog.get('unknown').preferredThinkingEffort).toBe('custom');
+    } finally { host.dispose(); }
   });
 
   it('resolves provider image defaults with field-level model overrides', () => {

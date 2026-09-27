@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 105 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 106 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -128,6 +128,7 @@
 //     prompt.queue                                    src/agent/prompt/promptService.ts
 //     promptAdmission                                 src/agent/prompt/promptOps.ts
 //     promptResolution                                src/agent/prompt/promptService.ts
+//     promptRetryReceipt                              src/agent/prompt/promptOps.ts
 //     runtime.binding                                 src/agent/runtimeBinding/runtimeBindingService.ts
 //     runtimeBinding                                  src/agent/runtimeBinding/runtimeBindingOps.ts
 //     shellCommand.tasks                              src/agent/shellCommand/shellCommandService.ts
@@ -1485,6 +1486,19 @@ export interface AgentStateSnapshot {
       baseUrl?: string;
       customHeaders?: Record<string, string>;
       defaultModel?: string;
+      defaults?: /* GenerationParameters — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
+        temperature?: number | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
+          kind: 'api_default';
+        };
+        topP?: number | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
+          kind: 'api_default';
+        };
+        maxCompletionTokens?: number;
+        thinkingEffort?: string;
+        serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
+          kind: 'api_default';
+        };
+      };
       requestIdentity?: /* RequestIdentityPolicy — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
         preset?: 'none' | 'codex_compatible' | 'grok_build_compatible' | 'kimi_code';
         overrides?: /* RequestIdentityOverrides — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
@@ -2990,6 +3004,16 @@ export interface AgentStateSnapshot {
   // src/agent/prompt/promptOps.ts
   // replayable · durable — folds: PromptAccepted
   'promptAdmission': Map<string, true>;
+  // replayable · durable — folds: PromptRetryCommitted
+  'promptRetryReceipt': Map<string, {
+    readonly fingerprint: string;
+    readonly receipt: {
+      status: 'running' | 'blocked' | 'queued';
+      createdAt: string;
+      appendTiming: 'subagents_done' | 'tasks_done' | 'agent_idle';
+      revision: number;
+    };
+  }>;
   // src/agent/prompt/promptService.ts
   'prompt.launching': boolean;
   // replayable · durable — folds: PromptEnqueued, PromptReplaced, PromptTimingChanged, PromptMoved, PromptLaunchCommitted, PromptAborted, PromptCompleted, PromptSteered
@@ -3042,6 +3066,17 @@ export interface AgentStateSnapshot {
     readonly ownerAgentId?: string;
     readonly ownerTurnId?: number;
     readonly goalId?: string;
+    readonly receipt?: /* AgentTaskReceipt — packages/agent-core-v2/src/agent/task/types.ts */ {
+      readonly schemaVersion: 1;
+      readonly path: string;
+      readonly mediaType: 'text/plain; charset=utf-8';
+      readonly bytes: number;
+      readonly sha256: string;
+      readonly contentState: 'unavailable' | 'final';
+      readonly committedAt: string;
+      readonly sourceTurnId?: number;
+    };
+    readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   } | /* QuestionTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'question';
     readonly questionCount: number;
@@ -3059,6 +3094,17 @@ export interface AgentStateSnapshot {
     readonly ownerAgentId?: string;
     readonly ownerTurnId?: number;
     readonly goalId?: string;
+    readonly receipt?: /* AgentTaskReceipt — packages/agent-core-v2/src/agent/task/types.ts */ {
+      readonly schemaVersion: 1;
+      readonly path: string;
+      readonly mediaType: 'text/plain; charset=utf-8';
+      readonly bytes: number;
+      readonly sha256: string;
+      readonly contentState: 'unavailable' | 'final';
+      readonly committedAt: string;
+      readonly sourceTurnId?: number;
+    };
+    readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'process';
     readonly command: string;
@@ -3077,6 +3123,17 @@ export interface AgentStateSnapshot {
     readonly ownerAgentId?: string;
     readonly ownerTurnId?: number;
     readonly goalId?: string;
+    readonly receipt?: /* AgentTaskReceipt — packages/agent-core-v2/src/agent/task/types.ts */ {
+      readonly schemaVersion: 1;
+      readonly path: string;
+      readonly mediaType: 'text/plain; charset=utf-8';
+      readonly bytes: number;
+      readonly sha256: string;
+      readonly contentState: 'unavailable' | 'final';
+      readonly committedAt: string;
+      readonly sourceTurnId?: number;
+    };
+    readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   }>;
   // src/agent/task/taskService.ts
   'task.activeTaskReminderPending': boolean;
@@ -3103,6 +3160,17 @@ export interface AgentStateSnapshot {
     readonly ownerAgentId?: string;
     readonly ownerTurnId?: number;
     readonly goalId?: string;
+    readonly receipt?: /* AgentTaskReceipt — packages/agent-core-v2/src/agent/task/types.ts */ {
+      readonly schemaVersion: 1;
+      readonly path: string;
+      readonly mediaType: 'text/plain; charset=utf-8';
+      readonly bytes: number;
+      readonly sha256: string;
+      readonly contentState: 'unavailable' | 'final';
+      readonly committedAt: string;
+      readonly sourceTurnId?: number;
+    };
+    readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   } | /* QuestionTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'question';
     readonly questionCount: number;
@@ -3120,6 +3188,17 @@ export interface AgentStateSnapshot {
     readonly ownerAgentId?: string;
     readonly ownerTurnId?: number;
     readonly goalId?: string;
+    readonly receipt?: /* AgentTaskReceipt — packages/agent-core-v2/src/agent/task/types.ts */ {
+      readonly schemaVersion: 1;
+      readonly path: string;
+      readonly mediaType: 'text/plain; charset=utf-8';
+      readonly bytes: number;
+      readonly sha256: string;
+      readonly contentState: 'unavailable' | 'final';
+      readonly committedAt: string;
+      readonly sourceTurnId?: number;
+    };
+    readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'process';
     readonly command: string;
@@ -3138,6 +3217,17 @@ export interface AgentStateSnapshot {
     readonly ownerAgentId?: string;
     readonly ownerTurnId?: number;
     readonly goalId?: string;
+    readonly receipt?: /* AgentTaskReceipt — packages/agent-core-v2/src/agent/task/types.ts */ {
+      readonly schemaVersion: 1;
+      readonly path: string;
+      readonly mediaType: 'text/plain; charset=utf-8';
+      readonly bytes: number;
+      readonly sha256: string;
+      readonly contentState: 'unavailable' | 'final';
+      readonly committedAt: string;
+      readonly sourceTurnId?: number;
+    };
+    readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   }>;
   // replayable · durable · undoable — folds: ContextAppendMessage, TaskWaitDelivered
   'task.notificationDelivery': readonly string[];

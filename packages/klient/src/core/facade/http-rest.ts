@@ -216,6 +216,9 @@ export interface HttpRestFacade {
   readonly config: {
     get(): Promise<ConfigResponse>;
     patch(body: HttpRestConfigPatch): Promise<ConfigResponse>;
+    previewModelGenerationMigration(): Promise<import('@kiki/protocol').ModelGenerationMigrationPreviewResponse>;
+    applyModelGenerationMigration(revision: string): Promise<import('@kiki/protocol').ModelGenerationMigrationApplyResponse>;
+    restoreModelGenerationMigration(backupKey: string, revision: string): Promise<import('@kiki/protocol').ModelGenerationMigrationRestoreResponse>;
   };
 
   readonly catalog: {
@@ -230,6 +233,8 @@ export interface HttpRestFacade {
   readonly nbSearch: {
     capabilities(): Promise<import('@kiki/protocol').NbSearchCapabilities>;
     test(options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').NbSearchTestStatus>;
+    readCredential(instanceId: string, reveal: boolean): Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
+    writeCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
   };
 
   readonly agents: {

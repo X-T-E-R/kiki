@@ -1,5 +1,5 @@
 import { ErrorCodes, Error2 } from '#/errors';
-import type { McpServerConfig } from './config-schema';
+import type { McpRemoteServerConfig, McpServerConfig } from './config-schema';
 import type { ILogger as Logger } from '#/_base/log/log';
 import type { Tool } from '#/kosong/contract/tool';
 import { HostProcessError, HostProcessErrorCode } from '#/os/interface/hostProcess';
@@ -440,7 +440,7 @@ export class McpConnectionManager implements McpConnectionView {
     const oauthService = this.oauthService;
     if (oauthService === undefined) return undefined;
     if (!isRemoteMcpConfig(config)) return undefined;
-    if (config.bearerTokenEnvVar !== undefined) return undefined;
+    if (config.bearerTokenEnvVar !== undefined || hasExplicitAuthorizationHeader(config)) return undefined;
     if (!(await oauthService.hasTokens(name, config.url))) return undefined;
     return oauthService.getProvider(name, config.url);
   }
@@ -448,7 +448,7 @@ export class McpConnectionManager implements McpConnectionView {
   private shouldMarkNeedsAuth(entry: InternalEntry, error: unknown): boolean {
     if (this.oauthService === undefined) return false;
     if (!isRemoteMcpConfig(entry.config)) return false;
-    if (entry.config.bearerTokenEnvVar !== undefined) return false;
+    if (entry.config.bearerTokenEnvVar !== undefined || hasExplicitAuthorizationHeader(entry.config)) return false;
     if (entry.config.headers !== undefined && entry.config.auth !== 'oauth') return false;
     return isUnauthorizedLikeError(error);
   }
@@ -539,6 +539,10 @@ function computeEnabledNames(config: McpServerConfig, tools: readonly Tool[]): S
     allowed.add(name);
   }
   return allowed;
+}
+
+function hasExplicitAuthorizationHeader(config: McpRemoteServerConfig): boolean {
+  return Object.keys(config.headers ?? {}).some((key) => key.toLowerCase() === 'authorization');
 }
 
 function isUnauthorizedLikeError(error: unknown): boolean {

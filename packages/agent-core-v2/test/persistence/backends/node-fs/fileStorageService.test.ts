@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
@@ -191,19 +191,23 @@ describe('FileStorageService — exclusive locks', () => {
     const lockDir = join(dir, 'session-locks');
     const lockPath = join(lockDir, 'session.lock');
     await mkdir(lockDir, { recursive: true });
-    await writeFile(lockPath, JSON.stringify({
+    const deadOwner = {
       version: 1,
       pid: 2_147_483_647,
       processStartedAt: 0,
       token: 'old-token',
       acquiredAt: Date.now() - 10_000,
       leaseMs: 1_000,
-    }));
+    };
+    await writeFile(lockPath, JSON.stringify(deadOwner));
+    const deadWatchPath = `${lockPath}.watch-${deadOwner.pid}-orphan`;
+    await writeFile(deadWatchPath, JSON.stringify(deadOwner));
     const expiredAt = new Date(Date.now() - 5_000);
     await utimes(lockPath, expiredAt, expiredAt);
 
     const before = Date.now();
     const lock = await new FileStorageService(dir).acquireLock('session-locks', 'session.lock');
+    await expect(readFile(deadWatchPath)).rejects.toMatchObject({ code: 'ENOENT' });
     const current = JSON.parse(await readFile(lockPath, 'utf8')) as {
       pid: number; token: string; acquiredAt: number; processStartedAt: number;
     };
@@ -214,11 +218,31 @@ describe('FileStorageService — exclusive locks', () => {
     await expect(readFile(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('fences a superseded holder when its pid has the wrong process start time', async () => {
+  it('does not supersede a live holder even when its lock metadata has drifted', async () => {
     const lockPath = join(dir, 'session-locks', 'session.lock');
+    const svc = new FileStorageService(dir);
+    const held = await svc.acquireLock('session-locks', 'session.lock');
+    const payload = JSON.parse(await readFile(lockPath, 'utf8')) as Record<string, unknown>;
+    await writeFile(lockPath, JSON.stringify({ ...payload, processStartedAt: 0 }));
+    const expiredAt = new Date(Date.now() - 180_000);
+    await utimes(lockPath, expiredAt, expiredAt);
+
+    await expect(svc.acquireLock('session-locks', 'session.lock')).rejects.toMatchObject({ code: 'storage.locked' });
+    expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ token: payload['token'] });
+    await held.release();
+    const replacement = await svc.acquireLock('session-locks', 'session.lock');
+    await replacement.release();
+  });
+
+  it('does not let an older holder release a replacement after its watch is removed', async () => {
+    const lockPath = join(dir, 'session-locks', 'session.lock');
+    const lockDir = join(dir, 'session-locks');
     const svc = new FileStorageService(dir);
     const old = await svc.acquireLock('session-locks', 'session.lock');
     const payload = JSON.parse(await readFile(lockPath, 'utf8')) as Record<string, unknown>;
+    const watches = (await readdir(lockDir)).filter((entry) => entry.startsWith('session.lock.watch-'));
+    expect(watches).toHaveLength(1);
+    await unlink(join(lockDir, watches[0]!));
     await writeFile(lockPath, JSON.stringify({ ...payload, processStartedAt: 0 }));
     const expiredAt = new Date(Date.now() - 180_000);
     await utimes(lockPath, expiredAt, expiredAt);
@@ -249,7 +273,9 @@ describe('FileStorageService — exclusive locks', () => {
         acquiredAt: Date.now() - 10_000,
         leaseMs: 1_000,
       };
+      const watchPath = `${lockPath}.watch-${child.pid}-reused`;
       await writeFile(lockPath, JSON.stringify(payload));
+      await writeFile(watchPath, JSON.stringify(payload));
       const expiredAt = new Date(Date.now() - 5_000);
       await utimes(lockPath, expiredAt, expiredAt);
       const svc = new FileStorageService(dir);
@@ -258,8 +284,10 @@ describe('FileStorageService — exclusive locks', () => {
       });
       expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual(payload);
       await writeFile(lockPath, JSON.stringify({ ...payload, processStartedAt: 0 }));
+      await writeFile(watchPath, JSON.stringify({ ...payload, processStartedAt: 0 }));
       await utimes(lockPath, expiredAt, expiredAt);
       const lock = await svc.acquireLock('session-locks', 'session.lock');
+      await expect(readFile(watchPath)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ pid: process.pid });
       await lock.release();
     } finally {

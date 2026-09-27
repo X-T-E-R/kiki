@@ -1530,6 +1530,8 @@ describe('MCP settings draft projection', () => {
       args: '-y\nserver.js',
       env: 'TOKEN=value\nEMPTY=',
       url: '',
+      headers: 'Authorization=unused',
+      bearerTokenEnvVar: 'UNUSED_ENV',
     })).toEqual({
       enabled: undefined,
       startupTimeoutMs: undefined,
@@ -1551,6 +1553,79 @@ describe('MCP settings draft projection', () => {
       args: '',
       env: 'TOKEN',
       url: '',
+      headers: '',
+      bearerTokenEnvVar: '',
     })).toThrow('st.mcp.envInvalid');
+  });
+
+  const remote = {
+    name: 'remote',
+    config: {
+      transport: 'http' as const,
+      url: 'https://old.example.test/mcp',
+      headers: { Authorization: 'Bearer old=token', 'X-Team': 'alpha' },
+      auth: 'oauth' as const,
+      bearerTokenEnvVar: 'MCP_TOKEN',
+    },
+    source: 'global' as const,
+    origin: '/tmp/fixture-mcp.json',
+    mutable: true,
+  };
+  const remoteDraft = {
+    original: remote,
+    name: 'remote',
+    transport: 'http' as const,
+    command: '',
+    args: '',
+    env: '',
+    url: remote.config.url,
+    headers: 'Authorization=Bearer new=token\nX-Team=alpha',
+    bearerTokenEnvVar: 'MCP_TOKEN',
+    auth: 'oauth' as const,
+  };
+
+  it('keeps the explicit env reference until cleared or replaced, without inheriting deleted headers', () => {
+    expect(mcpConfigFromDraft(remoteDraft)).toMatchObject({
+      headers: { Authorization: 'Bearer new=token', 'X-Team': 'alpha' },
+      bearerTokenEnvVar: 'MCP_TOKEN', auth: 'oauth',
+    });
+    expect(mcpConfigFromDraft({ ...remoteDraft, bearerTokenEnvVar: 'OTHER_TOKEN', headers: 'X-Team=beta' })).toMatchObject({
+      headers: { 'X-Team': 'beta' }, bearerTokenEnvVar: 'OTHER_TOKEN',
+    });
+    expect(mcpConfigFromDraft({ ...remoteDraft, headers: '' })).toMatchObject({
+      headers: undefined, bearerTokenEnvVar: 'MCP_TOKEN',
+    });
+    expect(mcpConfigFromDraft({ ...remoteDraft, bearerTokenEnvVar: '', headers: 'Authorization=Bearer manual=now' })).toMatchObject({
+      headers: { Authorization: 'Bearer manual=now' }, bearerTokenEnvVar: undefined, auth: 'oauth',
+    });
+    expect(mcpConfigFromDraft({ ...remoteDraft, bearerTokenEnvVar: '', headers: '' })).toMatchObject({
+      headers: undefined, bearerTokenEnvVar: undefined, auth: 'oauth',
+    });
+  });
+
+  it('does not silently restore env or OAuth after a target change and return', () => {
+    const changed = { ...remoteDraft, url: 'https://new.example.test/mcp', bearerTokenEnvVar: '', headers: '', auth: undefined };
+    expect(mcpConfigFromDraft(changed)).toMatchObject({
+      transport: 'http', headers: undefined, bearerTokenEnvVar: undefined, auth: undefined,
+    });
+    expect(mcpConfigFromDraft({ ...changed, url: remote.config.url, transport: 'sse', headers: 'Authorization=Bearer sse' })).toMatchObject({
+      transport: 'sse', headers: { Authorization: 'Bearer sse' }, bearerTokenEnvVar: undefined, auth: undefined,
+    });
+    expect(mcpConfigFromDraft({ ...changed, url: remote.config.url })).toMatchObject({
+      headers: undefined, bearerTokenEnvVar: undefined, auth: undefined,
+    });
+  });
+
+  it('never inherits read-only values and rejects invalid or case-insensitive duplicate headers', () => {
+    const readOnly = { ...remote, mutable: false, source: 'plugin' as const };
+    expect(mcpConfigFromDraft({ ...remoteDraft, original: readOnly, bearerTokenEnvVar: '', headers: '' })).toMatchObject({
+      auth: undefined, bearerTokenEnvVar: undefined, headers: undefined,
+    });
+    expect(() => mcpConfigFromDraft({ ...remoteDraft, headers: 'Bad Name=secret' })).toThrow('st.mcp.headersInvalid');
+    expect(() => mcpConfigFromDraft({ ...remoteDraft, headers: 'Incomplete' })).toThrow('st.mcp.headersInvalid');
+    expect(() => mcpConfigFromDraft({ ...remoteDraft, headers: 'Authorization=one\naUTHORIZATION=two' })).toThrow('st.mcp.headersDuplicate');
+    expect(mcpConfigFromDraft({ ...remoteDraft, bearerTokenEnvVar: '', headers: 'X-Note=value=with: colon / and spaces\nEmpty=' })).toMatchObject({
+      headers: { 'X-Note': 'value=with: colon / and spaces', Empty: '' },
+    });
   });
 });

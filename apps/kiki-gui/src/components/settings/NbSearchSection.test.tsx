@@ -22,9 +22,11 @@ const getConfig = vi.fn();
 const patchConfig = vi.fn();
 const getNbSearchCapabilities = vi.fn();
 const testNbSearch = vi.fn();
+const readNbSearchCredential = vi.fn();
+const writeNbSearchCredential = vi.fn();
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { getConfig, patchConfig, getNbSearchCapabilities, testNbSearch } }),
+  useConnection: () => ({ scopeId: 'fixture-connection', client: { getConfig, patchConfig, getNbSearchCapabilities, testNbSearch, readNbSearchCredential, writeNbSearchCredential } }),
 }));
 vi.mock('../../host', () => ({
   useHost: () => ({ kind: 'browser' }),
@@ -97,6 +99,8 @@ beforeEach(() => {
   getConfig.mockReset().mockResolvedValue({} as KikiConfigResponse);
   patchConfig.mockReset().mockImplementation(async (patch: Record<string, unknown>) => ({ ...patch }));
   getNbSearchCapabilities.mockReset().mockResolvedValue(CAPABILITIES);
+  readNbSearchCredential.mockReset().mockResolvedValue({ instance_id: 'exa.default', slot_id: 'exa.default', stored: false, active: false, source: 'none', version: 'none', binding_version: 'fixture-binding' });
+  writeNbSearchCredential.mockReset().mockResolvedValue({ instance_id: 'exa.default', slot_id: 'exa.default', stored: true, active: true, source: 'managed', version: 'fixture-version', binding_version: 'fixture-binding' });
   testNbSearch.mockReset().mockResolvedValue({
     revision: 'config-fixture',
     search: { configured: true, available: true, selection: 'github.repositories', issues: [] },
@@ -190,9 +194,50 @@ describe('NbSearchSection status', () => {
     expect(providers.textContent).toContain('credential missing');
     expect(providers.querySelectorAll('textarea')).toHaveLength(1);
     expect(providers.textContent).toContain('user_location');
-    // The env input holds a variable NAME only; no secret field exists.
+    // The env input holds only a name; the managed value has a separate editor.
     const envInput = providers.querySelector<HTMLInputElement>('input[placeholder="NB_SEARCH_EXA_API_KEY"]')!;
     expect(envInput.value).toBe('');
+    expect(providers.querySelector<HTMLInputElement>('input[type="password"]')).not.toBeNull();
+  });
+
+  it('reveals a saved managed value only on demand, then overwrites and clears it', async () => {
+    const initial = { instance_id: 'exa.default', slot_id: 'exa.default', stored: true, active: true, source: 'managed', version: 'fixture-old', binding_version: 'fixture-binding' };
+    readNbSearchCredential.mockResolvedValueOnce(initial).mockResolvedValueOnce({ ...initial, value: 'fixture-old-value' });
+    writeNbSearchCredential.mockResolvedValueOnce({ ...initial, version: 'fixture-new' }).mockResolvedValueOnce({ ...initial, stored: false, active: false, source: 'none', version: 'none' });
+    const container = await renderSection('/settings/search?tab=providers');
+    const providers = container.querySelector('#st-card-search-providers')!;
+    const credential = providers.querySelector<HTMLInputElement>('input[type="password"]')!;
+    expect(credential.value).toBe('');
+    expect(readNbSearchCredential).toHaveBeenCalledWith('exa.default', false);
+    const button = (text: string) => [...providers.querySelectorAll('button')].find((item) => item.textContent === text)!;
+    await click(button('Reveal saved value'));
+    expect(readNbSearchCredential).toHaveBeenCalledWith('exa.default', true);
+    expect(credential.value).toBe('fixture-old-value');
+    await setInputValue(credential, 'fixture-edited-value');
+    await click(button('Save / overwrite'));
+    expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', 'fixture-edited-value', 'fixture-old', 'fixture-binding');
+    expect(credential.value).toBe('');
+    await click(button('Clear saved value'));
+    expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', null, 'fixture-new', 'fixture-binding');
+  });
+
+  it('requires reload after another client changes a credential binding', async () => {
+    const initial = { instance_id: 'exa.default', slot_id: 'exa.default', stored: false, active: false, source: 'none', version: 'none', binding_version: 'fixture-before-binding' };
+    readNbSearchCredential.mockResolvedValueOnce(initial).mockResolvedValueOnce({ ...initial, binding_version: 'fixture-after-binding' });
+    writeNbSearchCredential.mockRejectedValueOnce({ code: 40941 }).mockResolvedValueOnce({ ...initial, stored: true, active: true, source: 'managed', version: 'fixture-new', binding_version: 'fixture-after-binding' });
+    const container = await renderSection('/settings/search?tab=providers');
+    const card = container.querySelector('#st-card-search-providers')!;
+    const input = card.querySelector<HTMLInputElement>('input[type="password"]')!;
+    const button = (text: string) => [...card.querySelectorAll('button')].find((item) => item.textContent === text)!;
+    await setInputValue(input, 'fixture-typed-key');
+    await click(button('Save / overwrite'));
+    expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', 'fixture-typed-key', 'none', 'fixture-before-binding');
+    expect(card.textContent).toContain('changed elsewhere');
+    await click(button('Retry'));
+    expect(input.value).toBe('');
+    await setInputValue(input, 'fixture-confirmed-key');
+    await click(button('Save / overwrite'));
+    expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', 'fixture-confirmed-key', 'none', 'fixture-after-binding');
   });
 });
 
@@ -900,7 +945,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     // After discard, default should be restored
     const noDefaultRadio = container.querySelector<HTMLInputElement>('input[type="radio"]')!;
     expect(noDefaultRadio.checked).toBe(true);
-    expect(container.querySelector('button[disabled]')?.textContent).toContain('Save search & retrieval');
+    expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save search & retrieval')?.disabled).toBe(true);
   });
 
   it('resolves tab-hash conflict by prioritizing the specific card hash anchor', async () => {

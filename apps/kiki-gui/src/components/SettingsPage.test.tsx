@@ -44,6 +44,7 @@ const klient = {
       update: vi.fn(async (): Promise<readonly typeof MCP_ENTRY[]> => []),
       remove: vi.fn(async (): Promise<readonly typeof MCP_ENTRY[]> => []),
       test: vi.fn(async () => ({ success: true, output: '' })),
+      listStoredOAuthCredentials: vi.fn(async () => []),
     },
   },
 };
@@ -94,16 +95,20 @@ const client = {
   patchConfig: vi.fn(async () => ({})),
 };
 
+const connectionMock = vi.hoisted(() => ({ token: '', applyConnection: vi.fn() }));
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
     client,
     klient,
-    config: { url: 'http://127.0.0.1:8080', token: '' },
+    config: { url: 'http://127.0.0.1:8080', token: connectionMock.token },
+    scopeId: 'direct:http://127.0.0.1:8080',
+    sshLabel: null,
     meta: { server_version: 'test', backend: 'v2' },
     wsStatus: 'open',
     socket: { nudge: vi.fn() },
+    activateLocal: vi.fn(),
     disconnect: vi.fn(),
-    applyConnection: vi.fn(),
+    applyConnection: connectionMock.applyConnection,
   }),
 }));
 
@@ -127,16 +132,20 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  connectionMock.token = '';
+  connectionMock.applyConnection.mockClear();
   klient.global.mcp.list.mockReset();
   klient.global.mcp.add.mockReset();
   klient.global.mcp.update.mockReset();
   klient.global.mcp.remove.mockReset();
   klient.global.mcp.test.mockReset();
+  klient.global.mcp.listStoredOAuthCredentials.mockReset();
   klient.global.mcp.list.mockResolvedValue([]);
   klient.global.mcp.add.mockResolvedValue([]);
   klient.global.mcp.update.mockResolvedValue([]);
   klient.global.mcp.remove.mockResolvedValue([]);
   klient.global.mcp.test.mockResolvedValue({ success: true, output: '' });
+  klient.global.mcp.listStoredOAuthCredentials.mockResolvedValue([]);
   client.listNamedAgentProfiles.mockClear();
 });
 
@@ -270,6 +279,26 @@ describe('SettingsPage batch-3 leaves', () => {
       requestTimeoutSeconds: 120,
     });
     expect(card.textContent).toContain('New requests use the updated limit.');
+  });
+
+  it('reveals, edits, and overwrites the saved connection token', async () => {
+    connectionMock.token = 'saved-token';
+    const container = await renderSettings('/settings/connection');
+    const card = container.querySelector('#st-card-conn-server')!;
+    const token = card.querySelector<HTMLInputElement>('#st-conn-token')!;
+    expect(token.value).toBe('saved-token');
+    expect(token.type).toBe('password');
+    await click(card.querySelector('[aria-label="Show Bearer token"]')!);
+    expect(token.type).toBe('text');
+    await setInput(token, 'replacement-token');
+    await act(async () => {
+      card.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    expect(connectionMock.applyConnection).toHaveBeenCalledWith({
+      url: 'http://127.0.0.1:8080', token: 'replacement-token',
+    });
+    await click(card.querySelector('[aria-label="Hide Bearer token"]')!);
+    expect(token.type).toBe('password');
   });
 
   it('mounts the mcp leaf with config, status, and timeouts cards', async () => {

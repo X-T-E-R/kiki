@@ -1,5 +1,4 @@
 import type { ModelCapability } from '#/kosong/contract/capability';
-
 import type { OAuthRef } from '../provider/provider';
 
 export interface ModelOverrides {
@@ -37,5 +36,6 @@ export interface ModelThinkingMetadata {
   readonly alwaysThinking?: boolean;
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
+  readonly preferredThinkingEffort?: string;
   readonly overrides?: { readonly defaultEffort?: string };
 }

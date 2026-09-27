@@ -34,6 +34,10 @@ const FILES: Record<string, string> = {
 const writeMock = vi.fn(async (path: string, text: string) => {
   FILES[path] = text;
 });
+const connectionMock = vi.hoisted(() => ({
+  activeClient: null as unknown, defaultClient: null as unknown, scopeId: 'local',
+}));
+const hostMock = vi.hoisted(() => ({ desktop: false, revealPath: vi.fn(), openPath: vi.fn() }));
 
 vi.mock('../state/connection', async (importOriginal) => {
   const original = await importOriginal<typeof import('../state/connection')>();
@@ -44,12 +48,15 @@ vi.mock('../state/connection', async (importOriginal) => {
     readHostFile: (path: string) =>
       path in FILES ? Promise.resolve(FILES[path]) : Promise.reject(new Error('not found')),
     previewHostFile: (path: string) =>
-      path in FILES ? Promise.resolve({ text: FILES[path], truncated: false }) : Promise.reject(new Error('not found')),
+      path === '/work/docs/long.md' ? Promise.resolve({ text: '# Beginning\n', truncated: true })
+        : path in FILES ? Promise.resolve({ text: FILES[path], truncated: false }) : Promise.reject(new Error('not found')),
     readHostFileBytes: () => Promise.reject(new Error('not found')),
   };
+  connectionMock.activeClient = fakeClient;
+  connectionMock.defaultClient = fakeClient;
   return {
     ...original,
-    useOptionalConnection: () => ({ client: fakeClient }),
+    useOptionalConnection: () => ({ client: connectionMock.activeClient, scopeId: connectionMock.scopeId }),
   };
 });
 
@@ -58,7 +65,8 @@ vi.mock('../host', () => {
     kind: 'browser',
     writeFileText: (path: string, text: string) => writeMock(path, text),
   };
-  return { useHost: () => host };
+  const desktopHost = { ...host, kind: 'tauri', revealPath: hostMock.revealPath, openPath: hostMock.openPath };
+  return { useHost: () => hostMock.desktop ? desktopHost : host };
 });
 
 vi.mock('./CodeEditor', () => ({
@@ -93,6 +101,9 @@ const agentWorkspaceHarness = vi.hoisted(() => ({
     inheritMediaPreview: unknown;
     showPreviewToggle: unknown;
     railIsOverlay: unknown;
+    railOpen: unknown;
+    showRailToggle: unknown;
+    onToggleRail: unknown;
     transcriptVisible: unknown;
     slotsProvided: boolean;
   }>,
@@ -104,6 +115,9 @@ vi.mock('./agent-workspace', () => ({
     inheritMediaPreview?: unknown;
     showPreviewToggle?: unknown;
     railIsOverlay?: unknown;
+    railOpen?: unknown;
+    showRailToggle?: unknown;
+    onToggleRail?: unknown;
     transcriptVisible?: unknown;
     slots?: unknown;
   }) => {
@@ -112,6 +126,9 @@ vi.mock('./agent-workspace', () => ({
       inheritMediaPreview: props.inheritMediaPreview,
       showPreviewToggle: props.showPreviewToggle,
       railIsOverlay: props.railIsOverlay,
+      railOpen: props.railOpen,
+      showRailToggle: props.showRailToggle,
+      onToggleRail: props.onToggleRail,
       transcriptVisible: props.transcriptVisible,
       slotsProvided: props.slots !== undefined,
     });
@@ -179,6 +196,11 @@ describe('PreviewWorkspace', () => {
   beforeEach(() => {
     FILES['/work/src/server.ts'] = "import { boot } from './boot';\nboot(5801);\n";
     FILES['/work/docs/design.md'] = '# Design\n\nSome **notes**.\n';
+    connectionMock.activeClient = connectionMock.defaultClient;
+    connectionMock.scopeId = 'local';
+    hostMock.desktop = false;
+    hostMock.revealPath.mockClear();
+    hostMock.openPath.mockClear();
     writeMock.mockClear();
   });
   afterEach(() => {
@@ -262,6 +284,76 @@ describe('PreviewWorkspace', () => {
     // Markdown defaults to the rendered view.
     const panel = workspace().querySelector('[data-preview-tabpanel="/work/docs/design.md"]');
     expect(panel?.querySelector('h1')?.textContent).toBe('Design');
+  });
+
+  it('discloses a truncated Markdown preview and loads the full file on demand without enabling editing', async () => {
+    FILES['/work/docs/long.md'] = '# Beginning\n\n# Hidden ending\n';
+    const probe = makeRoot();
+    await renderSettled(probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/docs/long.md" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/docs/long.md');
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/docs/long.md"]')!;
+    expect(panel.querySelector('h1')?.textContent).toBe('Beginning');
+    expect(panel.textContent).toContain('preview shows only the beginning');
+    expect(panel.textContent).not.toContain('Hidden ending');
+    await act(async () => {
+      panel.querySelector('[data-load-full-markdown]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(panel.querySelector('h1')?.textContent).toBe('Beginning');
+    expect([...panel.querySelectorAll('h1')].map((heading) => heading.textContent)).toEqual(['Beginning', 'Hidden ending']);
+    expect(panel.querySelector('[data-load-full-markdown]')).toBeNull();
+    expect(panel.querySelector('[data-save-button]')).toBeNull();
+    expect(writeMock).not.toHaveBeenCalled();
+  });
+
+  it('loads the full Markdown source on demand without making it editable', async () => {
+    FILES['/work/docs/long.md'] = '# Beginning\n\n# Hidden ending\n';
+    const probe = makeRoot();
+    await renderSettled(probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/docs/long.md" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/docs/long.md');
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/docs/long.md"]')!;
+    await act(async () => {
+      panel.querySelector('[data-md-mode="source"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const editor = () => panel.querySelector('[data-testid="editor"]') as HTMLTextAreaElement;
+    expect(editor().value).not.toContain('Hidden ending');
+    expect(panel.querySelector('[data-load-full-markdown]')).not.toBeNull();
+    await act(async () => {
+      panel.querySelector('[data-load-full-markdown]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(editor().value).toContain('# Hidden ending');
+    expect(editor().readOnly).toBe(true);
+    expect(panel.querySelector('[data-load-full-markdown]')).toBeNull();
+    expect(writeMock).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse full Markdown from a different connection with the same file generation', async () => {
+    FILES['/work/docs/long.md'] = '# First host\n\n# Private ending\n';
+    const probe = makeRoot();
+    const view = () => <MediaPreviewProvider cwd="/work"><OpenButton path="/work/docs/long.md" /></MediaPreviewProvider>;
+    await renderSettled(probe.root, view());
+    await openFile(probe.container, '/work/docs/long.md');
+    await act(async () => {
+      workspace().querySelector('[data-load-full-markdown]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(workspace().textContent).toContain('Private ending');
+
+    connectionMock.activeClient = {
+      readHostFile: async () => '# Second host\n',
+      previewHostFile: async () => ({ text: '# Second host\n', truncated: true }),
+      readHostFileBytes: async () => { throw new Error('not found'); },
+    };
+    await renderSettled(probe.root, view());
+    expect(workspace().textContent).not.toContain('Private ending');
+    expect(workspace().querySelector('h1')?.textContent).toBe('Second host');
+    expect(workspace().querySelector('[data-load-full-markdown]')).not.toBeNull();
   });
 
   it('markdown source toggle shows the editor', async () => {
@@ -546,6 +638,26 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
     expect(writeText).toHaveBeenCalledWith('src/server.ts');
   });
 
+  it.each([['local', true], ['ssh:remote-1', false]] as const)(
+    'only offers local file openers in the local scope (%s)', async (scopeId, expected) => {
+      hostMock.desktop = true;
+      connectionMock.scopeId = scopeId;
+      const probe = makeRoot();
+      await renderSettled(probe.root,
+        <MediaPreviewProvider cwd="/work"><OpenButton path="/work/src/server.ts" /></MediaPreviewProvider>,
+      );
+      await openFile(probe.container, '/work/src/server.ts');
+      await act(async () => {
+        workspace().querySelector('[data-preview-tab="/work/src/server.ts"]')!
+          .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+      });
+      const menu = document.querySelector('[data-preview-tab-menu]')!;
+      expect(menu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
+      expect(menu.querySelector('[data-menu-item="show-in-folder"]') !== null).toBe(expected);
+      expect(menu.querySelector('[data-menu-item="open-default-app"]') !== null).toBe(expected);
+    },
+  );
+
   it('the @ button appends @<relative path> to the session draft', async () => {
     const probe = makeRoot();
     await renderSettled(
@@ -675,20 +787,29 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
     await openFile(probe.container, '/work/src/server.ts');
     const ws = workspace();
     expect(ws.classList.contains('fixed')).toBe(false);
+    expect(ws.hasAttribute('data-preview-fullscreen')).toBe(false);
 
     const toggleBtn = ws.querySelector('[data-preview-fullscreen-toggle]')!;
-    // Toggle into fullscreen
+    // Toggle into fullscreen; the shell uses this state to lift its one shared rail.
     await act(async () => {
       toggleBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(workspace().classList.contains('fixed')).toBe(true);
     expect(workspace().classList.contains('inset-0')).toBe(true);
+    expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
 
-    // Escape exits fullscreen
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    });
+    const ownedEscape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    ownedEscape.preventDefault();
+    await act(async () => { window.dispatchEvent(ownedEscape); });
+    expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+
+    // The fullscreen closer consumes its Escape so later main-abort listeners
+    // cannot mistake focus on body for permission to stop the active turn.
+    const fullscreenEscape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    await act(async () => { window.dispatchEvent(fullscreenEscape); });
+    expect(fullscreenEscape.defaultPrevented).toBe(true);
     expect(workspace().classList.contains('fixed')).toBe(false);
+    expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
   });
 });
 
@@ -734,6 +855,7 @@ describe('PreviewWorkspace agent tabs', () => {
   async function renderAgentPreview(
     controller: ReturnType<typeof makeController>,
     openRoute: (agentId: string) => void,
+    sharedRail?: { open: boolean; toggle: () => void },
   ) {
     const probe = makeRoot();
     const forest: AgentForest = { roots: [], byId: {} };
@@ -745,7 +867,7 @@ describe('PreviewWorkspace agent tabs', () => {
         sessionViewState={{ ...createViewState('s1'), loaded: true }}
         agentForest={forest}
         controller={controller as unknown as SessionController}
-        workspaceNavigation={{ openAgent: vi.fn(), openAgentRoute: openRoute, openSession: vi.fn() }}
+        workspaceNavigation={{ openAgent: vi.fn(), openAgentRoute: openRoute, openSession: vi.fn(), sharedRail }}
       >
         <OpenPanelButton agentId="sub-123" title="Subagent Worker" />
         <OpenButton path="/work/src/server.ts" />
@@ -778,7 +900,36 @@ describe('PreviewWorkspace agent tabs', () => {
     // No tab-local rail: the app keeps one shared rail, retargeted at this
     // tab's agent by SessionView's focus bridge.
     expect(call?.railIsOverlay).toBe(false);
+    expect(call?.showRailToggle).toBe(false);
     expect(call?.slotsProvided).toBe(true);
+  });
+
+  it('reopens the one shared rail from the preview header instead of creating a local rail', async () => {
+    const toggle = vi.fn();
+    const controller = makeController();
+    const probe = await renderAgentPreview(controller, vi.fn(), { open: false, toggle });
+    await openPanel(probe.container, 'sub-123');
+    const call = agentWorkspaceHarness.calls.at(-1);
+    expect(call?.showRailToggle).toBe(true);
+    expect(call?.railOpen).toBe(false);
+    expect(call?.onToggleRail).toBe(toggle);
+    expect(call?.railIsOverlay).toBe(false);
+  });
+
+  it('closes the shared rail before exiting fullscreen on Escape', async () => {
+    const toggle = vi.fn();
+    const controller = makeController();
+    const probe = await renderAgentPreview(controller, vi.fn(), { open: true, toggle });
+    await openPanel(probe.container, 'sub-123');
+    await act(async () => {
+      workspace().querySelector<HTMLButtonElement>('[data-preview-fullscreen-toggle]')?.click();
+    });
+    expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
+    });
+    expect(toggle).toHaveBeenCalledTimes(1);
+    expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
   });
 
   it('drops the view when the tab or panel hides, restores it on show, releases on close', async () => {
@@ -823,6 +974,21 @@ describe('PreviewWorkspace agent tabs', () => {
         .dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(controller.releaseAgentView).toHaveBeenCalledWith('panel:sub-123');
+  });
+
+  it('activates an agent tab from keyboard without routing away or losing its transcript lease', async () => {
+    const controller = makeController();
+    const openRoute = vi.fn();
+    const probe = await renderAgentPreview(controller, openRoute);
+    await openPanel(probe.container, 'sub-123');
+    await openFile(probe.container, '/work/src/server.ts');
+    expect(controller.updateAgentView).toHaveBeenLastCalledWith('panel:sub-123', 'off');
+    const tab = workspace().querySelector<HTMLElement>('[data-preview-tab="panel:sub-123"]')!;
+    expect(tab.tabIndex).toBe(0);
+    await act(async () => { tab.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })); });
+    expect(tab.getAttribute('aria-selected')).toBe('true');
+    expect(controller.updateAgentView).toHaveBeenLastCalledWith('panel:sub-123', 'delta');
+    expect(openRoute).not.toHaveBeenCalled();
   });
 
   it('opens the agent on its fullscreen route from the tab context menu', async () => {

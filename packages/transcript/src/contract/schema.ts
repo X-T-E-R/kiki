@@ -502,6 +502,7 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
     coverage: z
       .discriminatedUnion('kind', [
         z.object({ kind: z.literal('full'), hasMoreOlder: z.literal(false) }),
+        z.object({ kind: z.literal('unknown'), hasMoreOlder: z.literal(true) }),
         z.object({
           kind: z.literal('tail'),
           fromTurnId: turnIdSchema.optional(),
@@ -564,6 +565,7 @@ export const transcriptCursorSchema = z.object({
 
 export const transcriptCoverageSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('full'), hasMoreOlder: z.literal(false) }),
+  z.object({ kind: z.literal('unknown'), hasMoreOlder: z.literal(true) }),
   z.object({
     kind: z.literal('tail'),
     fromTurnId: turnIdSchema.optional(),
@@ -583,6 +585,7 @@ export const transcriptSubscribeV2PayloadSchema = z.object({
   session_id: z.string().min(1),
   transcript: transcriptGradeSpecSchema,
   transcript_since: z.record(z.string(), transcriptCursorInputSchema).optional(),
+  transcript_coverage_version: z.unknown().optional(),
 });
 
 export type TranscriptSubscribeV2Payload = z.infer<typeof transcriptSubscribeV2PayloadSchema>;
@@ -593,6 +596,7 @@ export const transcriptOpsQuerySchema = z
     epoch: z.string().min(1).optional(),
     since_seq: z.coerce.number().int().min(0),
     grade: z.enum(['turn', 'block', 'delta']).default('delta'),
+    transcript_coverage_version: z.string().optional(),
   })
   .superRefine((value, ctx) => {
     if (!isPlainAgentId(value.agent_id)) {

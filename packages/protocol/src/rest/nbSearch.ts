@@ -11,12 +11,35 @@ export const nbSearchConfigSourceStatusSchema = z.object({
   layers: z.array(z.enum(['defaults', 'local', 'environment', 'kiki'])),
   local_config: z.enum(['present', 'missing', 'ignored', 'unreadable', 'invalid']),
   local_credentials: z.enum(['present', 'missing', 'ignored', 'unreadable', 'invalid', 'rejected']).optional(),
-  credential_source: z.enum(['environment', 'environment+local']).optional(),
+  credential_source: z.enum(['environment', 'environment+local', 'environment+managed', 'environment+local+managed']).optional(),
   availability: z.enum(['ready', 'unavailable']),
   issues: z.array(z.string()),
 }).strict();
 
 export type NbSearchConfigSourceStatus = z.infer<typeof nbSearchConfigSourceStatusSchema>;
+
+/** POST bodies keep identifiers and secrets out of URLs and query strings. */
+export const nbSearchManagedCredentialReadSchema = z.object({
+  instance_id: z.string().min(1).max(256),
+  reveal: z.boolean().default(false),
+}).strict();
+export const nbSearchManagedCredentialWriteSchema = z.object({
+  instance_id: z.string().min(1).max(256),
+  value: z.string().trim().min(1).max(8192).nullable(),
+  expected_version: z.union([z.literal('none'), z.string().regex(/^[a-f0-9]{64}$/)]),
+  expected_binding: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export const nbSearchManagedCredentialViewSchema = z.object({
+  instance_id: z.string(),
+  slot_id: z.string(),
+  stored: z.boolean(),
+  active: z.boolean(),
+  source: z.enum(['environment', 'local', 'managed', 'none']),
+  version: z.string(),
+  binding_version: z.string().regex(/^[a-f0-9]{64}$/),
+  value: z.string().optional(),
+}).strict();
+export type NbSearchManagedCredentialView = z.infer<typeof nbSearchManagedCredentialViewSchema>;
 
 const fetchInputKindSchema = z.enum(['url', 'inline_text', 'inline_bytes', 'file']);
 const fetchRepresentationSchema = z.enum(['markdown', 'text']);

@@ -3,10 +3,30 @@ export interface ConnectionConfig {
   readonly url: string;
   readonly token: string;
 }
+export interface SshProfile {
+  readonly id: string;
+  readonly label: string;
+  readonly target:
+    | { readonly kind: 'alias'; readonly alias: string }
+    | { readonly kind: 'host'; readonly hostname: string; readonly username?: string; readonly port?: number };
+  readonly identityFile?: string | null;
+  readonly releaseChannel: 'stable' | 'beta';
+  readonly remotePort?: number | null;
+  readonly serverHomeId?: string | null;
+}
+
 export interface ConnectionSelection {
   readonly config: ConnectionConfig;
   readonly persist: boolean;
-  readonly source: 'desktop' | 'deep-link' | 'stored' | 'manual' | 'local-detection';
+  readonly source: 'desktop' | 'deep-link' | 'stored' | 'manual' | 'local-detection' | 'ssh';
+  readonly scopeId?: string;
+  readonly profile?: SshProfile;
+  readonly tunnelId?: string;
+  readonly serverHomeId?: string;
+  readonly serverInstanceId?: string;
+  readonly serverVersion?: string;
+  readonly buildId?: string | null;
+  readonly buildChannel?: string | null;
 }
 
 export const CONNECTION_STORAGE_KEY = 'kiki.connection';

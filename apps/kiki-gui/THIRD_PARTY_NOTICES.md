@@ -15,7 +15,8 @@ This static notice covers the bundled sidecar, major direct desktop runtime depe
 | [CodeMirror](https://github.com/codemirror) packages | Text and code editing | MIT |
 | [`@moonshot-ai/protocol`](https://github.com/MoonshotAI/kimi-code) | Workspace protocol library used by the desktop client | MIT |
 | [TanStack Query](https://github.com/TanStack/query) | Client-side server-state management | MIT |
-| [Streamdown](https://github.com/vercel/streamdown) and `@streamdown/code` | Streaming Markdown and code rendering | Apache-2.0 |
+| [Streamdown](https://github.com/vercel/streamdown) and `@streamdown/code`, `@streamdown/cjk`, `@streamdown/math`, `@streamdown/mermaid` | Streaming Markdown, code, CJK text, math, and diagram rendering | Apache-2.0 |
+| [KaTeX](https://github.com/KaTeX/KaTeX) and [Mermaid](https://github.com/mermaid-js/mermaid) | Math typesetting and diagram rendering | MIT |
 | [xterm.js](https://github.com/xtermjs/xterm.js), addon-fit, and addon-web-links | Terminal rendering and integration | MIT |
 | [diff](https://github.com/kpdecker/jsdiff) | Unified diff processing | BSD-3-Clause |
 | [use-stick-to-bottom](https://github.com/stackblitz-labs/use-stick-to-bottom) | Conversation scroll behavior | MIT |

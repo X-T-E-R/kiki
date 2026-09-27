@@ -6,6 +6,7 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
+import { modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
@@ -163,6 +164,73 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
     },
   );
   app.post(setRoute.path, setRoute.options, setRoute.handler as Parameters<ConfigRouteHost['post']>[2]);
+
+  const migrationPath = '/config/model-generation-migration';
+  const previewRoute = defineRoute({
+    method: 'GET', path: migrationPath,
+    success: { data: modelGenerationMigrationPreviewSchema },
+    errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'Read-only, secret-free preview of legacy model parameter copies and available backup identifiers',
+    tags: ['config'],
+  }, async (req, reply) => {
+    try {
+      const config = core.accessor.get(IConfigService);
+      if (config.previewModelGenerationMigration === undefined) throw new Error('Migration previews are unavailable');
+      const preview = await config.previewModelGenerationMigration();
+      reply.send(okEnvelope({
+        revision: preview.revision,
+        changes: preview.changes.map(({ modelId, fields }) => ({ model_id: modelId, fields })),
+        needs_review: preview.needsReview.map(({ modelId, code, field }) => ({ model_id: modelId, code, ...(field === undefined ? {} : { field }) })),
+        backups: preview.backups,
+      }, req.id));
+    } catch {
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Could not preview model generation migration; inspect the configuration and retry.', req.id));
+    }
+  });
+  app.get(previewRoute.path, previewRoute.options, previewRoute.handler as Parameters<ConfigRouteHost['get']>[2]);
+
+  const applyRoute = defineRoute({
+    method: 'POST', path: `${migrationPath}/apply`,
+    body: modelGenerationMigrationApplyRequestSchema,
+    success: { data: modelGenerationMigrationApplyResponseSchema },
+    errors: { [ErrorCode.CONFIG_REVISION_CONFLICT]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'Explicitly apply previewed model parameter copies after confirmation and create a byte-exact backup',
+    tags: ['config'],
+  }, async (req, reply) => {
+    try {
+      const result = await core.accessor.get(IConfigService).applyModelGenerationMigration(req.body.revision);
+      requestLog(req)?.info({ operation: 'model_generation_apply', backupKey: result.backupKey }, 'config migration applied');
+      reply.send(okEnvelope({ revision: result.revision, backup_key: result.backupKey }, req.id));
+    } catch (error) {
+      sendMigrationFailure(req, reply, error, 'model_generation_apply');
+    }
+  });
+  app.post(applyRoute.path, applyRoute.options, applyRoute.handler as Parameters<ConfigRouteHost['post']>[2]);
+
+  const restoreRoute = defineRoute({
+    method: 'POST', path: `${migrationPath}/restore`,
+    body: modelGenerationMigrationRestoreRequestSchema,
+    success: { data: modelGenerationMigrationRestoreResponseSchema },
+    errors: { [ErrorCode.CONFIG_REVISION_CONFLICT]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'Explicitly restore a byte-exact migration backup after separate confirmation, only when the config still matches',
+    tags: ['config'],
+  }, async (req, reply) => {
+    try {
+      const result = await core.accessor.get(IConfigService).restoreModelGenerationMigration(req.body.backup_key, req.body.revision);
+      requestLog(req)?.info({ operation: 'model_generation_restore', backupKey: req.body.backup_key }, 'config migration restored');
+      reply.send(okEnvelope(result, req.id));
+    } catch (error) {
+      sendMigrationFailure(req, reply, error, 'model_generation_restore');
+    }
+  });
+  app.post(restoreRoute.path, restoreRoute.options, restoreRoute.handler as Parameters<ConfigRouteHost['post']>[2]);
+}
+
+function sendMigrationFailure(req: { id: string }, reply: { send(payload: unknown): void }, error: unknown, operation: string): void {
+  const conflict = error instanceof Error && /changed|conflict|refusing to overwrite/i.test(error.message);
+  requestLog(req)?.warn({ operation, conflict }, 'config migration refused');
+  reply.send(errEnvelope(conflict ? ErrorCode.CONFIG_REVISION_CONFLICT : ErrorCode.VALIDATION_FAILED,
+    conflict ? 'Config changed; preview again before continuing.' : 'Migration failed; inspect the configuration and backup before retrying.', req.id));
 }
 
 function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {

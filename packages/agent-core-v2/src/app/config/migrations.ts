@@ -1,10 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'pathe';
 
 import { type IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { type ILogService } from '#/_base/log/log';
+import { Error2, ErrorCodes } from '#/errors';
 
-import { writeConfigDocument } from './configDocument';
+import { readConfigDocumentSnapshot, writeConfigDocument } from './configDocument';
 import { mergeConfigCredentials, splitConfigCredentials } from './credentials';
 import { deepEqual, isPlainObject } from './configPure';
 import { replaceThinkingEffortMax } from './tomlWriteback';
@@ -13,6 +15,26 @@ const MIGRATIONS_FILE = 'migrations-effort.json';
 const THINKING_EFFORT_MAX_TO_HIGH = 'thinking-effort-max-to-high';
 const CONFIG_SCOPE = '';
 export const CREDENTIALS_KEY = 'credentials.toml';
+
+function hasConflictingCredentialValues(inline: unknown, stored: unknown): boolean {
+  if (Array.isArray(inline) && Array.isArray(stored)) {
+    return inline.some((value, index) => index < stored.length && hasConflictingCredentialValues(value, stored[index]));
+  }
+  if (isPlainObject(inline) && isPlainObject(stored)) {
+    return Object.entries(inline).some(([key, value]) => Object.hasOwn(stored, key) && hasConflictingCredentialValues(value, stored[key]));
+  }
+  return !deepEqual(inline, stored);
+}
+
+function hasAllCredentialPaths(current: unknown, original: unknown): boolean {
+  if (Array.isArray(original)) {
+    return Array.isArray(current) && original.every((value, index) => index < current.length && hasAllCredentialPaths(current[index], value));
+  }
+  if (isPlainObject(original)) {
+    return isPlainObject(current) && Object.entries(original).every(([key, value]) => Object.hasOwn(current, key) && hasAllCredentialPaths(current[key], value));
+  }
+  return current !== undefined;
+}
 
 export async function migrateConfigCredentials(
   documentStore: IAtomicTomlDocumentStore,
@@ -24,26 +46,51 @@ export async function migrateConfigCredentials(
   let configText: string | undefined;
   let credentialsText: string | undefined;
   try {
-    const configData = await documentStore.get<Record<string, unknown>>(CONFIG_SCOPE, configKey);
-    config = isPlainObject(configData) ? configData : {};
-    const credentialsData = await documentStore.get<Record<string, unknown>>(CONFIG_SCOPE, CREDENTIALS_KEY);
-    credentials = isPlainObject(credentialsData) ? credentialsData : {};
-    configText = await documentStore.getText(CONFIG_SCOPE, configKey);
-    credentialsText = await documentStore.getText(CONFIG_SCOPE, CREDENTIALS_KEY);
+    const configSnapshot = await readConfigDocumentSnapshot(documentStore, configKey);
+    const credentialsSnapshot = await readConfigDocumentSnapshot(documentStore, CREDENTIALS_KEY);
+    config = configSnapshot.data;
+    credentials = credentialsSnapshot.data;
+    configText = configSnapshot.text;
+    credentialsText = credentialsSnapshot.text;
   } catch {
     return;
   }
   const separated = splitConfigCredentials(config);
   if (deepEqual(separated.config, config)) return;
   if (configText === undefined) return;
+  if (hasConflictingCredentialValues(separated.credentials, splitConfigCredentials(credentials).credentials)) {
+    throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Legacy credential migration found conflicting inline and stored secrets. Resolve the conflicting credentials before retrying; neither file was changed.');
+  }
   const merged = mergeConfigCredentials(config, credentials);
   const nextCredentials = splitConfigCredentials(merged).credentials;
-  const backupKey = `${configKey}.bak-${new Date().toISOString().slice(0, 10)}`;
-  if (await documentStore.getText(CONFIG_SCOPE, backupKey) === undefined) {
-    await documentStore.setText(CONFIG_SCOPE, backupKey, configText);
+  const backupKey = `${configKey}.bak-${new Date().toISOString().slice(0, 10)}-${randomUUID()}`;
+  if (!await documentStore.compareAndSetText(CONFIG_SCOPE, backupKey, undefined, configText)) {
+    throw new Error('Credential migration backup already exists; no changes made');
   }
-  await writeConfigDocument(documentStore, CREDENTIALS_KEY, credentials, credentialsText, nextCredentials);
-  await writeConfigDocument(documentStore, configKey, config, configText, separated.config);
+  const writtenCredentials = await writeConfigDocument(documentStore, CREDENTIALS_KEY, credentials, credentialsText, nextCredentials);
+  try {
+    await writeConfigDocument(documentStore, configKey, config, configText, separated.config);
+  } catch (error) {
+    if (writtenCredentials !== undefined) {
+      let observed;
+      try {
+        observed = await readConfigDocumentSnapshot(documentStore, configKey);
+      } catch (inspectionError) {
+        throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, `Credential migration failed; config cannot be inspected, credentials retained. Inspect backup ${backupKey}`, { cause: inspectionError });
+      }
+      if (!hasAllCredentialPaths(splitConfigCredentials(observed.data).credentials, separated.credentials)) {
+        throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, `Credential migration failed; config changed and credentials retained. Inspect backup ${backupKey}`, { cause: error });
+      }
+      try {
+        if (!await documentStore.compareAndSetText(CONFIG_SCOPE, CREDENTIALS_KEY, writtenCredentials, credentialsText)) {
+          throw new Error('Credential migration rollback conflicted with another writer', { cause: error });
+        }
+      } catch (rollbackError) {
+        throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, `Credential migration failed; rollback could not complete. Inspect backup ${backupKey}`, { cause: rollbackError });
+      }
+    }
+    throw error;
+  }
   log.info('Moved config credentials into credentials.toml', { backup: backupKey });
 }
 
@@ -72,29 +119,25 @@ export async function migrateThinkingEffortMaxToHigh(
   documentStore: IAtomicTomlDocumentStore,
   configKey: string,
   homeDir: string,
+  propagateWriteErrors = false,
 ): Promise<void> {
   try {
     if (readMigrationMarkers(homeDir)[THINKING_EFFORT_MAX_TO_HIGH] !== undefined) return;
-    let doc: Record<string, unknown> | undefined;
-    let text: string | undefined;
+    let snapshot;
     try {
-      text = await documentStore.getText(CONFIG_SCOPE, configKey);
-      const data = await documentStore.get<Record<string, unknown>>(CONFIG_SCOPE, configKey);
-      doc = data !== undefined && isPlainObject(data) ? data : {};
+      snapshot = await readConfigDocumentSnapshot(documentStore, configKey);
     } catch {
       return;
     }
-    const thinking = doc['thinking'];
+    const thinking = snapshot.data['thinking'];
     if (isPlainObject(thinking) && thinking['effort'] === 'max') {
-      const migrated = text === undefined ? undefined : replaceThinkingEffortMax(text);
-      if (migrated === undefined) {
-        doc['thinking'] = { ...thinking, effort: 'high' };
-        await documentStore.set(CONFIG_SCOPE, configKey, doc);
-      } else if (migrated !== text) {
-        await documentStore.setText(CONFIG_SCOPE, configKey, migrated);
-      }
+      if (snapshot.text === undefined) return;
+      const migrated = replaceThinkingEffortMax(snapshot.text);
+      if (migrated === undefined || migrated === snapshot.text) return;
+      if (!await documentStore.compareAndSetText(CONFIG_SCOPE, configKey, snapshot.text, migrated)) return;
     }
     writeMigrationMarker(homeDir, THINKING_EFFORT_MAX_TO_HIGH);
-  } catch {
+  } catch (error) {
+    if (propagateWriteErrors) throw error;
   }
 }

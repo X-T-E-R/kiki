@@ -12,6 +12,7 @@ import type { ProviderRequestAuth, VideoUploadInput } from '#/kosong/contract/pr
 import { convertOpenAIError } from '../../bases/openai/openai-common';
 import {
   mergeRequestHeaders,
+  requestIdentityFetch,
   requireProviderApiKey,
   resolveAuthBackedClient,
 } from '../../bases/request-auth';
@@ -114,6 +115,7 @@ export class KimiFiles {
           apiKey: requireProviderApiKey('KimiFiles.uploadVideo', a, this._apiKey),
           baseURL: this._baseUrl,
           defaultHeaders,
+          fetch: requestIdentityFetch,
         });
       },
     );

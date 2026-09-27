@@ -312,7 +312,7 @@ describe('kap-server cold start', () => {
 
     const recoveredTranscript = await getJson<TranscriptContract>(
       recoveredServer,
-      `/api/sessions/${sessionId}/transcript?agent_id=main`,
+      `/api/sessions/${sessionId}/transcript?agent_id=main&transcript_coverage_version=2`,
     );
     expect(recoveredTranscript.status).toBe(200);
     expect(recoveredTranscript.body.code).toBe(0);

@@ -1,23 +1,14 @@
 import {
-  ErrorCodes,
-  Error2,
   ISessionContext,
   ISessionMetadata,
-  resumeSessionById,
-  type Scope,
+  type ISessionScopeHandle,
 } from '@kiki/agent-core-v2';
 import type { SessionWireFields } from '@kiki/agent-core-v2/app/sessionLegacy/sessionLegacy';
 import type { UpdateSessionProfileRequest } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
-
 export async function updateSessionProfile(
-  core: Scope,
-  sessionId: string,
+  session: ISessionScopeHandle,
   body: Pick<UpdateSessionProfileRequest, 'title' | 'metadata'>,
 ): Promise<SessionWireFields> {
-  const session = await resumeSessionById(core.accessor, sessionId);
-  if (session === undefined) {
-    throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-  }
   const metadata = session.accessor.get(ISessionMetadata);
 
   if (typeof body.title === 'string') {

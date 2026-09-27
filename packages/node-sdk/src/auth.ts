@@ -20,6 +20,7 @@ import {
   loadRuntimeConfigSafe,
   readConfigFile,
   readConfigFileForUpdate,
+  readConfigWriteSnapshot,
   writeConfigFile,
   type KimiConfig,
   type OAuthRef,
@@ -53,6 +54,7 @@ export interface KimiAuthLogoutResult {
 export interface KimiAuthFacadeOptions {
   readonly homeDir: string;
   readonly configPath: string;
+  readonly configReady?: (() => Promise<void>) | undefined;
   readonly identity?: KimiHostIdentity | undefined;
   readonly onConfigUpdated?: ((config: KimiConfig) => void) | undefined;
   readonly onRefresh?: ((outcome: OAuthRefreshOutcome) => void) | undefined;
@@ -62,6 +64,7 @@ type SDKManagedConfig = KimiConfig & ManagedKimiConfigShape;
 
 export class KimiAuthFacade {
   private readonly toolkit: KimiOAuthToolkit<SDKManagedConfig>;
+  private readonly snapshots = new WeakMap<SDKManagedConfig, ReturnType<typeof readConfigWriteSnapshot>>();
 
   constructor(private readonly options: KimiAuthFacadeOptions) {
     this.toolkit = new KimiOAuthToolkit<SDKManagedConfig>({
@@ -72,9 +75,21 @@ export class KimiAuthFacade {
         configPath: options.configPath,
         // Write-path base read: strict (a salvaged base would drop the user's
         // broken-but-fixable sections on rewrite) with an actionable message.
-        read: () => readConfigFileForUpdate(options.configPath) as SDKManagedConfig,
+        read: () => {
+          const before = readConfigWriteSnapshot(options.configPath);
+          const config = readConfigFileForUpdate(options.configPath) as SDKManagedConfig;
+          const after = readConfigWriteSnapshot(options.configPath);
+          if (before.configText !== after.configText || before.credentialsText !== after.credentialsText) {
+            throw new Error('Configuration changed during login; retry.');
+          }
+          this.snapshots.set(config, { ...after, loaded: structuredClone(config) });
+          return config;
+        },
         write: async (config) => {
-          await writeConfigFile(options.configPath, config);
+          const expected = this.snapshots.get(config);
+          if (expected === undefined) throw new Error('Configuration write requires a fresh on-disk snapshot');
+          await writeConfigFile(options.configPath, config, expected);
+          this.snapshots.delete(config);
         },
         apply: applyManagedKimiCodeConfig,
         remove: applyManagedKimiCodeLogoutConfig,
@@ -90,6 +105,7 @@ export class KimiAuthFacade {
     providerName: string | undefined = KIMI_CODE_PROVIDER_NAME,
     options: KimiAuthLoginOptions = {},
   ): Promise<KimiAuthLoginResult> {
+    await this.options.configReady?.();
     const { region, ...loginOptions } = options;
     const regionHosts = region === undefined ? undefined : kimiRegionLoginHosts(region);
     const auth = this.resolveManagedAuth(providerName);
@@ -121,6 +137,7 @@ export class KimiAuthFacade {
   }
 
   async logout(providerName?: string | undefined): Promise<KimiAuthLogoutResult> {
+    await this.options.configReady?.();
     const result = await this.toolkit.logout(
       providerName,
       this.resolveRuntimeManagedAuth(providerName).oauthRef,

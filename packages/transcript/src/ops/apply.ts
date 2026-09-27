@@ -158,20 +158,24 @@ function carryRemovedItemIds(
 function applyReset(state: AgentState, op: Extract<TranscriptOperation, { op: 'reset' }>): ApplyResult {
   const coverage = op.coverage ?? fullCoverage(op.snapshot.hasMoreOlder ?? false);
   const items = reconcileItems(state.items, op.snapshot.items, coverage);
-  const tasks = stabilizeMap(state.tasks, op.snapshot.tasks, (value) => value.taskId);
+  const preserveExisting = coverage.kind === 'unknown';
+  const tasks = stabilizeMap(state.tasks, op.snapshot.tasks, (value) => value.taskId, preserveExisting);
   const interactions = stabilizeMap(
     state.interactions,
     op.snapshot.interactions,
     (value) => value.interactionId,
+    preserveExisting,
   );
   const attachments = stabilizeMap(
     state.attachments,
     op.snapshot.attachments,
     (value) => value.attachmentId,
+    preserveExisting,
   );
-  const todos = stabilizeMap(state.todos, op.snapshot.todos, (value) => value.todoId);
-  const prompts = stabilizeMap(state.prompts, op.snapshot.prompts, (value) => value.promptId);
-  const meta = transcriptValueEquals(state.meta, op.snapshot.meta) ? state.meta : op.snapshot.meta;
+  const todos = stabilizeMap(state.todos, op.snapshot.todos, (value) => value.todoId, preserveExisting);
+  const prompts = stabilizeMap(state.prompts, op.snapshot.prompts, (value) => value.promptId, preserveExisting);
+  const metaCandidate = preserveExisting ? { ...op.snapshot.meta, ...state.meta } : op.snapshot.meta;
+  const meta = transcriptValueEquals(state.meta, metaCandidate) ? state.meta : metaCandidate;
   const toolCallCount = toolCallCountAfterReset(
     state,
     op.snapshot.toolCallCount,
@@ -278,6 +282,19 @@ function reconcileItems(
   if (coverage.kind === 'full') {
     return transcriptValueEquals(current, stableIncoming) ? current : stableIncoming;
   }
+  if (coverage.kind === 'unknown') {
+    const next = [...current];
+    for (const item of stableIncoming) {
+      if (next.some((candidate) => itemIdOf(candidate) === itemIdOf(item))) continue;
+      if (item.kind === 'turn') {
+        const before = next.findIndex((candidate) => candidate.kind === 'turn' && candidate.ordinal > item.ordinal);
+        next.splice(before === -1 ? next.length : before, 0, item);
+      } else {
+        next.push(item);
+      }
+    }
+    return transcriptValueEquals(current, next) ? current : next;
+  }
   if (coverage.fromTurnId === undefined) {
     return stableIncoming.length === 0 ? current : stableIncoming;
   }
@@ -295,12 +312,14 @@ function stabilizeMap<K, V>(
   current: ReadonlyMap<K, V>,
   incoming: readonly V[],
   keyOf: (value: V) => K,
+  preserveExisting = false,
 ): ReadonlyMap<K, V> {
-  const next = new Map<K, V>();
+  const next = preserveExisting ? new Map(current) : new Map<K, V>();
   for (const value of incoming) {
     const key = keyOf(value);
     const existing = current.get(key);
-    next.set(key, existing !== undefined && transcriptValueEquals(existing, value) ? existing : value);
+    next.set(key, preserveExisting && existing !== undefined ? existing
+      : existing !== undefined && transcriptValueEquals(existing, value) ? existing : value);
   }
   if (current.size !== next.size) return next;
   for (const [key, value] of next) {

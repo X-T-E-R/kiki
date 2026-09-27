@@ -491,9 +491,8 @@ async function confirmInstallTrust(
 const CAPABILITY_POLL_INTERVAL_MS = 700;
 const CAPABILITY_POLL_ATTEMPTS = 260; // ~3 minutes of runtime setup budget
 
-/** Client-injected v2 entries install their runtime and plugin together.
- * Trust keys on the parser-proof `builtIn` flag — the `capability:<id>`
- * source string stays purely diagnostic. */
+/** Built-in v2 capability entries prepare runtimes independently of plugin ZIP installation.
+ * Dispatch keys on the parser-proof `builtIn` flag, not the diagnostic source string. */
 function isCapabilityEntry(host: SlashCommandHost, entry: PluginMarketplaceEntry): boolean {
   return host.engineV2 && entry.builtIn === true;
 }
@@ -550,8 +549,7 @@ async function installCapabilityFromPanel(
   entry: PluginMarketplaceEntry,
 ): Promise<void> {
   const label = entry.displayName;
-  // Capability entries are official by construction; the trust prompt is
-  // reserved for unreviewed third-party plugins.
+  // Built-in entries prepare a runtime; the plugin ZIP remains a separate installation.
   panel.setInstalling(truncateForStatus(label));
   host.state.ui.requestRender();
   const api = await resolveCapabilityApi(host);
@@ -598,8 +596,19 @@ async function installCapabilityFromPanel(
     return;
   }
   if (result.state !== 'ready') {
+    const daemonUnverified = entry.id === 'kimi-webbridge' &&
+      result.steps.some((step) => step.id === 'daemon' && step.detail?.includes('identity is not authenticated'));
+    if (daemonUnverified) {
+      const pinnedBinaryPresent = result.steps.some((step) => step.id === 'daemon-binary' && step.state === 'ok');
+      host.showStatus(pinnedBinaryPresent
+        ? 'Pinned WebBridge binary is present, but the responding local daemon is not authenticated. Runtime preparation is not verified readiness.'
+        : 'A local process responds as WebBridge, but its identity is unverified; no pinned binary was prepared. Inspect the local process before retrying.', 'warning');
+      host.showStatus('Plugin ZIP compatibility and browser extension connection remain unverified. Repeating installation alone cannot verify them.', 'warning');
+      return;
+    }
     const permissionsRequired =
       entry.id === 'kimi-cu' &&
+      result.steps.some((step) => step.id === 'app' && step.state === 'ok') &&
       result.steps.some((step) => step.id === 'permissions' && step.state !== 'ok');
     if (permissionsRequired) {
       host.showStatus(

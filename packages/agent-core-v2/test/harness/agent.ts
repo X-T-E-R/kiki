@@ -1109,6 +1109,8 @@ export class AgentTestContext {
           reg.defineInstance(IAgentIdentity, stubAgentIdentity());
           reg.defineInstance(INbSearchSourceStore, {
             _serviceBrand: undefined,
+            readManaged: async () => { throw new Error('Test search credentials not configured'); },
+            writeManaged: async () => { throw new Error('Test search credentials not configured'); },
             withSource: async (reuse, _config, use) => use({
               env: {},
               status: { reuse_local_config: reuse, layers: ['defaults'], local_config: 'ignored', availability: 'unavailable', issues: ['TEST_SEARCH_NOT_CONFIGURED'] },

@@ -7,12 +7,14 @@ import type {
   SessionViewChannel,
 } from '../../core/channel.js';
 import { HttpSessionViews } from './session-view.js';
+import { degradeUnconfirmedTranscriptCatchUp, degradeUnconfirmedTranscriptPage } from './transcript-coverage.js';
 import { HttpTerminals } from './terminal.js';
 import { HTTP_REQUEST_BODY_LIMIT_BYTES } from './limits.js';
 import type { TerminalFacade } from '../../core/facade/terminal.js';
 import type { HttpRestFacade } from '../../core/facade/http-rest.js';
 import { createHttpRestFacade, type HttpRestJsonOptions } from './rest.js';
 import { listTerminalsResponseSchema, getTerminalResponseSchema, closeTerminalResponseSchema, createTerminalRequestSchema } from '@kiki/protocol';
+import { confirmsTranscriptCoverage, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 import { sessionCommandContract, type SessionCommandChannel } from '../../contract/session/commands.js';
 import { RPCError } from '../../core/errors.js';
 import { trimTrailingUndefined } from '../args.js';
@@ -98,10 +100,10 @@ export class HttpChannel implements KlientChannel {
 
   readonly sessionView: SessionViewChannel = {
     snapshot: (sessionId, options) => this.viewRequest(`/api/klient/session-view/${encodeURIComponent(sessionId)}/snapshot`, {}, { signal: options?.signal, timeoutMs: options?.timeoutMs }),
-    transcriptPage: (sessionId, input) => this.viewRequest(`/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript`, {
+    transcriptPage: (sessionId, input) => this.transcriptRequest('page', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript`, {
       agent_id: input.agentId, before_turn: input.beforeTurn, after_turn: input.afterTurn, page_size: input.pageSize,
     }),
-    transcriptCatchUp: (sessionId, input) => this.viewRequest(`/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript/catch-up`, {
+    transcriptCatchUp: (sessionId, input) => this.transcriptRequest('catchUp', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript/catch-up`, {
       agent_id: input.agentId, epoch: input.since.epoch, since_seq: input.since.seq, grade: input.grade ?? 'delta',
     }),
     subscribe: (sessionId, input, handler) => {
@@ -144,6 +146,12 @@ export class HttpChannel implements KlientChannel {
     },
   ): Promise<unknown> {
     return this.requestJson(path, { ...options, query });
+  }
+
+  private async transcriptRequest(kind: 'page' | 'catchUp', path: string, query: Record<string, string | number | undefined>): Promise<unknown> {
+    const data = await this.viewRequest(path, { ...query, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION });
+    if (confirmsTranscriptCoverage(data)) return data;
+    return kind === 'page' ? degradeUnconfirmedTranscriptPage(data) : degradeUnconfirmedTranscriptCatchUp(data);
   }
 
   private requestJson<T>(path: string, options: HttpRestJsonOptions = {}): Promise<T> {

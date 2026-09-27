@@ -790,13 +790,14 @@ export function FilePathLink({ path, className }: { path: string; className?: st
   const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
+  const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   if (preview === null) return <span className={className}>{path}</span>;
   const filePath = normalizeRawPath(path);
   const entries: MiniMenuEntry[] = [
     { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(path); } },
     { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(path) },
-    ...(host.revealPath !== undefined && host.openPath !== undefined
+    ...(!remoteScope && host.revealPath !== undefined && host.openPath !== undefined
       ? [
           { separator: true } as const,
           {

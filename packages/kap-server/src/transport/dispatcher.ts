@@ -2,17 +2,32 @@ import {
   ErrorCodes,
   IAgentGoalService,
   IAgentLifecycleService,
+  ISessionManager,
   Error2,
   getLiveSessionById,
   type IScopeHandle,
+  type SessionLease,
   type Scope,
   type ServiceIdentifier,
 } from '@kiki/agent-core-v2';
 
 import type { ScopeKind } from './channel';
 import { resolveAnyScopedServiceId } from './channelRegistry';
-import { assertSerializable } from './errors';
+import { TimeoutError, assertSerializable } from './errors';
 import { MAIN_AGENT_ID, ensureMainAgent } from './mainAgent';
+
+interface DispatchDeadline {
+  readonly at?: number;
+  readonly timeoutMs: number;
+  readonly signal: AbortSignal;
+}
+
+function assertBeforeDeadline(deadline: DispatchDeadline | undefined): void {
+  if (deadline?.signal.aborted) throw new Error('debug request disconnected');
+  if (deadline?.at !== undefined && performance.now() >= deadline.at) {
+    throw new TimeoutError(deadline.timeoutMs);
+  }
+}
 
 /**
  * Channel name → identifier resolution used to gate which Services are
@@ -117,18 +132,37 @@ export async function dispatch(
   method: string,
   arg: unknown,
   lookup: ChannelLookup = (name) => resolveAnyScopedServiceId(core, name),
+  deadline?: DispatchDeadline,
 ): Promise<unknown> {
-  const service = await resolveService(core, scopeKind, params, serviceName, lookup);
-  const member = (service as Record<string, unknown>)[method];
-  if (member === undefined) {
-    throw new Error2(ErrorCodes.REQUEST_INVALID, `method not found: ${serviceName}.${method}`);
+  let lease: SessionLease | undefined;
+  if (scopeKind !== 'core') {
+    const sessionId = params['session_id'] ?? '';
+    if (getLiveSessionById(core.accessor, sessionId) === undefined) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} not found`);
+    }
+    lease = await core.accessor.get(ISessionManager).acquire?.(sessionId, 'debug-dispatch');
+    if (lease === undefined) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} not found`);
+    }
   }
+  try {
+    assertBeforeDeadline(deadline);
+    const service = await resolveService(core, scopeKind, params, serviceName, lookup);
+    assertBeforeDeadline(deadline);
+    const member = (service as Record<string, unknown>)[method];
+    if (member === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, `method not found: ${serviceName}.${method}`);
+    }
 
-  if (typeof member !== 'function') {
-    return assertSerializable(member);
+    if (typeof member !== 'function') {
+      return assertSerializable(member);
+    }
+
+    const args = Array.isArray(arg) ? arg : arg === undefined ? [] : [arg];
+    assertBeforeDeadline(deadline);
+    const result = await (member as (...a: unknown[]) => unknown).apply(service, args);
+    return assertSerializable(result);
+  } finally {
+    lease?.dispose();
   }
-
-  const args = Array.isArray(arg) ? arg : arg === undefined ? [] : [arg];
-  const result = await (member as (...a: unknown[]) => unknown).apply(service, args);
-  return assertSerializable(result);
 }

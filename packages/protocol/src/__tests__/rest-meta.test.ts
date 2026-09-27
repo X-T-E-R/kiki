@@ -23,6 +23,13 @@ describe('metaResponseSchema', () => {
     external_delegation: { state: 'active' as const },
   };
 
+  it('keeps old metadata compatible but validates optional non-path server home identity', () => {
+    expect(metaResponseSchema.parse(sample).server_home_id).toBeUndefined();
+    const server_home_id = '46aca369-50e8-4fd3-9c45-606d084450ed';
+    expect(metaResponseSchema.parse({ ...sample, server_home_id }).server_home_id).toBe(server_home_id);
+    expect(metaResponseSchema.safeParse({ ...sample, server_home_id: '/home/user/.kiki' }).success).toBe(false);
+  });
+
   it('round-trips a well-formed payload', () => {
     const parsed: MetaResponse = metaResponseSchema.parse(sample);
     expect(parsed.server_version).toBe('0.1.0');

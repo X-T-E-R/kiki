@@ -8,6 +8,7 @@ import { WsConnectionV1, type WsConnectionV1Options } from '../src/transport/ws/
 import type {
   AgentActivityState,
   IScopeHandle,
+  ISessionScopeHandle,
   ISessionStateService,
   Scope,
   SessionActivityCause,
@@ -369,21 +370,32 @@ function makeCore(
   eventBus = new FakeEventBus(),
   metaAgents: Record<string, { type?: string; parentAgentId?: string }> = {},
   lifecycleEvents = new FakeSessionLifecycleEvents(),
+  acquire?: (
+    sessionId: string,
+    reason: string,
+    getHandle: (sessionId: string) => ISessionScopeHandle | undefined,
+  ) => Promise<{ handle: ISessionScopeHandle; dispose(): void } | undefined>,
 ): Scope {
-  const sessionFor = (sid: string) => {
+  const handles = new WeakMap<FakeLifecycle, ISessionScopeHandle>();
+  const sessionFor = (sid: string): ISessionScopeHandle | undefined => {
     const lifecycle = sessions.get(sid);
     if (lifecycle === undefined) return undefined;
-    const sessionAccessor = {
-      get: (t: unknown) => {
-        if (t === IAgentLifecycleService) return lifecycle;
-        if (t === ISessionInteractionService) return lifecycle.interactions;
-        if (t === ISessionActivityView) return lifecycle.workView;
-        if (t === ISessionDispatchService) return lifecycle.dispatch;
-        if (t === ISessionMetadata) return { read: async () => ({ agents: metaAgents }) };
-        return undefined;
-      },
-    };
-    return { id: sid, kind: LifecycleScope.Session, accessor: sessionAccessor, dispose: () => {} };
+    let handle = handles.get(lifecycle);
+    if (handle === undefined) {
+      const sessionAccessor = {
+        get: (t: unknown) => {
+          if (t === IAgentLifecycleService) return lifecycle;
+          if (t === ISessionInteractionService) return lifecycle.interactions;
+          if (t === ISessionActivityView) return lifecycle.workView;
+          if (t === ISessionDispatchService) return lifecycle.dispatch;
+          if (t === ISessionMetadata) return { read: async () => ({ agents: metaAgents }) };
+          return undefined;
+        },
+      };
+      handle = { id: sid, kind: LifecycleScope.Session, accessor: sessionAccessor, dispose: () => {} } as unknown as ISessionScopeHandle;
+      handles.set(lifecycle, handle);
+    }
+    return handle;
   };
   const sessionLifecycle = {
     onDidCloseSession: (handler: (event: { sessionId: string }) => void) =>
@@ -407,6 +419,8 @@ function makeCore(
       if (token === ISessionManager) {
         return {
           get: sessionFor,
+          acquire: acquire === undefined ? undefined : (sessionId: string, reason: string) =>
+            acquire(sessionId, reason, sessionFor),
           list: () => [...sessions.keys()].map((sessionId) => sessionFor(sessionId)),
           onDidCloseSession: (handler: (event: { sessionId: string }) => void) =>
             lifecycleEvents.onDidCloseSession(handler),
@@ -956,6 +970,290 @@ describe('SessionEventBroadcaster', () => {
     expect(await bc.subscribe('s1', reconnected.target)).toBe(true);
     expect(states.get('s1')?.targets.has(original.target)).toBe(false);
     expect(states.get('s1')?.targets.has(reconnected.target)).toBe(true);
+  });
+
+  it('pins a cold session before building its event state and releases the subscription once', async () => {
+    const lifecycle = new FakeLifecycle();
+    const main = lifecycle.addAgent('main');
+    let resume!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const release = vi.fn();
+    const acquire = vi.fn(async (
+      sessionId: string,
+      reason: string,
+      getHandle: (id: string) => ISessionScopeHandle | undefined,
+    ) => {
+      expect(sessionId).toBe('s1');
+      expect(reason).toBe('ws-subscription');
+      await gate;
+      sessions.set(sessionId, lifecycle);
+      return { handle: getHandle(sessionId)!, dispose: release };
+    });
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, lifecycleEvents, acquire),
+    });
+    const { target, envelopes } = collectingTarget();
+    const pending = bc.subscribe('s1', target);
+    expect(acquire).toHaveBeenCalledOnce();
+    resume();
+    expect(await pending).toBe(true);
+    main.bus.emit(agentEvent('turn.started', { turnId: 1 }));
+    await bc.getCursor('s1');
+    expect(envelopes.some((event) => event.type === 'turn.started')).toBe(true);
+    bc.unsubscribe('s1', target);
+    bc.unsubscribe('s1', target);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('blocks idle eviction while a warm session subscription is pending', async () => {
+    const lifecycle = new FakeLifecycle();
+    lifecycle.addAgent('main');
+    sessions.set('s1', lifecycle);
+    let finishAcquire!: () => void;
+    const gate = new Promise<void>((resolve) => { finishAcquire = resolve; });
+    let pins = 0;
+    const release = vi.fn(() => { pins -= 1; });
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, lifecycleEvents, async (sessionId, _reason, getHandle) => {
+        pins += 1;
+        await gate;
+        return { handle: getHandle(sessionId)!, dispose: release };
+      }),
+    });
+    const { target } = collectingTarget();
+    const pending = bc.subscribe('s1', target);
+    if (pins === 0) {
+      sessions.delete('s1');
+      lifecycleEvents.close('s1');
+    }
+    expect(pins).toBe(1);
+    finishAcquire();
+    expect(await pending).toBe(true);
+    bc.unsubscribe('s1', target);
+    expect(pins).toBe(0);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a lease from the previous handle after close and same-id resume', async () => {
+    const oldLifecycle = new FakeLifecycle();
+    oldLifecycle.addAgent('main');
+    sessions.set('s1', oldLifecycle);
+    const newLifecycle = new FakeLifecycle();
+    const newMain = newLifecycle.addAgent('main');
+    const pins = new Map<ISessionScopeHandle, number>();
+    const release = vi.fn((handle: ISessionScopeHandle) => {
+      pins.set(handle, pins.get(handle)! - 1);
+    });
+    let acquired = 0;
+    const core = makeCore(sessions, eventBus, {}, lifecycleEvents, async (sessionId, reason, getHandle) => {
+      expect(reason).toBe('ws-subscription');
+      const handle = getHandle(sessionId)!;
+      pins.set(handle, (pins.get(handle) ?? 0) + 1);
+      if (++acquired === 1) {
+        sessions.delete(sessionId);
+        lifecycleEvents.close(sessionId);
+        sessions.set(sessionId, newLifecycle);
+      }
+      return { handle, dispose: () => release(handle) };
+    });
+    bc = new SessionEventBroadcaster({ eventsDir: dir, core });
+    await bc.getCursor('s1');
+    const oldHandle = core.accessor.get(ISessionManager).get('s1')!;
+    const { target, envelopes } = collectingTarget();
+    expect(await bc.subscribe('s1', target)).toBe(false);
+    const newHandle = core.accessor.get(ISessionManager).get('s1')!;
+    expect(newHandle).not.toBe(oldHandle);
+    expect(pins.get(oldHandle)).toBe(0);
+    expect(pins.get(newHandle) ?? 0).toBe(0);
+    const states = (bc as unknown as {
+      sessions: Map<string, { targets: Map<BroadcastTarget, unknown> }>;
+    }).sessions;
+    expect(states.get('s1')?.targets.has(target)).toBe(false);
+    expect(await bc.subscribe('s1', target)).toBe(true);
+    expect(pins.get(newHandle)).toBe(1);
+    newMain.bus.emit(agentEvent('turn.started', { turnId: 1 }));
+    await bc.getCursor('s1');
+    expect(envelopes.some((event) => event.type === 'turn.started')).toBe(true);
+    bc.unsubscribe('s1', target);
+    expect(pins.get(newHandle)).toBe(0);
+    expect(release).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not attach a subscription cancelled during acquisition', async () => {
+    const lifecycle = new FakeLifecycle();
+    lifecycle.addAgent('main');
+    sessions.set('s1', lifecycle);
+    let finishAcquire!: () => void;
+    const gate = new Promise<void>((resolve) => { finishAcquire = resolve; });
+    const release = vi.fn();
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, lifecycleEvents, async (sessionId, _reason, getHandle) => {
+        await gate;
+        return { handle: getHandle(sessionId)!, dispose: release };
+      }),
+    });
+    const { target } = collectingTarget();
+    const pending = bc.subscribe('s1', target);
+    bc.unsubscribe('s1', target);
+    finishAcquire();
+    expect(await pending).toBe(false);
+    expect(release).toHaveBeenCalledOnce();
+    expect((bc as unknown as { sessions: Map<string, { targets: Map<BroadcastTarget, unknown> }> }).sessions
+      .get('s1')?.targets.has(target)).not.toBe(true);
+  });
+
+  it('keeps only the latest overlapping subscribe and releases the displaced lease', async () => {
+    const lifecycle = new FakeLifecycle();
+    lifecycle.addAgent('main');
+    sessions.set('s1', lifecycle);
+    let finishFirst!: () => void;
+    const gate = new Promise<void>((resolve) => { finishFirst = resolve; });
+    const firstRelease = vi.fn();
+    const secondRelease = vi.fn();
+    let acquired = 0;
+    const acquire = vi.fn(async (
+      sessionId: string,
+      _reason: string,
+      getHandle: (id: string) => ISessionScopeHandle | undefined,
+    ) => {
+      acquired += 1;
+      if (acquired === 1) {
+        await gate;
+        return { handle: getHandle(sessionId)!, dispose: firstRelease };
+      }
+      return { handle: getHandle(sessionId)!, dispose: secondRelease };
+    });
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, lifecycleEvents, acquire),
+    });
+    const { target } = collectingTarget();
+    const first = bc.subscribe('s1', target, new Set(['main']));
+    const second = bc.subscribe('s1', target, new Set(['sub']));
+    expect(await second).toBe(true);
+    finishFirst();
+    expect(await first).toBe(false);
+    expect(firstRelease).toHaveBeenCalledOnce();
+    expect(acquire).toHaveBeenCalledTimes(2);
+    const state = (bc as unknown as {
+      sessions: Map<string, { targets: Map<BroadcastTarget, { agentFilter?: ReadonlySet<string> }> }>;
+    }).sessions.get('s1');
+    expect([...state!.targets.get(target)!.agentFilter!]).toEqual(['sub']);
+    expect(await bc.subscribe('s1', target, new Set(['main']))).toBe(true);
+    expect(acquire).toHaveBeenCalledTimes(2);
+    bc.unsubscribe('s1', target);
+    expect(firstRelease).toHaveBeenCalledOnce();
+    expect(secondRelease).toHaveBeenCalledOnce();
+  });
+
+  it('returns false for a missing acquired session and recovers from an acquisition failure', async () => {
+    const lifecycle = new FakeLifecycle();
+    lifecycle.addAgent('main');
+    const release = vi.fn();
+    let attempt = 0;
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, lifecycleEvents, async (sessionId, _reason, getHandle) => {
+        attempt += 1;
+        if (attempt === 1) throw new Error('restore failed');
+        if (attempt === 2) return undefined;
+        sessions.set(sessionId, lifecycle);
+        return { handle: getHandle(sessionId)!, dispose: release };
+      }),
+    });
+    const { target } = collectingTarget();
+    await expect(bc.subscribe('s1', target)).rejects.toThrow('restore failed');
+    expect(await bc.subscribe('s1', target)).toBe(false);
+    expect(await bc.subscribe('s1', target)).toBe(true);
+    bc.unsubscribe('s1', target);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('releases a lease if state construction cannot find its live session', async () => {
+    const release = vi.fn();
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, lifecycleEvents, async () =>
+        ({ handle: {} as ISessionScopeHandle, dispose: release })),
+    });
+    const { target } = collectingTarget();
+    expect(await bc.subscribe('s1', target)).toBe(false);
+    expect(release).toHaveBeenCalledOnce();
+    await bc.close();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('releases the pending lease when interaction attachment fails', async () => {
+    const lifecycle = new FakeLifecycle();
+    lifecycle.addAgent('main');
+    sessions.set('s1', lifecycle);
+    const release = vi.fn();
+    vi.spyOn(lifecycle.interactions, 'acquireConsumer').mockImplementation(() => {
+      throw new Error('consumer failed');
+    });
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, lifecycleEvents, async (sessionId, _reason, getHandle) =>
+        ({ handle: getHandle(sessionId)!, dispose: release })),
+    });
+    const { target } = collectingTarget();
+    await expect(bc.subscribe('s1', target)).rejects.toThrow('consumer failed');
+    expect(release).toHaveBeenCalledOnce();
+    const state = (bc as unknown as {
+      sessions: Map<string, {
+        targets: Map<BroadcastTarget, unknown>;
+        interactionConsumers: Map<BroadcastTarget, string>;
+      }>;
+    }).sessions.get('s1');
+    expect(state?.targets.has(target)).toBe(false);
+    expect(state?.interactionConsumers.has(target)).toBe(false);
+  });
+
+  it('releases a connection pending acquisition when its socket closes', async () => {
+    const lifecycle = new FakeLifecycle();
+    lifecycle.addAgent('main');
+    sessions.set('s1', lifecycle);
+    let finishAcquire!: () => void;
+    const gate = new Promise<void>((resolve) => { finishAcquire = resolve; });
+    const release = vi.fn();
+    const acquire = vi.fn(async (
+      sessionId: string,
+      _reason: string,
+      getHandle: (id: string) => ISessionScopeHandle | undefined,
+    ) => {
+      await gate;
+      return { handle: getHandle(sessionId)!, dispose: release };
+    });
+    bc = new SessionEventBroadcaster({
+      eventsDir: dir,
+      core: makeCore(sessions, eventBus, {}, lifecycleEvents, acquire),
+    });
+    const socket = Object.assign(new EventEmitter(), {
+      OPEN: 1, readyState: 1, bufferedAmount: 0,
+      send: () => {},
+      close: () => { socket.readyState = 3; socket.emit('close'); },
+      terminate: () => { socket.readyState = 3; socket.emit('close'); },
+    });
+    const connection = new WsConnectionV1({
+      socket: socket as unknown as WebSocket, broadcaster: bc,
+      connectionRegistry: { add() {} } as unknown as WsConnectionV1Options['connectionRegistry'],
+      remoteAddress: null, userAgent: null, heartbeatIntervalMs: 0,
+    });
+    socket.emit('message', Buffer.from(JSON.stringify({
+      type: 'subscribe', id: 'pending', payload: { session_ids: ['s1'] },
+    })));
+    await vi.waitFor(() => expect(acquire).toHaveBeenCalledOnce());
+    connection.close();
+    finishAcquire();
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+    expect(connection.subscriptionSessionIds).toEqual([]);
+    expect((bc as unknown as { sessions: Map<string, { targets: Map<BroadcastTarget, unknown> }> }).sessions
+      .get('s1')?.targets.has(connection)).not.toBe(true);
+    await bc.close();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('returns buffer_overflow when the gap exceeds the cap', async () => {
@@ -2697,7 +2995,7 @@ describe('SessionEventBroadcaster', () => {
           session_id: 's1',
           payload: {
             agent_id: 'main',
-            coverage: { kind: 'full', hasMoreOlder: false },
+            coverage: { kind: 'unknown', hasMoreOlder: true },
             snapshot: { items: [] },
           },
         });
@@ -3092,7 +3390,7 @@ describe('SessionEventBroadcaster', () => {
       expect(JSON.stringify(transcriptEnvelopes(view.envelopes).at(-1))).toContain('current-generation');
     });
 
-    it('reseeds an overflowing journal and converges both agents after asynchronous drain', async () => {
+    it('reseeds an overflowing journal without claiming unknown coverage can restore unobserved details', async () => {
       const { AgentTranscript } = await import('@kiki/transcript');
       const lc = new FakeLifecycle();
       const main = lc.addAgent('main');
@@ -3119,8 +3417,11 @@ describe('SessionEventBroadcaster', () => {
       };
       await bc.subscribe('s1', target, undefined, { '*': 'delta' });
       const sent = transcriptEnvelopes(view.envelopes);
-      expect(sent.filter((envelope) => envelope.type === 'transcript.reset' &&
-        (envelope.payload as { agent_id: string }).agent_id === 'main').length).toBeGreaterThanOrEqual(2);
+      const mainResets = sent.filter((envelope) => envelope.type === 'transcript.reset' &&
+        (envelope.payload as { agent_id: string }).agent_id === 'main');
+      expect(mainResets.length).toBeGreaterThanOrEqual(2);
+      expect(mainResets.every((envelope) =>
+        (envelope.payload as { coverage: { kind: string } }).coverage.kind === 'unknown')).toBe(true);
       for (const agentId of ['main', 'sub-1']) {
         const receiver = new AgentTranscript(agentId);
         for (const envelope of sent) {
@@ -3135,7 +3436,19 @@ describe('SessionEventBroadcaster', () => {
             : payload.ops);
           expect(result.gap).toBeUndefined();
         }
-        expect(receiver.snapshot()).toEqual(service.forSessionLive('s1')!.getAgent(agentId)!.snapshot());
+        const received = receiver.snapshot();
+        const local = service.forSessionLive('s1')!.getAgent(agentId)!.snapshot();
+        const headers = (items: typeof received.items) => items.map((item) =>
+          item.kind === 'turn' ? { ...item, steps: [] } : item);
+        expect(headers(received.items)).toEqual(headers(local.items));
+        expect(received.items.some((item) => item.kind === 'turn')).toBe(true);
+        expect(received.tasks).toEqual(local.tasks);
+        expect(received.interactions).toEqual(local.interactions);
+        expect(received.attachments).toEqual(local.attachments);
+        expect(received.todos).toEqual(local.todos);
+        expect(received.meta).toEqual(local.meta);
+        expect(received.hasMoreOlder).toBe(true);
+        expect(received.toolCallCountKnown).toBe(false);
       }
     });
 
@@ -3164,7 +3477,7 @@ describe('SessionEventBroadcaster', () => {
         remoteAddress: null, userAgent: null, heartbeatIntervalMs: 0 });
       const release = vi.spyOn(lc.interactions, 'releaseConsumer');
       if (failure === 'drain-error') vi.spyOn(connection, 'drain').mockRejectedValueOnce(new Error('drain failed'));
-      socket.emit('message', Buffer.from(JSON.stringify({ type: 'subscribe_v2', id: 'seed', payload: { session_id: 's1', transcript: { main: 'delta' } } })));
+      socket.emit('message', Buffer.from(JSON.stringify({ type: 'subscribe_v2', id: 'seed', payload: { session_id: 's1', transcript: { main: 'delta' }, transcript_coverage_version: 2 } })));
       if (failure !== 'drain-error') {
         await vi.waitFor(() => expect(complete).toBeDefined());
         expect(connection.subscriptionSessionIds).toEqual([]);
@@ -3399,14 +3712,14 @@ describe('SessionEventBroadcaster', () => {
           todos: unknown[];
           meta: unknown;
         };
-        coverage: { kind: 'full' | 'tail'; hasMoreOlder: boolean };
+        coverage: { kind: 'full' | 'tail' | 'unknown'; hasMoreOlder: boolean };
         cursor: { epoch?: string; seq: number };
       };
       expect(payload.snapshot.items.some((item) => item.kind === 'turn')).toBe(true);
       expect(payload.snapshot.items.every((item) => item.kind !== 'turn' || item.steps?.length === 0)).toBe(
         true,
       );
-      expect(payload.coverage).toEqual({ kind: 'full', hasMoreOlder: false });
+      expect(payload.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
       expect(payload.cursor.seq).toBeTypeOf('number');
       expect(payload.snapshot).toMatchObject({
         tasks: [],

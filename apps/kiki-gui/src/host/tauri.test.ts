@@ -59,6 +59,43 @@ describe('native desktop bridge', () => {
     expect(invoke).toHaveBeenNthCalledWith(2, 'open_host_path', { path });
   });
 
+  it('blocks native file and directory operations in SSH scope and restores local operations', async () => {
+    tauriHost.connection.setWorkspaceScope('ssh');
+    try {
+      await expect(tauriHost.pickDirectory()).rejects.toThrow('SSH workspace');
+      await expect(tauriHost.pickDirectories()).rejects.toThrow('SSH workspace');
+      await expect(tauriHost.revealPath('/home/dev/project')).rejects.toThrow('SSH workspace');
+      await expect(tauriHost.openPath('/home/dev/project')).rejects.toThrow('SSH workspace');
+      await expect(tauriHost.writeFileText('/home/dev/file', 'data')).rejects.toThrow('SSH workspace');
+      expect(invoke).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      tauriHost.connection.setWorkspaceScope('local');
+    }
+    invoke.mockResolvedValueOnce(undefined);
+    await tauriHost.openPath('C:/work/example.txt');
+    expect(invoke).toHaveBeenCalledWith('open_host_path', { path: 'C:/work/example.txt' });
+  });
+
+  it('passes SSH profile operations through narrow native commands', async () => {
+    const profile = { id: 'host-1', label: 'Example', target: { kind: 'alias', alias: 'example' }, releaseChannel: 'stable' } as const;
+    const token = 'a'.repeat(43);
+    invoke.mockResolvedValueOnce([]).mockResolvedValueOnce([profile])
+      .mockRejectedValueOnce('Host key not trusted').mockResolvedValueOnce(true).mockResolvedValueOnce(undefined);
+    await expect(tauriHost.connection.listSshProfiles()).resolves.toEqual([]);
+    await expect(tauriHost.connection.saveSshProfile(profile)).resolves.toEqual([profile]);
+    await expect(tauriHost.connection.connectSshProfile('host-1', token)).rejects.toBe('Host key not trusted');
+    await expect(tauriHost.connection.sshTunnelRunning('host-1', 'tunnel-one')).resolves.toBe(true);
+    await tauriHost.connection.disconnectSshProfile('host-1', 'tunnel-one');
+    expect(invoke.mock.calls).toEqual([
+      ['list_ssh_profiles'],
+      ['save_ssh_profile', { profile }],
+      ['connect_ssh_profile', { id: 'host-1', token }],
+      ['ssh_tunnel_running', { id: 'host-1', tunnelId: 'tunnel-one' }],
+      ['disconnect_ssh_profile', { id: 'host-1', tunnelId: 'tunnel-one' }],
+    ]);
+  });
+
   it('routes external links through the native default-browser command', async () => {
     await openExternalUrl('https://example.test/docs');
     expect(invoke).toHaveBeenCalledWith('open_external_url', { url: 'https://example.test/docs' });

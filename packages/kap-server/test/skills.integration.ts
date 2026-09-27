@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import {
   IAgentLifecycleService,
+  ISessionManager,
+  ISessionSkillCatalog,
   KIKI_OPS_SKILL,
   getLiveSessionById,
 } from '@kiki/agent-core-v2';
@@ -12,7 +14,7 @@ import {
   builtinSkillContentResponseSchema,
   listSkillsResponseSchema,
 } from '../src/protocol/rest-skill';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -46,6 +48,7 @@ describe('server-v2 /api skills', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -184,6 +187,44 @@ describe('server-v2 /api skills', () => {
   });
 
   describe('GET /api/sessions/{sid}/skills', () => {
+    it('pins a live catalog until the response and keeps cold requests cold', async () => {
+      await server!.close();
+      server = undefined;
+      vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+      await writeFile(join(home!, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!, logLevel: 'silent' });
+      base = `http://127.0.0.1:${server.port}`;
+      const id = await createSession();
+      const manager = server.core.accessor.get(ISessionManager);
+      const catalog = getLiveSessionById(server.core.accessor, id)!.accessor.get(ISessionSkillCatalog);
+      const originalReady = catalog.ready;
+      let entered!: () => void;
+      let resume!: () => void;
+      const reached = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { resume = resolve; });
+      Object.defineProperty(catalog, 'ready', {
+        value: { then: (finish: () => void) => { entered(); return gate.then(finish); } },
+        configurable: true,
+      });
+      try {
+        const pending = getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`);
+        await reached;
+        expect(await manager.evictIfIdle!(id)).toBe(false);
+        resume();
+        expect((await pending).body.code).toBe(0);
+        expect(await manager.evictIfIdle!(id)).toBe(true);
+        const acquire = vi.spyOn(manager, 'acquire');
+        const cold = await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`);
+        expect(cold.body.code).toBe(0);
+        expect(acquire).not.toHaveBeenCalled();
+        expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+        acquire.mockRestore();
+      } finally {
+        resume();
+        Object.defineProperty(catalog, 'ready', { value: originalReady, configurable: true });
+      }
+    });
+
     it('returns 40401 for an unknown session', async () => {
       const { body } = await getJson<null>('/api/sessions/nope/skills');
       expect(body.code).toBe(40401);

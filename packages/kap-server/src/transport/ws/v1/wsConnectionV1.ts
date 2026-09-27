@@ -13,18 +13,22 @@ import {
   ErrorCodes as CoreErrorCodes,
   ISessionTerminalService,
   isError2,
-  resumeSessionById,
   type Scope,
   type TerminalFrame,
 } from '@kiki/agent-core-v2';
 import {
+  acceptsTranscriptCoverage,
   detachGrades,
+  requestsTranscript,
+  TRANSCRIPT_CLIENT_UPGRADE_MESSAGE,
+  TRANSCRIPT_COVERAGE_VERSION,
   transcriptSubscribeV2PayloadSchema,
   type TranscriptGradeSpec,
 } from '@kiki/transcript';
 import { ulid } from 'ulid';
 import type { RawData, WebSocket } from 'ws';
 
+import { withSessionOperation } from '../../../lib/sessionOperationLease';
 import type { CredentialValidator } from '../../../services/auth/credentials';
 import type { IConnectionRegistry } from '../connectionRegistry';
 import {
@@ -444,6 +448,16 @@ export class WsConnectionV1 implements BroadcastTarget {
       return;
     }
     const sid = parsed.data.session_id;
+    const coverage = requestsTranscript(parsed.data.transcript);
+    if (coverage && !acceptsTranscriptCoverage(parsed.data.transcript_coverage_version)) {
+      const existing = this.subscriptions.get(sid);
+      if (existing !== undefined) {
+        this.broadcaster.unsubscribeTranscript(sid, this);
+        this.subscriptions.set(sid, { ...existing, transcriptGrades: undefined });
+      }
+      this.sendImmediateFrame(buildAck(frame.id ?? '', 1, TRANSCRIPT_CLIENT_UPGRADE_MESSAGE, {}));
+      return;
+    }
 
     const accepted: string[] = [];
     const notFound: string[] = [];
@@ -465,6 +479,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         not_found: notFound,
         resync_required: resyncRequired,
         cursors: serverCursors,
+        transcript_coverage_version: coverage ? TRANSCRIPT_COVERAGE_VERSION : undefined,
       }),
     );
   }
@@ -572,38 +587,40 @@ export class WsConnectionV1 implements BroadcastTarget {
             return;
           }
           const { session_id, terminal_id, since_seq } = parsed.data.payload;
-          const service = await this.resolveTerminalService(session_id);
-          if (this.closed) return;
-          const key = terminalAttachmentKey(session_id, terminal_id);
-          this.terminalAttachments.set(key, service);
-          try {
-            const result = await service.attach(
-              terminal_id,
-              {
-                id: this.id,
-                send: (terminalFrame) => {
-                  this.onTerminalFrame(service, terminalFrame);
+          await this.withTerminalService(session_id, async (service) => {
+            if (this.closed) return;
+            const key = terminalAttachmentKey(session_id, terminal_id);
+            this.terminalAttachments.set(key, service);
+            try {
+              const result = await service.attach(
+                terminal_id,
+                {
+                  id: this.id,
+                  send: (terminalFrame) => {
+                    this.onTerminalFrame(service, terminalFrame);
+                  },
                 },
-              },
-              { sinceSeq: since_seq },
-            );
-            if (this.closed) {
+                { sinceSeq: since_seq },
+              );
+              if (this.closed) {
+                service.detach(terminal_id, this.id);
+                this.terminalAttachments.delete(key);
+                return;
+              }
+              this.sendImmediateFrame(
+                buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', {
+                  attached: true as const,
+                  replayed: result.replayed,
+                  earliest_seq: result.earliestSeq,
+                  truncated: result.truncated,
+                }),
+              );
+            } catch (error) {
               service.detach(terminal_id, this.id);
               this.terminalAttachments.delete(key);
-              return;
+              throw error;
             }
-            this.sendImmediateFrame(
-              buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', {
-                attached: true as const,
-                replayed: result.replayed,
-                earliest_seq: result.earliestSeq,
-                truncated: result.truncated,
-              }),
-            );
-          } catch (error) {
-            this.terminalAttachments.delete(key);
-            throw error;
-          }
+          });
           return;
         }
         case 'terminal_detach': {
@@ -613,13 +630,16 @@ export class WsConnectionV1 implements BroadcastTarget {
             return;
           }
           const { session_id, terminal_id } = parsed.data.payload;
-          const service = await this.resolveTerminalService(session_id);
-          await service.get(terminal_id);
-          service.detach(terminal_id, this.id);
-          this.terminalAttachments.delete(terminalAttachmentKey(session_id, terminal_id));
-          this.sendImmediateFrame(
-            buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', { detached: true as const }),
-          );
+          await this.withTerminalService(session_id, async (service) => {
+            if (this.closed) return;
+            await service.get(terminal_id);
+            if (this.closed) return;
+            service.detach(terminal_id, this.id);
+            this.terminalAttachments.delete(terminalAttachmentKey(session_id, terminal_id));
+            this.sendImmediateFrame(
+              buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', { detached: true as const }),
+            );
+          });
           return;
         }
         case 'terminal_input': {
@@ -629,10 +649,13 @@ export class WsConnectionV1 implements BroadcastTarget {
             return;
           }
           const { session_id, terminal_id, data } = parsed.data.payload;
-          await (await this.resolveTerminalService(session_id)).write(terminal_id, data);
-          this.sendImmediateFrame(
-            buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', { accepted: true as const }),
-          );
+          await this.withTerminalService(session_id, async (service) => {
+            if (this.closed) return;
+            await service.write(terminal_id, data);
+            this.sendImmediateFrame(
+              buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', { accepted: true as const }),
+            );
+          });
           return;
         }
         case 'terminal_resize': {
@@ -642,10 +665,13 @@ export class WsConnectionV1 implements BroadcastTarget {
             return;
           }
           const { session_id, terminal_id, cols, rows } = parsed.data.payload;
-          await (await this.resolveTerminalService(session_id)).resize(terminal_id, cols, rows);
-          this.sendImmediateFrame(
-            buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', { resized: true as const }),
-          );
+          await this.withTerminalService(session_id, async (service) => {
+            if (this.closed) return;
+            await service.resize(terminal_id, cols, rows);
+            this.sendImmediateFrame(
+              buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', { resized: true as const }),
+            );
+          });
           return;
         }
         case 'terminal_close': {
@@ -655,13 +681,15 @@ export class WsConnectionV1 implements BroadcastTarget {
             return;
           }
           const { session_id, terminal_id } = parsed.data.payload;
-          const service = await this.resolveTerminalService(session_id);
-          const result = await service.close(terminal_id);
-          service.detach(terminal_id, this.id);
-          this.terminalAttachments.delete(terminalAttachmentKey(session_id, terminal_id));
-          this.sendImmediateFrame(
-            buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', result),
-          );
+          await this.withTerminalService(session_id, async (service) => {
+            if (this.closed) return;
+            const result = await service.close(terminal_id);
+            service.detach(terminal_id, this.id);
+            this.terminalAttachments.delete(terminalAttachmentKey(session_id, terminal_id));
+            this.sendImmediateFrame(
+              buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', result),
+            );
+          });
           return;
         }
       }
@@ -670,17 +698,15 @@ export class WsConnectionV1 implements BroadcastTarget {
     }
   }
 
-  private async resolveTerminalService(sessionId: string): Promise<ISessionTerminalService> {
+  private async withTerminalService<T>(sessionId: string, work: (service: ISessionTerminalService) => Promise<T>): Promise<T> {
     const core = this.terminalCore;
     if (core === undefined) throw new Error('terminal core unavailable');
-    const session = await resumeSessionById(core.accessor, sessionId);
-    if (session === undefined) {
-      throw new Error2(
-        CoreErrorCodes.SESSION_NOT_FOUND,
-        `session ${sessionId} does not exist`,
-      );
-    }
-    return session.accessor.get(ISessionTerminalService);
+    return withSessionOperation(core, sessionId, async (session) => {
+      if (session === undefined) {
+        throw new Error2(CoreErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+      }
+      return work(session.accessor.get(ISessionTerminalService));
+    });
   }
 
   private onTerminalFrame(service: ISessionTerminalService, frame: TerminalFrame): void {

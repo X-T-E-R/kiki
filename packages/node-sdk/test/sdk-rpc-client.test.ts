@@ -8,6 +8,7 @@
  * Wiring: real v2 engine bootstrapped on a temp KIKI_HOME; remote provider calls are stubbed.
  * Run: pnpm exec vitest run test/sdk-rpc-client-v2.test.ts
  */
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -76,6 +77,19 @@ vi.mock('@kiki/agent-core-v2/_base/execEnv/environmentProbe', async (importOrigi
 });
 
 const tempDirs: string[] = [];
+const realPlatform = process.platform;
+
+async function makePrivateHome(prefix: string): Promise<string> {
+  const homeDir = await mkdtemp(join(tmpdir(), prefix));
+  if (realPlatform === 'win32') {
+    const sid = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { encoding: 'utf8', windowsHide: true }).trim();
+    if (!/^S-1-[0-9-]+$/u.test(sid)) throw new Error('Windows test SID is invalid');
+    execFileSync('icacls.exe', [homeDir, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '*S-1-5-18:(OI)(CI)F'],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+  return homeDir;
+}
 
 afterEach(async () => {
   // The read-model mirror/query-store close asynchronously on dispose; await
@@ -98,7 +112,7 @@ function stubProcessPlatform(platform: NodeJS.Platform): () => void {
 }
 
 async function makeHarness(): Promise<{ harness: KimiHarness; homeDir: string }> {
-  const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+  const homeDir = await makePrivateHome('kimi-sdk-v2-');
   tempDirs.push(homeDir);
   return { harness: createKimiHarness({ homeDir, identity: TEST_IDENTITY }), homeDir };
 }
@@ -141,7 +155,7 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
   });
 
   it('reports global MCP authorization without probing when verify is false', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const implicitOAuthUrl = 'https://implicit-oauth.example.test/mcp';
     const authorizedUrl = 'https://authorized.example.test/mcp';
@@ -216,7 +230,7 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
   }, 15_000);
 
   it('restates engine MCP management Error2s as KimiError, undeclared codes as internal', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     try {
@@ -274,7 +288,7 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
   });
 
   it('close() awaits the MCP OAuth service shutdown', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     // Activate the OnDemand OAuth service, then gate its shutdown behind a
@@ -312,7 +326,7 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
   });
 
   it('close() resolves promptly when the MCP OAuth service was never used', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     // Nothing touched IMcpOAuthService: close() force-activates the OnDemand
@@ -323,7 +337,7 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
   });
 
   it('seeds the host request headers (User-Agent + X-Msh-*) into the engine', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     try {
@@ -343,7 +357,7 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
     hostEnvProbe.failWithMissingShell = true;
     const restorePlatform = stubProcessPlatform('win32');
     try {
-      const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+      const homeDir = await makePrivateHome('kimi-sdk-v2-');
       tempDirs.push(homeDir);
       const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
       try {
@@ -360,11 +374,11 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
     }
   });
 
-  it('does not block ensureConfigFile on the host environment probe on POSIX', async () => {
+  it.skipIf(realPlatform === 'win32')('does not block ensureConfigFile on the host environment probe on POSIX', async () => {
     hostEnvProbe.failWithMissingShell = true;
     const restorePlatform = stubProcessPlatform('darwin');
     try {
-      const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+      const homeDir = await makePrivateHome('kimi-sdk-v2-');
       tempDirs.push(homeDir);
       const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
       try {
@@ -423,7 +437,7 @@ describe('SDKRpcClient (agent-core-v2 wiring)', () => {
   });
 
   it('emits one complete metadata event when a generated title is applied', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
@@ -531,7 +545,7 @@ key = "${titleOAuthRef.key}"
   });
 
   it('serializes a temporary title-generation close against a public resume', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
@@ -811,7 +825,7 @@ key = "${titleOAuthRef.key}"
   });
 
   it('honors skillDirs (explicit dirs) over default user / project discovery', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
@@ -851,7 +865,7 @@ key = "${titleOAuthRef.key}"
   });
 
   it('serves the plugin catalog from the v2 engine on an empty home', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const rpc = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     try {
@@ -918,7 +932,7 @@ key = "${titleOAuthRef.key}"
   });
 
   it('resumes archived sessions through the facade without unarchiving or losing metadata', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-sdk-resume-home-'));
+    const homeDir = await makePrivateHome('kiki-sdk-resume-home-');
     const workDir = await mkdtemp(join(tmpdir(), 'kiki-sdk-resume-work-'));
     tempDirs.push(homeDir, workDir);
     await mkdir(join(workDir, '.git'));
@@ -959,7 +973,7 @@ key = "${titleOAuthRef.key}"
   });
 
   it('serves getTodos from the live session todo state', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
@@ -1106,7 +1120,7 @@ describe('SDKRpcClient workspace trust', () => {
 
 describe('SDKRpcClient createSession profile binding', () => {
   it('applies create-time thinking and permission without a model source', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
@@ -1130,7 +1144,7 @@ describe('SDKRpcClient createSession profile binding', () => {
   });
 
   it('binds a named agent profile when a default model is configured', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
@@ -1178,7 +1192,7 @@ max_context_size = 1000
   });
 
   it('does not persist a session when the requested agent profile is missing', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-');
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
@@ -1429,7 +1443,7 @@ describe('foldAgentWireReplay', () => {
 
 describe('SDKRpcClient engine telemetry', () => {
   it('forwards engine-side events to the host-supplied telemetry client', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-tel-'));
+    const homeDir = await makePrivateHome('kimi-sdk-v2-tel-');
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-tel-work-'));
     tempDirs.push(workDir);

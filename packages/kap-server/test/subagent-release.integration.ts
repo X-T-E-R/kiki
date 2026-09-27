@@ -75,7 +75,7 @@ describe('released subagent scopes', () => {
       const response = await authedFetch(
         server!,
         base,
-        `/api/sessions/${sessionId}/transcript?agent_id=agent-1`,
+        `/api/sessions/${sessionId}/transcript?agent_id=agent-1&transcript_coverage_version=2`,
       );
       expect(response.status).toBe(200);
       return ((await response.json()) as Envelope<TranscriptContract>).data;

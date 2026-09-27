@@ -496,13 +496,22 @@ function RailOwnerBadge({
   subagent,
   forest,
   session,
+  onClose,
 }: {
   subagent: SubagentRailContext | undefined;
   forest: AgentForest;
   session: SessionViewState['session'];
+  onClose?: () => void;
 }) {
   const { t } = useI18n();
   const node = subagent === undefined ? undefined : forest.byId[subagent.agentId];
+  const closeButton = onClose === undefined ? null : (
+    <button type="button" onClick={onClose} data-rail-close
+      title={t('sv.hidePanel')} aria-label={t('sv.hidePanel')}
+      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-[17px] text-ink-faint transition-colors hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 lg:w-7">
+      ×
+    </button>
+  );
   if (subagent !== undefined) {
     const status = node?.status ?? subagent.block?.status ?? 'unknown';
     const name = node?.label ?? subagent.block?.name ?? subagent.agentId;
@@ -511,7 +520,7 @@ function RailOwnerBadge({
       <div
         data-rail-owner
         data-rail-owner-name={name}
-        className="flex items-center gap-2 rounded-xl border border-accent/40 bg-accent-soft/30 px-3 py-2"
+        className="sticky top-0 z-10 flex items-center gap-2 rounded-xl border border-accent/40 bg-accent-soft px-3 py-2"
       >
         <span
           aria-hidden
@@ -528,6 +537,7 @@ function RailOwnerBadge({
             ) : null}
           </p>
         </div>
+        {closeButton}
       </div>
     );
   }
@@ -535,13 +545,14 @@ function RailOwnerBadge({
     ? session.title
     : t('sidebar.untitled');
   return (
-    <div data-rail-owner className="flex items-center gap-2 rounded-xl border border-hairline bg-panel px-3 py-2">
+    <div data-rail-owner className="sticky top-0 z-10 flex items-center gap-2 rounded-xl border border-hairline bg-panel px-3 py-2">
       <div className="min-w-0 flex-1">
         <p className="truncate text-[10px] tracking-[0.06em] text-ink-faint uppercase">
           {t('rail.ownerMain')}
         </p>
         <p className="truncate text-[12px] font-semibold text-ink">{title}</p>
       </div>
+      {closeButton}
     </div>
   );
 }
@@ -573,6 +584,7 @@ export function RightRail({
   onCancelTask,
   onStopAgentTask,
   onOpenSubagent,
+  onClose,
   className,
 }: {
   state: SessionViewState;
@@ -580,6 +592,7 @@ export function RightRail({
   selectedAgentId?: string;
   subagent?: SubagentRailContext;
   taskOwnerAgentId?: string;
+  onClose?: () => void;
   onCancelTask: (taskId: string, ownerAgentId?: string) => void;
   /**
    * Stops one running subagent task through its owning agent's scope
@@ -723,7 +736,7 @@ export function RightRail({
         data-session-rail
       >
       <div data-agent-panel-scroll className="min-h-0 flex-1 space-y-5 overflow-y-auto pb-4">
-      <RailOwnerBadge subagent={subagent} forest={forest} session={session} />
+      <RailOwnerBadge subagent={subagent} forest={forest} session={session} onClose={onClose} />
       {showSubagents ? (
         <RailSection
           title={t('rail.subagents')}

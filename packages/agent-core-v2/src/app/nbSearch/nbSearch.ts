@@ -10,6 +10,7 @@ import type { NbSearchConfigSourceStatus } from '@kiki/protocol';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
 import type { NbSearchConfig } from './configSection';
+import type { ManagedCredentialView } from './sourceStore';
 
 export type NbSearchCapabilities = CapabilityEnvelope & { config_source?: NbSearchConfigSourceStatus };
 
@@ -42,6 +43,8 @@ export interface INbSearchService {
   capabilities(context?: OperationContext): Promise<NbSearchCapabilities>;
   test(context?: OperationContext): Promise<NbSearchTestStatus>;
   validateConfiguration(config: NbSearchConfig, reuseLocalConfig: boolean): Promise<void>;
+  readManagedCredential(instanceId: string, reveal: boolean): Promise<ManagedCredentialView>;
+  writeManagedCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<ManagedCredentialView>;
 }
 
 export const INbSearchService: ServiceIdentifier<INbSearchService> =

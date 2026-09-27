@@ -1,6 +1,6 @@
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 
-import { deepEqual, isPlainObject } from './configPure';
+import { deepEqual, isPlainObject, stripTomlBom } from './configPure';
 
 export interface DomainUpdate {
   readonly snakeKey: string;
@@ -352,7 +352,7 @@ function scanRootRegions(text: string): ScannedDocument | undefined {
   let triviaStart = -1;
   let i = 0;
   while (i < lines.length) {
-    const body = stripLineEnding(lines[i]!);
+    const body = i === 0 ? stripTomlBom(stripLineEnding(lines[i]!)) : stripLineEnding(lines[i]!);
     if (isTriviaBody(body)) {
       if (triviaStart < 0) triviaStart = i;
       i++;
@@ -375,7 +375,7 @@ function scanRootRegions(text: string): ScannedDocument | undefined {
     }
     const kv = matchKeyValue(body);
     if (kv === undefined) return undefined;
-    const valueStart = offsets[i]! + kv.valueStart;
+    const valueStart = offsets[i]! + (i === 0 && text.startsWith('\uFEFF') ? 1 : 0) + kv.valueStart;
     const valueEnd = scanValueEnd(text, valueStart);
     if (valueEnd === undefined) return undefined;
     const endLine = lineIndexAt(offsets, valueEnd - 1);
@@ -405,7 +405,7 @@ function scanDomainRegion(
   let ambiguous = false;
   let current: DomainBlock | undefined;
   for (let i = region.start; i <= region.end; i++) {
-    const body = stripLineEnding(lines[i]!);
+    const body = i === 0 ? stripTomlBom(stripLineEnding(lines[i]!)) : stripLineEnding(lines[i]!);
     if (isTriviaBody(body)) continue;
     const header = matchHeader(body);
     if (header !== undefined) {
@@ -425,7 +425,7 @@ function scanDomainRegion(
     const kv = matchKeyValue(body);
     if (kv === undefined) return undefined;
     if (kv.dotted) ambiguous = true;
-    const valueStart = offsets[i]! + kv.valueStart;
+    const valueStart = offsets[i]! + (i === 0 && text.startsWith('\uFEFF') ? 1 : 0) + kv.valueStart;
     const valueEnd = scanValueEnd(text, valueStart);
     if (valueEnd === undefined) return undefined;
     const endLine = lineIndexAt(offsets, valueEnd - 1);
@@ -674,13 +674,14 @@ function applyLineEdits(lines: readonly string[], edits: readonly LineEdit[], eo
       out.splice(edit.afterLine + 1, 0, ...splitLinesKeepEnds(prefix + edit.text));
     }
   }
-  return out.join('');
+  const result = out.join('');
+  return lines[0]?.startsWith('\uFEFF') && !result.startsWith('\uFEFF') ? `\uFEFF${result}` : result;
 }
 
 function verifyPlannedText(text: string, expected: Record<string, unknown>): boolean {
   if (text.trim().length === 0) return Object.keys(expected).length === 0;
   try {
-    return deepEqual(parseToml(text), expected);
+    return deepEqual(parseToml(stripTomlBom(text)), expected);
   } catch {
     return false;
   }

@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 
 import {
   ISessionExternalDelegationService,
-  resumeSessionById,
   type ExternalAuthority,
   type ExternalDispatchView,
   type ExternalEventPage,
@@ -29,6 +28,7 @@ import {
 } from '@kiki/klient/procedures';
 import type { NormalizedExecutorContent, NormalizedExecutorEvent } from '@kiki/protocol';
 
+import { withSessionOperation } from '../lib/sessionOperationLease';
 import { ensureMainAgent } from '../transport/mainAgent';
 
 export interface ExternalDelegationSeatAuthority {
@@ -49,12 +49,13 @@ export class ExternalDelegationProcedureHost {
   ): Promise<DelegationProcedureOutput<Name>> {
     const procedure = delegationProcedure(name);
     const canonicalInput = procedure.inputSchema.parse(input) as DelegationProcedureInput<Name>;
-    const session = await resumeSessionById(this.core.accessor, seat.sessionId);
-    if (session === undefined) throw new Error('Session does not exist.');
-    await ensureMainAgent(session);
-    const service = session.accessor.get(ISessionExternalDelegationService);
-    const output = await execute(service, authorityFor(seat), seat, name, canonicalInput, signal);
-    return procedure.outputSchema.parse(output) as DelegationProcedureOutput<Name>;
+    return withSessionOperation(this.core, seat.sessionId, async (session) => {
+      if (session === undefined) throw new Error('Session does not exist.');
+      await ensureMainAgent(session);
+      const service = session.accessor.get(ISessionExternalDelegationService);
+      const output = await execute(service, authorityFor(seat), seat, name, canonicalInput, signal);
+      return procedure.outputSchema.parse(output) as DelegationProcedureOutput<Name>;
+    });
   }
 
   klient(seat: ExternalDelegationSeatAuthority): SeatKlient {

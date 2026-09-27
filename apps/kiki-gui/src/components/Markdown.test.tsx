@@ -18,6 +18,7 @@ import { FilePathLink, MediaPreviewProvider } from './mediaPreview';
 import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
 
 const hostMocks = vi.hoisted(() => ({ revealPath: vi.fn(), openPath: vi.fn(), openUrl: vi.fn(), desktop: false }));
+const connectionScope = vi.hoisted(() => ({ scopeId: null as string | null }));
 vi.mock('../host', () => ({
   useHost: () => hostMocks.desktop
     ? { kind: 'tauri', revealPath: hostMocks.revealPath, openPath: hostMocks.openPath, openUrl: hostMocks.openUrl }
@@ -31,7 +32,7 @@ vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
 
 vi.mock('../state/connection', async (importOriginal) => {
   const original = await importOriginal<typeof import('../state/connection')>();
-  return { ...original, useOptionalConnection: () => null };
+  return { ...original, useOptionalConnection: () => connectionScope.scopeId === null ? null : { scopeId: connectionScope.scopeId } };
 });
 
 const roots: Root[] = [];
@@ -71,6 +72,7 @@ afterAll(() => {
 
 beforeEach(() => {
   hostMocks.desktop = false;
+  connectionScope.scopeId = null;
   hostMocks.openPath.mockReset();
   hostMocks.openUrl.mockReset();
   hostMocks.revealPath.mockReset();
@@ -144,6 +146,22 @@ describe('Markdown link menus', () => {
     await act(async () => { link.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
     expect(document.querySelector('[data-preview-tab]')?.getAttribute('data-preview-tab')).toBe(path);
   });
+
+  it('keeps FilePathLink preview and copy but hides local openers in SSH scope', async () => {
+    hostMocks.desktop = true;
+    connectionScope.scopeId = 'ssh:remote-1';
+    const probe = makeRoot();
+    await renderSettled(probe.root,
+      <MediaPreviewProvider cwd="/remote"><FilePathLink path="/remote/output.txt" /></MediaPreviewProvider>,
+    );
+    await rightClick(probe.container.querySelector('[role="link"]')!);
+    const menu = document.querySelector('[data-file-link-menu]')!;
+    expect(menu.querySelector('[data-menu-item="open-preview"]')).not.toBeNull();
+    expect(menu.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    expect(menu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+  });
+
   it('file links raise the file menu and copy both path forms', async () => {
     const probe = makeRoot();
     await renderSettled(
@@ -178,6 +196,21 @@ describe('Markdown link menus', () => {
         .dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(writeText).toHaveBeenCalledWith('/work/app/config/app.toml');
+  });
+
+  it('hides local desktop file openers for a remote SSH scope', async () => {
+    hostMocks.desktop = true;
+    connectionScope.scopeId = 'ssh:remote-1';
+    const probe = makeRoot();
+    await renderSettled(probe.root,
+      <MediaPreviewProvider cwd="/remote"><Markdown text="[source](./config.toml)" /></MediaPreviewProvider>,
+    );
+    await rightClick(probe.container.querySelector('a')!);
+    const menu = document.body.querySelector('[data-file-link-menu]')!;
+    expect(menu.querySelector('[data-menu-item="open-preview"]')).not.toBeNull();
+    expect(menu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
+    expect(menu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
   });
 
   it('external links raise open/copy and copy writes the URL', async () => {

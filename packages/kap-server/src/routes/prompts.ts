@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import {
@@ -37,8 +38,8 @@ import {
   type PromptReservation,
   type PromptWithSkillsResult,
   reservePrompt,
+  promptRetryFor,
   ISessionContext,
-  resumeSessionById,
   ITelemetryService,
   applyPromptMetadataUpdate,
   isError2,
@@ -81,6 +82,7 @@ import {
   type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
+import { acquireSessionOperation, withSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent, MAIN_AGENT_ID } from '../transport/mainAgent';
 import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
@@ -116,16 +118,20 @@ const validationDetailsSchema = z.array(z.object({ path: z.string(), message: z.
 const authProviderDetailsSchema = z.object({ provider_id: z.string() });
 const authModelDetailsSchema = z.object({ model_id: z.string(), provider_id: z.string() }).partial();
 
-async function resolveSession(core: Scope, sessionId: string): Promise<ISessionScopeHandle> {
-  const session = await resumeSessionById(core.accessor, sessionId);
+function promptPayloadFingerprint(payload: z.infer<typeof promptSubmissionSchema>): string {
+  const canonical = JSON.stringify(payload, (_key, value: unknown) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
+      : value,
+  );
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+function requireSession(session: ISessionScopeHandle | undefined, sessionId: string): ISessionScopeHandle {
   if (session === undefined) {
     throw new Error2('session.not_found', `session ${sessionId} does not exist`);
   }
   return session;
-}
-
-async function resolvePrompt(core: Scope, sessionId: string, agentId?: string) {
-  return resolvePromptFromSession(core, await resolveSession(core, sessionId), agentId);
 }
 
 async function resolvePromptFromSession(
@@ -369,8 +375,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const result = projectPromptList((await resolvePrompt(core, session_id)).prompt.list());
-        reply.send(okEnvelope(result, req.id));
+        await withSessionOperation(core, session_id, async (handle) => {
+          const session = requireSession(handle, session_id);
+          const result = projectPromptList((await resolvePromptFromSession(core, session)).prompt.list());
+          reply.send(okEnvelope(result, req.id));
+        });
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -397,7 +406,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         [ErrorCode.PROMPT_ID_CONFLICT]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
       },
-      description: 'Submit a prompt to a session',
+      description: 'Submit a prompt; text-only native child requests with a client prompt_id replay an accepted matching receipt',
       tags: ['prompts'],
       operationId: 'submitPrompt',
     },
@@ -405,10 +414,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       const { session_id } = req.params;
       let preparedMedia: PromptMediaPreparation | undefined;
       let reservation: PromptReservation | undefined;
+      let lease: SessionOperationLease | undefined;
       let enqueued = false;
       try {
         await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));
-        const session = await resolveSession(core, session_id);
+        lease = await acquireSessionOperation(core, session_id, 'operation');
+        const session = requireSession(lease.handle, session_id);
         if (req.body.skills !== undefined) {
           if (req.body.prompt_id !== undefined) {
             throw new Error2(
@@ -421,12 +432,33 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             req.body.skills,
           );
         }
+        const resolved = await resolvePromptFromSession(core, session, req.body.agent_id);
+        const retryPromptId = resolved.agentId !== MAIN_AGENT_ID &&
+          req.body.content.every((part) => part.type === 'text') &&
+          req.body.skills === undefined
+          ? req.body.prompt_id
+          : undefined;
+        const retryFingerprint = retryPromptId === undefined ? undefined : promptPayloadFingerprint(req.body);
+        if (retryPromptId !== undefined && retryFingerprint !== undefined) {
+          const receipt = await promptRetryFor(resolved.prompt).lookup(retryPromptId, retryFingerprint);
+          if (receipt !== undefined) {
+            reply.send(okEnvelope({
+              prompt_id: retryPromptId,
+              user_message_id: retryPromptId,
+              status: receipt.status,
+              content: req.body.content,
+              created_at: receipt.createdAt,
+              append_timing: receipt.appendTiming,
+              revision: receipt.revision,
+            }, req.id));
+            return;
+          }
+        }
         const submittedContent = await resolvePromptSessionMediaRefs(
           req.body.content,
           session.accessor.get(ISessionMediaStore),
         );
-        const resolved = await resolvePromptFromSession(core, session, req.body.agent_id);
-        reservation = reservePrompt(resolved.prompt, req.body.prompt_id);
+        reservation = reservePrompt(resolved.prompt, req.body.prompt_id, retryPromptId !== undefined);
         await ensurePromptAuthReady(session, resolved.accessor, req.body);
 
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
@@ -437,16 +469,10 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           {
             telemetry,
             providerType: resolved.profile.getModelProviderType(req.body.model),
-            resolveOriginalsDir: async () => {
-              const session = await resumeSessionById(core.accessor, session_id);
-              if (session === undefined) return undefined;
-              return sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir);
-            },
-            resolveAttachmentsDir: async () => {
-              const session = await resumeSessionById(core.accessor, session_id);
-              if (session === undefined) return undefined;
-              return join(session.accessor.get(ISessionContext).sessionDir, 'attachments');
-            },
+            resolveOriginalsDir: async () =>
+              sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir),
+            resolveAttachmentsDir: async () =>
+              join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
           },
         );
         const resolvedContent = preparedMedia.content;
@@ -544,9 +570,18 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             () => staging?.discard(),
             () => staging?.discard(),
           );
-          reply.send(okEnvelope(projectPromptHandle(handle), req.id));
+          const result = promptSubmitResultSchema.parse(projectPromptHandle(handle));
+          if (retryFingerprint !== undefined) {
+            await promptRetryFor(resolved.prompt).commit(handle.id, retryFingerprint, {
+              status: result.status,
+              createdAt: result.created_at,
+              appendTiming: result.append_timing ?? 'agent_idle',
+              revision: result.revision ?? 0,
+            });
+          }
+          reply.send(okEnvelope(result, req.id));
         } catch (error) {
-          admission.fail(error);
+          if (!enqueued) admission.fail(error);
           throw error;
         }
       } catch (error) {
@@ -554,6 +589,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         sendMappedError(reply, req, error);
       } finally {
         reservation?.dispose();
+        lease?.dispose();
       }
     },
   );
@@ -582,9 +618,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const resolved = await resolvePrompt(core, session_id);
-        await resolved.prompt.steer(req.body.prompt_ids);
-        reply.send(okEnvelope({ steered: true, prompt_ids: [...req.body.prompt_ids] }, req.id));
+        await withSessionOperation(core, session_id, async (handle) => {
+          const resolved = await resolvePromptFromSession(core, requireSession(handle, session_id));
+          await resolved.prompt.steer(req.body.prompt_ids);
+          reply.send(okEnvelope({ steered: true, prompt_ids: [...req.body.prompt_ids] }, req.id));
+        });
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -624,6 +662,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       let preparedMedia: PromptMediaPreparation | undefined;
+      let lease: SessionOperationLease | undefined;
       let replaced = false;
       try {
         const { session_id, tail } = req.params as { session_id: string; tail: string };
@@ -643,7 +682,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             throw new Error2(ErrorCodes.REQUEST_INVALID, 'replacement content is required');
           }
           await assertPromptFileRefs(replacement.data.content, core.accessor.get(IFileService));
-          const session = await resolveSession(core, session_id);
+          lease = await acquireSessionOperation(core, session_id, 'operation');
+          const session = requireSession(lease.handle, session_id);
           const replacementContent = await resolvePromptSessionMediaRefs(
             replacement.data.content,
             session.accessor.get(ISessionMediaStore),
@@ -656,16 +696,10 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             {
               telemetry: core.accessor.get(ITelemetryService).withContext({ sessionId: session_id }),
               providerType: resolved.profile.getModelProviderType(),
-              resolveOriginalsDir: async () => {
-                const current = await resumeSessionById(core.accessor, session_id);
-                if (current === undefined) return undefined;
-                return sessionMediaOriginalsDir(current.accessor.get(ISessionContext).sessionDir);
-              },
-              resolveAttachmentsDir: async () => {
-                const current = await resumeSessionById(core.accessor, session_id);
-                if (current === undefined) return undefined;
-                return join(current.accessor.get(ISessionContext).sessionDir, 'attachments');
-              },
+              resolveOriginalsDir: async () =>
+                sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir),
+              resolveAttachmentsDir: async () =>
+                join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
             },
           );
           const handle = resolved.prompt.replace(
@@ -682,7 +716,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           reply.send(okEnvelope(projectPromptHandle(handle), req.id));
           return;
         }
-        const resolved = await resolvePrompt(core, session_id);
+        lease = await acquireSessionOperation(core, session_id, 'operation');
+        const resolved = await resolvePromptFromSession(core, requireSession(lease.handle, session_id));
         if (parsed.action === 'move') {
           const move = promptMoveRequestSchema.safeParse(req.body);
           if (!move.success) {
@@ -717,6 +752,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       } catch (error) {
         if (!replaced) await preparedMedia?.discard();
         sendMappedError(reply, req, error);
+      } finally {
+        lease?.dispose();
       }
     },
   );
@@ -749,10 +786,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           return;
         }
         const turnId = Number(parsed.id);
-        const resolved = await resolvePrompt(core, session_id);
-        const loop = resolved.accessor.get(IAgentLoopService);
-        const aborted = loop.status().activeTurnId === turnId && loop.cancel(turnId);
-        reply.send(okEnvelope({ aborted }, req.id));
+        await withSessionOperation(core, session_id, async (handle) => {
+          const resolved = await resolvePromptFromSession(core, requireSession(handle, session_id));
+          const loop = resolved.accessor.get(IAgentLoopService);
+          const aborted = loop.status().activeTurnId === turnId && loop.cancel(turnId);
+          reply.send(okEnvelope({ aborted }, req.id));
+        });
       } catch (error) {
         sendMappedError(reply, req, error);
       }

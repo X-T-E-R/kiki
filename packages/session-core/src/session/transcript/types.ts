@@ -400,6 +400,7 @@ export interface SessionViewState {
   readonly transcriptReady: boolean;
   readonly loadError: string | undefined;
   readonly hasMoreHistory: boolean;
+  readonly historyCoverageKind: 'full' | 'tail' | 'unknown' | undefined;
   readonly oldestMessageId: string | undefined;
   readonly loadingOlder: boolean;
   readonly fetchedOlder: boolean;
@@ -449,6 +450,7 @@ export function createViewState(sessionId: string): SessionViewState {
     transcriptReady: false,
     loadError: undefined,
     hasMoreHistory: false,
+    historyCoverageKind: undefined,
     oldestMessageId: undefined,
     loadingOlder: false,
     fetchedOlder: false,

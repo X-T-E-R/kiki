@@ -40,7 +40,6 @@ import {
   ProfileError,
   getLiveSessionById,
   programForSession,
-  resumeSessionById,
   setSessionArchivedBatch,
   isError2,
   Error2,
@@ -86,6 +85,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
+import { acquireSessionOperation, withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import {
   IModelPricingService,
@@ -668,24 +668,25 @@ export function registerSessionsRoutes(
       try {
         const { session_id } = req.params;
         const { agent_config, ...profileBody } = req.body;
-        const fields = await updateSessionProfile(core, session_id, profileBody);
-        if (agent_config !== undefined) {
-          await applySessionAgentConfig(core, session_id, agent_config);
-        }
-        const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id));
-        if (typeof req.body.title === 'string' && req.body.title.trim().length > 0) {
-          core.accessor.get(IEventService).publish(
-            new SessionMetaUpdated({
-              payload: {
-                agentId: 'main',
-                sessionId: session_id,
-                title: session.title,
-                patch: { title: session.title, isCustomTitle: true },
-              },
-            }),
-          );
-        }
-        reply.send(okEnvelope(session, req.id));
+        await withSessionOperation(core, session_id, async (handle) => {
+          if (handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+          const fields = await updateSessionProfile(handle, profileBody);
+          if (agent_config !== undefined) await applySessionAgentConfig(handle, agent_config);
+          const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id));
+          if (typeof req.body.title === 'string' && req.body.title.trim().length > 0) {
+            core.accessor.get(IEventService).publish(
+              new SessionMetaUpdated({
+                payload: {
+                  agentId: 'main',
+                  sessionId: session_id,
+                  title: session.title,
+                  patch: { title: session.title, isCustomTitle: true },
+                },
+              }),
+            );
+          }
+          reply.send(okEnvelope(session, req.id));
+        });
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -720,27 +721,24 @@ export function registerSessionsRoutes(
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const handle = await resumeSessionById(core.accessor, session_id);
-        if (handle === undefined) {
-          reply.send(
-            errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} not found`, req.id),
-          );
-          return;
-        }
-        const title = await handle.accessor
-          .get(ISessionTitleService)
-          .generateTitle({ force: req.body.force === true, source: req.body.source });
-        if (title === undefined) {
-          reply.send(
-            errEnvelope(
+        await withSessionOperation(core, session_id, async (handle) => {
+          if (handle === undefined) {
+            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} not found`, req.id));
+            return;
+          }
+          const title = await handle.accessor
+            .get(ISessionTitleService)
+            .generateTitle({ force: req.body.force === true, source: req.body.source });
+          if (title === undefined) {
+            reply.send(errEnvelope(
               ErrorCode.SESSION_TITLE_UNAVAILABLE,
               'session title generation is unavailable (no managed OAuth login, no prompt yet, or the backend request failed)',
               req.id,
-            ),
-          );
-          return;
-        }
-        reply.send(okEnvelope({ title }, req.id));
+            ));
+            return;
+          }
+          reply.send(okEnvelope({ title }, req.id));
+        });
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -818,27 +816,28 @@ export function registerSessionsRoutes(
             if (broadcaster === undefined || body.expected_cursor === undefined) {
               throw new Error2(ErrorCodes.REQUEST_INVALID, 'Targeted fork is unavailable');
             }
-            const source = await resumeSessionById(core.accessor, parsed.id);
-            if (source === undefined) {
-              throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
-            }
-            const gate = source.accessor.get(ISessionHistoryMutationService);
-            const lease = await gate.acquire();
-            try {
-              await assertCursor(broadcaster, parsed.id, body.expected_cursor);
-              assertSessionIdle(source);
-              const entries = await loadMessageHistoryEntries(core, parsed.id);
-              const boundary = resolveForkMessageBoundary(entries, body.through_message_id);
-              handle = await core.accessor.get(ISessionManager).fork({
-                sourceSessionId: parsed.id,
-                title: body.title,
-                metadata: body.metadata,
-                turnIndex: boundary.turnIndex,
-                throughUserMessage: boundary.throughUserMessage,
-              });
-            } finally {
-              lease.dispose();
-            }
+            const expectedCursor = body.expected_cursor;
+            const throughMessageId = body.through_message_id;
+            handle = await withSessionOperation(core, parsed.id, async (source) => {
+              if (source === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
+              const gate = source.accessor.get(ISessionHistoryMutationService);
+              const lease = await gate.acquire();
+              try {
+                await assertCursor(broadcaster, parsed.id, expectedCursor);
+                assertSessionIdle(source);
+                const entries = await loadMessageHistoryEntries(core, parsed.id);
+                const boundary = resolveForkMessageBoundary(entries, throughMessageId);
+                return core.accessor.get(ISessionManager).fork({
+                  sourceSessionId: parsed.id,
+                  title: body.title,
+                  metadata: body.metadata,
+                  turnIndex: boundary.turnIndex,
+                  throughUserMessage: boundary.throughUserMessage,
+                });
+              } finally {
+                lease.dispose();
+              }
+            });
           }
           const meta = await handle.accessor.get(ISessionMetadata).read();
           const ctx = handle.accessor.get(ISessionContext);
@@ -860,62 +859,51 @@ export function registerSessionsRoutes(
 
         if (parsed.action === 'compact') {
           const body = compactSessionRequestSchema.parse(req.body);
-          const agent = await resolveMainAgent(core, parsed.id);
-          agent.accessor
-            .get(IAgentFullCompactionService)
-            .begin({ source: 'manual', instruction: normalizeOptional(body.instruction) });
-          requestLog(req)?.info({ session_id: parsed.id, action: 'compact' }, 'session action completed');
-          reply.send(okEnvelope({}, req.id));
+          await withMainAgent(core, parsed.id, async (agent) => {
+            agent.accessor
+              .get(IAgentFullCompactionService)
+              .begin({ source: 'manual', instruction: normalizeOptional(body.instruction) });
+            requestLog(req)?.info({ session_id: parsed.id, action: 'compact' }, 'session action completed');
+            reply.send(okEnvelope({}, req.id));
+          });
           return;
         }
 
         if (parsed.action === 'undo') {
           const body = undoSessionRequestSchema.parse(req.body);
-          const agent = await resolveMainAgent(core, parsed.id);
-          await agent.accessor.get(IAgentConversationUndoService).undo(body.count);
-          const history = agent.accessor.get(IAgentContextMemoryService).get();
-          requestLog(req)?.info({ session_id: parsed.id, action: 'undo' }, 'session action completed');
-          const [summary, status] = await Promise.all([
-            core.accessor.get(ISessionIndex).get(parsed.id),
-            legacy.status(parsed.id),
-          ]);
-          reply.send(
-            okEnvelope(
-              {
-                messages: pageUndoMessages(
-                  parsed.id,
-                  summary?.createdAt ?? 0,
-                  history,
-                  body.page_size,
-                ),
-                status,
-              },
-              req.id,
-            ),
-          );
+          await withMainAgent(core, parsed.id, async (agent) => {
+            await agent.accessor.get(IAgentConversationUndoService).undo(body.count);
+            const history = agent.accessor.get(IAgentContextMemoryService).get();
+            requestLog(req)?.info({ session_id: parsed.id, action: 'undo' }, 'session action completed');
+            const [summary, status] = await Promise.all([
+              core.accessor.get(ISessionIndex).get(parsed.id),
+              legacy.status(parsed.id),
+            ]);
+            reply.send(okEnvelope({
+              messages: pageUndoMessages(parsed.id, summary?.createdAt ?? 0, history, body.page_size),
+              status,
+            }, req.id));
+          });
           return;
         }
 
         if (parsed.action === 'abort') {
-          const agent = await resolveMainAgent(core, parsed.id);
-          agent.accessor.get(IAgentLoopService).cancelFromUser();
-          requestLog(req)?.info({ session_id: parsed.id, action: 'abort' }, 'session action completed');
-          reply.send(okEnvelope({ aborted: true }, req.id));
+          await withMainAgent(core, parsed.id, async (agent) => {
+            agent.accessor.get(IAgentLoopService).cancelFromUser();
+            requestLog(req)?.info({ session_id: parsed.id, action: 'abort' }, 'session action completed');
+            reply.send(okEnvelope({ aborted: true }, req.id));
+          });
           return;
         }
 
         if (parsed.action === 'btw') {
-          const session = await resumeSessionById(core.accessor, parsed.id);
-          if (session === undefined) {
-            throw new Error2(
-              ErrorCodes.SESSION_NOT_FOUND,
-              `session ${parsed.id} does not exist`,
-            );
-          }
-          const main = await ensureMainAgent(session);
-          await core.accessor.get(IAuthSummaryService).ensureReady(main.accessor.get(IAgentProfileService).getModel());
-          const agentId = await session.accessor.get(ISessionBtwService).start();
-          reply.send(okEnvelope({ agent_id: agentId }, req.id));
+          await withSessionOperation(core, parsed.id, async (session) => {
+            if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
+            const main = await ensureMainAgent(session);
+            await core.accessor.get(IAuthSummaryService).ensureReady(main.accessor.get(IAgentProfileService).getModel());
+            const agentId = await session.accessor.get(ISessionBtwService).start();
+            reply.send(okEnvelope({ agent_id: agentId }, req.id));
+          });
           return;
         }
 
@@ -1134,80 +1122,75 @@ export function registerSessionsRoutes(
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const session = await resumeSessionById(core.accessor, session_id);
-        if (session === undefined) {
-          reply.send(
-            errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
-          );
-          return;
-        }
-        const program = await programForSession(core.accessor, session_id);
-        if (program === undefined) {
-          reply.send(
-            errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
-          );
-          return;
-        }
-        if (!leaseRegistry.isActive(req.body.lease_id)) {
-          reply.send(
-            buildValidationEnvelope(
-              [{ path: 'lease_id', message: 'lease is missing or expired' }],
-              req.id,
-            ),
-          );
-          return;
-        }
-        const sourceId = `session-source:${req.body.lease_id}`;
-        const resourceId = `${session_id}:${sourceId}`;
-        const profiles = session.accessor.get(ISessionAgentProfileCatalog) as SessionAgentProfileCatalogService;
-        const skills = session.accessor.get(ISessionSkillCatalog) as SessionSkillCatalogService;
-        if (req.body.agent_files.length === 0 && req.body.skill_dirs.length === 0) {
-          leaseRegistry.releaseResource(resourceId);
-          overlayResourcesBySession.get(session_id)?.delete(resourceId);
-          reply.send(okEnvelope({ profiles: 0, skills: 0 }, req.id));
-          return;
-        }
-        const contributions = await program.loadSessionSourceContributions({
-          agentFiles: req.body.agent_files,
-          skillDirs: req.body.skill_dirs,
-        });
-        if (!leaseRegistry.isActive(req.body.lease_id)) {
-          reply.send(
-            buildValidationEnvelope(
-              [{ path: 'lease_id', message: 'lease expired while loading sources' }],
-              req.id,
-            ),
-          );
-          return;
-        }
-        if (req.body.agent_files.length === 0) profiles.removeContribution(sourceId);
-        else {
-          profiles.setContribution(
-            sourceId,
-            contributions.profiles,
-            AGENT_PROFILE_SOURCE_PRIORITY.explicit,
-          );
-        }
-        if (req.body.skill_dirs.length === 0) skills.remove(sourceId);
-        else {
-          skills.set(sourceId, contributions.skills, {
-            priority: SKILL_SOURCE_PRIORITY.workspace + 1,
+        await withSessionOperation(core, session_id, async (session) => {
+          if (session === undefined) {
+            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+            return;
+          }
+          const program = await programForSession(core.accessor, session_id);
+          if (program === undefined) {
+            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+            return;
+          }
+          if (!leaseRegistry.isActive(req.body.lease_id)) {
+            reply.send(buildValidationEnvelope([{ path: 'lease_id', message: 'lease is missing or expired' }], req.id));
+            return;
+          }
+          const sourceId = `session-source:${req.body.lease_id}`;
+          const resourceId = `${session_id}:${sourceId}`;
+          const profiles = session.accessor.get(ISessionAgentProfileCatalog) as SessionAgentProfileCatalogService;
+          const skills = session.accessor.get(ISessionSkillCatalog) as SessionSkillCatalogService;
+          if (req.body.agent_files.length === 0 && req.body.skill_dirs.length === 0) {
+            leaseRegistry.releaseResource(resourceId);
+            overlayResourcesBySession.get(session_id)?.delete(resourceId);
+            reply.send(okEnvelope({ profiles: 0, skills: 0 }, req.id));
+            return;
+          }
+          const contributions = await program.loadSessionSourceContributions({
+            agentFiles: req.body.agent_files,
+            skillDirs: req.body.skill_dirs,
           });
-        }
-        leaseRegistry.attach(req.body.lease_id, resourceId, () => {
-          profiles.removeContribution(sourceId);
-          skills.remove(sourceId);
-          const resources = overlayResourcesBySession.get(session_id);
-          resources?.delete(resourceId);
-          if (resources?.size === 0) overlayResourcesBySession.delete(session_id);
+          if (!leaseRegistry.isActive(req.body.lease_id)) {
+            reply.send(buildValidationEnvelope([{ path: 'lease_id', message: 'lease expired while loading sources' }], req.id));
+            return;
+          }
+          const overlayPin = await acquireSessionOperation(core, session_id, 'source-overlay');
+          let attached = false;
+          try {
+            if (overlayPin.handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+            leaseRegistry.releaseResource(resourceId);
+            if (req.body.agent_files.length === 0) profiles.removeContribution(sourceId);
+            else profiles.setContribution(sourceId, contributions.profiles, AGENT_PROFILE_SOURCE_PRIORITY.explicit);
+            if (req.body.skill_dirs.length === 0) skills.remove(sourceId);
+            else skills.set(sourceId, contributions.skills, { priority: SKILL_SOURCE_PRIORITY.workspace + 1 });
+            attached = leaseRegistry.attach(req.body.lease_id, resourceId, () => {
+              try {
+                profiles.removeContribution(sourceId);
+                skills.remove(sourceId);
+                const resources = overlayResourcesBySession.get(session_id);
+                resources?.delete(resourceId);
+                if (resources?.size === 0) overlayResourcesBySession.delete(session_id);
+              } finally {
+                overlayPin.dispose();
+              }
+            });
+            if (!attached) {
+              profiles.removeContribution(sourceId);
+              skills.remove(sourceId);
+              reply.send(buildValidationEnvelope([{ path: 'lease_id', message: 'lease expired while loading sources' }], req.id));
+              return;
+            }
+            const resources = overlayResourcesBySession.get(session_id) ?? new Set<string>();
+            resources.add(resourceId);
+            overlayResourcesBySession.set(session_id, resources);
+            reply.send(okEnvelope({
+              profiles: contributions.profiles.profiles.length,
+              skills: contributions.skills.skills.length,
+            }, req.id));
+          } finally {
+            if (!attached) overlayPin.dispose();
+          }
         });
-        const resources = overlayResourcesBySession.get(session_id) ?? new Set<string>();
-        resources.add(resourceId);
-        overlayResourcesBySession.set(session_id, resources);
-        reply.send(okEnvelope({
-          profiles: contributions.profiles.profiles.length,
-          skills: contributions.skills.skills.length,
-        }, req.id));
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -1263,27 +1246,19 @@ export function registerSessionsRoutes(
     },
     async (req, reply) => {
       const { session_id } = req.params;
-      const session = await resumeSessionById(core.accessor, session_id);
-      if (session === undefined) {
-        reply.send(
-          errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
-        );
-        return;
-      }
       try {
-        const agent = await ensureMainAgent(session);
-        const agentsMdWarning = agent.accessor.get(IAgentProfileService).getAgentsMdWarning();
-        const warnings =
-          agentsMdWarning === undefined
-            ? []
-            : [
-                {
-                  code: 'agents-md-oversized',
-                  message: agentsMdWarning,
-                  severity: 'warning' as const,
-                },
-              ];
-        reply.send(okEnvelope({ warnings }, req.id));
+        await withSessionOperation(core, session_id, async (session) => {
+          if (session === undefined) {
+            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+            return;
+          }
+          const agent = await ensureMainAgent(session);
+          const agentsMdWarning = agent.accessor.get(IAgentProfileService).getAgentsMdWarning();
+          const warnings = agentsMdWarning === undefined ? [] : [{
+            code: 'agents-md-oversized', message: agentsMdWarning, severity: 'warning' as const,
+          }];
+          reply.send(okEnvelope({ warnings }, req.id));
+        });
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -1524,12 +1499,11 @@ function readSessionUsage(
   }
 }
 
-async function resolveMainAgent(core: Scope, sessionId: string): Promise<IAgentScopeHandle> {
-  const session = await resumeSessionById(core.accessor, sessionId);
-  if (session === undefined) {
-    throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-  }
-  return ensureMainAgent(session);
+async function withMainAgent<T>(core: Scope, sessionId: string, work: (agent: IAgentScopeHandle) => Promise<T>): Promise<T> {
+  return withSessionOperation(core, sessionId, async (session) => {
+    if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    return work(await ensureMainAgent(session));
+  });
 }
 
 function normalizeOptional(value: string | undefined): string | undefined {

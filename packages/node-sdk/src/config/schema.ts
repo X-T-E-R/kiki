@@ -151,7 +151,7 @@ export type PermissionConfig = z.infer<typeof PermissionConfigSchema>;
 
 export const LoopControlSchema = z.object({
   maxStepsPerTurn: z.number().int().min(0).optional(),
-  maxRetriesPerStep: z.number().int().min(0).optional(),
+  maxAttemptsPerStep: z.number().int().min(0).optional(),
   maxRalphIterations: z.number().int().min(-1).optional(),
   reservedContextSize: z.number().int().min(0).optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.99).optional(),
@@ -190,8 +190,13 @@ export const SubagentConfigSchema = z.object({
    * in milliseconds. `0` means no timeout. Defaults to 2 hours when unset.
    */
   timeoutMs: z.number().int().min(0).optional(),
+  denyModels: z.array(z.string()).optional(),
   maxDirectChildren: z.number().int().nonnegative().optional(),
   maxTotalSubagents: z.number().int().nonnegative().optional(),
+  defaultProfile: z.string().optional(),
+  mainDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
+  subagentDispatchPolicy: z.enum(['advisory', 'strict']).optional(),
+  allowedTools: z.array(z.string()).optional(),
 });
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;

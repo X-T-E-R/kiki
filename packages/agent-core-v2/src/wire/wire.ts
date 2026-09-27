@@ -18,6 +18,10 @@ export interface IWireService {
   readonly _serviceBrand: undefined;
 
   seal(): Promise<void>;
+  beginTranscriptEpoch?(): Promise<void>;
+  sealTranscriptEpoch?(): Promise<void>;
+  verifyTranscriptLiveEpoch?(): Promise<boolean>;
+  isTranscriptLiveEpochVerified?(): boolean;
   appendRecord(record: WireRecord, dehydrate?: RecordDehydrator): void;
   readJournal(): AsyncIterable<WireRecord>;
   journalIdentity?(): Promise<WireJournalIdentity>;

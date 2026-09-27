@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import type { NbSearchCapabilities } from '@kiki/protocol';
+import type { NbSearchCapabilities, NbSearchManagedCredentialView } from '@kiki/protocol';
+import { NbSearchCredentialEditor } from './NbSearchCredentialEditor';
 import { nbSearchIssueCodes, type NbSearchProviderDraft } from '@kiki/session-core/settings';
 import { SectionCard } from '../SectionCard';
 import { Hint, Toggle } from '../../controls';
@@ -36,6 +37,9 @@ function ProviderInstanceCard({
   credentialEnv,
   onChange,
   onCredentialEnvChange,
+  readCredential,
+  writeCredential,
+  credentialDisabled,
 }: {
   instance: NbSearchCapabilities['providers']['instances'][number];
   descriptor: NbSearchCapabilities['providers']['descriptors'][number] | undefined;
@@ -43,6 +47,9 @@ function ProviderInstanceCard({
   credentialEnv: string;
   onChange: (patch: Partial<NbSearchProviderDraft>) => void;
   onCredentialEnvChange: (credentialEnv: string) => void;
+  readCredential: (id: string, reveal: boolean) => Promise<NbSearchManagedCredentialView>;
+  writeCredential: (id: string, value: string | null, version: string, binding: string) => Promise<NbSearchManagedCredentialView>;
+  credentialDisabled: boolean;
 }) {
   const { t } = useI18n();
   const attention = instance.availability === 'unavailable' || instance.issues.length > 0;
@@ -150,18 +157,19 @@ function ProviderInstanceCard({
         <NbSearchIssues issues={nbSearchIssueCodes(instance.issues)} />
 
         {needsCredential ? (
-          <label className="block text-[11px] font-medium text-ink-soft">
-            {t('st.nbSearch.credentialEnvLabel')}
-            <input
-              className={`${INPUT} mt-1 font-mono`}
-              value={credentialEnv}
-              placeholder={credentialPlaceholder}
-              onChange={(event) => {
-                onCredentialEnvChange(event.target.value);
-              }}
-            />
-            <Hint>{t('st.nbSearch.credentialEnvHint')}</Hint>
-          </label>
+          <div className="space-y-2">
+            <label className="block text-[11px] font-medium text-ink-soft">
+              {t('st.nbSearch.credentialEnvLabel')}
+              <input
+                className={`${INPUT} mt-1 font-mono`}
+                value={credentialEnv}
+                placeholder={credentialPlaceholder}
+                onChange={(event) => { onCredentialEnvChange(event.target.value); }}
+              />
+              <Hint>{t('st.nbSearch.credentialEnvHint')}</Hint>
+            </label>
+            <NbSearchCredentialEditor instanceId={instance.id} disabled={credentialDisabled} read={readCredential} write={writeCredential} />
+          </div>
         ) : null}
 
         {needsEndpoint ? (
@@ -207,6 +215,9 @@ export function NbSearchProvidersTab({
   credentialSlots,
   onUpdateProvider,
   onUpdateCredentialEnv,
+  readCredential,
+  writeCredential,
+  credentialDisabled,
   saving = false,
 }: {
   capabilities: NbSearchCapabilities;
@@ -214,6 +225,9 @@ export function NbSearchProvidersTab({
   credentialSlots: unknown;
   onUpdateProvider: (id: string, patch: Partial<NbSearchProviderDraft>) => void;
   onUpdateCredentialEnv: (instanceId: string, providerId: string, credentialEnv: string) => void;
+  readCredential: (id: string, reveal: boolean) => Promise<NbSearchManagedCredentialView>;
+  writeCredential: (id: string, value: string | null, version: string, binding: string) => Promise<NbSearchManagedCredentialView>;
+  credentialDisabled: boolean;
   saving?: boolean;
 }) {
   const { t } = useI18n();
@@ -336,6 +350,9 @@ export function NbSearchProvidersTab({
               onCredentialEnvChange={(env) => {
                 onUpdateCredentialEnv(instance.id, instance.provider_id, env);
               }}
+              readCredential={readCredential}
+              writeCredential={writeCredential}
+              credentialDisabled={credentialDisabled}
             />
           ))}
 

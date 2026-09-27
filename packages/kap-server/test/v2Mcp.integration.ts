@@ -44,6 +44,9 @@ interface McpStub {
     lastInspectCwd?: string;
     lastBeginCwd?: string;
     lastResetCwd?: string;
+    lastExpectedCanonicalUrl?: string;
+    lastRevokedCredential?: { readonly credentialId: string };
+    lastRevealedCredential?: { readonly credentialId: string };
     verifySeen?: boolean;
     mutationCwds: Array<string | undefined>;
   };
@@ -160,9 +163,20 @@ function makeMcpStub(): McpStub {
       }
     },
     cancelServerAuth: async () => {},
-    resetServerAuth: async (locator, query) => {
+    resetServerAuth: async (locator, query, expectedCanonicalUrl) => {
       state.lastResetLocator = locator;
       state.lastResetCwd = query?.cwd;
+      state.lastExpectedCanonicalUrl = expectedCanonicalUrl;
+    },
+    listStoredOAuthCredentials: async () => [
+      { credentialId: 'a'.repeat(64), serverName: 'orphan', displayUrl: 'https://orphan.example.test/…', origin: 'unknown' },
+    ],
+    revealStoredOAuthCredential: async (target) => {
+      state.lastRevealedCredential = target;
+      return { canonicalUrl: 'https://user:fixture-secret@orphan.example.test/mcp?key=fixture-secret' };
+    },
+    revokeStoredOAuthCredential: async (target) => {
+      state.lastRevokedCredential = target;
     },
   };
   return { service, calls, state };
@@ -466,6 +480,32 @@ describe('server /api/mcp', () => {
       });
       expect(reset.body).toMatchObject({ code: 0, data: null });
       expect(stub.state.lastResetLocator).toEqual({ source: 'plugin', pluginId: 'p', serverName: 's' });
+    });
+
+    it('masks URL secrets in inventory and reveals only an explicitly selected opaque identity', async () => {
+      const stub = makeMcpStub();
+      await boot(stub);
+      const identity = { credentialId: 'a'.repeat(64) };
+      const saved = await call('GET', '/api/mcp/oauth-credentials');
+      expect(saved.body).toMatchObject({
+        code: 0,
+        data: [{ ...identity, serverName: 'orphan', displayUrl: 'https://orphan.example.test/…', origin: 'unknown' }],
+      });
+      expect(JSON.stringify(saved.body)).not.toContain('fixture-secret');
+      expect(JSON.stringify(saved.body)).not.toContain('canonicalUrl');
+      const reveal = await call('POST', '/api/mcp/oauth-credentials:reveal', identity);
+      expect(reveal.body).toMatchObject({
+        code: 0, data: { canonicalUrl: 'https://user:fixture-secret@orphan.example.test/mcp?key=fixture-secret' },
+      });
+      expect(stub.state.lastRevealedCredential).toEqual(identity);
+      const reset = await call('POST', '/api/mcp/auth:reset', {
+        source: 'global', name: 'a', expectedCanonicalUrl: 'https://old.example.test/mcp',
+      });
+      expect(reset.body.code).toBe(0);
+      expect(stub.state.lastExpectedCanonicalUrl).toBe('https://old.example.test/mcp');
+      const revoke = await call('POST', '/api/mcp/oauth-credentials:revoke', identity);
+      expect(revoke.body).toMatchObject({ code: 0, data: null });
+      expect(stub.state.lastRevokedCredential).toEqual(identity);
     });
 
     it('rejects an overflowing auth:complete timeoutMs with 40001', async () => {

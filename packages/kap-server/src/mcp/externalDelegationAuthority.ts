@@ -9,7 +9,6 @@ import {
   ISessionManager,
   ISessionMetadata,
   IWorkspaceService,
-  resumeSessionById,
   type PermissionMode,
   type Scope,
 } from '@kiki/agent-core-v2';
@@ -17,6 +16,7 @@ import { realpath } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { isAbsolute, normalize } from 'node:path';
 
+import { withSessionOperation } from '../lib/sessionOperationLease';
 import { ensureMainAgent } from '../transport/mainAgent';
 
 export interface ExternalDelegationSessionBootstrap {
@@ -171,26 +171,19 @@ export async function ensureExternalDelegationSession(
     status.model !== bootstrap.modelAlias ||
     status.thinking_level !== bootstrap.thinkingEffort;
   if (updateProfile || bootstrap.permissionMode !== undefined) {
-    const session = await resumeSessionById(core.accessor, authority.sessionId);
-    if (session === undefined) {
-      throw new Error('External delegation Session is unavailable.');
-    }
-    const agent = await ensureMainAgent(session);
-    if (updateProfile) {
-      const profile = agent.accessor.get(IAgentProfileService);
-      if (status.model !== bootstrap.modelAlias) {
-        await profile.setModel(bootstrap.modelAlias);
+    await withSessionOperation(core, authority.sessionId, async (session) => {
+      if (session === undefined) throw new Error('External delegation Session is unavailable.');
+      const agent = await ensureMainAgent(session);
+      if (updateProfile) {
+        const profile = agent.accessor.get(IAgentProfileService);
+        if (status.model !== bootstrap.modelAlias) await profile.setModel(bootstrap.modelAlias);
+        if (status.thinking_level !== bootstrap.thinkingEffort) profile.setThinking(bootstrap.thinkingEffort);
+        status = await legacy.status(authority.sessionId);
       }
-      if (status.thinking_level !== bootstrap.thinkingEffort) {
-        profile.setThinking(bootstrap.thinkingEffort);
+      if (bootstrap.permissionMode !== undefined) {
+        agent.accessor.get(IAgentLifecycleService).broadcastPermissionMode(bootstrap.permissionMode);
       }
-      status = await legacy.status(authority.sessionId);
-    }
-    if (bootstrap.permissionMode !== undefined) {
-      agent.accessor
-        .get(IAgentLifecycleService)
-        .broadcastPermissionMode(bootstrap.permissionMode);
-    }
+    });
   }
   if (
     status.model !== bootstrap.modelAlias ||
@@ -230,10 +223,9 @@ export async function ensureExternalDelegationSeatSession(
     core.accessor.get(ISessionIndex),
     input.sessionId,
   );
-  let session;
   if (existing === undefined) {
     const workspace = await registry.createOrTouch(workspacePath);
-    session = await core.accessor.get(ISessionManager).create({
+    await core.accessor.get(ISessionManager).create({
       workspaceId: workspace.id,
       sessionId: input.sessionId,
       workDir: workspacePath,
@@ -258,32 +250,33 @@ export async function ensureExternalDelegationSeatSession(
         'External delegation Session workspace binding does not match.',
       );
     }
-    session = await resumeSessionById(core.accessor, input.sessionId);
+  }
+  return withSessionOperation(core, input.sessionId, async (session) => {
     if (session === undefined) throw new Error('External delegation Session is unavailable.');
-  }
-  if (input.title !== undefined) await session.accessor.get(ISessionMetadata).setTitle(input.title);
-  const agent = await ensureMainAgent(session);
-  const profile = agent.accessor.get(IAgentProfileService);
-  if (input.modelAlias !== undefined && profile.data().modelAlias !== input.modelAlias) {
-    await profile.setModel(input.modelAlias);
-  }
-  if (input.thinkingEffort !== undefined && profile.data().thinkingLevel !== input.thinkingEffort) {
-    profile.setThinking(input.thinkingEffort);
-  }
-  agent.accessor.get(IAgentLifecycleService).broadcastPermissionMode(input.permissionMode);
-  await session.accessor.get(ISessionExternalDelegationProvisionStore).write({
-    version: 2,
-    ownership: 'dedicated',
-    principalId: input.principalId,
-    delegationToken: input.delegationToken,
+    if (input.title !== undefined) await session.accessor.get(ISessionMetadata).setTitle(input.title);
+    const agent = await ensureMainAgent(session);
+    const profile = agent.accessor.get(IAgentProfileService);
+    if (input.modelAlias !== undefined && profile.data().modelAlias !== input.modelAlias) {
+      await profile.setModel(input.modelAlias);
+    }
+    if (input.thinkingEffort !== undefined && profile.data().thinkingLevel !== input.thinkingEffort) {
+      profile.setThinking(input.thinkingEffort);
+    }
+    agent.accessor.get(IAgentLifecycleService).broadcastPermissionMode(input.permissionMode);
+    await session.accessor.get(ISessionExternalDelegationProvisionStore).write({
+      version: 2,
+      ownership: 'dedicated',
+      principalId: input.principalId,
+      delegationToken: input.delegationToken,
+    });
+    const data = profile.data();
+    return {
+      workspacePath,
+      modelAlias: data.modelAlias,
+      thinkingEffort: data.modelAlias === undefined ? undefined : data.thinkingLevel,
+      permissionMode: agent.accessor.get(IAgentPermissionModeService).mode,
+    };
   });
-  const data = profile.data();
-  return {
-    workspacePath,
-    modelAlias: data.modelAlias,
-    thinkingEffort: data.modelAlias === undefined ? undefined : data.thinkingLevel,
-    permissionMode: agent.accessor.get(IAgentPermissionModeService).mode,
-  };
 }
 
 async function readExternalDelegationSession(
@@ -314,13 +307,9 @@ async function writeExternalDelegationSessionOwnership(
   sessionId: string,
   ownership: 'dedicated' | 'attached',
 ): Promise<void> {
-  const session = await resumeSessionById(core.accessor, sessionId);
-  if (session === undefined) {
-    throw new Error('External delegation Session is unavailable.');
-  }
-  await session.accessor.get(ISessionExternalDelegationProvisionStore).write({
-    version: 1,
-    ownership,
+  await withSessionOperation(core, sessionId, async (session) => {
+    if (session === undefined) throw new Error('External delegation Session is unavailable.');
+    await session.accessor.get(ISessionExternalDelegationProvisionStore).write({ version: 1, ownership });
   });
 }
 

@@ -87,6 +87,8 @@ When session recovery fails, the GUI keeps the history that was already loaded a
 
 Resolved questions, approvals, markers, and background-task completion notices stay inline in the timeline at their original position, rendered as compact one-line entries; consecutive entries fold into an expandable "Activity history" row, while failed or cancelled entries always remain individually visible. The timeline focuses on unfinished work; completed task output remains available in task history. File references can be previewed, opened, or shown in their containing folder from the relevant session view.
 
+In the file preview, Markdown opens in the rendered view; switch to **Source** to inspect the text or edit it in the desktop app when a write channel is available. The rendered view supports tables, math, diagrams, and images linked relative to the Markdown file. For files larger than about 512 KB, the initial view shows only the beginning and is read-only. Select **Load full file** in either the rendered or Source view to display the rest; loading the full file does not enable editing.
+
 ## GUI usage statistics
 
 Opening **Usage** without filters starts with today in the browser's local time. An explicit range in the URL takes precedence; a previously saved all-history view does not replace this default. The page refreshes its date boundary across midnight and when the browser's timezone offset changes.

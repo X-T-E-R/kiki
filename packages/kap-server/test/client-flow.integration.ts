@@ -232,7 +232,7 @@ describe('GUI shared client against an isolated KAP host', () => {
       delegator: { kind: 'agent', agentId: 'main' },
       binding: { profile: 'agent', model: 'first' },
     });
-    await client.sendAgentMessage(id, child.id, 'initial child prompt');
+    await client.sendAgentMessage(id, child.id, 'initial child prompt', undefined, 'initial-child-prompt');
     await child.accessor.get(IAgentExecutionService).settled();
     if (mode === 'cold') {
       await client.klient.close();
@@ -241,7 +241,7 @@ describe('GUI shared client against an isolated KAP host', () => {
       endpoint = `http://127.0.0.1:${host.port}`;
       client = new KikiClient({ baseUrl: endpoint, token: host.authTokenService.getToken() });
       expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-      const response = await fetch(`${endpoint}/api/sessions/${id}/transcript?agent_id=main`, {
+      const response = await fetch(`${endpoint}/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2`, {
         headers: { authorization: `Bearer ${host.authTokenService.getToken()}` },
       });
       const cold = await response.json() as { code: number; data: { tasks: { agentId?: string; state: string }[] } };
@@ -265,7 +265,7 @@ describe('GUI shared client against an isolated KAP host', () => {
         mainChanges.mockClear();
         childChanges.mockClear();
         const beforeRequests = requests.length;
-        await client.sendAgentMessage(id, child.id, `follow-up ${ending}`);
+        await client.sendAgentMessage(id, child.id, `follow-up ${ending}`, undefined, `follow-up-${ending}`);
         await vi.waitFor(() => expect(requests).toHaveLength(beforeRequests + 1), { timeout: 10000 });
         await vi.waitFor(() => {
           controller.flushFrames();

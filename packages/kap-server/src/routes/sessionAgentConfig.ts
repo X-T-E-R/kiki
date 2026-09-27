@@ -9,10 +9,9 @@ import {
   IAgentProfileService,
   IAgentSwarmService,
   ProfileError,
-  resumeSessionById,
   type IAgentScopeHandle,
+  type ISessionScopeHandle,
   type PermissionMode,
-  type Scope,
 } from '@kiki/agent-core-v2';
 import type {
   SessionAgentConfigCreate,
@@ -22,14 +21,9 @@ import type {
 import { ensureMainAgent } from '../transport/mainAgent';
 
 export async function applySessionAgentConfig(
-  core: Scope,
-  sessionId: string,
+  session: ISessionScopeHandle,
   agentConfig: SessionAgentConfigPartial,
 ): Promise<void> {
-  const session = await resumeSessionById(core.accessor, sessionId);
-  if (session === undefined) {
-    throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-  }
   const agent = await ensureMainAgent(session);
 
   const profile = agent.accessor.get(IAgentProfileService);

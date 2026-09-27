@@ -5,13 +5,13 @@ import { join, normalize, resolve } from 'node:path';
 
 import {
   ISessionExternalDelegationProvisionStore,
-  resumeSessionById,
   type PermissionMode,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { ulid } from 'ulid';
 import { z } from 'zod';
 
+import { withSessionOperation } from '../lib/sessionOperationLease';
 import { readPrivateFile, writePrivateFile } from '../services/auth/privateFiles';
 import { ensureExternalDelegationSeatSession } from './externalDelegationAuthority';
 
@@ -134,11 +134,10 @@ export class ExternalDelegationSeatManager {
       const index = document.seats.findIndex((seat) => seat.seatId === seatId);
       if (index === -1) return undefined;
       const seat = document.seats[index]!;
-      const provisionStore = await this.provisionStore(seat.sessionId);
-      if (provisionStore === undefined) {
-        throw new Error('External delegation seat Session is unavailable.');
-      }
-      await provisionStore.revoke();
+      await withSessionOperation(this.core, seat.sessionId, async (session) => {
+        if (session === undefined) throw new Error('External delegation seat Session is unavailable.');
+        await session.accessor.get(ISessionExternalDelegationProvisionStore).revoke();
+      });
       document.seats.splice(index, 1);
       await this.write(document);
       return toView(seat);
@@ -207,14 +206,11 @@ export class ExternalDelegationSeatManager {
     return writePrivateFile(this.filePath, JSON.stringify(document));
   }
 
-  private async provisionStore(sessionId: string) {
-    const session = await resumeSessionById(this.core.accessor, sessionId);
-    return session?.accessor.get(ISessionExternalDelegationProvisionStore);
-  }
-
   private async readSeatProvision(sessionId: string) {
-    const provision = await (await this.provisionStore(sessionId))?.read();
-    return provision?.version === 2 ? provision : undefined;
+    return withSessionOperation(this.core, sessionId, async (session) => {
+      const provision = await session?.accessor.get(ISessionExternalDelegationProvisionStore).read();
+      return provision?.version === 2 ? provision : undefined;
+    });
   }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {

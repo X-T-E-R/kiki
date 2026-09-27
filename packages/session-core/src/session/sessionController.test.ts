@@ -1244,6 +1244,37 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  it('does not roll visible progress back on a stale or equal-cursor grade reset', async () => {
+    const { controller, flushAll } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('child-1', userTurnSnapshot({ assistantText: 'earlier' }), 1));
+    controller.handleTranscript(opsEvent('child-1', [
+      { op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: ASSISTANT_FRAME_ID }, offset: 7, text: ' latest' },
+    ], 2));
+    flushAll();
+    const blocks = controller.getAgentState('child-1').blocks;
+    const cursor = controller.getAgentTranscriptCursor('child-1');
+    const earlierReset = resetEvent('child-1', userTurnSnapshot({ assistantText: 'earlier' }), 1);
+    if (earlierReset.type !== 'transcript.reset') throw new Error('Expected reset');
+    controller.handleTranscript({ ...earlierReset, grade: 'turn' });
+    controller.handleTranscript(resetEvent('child-1', userTurnSnapshot({ assistantText: 'earlier' }), 2));
+    expect(controller.getAgentState('child-1').blocks).toBe(blocks);
+    expect(controller.getAgentTranscriptCursor('child-1')).toEqual(cursor);
+    controller.close();
+  });
+
+  it('accepts an equal-cursor turn-to-delta reset with the missing frame details', async () => {
+    const { controller } = await openTranscriptController();
+    const full = userTurnSnapshot({ assistantText: 'full details' });
+    const turnOnly = { ...full, items: full.items.map((item) => item.kind === 'turn' ? { ...item, steps: [] } : item) };
+    const turnReset = resetEvent('child-1', turnOnly, 1);
+    if (turnReset.type !== 'transcript.reset') throw new Error('Expected reset');
+    controller.handleTranscript({ ...turnReset, grade: 'turn' });
+    expect(controller.getAgentState('child-1').blocks.some((block) => block.kind === 'assistant')).toBe(false);
+    controller.handleTranscript(resetEvent('child-1', full, 1));
+    expect(controller.getAgentState('child-1').blocks.some((block) => block.kind === 'assistant' && block.text === 'full details')).toBe(true);
+    controller.close();
+  });
+
   it('shares a pending older-page request between two views of one agent', async () => {
     const { controller, client } = await openTranscriptController();
     controller.retainAgentView('route', 'child-1', 'delta');
@@ -1284,6 +1315,37 @@ describe('SessionController transcript authority', () => {
     expect(controller.getState().model).toBe('explicit-second');
     reset(3, { agent: { usage: { total: { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 } } } });
     expect(controller.getState().model).toBe('explicit-second');
+    controller.close();
+  });
+
+  it('keeps REST and WS unknown coverage visible without discarding earlier turns', async () => {
+    const { controller, client } = await openTranscriptController();
+    const newer = { kind: 'turn' as const, turnId: 't2', ordinal: 2, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'newer', steps: [] };
+    const older = { kind: 'turn' as const, turnId: 't1', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'older', steps: [] };
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [newer] }), 1, true));
+    client.getAgentTranscript.mockResolvedValueOnce({
+      agent_id: 'main', items: [older], has_more: false,
+      coverage: { kind: 'unknown', hasMoreOlder: true },
+    });
+    await expect(controller.loadOlderMessages()).resolves.toBe(true);
+    expect(controller.getState()).toMatchObject({ historyCoverageKind: 'unknown', hasMoreHistory: false });
+    await expect(controller.loadOlderMessages()).resolves.toBe(false);
+    expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
+    const unknownReset = resetEvent('main', emptySnapshot({ items: [] }), 2, true);
+    if (unknownReset.type !== 'transcript.reset') throw new Error('Expected transcript reset');
+    const beforeResetVersion = controller.getState().transcriptResetVersion;
+    controller.handleTranscript({ ...unknownReset, coverage: { kind: 'unknown', hasMoreOlder: true } });
+    expect(controller.getState()).toMatchObject({
+      historyCoverageKind: 'unknown', hasMoreHistory: false, transcriptResetVersion: beforeResetVersion,
+    });
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'older')).toBe(true);
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [newer] }), 3, true));
+    expect(controller.getState().historyCoverageKind).toBe('unknown');
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [newer] }), 4));
+    expect(controller.getState().historyCoverageKind).toBe('full');
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'older')).toBe(false);
     controller.close();
   });
 

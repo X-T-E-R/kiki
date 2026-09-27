@@ -1,4 +1,5 @@
-import { Error2, ErrorCodes, ISessionTerminalService, isError2, resumeSessionById, type Scope, type TerminalFrame } from '@kiki/agent-core-v2';
+import { Error2, ErrorCodes, ISessionTerminalService, isError2, type Scope, type TerminalFrame } from '@kiki/agent-core-v2';
+import { withSessionOperation } from '../../lib/sessionOperationLease';
 import type { KlientFrame } from '@kiki/klient/host';
 import { terminalAttachMessageSchema, terminalDetachMessageSchema, terminalInputMessageSchema, terminalResizeMessageSchema } from '../../protocol/ws-control';
 import { ErrorCode } from '../../protocol/error-codes';
@@ -17,10 +18,11 @@ export class TerminalHttpConnection {
     return true;
   }
 
-  private async resolve(sessionId: string): Promise<ISessionTerminalService> {
-    const session = await resumeSessionById(this.core.accessor, sessionId);
-    if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-    return session.accessor.get(ISessionTerminalService);
+  private async withTerminal<T>(sessionId: string, work: (service: ISessionTerminalService) => Promise<T>): Promise<T> {
+    return withSessionOperation(this.core, sessionId, async (session) => {
+      if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+      return work(session.accessor.get(ISessionTerminalService));
+    });
   }
 
   private ack(frame: KlientFrame, code: number, msg: string, data: unknown = {}): void {
@@ -40,43 +42,48 @@ export class TerminalHttpConnection {
           const parsed = terminalAttachMessageSchema.safeParse(wire);
           if (!parsed.success) { this.ack(frame, ErrorCode.VALIDATION_FAILED, 'invalid terminal_attach payload'); return; }
           const { session_id, terminal_id, since_seq } = parsed.data.payload;
-          const service = await this.resolve(session_id);
-          if (this.closed) return;
-          const key = JSON.stringify([session_id, terminal_id]);
-          this.attachments.set(key, service);
-          try {
-            const result = await service.attach(terminal_id, { id: this.id, send: (output) => this.output(service, output) }, { sinceSeq: since_seq });
-            if (this.closed) { service.detach(terminal_id, this.id); this.attachments.delete(key); return; }
-            this.ack(frame, 0, 'success', { replayed: result.replayed, earliest_seq: result.earliestSeq, truncated: result.truncated });
-          } catch (error) { this.attachments.delete(key); throw error; }
+          await this.withTerminal(session_id, async (service) => {
+            if (this.closed) return;
+            const key = JSON.stringify([session_id, terminal_id]);
+            this.attachments.set(key, service);
+            try {
+              const result = await service.attach(terminal_id, { id: this.id, send: (output) => this.output(service, output) }, { sinceSeq: since_seq });
+              if (this.closed) { service.detach(terminal_id, this.id); this.attachments.delete(key); return; }
+              this.ack(frame, 0, 'success', { replayed: result.replayed, earliest_seq: result.earliestSeq, truncated: result.truncated });
+            } catch (error) { service.detach(terminal_id, this.id); this.attachments.delete(key); throw error; }
+          });
           return;
         }
         case 'terminal_detach': {
           const parsed = terminalDetachMessageSchema.safeParse(wire);
           if (!parsed.success) { this.ack(frame, ErrorCode.VALIDATION_FAILED, 'invalid terminal_detach payload'); return; }
           const { session_id, terminal_id } = parsed.data.payload;
-          const service = await this.resolve(session_id);
-          if (this.closed) return;
-          await service.get(terminal_id);
-          service.detach(terminal_id, this.id);
-          this.attachments.delete(JSON.stringify([session_id, terminal_id]));
-          this.ack(frame, 0, 'success');
+          await this.withTerminal(session_id, async (service) => {
+            if (this.closed) return;
+            await service.get(terminal_id);
+            if (this.closed) return;
+            service.detach(terminal_id, this.id);
+            this.attachments.delete(JSON.stringify([session_id, terminal_id]));
+            this.ack(frame, 0, 'success');
+          });
           return;
         }
         case 'terminal_input': {
           const parsed = terminalInputMessageSchema.safeParse(wire);
           if (!parsed.success) { this.ack(frame, ErrorCode.VALIDATION_FAILED, 'invalid terminal_input payload'); return; }
           const { session_id, terminal_id, data } = parsed.data.payload;
-          const service = await this.resolve(session_id);
-          if (!this.closed) await service.write(terminal_id, data);
+          await this.withTerminal(session_id, async (service) => {
+            if (!this.closed) await service.write(terminal_id, data);
+          });
           return;
         }
         case 'terminal_resize': {
           const parsed = terminalResizeMessageSchema.safeParse(wire);
           if (!parsed.success) { this.ack(frame, ErrorCode.VALIDATION_FAILED, 'invalid terminal_resize payload'); return; }
           const { session_id, terminal_id, cols, rows } = parsed.data.payload;
-          const service = await this.resolve(session_id);
-          if (!this.closed) await service.resize(terminal_id, cols, rows);
+          await this.withTerminal(session_id, async (service) => {
+            if (!this.closed) await service.resize(terminal_id, cols, rows);
+          });
           return;
         }
       }

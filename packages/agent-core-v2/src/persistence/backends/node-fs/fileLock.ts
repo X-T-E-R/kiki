@@ -139,9 +139,8 @@ export async function cleanupExpiredSessionLocks(homeDir: string): Promise<numbe
   return removed;
 }
 
-/** Acquires a renewable local-filesystem exclusive lock: tokenized process ownership with atomic
- *  create/takeover semantics, kept fresh through a lease heartbeat, reclaiming expired dead owners
- *  and releasing only the token held by this lock instance. */
+/** Acquires a renewable local-filesystem lock with atomic create and process-live watch arbitration
+ *  for stale takeover. Reclaims expired dead owners and releases only this instance's token. */
 export async function acquireFileLock(
   lockPath: string,
   options: StorageLockOptions = {},
@@ -180,6 +179,7 @@ class FileLock implements IStorageLock {
   private token = '';
   private acquiredAt = 0;
   private held = false;
+  private watchPath: string | undefined;
   private renewTimer: ReturnType<typeof setInterval> | undefined;
   private serialized = Promise.resolve();
 
@@ -208,6 +208,7 @@ class FileLock implements IStorageLock {
       this.stopHeartbeat();
       const current = await this.inspect();
       if (current?.mine === true) await unlink(this.lockPath).catch(() => undefined);
+      await this.removeWatch();
       this.held = false;
       HELD.delete(this);
     });
@@ -221,6 +222,10 @@ class FileLock implements IStorageLock {
       if (isPayload(parsed) && parsed.token === this.token) fsSync.unlinkSync(this.lockPath);
     } catch {
     }
+    if (this.watchPath !== undefined) {
+      try { fsSync.unlinkSync(this.watchPath); } catch { }
+      this.watchPath = undefined;
+    }
     this.held = false;
     HELD.delete(this);
   }
@@ -231,15 +236,23 @@ class FileLock implements IStorageLock {
 
   async reapIfDead(): Promise<boolean> {
     const seen = await this.inspect();
-    if (seen?.payload === undefined || seen.active || await this.hasLiveForeignWatch()) return false;
-    const current = await this.inspect();
-    if (current?.active !== false || current.payload?.token !== seen.payload.token) return false;
+    if (seen?.payload === undefined || seen.active) return false;
+    this.token = `${process.pid}:${randomUUID()}`;
+    this.acquiredAt = Date.now();
+    await this.publishWatch(true);
     try {
-      await unlink(this.lockPath);
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-      throw error;
+      if (await this.hasLiveForeignWatch()) return false;
+      const current = await this.inspect();
+      if (current?.active !== false || current.payload?.token !== seen.payload.token) return false;
+      try {
+        await unlink(this.lockPath);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      }
+    } finally {
+      await this.removeWatch();
     }
   }
 
@@ -248,8 +261,7 @@ class FileLock implements IStorageLock {
     this.token = `${process.pid}:${randomUUID()}`;
     this.acquiredAt = Date.now();
     await mkdir(dirname(this.lockPath), { recursive: true, mode: this.dirMode });
-    const watchPath = `${this.lockPath}.watch-${process.pid}-${nextSidecarSequence()}`;
-    await writeFile(watchPath, this.payloadText(), { mode: this.fileMode });
+    await this.publishWatch();
     try {
       await this.reapDeadWatches();
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -261,8 +273,26 @@ class FileLock implements IStorageLock {
       }
       return false;
     } finally {
-      await unlink(watchPath).catch(() => undefined);
+      if (!this.held) await this.removeWatch();
     }
+  }
+
+  private async publishWatch(reaping = false): Promise<void> {
+    const watchPath = `${this.lockPath}.watch-${process.pid}-${randomUUID()}${reaping ? '.reap' : ''}`;
+    const tempPath = `${this.lockPath}.tmp-${process.pid}-${nextSidecarSequence()}`;
+    try {
+      await writeFile(tempPath, this.payloadText(), { mode: this.fileMode });
+      await link(tempPath, watchPath);
+      this.watchPath = watchPath;
+    } finally {
+      await unlink(tempPath).catch(() => undefined);
+    }
+  }
+
+  private async removeWatch(): Promise<void> {
+    if (this.watchPath === undefined) return;
+    await unlink(this.watchPath).catch(() => undefined);
+    this.watchPath = undefined;
   }
 
   private async tryCreate(): Promise<boolean> {
@@ -288,6 +318,7 @@ class FileLock implements IStorageLock {
       for (let attempt = 0; ; attempt += 1) {
         const gate = await this.inspect();
         if (gate === null || gate.active || gate.mine) return false;
+        if (gate.payload !== undefined && await this.hasLiveForeignWatch(gate.payload.token)) return false;
         try {
           await rename(bidPath, this.lockPath);
           break;
@@ -353,21 +384,22 @@ class FileLock implements IStorageLock {
   private async reapDeadWatches(): Promise<void> {
     const directory = dirname(this.lockPath);
     const prefix = `${basename(this.lockPath)}.watch-`;
-    for (const entry of await readdir(directory).catch(() => [] as string[])) {
+    for (const entry of await readdir(directory)) {
       if (!entry.startsWith(prefix)) continue;
       const watchPath = join(directory, entry);
       if (!(await this.watchIsActive(watchPath))) await unlink(watchPath).catch(() => undefined);
     }
   }
 
-  private async hasLiveForeignWatch(): Promise<boolean> {
+  private async hasLiveForeignWatch(ownerToken?: string): Promise<boolean> {
     const directory = dirname(this.lockPath);
     const prefix = `${basename(this.lockPath)}.watch-`;
-    for (const entry of await readdir(directory).catch(() => [] as string[])) {
+    for (const entry of await readdir(directory)) {
       if (!entry.startsWith(prefix)) continue;
       const watchPath = join(directory, entry);
       const payload = await this.readPayload(watchPath);
       if (payload?.token === this.token) continue;
+      if (ownerToken !== undefined && payload?.token !== ownerToken && !entry.endsWith('.reap')) continue;
       if (await this.watchIsActive(watchPath, payload)) return true;
       await unlink(watchPath).catch(() => undefined);
     }
@@ -379,14 +411,13 @@ class FileLock implements IStorageLock {
     knownPayload?: FileLockPayload,
   ): Promise<boolean> {
     try {
-      const [payload, fileStat] = await Promise.all([
-        knownPayload === undefined ? this.readPayload(watchPath) : knownPayload,
-        stat(watchPath),
-      ]);
-      if (payload === undefined) return false;
-      const samePidWrongStart =
-        payload.pid === process.pid && Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) > 2_000;
-      return !samePidWrongStart && pidAlive(payload.pid) && fileStat.mtimeMs + payload.leaseMs > Date.now();
+      const payload = knownPayload ?? await this.readPayload(watchPath);
+      await stat(watchPath);
+      if (payload !== undefined) return ownerProcessAlive(payload);
+      const entry = basename(watchPath);
+      const prefix = `${basename(this.lockPath)}.watch-`;
+      const namedPid = Number(entry.slice(prefix.length).split('-')[0]);
+      return !Number.isSafeInteger(namedPid) || namedPid <= 0 || pidAlive(namedPid);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       throw error;
@@ -419,6 +450,7 @@ class FileLock implements IStorageLock {
       const current = await this.inspect();
       if (current?.mine !== true) {
         this.stopHeartbeat();
+        await this.removeWatch();
         this.held = false;
         HELD.delete(this);
         return;

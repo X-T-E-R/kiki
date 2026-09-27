@@ -8,7 +8,7 @@
  * `startServer`).
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 import { createServerLogger, startServer, type ServerLogger } from '@kiki/kap-server';
@@ -91,6 +91,7 @@ export interface WebCommandDeps {
    * it simply print/open the plain origin.
    */
   resolveToken?: () => string | undefined;
+  resolveHomeId?: () => string | undefined;
   /**
    * Non-loopback interface addresses to display for a wildcard bind. Defaults
    * to the machine's own interfaces (`listNetworkAddresses()`); inject a fixed
@@ -183,14 +184,16 @@ export async function handleWebCommand(
       // token line when unavailable. When auth is bypassed, the token is
       // meaningless and is intentionally NOT shown or carried in the URL.
       const token = parsed.dangerousBypassAuth ? undefined : deps.resolveToken?.();
+      const homeId = token !== undefined && isLoopbackHost(parsed.host) ? deps.resolveHomeId?.() : undefined;
       deps.stdout.write(
         parsed.logLevel === DEFAULT_FOREGROUND_LOG_LEVEL
           ? formatReadyBanner(origin, parsed.host, {
               token,
+              homeId,
               networkAddresses: deps.networkAddresses,
               dangerousBypassAuth: parsed.dangerousBypassAuth,
             })
-          : formatReadyLine(origin, token, parsed.dangerousBypassAuth),
+          : formatReadyLine(origin, token, parsed.dangerousBypassAuth, homeId),
       );
       if (opts.open === true) {
         const openOrigin = browserOpenOrigin(origin);
@@ -204,11 +207,12 @@ function formatReadyLine(
   origin: string,
   token: string | undefined,
   dangerousBypassAuth = false,
+  homeId?: string,
 ): string {
   const notice = dangerousBypassAuth
     ? `${formatDangerNoticeLines().join('\n')}\n`
     : '';
-  return `${notice}Kiki server: ${buildOpenableUrl(origin, token)}\n`;
+  return `${notice}Kiki server: ${buildOpenableUrl(origin, token)}\n${homeId === undefined ? '' : `SSH home ID: ${homeId}\n`}`;
 }
 
 /**
@@ -439,6 +443,7 @@ export { resolveServerWebAssetsDir };
 interface FormatReadyBannerOptions {
   /** Persistent bearer token to print; omitted when unresolvable. */
   token?: string;
+  homeId?: string;
   /** Non-loopback interface addresses to list for a wildcard bind. */
   networkAddresses?: NetworkAddress[];
   /** When true, render a red danger notice (auth is disabled). */
@@ -498,6 +503,7 @@ export function formatReadyBanner(
     // easy to spot without being highlighted.
     lines.push('');
     lines.push(`  ${label('Token:    ')}${opts.token}`);
+    if (opts.homeId !== undefined) lines.push(`  ${label('SSH home ID: ')}${opts.homeId}`);
     lines.push('');
   }
 
@@ -517,6 +523,14 @@ const DEFAULT_WEB_COMMAND_DEPS: WebCommandDeps = {
     // (M5.1). Best-effort: a missing/older server yields undefined and the
     // caller opens the plain origin.
     return tryResolveServerToken(getDataDir());
+  },
+  resolveHomeId: () => {
+    try {
+      const id = readFileSync(join(getDataDir(), 'server', 'home-id'), 'utf8').trim();
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id) ? id : undefined;
+    } catch {
+      return undefined;
+    }
   },
   stdout: process.stdout,
   stderr: process.stderr,

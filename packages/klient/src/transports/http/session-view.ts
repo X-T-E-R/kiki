@@ -1,6 +1,8 @@
 import type { SessionViewChannelSubscription } from '../../core/channel.js';
 import type { SessionViewSignal, SessionViewSubscribeInput } from '../../contract/session/view.js';
 import type { KlientFrame } from '../codec.js';
+import { confirmsTranscriptCoverage, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
+import { degradeUnconfirmedTranscriptSignal } from './transcript-coverage.js';
 
 interface ActiveView {
   readonly id: string;
@@ -90,7 +92,10 @@ export class HttpSessionViews {
       const data = frame.data;
       const generation = data !== null && typeof data === 'object' ? (data as { generation?: unknown }).generation : undefined;
       if (typeof generation === 'number' && generation !== this.generation) return true;
-      view.handler(data as SessionViewSignal);
+      const signal = confirmsTranscriptCoverage(data)
+        ? data
+        : degradeUnconfirmedTranscriptSignal(data);
+      view.handler(signal as SessionViewSignal);
     }
     return true;
   }
@@ -98,7 +103,8 @@ export class HttpSessionViews {
   private attach(view: ActiveView): void {
     this.host.send({
       type: 'view_attach', id: view.id, sessionId: view.sessionId,
-      data: { input: view.input, generation: this.generation, reconnected: view.attachCount > 0 },
+      data: { input: view.input, generation: this.generation, reconnected: view.attachCount > 0,
+        transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION },
     });
     view.attachCount += 1;
   }

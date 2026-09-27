@@ -69,6 +69,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly buildId?: string;
   readonly buildChannel?: string;
   readonly serverId: string;
+  readonly serverHomeId?: string;
   readonly startedAt: string;
   readonly hostIdentity: KimiHostIdentity;
   readonly debugEndpoints?: boolean;
@@ -126,6 +127,7 @@ export async function registerApiV1Routes(
         buildId: opts.buildId,
         buildChannel: opts.buildChannel,
         serverId: opts.serverId,
+        serverHomeId: opts.serverHomeId,
         startedAt: opts.startedAt,
         enableTerminals: opts.enableTerminals !== false,
         dangerousBypassAuth: opts.dangerousBypassAuth === true,

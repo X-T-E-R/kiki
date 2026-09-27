@@ -1,7 +1,6 @@
 import {
   ErrorCodes,
   ISessionTerminalService,
-  resumeSessionById,
   isError2,
   Error2,
   type Scope,
@@ -11,6 +10,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
+import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
@@ -59,12 +59,11 @@ const sessionAndTailParamSchema = z.object({
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
-async function resolveTerminal(core: Scope, sessionId: string): Promise<ISessionTerminalService> {
-  const session = await resumeSessionById(core.accessor, sessionId);
-  if (session === undefined) {
-    throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-  }
-  return session.accessor.get(ISessionTerminalService);
+async function withTerminal<T>(core: Scope, sessionId: string, work: (service: ISessionTerminalService) => Promise<T>): Promise<T> {
+  return withSessionOperation(core, sessionId, async (session) => {
+    if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    return work(session.accessor.get(ISessionTerminalService));
+  });
 }
 
 export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): void {
@@ -84,8 +83,10 @@ export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): v
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const items = await (await resolveTerminal(core, session_id)).list();
-        reply.send(okEnvelope({ items }, req.id));
+        await withTerminal(core, session_id, async (service) => {
+          const items = await service.list();
+          reply.send(okEnvelope({ items }, req.id));
+        });
       } catch (err) {
         sendMappedError(reply, req.id, err);
       }
@@ -115,11 +116,11 @@ export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): v
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const session = await resumeSessionById(core.accessor, session_id);
-        if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
-        const terminal = await session.accessor.get(ISessionTerminalService).create({ ...req.body, runtime_id: req.body.runtime_id ?? 'local' });
-        requestLog(req)?.info({ session_id, terminal_id: terminal.id }, 'terminal created');
-        reply.send(okEnvelope(terminal, req.id));
+        await withTerminal(core, session_id, async (service) => {
+          const terminal = await service.create({ ...req.body, runtime_id: req.body.runtime_id ?? 'local' });
+          requestLog(req)?.info({ session_id, terminal_id: terminal.id }, 'terminal created');
+          reply.send(okEnvelope(terminal, req.id));
+        });
       } catch (err) {
         sendMappedError(reply, req.id, err);
       }
@@ -148,8 +149,10 @@ export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): v
     async (req, reply) => {
       try {
         const { session_id, terminal_id } = req.params;
-        const terminal = await (await resolveTerminal(core, session_id)).get(terminal_id);
-        reply.send(okEnvelope(terminal, req.id));
+        await withTerminal(core, session_id, async (service) => {
+          const terminal = await service.get(terminal_id);
+          reply.send(okEnvelope(terminal, req.id));
+        });
       } catch (err) {
         sendMappedError(reply, req.id, err);
       }
@@ -190,9 +193,11 @@ export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): v
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
           return;
         }
-        const result = await (await resolveTerminal(core, session_id)).close(parsed.id);
-        requestLog(req)?.info({ session_id, terminal_id: parsed.id }, 'terminal closed');
-        reply.send(okEnvelope(result, req.id));
+        await withTerminal(core, session_id, async (service) => {
+          const result = await service.close(parsed.id);
+          requestLog(req)?.info({ session_id, terminal_id: parsed.id }, 'terminal closed');
+          reply.send(okEnvelope(result, req.id));
+        });
       } catch (err) {
         sendMappedError(reply, req.id, err);
       }

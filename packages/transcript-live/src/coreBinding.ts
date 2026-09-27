@@ -239,7 +239,8 @@ export function bindSessionTranscript(
       event.type === 'subagent.completed' ||
       event.type === 'subagent.failed' ||
       event.type === 'subagent.suspended';
-    if (!liveOwned) applyFacts(agentId, wireAdapterFor(agentId).add(event));
+    const wireFacts = liveOwned ? [] : wireAdapterFor(agentId).add(event);
+    applyFacts(agentId, wireFacts);
     if (
       event.type === 'task.started' ||
       event.type === 'task.terminated' ||
@@ -259,7 +260,11 @@ export function bindSessionTranscript(
     ) {
       return;
     }
-    applyOps(agentId, liveAdapterFor(agentId).map(event as unknown as LiveAdapterBusEvent));
+    const liveOps = liveAdapterFor(agentId).map(event as unknown as LiveAdapterBusEvent);
+    const wireEndedTurn = event.type === 'turn.ended' && wireFacts.some((fact) =>
+      fact.operations.some((op) => op.op === 'turn.upsert'),
+    );
+    applyOps(agentId, wireEndedTurn ? liveOps.filter((op) => op.op !== 'turn.upsert') : liveOps);
   };
 
   const finishReplay = (agentId: string): void => {

@@ -1,5 +1,5 @@
 import type { DesktopNativePrefs } from '@kiki/session-core/settings';
-import type { ConnectionConfig } from '../state/connectionConfig';
+import type { ConnectionConfig, SshProfile } from '../state/connectionConfig';
 import type { ResolvedTheme } from '../lib/theme';
 
 export interface HostNotification {
@@ -43,8 +43,25 @@ export interface LocalConnection {
   readonly persist: boolean;
 }
 
+export interface SshResolvedConnection {
+  readonly config: ConnectionConfig;
+  readonly tunnelId: string;
+  readonly serverHomeId: string;
+  readonly serverInstanceId: string;
+  readonly serverVersion: string;
+  readonly buildId: string | null;
+  readonly buildChannel: string | null;
+}
+
 export interface HostConnectionAdapter {
   discover(): Promise<LocalConnection | null>;
+  listSshProfiles?: () => Promise<SshProfile[]>;
+  saveSshProfile?: (profile: SshProfile) => Promise<SshProfile[]>;
+  removeSshProfile?: (id: string) => Promise<SshProfile[]>;
+  connectSshProfile?: (id: string, token: string) => Promise<SshResolvedConnection>;
+  sshTunnelRunning?: (id: string, tunnelId: string) => Promise<boolean>;
+  disconnectSshProfile?: (id: string, tunnelId: string) => Promise<void>;
+  setWorkspaceScope?: (scope: 'local' | 'ssh') => void;
   cancelStartup?: () => Promise<void>;
   onBackendStage?: (callback: (payload: unknown) => void) => Promise<() => void>;
 }

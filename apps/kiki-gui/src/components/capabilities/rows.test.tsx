@@ -16,7 +16,7 @@ const client = vi.hoisted(() => ({
 }));
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client }),
-  useOptionalConnection: () => ({ client }),
+  useOptionalConnection: () => ({ client, scopeId: 'local' }),
 }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

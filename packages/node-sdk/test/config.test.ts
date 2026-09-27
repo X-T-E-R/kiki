@@ -79,6 +79,11 @@ keep_alive_on_exit = false
 kill_grace_period_ms = 2000
 print_wait_ceiling_s = 3600
 
+[subagent]
+default_profile = "general"
+allowed_tools = ["Read", "Grep"]
+main_dispatch_policy = "advisory"
+
 [nb_search.provider_instances."exa.team"]
 provider_id = "exa"
 enabled = true
@@ -101,9 +106,6 @@ search_lane = "team.search"
 [nb_search.execution]
 search_timeout_ms = 15000
 fetch_timeout_ms = 20000
-
-[notifications]
-claim_stale_after_ms = 15000
 
 [thinking]
 enabled = true
@@ -311,7 +313,7 @@ search_lane = "exa.search"
     });
 
     expect(config.loopControl).toEqual({
-      maxRetriesPerStep: 3,
+      maxAttemptsPerStep: 3,
       maxRalphIterations: 0,
       reservedContextSize: 50000,
       compactionTriggerRatio: 0.85,
@@ -323,6 +325,11 @@ search_lane = "exa.search"
       killGracePeriodMs: 2000,
       printWaitCeilingS: 3600,
     });
+    expect(config.subagent).toEqual({
+      defaultProfile: 'general',
+      allowedTools: ['Read', 'Grep'],
+      mainDispatchPolicy: 'advisory',
+    });
     expect(config.nbSearch?.defaults?.search_lane).toBe('team.search');
     expect(config.nbSearch?.credential_slots?.['exa.team']).toEqual({
       provider_id: 'exa',
@@ -333,7 +340,6 @@ search_lane = "exa.search"
     expect(config.raw?.['theme']).toBe('dark');
     expect(config.raw?.['skip_afk_prompt_injection']).toBe(false);
     expect(config.raw?.['show_thinking_stream']).toBe(true);
-    expect(config.raw?.['notifications']).toEqual({ claim_stale_after_ms: 15000 });
   });
 
   it('writes typed fields in snake_case and preserves unknown raw sections', async () => {
@@ -360,7 +366,7 @@ search_lane = "exa.search"
     expect(text).toContain('compaction_soft_context_size = 512000');
     expect(text).toContain('display_name = "Kimi for Coding"');
     expect(text).toContain('GOOGLE_CLOUD_PROJECT = "project-1"');
-    expect(text).toContain('claim_stale_after_ms = 15000');
+    expect(text).toContain('allowed_tools = [ "Read", "Grep" ]');
     expect(text).toContain('theme = "dark"');
 
     const reloaded = readConfigFile(configPath);
@@ -452,16 +458,16 @@ describe('KimiHarness config API', () => {
     const text = await readFile(configPath, 'utf-8');
     expect(text).toContain('theme = "dark"');
     expect(text).toContain('GOOGLE_CLOUD_PROJECT = "project-1"');
-    expect(text).toContain('claim_stale_after_ms = 15000');
+    expect(text).toContain('allowed_tools = ["Read", "Grep"]');
   });
 
   it('does not write invalid config patches', async () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const before = await readFile(configPath, 'utf-8');
-
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    await harness.getConfig();
+    const before = await readFile(configPath, 'utf-8');
 
     const setInvalidConfig = harness.setConfig({
       providers: {
@@ -483,8 +489,9 @@ describe('KimiHarness config API', () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const before = await readFile(configPath, 'utf-8');
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    await harness.getConfig();
+    const before = await readFile(configPath, 'utf-8');
 
     await expect(harness.setConfig({
       nbSearch: {
@@ -502,8 +509,9 @@ describe('KimiHarness config API', () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const before = await readFile(configPath, 'utf-8');
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    await harness.getConfig();
+    const before = await readFile(configPath, 'utf-8');
 
     await expect(harness.setConfig({
       nbSearch: {
@@ -552,7 +560,7 @@ describe('KimiHarness config API', () => {
       extraSkillDirs: [],
       loopControl: { compactionSoftContextSize: 0 },
       background: {},
-      subagent: { timeoutMs: 7_200_000, maxDirectChildren: 16, maxTotalSubagents: 0, defaultProfile: 'general' },
+      subagent: { timeoutMs: 7_200_000, maxDirectChildren: 16, maxTotalSubagents: 0, defaultProfile: 'general', allowedTools: [] },
       mcp: {},
       image: {},
     });
@@ -732,6 +740,7 @@ describe('KimiHarness config API', () => {
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
     let stopListening: (() => void) | undefined;
     let prompt: Promise<void> | undefined;
+    let sessionDir: string | undefined;
 
     try {
       const session = await harness.createSession({
@@ -739,6 +748,7 @@ describe('KimiHarness config API', () => {
         workDir,
         model: 'reload-test-model',
       });
+      sessionDir = session.summary?.sessionDir;
       let startedResolve!: () => void;
       const started = new Promise<void>((resolve) => {
         startedResolve = resolve;
@@ -762,6 +772,18 @@ describe('KimiHarness config API', () => {
       stopListening?.();
       provider.mockRestore();
       await harness.close();
+      if (sessionDir !== undefined) {
+        const wireDir = join(sessionDir, 'agents', 'main');
+        const wire = await readFile(join(wireDir, 'wire.jsonl'));
+        const receipt = JSON.parse(await readFile(join(wireDir, 'wire.transcript-receipt.json'), 'utf-8')) as {
+          state: string; trusted: boolean; wire?: { size: number; sha256: string };
+        };
+        const { createHash } = await import('node:crypto');
+        expect(wire.toString('utf8')).toContain('"type":"turn.ended"');
+        expect(receipt).toMatchObject({ state: 'sealed', trusted: true, wire: {
+          size: wire.byteLength, sha256: createHash('sha256').update(wire).digest('hex'),
+        } });
+      }
     }
   });
 
@@ -955,7 +977,7 @@ effort = "max"
       'utf-8',
     );
 
-    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+    await migrateThinkingEffortMaxToHigh(configPath, homeDir);
 
     const configText = await readFile(configPath, 'utf-8');
     expect(configText).toContain('effort = "high"');
@@ -986,7 +1008,7 @@ effort = "max"
       'utf-8',
     );
 
-    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+    await migrateThinkingEffortMaxToHigh(configPath, homeDir);
 
     expect(await readFile(configPath, 'utf-8')).toContain('effort = "high"');
     expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toBe(scaffold);
@@ -1013,7 +1035,7 @@ effort = "max"
       'utf-8',
     );
 
-    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+    await migrateThinkingEffortMaxToHigh(configPath, homeDir);
 
     expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toContain('sk-existing-cred');
     expect(await readFile(configPath, 'utf-8')).not.toContain('api_key');
@@ -1027,13 +1049,28 @@ effort = "max"
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, `[thinking]\neffort = "max"\n`, 'utf-8');
 
-    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+    await migrateThinkingEffortMaxToHigh(configPath, homeDir);
     expect(await readFile(configPath, 'utf-8')).toContain('effort = "high"');
 
     // A hand-written max afterwards is honored as-is.
     await writeFile(configPath, `[thinking]\neffort = "max"\n`, 'utf-8');
-    migrateThinkingEffortMaxToHigh(configPath, homeDir);
+    await migrateThinkingEffortMaxToHigh(configPath, homeDir);
     expect(await readFile(configPath, 'utf-8')).toContain('effort = "max"');
+  });
+
+  it('does not overwrite a conflicting stored key during legacy credential migration', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    const credentialsPath = join(homeDir, 'credentials.toml');
+    const configText = '[providers.alpha]\ntype = "openai"\napi_key = "sk-inline"\n[thinking]\neffort = "max"\n';
+    const credentialsText = '[providers.alpha]\napi_key = "sk-stored"\n';
+    await writeFile(configPath, configText, 'utf-8');
+    await writeFile(credentialsPath, credentialsText, 'utf-8');
+
+    await expect(migrateThinkingEffortMaxToHigh(configPath, homeDir)).rejects.toThrow('conflicting inline and stored secrets');
+    expect(await readFile(configPath, 'utf-8')).toBe(configText);
+    expect(await readFile(credentialsPath, 'utf-8')).toBe(credentialsText);
+    await expect(stat(join(homeDir, 'migrations-effort.json'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 

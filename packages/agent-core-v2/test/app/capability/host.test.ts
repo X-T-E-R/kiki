@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -141,5 +142,28 @@ describe('capability host downloadToFile', () => {
 
     expect(received).toBe(11);
     expect(await readFile(dest, 'utf-8')).toBe('hello world');
+  });
+
+  it('checks pinned SHA-256 and bounds streamed bytes, not just content-length', async () => {
+    const fixture = new TextEncoder().encode('verified');
+    const sha256 = createHash('sha256').update(fixture).digest('hex');
+    const mocked = ((_url: string, init?: { redirect?: string }) => {
+      expect(init?.redirect).toBe('manual');
+      return Promise.resolve(new Response(fixture));
+    }) as never;
+    await expect(downloadToFile('https://example.test/blob', path.join(root, 'good'), undefined,
+      mocked, { sha256, maxBytes: fixture.byteLength })).resolves.toBe(fixture.byteLength);
+    await expect(downloadToFile('https://example.test/blob', path.join(root, 'bad'), undefined,
+      mocked, { sha256: '0'.repeat(64), maxBytes: 100 })).rejects.toThrow(/SHA-256/);
+    await expect(downloadToFile('https://example.test/blob', path.join(root, 'too-large'), undefined,
+      mocked, { sha256, maxBytes: 2 })).rejects.toThrow(/exceeds 2 bytes/);
+  });
+
+  it('rejects a redirected verified download before creating a file', async () => {
+    const fetchImpl = (() => Promise.resolve(new Response(null, { status: 302,
+      headers: { location: 'http://169.254.169.254/latest/meta-data/' } }))) as never;
+    await expect(downloadToFile('https://example.test/blob', path.join(root, 'redirect'), undefined,
+      fetchImpl, { sha256: '0'.repeat(64), maxBytes: 100 })).rejects.toThrow(/HTTP 302/);
+    await expect(readFile(path.join(root, 'redirect'))).rejects.toThrow();
   });
 });

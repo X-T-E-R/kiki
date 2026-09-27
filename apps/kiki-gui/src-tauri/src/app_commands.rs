@@ -2,6 +2,12 @@ macro_rules! app_commands {
     ($callback:ident) => {
         $callback!(
             desktop_connection,
+            list_ssh_profiles,
+            save_ssh_profile,
+            remove_ssh_profile,
+            connect_ssh_profile,
+            ssh_tunnel_running,
+            disconnect_ssh_profile,
             cancel_desktop_startup,
             show_main_window,
             write_host_file_text,

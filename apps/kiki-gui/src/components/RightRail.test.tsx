@@ -64,10 +64,12 @@ async function renderRail({
   stateTasks,
   ownerAgentId,
   agentForest,
+  onClose,
 }: {
   subagent?: SubagentRailContext;
   empty?: boolean;
   agentForest?: ReturnType<typeof buildAgentForest>;
+  onClose?: () => void;
   /** Main-session tasks; the child-only set arrives via `subagent`'s tasks. */
   stateTasks?: readonly Task[];
   /** Rail cancel/detail owner scope (the focused agent's task service). */
@@ -90,6 +92,7 @@ async function renderRail({
             onCancelTask={() => {}}
             onStopAgentTask={async () => {}}
             onOpenSubagent={() => {}}
+            onClose={onClose}
           />
         </I18nProvider>
       </MemoryRouter>,
@@ -149,6 +152,19 @@ describe('RightRail shared chapters', () => {
     for (const rail of [main, child]) {
       expect(rail.querySelector('[data-agent-panel-scroll]')?.firstElementChild?.hasAttribute('data-rail-owner')).toBe(true);
     }
+  });
+
+  it('keeps an accessible rail-close action on the owner badge', async () => {
+    const onClose = vi.fn();
+    const rail = await renderRail({ subagent: context, onClose });
+    const close = rail.querySelector<HTMLButtonElement>('[data-rail-close]');
+    expect(close?.closest('[data-rail-owner]')).not.toBeNull();
+    expect(close?.getAttribute('aria-label')).toBe('Hide panel');
+    expect(close?.getAttribute('title')).toBe('Hide panel');
+    expect(close?.className).toContain('h-11');
+    expect(close?.className).toContain('lg:h-7');
+    await act(async () => { close?.click(); });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('lists only the focused agent own tasks in the child-focus task bar', async () => {

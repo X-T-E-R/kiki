@@ -6,6 +6,7 @@ import {
   IAgentActivityView,
   IAgentLifecycleService,
   IAgentLoopService,
+  IAgentPermissionModeService,
   IAgentPromptService,
   IAgentTaskService,
   IAgentToolRegistryService,
@@ -732,6 +733,7 @@ describe('bindSessionTranscript', () => {
         runCompletion: async () => ({ summary: 'finished immediately' }),
       });
       const ctx = createAgentToolContext(lifecycle);
+      ctx.get(IAgentPermissionModeService).setMode('manual');
       onTestFinished(async () => {
         await ctx.dispose();
       });
@@ -832,6 +834,7 @@ describe('bindSessionTranscript', () => {
         runCompletion: async () => ({ summary: 'finished immediately' }),
       });
       const ctx = createAgentToolContext(lifecycle);
+      ctx.get(IAgentPermissionModeService).setMode('manual');
       onTestFinished(async () => {
         await ctx.dispose();
       });
@@ -1264,6 +1267,17 @@ describe('bindSessionTranscript', () => {
       }),
     ]);
     binding.dispose();
+  });
+
+  it('retains the prompt id when only live events close a turn', () => {
+    const adapter = new AgentTranscriptLiveAdapter('main');
+    adapter.map(ev({ type: 'turn.started', turnId: 0, promptId: 'prompt-live', origin: { kind: 'user' } }));
+    expect(adapter.map(ev({ type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 }))).toContainEqual(
+      expect.objectContaining({
+        op: 'turn.upsert',
+        turn: expect.objectContaining({ turnId: 't0', promptId: 'prompt-live', state: 'completed' }),
+      }),
+    );
   });
 
   it('assigns stable question and option ids in live transcript entities', () => {

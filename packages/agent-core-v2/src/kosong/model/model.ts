@@ -8,6 +8,7 @@ import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIden
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 
 import type { OAuthRef } from '../provider/provider';
+import type { GenerationParameters } from './parameters';
 
 export interface ModelParameterDefaults {
   contextBudget?: number;
@@ -67,6 +68,7 @@ export interface ModelRecord extends ModelParameterDefaults {
   offEffort?: string;
 
   overrides?: ModelOverride;
+  parameters?: GenerationParameters;
   cognition?: CognitionConfig;
   promptOverrides?: PromptOverrides;
   requestIdentity?: RequestIdentityPolicy;

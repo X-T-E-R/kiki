@@ -420,6 +420,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
     this.auth = new KimiAuthFacade({
       homeDir: this.homeDir,
       configPath: this.configPath,
+      configReady: () => this.configReady,
       identity: this.identity,
       onRefresh: options.onOAuthRefresh,
     });
@@ -520,6 +521,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
       subscription.dispose();
     }
     await this.klient.close();
+    await this.configReady.catch(() => undefined);
     // Same shutdown order as kap-server: drain the session-index mirror while
     // the query store is still open, then await the asynchronous closes that
     // disposal fires — a host that removes homeDir right after close() must

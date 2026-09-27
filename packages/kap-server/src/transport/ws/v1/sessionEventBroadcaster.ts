@@ -10,6 +10,7 @@ import type {
   ISessionScopeHandle,
   Scope,
   SessionActivityState,
+  SessionLease,
 } from '@kiki/agent-core-v2';
 import {
   IAgentContextMemoryService,
@@ -130,7 +131,7 @@ export interface TargetSubscription {
   readonly agentFilter?: AgentFilter;
   readonly transcriptGrades?: TranscriptGradeSpec;
   readonly transcriptGeneration?: number;
-  readonly residencyLease?: IDisposable;
+  readonly residencyLease?: SessionLease;
 }
 
 export type TranscriptSince = Record<string, TranscriptCursor | number>;
@@ -151,6 +152,7 @@ interface PendingTranscriptSeed {
 
 interface SessionState {
   readonly sessionId: string;
+  readonly sessionHandle?: ISessionScopeHandle;
   readonly journal: SessionEventJournal;
   readonly tracker: InFlightTurnTracker;
   readonly roster: SubagentRosterTracker;
@@ -211,6 +213,7 @@ export class SessionEventBroadcaster {
    * per-chunk `AABBCC` stream while every seq and offset still looks valid.
    */
   private readonly pendingStates = new Map<string, Promise<SessionState | undefined>>();
+  private readonly pendingSubscriptions = new Map<string, Map<BroadcastTarget, symbol>>();
   /** Session ids whose closing state is being drained and disposed. */
   private readonly evictions = new Map<string, Promise<void>>();
   private readonly maxBufferSize: number;
@@ -279,51 +282,87 @@ export class SessionEventBroadcaster {
     transcriptGrades?: TranscriptGradeSpec,
     opts?: { deferTranscriptReset?: boolean; transcriptSince?: TranscriptSince },
   ): Promise<boolean> {
-    const state = await this.ensureState(sessionId);
-    if (state === undefined) return false;
-    const prev = state.targets.get(target);
-    const residencyLease = prev?.residencyLease ?? await this.opts.core.accessor
-      .get(ISessionManager)
-      .acquire?.(sessionId, 'ws-subscription');
-    if (prev === undefined && state.interactionService !== undefined) {
-      const consumerId = `kap-ws:${sessionId}:${nextInteractionConsumerId++}`;
-      state.interactionConsumers.set(target, consumerId);
-      state.interactionService.acquireConsumer(consumerId);
-    }
-    const generation = this.nextTranscriptGeneration(state, target);
-    state.targets.set(target, {
-      agentFilter: filter,
-      transcriptGrades,
-      transcriptGeneration: generation,
-      residencyLease,
-    });
-    if (transcriptGrades === undefined) {
+    if (this.closed) return false;
+    const pending = this.pendingSubscriptions.get(sessionId) ?? new Map<BroadcastTarget, symbol>();
+    this.pendingSubscriptions.set(sessionId, pending);
+    const token = Symbol();
+    pending.set(target, token);
+    let acquiredLease: SessionLease | undefined;
+    let attached: { state: SessionState; generation: number } | undefined;
+    try {
+      const pinnedState = this.sessions.get(sessionId);
+      const existingLease = pinnedState?.targets.get(target)?.residencyLease;
+      const manager = this.opts.core.accessor.get(ISessionManager);
+      if (existingLease === undefined) {
+        acquiredLease = await manager.acquire?.(sessionId, 'ws-subscription');
+        if (manager.acquire !== undefined && acquiredLease === undefined) return false;
+      }
+      if (this.closed || pending.get(target) !== token) return false;
+      const state = await this.ensureState(sessionId);
+      if (state === undefined || this.closed || pending.get(target) !== token ||
+          this.sessions.get(sessionId) !== state ||
+          (existingLease !== undefined && state !== pinnedState)) return false;
+      const prev = state.targets.get(target);
+      const residencyLease = prev?.residencyLease ?? acquiredLease;
+      if (residencyLease !== undefined &&
+          (state.sessionHandle !== residencyLease.handle ||
+           manager.get(sessionId) !== residencyLease.handle)) return false;
+      if (prev === undefined && state.interactionService !== undefined) {
+        const consumerId = `kap-ws:${sessionId}:${nextInteractionConsumerId++}`;
+        state.interactionService.acquireConsumer(consumerId);
+        state.interactionConsumers.set(target, consumerId);
+      }
+      const generation = this.nextTranscriptGeneration(state, target);
+      if (prev?.residencyLease !== undefined) acquiredLease?.dispose();
+      acquiredLease = undefined;
+      state.targets.set(target, {
+        agentFilter: filter,
+        transcriptGrades,
+        transcriptGeneration: generation,
+        residencyLease,
+      });
+      attached = { state, generation };
+      if (transcriptGrades === undefined) {
+        state.transcriptSeeded.delete(target);
+        return true;
+      }
+      const deferred = opts?.deferTranscriptReset === true;
+      const liveStore = this.opts.transcriptService?.forSessionLive(sessionId);
+      const streamChanged = liveStore !== undefined && state.transcriptStream?.store !== liveStore;
+      const needsSeed =
+        deferred ||
+        streamChanged ||
+        opts?.transcriptSince !== undefined ||
+        !state.transcriptSeeded.has(target) ||
+        this.willSendTranscriptReset(state, transcriptGrades, prev);
+      if (!needsSeed) return true;
       state.transcriptSeeded.delete(target);
+      if (liveStore === undefined) return true;
+      const seed: PendingTranscriptSeed = {
+        generation,
+        spec: transcriptGrades,
+        prev: streamChanged ? undefined : prev?.transcriptGrades,
+        transcriptSince: opts?.transcriptSince,
+        store: liveStore,
+        deferred,
+      };
+      state.pendingTranscriptSeeds.set(target, seed);
+      if (!deferred) await this.runTranscriptSeed(state, target, seed);
       return true;
+    } catch (error) {
+      if (attached !== undefined && pending.get(target) === token &&
+          this.sessions.get(sessionId) === attached.state &&
+          attached.state.targets.get(target)?.transcriptGeneration === attached.generation) {
+        this.unsubscribe(sessionId, target);
+      }
+      throw error;
+    } finally {
+      acquiredLease?.dispose();
+      if (pending.get(target) === token) pending.delete(target);
+      if (pending.size === 0 && this.pendingSubscriptions.get(sessionId) === pending) {
+        this.pendingSubscriptions.delete(sessionId);
+      }
     }
-    const deferred = opts?.deferTranscriptReset === true;
-    const liveStore = this.opts.transcriptService?.forSessionLive(sessionId);
-    const streamChanged = liveStore !== undefined && state.transcriptStream?.store !== liveStore;
-    const needsSeed =
-      deferred ||
-      streamChanged ||
-      opts?.transcriptSince !== undefined ||
-      !state.transcriptSeeded.has(target) ||
-      this.willSendTranscriptReset(state, transcriptGrades, prev);
-    if (!needsSeed) return true;
-    state.transcriptSeeded.delete(target);
-    if (liveStore === undefined) return true;
-    const seed: PendingTranscriptSeed = {
-      generation,
-      spec: transcriptGrades,
-      prev: streamChanged ? undefined : prev?.transcriptGrades,
-      transcriptSince: opts?.transcriptSince,
-      store: liveStore,
-      deferred,
-    };
-    state.pendingTranscriptSeeds.set(target, seed);
-    if (!deferred) await this.runTranscriptSeed(state, target, seed);
-    return true;
   }
 
   private nextTranscriptGeneration(state: SessionState, target: BroadcastTarget): number {
@@ -391,6 +430,9 @@ export class SessionEventBroadcaster {
   }
 
   unsubscribe(sessionId: string, target: BroadcastTarget): void {
+    const pending = this.pendingSubscriptions.get(sessionId);
+    pending?.delete(target);
+    if (pending?.size === 0) this.pendingSubscriptions.delete(sessionId);
     const state = this.sessions.get(sessionId);
     if (state === undefined) return;
     this.nextTranscriptGeneration(state, target);
@@ -504,6 +546,8 @@ export class SessionEventBroadcaster {
             delivered.set(agentId, { seq: catchup.throughSeq, epoch: catchup.epoch });
           } else {
             if (since !== undefined || needsReset) {
+              await service.verifyTranscriptLiveCoverage(state.sessionId, agentId);
+              if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
               if (!this.sendTranscriptReset(state, target, transcript, grade, cursor, seed.generation)) return;
               await target.drain?.();
             }
@@ -634,23 +678,35 @@ export class SessionEventBroadcaster {
           const transcript = store.getAgent(descriptor.agentId);
           if (transcript === undefined) continue;
           stream.knownAgents.add(descriptor.agentId);
-          const cursor = service.getTranscriptCursor(state.sessionId, descriptor.agentId);
           for (const [target, sub] of state.targets) {
             if (!state.transcriptSeeded.has(target)) continue;
             const grade = gradeFor(sub.transcriptGrades, descriptor.agentId);
             if (grade === 'off') continue;
-            this.sendTranscriptReset(
-              state,
-              target,
-              transcript,
-              grade,
-              cursor,
-              sub.transcriptGeneration,
-            );
+            this.sendLiveTranscriptReset(state, target, transcript, grade, sub.transcriptGeneration);
           }
         }
       }),
     );
+  }
+
+  private sendLiveTranscriptReset(
+    state: SessionState,
+    target: BroadcastTarget,
+    transcript: AgentTranscript,
+    grade: Exclude<TranscriptGrade, 'off'>,
+    generation?: number,
+  ): void {
+    const service = this.opts.transcriptService;
+    if (service === undefined) return;
+    const deliver = () => {
+      if (generation !== undefined && !this.isTranscriptGeneration(state, target, generation)) return;
+      if (generation === undefined && !state.targets.has(target)) return;
+      if (service.forSessionLive(state.sessionId)?.getAgent(transcript.agentId) !== transcript) return;
+      const cursor = service.getTranscriptCursor(state.sessionId, transcript.agentId);
+      this.sendTranscriptReset(state, target, transcript, grade, cursor, generation);
+    };
+    if (service.isTranscriptLiveCoverageVerified(state.sessionId, transcript.agentId)) deliver();
+    else void service.verifyTranscriptLiveCoverage(state.sessionId, transcript.agentId).then(deliver, deliver);
   }
 
   /**
@@ -666,20 +722,25 @@ export class SessionEventBroadcaster {
     cursor: TranscriptCursor,
     generation?: number,
   ): boolean {
-    const snapshot = redactSnapshotForGrade(
+    const redacted = redactSnapshotForGrade(
       grade,
       transcript.snapshot({ tailTurns: TRANSCRIPT_RESET_TAIL_TURNS }),
     );
+    const liveVerified = this.opts.transcriptService?.isTranscriptLiveCoverageVerified(state.sessionId, transcript.agentId) === true;
+    const snapshot = liveVerified ? redacted
+      : { ...redacted, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: true };
     const turns = snapshot.items.filter((item) => item.kind === 'turn');
     const hasMoreOlder = snapshot.hasMoreOlder ?? false;
-    const coverage = hasMoreOlder
-      ? {
-          kind: 'tail' as const,
-          fromTurnId: turns[0]?.turnId,
-          throughTurnId: turns.at(-1)?.turnId,
-          hasMoreOlder,
-        }
-      : { kind: 'full' as const, hasMoreOlder: false as const };
+    const coverage = snapshot.toolCallCountKnown === false
+      ? { kind: 'unknown' as const, hasMoreOlder: true as const }
+      : hasMoreOlder
+        ? {
+            kind: 'tail' as const,
+            fromTurnId: turns[0]?.turnId,
+            throughTurnId: turns.at(-1)?.turnId,
+            hasMoreOlder,
+          }
+        : { kind: 'full' as const, hasMoreOlder: false as const };
     return this.sendTranscriptEnvelope(
       state,
       target,
@@ -811,19 +872,11 @@ export class SessionEventBroadcaster {
     for (const descriptor of store.agents()) {
       const transcript = store.getAgent(descriptor.agentId);
       if (transcript === undefined) continue;
-      const cursor = service.getTranscriptCursor(sessionId, descriptor.agentId);
       for (const [target, sub] of state.targets) {
         if (!state.transcriptSeeded.has(target)) continue;
         const grade = gradeFor(sub.transcriptGrades, descriptor.agentId);
         if (grade === 'off') continue;
-        this.sendTranscriptReset(
-          state,
-          target,
-          transcript,
-          grade,
-          cursor,
-          sub.transcriptGeneration,
-        );
+        this.sendLiveTranscriptReset(state, target, transcript, grade, sub.transcriptGeneration);
       }
     }
   }
@@ -945,6 +998,7 @@ export class SessionEventBroadcaster {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.pendingSubscriptions.clear();
     this.coreEventSubscription.dispose();
     this.sessionLifecycleSubscription.dispose();
     await Promise.allSettled([...this.evictions.values(), ...this.pendingStates.values()]);
@@ -1017,6 +1071,7 @@ export class SessionEventBroadcaster {
     }
     const state: SessionState = {
       sessionId,
+      sessionHandle: session,
       journal,
       tracker: new InFlightTurnTracker(),
       roster: new SubagentRosterTracker(),

@@ -13,11 +13,13 @@ import {
   AUTO_WORKSPACE_ID,
   buildNewSessionCreate,
   isAbsoluteCwdPath,
+  isAbsoluteRemoteCwdPath,
   useNewSessionDraft,
   type NewSessionDraftState,
 } from './NewSessionDraft';
 
-const { client, navigate } = vi.hoisted(() => ({
+const { client, navigate, scope } = vi.hoisted(() => ({
+  scope: { id: 'local', label: null as string | null },
   client: {
     listWorkspaces: vi.fn(),
     getConfig: vi.fn(),
@@ -30,7 +32,7 @@ const { client, navigate } = vi.hoisted(() => ({
 }));
 
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client }),
+  useConnection: () => ({ client, scopeId: scope.id, sshLabel: scope.label }),
 }));
 vi.mock('../host', () => ({
   useHost: () => ({ kind: 'browser' }),
@@ -53,6 +55,8 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  scope.id = 'local';
+  scope.label = null;
   latestDraftState = undefined;
   localStorage.clear();
   navigate.mockReset();
@@ -154,6 +158,14 @@ describe('isAbsoluteCwdPath', () => {
     expect(isAbsoluteCwdPath('')).toBe(false);
     expect(isAbsoluteCwdPath('  ')).toBe(false);
   });
+
+  it('accepts only POSIX paths for SSH workspace cwd', () => {
+    expect(isAbsoluteRemoteCwdPath('/home/dev/project')).toBe(true);
+    expect(isAbsoluteRemoteCwdPath('C:/work/project')).toBe(false);
+    expect(isAbsoluteRemoteCwdPath('\\\\server\\share')).toBe(false);
+    expect(isAbsoluteRemoteCwdPath('/home/dev\\work')).toBe(false);
+    expect(isAbsoluteRemoteCwdPath('/home/dev\0work')).toBe(false);
+  });
 });
 
 describe('buildNewSessionCreate', () => {
@@ -197,6 +209,28 @@ describe('buildNewSessionCreate', () => {
 });
 
 describe('useNewSessionDraft agent profile scope', () => {
+  it('keeps remote cwd/draft separate from local and rejects Windows paths without sending', async () => {
+    localStorage.setItem('kiki.newSessionDraft', JSON.stringify({ cwd: 'C:/local/project' }));
+    scope.id = 'ssh:host-1';
+    scope.label = 'Example';
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [
+      { name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] },
+    ] });
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.cwd).toBe('');
+    expect(state.canBrowseForWorkspace).toBe(false);
+    await act(async () => { state.setCwd('C:/local/project'); });
+    state = await settleDraft((value) => value.cwd === 'C:/local/project' && !value.agentProfileCatalogPending);
+    await act(async () => { void state.send('Remote', []); });
+    expect(client.createSession).not.toHaveBeenCalled();
+    state = await settleDraft((value) => value.error !== null);
+    expect(state.error).toBeTruthy();
+    await act(async () => { state.setCwd('/home/dev/project'); });
+    state = await settleDraft((value) => value.cwd === '/home/dev/project');
+    expect(JSON.parse(localStorage.getItem('kiki.draft.new.ssh:host-1') ?? '{}')).toMatchObject({ cwd: '/home/dev/project' });
+    expect(JSON.parse(localStorage.getItem('kiki.newSessionDraft') ?? '{}')).toMatchObject({ cwd: 'C:/local/project' });
+  });
   const workspace = (id: string, name: string) => ({
     id,
     name,

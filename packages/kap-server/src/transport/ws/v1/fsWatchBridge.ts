@@ -5,6 +5,7 @@ import {
   ISessionContext,
   IRuntimeResolver,
   IWorkspaceInstanceManager,
+  ISessionManager,
   getLiveSessionById,
   type Scope,
 } from '@kiki/agent-core-v2';
@@ -13,6 +14,7 @@ import { RuntimeWorkspaceView } from '@kiki/agent-core-v2/runtime/runtimeWorkspa
 import type { IHostFsWatchHandle, HostFsChange } from '@kiki/agent-core-v2/os/interface/hostFsWatch';
 import type { FsChangeEntry, FsChangeEvent } from '@kiki/agent-core-v2/workspace/workspaceFs/fsWatch';
 
+import { acquireSessionOperation, type SessionOperationLease } from '../../../lib/sessionOperationLease';
 import type { EventEnvelope, JournalLogger } from './sessionEventJournal';
 
 const MAX_PATHS_PER_CONNECTION = 100;
@@ -73,6 +75,7 @@ interface SessionWatch {
   readonly view: RuntimeWorkspaceView;
   readonly handle: IHostFsWatchHandle;
   readonly lease: RuntimeLease;
+  readonly sessionLease: SessionOperationLease;
   readonly workspace: ISessionWorkspaceContext;
   readonly conns: Map<string, ConnEntry>;
   union: Set<string>;
@@ -86,17 +89,32 @@ interface SessionWatch {
   readonly maxChangesPerWindow: number;
 }
 
+interface PendingWatchBuild {
+  readonly task: Promise<SessionWatch | undefined>;
+  readonly connections: Set<FsWatchConnection>;
+  readonly abort: AbortController;
+}
+
 export class FsWatchBridge {
   private readonly core: Scope;
   private readonly logger: JournalLogger | undefined;
   private readonly bySession = new Map<string, SessionWatch>();
   private readonly connPathCount = new Map<string, number>();
-  private readonly rebuilding = new Map<string, Promise<SessionWatch | undefined>>();
+  private readonly rebuilding = new Map<string, PendingWatchBuild>();
+  private readonly detached = new WeakSet<FsWatchConnection>();
+  private readonly tornDown = new WeakSet<SessionWatch>();
   private readonly registrySubscriptions = new Map<string, IDisposable>();
+  private readonly sessionLifecycles: IDisposable[];
+  private disposed = false;
 
   constructor(opts: { core: Scope; logger?: JournalLogger }) {
     this.core = opts.core;
     this.logger = opts.logger;
+    const manager = this.core.accessor.get(ISessionManager);
+    this.sessionLifecycles = [
+      manager.onDidCloseSession?.(({ sessionId }) => this.teardownSessionWatches(sessionId)),
+      manager.onDidArchiveSession?.(({ sessionId }) => this.teardownSessionWatches(sessionId)),
+    ].filter((subscription): subscription is IDisposable => subscription !== undefined);
   }
 
   async addWatch(
@@ -105,41 +123,67 @@ export class FsWatchBridge {
     rawPaths: readonly string[],
     runtimeId: string,
   ): Promise<FsWatchAck> {
-    const resolved = await this.resolveSession(sessionId, runtimeId);
-    if (resolved === undefined) {
+    const key = sessionRuntimeKey(sessionId, runtimeId);
+    if (rawPaths.length === 0) {
+      const pending = this.rebuilding.get(key);
+      if (pending !== undefined) {
+        pending.connections.delete(conn);
+        if (pending.connections.size === 0) pending.abort.abort();
+      }
+      if (getLiveSessionById(this.core.accessor, sessionId) === undefined) {
+        return { code: FS_WATCH_CODE.SESSION_NOT_FOUND, msg: 'session not found' };
+      }
+      const sw = this.bySession.get(key);
+      const paths = sw?.conns.get(conn.id)?.paths;
+      if (paths !== undefined && paths.size > 0) return this.removeWatch(conn, sessionId, [...paths], runtimeId);
+      return { code: FS_WATCH_CODE.OK, msg: 'success', watched_paths: [], current_count: this.countFor(conn.id) };
+    }
+    const resolving = this.resolveSession(conn, sessionId, runtimeId);
+    const pending = this.rebuilding.get(key);
+    const sw = await resolving;
+    if (
+      sw === undefined ||
+      this.disposed ||
+      this.detached.has(conn) ||
+      this.bySession.get(key) !== sw ||
+      this.tornDown.has(sw) ||
+      (pending !== undefined && (pending.abort.signal.aborted || !pending.connections.has(conn))) ||
+      sw.sessionLease.handle !== getLiveSessionById(this.core.accessor, sessionId) ||
+      !this.isCurrentGeneration(sw)
+    ) {
+      if (sw !== undefined) this.cleanupOrphan(sw);
       return { code: FS_WATCH_CODE.SESSION_NOT_FOUND, msg: 'session not found' };
     }
-    const sw = resolved;
-
-    const normalized: string[] = [];
-    for (const raw of rawPaths) {
-      const rel = this.normalize(sw, raw);
-      if (rel === undefined) {
-        return { code: FS_WATCH_CODE.PATH_ESCAPES, msg: 'fs.path_escapes_session' };
+    try {
+      const normalized: string[] = [];
+      for (const raw of rawPaths) {
+        const rel = this.normalize(sw, raw);
+        if (rel === undefined) return { code: FS_WATCH_CODE.PATH_ESCAPES, msg: 'fs.path_escapes_session' };
+        normalized.push(rel);
       }
-      normalized.push(rel);
-    }
 
-    let entry = sw.conns.get(conn.id);
-    const toAdd: string[] = [];
-    for (const rel of normalized) {
-      if (entry?.paths.has(rel)) continue;
-      toAdd.push(rel);
-    }
-    const current = this.connPathCount.get(conn.id) ?? 0;
-    if (current + toAdd.length > MAX_PATHS_PER_CONNECTION) {
-      return { code: FS_WATCH_CODE.LIMIT_EXCEEDED, msg: 'fs.watch_limit_exceeded' };
-    }
+      let entry = sw.conns.get(conn.id);
+      const toAdd: string[] = [];
+      for (const rel of normalized) {
+        if (entry?.paths.has(rel)) continue;
+        toAdd.push(rel);
+      }
+      const current = this.connPathCount.get(conn.id) ?? 0;
+      if (current + toAdd.length > MAX_PATHS_PER_CONNECTION) {
+        return { code: FS_WATCH_CODE.LIMIT_EXCEEDED, msg: 'fs.watch_limit_exceeded' };
+      }
 
-    if (entry === undefined) {
-      entry = { conn, paths: new Set() };
-      sw.conns.set(conn.id, entry);
+      if (entry === undefined) {
+        entry = { conn, paths: new Set() };
+        sw.conns.set(conn.id, entry);
+      }
+      for (const rel of toAdd) entry.paths.add(rel);
+      this.connPathCount.set(conn.id, current + toAdd.length);
+      this.recomputeAndApply(sw);
+      return this.ok(sw, conn);
+    } finally {
+      this.cleanupOrphan(sw);
     }
-    for (const rel of toAdd) entry.paths.add(rel);
-    this.connPathCount.set(conn.id, current + toAdd.length);
-    this.recomputeAndApply(sw);
-
-    return this.ok(sw, conn);
   }
 
   async removeWatch(
@@ -169,6 +213,11 @@ export class FsWatchBridge {
 
   /** Drop every subscription held by `conn` (called on socket close). */
   detachConnection(conn: FsWatchConnection): void {
+    this.detached.add(conn);
+    for (const pending of this.rebuilding.values()) {
+      pending.connections.delete(conn);
+      if (pending.connections.size === 0) pending.abort.abort();
+    }
     for (const sw of Array.from(this.bySession.values())) {
       const entry = sw.conns.get(conn.id);
       if (entry === undefined) continue;
@@ -181,42 +230,86 @@ export class FsWatchBridge {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const subscription of this.sessionLifecycles) subscription.dispose();
+    for (const pending of this.rebuilding.values()) pending.abort.abort();
     for (const subscription of this.registrySubscriptions.values()) subscription.dispose();
     this.registrySubscriptions.clear();
-    for (const sw of this.bySession.values()) this.teardownSession(sw);
+    for (const sw of [...this.bySession.values()]) this.teardownSession(sw);
+    this.connPathCount.clear();
   }
 
-  private async resolveSession(sessionId: string, runtimeId: string): Promise<SessionWatch | undefined> {
+  private teardownSessionWatches(sessionId: string): void {
+    for (const [key, pending] of this.rebuilding) {
+      if (key.startsWith(`${sessionId}\0`)) pending.abort.abort();
+    }
+    for (const sw of [...this.bySession.values()]) {
+      if (sw.id !== sessionId) continue;
+      for (const { conn, paths } of sw.conns.values()) {
+        this.connPathCount.set(conn.id, Math.max(0, this.countFor(conn.id) - paths.size));
+      }
+      this.teardownSession(sw);
+    }
+  }
+
+  private async resolveSession(conn: FsWatchConnection, sessionId: string, runtimeId: string): Promise<SessionWatch | undefined> {
+    if (this.disposed || this.detached.has(conn)) return undefined;
     const key = sessionRuntimeKey(sessionId, runtimeId);
     const pending = this.rebuilding.get(key);
-    if (pending !== undefined) return pending;
+    if (pending !== undefined) {
+      pending.connections.add(conn);
+      return pending.task;
+    }
     const existing = this.bySession.get(key);
     if (existing !== undefined) {
       if (this.isCurrentGeneration(existing)) return existing;
-      return this.rebuild(existing);
+      return this.rebuild(existing, conn);
     }
-    return this.createSessionWatch(sessionId, runtimeId, undefined);
+    if (getLiveSessionById(this.core.accessor, sessionId) === undefined) return undefined;
+    return this.build(key, [conn], (signal) => this.createSessionWatch(sessionId, runtimeId, undefined, signal));
+  }
+
+  private build(
+    key: string,
+    connections: readonly FsWatchConnection[],
+    work: (signal: AbortSignal) => Promise<SessionWatch | undefined>,
+  ): Promise<SessionWatch | undefined> {
+    const abort = new AbortController();
+    let pending!: PendingWatchBuild;
+    const task = work(abort.signal).finally(() => {
+      if (this.rebuilding.get(key) === pending) this.rebuilding.delete(key);
+    });
+    pending = { task, connections: new Set(connections), abort };
+    this.rebuilding.set(key, pending);
+    return task;
   }
 
   private async createSessionWatch(
     sessionId: string,
     runtimeId: string,
     carried: { readonly conns: Map<string, ConnEntry>; readonly seq: number } | undefined,
+    signal: AbortSignal,
   ): Promise<SessionWatch | undefined> {
     const key = sessionRuntimeKey(sessionId, runtimeId);
-    const session = getLiveSessionById(this.core.accessor, sessionId);
-    if (session === undefined) return undefined;
-    const context = session.accessor.get(ISessionWorkspaceContext);
-    const sessionContext = session.accessor.get(ISessionContext);
-    const lease = this.core.accessor.get(IRuntimeResolver).acquire(
-      { workspaceId: sessionContext.workspaceId, runtimeId },
-      ['watch'],
-    );
+    const sessionLease = await acquireSessionOperation(this.core, sessionId, 'fs-watch');
+    let lease: RuntimeLease | undefined;
+    let handle: IHostFsWatchHandle | undefined;
+    let sw: SessionWatch | undefined;
     try {
+      const session = sessionLease.handle;
+      if (session === undefined || signal.aborted || this.disposed) return undefined;
+      const context = session.accessor.get(ISessionWorkspaceContext);
+      const sessionContext = session.accessor.get(ISessionContext);
+      lease = this.core.accessor.get(IRuntimeResolver).acquire(
+        { workspaceId: sessionContext.workspaceId, runtimeId },
+        ['watch'],
+      );
       const view = new RuntimeWorkspaceView(lease.runtime, context);
-      const handle = lease.track(lease.runtime.watch!.watch(view.workDir, { recursive: true }));
-      await handle.ready;
-      const sw: SessionWatch = {
+      handle = lease.track(lease.runtime.watch!.watch(view.workDir, { recursive: true }));
+      await readyOrAborted(handle.ready, signal);
+      if (signal.aborted || this.disposed) return undefined;
+      sw = {
         id: sessionId,
         runtimeId,
         workspaceId: sessionContext.workspaceId,
@@ -226,6 +319,7 @@ export class FsWatchBridge {
         view,
         handle,
         lease,
+        sessionLease,
         workspace: context,
         conns: carried?.conns ?? new Map(),
         union: new Set(),
@@ -244,32 +338,54 @@ export class FsWatchBridge {
       this.subscribeRegistry(sessionContext.workspaceId);
       return sw;
     } catch (error) {
-      lease.dispose();
-      throw error;
+      if (sw !== undefined && this.bySession.get(key) === sw) {
+        const created = sw;
+        sw = undefined;
+        handle = undefined;
+        lease = undefined;
+        this.teardownSession(created);
+      }
+      if (!signal.aborted) throw error;
+      return undefined;
+    } finally {
+      if (sw === undefined || this.bySession.get(key) !== sw) {
+        try {
+          sw?.sub?.dispose();
+        } finally {
+          try {
+            handle?.dispose();
+          } finally {
+            try {
+              lease?.dispose();
+            } finally {
+              sessionLease.dispose();
+            }
+          }
+        }
+      }
     }
   }
 
-  private async rebuild(sw: SessionWatch): Promise<SessionWatch | undefined> {
+  private rebuild(sw: SessionWatch, joining?: FsWatchConnection): Promise<SessionWatch | undefined> {
     const key = sessionRuntimeKey(sw.id, sw.runtimeId);
     const pending = this.rebuilding.get(key);
-    if (pending !== undefined) return pending;
-    const task = (async () => {
-      const { conns, seq } = sw;
-      this.teardownSession(sw);
-      return this.createSessionWatch(sw.id, sw.runtimeId, { conns, seq });
-    })();
-    this.rebuilding.set(key, task);
-    try {
-      return await task;
-    } finally {
-      this.rebuilding.delete(key);
+    if (pending !== undefined) {
+      if (joining !== undefined) pending.connections.add(joining);
+      return pending.task;
     }
+    const connections = [...sw.conns.values()].map((entry) => entry.conn);
+    if (joining !== undefined && !connections.includes(joining)) connections.push(joining);
+    return this.build(key, connections, async (signal) => {
+      const next = await this.createSessionWatch(sw.id, sw.runtimeId, { conns: sw.conns, seq: sw.seq }, signal);
+      if (next !== undefined) this.teardownSession(sw);
+      return next;
+    });
   }
 
   private async refreshIfStale(sw: SessionWatch): Promise<void> {
     const key = sessionRuntimeKey(sw.id, sw.runtimeId);
     const pending = this.rebuilding.get(key);
-    if (pending !== undefined) await pending.catch(() => undefined);
+    if (pending !== undefined) await pending.task.catch(() => undefined);
     const current = this.bySession.get(key);
     if (current === undefined || this.isCurrentGeneration(current)) return;
     try {
@@ -310,13 +426,38 @@ export class FsWatchBridge {
   }
 
   private teardownSession(sw: SessionWatch): void {
-    sw.sub?.dispose();
-    sw.sub = undefined;
+    if (this.tornDown.has(sw)) return;
+    this.tornDown.add(sw);
+    const key = sessionRuntimeKey(sw.id, sw.runtimeId);
+    if (this.bySession.get(key) === sw) this.bySession.delete(key);
     if (sw.debounceTimer !== undefined) clearTimeout(sw.debounceTimer);
     sw.debounceTimer = undefined;
-    sw.handle.dispose();
-    sw.lease.dispose();
-    this.bySession.delete(sessionRuntimeKey(sw.id, sw.runtimeId));
+    try {
+      sw.sub?.dispose();
+    } finally {
+      sw.sub = undefined;
+      try {
+        sw.handle.dispose();
+      } finally {
+        try {
+          sw.lease.dispose();
+        } finally {
+          sw.sessionLease.dispose();
+        }
+      }
+    }
+  }
+
+  private cleanupOrphan(sw: SessionWatch): void {
+    queueMicrotask(() => {
+      if (sw.conns.size === 0 && this.bySession.get(sessionRuntimeKey(sw.id, sw.runtimeId)) === sw) {
+        try {
+          this.teardownSession(sw);
+        } catch (error) {
+          this.logger?.warn({ sessionId: sw.id, err: String(error) }, 'fs-watch orphan teardown failed');
+        }
+      }
+    });
   }
 
   private onRuntimeEvent(key: string, event: HostFsChange): void {
@@ -413,6 +554,19 @@ export class FsWatchBridge {
   private countFor(connId: string): number {
     return this.connPathCount.get(connId) ?? 0;
   }
+}
+
+function readyOrAborted(ready: Promise<void>, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error('fs watch cancelled'));
+  return new Promise<void>((resolve, reject) => {
+    const cancel = (): void => { finish(); reject(new Error('fs watch cancelled')); };
+    const finish = (): void => { signal.removeEventListener('abort', cancel); };
+    signal.addEventListener('abort', cancel, { once: true });
+    void ready.then(
+      () => { finish(); resolve(); },
+      (error: unknown) => { finish(); reject(error); },
+    );
+  });
 }
 
 function isUnderAny(rel: string, parents: ReadonlySet<string>): boolean {

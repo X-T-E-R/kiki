@@ -54,6 +54,7 @@ import {
   type AgentTaskInfo,
   type AgentTaskReceipt,
   type AgentTaskOutputSnapshot,
+  type AgentTaskOutputPage,
   type AgentTaskStatus,
   type AgentTaskTrackOptions,
   type AgentTaskWaitDelivery,
@@ -212,7 +213,7 @@ function coerceTimeoutSettlement(
   return settlement;
 }
 
-const notificationPreviewBudgets = new WeakMap<object, { remainingBytes: number }>();
+const notificationPreviewBudgets = new WeakMap<object, { remainingBytes: number; perTaskBytes: number }>();
 
 export class TaskNotificationStepRequest extends MessageStepRequest {
   constructor(
@@ -629,19 +630,38 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return entry === undefined ? this.ghosts.get(taskId) : entry.visible ? this.toInfo(entry) : undefined;
   }
 
-  list(activeOnly = true, limit?: number): readonly AgentTaskInfo[] {
+  async getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined> {
+    const info = this.getTask(taskId);
+    if (info?.receiptVerification !== 'verified' || !isAgentTaskTerminal(info.status)) return info;
+    try {
+      const persisted = await this.persistence.readTask(taskId);
+      if (persisted?.taskId === info.taskId && persisted.status === info.status &&
+          persisted.receiptVerification === 'verified' &&
+          JSON.stringify(persisted.receipt) === JSON.stringify(info.receipt)) return info;
+    } catch {}
+    return { ...info, receipt: undefined, receiptVerification: 'invalid' };
+  }
+
+  list(activeOnly = true, limit?: number, offset = 0): readonly AgentTaskInfo[] {
     const result: AgentTaskInfo[] = [];
+    let skipped = 0;
+    const include = (info: AgentTaskInfo): boolean => {
+      if (!shouldListTask(info, activeOnly)) return false;
+      if (skipped < offset) {
+        skipped++;
+        return false;
+      }
+      result.push(info);
+      return limit !== undefined && result.length >= limit;
+    };
     for (const taskId of activeOnly ? this.tasks.keys() : this.localTaskIds) {
       const info = this.getTask(taskId);
-      if (info === undefined || !shouldListTask(info, activeOnly)) continue;
-      result.push(info);
-      if (limit !== undefined && result.length >= limit) return result;
+      if (info !== undefined && include(info)) return result;
     }
     if (!activeOnly) {
       for (const ghost of this.ghosts.values()) {
-        if (this.localTaskIds.has(ghost.taskId) || !shouldListTask(ghost, activeOnly)) continue;
-        result.push(ghost);
-        if (limit !== undefined && result.length >= limit) return result;
+        if (this.localTaskIds.has(ghost.taskId)) continue;
+        if (include(ghost)) return result;
       }
     }
     return result;
@@ -714,8 +734,12 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       try {
         const persisted = await this.persistence.readTaskOutputSnapshot(taskId, previewLimit);
         if (persisted !== undefined) {
+          const terminalReceipt = isAgentTaskTerminal(info.status) && info.detached !== false
+            ? await this.persistence.readTask(taskId) : undefined;
           const verified = !isAgentTaskTerminal(info.status) || info.detached === false ||
-            (info.receiptVerification === 'verified' && info.receipt?.bytes === persisted.outputSizeBytes);
+            (info.receiptVerification === 'verified' && terminalReceipt?.receiptVerification === 'verified' &&
+              info.receipt?.sha256 === terminalReceipt.receipt?.sha256 &&
+              info.receipt?.bytes === persisted.outputSizeBytes);
           return { ...persisted, outputPath: verified ? persisted.outputPath : undefined,
             fullOutputAvailable: verified };
         }
@@ -762,6 +786,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       fullOutputAvailable: false,
       preview,
     };
+  }
+
+  async getOutputPage(taskId: string, offset: number, maxBytes: number): Promise<AgentTaskOutputPage | undefined> {
+    if (!Number.isSafeInteger(offset) || offset < 0 ||
+        !Number.isSafeInteger(maxBytes) || maxBytes < 4 || maxBytes > 32 * 1024) return undefined;
+    if (this.getTask(taskId) === undefined) return undefined;
+    const snapshot = await this.getOutputSnapshot(taskId, 0);
+    if (!snapshot.fullOutputAvailable || snapshot.outputPath === undefined) return undefined;
+    const page = await this.persistence.readTaskOutputPage(taskId, offset, maxBytes);
+    if (page?.outputPath !== snapshot.outputPath || page.totalBytes !== snapshot.outputSizeBytes) return undefined;
+    return page;
   }
 
   async readOutput(taskId: string, tail?: number): Promise<string> {
@@ -1530,11 +1565,19 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private async restoreAgentTaskNotificationsNow(): Promise<void> {
     const delivery = {};
-    for (const info of this.list(false)) {
-      if (!isAgentTaskTerminal(info.status)) continue;
-      if (info.receipt === undefined && !this.localTaskIds.has(info.taskId)) continue;
-      await this.restoreAgentTaskNotification(info, delivery);
-    }
+    const candidates = this.list(false).filter((info) =>
+      isAgentTaskTerminal(info.status) && (info.receipt !== undefined || info.receiptVerification === 'invalid' || this.localTaskIds.has(info.taskId)) &&
+      info.detached !== false && info.terminalNotificationSuppressed !== true &&
+      !this.deliveredNotificationKeys.has(notificationKey({
+        taskId: info.taskId, status: info.status, notificationId: taskNotificationId(info.taskId, info.status),
+      })),
+    );
+    const ordinaryCount = candidates.filter((info) => info.kind !== 'question').length;
+    notificationPreviewBudgets.set(delivery, {
+      remainingBytes: NOTIFICATION_BATCH_PREVIEW_BYTES,
+      perTaskBytes: Math.max(4, Math.floor(NOTIFICATION_BATCH_PREVIEW_BYTES / Math.max(1, ordinaryCount))),
+    });
+    for (const info of candidates) await this.restoreAgentTaskNotification(info, delivery);
   }
 
   private async restoreAgentTaskNotification(info: AgentTaskInfo, delivery: object): Promise<void> {
@@ -1559,6 +1602,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async buildAgentTaskNotificationContext(
     info: AgentTaskInfo,
   ): Promise<AgentTaskNotificationBuildContext | undefined> {
+    info = (await this.getTaskSnapshot(info.taskId)) ?? info;
     if (info.detached === false) return undefined;
     if (info.terminalNotificationSuppressed === true) return undefined;
     const origin: TaskOrigin = {
@@ -1590,7 +1634,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       this.scheduledNotificationKeys.add(key);
       const notification = buildAgentTaskNotification(info, output);
       const renderContent = (delivery: object): readonly ContentPart[] => {
-        const snapshot = budgetNotificationPreview(info, output, delivery);
+        const snapshot = budgetNotificationPreview(info, output, delivery, this.pendingNotificationRequests.size);
         const remainingSubagents = info.kind === 'agent'
           ? runningSubagentStatus(this, this.lifecycle, this.scopeContext.agentId, info.agentId)
           : undefined;
@@ -1617,6 +1661,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async notificationOutputSnapshot(
     info: AgentTaskInfo,
   ): Promise<AgentTaskOutputSnapshot> {
+    if (info.receiptVerification === 'invalid') return emptyOutputSnapshot();
     return this.getOutputSnapshot(
       info.taskId,
       info.kind === 'process' ? NOTIFICATION_FALLBACK_PREVIEW_BYTES : QUESTION_ANSWER_INLINE_BYTES,
@@ -1729,15 +1774,19 @@ function budgetNotificationPreview(
   info: AgentTaskInfo,
   output: AgentTaskOutputSnapshot,
   delivery: object,
+  pendingCount: number,
 ): AgentTaskOutputSnapshot {
   if (info.kind === 'question') return output;
   let budget = notificationPreviewBudgets.get(delivery);
   if (budget === undefined) {
-    budget = { remainingBytes: NOTIFICATION_BATCH_PREVIEW_BYTES };
+    budget = {
+      remainingBytes: NOTIFICATION_BATCH_PREVIEW_BYTES,
+      perTaskBytes: Math.max(4, Math.floor(NOTIFICATION_BATCH_PREVIEW_BYTES / Math.max(1, pendingCount))),
+    };
     notificationPreviewBudgets.set(delivery, budget);
   }
   const available = Buffer.from(output.preview, 'utf-8');
-  const preview = utf8OutputTail(available, budget.remainingBytes);
+  const preview = utf8OutputTail(available, Math.min(budget.remainingBytes, budget.perTaskBytes));
   const previewBytes = Buffer.byteLength(preview, 'utf-8');
   budget.remainingBytes -= previewBytes;
   return {
@@ -1762,6 +1811,9 @@ function agentTaskNotificationChildren(
   info: AgentTaskInfo,
   output: AgentTaskOutputSnapshot,
 ): readonly string[] | undefined {
+  if (info.receiptVerification === 'invalid') {
+    return ['Task receipt verification failed; no trusted output preview or full output file is available.'];
+  }
   if (inlinesQuestionAnswer(info, output)) {
     return output.preview.length === 0 ? undefined : [renderAnswerBlock(output.preview)];
   }

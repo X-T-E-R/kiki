@@ -30,6 +30,7 @@ import {
   writeDraft,
   writeNewSessionDraft,
   type ComposerAttachment,
+  type PersistedNewSessionDraft,
 } from '@kiki/session-core/composer';
 import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import {
@@ -56,6 +57,44 @@ import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 
 const DRAFT_KEY = 'new';
+const remoteDraftStorageKey = (scopeId: string) => `kiki.draft.new.${scopeId}`;
+
+function readScopedNewSessionDraft(scopeId: string): PersistedNewSessionDraft {
+  if (scopeId === 'local' || !readSettings().draftPersistence) return scopeId === 'local' ? readNewSessionDraft() : {};
+  try {
+    const value = JSON.parse(localStorage.getItem(remoteDraftStorageKey(scopeId)) ?? '{}') as unknown;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+    const record = value as Record<string, unknown>;
+    return {
+      workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
+      cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
+      profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
+      modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
+      effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
+      modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
+      effortFromProfile: typeof record['effortFromProfile'] === 'boolean' ? record['effortFromProfile'] : undefined,
+      prefillSource: typeof record['prefillSource'] === 'string' ? record['prefillSource'] : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writeScopedNewSessionDraft(scopeId: string, draft: PersistedNewSessionDraft): void {
+  if (scopeId === 'local') return writeNewSessionDraft(draft);
+  if (!readSettings().draftPersistence) return;
+  try {
+    localStorage.setItem(remoteDraftStorageKey(scopeId), JSON.stringify(draft));
+  } catch {
+    return;
+  }
+}
+
+function clearScopedNewSessionDraft(scopeId: string): void {
+  if (scopeId === 'local') return clearNewSessionDraft();
+  try { localStorage.removeItem(remoteDraftStorageKey(scopeId)); } catch { return; }
+}
+
 export const AUTO_WORKSPACE_ID = '__auto__';
 
 /** One-shot skill activation carried across the /new → /s/:id navigation. */
@@ -99,6 +138,10 @@ export function isAbsoluteCwdPath(value: string): boolean {
   return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(value);
 }
 
+export function isAbsoluteRemoteCwdPath(value: string): boolean {
+  return value.startsWith('/') && !value.includes('\0') && !value.includes('\\');
+}
+
 /**
  * Whether /new should offer first-run provider guidance. True only when both
  * probes have answered and agree there is nothing to answer with — an
@@ -125,7 +168,9 @@ export function useNewSessionDraft({
   prefillNavigationKey?: string;
 } = {}) {
   const host = useHost();
-  const { client } = useConnection();
+  const { client, scopeId, sshLabel } = useConnection();
+  const draftScopeId = sshLabel === null ? 'local' : scopeId;
+  const draftKey = draftScopeId === 'local' ? DRAFT_KEY : `${DRAFT_KEY}:${draftScopeId}`;
   const navigate = useGuardedNavigate();
   const { t } = useI18n();
   const liveSettings = useSyncExternalStore(
@@ -134,7 +179,7 @@ export function useNewSessionDraft({
     settingsServerSnapshot,
   );
   const settings = useMemo(() => readSettings(), []);
-  const initialRestoredDraft = useMemo(() => readNewSessionDraft(), []);
+  const initialRestoredDraft = useMemo(() => readScopedNewSessionDraft(draftScopeId), [draftScopeId]);
   const [prefillSource] = useState(() => initialWorkspaceId !== undefined || initialProfile !== undefined
     ? JSON.stringify([initialWorkspaceId ?? null, initialProfile ?? null, prefillNavigationKey ?? null])
     : initialRestoredDraft.prefillSource);
@@ -251,9 +296,9 @@ export function useNewSessionDraft({
   );
 
   useEffect(() => {
-    setDraft(readDraft(DRAFT_KEY));
+    setDraft(readDraft(draftKey));
     return () => { flushDrafts(); };
-  }, []);
+  }, [draftKey]);
 
   const setModelOverride = useCallback((model: string | undefined) => {
     modelOverrideFromProfile.current = false;
@@ -296,7 +341,7 @@ export function useNewSessionDraft({
   }, [agentProfile, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isError, agentProfilesQuery.isPending]);
 
   useEffect(() => {
-    writeNewSessionDraft({
+    writeScopedNewSessionDraft(draftScopeId, {
       workspaceId: workspaceId || effectiveWorkspace?.id,
       cwd,
       profile: agentProfile,
@@ -306,12 +351,12 @@ export function useNewSessionDraft({
       effortFromProfile: effortOverrideFromProfile.current,
       prefillSource,
     });
-  }, [workspaceId, effectiveWorkspace?.id, cwd, agentProfile, modelOverride, effortOverride, selectionRevision, prefillSource]);
+  }, [draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, modelOverride, effortOverride, selectionRevision, prefillSource]);
 
   const updateDraft = useCallback((text: string) => {
     setDraft(text);
-    writeDraft(DRAFT_KEY, text);
-  }, []);
+    writeDraft(draftKey, text);
+  }, [draftKey]);
 
   const agentProfileCatalogPending = profileCatalogTransitionPending
     || (cwd.trim() === '' && workspacesQuery.isPending)
@@ -371,8 +416,8 @@ export function useNewSessionDraft({
     const trimmedCwd = context.cwd.trim();
     // A free-text cwd must be an absolute path — a relative one would be
     // resolved against the server's own cwd and silently land elsewhere.
-    if (trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd)) {
-      setError(t('new.cwdInvalid'));
+    if (trimmedCwd !== '' && (sshLabel === null ? !isAbsoluteCwdPath(trimmedCwd) : !isAbsoluteRemoteCwdPath(trimmedCwd))) {
+      setError(sshLabel === null ? t('new.cwdInvalid') : t('connect.sshCwdInvalid'));
       return;
     }
     setBusy(true);
@@ -395,8 +440,8 @@ export function useNewSessionDraft({
     return client
       .createSession(body)
       .then((session) => {
-        writeDraft(DRAFT_KEY, '');
-        clearNewSessionDraft();
+        writeDraft(draftKey, '');
+        clearScopedNewSessionDraft(draftScopeId);
         // react-router's navigate returns a promise in data routers; the
         // navigation is fire-and-forget here (the catch below covers createSession).
         navigate(`/s/${session.id}`, {
@@ -418,7 +463,7 @@ export function useNewSessionDraft({
         setBusy(false);
         setError(error instanceof Error ? error.message : String(error));
       });
-  }, [client, navigate, t]);
+  }, [client, draftKey, draftScopeId, sshLabel, navigate, t]);
 
   const send = useCallback((
     text: string,
@@ -506,7 +551,8 @@ export function useNewSessionDraft({
     agentProfileCatalogMode,
     agentProfileCatalogPending,
     needsProviderSetup: providerSetupNeeded,
-    canBrowseForWorkspace: host.pickDirectory !== undefined,
+    sshLabel,
+    canBrowseForWorkspace: sshLabel === null && host.pickDirectory !== undefined,
     browseForWorkspace,
     serverDefaultModel,
     inheritedDefault,
@@ -539,7 +585,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
   const { t } = useI18n();
   const [cwdBlurred, setCwdBlurred] = useState(false);
   const trimmedCwd = state.cwd.trim();
-  const cwdInvalid = trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd);
+  const cwdInvalid = trimmedCwd !== '' && (state.sshLabel === null ? !isAbsoluteCwdPath(trimmedCwd) : !isAbsoluteRemoteCwdPath(trimmedCwd));
   const workspaceOptions: readonly SearchableSelectOption[] = useMemo(
     () => [
       {
@@ -562,6 +608,10 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
 
   return (
     <div className="flex flex-col gap-2.5">
+      <p className="text-[11px] font-medium text-accent">
+        {state.sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${state.sshLabel}`}
+      </p>
+      {state.sshLabel !== null ? <p className="text-[11px] text-ink-soft">{t('connect.sshRemotePathHint')}</p> : null}
       {firstRun ? (
         <p className="text-[11.5px] leading-relaxed text-ink-soft">{t('new.firstRunHint')}</p>
       ) : null}
@@ -603,14 +653,14 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
             onBlur={() => { setCwdBlurred(true); }}
             aria-label={t('new.cwdAria')}
             aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
-            placeholder={t('new.cwdPlaceholder')}
+            placeholder={state.sshLabel === null ? t('new.cwdPlaceholder') : '/home/dev/project'}
             className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent ${
               cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
             }`}
           />
           {cwdBlurred && cwdInvalid ? (
             <p role="alert" className="mt-1 text-[10.5px] text-danger">
-              {t('new.cwdInvalid')}
+              {t(state.sshLabel === null ? 'new.cwdInvalid' : 'connect.sshCwdInvalid')}
             </p>
           ) : null}
         </div>

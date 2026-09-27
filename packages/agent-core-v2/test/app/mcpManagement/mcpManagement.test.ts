@@ -1666,6 +1666,48 @@ describe('McpManagementService', () => {
       });
     });
 
+    it('rejects a changed current target without deleting either the old or new credential', async () => {
+      const urlA = 'https://oauth-a.example.test/mcp';
+      const urlB = 'https://oauth-b.example.test/mcp';
+      await management.addServer({ name: 'oauthable', transport: 'http', url: urlA });
+      await seedTokens('oauthable', urlA, { access_token: 'old' });
+      await seedTokens('oauthable', urlB, { access_token: 'new' });
+      await management.updateServer({ name: 'oauthable', transport: 'http', url: urlB });
+
+      await expect(management.resetServerAuth(
+        { source: 'global', name: 'oauthable' }, {}, urlA,
+      )).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      expect((await oauth.tokenState('oauthable', urlA)).hasTokens).toBe(true);
+      expect((await oauth.tokenState('oauthable', urlB)).hasTokens).toBe(true);
+    });
+
+    it('lists metadata without tokens and explicitly revokes one orphaned identity after rename or transport change', async () => {
+      const oldUrl = 'https://oauth-a.example.test/mcp';
+      const otherUrl = 'https://oauth-b.example.test/mcp';
+      await management.addServer({ name: 'former', transport: 'http', url: oldUrl });
+      await seedTokens('former', oldUrl, { access_token: 'fixture-old' });
+      await seedTokens('former', otherUrl, { access_token: 'fixture-other' });
+      await management.removeServer('former');
+      await management.addServer(stdioServer('renamed'));
+      const credentials = await management.listStoredOAuthCredentials();
+      expect(credentials).toHaveLength(2);
+      expect(credentials).toEqual(expect.arrayContaining([
+        expect.objectContaining({ serverName: 'former', displayUrl: 'https://oauth-a.example.test/…', origin: 'unknown' }),
+        expect.objectContaining({ serverName: 'former', displayUrl: 'https://oauth-b.example.test/…', origin: 'unknown' }),
+      ]));
+      expect(JSON.stringify(credentials)).not.toContain('fixture-old');
+      const old = credentials.find((item) => item.displayUrl.includes('oauth-a.example.test'))!;
+      expect(await management.revealStoredOAuthCredential({ credentialId: old.credentialId })).toEqual({ canonicalUrl: oldUrl });
+
+      await management.revokeStoredOAuthCredential({ credentialId: old.credentialId });
+      expect((await oauth.tokenState('former', oldUrl)).hasTokens).toBe(false);
+      expect((await oauth.tokenState('former', otherUrl)).hasTokens).toBe(true);
+      await expect(management.revokeStoredOAuthCredential({ credentialId: old.credentialId }))
+        .rejects.toMatchObject({ code: ErrorCodes.MCP_SERVER_NOT_FOUND });
+      await expect(management.revealStoredOAuthCredential({ credentialId: 'not-an-id' }))
+        .rejects.toMatchObject({ code: ErrorCodes.MCP_SERVER_NOT_FOUND });
+    });
+
     it('resets a plugin server by locator', async () => {
       pluginEntries = [
         {

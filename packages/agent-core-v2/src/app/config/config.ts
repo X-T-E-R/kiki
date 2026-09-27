@@ -2,6 +2,7 @@ import type { Event } from '#/_base/event';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
 import { isPlainObject } from './configPure';
+import type { ModelGenerationMigrationReason } from './modelGenerationMigration';
 
 export interface ConfigSchema<T> {
   parse(value: unknown): T;
@@ -202,6 +203,14 @@ export interface IConfigService {
     expectedValues?: Readonly<Record<string, unknown>>,
   ): Promise<void>;
   reload(): Promise<void>;
+  previewModelGenerationMigration?(): Promise<{
+    readonly revision: string;
+    readonly changes: readonly { readonly modelId: string; readonly fields: readonly string[] }[];
+    readonly needsReview: readonly { readonly modelId: string; readonly code: ModelGenerationMigrationReason; readonly field?: string }[];
+    readonly backups: readonly string[];
+  }>;
+  applyModelGenerationMigration(expectedRevision: string): Promise<{ readonly backupKey: string; readonly revision: string }>;
+  restoreModelGenerationMigration(backupKey: string, expectedRevision: string): Promise<{ readonly revision: string }>;
   diagnostics(): readonly ConfigDiagnostic[];
 }
 

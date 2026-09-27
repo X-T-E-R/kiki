@@ -5,6 +5,7 @@ import {
   applyMatchedModelProfilePrompt,
   applyModelProfilePromptDelta,
   declaresModelProfilePrompt,
+  mergeModelParameters,
   resolveModelProfileEntry,
 } from '#/modelProfileOverlay';
 
@@ -36,6 +37,11 @@ function resolveId(id: string): string | undefined {
 }
 
 describe('model profile overlay matching and prompt composition', () => {
+  it('keeps a model preference distinct from profile hard caps', () => {
+    expect(mergeModelParameters({ maxCompletionTokens: 16384 }, { maxCompletionTokens: 12000 }, { maxCompletionTokens: 10000 }).maxCompletionTokens).toBe(10000);
+    expect(mergeModelParameters({ maxCompletionTokens: 16384 }, { maxCompletionTokens: 12000 }).maxCompletionTokens).toBe(12000);
+    expect(mergeModelParameters({ maxCompletionTokens: 16384 }, undefined).maxCompletionTokens).toBe(16384);
+  });
   it('matches by canonical alias and skips catalog-missing entries', () => {
     expect(resolveModelProfileEntry(ENTRIES, 'mock-model', resolveId)?.alias).toBe('mock-model');
     expect(resolveModelProfileEntry(ENTRIES, 'test-provider/mock-model', resolveId)?.alias).toBe(

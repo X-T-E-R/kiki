@@ -2,7 +2,7 @@ import {
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   Error2,
   ErrorCodes,
-  resumeSessionById,
+  ISessionManager,
   type ExternalDispatchView,
   type ISessionExternalDelegationService as ExternalDelegationService,
 } from '@kiki/agent-core-v2';
@@ -11,11 +11,6 @@ import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { registerV2ExternalDelegationRoutes } from '../src/routes/v2/externalDelegation';
 
 const mainAgent = vi.hoisted(() => ({ ensure: vi.fn() }));
-
-vi.mock('@kiki/agent-core-v2', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@kiki/agent-core-v2')>();
-  return { ...actual, resumeSessionById: vi.fn() };
-});
 
 vi.mock('../src/transport/mainAgent', () => ({ ensureMainAgent: mainAgent.ensure }));
 
@@ -75,6 +70,10 @@ describe('external delegation route projection', () => {
     wait: Mock<ExternalDelegationService['wait']>;
   };
 
+  const acquire = vi.fn();
+  const release = vi.fn();
+  const core = { accessor: { get: (id: unknown) => id === ISessionManager ? { acquire } : undefined } } as never;
+
   beforeEach(() => {
     handlers = new Map();
     logger = {
@@ -96,9 +95,9 @@ describe('external delegation route projection', () => {
       cancel: vi.fn(),
       _serviceBrand: vi.fn(),
     };
-    vi.mocked(resumeSessionById).mockResolvedValue({
-      accessor: { get: () => service },
-    } as never);
+    acquire.mockReset();
+    release.mockReset();
+    acquire.mockResolvedValue({ handle: { accessor: { get: () => service } }, dispose: release });
     mainAgent.ensure.mockResolvedValue(undefined);
     registerV2ExternalDelegationRoutes(
       {
@@ -106,7 +105,7 @@ describe('external delegation route projection', () => {
           handlers.set(path, handler);
         },
       },
-      {} as never,
+      core,
       authorityConfig,
     );
   });
@@ -136,7 +135,7 @@ describe('external delegation route projection', () => {
           handlers.set(path, handler);
         },
       },
-      {} as never,
+      core,
       {
         ...authorityConfig,
         state: {
@@ -153,7 +152,7 @@ describe('external delegation route projection', () => {
       code: 40002,
       msg: expect.stringContaining('workspace_drift'),
     });
-    expect(resumeSessionById).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
   });
 
   it('returns the domain replay view for repeated dispatch_key requests', async () => {

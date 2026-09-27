@@ -34,17 +34,20 @@ import { IWebSearchTool } from '#/agent/tools/web-search/web-search';
 import { WebSearchTool } from '#/agent/tools/web-search/webSearchTool';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
-import { Emitter } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { IConfigService, type ConfigChangedEvent } from '#/app/config/config';
-import { NB_SEARCH_SECTION } from '#/app/nbSearch/configSection';
+import { NB_SEARCH_SECTION, NB_SEARCH_SOURCE_SECTION } from '#/app/nbSearch/configSection';
 import { INbSearchService, type NbSearchTestStatus } from '#/app/nbSearch/nbSearch';
 import { parseNativeFetchInput, parseNativeSearchInput, type NativeFetchInput, type NativeSearchInput } from '#/app/nbSearch/nativeInput';
 import { NbSearchService } from '#/app/nbSearch/nbSearchService';
 import { INbSearchSourceStore, NbSearchSourceStore } from '#/app/nbSearch/sourceStore';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { applyLocalCredentials } from '#/app/nbSearch/localCredentials';
 import { NbSearchCredentialFileStore } from '#/app/nbSearch/credentialFileStore';
 import { resolveNbSearchConfig, nbSearchConfigRevision } from '#/app/nbSearch/donorConfig';
+import { managedBinding } from '#/app/nbSearch/managedCredentials';
+import { copyNbSearchEnvironment } from '#/app/nbSearch/environment';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import {
@@ -252,6 +255,8 @@ function stubService(overrides: Partial<INbSearchService> = {}): INbSearchServic
     toolDescription: () => 'Fixture capability snapshot',
     test: vi.fn().mockResolvedValue(testStatus()),
     validateConfiguration: vi.fn().mockResolvedValue(undefined),
+    readManagedCredential: vi.fn().mockResolvedValue(undefined),
+    writeManagedCredential: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -526,7 +531,7 @@ describe('NbSearchSourceStore', () => {
     ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.definePartialInstance(IHostFileSystem, { stat });
-        reg.definePartialInstance(IFileSystemStorageService, { pathFor: () => undefined, write });
+        reg.definePartialInstance(IFileSystemStorageService, { pathFor: () => undefined, write, size: async () => undefined });
         reg.define(INbSearchSourceStore, NbSearchSourceStore);
       },
     });
@@ -611,7 +616,7 @@ describe('NbSearchSourceStore', () => {
       });
       expect(source.env['NB_SEARCH_EXA_API_KEY']).toBeUndefined();
       expect(source.env['NB_SEARCH_CONFIG']).toMatch(/isolated-config\.\d+\.\d+\.json$/);
-      expect(JSON.stringify(source)).not.toContain('42');
+      expect(JSON.stringify(source)).not.toContain('"search_lane":42');
       expect(JSON.stringify(source)).not.toContain('fixture-local-key');
     } finally {
       read.mockRestore();
@@ -679,6 +684,69 @@ describe('NbSearchSourceStore', () => {
     expect(source.status).toMatchObject({ local_config: 'unreadable', availability: 'unavailable', issues: ['LOCAL_CONFIG_UNREADABLE'] });
     expect(write).not.toHaveBeenCalled();
   });
+
+  describe('managed credentials', () => {
+    function managedDocument(slots: Record<string, unknown>): Uint8Array {
+      return new TextEncoder().encode(JSON.stringify({ schema_version: '1', slots }));
+    }
+
+    function serveManagedDocument(storage: IFileSystemStorageService, bytes: Uint8Array): void {
+      storage.pathFor = (_scope, key) => `/fixture/cache/nb-search/${key}`;
+      storage.size = vi.fn(async () => bytes.length);
+      storage.read = vi.fn(async () => bytes);
+    }
+
+    it('keeps the source and environment credentials when the managed document is unreadable', async () => {
+      vi.stubEnv('NB_SEARCH_GITHUB_TOKEN', 'fixture-env-token');
+      const storage = ix.get(IFileSystemStorageService);
+      serveManagedDocument(storage, new TextEncoder().encode('{fixture-broken-managed'));
+      write.mockResolvedValue(undefined);
+      const source = await ix.get(INbSearchSourceStore).withSource(false, undefined, (value) => value);
+      expect(source.status).toMatchObject({ availability: 'ready', credential_source: 'environment' });
+      expect(source.status.issues).toContain('MANAGED_CREDENTIALS_UNAVAILABLE');
+      expect(source.env['NB_SEARCH_GITHUB_TOKEN']).toBe('fixture-env-token');
+      expect(source.managedSlots).toEqual([]);
+      expect(JSON.stringify(source)).not.toContain('fixture-broken-managed');
+    });
+
+    it('drops only the managed slot whose binding changed and reports it', async () => {
+      vi.stubEnv('NB_SEARCH_BRAVE_API_KEY', 'fixture-env-brave');
+      const storage = ix.get(IFileSystemStorageService);
+      const env = copyNbSearchEnvironment(process.env);
+      const config = resolveNbSearchConfig(env, undefined, undefined);
+      const binding = managedBinding(config, 'exa.default', env);
+      serveManagedDocument(storage, managedDocument({
+        'exa.default': { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY', binding, value: 'fixture-managed-exa' },
+        'tavily.default': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_API_KEY', binding: 'fixture-stale-binding', value: 'fixture-managed-tavily' },
+      }));
+      write.mockResolvedValue(undefined);
+      const source = await ix.get(INbSearchSourceStore).withSource(false, undefined, (value) => value);
+      expect(source.status).toMatchObject({ availability: 'ready', credential_source: 'environment+managed' });
+      expect(source.status.issues).toContain('MANAGED_CREDENTIALS_MISMATCH:tavily.default');
+      expect(source.env['NB_SEARCH_EXA_API_KEY']).toBe('fixture-managed-exa');
+      expect(source.env['NB_SEARCH_TAVILY_API_KEY']).toBeUndefined();
+      expect(source.env['NB_SEARCH_BRAVE_API_KEY']).toBe('fixture-env-brave');
+      expect(source.managedSlots).toEqual(['exa.default']);
+      expect(JSON.stringify(source)).not.toContain('fixture-managed-tavily');
+    });
+
+    it('rejects a stale managed write against the stored version or binding without touching the document', async () => {
+      const storage = ix.get(IFileSystemStorageService);
+      serveManagedDocument(storage, managedDocument({}));
+      const lock = { release: vi.fn(async () => undefined) };
+      storage.acquireLock = vi.fn(async () => lock);
+      const managedWrite = vi.fn(async (_scope: string, _key: string) => undefined);
+      storage.write = managedWrite;
+      const store = ix.get(INbSearchSourceStore);
+      const source = await store.withSource(false, undefined, (value) => value);
+      const view = await store.readManaged(source, 'exa.default', false);
+      const current = () => ({ config: undefined, reuseLocalConfig: false, generation: 0 });
+      await expect(store.writeManaged(source, current, 'exa.default', 'fixture-new-key', 'a'.repeat(64), view.binding_version)).rejects.toMatchObject({ reason: 'changed' });
+      await expect(store.writeManaged(source, current, 'exa.default', 'fixture-new-key', 'none', 'b'.repeat(64))).rejects.toMatchObject({ reason: 'changed' });
+      expect(managedWrite.mock.calls.every(([scope]) => scope !== 'secrets/nb-search')).toBe(true);
+      expect(lock.release).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe('NbSearchCredentialFileStore', () => {
@@ -711,6 +779,8 @@ describe('NbSearchService', () => {
         });
         reg.defineInstance(INbSearchSourceStore, {
           _serviceBrand: undefined,
+          readManaged: vi.fn(),
+          writeManaged: vi.fn(),
           withSource: async (reuse, _config, use) => use({
             env: {},
             status: { reuse_local_config: reuse, layers: ['defaults', 'local', 'environment', 'kiki'], local_config: 'missing', availability: 'ready', issues: [] },
@@ -1322,5 +1392,91 @@ describe('nb-search tool adapters', () => {
     await expect(
       execute(ix.get(IFetchURLTool).resolveExecution({ url: 'https://example.com' }), controller.signal),
     ).rejects.toThrow('Aborted by the user');
+  });
+});
+
+describe('NbSearch local CLI credential lane safety', () => {
+  let disposables: DisposableStore;
+  let ix: TestInstantiationService;
+  let fixture: string;
+
+  beforeEach(async () => {
+    createRuntimeMock.mockReset();
+    await mkdir(resolve('.tmp'), { recursive: true });
+    fixture = await mkdtemp(join(resolve('.tmp'), 'nb-cli-safety-'));
+    for (const key of Object.keys(process.env)) if (key.toUpperCase().startsWith('NB_SEARCH_')) vi.stubEnv(key, undefined);
+    vi.stubEnv('NB_SEARCH_HOME', fixture);
+    disposables = new DisposableStore();
+    ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async () => undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => domain === NB_SEARCH_SOURCE_SECTION
+            ? { reuse_local_config: true }
+            : domain === NB_SEARCH_SECTION ? {} : undefined) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+        reg.define(INbSearchService, NbSearchService);
+      },
+    });
+  });
+
+  afterEach(async () => {
+    disposables.dispose();
+    vi.unstubAllEnvs();
+    await rm(fixture, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  function acceptRuntimeOnRevision(): void {
+    createRuntimeMock.mockImplementation((options: { env: NodeJS.ProcessEnv; config: unknown }) => ({
+      search: vi.fn(),
+      fetch: vi.fn(),
+      capabilities: vi.fn(async () => ({
+        ...CAPABILITIES,
+        revision: nbSearchConfigRevision(resolveNbSearchConfig(options.env, options.config as never, undefined)),
+      })),
+    }));
+  }
+
+  it('passes an imported CLI credential to the donor lane environment', async () => {
+    await writeFile(join(fixture, 'config.json'), '{}');
+    await writeFile(join(fixture, 'secrets.json'), JSON.stringify({ schema_version: '1', values: { NB_SEARCH_EXA_API_KEY: 'fixture-cli-key' } }));
+    acceptRuntimeOnRevision();
+    const capabilities = await ix.get(INbSearchService).capabilities();
+    expect(capabilities.config_source).toMatchObject({ availability: 'ready', local_credentials: 'present', credential_source: 'environment+local' });
+    expect(createRuntimeMock).toHaveBeenCalledTimes(1);
+    const passed = createRuntimeMock.mock.calls[0]?.[0] as { env: NodeJS.ProcessEnv };
+    expect(passed.env['NB_SEARCH_EXA_API_KEY']).toBe('fixture-cli-key');
+  });
+
+  it('ignores a corrupt CLI credential file and never substitutes a managed or env account', async () => {
+    const storage = ix.get(IFileSystemStorageService);
+    const env = copyNbSearchEnvironment(process.env);
+    const config = resolveNbSearchConfig(env, undefined, undefined);
+    const binding = managedBinding(config, 'exa.default', env);
+    const managed = new TextEncoder().encode(JSON.stringify({
+      schema_version: '1',
+      slots: { 'exa.default': { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY', binding, value: 'fixture-managed-exa' } },
+    }));
+    storage.size = vi.fn(async () => managed.length);
+    storage.read = vi.fn(async () => managed);
+    vi.stubEnv('NB_SEARCH_EXA_API_KEY', undefined);
+    await writeFile(join(fixture, 'config.json'), '{}');
+    await writeFile(join(fixture, 'secrets.json'), '{fixture-private-invalid');
+    acceptRuntimeOnRevision();
+    const capabilities = await ix.get(INbSearchService).capabilities();
+    expect(capabilities.config_source).toMatchObject({ availability: 'ready', local_credentials: 'invalid', issues: ['LOCAL_CREDENTIALS_INVALID'] });
+    expect(JSON.stringify(capabilities)).not.toContain('fixture-private-invalid');
+    expect(JSON.stringify(capabilities)).not.toContain('fixture-managed-exa');
+    expect(createRuntimeMock).toHaveBeenCalledTimes(1);
+    const passed = createRuntimeMock.mock.calls[0]?.[0] as { env: NodeJS.ProcessEnv };
+    expect(passed.env['NB_SEARCH_EXA_API_KEY']).toBeUndefined();
   });
 });

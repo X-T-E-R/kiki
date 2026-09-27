@@ -16,6 +16,14 @@ import type {
 import type { DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
 
+let remoteWorkspaceActive = false;
+
+function requireLocalWorkspace(): void {
+  if (remoteWorkspaceActive) {
+    throw new Error('This is an SSH workspace. Use a remote server operation, not a local file or directory action.');
+  }
+}
+
 const NATIVE_IMAGE_MIMES: Readonly<Record<string, string>> = {
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -92,6 +100,13 @@ export const tauriHost: TauriHostAdapter = {
       const config = await invoke<ConnectionConfig>('desktop_connection');
       return { config, persist: false };
     },
+    listSshProfiles: () => invoke('list_ssh_profiles'),
+    saveSshProfile: (profile) => invoke('save_ssh_profile', { profile }),
+    removeSshProfile: (id) => invoke('remove_ssh_profile', { id }),
+    connectSshProfile: (id, token) => invoke('connect_ssh_profile', { id, token }),
+    sshTunnelRunning: (id, tunnelId) => invoke('ssh_tunnel_running', { id, tunnelId }),
+    disconnectSshProfile: (id, tunnelId) => invoke('disconnect_ssh_profile', { id, tunnelId }),
+    setWorkspaceScope: (scope) => { remoteWorkspaceActive = scope === 'ssh'; },
     async cancelStartup() {
       await invoke('cancel_desktop_startup');
     },
@@ -152,27 +167,32 @@ export const tauriHost: TauriHostAdapter = {
     );
   },
   async pickDirectories() {
+    requireLocalWorkspace();
     const { open } = await import('@tauri-apps/plugin-dialog');
     const selected = await open({ directory: true, multiple: true });
     if (selected === null) return null;
     return typeof selected === 'string' ? [selected] : selected;
   },
   async pickDirectory() {
+    requireLocalWorkspace();
     const { open } = await import('@tauri-apps/plugin-dialog');
     const selected = await open({ directory: true, multiple: false });
     if (selected === null) return null;
     return typeof selected === 'string' ? selected : (selected[0] ?? null);
   },
   async revealPath(path) {
+    requireLocalWorkspace();
     await invoke('reveal_host_path', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path });
   },
   async openUrl(url) {
     await invoke('open_external_url', { url });
   },
   async openPath(path) {
+    requireLocalWorkspace();
     await invoke('open_host_path', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path });
   },
   async writeFileText(path, text) {
+    requireLocalWorkspace();
     await invoke('write_host_file_text', { path, text });
   },
   async writeDesktopPrefs(prefs) {

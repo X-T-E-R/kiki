@@ -31,11 +31,15 @@ export const capabilityStatusSchema = z.object({
   state: z.enum(['not_installed', 'partial', 'ready', 'unsupported']),
   version: z.string().optional(),
   steps: z.array(capabilityStepSchema),
+  plan: z.object({
+    artifact: z.object({ version: z.string(), url: z.string(), sha256: z.string(), metadataUrl: z.string(), maxBytes: z.number() }),
+    destination: z.string(), browserExtensionUrl: z.string().optional(), note: z.string(),
+  }).optional(),
   install: capabilityInstallProgressSchema,
 });
 
 export const capabilitiesContract = {
   listCapabilities: { input: z.tuple([]), output: z.array(capabilityStatusSchema) },
   getCapability: { input: z.tuple([z.string()]), output: capabilityStatusSchema },
-  installCapability: { input: z.tuple([z.string()]), output: capabilityStatusSchema },
+  installCapability: { input: z.tuple([z.string(), z.string().optional()]), output: capabilityStatusSchema },
 } satisfies ServiceContract;

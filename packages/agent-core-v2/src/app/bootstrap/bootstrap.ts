@@ -15,10 +15,7 @@ import {
 } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { cleanupExpiredSessionLocks } from '#/persistence/backends/node-fs/fileLock';
-import {
-  IAtomicTomlDocumentStore,
-  type IAtomicDocumentStore,
-} from '#/persistence/interface/atomicDocumentStore';
+import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileSkillDiscovery } from '#/app/skillCatalog/fileSkillDiscovery';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
@@ -168,8 +165,8 @@ export function bootstrap(input: BootstrapInput, extraSeeds: ScopeSeed = []): Bo
 function storageSeed(options: IBootstrapOptions): ScopeSeed {
   const file = (): SyncDescriptor<IFileSystemStorageService> =>
     new SyncDescriptor(FileStorageService, [options.homeDir, 0o700, 0o600]);
-  const configStorage = new FileStorageService(dirname(options.configPath), 0o700, 0o600);
-  const configDocuments: IAtomicDocumentStore = new TomlAtomicDocumentStore(configStorage);
+  const configStorage = new FileStorageService(dirname(options.configPath), 0o700, 0o600, !options.configReadOnly);
+  const configDocuments: IAtomicTomlDocumentStore = new TomlAtomicDocumentStore(configStorage);
   return [
     [IFileSystemStorageService as ServiceIdentifier<unknown>, file()],
     [
@@ -181,13 +178,25 @@ function storageSeed(options: IBootstrapOptions): ScopeSeed {
   ];
 }
 
-class ReadOnlyAtomicDocumentStore implements IAtomicDocumentStore {
+class ReadOnlyAtomicDocumentStore implements IAtomicTomlDocumentStore {
   declare readonly _serviceBrand: undefined;
 
-  constructor(private readonly delegate: IAtomicDocumentStore) {}
+  constructor(private readonly delegate: IAtomicTomlDocumentStore) {}
 
   get<T>(scope: string, key: string): Promise<T | undefined> {
     return this.delegate.get<T>(scope, key);
+  }
+
+  getText(scope: string, key: string): Promise<string | undefined> {
+    return this.delegate.getText(scope, key);
+  }
+
+  setText(_scope: string, _key: string, _text: string): Promise<void> {
+    return Promise.reject(readOnlyConfigError());
+  }
+
+  compareAndSetText(_scope: string, _key: string, _expected: string | undefined, _next: string | undefined): Promise<boolean> {
+    return Promise.reject(readOnlyConfigError());
   }
 
   set<T>(_scope: string, _key: string, _value: T): Promise<void> {

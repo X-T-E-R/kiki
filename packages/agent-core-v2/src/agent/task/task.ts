@@ -32,6 +32,15 @@ export interface AgentTaskOutputSnapshot {
   readonly preview: string;
 }
 
+export interface AgentTaskOutputPage {
+  readonly outputPath: string;
+  readonly offset: number;
+  readonly nextOffset: number;
+  readonly totalBytes: number;
+  readonly hasMore: boolean;
+  readonly text: string;
+}
+
 export interface RegisterAgentTaskOptions {
   readonly detached?: boolean;
   readonly lifetime?: TaskLifetime;
@@ -88,12 +97,14 @@ export interface IAgentTaskService {
   commitTaskRegistration?(taskId: string): void;
   rollbackTaskRegistration?(taskId: string, reason?: unknown): Promise<void>;
   getTask(taskId: string): AgentTaskInfo | undefined;
-  list(activeOnly?: boolean, limit?: number): readonly AgentTaskInfo[];
+  getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined>;
+  list(activeOnly?: boolean, limit?: number, offset?: number): readonly AgentTaskInfo[];
   persistOutput(taskId: string): void;
   getOutputSnapshot(
     taskId: string,
     maxPreviewBytes: number,
   ): Promise<AgentTaskOutputSnapshot>;
+  getOutputPage(taskId: string, offset: number, maxBytes: number): Promise<AgentTaskOutputPage | undefined>;
   readOutput(taskId: string, tail?: number): Promise<string>;
   suppressTerminalNotification(taskId: string): Promise<void>;
   /**

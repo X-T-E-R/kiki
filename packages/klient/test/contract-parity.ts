@@ -56,6 +56,7 @@ import type {
 } from '@kiki/agent-core-v2/app/mcpRegistry/mcpRegistry';
 import type { McpServerConfig } from '@kiki/agent-core-v2/mcpCore/config-schema';
 import type { McpServerConfigView } from '@kiki/agent-core-v2/mcpCore/configView';
+import type { McpRevealedOAuthCredential, McpStoredOAuthCredential, McpStoredOAuthIdentity } from '@kiki/agent-core-v2/mcpCore/oauth/service';
 import type { FullCompactionInput } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
 import type { ISessionScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
 import type {
@@ -341,6 +342,9 @@ import {
   mcpServerSourceSchema,
   mcpServerTestResultSchema,
   mcpServerTestTargetSchema,
+  mcpStoredOAuthCredentialSchema,
+  mcpStoredOAuthIdentitySchema,
+  mcpRevealedOAuthCredentialSchema,
 } from '../src/contract/global/mcpManagement.js';
 import {
   getPluginInfoInputSchema,
@@ -607,6 +611,9 @@ const _mcpServerAuthFlowHandle: AssertWire<
   typeof mcpServerAuthFlowHandleSchema,
   McpServerAuthFlowHandle
 > = true;
+const _mcpStoredOAuthIdentity: AssertWire<typeof mcpStoredOAuthIdentitySchema, McpStoredOAuthIdentity> = true;
+const _mcpStoredOAuthCredential: AssertWire<typeof mcpStoredOAuthCredentialSchema, McpStoredOAuthCredential> = true;
+const _mcpRevealedOAuthCredential: AssertWire<typeof mcpRevealedOAuthCredentialSchema, McpRevealedOAuthCredential> = true;
 
 // env.ts has no named schemas; `platform` narrows to `NodeJS.Platform` in the
 // engine — assert the bootstrap properties are all strings instead. The

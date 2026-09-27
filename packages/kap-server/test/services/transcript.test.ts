@@ -1,8 +1,9 @@
-import { appendFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile as appendFixtureFile, mkdtemp, mkdir, rm, writeFile as writeFixtureFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   IAgentActivityView,
@@ -18,6 +19,7 @@ import {
   ISessionLifecycleService,
   ISessionManager,
   IWorkspaceInstanceManager,
+  IWireService,
   LifecycleScope,
   SessionInteractionService,
   StateRegistry,
@@ -57,8 +59,35 @@ import {
 } from '../../src/services/transcript/configSection';
 import { readWireRecordsBounded } from '../../src/services/transcript/boundedWireScan';
 import { registerTranscriptRoutes } from '../../src/routes/transcript';
+import { readSessionViewTranscriptPage } from '../../src/transport/klient/sessionViewReads';
+import { TestInstantiationService } from '../../../agent-core-v2/src/_base/di/test';
+import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '../../../agent-core-v2/src/_base/errors/unexpectedError';
+import { InMemoryStorageService } from '../../../agent-core-v2/src/persistence/backends/memory/inMemoryStorageService';
+import { FileStorageService } from '../../../agent-core-v2/src/persistence/backends/node-fs/fileStorageService';
+import { AppendLogStore } from '../../../agent-core-v2/src/persistence/backends/node-fs/appendLogStore';
+import { noopTelemetryService } from '../../../agent-core-v2/src/app/telemetry/telemetry';
+import { noopLogger, registerTestAgentWire, stubAgentWire } from '../../../agent-core-v2/test/wire/stubs';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY, digestWireBytes } from '../../../agent-core-v2/src/wire/transcriptReceipt';
 
 vi.mock('node:fs/promises', { spy: true });
+
+async function sealFixtureWire(path: string): Promise<void> {
+  const digest = await digestWireBytes(createReadStream(path));
+  const wire = { size: digest.size, sha256: digest.sha256 };
+  await writeFixtureFile(join(dirname(path), WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({
+    format: 1, epoch: 'verified-test-fixture', state: 'sealed', trusted: true, wire,
+  }));
+}
+
+async function writeFile(path: string, content: string | Uint8Array): Promise<void> {
+  await writeFixtureFile(path, content);
+  if (path.endsWith('wire.jsonl')) await sealFixtureWire(path);
+}
+
+async function appendFile(path: string, content: string | Uint8Array): Promise<void> {
+  await appendFixtureFile(path, content);
+  if (path.endsWith('wire.jsonl')) await sealFixtureWire(path);
+}
 
 function ev(payload: Record<string, unknown>): LiveAdapterBusEvent {
   return payload as unknown as LiveAdapterBusEvent;
@@ -495,7 +524,7 @@ describe('TranscriptService live integration', () => {
       this.disposeHandlers.add(cb);
       return { dispose: () => this.disposeHandlers.delete(cb) };
     }
-    add(id: string, opts?: { loopStatus?: unknown; tasks?: readonly unknown[]; prompts?: { active?: unknown; pending?: readonly unknown[] } }): FakeAgentHandle {
+    add(id: string, opts?: { loopStatus?: unknown; tasks?: readonly unknown[]; prompts?: { active?: unknown; pending?: readonly unknown[] }; wire?: IWireService }): FakeAgentHandle {
       const bus = new FakeBus();
       const handle: FakeAgentHandle = {
         id,
@@ -503,6 +532,7 @@ describe('TranscriptService live integration', () => {
         accessor: {
           get: (token: unknown) => {
             if (token === IEventBus) return bus;
+            if (token === IWireService) return opts?.wire;
             if (token === IAgentLoopService) {
               return { status: () => opts?.loopStatus ?? { state: 'idle' } };
             }
@@ -635,6 +665,371 @@ describe('TranscriptService live integration', () => {
       },
     } as unknown as Scope;
   }
+
+  it('keeps replayed and live completed turns resident under explicit memory limits without durability clearance', async () => {
+    const home = await seedWireHome(undefined, true);
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const service = new TranscriptService({
+      homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      residentLimits: { tailTurns: 1, maxBytes: 1 },
+    });
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      const transcript = store.getAgent('main')!;
+      expect(transcript.getTurn('t0')).toMatchObject({ state: 'completed', prompt: 'hi' });
+      main.bus.emit(ev({
+        type: 'turn.prompt', turnId: 1, promptId: 'prompt-2',
+        input: [{ type: 'text', text: 'second' }], origin: { kind: 'user' }, time: 3_000,
+      }));
+      main.bus.emit(ev({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 4_000 }));
+      expect(transcript.getTurn('t0')?.prompt).toBe('hi');
+      expect(transcript.getTurn('t1')?.prompt).toBe('second');
+      expect(transcript.residentReport()).toMatchObject({ turns: 2, trimmedTurns: 0, overBudget: true });
+      expect(transcript.snapshot({ tailTurns: 1 }).items.filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t1']);
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('reopens healthy completed child history for GUI pages and reconnect after idle release', async () => {
+    const home = await seedWireHome();
+    const agents = new FakeAgents();
+    agents.add('main');
+    const service = new TranscriptService({
+      homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+    });
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      const child = agents.add('child-healthy', { wire: stubAgentWire() });
+      const records = [0, 1].flatMap((turnId) => [
+        {
+          type: 'turn.prompt', turnId, promptId: `prompt-${turnId}`,
+          input: [{ type: 'text', text: `healthy-${turnId}` }], origin: { kind: 'user' }, time: turnId * 2_000 + 1_000,
+        },
+        { type: 'turn.ended', turnId, reason: 'completed', time: turnId * 2_000 + 2_000 },
+      ]);
+      for (const record of records) child.bus.emit(ev(record));
+      const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'child-healthy');
+      await mkdir(wireDir, { recursive: true });
+      await writeFile(join(wireDir, 'wire.jsonl'), `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+      expect(store.getAgent('child-healthy')?.snapshot()).toEqual(await service.readColdSnapshot('s1', 'child-healthy'));
+      agents.remove('child-healthy');
+      await service.ensureAgentHistory('s1', 'child-healthy');
+      const latest = await readSessionViewTranscriptPage(service, 's1', { agentId: 'child-healthy', pageSize: 1 });
+      const older = await readSessionViewTranscriptPage(service, 's1', {
+        agentId: 'child-healthy', beforeTurn: 't1', pageSize: 1,
+      });
+      expect(latest?.items).toEqual([expect.objectContaining({ kind: 'turn', turnId: 't1', prompt: 'healthy-1' })]);
+      expect(older?.items).toEqual([expect.objectContaining({ kind: 'turn', turnId: 't0', prompt: 'healthy-0' })]);
+      const cursor = service.getTranscriptCursor('s1', 'child-healthy');
+      expect(service.getOpsSince('s1', 'child-healthy', { epoch: cursor.epoch, seq: 0 })?.complete).toBe(true);
+      expect(store.getAgent('child-healthy')?.snapshot().items.filter((item) => item.kind === 'turn')).toHaveLength(2);
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('does not certify a same-length same-line in-place rewrite of a trusted open wire', async () => {
+    const home = await seedWireHome();
+    const agents = new FakeAgents();
+    agents.add('main');
+    const service = new TranscriptService({
+      homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+    });
+    const ix = new TestInstantiationService();
+    const storage = new FileStorageService(home);
+    const log = new AppendLogStore(storage);
+    const scope = 'sessions/ws/s1/agents/child-tamper';
+    const wire = registerTestAgentWire(ix, scope, {
+      log, storage, logger: noopLogger, telemetry: noopTelemetryService,
+    });
+    try {
+      await wire.seal();
+      await wire.beginTranscriptEpoch!();
+      agents.add('child-tamper', { wire });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      wire.appendRecord({
+        type: 'turn.prompt', turnId: 0, promptId: 'p0',
+        input: [{ type: 'text', text: 'a' }], origin: { kind: 'user' }, time: 1_000,
+      });
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+      const path = storage.pathFor(scope, 'wire.jsonl');
+      const original = await fsPromises.readFile(path, 'utf8');
+      const changed = original.replace('"text":"a"', '"text":"b"');
+      expect(changed).not.toBe(original);
+      expect(Buffer.byteLength(changed)).toBe(Buffer.byteLength(original));
+      expect(changed.split('\n').length).toBe(original.split('\n').length);
+      await writeFixtureFile(path, changed);
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
+      const cold = await service.readColdSnapshot('s1', 'child-tamper');
+      expect(cold).toMatchObject({ toolCallCountKnown: false, hasMoreOlder: true });
+      expect(cold?.items).toEqual([expect.objectContaining({ kind: 'turn', prompt: 'b' })]);
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'child-tamper' });
+      expect(page?.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+      expect(page?.tool_call_count).toBeUndefined();
+      expect(page?.items).toEqual([expect.objectContaining({ kind: 'turn', prompt: 'b' })]);
+      wire.appendRecord({ type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 });
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
+      await expect(wire.sealTranscriptEpoch!()).rejects.toThrow('Transcript wire contents do not match accepted events');
+      agents.remove('child-tamper');
+      expect(await service.readColdSnapshot('s1', 'child-tamper')).toMatchObject({
+        toolCallCountKnown: false, hasMoreOlder: true,
+      });
+    } finally {
+      ix.dispose();
+      log.dispose();
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('serves a healthy open child as full at a verified live watermark, then revokes it on a failed append', async () => {
+    const home = await seedWireHome();
+    const agents = new FakeAgents();
+    agents.add('main');
+    const service = new TranscriptService({
+      homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+    });
+    const ix = new TestInstantiationService();
+    const wireStorage = new InMemoryStorageService();
+    const wireLog = new AppendLogStore(wireStorage);
+    const wire = registerTestAgentWire(ix, 'test/open-child', {
+      log: wireLog, storage: wireStorage, logger: noopLogger, telemetry: noopTelemetryService,
+    });
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      await wire.seal();
+      await wire.beginTranscriptEpoch!();
+      const child = agents.add('child-open', { wire });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      const prompt = {
+        type: 'turn.prompt', turnId: 0, promptId: 'p0', input: [{ type: 'text', text: 'healthy' }],
+        origin: { kind: 'user' }, time: 1_000,
+      } as const;
+      wire.appendRecord(prompt);
+      child.bus.emit(ev(prompt));
+      const ended = { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 } as const;
+      wire.appendRecord(ended);
+      child.bus.emit(ev(ended));
+      await wire.flush();
+      const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'child-open');
+      await mkdir(wireDir, { recursive: true });
+      await writeFixtureFile(join(wireDir, 'wire.jsonl'), (await wireStorage.read('test/open-child', 'wire.jsonl'))!);
+      await writeFixtureFile(join(wireDir, WIRE_TRANSCRIPT_RECEIPT_KEY),
+        (await wireStorage.read('test/open-child', WIRE_TRANSCRIPT_RECEIPT_KEY))!);
+      const healthy = await readSessionViewTranscriptPage(service, 's1', { agentId: 'child-open' });
+      expect(healthy?.coverage).toEqual({ kind: 'full', hasMoreOlder: false });
+      expect(healthy?.items).toEqual([expect.objectContaining({ kind: 'turn', prompt: 'healthy', state: 'completed' })]);
+      expect(await service.readColdSnapshot('s1', 'child-open')).toMatchObject({ toolCallCountKnown: true });
+      const failed = new Error('live dehydrator failed');
+      wire.appendRecord({ type: 'turn.prompt', turnId: 1 }, async () => { throw failed; });
+      await expect(wire.flush()).rejects.toBe(failed);
+      expect(unexpected).toEqual([failed]);
+      const uncertain = await readSessionViewTranscriptPage(service, 's1', { agentId: 'child-open' });
+      expect(uncertain?.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+      expect(uncertain?.tool_call_count).toBeUndefined();
+      expect(service.getMaterializedAgentToolCallCounts('s1', ['child-open']).has('child-open')).toBe(false);
+      expect((await service.getAgentToolCallCounts('s1', ['child-open'])).has('child-open')).toBe(false);
+      agents.remove('child-open');
+      service.dropSession('s1');
+      const restarted = new TranscriptService({ homeDir: home, core: coldCore() });
+      try {
+        expect(await restarted.readColdSnapshot('s1', 'child-open')).toMatchObject({ toolCallCountKnown: false, hasMoreOlder: true });
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      resetUnexpectedErrorHandler();
+      ix.dispose();
+      wireLog.dispose();
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('refuses a disposed child history after a real wire dehydration failure despite a later successful append', async () => {
+    const home = await seedWireHome();
+    const agents = new FakeAgents();
+    agents.add('main');
+    const warnings: string[] = [];
+    const service = new TranscriptService({
+      homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      logger: { warn: (_details, message) => warnings.push(message) },
+      residentLimits: { tailTurns: 1, maxBytes: 512 },
+    });
+    const ix = new TestInstantiationService();
+    const wireStorage = new InMemoryStorageService();
+    const wireLog = new AppendLogStore(wireStorage);
+    const wire = registerTestAgentWire(ix, 'test/child', {
+      log: wireLog,
+      storage: wireStorage,
+      logger: noopLogger,
+      telemetry: noopTelemetryService,
+    });
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      await wire.seal();
+      await wire.beginTranscriptEpoch!();
+      const child = agents.add('child', { wire });
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      await service.ensureAgentHistory('s1', 'child');
+      const failed = new Error('blob dehydration failed');
+      let rejectDehydration!: (error: Error) => void;
+      const gate = new Promise<void>((_resolve, reject) => { rejectDehydration = reject; });
+      const prompt = {
+        type: 'turn.prompt', turnId: 0, promptId: 'missing-prompt',
+        input: [{ type: 'text', text: 'only in memory' }], origin: { kind: 'user' }, time: 1_000,
+      } as const;
+      const ended = { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 } as const;
+      wire.appendRecord(prompt, async (record) => { await gate; return record; });
+      child.bus.emit(ev(prompt));
+      wire.appendRecord(ended);
+      child.bus.emit(ev(ended));
+      expect(store.getAgent('child')?.getTurn('t0')).toMatchObject({
+        state: 'completed', prompt: 'only in memory',
+      });
+      rejectDehydration(failed);
+      await expect(wire.flush()).rejects.toBe(failed);
+      expect(unexpected).toEqual([failed]);
+      const persistedWire = await wireStorage.read('test/child', 'wire.jsonl');
+      expect(Buffer.from(persistedWire!).toString('utf8').trim().split('\n').map((line) => JSON.parse(line).type)).toEqual(['metadata', 'turn.ended']);
+      const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'child');
+      await mkdir(wireDir, { recursive: true });
+      await writeFixtureFile(join(wireDir, 'wire.jsonl'), persistedWire!);
+      const acceptance = await wireStorage.read('test/child', WIRE_TRANSCRIPT_RECEIPT_KEY);
+      expect(JSON.parse(Buffer.from(acceptance!).toString('utf8'))).toMatchObject({ state: 'open', trusted: true });
+      await writeFixtureFile(join(wireDir, WIRE_TRANSCRIPT_RECEIPT_KEY), acceptance!);
+      agents.remove('child');
+      expect(store.getAgent('child')).toBeUndefined();
+      expect(service.getUnverifiedAgentSnapshot('s1', 'child')).toMatchObject({
+        complete: false,
+        snapshot: { items: [expect.objectContaining({ kind: 'turn', prompt: 'only in memory' })] },
+      });
+      expect(service.memoryReport()).toMatchObject({ unverifiedResidentAgents: 1 });
+      await expect(service.ensureAgentHistory('s1', 'child')).rejects.toThrow('not verified against durable history');
+      await expect(service.readColdSnapshot('s1', 'child')).rejects.toThrow('not verified against durable history');
+      expect(() => service.getOpsSince('s1', 'child', 0)).toThrow('not verified against durable history');
+      expect((await service.getAgentToolCallCounts('s1', ['child'])).has('child')).toBe(false);
+      expect(warnings).toContain('transcript: disposed agent wire flush failed; refusing later reads');
+      service.dropSession('s1');
+      expect(service.getUnverifiedAgentSnapshot('s1', 'child')).toBeUndefined();
+      expect(service.memoryReport()).toMatchObject({ unverifiedResidentAgents: 0, unverifiedResidentBytes: 0 });
+      const reopened = new TranscriptService({ homeDir: home, core: coldCore() });
+      try {
+        const cold = await reopened.readColdSnapshot('s1', 'child');
+        expect(cold).toMatchObject({ items: [], toolCallCountKnown: false, hasMoreOlder: true });
+        const page = await readSessionViewTranscriptPage(reopened, 's1', { agentId: 'child' });
+        expect(page?.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+        expect((await reopened.getAgentToolCallCounts('s1', ['child'])).has('child')).toBe(false);
+      } finally {
+        reopened.dispose();
+      }
+    } finally {
+      resetUnexpectedErrorHandler();
+      ix.dispose();
+      wireLog.dispose();
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('does not certify empty legacy wires or an overwritten sealed wire after restart', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-proof-'));
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const emptyDir = join(home, 'sessions', 'ws', 's1', 'agents', 'empty');
+      await mkdir(emptyDir, { recursive: true });
+      await writeFixtureFile(join(emptyDir, 'wire.jsonl'), '');
+      expect(await service.readColdSnapshot('s1', 'empty')).toMatchObject({
+        items: [], toolCallCountKnown: false, hasMoreOlder: true,
+      });
+      const legacyDir = join(home, 'sessions', 'ws', 's1', 'agents', 'legacy');
+      await mkdir(legacyDir, { recursive: true });
+      const wirePath = join(legacyDir, 'wire.jsonl');
+      const original = `${JSON.stringify({ type: 'turn.prompt', turnId: 0, promptId: 'p', input: [{ type: 'text', text: 'a' }], origin: { kind: 'user' } })}\n`;
+      await writeFixtureFile(wirePath, original);
+      const unknown = { toolCallCountKnown: false, hasMoreOlder: true };
+      expect(await service.readColdSnapshot('s1', 'legacy')).toMatchObject({
+        ...unknown, items: [expect.objectContaining({ kind: 'turn', prompt: 'a' })],
+      });
+      await writeFixtureFile(join(legacyDir, WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({
+        format: 1, epoch: 'interrupted', state: 'open', trusted: true,
+      }));
+      expect(await service.readColdSnapshot('s1', 'legacy')).toMatchObject(unknown);
+      await sealFixtureWire(wirePath);
+      expect(await service.readColdSnapshot('s1', 'legacy')).toMatchObject({
+        items: [expect.objectContaining({ kind: 'turn', prompt: 'a' })],
+        toolCallCountKnown: true, hasMoreOlder: false,
+      });
+      await writeFixtureFile(wirePath, original.replace('"text":"a"', '"text":"b"'));
+      expect(await service.readColdSnapshot('s1', 'legacy')).toMatchObject({
+        ...unknown, items: [expect.objectContaining({ kind: 'turn', prompt: 'b' })],
+      });
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('bounds the unverified quarantine and still rejects reads after an oversized resident turn is released', async () => {
+    const home = await seedWireHome();
+    const agents = new FakeAgents();
+    agents.add('main');
+    const warnings: string[] = [];
+    const service = new TranscriptService({
+      homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      logger: { warn: (_details, message) => warnings.push(message) },
+    });
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      const failedWire = stubAgentWire(async () => { throw new Error('append failed'); });
+      const child = agents.add('oversized', { wire: failedWire });
+      child.bus.emit(ev({
+        type: 'turn.prompt', turnId: 0, promptId: 'huge',
+        input: [{ type: 'text', text: 'x'.repeat(2_200_000) }], origin: { kind: 'user' }, time: 1_000,
+      }));
+      child.bus.emit(ev({ type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 }));
+      expect(store.getAgent('oversized')?.residentReport().estimatedBytes).toBeGreaterThan(4 << 20);
+      agents.remove('oversized');
+      expect(service.getUnverifiedAgentSnapshot('s1', 'oversized')).toBeUndefined();
+      expect(service.memoryReport()).toMatchObject({ unverifiedResidentAgents: 0, unverifiedResidentBytes: 0 });
+      await expect(service.ensureAgentHistory('s1', 'oversized')).rejects.toThrow('not verified against durable history');
+      expect(warnings).toContain('transcript: unverified resident history exceeds quarantine budget');
+      for (let index = 0; index < 17; index += 1) {
+        const agentId = `small-${index}`;
+        const small = agents.add(agentId, { wire: failedWire });
+        small.bus.emit(ev({
+          type: 'turn.prompt', turnId: 0, promptId: `prompt-${index}`,
+          input: [{ type: 'text', text: 'saved for diagnostics' }], origin: { kind: 'user' }, time: 3_000 + index,
+        }));
+        agents.remove(agentId);
+      }
+      expect(service.memoryReport().unverifiedResidentAgents).toBe(16);
+      expect(service.getUnverifiedAgentSnapshot('s1', 'small-0')).toBeUndefined();
+      expect(service.getUnverifiedAgentSnapshot('s1', 'small-16')).toMatchObject({ complete: false });
+      await expect(service.ensureAgentHistory('s1', 'small-0')).rejects.toThrow('not verified against durable history');
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
 
   it('reads cached historical counts without materializing transcripts and distinguishes missing history', async () => {
     const home = await seedWireHomeWithTool();
@@ -844,7 +1239,7 @@ describe('TranscriptService live integration', () => {
           homeDir: home,
           core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
         });
-        const known = scenario === 'complete-no-newline';
+        const known = false;
         expect((await service.getAgentToolCallCounts('s1', ['main'])).get('main')).toBe(known ? 1 : undefined);
         const cold = await service.readColdSnapshot('s1', 'main');
         expect(cold?.toolCallCountKnown).toBe(known);
@@ -866,11 +1261,16 @@ describe('TranscriptService live integration', () => {
     },
   );
 
-  it('[STAT-R3] keeps missing and corrupt history unknown while preserving readable empty as zero', async () => {
+  it('[STAT-R3] rejects zero-byte wire proofs but counts zero tools in a sealed nonempty wire', async () => {
     const scenarios = [
       { name: 'missing', content: undefined, expectedKnown: false },
       { name: 'corrupt', content: '{"type":"turn.prompt"}\nnot-json\n', expectedKnown: false },
-      { name: 'empty', content: '', expectedKnown: true },
+      { name: 'empty', content: '', expectedKnown: false },
+      { name: 'sealed-empty', content: '', expectedKnown: false },
+      { name: 'sealed-no-tools', content: `${JSON.stringify({
+        type: 'turn.prompt', turnId: 0, promptId: 'p',
+        input: [{ type: 'text', text: 'hello' }], origin: { kind: 'user' },
+      })}\n`, expectedKnown: true },
     ] as const;
     for (const scenario of scenarios) {
       const home = await mkdtemp(join(tmpdir(), `transcript-count-${scenario.name}-`));
@@ -878,7 +1278,10 @@ describe('TranscriptService live integration', () => {
         const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
         await mkdir(wireDir, { recursive: true });
         const wirePath = join(wireDir, 'wire.jsonl');
-        if (scenario.content !== undefined) await writeFile(wirePath, scenario.content);
+        if (scenario.content !== undefined) {
+          if (scenario.name.startsWith('sealed-')) await writeFile(wirePath, scenario.content);
+          else await writeFixtureFile(wirePath, scenario.content);
+        }
         const service = new TranscriptService({
           homeDir: home,
           core: fakeCoreWithAgents(
@@ -1652,6 +2055,79 @@ describe('TranscriptService live integration', () => {
   });
 
   describe('cold snapshot reads', () => {
+    it('reuses consecutive cold pages only while the wire fingerprint matches', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const scans: string[] = [];
+      const service = new TranscriptService({
+        homeDir: home,
+        core: coldCore(),
+        wireRecordReader: async (path, options) => {
+          scans.push(path);
+          return streamWireRecords(path, options);
+        },
+      });
+      try {
+        await appendFile(wirePath, `${Array.from({ length: 44 }, (_, index) => JSON.stringify({
+          type: 'turn.prompt', turnId: index + 1, promptId: `prompt-${index + 1}`,
+          input: [{ type: 'text', text: `question ${index + 1}` }], origin: { kind: 'user' }, time: 6_000 + index,
+        })).join('\n')}\n`);
+        const first = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+        const second = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't25' });
+        expect(first?.items.filter((item) => item.kind === 'turn')).toHaveLength(20);
+        expect(second?.items.filter((item) => item.kind === 'turn')).toHaveLength(20);
+        expect(scans).toHaveLength(1);
+        await appendFile(wirePath, `${JSON.stringify({
+          type: 'turn.prompt', turnId: 45, promptId: 'later',
+          input: [{ type: 'text', text: 'new fact' }], origin: { kind: 'user' }, time: 10_000,
+        })}\n`);
+        const changed = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+        expect(scans).toHaveLength(2);
+        expect(changed?.items.some((item) => item.kind === 'turn' && item.turnId === 't45')).toBe(true);
+        const expiredAt = Date.now() + 16_000;
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(expiredAt);
+        try {
+          await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't26' });
+          expect(scans).toHaveLength(3);
+        } finally { clock.mockRestore(); }
+      } finally {
+        service.dispose();
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('does not cache oversized consecutive cold pages above the bounded memory budget', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const large = 'x'.repeat(50_000);
+      await appendFile(wirePath, `${Array.from({ length: 90 }, (_, index) => JSON.stringify({
+        type: 'turn.prompt', turnId: index + 1, promptId: `large-${index}`,
+        input: [{ type: 'text', text: large }], origin: { kind: 'user' }, time: 6_000 + index,
+      })).join('\n')}\n`);
+      let scans = 0;
+      const service = new TranscriptService({
+        homeDir: home, core: coldCore(),
+        wireRecordReader: async (path, options) => {
+          scans += 1;
+          return streamWireRecords(path, options);
+        },
+      });
+      try {
+        const size = (await fsPromises.stat(wirePath)).size;
+        const first = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+        const second = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't71' });
+        expect(size).toBeGreaterThan(4 << 20);
+        expect(first?.items).toHaveLength(20);
+        expect(second?.items).toHaveLength(20);
+        expect(first?.coverage.kind).toBe('tail');
+        expect(second?.coverage.kind).toBe('tail');
+        expect(scans).toBe(2);
+      } finally {
+        service.dispose();
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
     it('shares one wire scan across concurrent cold reads of the same agent', async () => {
       const home = await seedWireHomeWithTool();
       let release!: () => void;
@@ -1975,11 +2451,13 @@ describe('TranscriptService live integration', () => {
       expect(snapshots[0]?.toolCallCount).toBe(1);
       expect(snapshots[0]?.toolCallCountKnown).toBe(true);
       expect(snapshots[1]).toEqual(snapshots[0]);
-      expect(snapshots[2]).toEqual(snapshots[0]);
+      expect(snapshots[2]?.items).toEqual(snapshots[0]?.items);
+      expect(snapshots[2]).toMatchObject({ toolCallCountKnown: false, hasMoreOlder: true });
+      expect(snapshots[2]?.toolCallCount).toBeUndefined();
     });
 
     it.each([
-      { name: 'the transcript page', path: '/sessions/:session_id/transcript', query: { agent_id: 'main' } },
+      { name: 'the transcript page', path: '/sessions/:session_id/transcript', query: { agent_id: 'main', transcript_coverage_version: '2' } },
       { name: 'the user-messages list', path: '/sessions/:session_id/transcript/user-messages', query: {} },
       { name: 'the plan list', path: '/sessions/:session_id/transcript/plan', query: { agent_id: 'main' } },
     ])('[STAT-R3] cancels the cold wire read when the client disconnects from $name', async ({ path, query }) => {
@@ -2126,20 +2604,20 @@ describe('TranscriptService live integration', () => {
         ev({ type: 'turn.ended', time: 1_700_000_000_000, turnId: 0, reason: 'completed' }),
       );
 
-      expect(seen).toEqual([base + 1, base + 2, base + 3]);
-      expect(service.getSeqWatermark('s1', 'main')).toBe(base + 3);
+      expect(seen).toEqual([base + 1, base + 2]);
+      expect(service.getSeqWatermark('s1', 'main')).toBe(base + 2);
 
       const catchup = service.getOpsSince('s1', 'main', base);
       expect(catchup?.complete).toBe(true);
-      expect(catchup?.throughSeq).toBe(base + 3);
-      expect(catchup?.batches.map((batch) => batch.seq)).toEqual([base + 1, base + 2, base + 3]);
+      expect(catchup?.throughSeq).toBe(base + 2);
+      expect(catchup?.batches.map((batch) => batch.seq)).toEqual([base + 1, base + 2]);
 
-      expect(service.getOpsSince('s1', 'main', base + 3)).toMatchObject({
+      expect(service.getOpsSince('s1', 'main', base + 2)).toMatchObject({
         batches: [],
-        throughSeq: base + 3,
+        throughSeq: base + 2,
         complete: true,
       });
-      expect(service.getOpsSince('s1', 'main', base + 4)?.complete).toBe(false);
+      expect(service.getOpsSince('s1', 'main', base + 3)?.complete).toBe(false);
 
       const sub = agents.add('sub-1');
       sub.bus.emit(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' } }));

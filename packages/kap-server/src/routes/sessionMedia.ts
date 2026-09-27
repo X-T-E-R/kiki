@@ -11,7 +11,6 @@ import {
   isFileError,
 } from '@kiki/agent-core-v2/app/file/fileService';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
-import { resumeSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
 import {
   agentScopeOf,
@@ -25,6 +24,7 @@ import { z } from 'zod';
 import { buildContentDisposition } from '../lib/contentDisposition';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
+import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { openApiDocumentJsonSchema } from '../middleware/schema';
 import { ErrorCode } from '../protocol/error-codes';
@@ -46,6 +46,7 @@ interface SessionMediaRequest {
 }
 
 interface SessionMediaReply {
+  readonly raw: { once(event: 'finish' | 'close', listener: () => void): unknown };
   type(mime: string): SessionMediaReply;
   header(name: string, value: string | number): SessionMediaReply;
   code(status: number): SessionMediaReply;
@@ -76,55 +77,62 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
     async (req, reply) => {
       const r = reply as unknown as SessionMediaReply;
       const { session_id, file_id } = req.params;
-      let file: SessionMediaFile | undefined;
-      if (file_id.startsWith('blobref:')) {
-        const summary = await core.accessor.get(ISessionIndex).get(session_id);
-        if (summary === undefined) {
-          r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
-          return;
+      let operation: SessionOperationLease | undefined;
+      let stream: Readable | undefined;
+      try {
+        let file: SessionMediaFile | undefined;
+        if (file_id.startsWith('blobref:')) {
+          const summary = await core.accessor.get(ISessionIndex).get(session_id);
+          if (summary === undefined) {
+            r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
+            return;
+          }
+          file = await openPersistedToolMedia(core, session_id, summary.workspaceId, file_id);
+        } else {
+          operation = await acquireSessionOperation(core, session_id, 'operation');
+          if (operation.handle === undefined) {
+            r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
+            return;
+          }
+          file = await operation.handle.accessor.get(ISessionMediaStore).open(file_id);
+          file ??= await openStagedUpload(core, file_id);
         }
-        file = await openPersistedToolMedia(core, session_id, summary.workspaceId, file_id);
-      } else {
-        const session = await resumeSessionById(core.accessor, session_id);
-        if (session === undefined) {
-          r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
-          return;
+        if (file === undefined) {
+          return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
         }
-        file = await session.accessor.get(ISessionMediaStore).open(file_id);
-        file ??= await openStagedUpload(core, file_id);
-      }
-      if (file === undefined) {
-        return r
-          .code(404)
-          .send(
-            errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id),
-          ) as unknown as void;
-      }
 
-      const etag = `"${session_id}-${file_id}-${file.size}"`;
-      r
-        .type(file.mediaType)
-        .header('content-disposition', buildContentDisposition(file.name, file.mediaType))
-        .header('accept-ranges', 'bytes')
-        .header('etag', etag);
-      if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) {
-        return r.code(304).send(null) as void;
-      }
+        const etag = `"${session_id}-${file_id}-${file.size}"`;
+        r.type(file.mediaType)
+          .header('content-disposition', buildContentDisposition(file.name, file.mediaType))
+          .header('accept-ranges', 'bytes')
+          .header('etag', etag);
+        if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) {
+          return r.code(304).send(null) as void;
+        }
 
-      const range = parseRangeHeader(pickHeader(req.headers, 'range'), file.size);
-      if (range !== null) {
-        return r
-          .header('content-range', `bytes ${range.start}-${range.end}/${file.size}`)
-          .header('content-length', range.length)
-          .code(206)
-          .send(
-            Readable.from(file.stream({ start: range.start, end: range.end })),
-          ) as unknown as void;
+        const range = parseRangeHeader(pickHeader(req.headers, 'range'), file.size);
+        if (range !== null) {
+          r.header('content-range', `bytes ${range.start}-${range.end}/${file.size}`)
+            .header('content-length', range.length).code(206);
+        } else {
+          r.header('content-length', file.size).code(200);
+        }
+        stream = Readable.from(file.stream(range === null ? undefined : { start: range.start, end: range.end }));
+        const downloadStream = stream;
+        downloadStream.on('error', (error: unknown) => {
+          requestLog(req)?.warn({ session_id, file_id, err: error }, 'session media stream error');
+          downloadStream.destroy();
+        });
+        r.raw.once('finish', () => operation?.dispose());
+        r.raw.once('close', () => { downloadStream.destroy(); operation?.dispose(); });
+        return r.send(downloadStream) as void;
+      } catch (error) {
+        stream?.destroy();
+        operation?.dispose();
+        throw error;
+      } finally {
+        if (stream === undefined) operation?.dispose();
       }
-      return r
-        .header('content-length', file.size)
-        .code(200)
-        .send(Readable.from(file.stream())) as unknown as void;
     },
   );
   app.get(

@@ -83,11 +83,15 @@ export function NbSearchOverviewTab({
   const localCredentialsLabelKey =
     CREDENTIALS_STATUS_LABEL[localCredentialsStatus] ?? 'st.nbSearch.source.credentialsUnknown';
   const credentialSourceLabelKey =
-    configSource?.credential_source === 'environment+local'
-      ? 'st.nbSearch.source.credentialEnvironmentLocal'
-      : configSource?.credential_source === 'environment'
-        ? 'st.nbSearch.source.credentialEnvironment'
-        : undefined;
+    configSource?.credential_source === 'environment+local+managed'
+      ? 'st.nbSearch.source.credentialEnvironmentLocalManaged'
+      : configSource?.credential_source === 'environment+managed'
+        ? 'st.nbSearch.source.credentialEnvironmentManaged'
+        : configSource?.credential_source === 'environment+local'
+          ? 'st.nbSearch.source.credentialEnvironmentLocal'
+          : configSource?.credential_source === 'environment'
+            ? 'st.nbSearch.source.credentialEnvironment'
+            : undefined;
 
   return (
     <div className="space-y-4">

@@ -152,10 +152,12 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | --- | --- |
 | `GET /api/sessions/{session_id}/messages` | 消息分页（`before_id` / `after_id` / `role`） |
 | `GET /api/sessions/{session_id}/messages/{message_id}` | 读取单条消息 |
-| `GET /api/sessions/{session_id}/transcript` | 转录按轮次分页（需 `agent_id`），全局状态不分页随响应返回 |
-| `GET /api/sessions/{session_id}/transcript/ops` | 转录批次补漏（`since_seq`），`complete: false` 时需全量刷新 |
+| `GET /api/sessions/{session_id}/transcript` | 转录按轮次分页（需 `agent_id` 和 `transcript_coverage_version=2`），全局状态不分页随响应返回 |
+| `GET /api/sessions/{session_id}/transcript/ops` | 转录批次补漏（需 `agent_id`、`since_seq` 和 `transcript_coverage_version=2`），`complete: false` 时需全量刷新 |
 | `GET /api/sessions/{session_id}/transcript/user-messages` | 各轮次的用户输入，不分页 |
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode 计划内容、路径与审阅结果 |
+
+转录分页与批次补漏请求都须携带 `transcript_coverage_version=2`。成功响应在 `data.transcript_coverage_version` 回显数字 `2`；缺少或使用不受支持的版本时，服务端以信封错误码 `40001` 提示升级，不返回转录。新版客户端读取未确认历史完整性的旧服务端时，会将历史标为未验证，而不是误判为完整。
 
 ### 提示词
 
@@ -362,7 +364,7 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 | --- | --- | --- |
 | `subscribe` | `{ session_ids, cursors?, agent_filter? }` | 订阅会话事件；带 `cursors`（每会话 `{seq, epoch}`）时回放错过的持久事件 |
 | `unsubscribe` | `{ session_ids }` | 取消会话订阅 |
-| `subscribe_v2` | `{ session_id, transcript, transcript_since? }` | 订阅转录流（唯一的转录订阅通道），`transcript` 按 agent 指定粒度 |
+| `subscribe_v2` | `{ session_id, transcript, transcript_since?, transcript_coverage_version: 2 }` | 订阅转录流（唯一的转录订阅通道），`transcript` 按 agent 指定粒度 |
 | `unsubscribe_v2` | `{ session_id, agent_ids? }` | 退订转录流；省略 `agent_ids` 表示整个会话 |
 | `watch_fs_add` / `watch_fs_remove` | `{ session_id, paths, recursive? }` | 订阅 / 取消文件变更通知（`event.fs.changed`） |
 | `client_hello` | `{ client_id }` | 握手帧，其余字段为遗留兼容 |
@@ -392,7 +394,7 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 
 ### 转录协议
 
-`subscribe_v2` 的 `transcript` 按 agent 指定粒度：`off` / `turn` / `block` / `delta`（键 `"*"` 表示默认粒度），粒度越高推送越细。粒度非 `off` 的 agent 走两帧推送：`transcript.reset`（基线快照，历史经 REST 分页回读）和 `transcript.ops`（增量批次，带每个 agent 连续递增的 `seq`）；该 agent 的旧式事件在同一连接上被抑制，改由转录帧承载。断线时用 `transcript_since` 续传；服务端批次日志无法覆盖缺口时（REST 补漏返回 `complete: false`）需全量刷新。REST 侧对应 `GET .../transcript`（按轮次分页）与 `GET .../transcript/ops?since_seq=`（批次补漏）。
+`subscribe_v2` 的 `transcript` 按 agent 指定粒度：`off` / `turn` / `block` / `delta`（键 `"*"` 表示默认粒度），粒度越高推送越细。只要有非 `off` 粒度，就须在 payload 携带数字 `transcript_coverage_version: 2`；成功应答会回显该值。缺少版本或版本不受支持时，服务端会在发送转录帧前拒绝订阅；所有粒度均为 `off` 时则不要求版本。粒度非 `off` 的 agent 走两帧推送：`transcript.reset`（基线快照，历史经 REST 分页回读）和 `transcript.ops`（增量批次，带每个 agent 连续递增的 `seq`）；该 agent 的旧式事件在同一连接上被抑制，改由转录帧承载。断线时用 `transcript_since` 续传；服务端批次日志无法覆盖缺口时（REST 补漏返回 `complete: false`）需全量刷新。REST 侧对应 `GET .../transcript`（按轮次分页）与 `GET .../transcript/ops?since_seq=`（批次补漏）。
 
 ## 二进制与流式端点
 

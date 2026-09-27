@@ -353,11 +353,32 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     super.dispose();
   }
 
-  async resetServerAuth(locator: McpServerLocator, query: McpRegistryQuery = {}): Promise<void> {
+  async resetServerAuth(locator: McpServerLocator, query: McpRegistryQuery = {}, expectedCanonicalUrl?: string): Promise<void> {
     await this.waitForReadiness();
     const server = await this.resolveServer(locator, query);
     const config = requireRemoteMcpConfig(server.runtimeName, server.config);
+    if (expectedCanonicalUrl !== undefined && (
+      locator.source !== 'global' || !server.editable || server.origin !== 'global' ||
+      canonicalMcpOAuthResource(config.url) !== expectedCanonicalUrl
+    )) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'MCP OAuth credential target changed; review the server before retrying');
+    }
     await this.oauth.invalidate(server.runtimeName, config.url);
+  }
+
+  async listStoredOAuthCredentials() {
+    await this.waitForReadiness();
+    return this.oauth.listStoredCredentials();
+  }
+
+  async revealStoredOAuthCredential(target: { readonly credentialId: string }) {
+    await this.waitForReadiness();
+    return this.oauth.revealStoredCredential(target.credentialId);
+  }
+
+  async revokeStoredOAuthCredential(target: { readonly credentialId: string }): Promise<void> {
+    await this.waitForReadiness();
+    await this.oauth.revokeStoredCredential(target);
   }
 
   private async serverDescriptors(

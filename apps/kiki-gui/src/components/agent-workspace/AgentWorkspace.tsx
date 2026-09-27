@@ -5,16 +5,16 @@
  * The target arrives as a prop from the route shell; this component never
  * reads the URL to decide who it shows, and it never creates or closes the
  * session controller — the shell owns the shared runtime and passes it in
- * together with the session-level (main) view state. That main state is an
- * explicit seam: the child timeline cards, owner task lists, resync status
- * and session record live on it, while configuration and usage never leak
- * from main into the child projection assembled below.
+ * together with the session-level view state. Main supplies its existing
+ * prompt/goal/queue adapter to the same chrome and timeline; children bind
+ * their own transcript and mailbox composer. Parent task lists and resync
+ * status cross the child seam without leaking main configuration or usage.
  *
  * Container concerns (close/back, fullscreen, sizing, tab arrangement) stay
  * with the shell, expressed here through `navigation` and the rail props.
  */
 
-import { useCallback, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -35,6 +35,7 @@ import {
 import { resolveCatalogModel } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
+import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError } from '../../lib/client';
 import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { revealSubagentCard } from '../ActivityHistory';
@@ -84,6 +85,9 @@ export interface AgentWorkspaceNavigation {
   /** Route-level open, bypassing any preview interception (spawn jump-back). */
   readonly openAgentRoute: (agentId: string) => void;
   readonly openSession: () => void;
+  /** The preview tab can reopen the session's one shared rail even when its
+   * full-width narrow overlay obscures the main header. */
+  readonly sharedRail?: { readonly open: boolean; readonly toggle: () => void };
 }
 
 export interface AgentWorkspaceProps {
@@ -122,14 +126,60 @@ export interface AgentWorkspaceProps {
   /**
    * Header open-rail entry (the shared rail's own affordance, the same
    * control shape the main session header renders). It renders only while the
-   * rail is collapsed; the expanded state keeps no hide button here. Also off
-   * where the toggle's railOpen state is a local no-op — the embedded panel
-   * tab, whose rail lives in the main session header.
+   * rail is collapsed; the expanded state keeps no hide button here. The
+   * preview tab opens the same session rail, not a local second rail.
    */
   readonly showRailToggle?: boolean;
   /** Header breadcrumb; suppressed in narrow containers (the relations row stays). */
   readonly showBreadcrumb?: boolean;
   readonly transcriptVisible?: boolean;
+  /** Main's prompt/queue/goal orchestration remains in the session owner; only its
+   * presentation crosses this boundary. Child commands never use this adapter. */
+  readonly main?: {
+    readonly header: ReactNode;
+    readonly timeline: ComponentProps<typeof Transcript>;
+    readonly dock: ReactNode;
+    readonly rail: ReactNode;
+    readonly timelineRef?: RefObject<HTMLDivElement | null>;
+    readonly timelineOverlay?: ReactNode;
+  };
+}
+
+/** All targets share these actual chrome slots and timeline geometry. The main
+ * input seat stays owned by ConversationShell, not by this portal. */
+function WorkspaceSurface({
+  target, slots, header, timeline, dock, rail, railIsOverlay, railOpen, onCloseRail,
+  timelineRef, timelineOverlay,
+}: {
+  target: AgentWorkspaceTarget;
+  slots: ConversationShellSlots;
+  header: ReactNode;
+  timeline: ComponentProps<typeof Transcript>;
+  dock: ReactNode;
+  rail: ReactNode;
+  railIsOverlay: boolean;
+  railOpen: boolean;
+  onCloseRail: () => void;
+  timelineRef?: RefObject<HTMLDivElement | null>;
+  timelineOverlay?: ReactNode;
+}) {
+  const { t } = useI18n();
+  return (
+    <>
+      {slots.header !== null ? createPortal(header, slots.header) : null}
+      <div ref={timelineRef} className="contents" data-agent-workspace-target={target.agentId}>
+        <Transcript {...timeline} />
+      </div>
+      {timelineOverlay}
+      {slots.dock !== null ? createPortal(dock, slots.dock) : null}
+      {slots.rail !== null && railOpen ? createPortal(rail, slots.rail) : null}
+      {railIsOverlay && railOpen ? (
+        <div role="button" tabIndex={-1} aria-label={t('sv.closePanel')}
+          className="app-overlay-backdrop lg:hidden" onClick={onCloseRail}
+          onKeyDown={(event) => { if (event.key === 'Escape') onCloseRail(); }} />
+      ) : null}
+    </>
+  );
 }
 
 export function resolveRunningSubagentTask(input: {
@@ -155,6 +205,16 @@ export function resolveRunningSubagentTask(input: {
 }
 
 const emptyAgentView = createViewState('');
+
+export function WorkspaceHeader({ children, main = false }: { children: ReactNode; main?: boolean }) {
+  return (
+    <header className={main
+      ? 'flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4'
+      : 'flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-hairline bg-panel px-4 py-2'}>
+      {children}
+    </header>
+  );
+}
 
 function AgentWorkspaceHeader({
   target,
@@ -188,7 +248,7 @@ function AgentWorkspaceHeader({
   const { t } = useI18n();
   return (
     <>
-      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-hairline bg-panel px-4 py-2">
+      <WorkspaceHeader>
         <div className="min-w-24 flex-1">
           {showBreadcrumb ? (
             <AgentBreadcrumb
@@ -232,12 +292,12 @@ function AgentWorkspaceHeader({
             aria-label={t('sv.togglePanelAria')}
             aria-expanded={false}
             data-agent-rail-toggle
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent lg:h-7 lg:w-7"
           >
             <PanelIcon className="h-[13px] w-[13px]" />
           </button>
         ) : null}
-      </header>
+      </WorkspaceHeader>
       <div className="shrink-0 border-b border-hairline px-4 py-2 text-[11px]">
         <AgentRelations
           key={target.agentId}
@@ -250,7 +310,31 @@ function AgentWorkspaceHeader({
   );
 }
 
-export function AgentWorkspace({
+export function AgentWorkspace(props: AgentWorkspaceProps) {
+  const ambientSlots = useOptionalConversationShell()?.slots;
+  if (props.target.agentId === MAIN_AGENT_ID) {
+    if (props.main === undefined) throw new Error('Main workspace requires the session prompt adapter');
+    const main = props.main;
+    return (
+      <WorkspaceSurface
+        target={props.target}
+        slots={props.slots ?? ambientSlots ?? EMPTY_SLOTS}
+        header={main.header}
+        timeline={main.timeline}
+        timelineRef={main.timelineRef}
+        timelineOverlay={main.timelineOverlay}
+        dock={main.dock}
+        rail={main.rail}
+        railOpen={props.railOpen}
+        railIsOverlay={props.railIsOverlay}
+        onCloseRail={props.onCloseRail}
+      />
+    );
+  }
+  return <ChildAgentWorkspace {...props} />;
+}
+
+function ChildAgentWorkspace({
   target,
   controller,
   sessionState,
@@ -271,13 +355,42 @@ export function AgentWorkspace({
   transcriptVisible = true,
 }: AgentWorkspaceProps) {
   const { t } = useI18n();
-  const { client } = useConnection();
+  const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
   const contextSlots = useOptionalConversationShell()?.slots;
   const slots = slotsOverride ?? contextSlots ?? EMPTY_SLOTS;
   const { sessionId, agentId } = target;
+  // A key belongs to one unacknowledged submission, not to the draft text
+  // forever. Switching the connection or endpoint invalidates it even if a
+  // later render switches back to the same target and unchanged draft.
+  const sendScope = JSON.stringify([scopeId, sessionId, agentId]);
+  const [sendNotice, setSendNotice] = useState<{ scope: string; text: string } | null>(null);
+  const pendingSendRef = useRef<{ scope: string; payload: string; key: string } | null>(null);
+  const previousSendScopeRef = useRef(sendScope);
+  if (previousSendScopeRef.current !== sendScope) {
+    previousSendScopeRef.current = sendScope;
+    pendingSendRef.current = null;
+  }
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const handleDraftChange = (next: string) => {
+    if (next !== draftRef.current) {
+      pendingSendRef.current = null;
+      setSendNotice(null);
+    }
+    draftRef.current = next;
+    setDraft(next);
+  };
+  const handleAttachmentsChange: typeof setAttachments = (next) => {
+    setAttachments((previous) => {
+      const updated = typeof next === 'function' ? next(previous) : next;
+      if (updated !== previous) pendingSendRef.current = null;
+      return updated;
+    });
+    setSendNotice(null);
+  };
 
   // The model catalog backing the composer's effort ladder. Same query key as
   // the main session and the composer itself, so one `/models` fetch feeds
@@ -398,9 +511,66 @@ export function AgentWorkspace({
     if (!agentKnown) return;
     const content = buildPromptContent(text, composerAttachments);
     if (content === null) return;
-    await client.sendAgentMessage(sessionId, agentId, text, content);
+    const payload = JSON.stringify([text, content]);
+    const previous = pendingSendRef.current;
+    const submission = previous?.scope === sendScope && previous.payload === payload
+      ? previous
+      : { scope: sendScope, payload, key: crypto.randomUUID() };
+    pendingSendRef.current = submission;
+    const hasNonTextAttachment = content.some((part) => part.type !== 'text');
+    let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
+    try {
+      receipt = await client.sendAgentMessage(sessionId, agentId, text, content, submission.key);
+    } catch (error) {
+      // Native attachments have no replay receipt; a failed request may have
+      // been accepted already. The external path rejects attachments before send.
+      if (error instanceof NativeChildPromptSendError) {
+        if (pendingSendRef.current === submission) {
+          setSendNotice({ scope: sendScope, text: t(hasNonTextAttachment
+            ? 'agentMessage.attachmentOutcomeUnknown' : 'agentMessage.promptOutcomeUnknown') });
+        }
+        return;
+      }
+      if (hasNonTextAttachment && !(error instanceof ExternalAgentAttachmentUnsupportedError)) {
+        if (pendingSendRef.current === submission) {
+          setSendNotice({ scope: sendScope, text: t('agentMessage.attachmentOutcomeUnknown') });
+        }
+        return;
+      }
+      if (pendingSendRef.current === submission) setSendNotice(null);
+      throw error;
+    }
+    if (receipt !== null && receipt.payloadConflict) {
+      // The earlier message under this key was accepted with different content,
+      // so this draft was NOT accepted. Fail closed before clearing: keep the
+      // draft for a retry and let the composer report the failure in place
+      // instead of reading as a delivered message.
+      if (pendingSendRef.current === submission) setSendNotice(null);
+      throw new Error(t('agentMessage.payloadConflict'));
+    }
+    if (pendingSendRef.current !== submission) return;
+    // A settled acceptance releases the key. Rejected attempts keep it so the
+    // composer retry button can recover a response lost after durable accept.
+    pendingSendRef.current = null;
+    draftRef.current = '';
+    setSendNotice(null);
     setDraft('');
     setAttachments([]);
+    if (receipt === null) return;
+    // A persisted external agent returns a durable-mailbox acceptance. Native
+    // children return null and take the ordinary prompt path, whose delivery
+    // timing stays unknown here rather than being guessed.
+    const deduplicated = receipt.deduplicated;
+    let summary: string;
+    if (deduplicated) summary = t('agentMessage.deduplicated');
+    else if (receipt.delivery === 'queued') summary = t('agentMessage.pending');
+    else summary = t('agentMessage.delivered');
+    if (receipt.resumed === true) summary = `${summary} · ${t('subagent.event.resumed')}`;
+    // A deduplicated or queued receipt never claims a fresh delivery.
+    pushToast({
+      tone: deduplicated || receipt.delivery === 'queued' ? 'info' : 'success',
+      text: summary,
+    });
   };
   // Stop is a server-side cancel that can fail; duplicate requests during the
   // round trip are guarded by a synchronous ref (a state-only guard can be
@@ -514,125 +684,62 @@ export function AgentWorkspace({
     pendingInteraction: 'none',
   };
 
-  // The backdrop exists only while a drawer actually overlays the transcript:
-  // below lg the rail becomes a fixed overlay (see .app-rail in index.css).
-  const showBackdrop = railIsOverlay && railOpen;
-
   const chrome = (
-    <>
-      {slots.header !== null
-        ? createPortal(
-            <AgentWorkspaceHeader
-              target={target}
-              name={displayName}
-              model={displayModel}
-              effort={displayEffort}
-              crumbs={crumbs}
-              forest={forest}
-              railOpen={railOpen}
-              onToggleRail={onToggleRail}
-              navigation={navigation}
-              showPreviewToggle={showPreviewToggle}
-              showRailToggle={showRailToggle}
-              showBreadcrumb={showBreadcrumb}
-            />,
-            slots.header,
-          )
-        : null}
-      <Transcript
-        state={agentState}
-        agentId={agentId}
-        onLoadOlder={handleLoadOlder}
-        onResolveApproval={handleResolveApproval}
-        onAnswerQuestion={handleAnswerQuestion}
-        onDismissQuestion={handleDismissQuestion}
-        forest={forest}
-        onOpenAgent={navigation.openAgent}
-      />
-      {slots.dock !== null
-        ? createPortal(
-            <div className="space-y-2 pt-2">
-              <Composer
-                variant="subagent"
-                busy={headerBusy}
-                disabled={composerDisabled}
-                disabledPlaceholder={t('subagent.composerUnavailable')}
-                value={draft}
-                onChange={setDraft}
-                model={displayModel}
-                defaultModel={displayModel}
-                serverDefaultModel={displayModel}
-                modelSource="session"
-                permissionMode={agentLiveState.permissionMode ?? ('manual' as PermissionMode)}
-                planMode={false}
-                swarmMode={false}
-                efforts={supportedEfforts}
-                effort={displayEffort}
-                contextUsage={
-                  displayContextTokens !== undefined && displayMaxContextTokens !== undefined
-                    ? { used: displayContextTokens, limit: displayMaxContextTokens }
-                    : undefined
-                }
-                sessionUsage={composerUsage}
-                sessionId={sessionId}
-                agentProfileCatalogMode={{ mode: 'disabled' }}
-                attachments={attachments}
-                onChangeAttachments={setAttachments}
-                onChangeModel={handleChangeAgentModel}
-                onChangePermissionMode={() => {}}
-                onChangePlanMode={() => {}}
-                onChangeSwarmMode={() => {}}
-                onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
-                onSend={handleComposerSend}
-                onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
-                abortPending={stoppingTaskId !== null}
-              />
-              <ResyncStatusBanner
-                resyncing={sessionState.resyncing}
-                resyncFailed={sessionState.resyncFailed}
-                error={sessionState.resyncError}
-                onRetry={controller === null ? undefined : () => { void controller.resync(); }}
-              />
-            </div>,
-            slots.dock,
-          )
-        : null}
-      {slots.rail !== null && railOpen
-        ? createPortal(
-            <RightRail
-              className={`app-rail ${railOpen ? 'open' : ''}`}
-              state={agentState}
-              forest={forest}
-              selectedAgentId={agentId}
-              subagent={{
-                agentId,
-                block: selectedSubagent,
-                pendingInteractionCount: agentPendingInteractionCount,
-                onJumpToSpawn: handleJumpToSpawn,
-              }}
-              taskOwnerAgentId={agentId}
-              onCancelTask={onCancelTask}
-              onStopAgentTask={onStopAgentTask}
-              onOpenSubagent={navigation.openAgent}
-            />,
-            slots.rail,
-          )
-        : null}
-      {showBackdrop ? (
-        <div
-          role="button"
-          tabIndex={-1}
-          aria-label={t('sv.closePanel')}
-          className="app-overlay-backdrop lg:hidden"
-          onClick={onCloseRail}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              onCloseRail();
-            }
-          }}
+    <WorkspaceSurface
+      target={target}
+      slots={slots}
+      header={<AgentWorkspaceHeader
+        target={target} name={displayName} model={displayModel} effort={displayEffort}
+        crumbs={crumbs} forest={forest} railOpen={railOpen} onToggleRail={onToggleRail}
+        navigation={navigation} showPreviewToggle={showPreviewToggle}
+        showRailToggle={showRailToggle} showBreadcrumb={showBreadcrumb}
+      />}
+      timeline={{
+        state: agentState, agentId, onLoadOlder: handleLoadOlder,
+        onResolveApproval: handleResolveApproval, onAnswerQuestion: handleAnswerQuestion,
+        onDismissQuestion: handleDismissQuestion, forest, onOpenAgent: navigation.openAgent,
+      }}
+      dock={<div className="space-y-2 pt-2">
+        {sendNotice?.scope === sendScope ? (
+          <p role="alert" className="rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-danger">
+            {sendNotice.text}
+          </p>
+        ) : null}
+        <Composer
+          variant="subagent" busy={headerBusy} disabled={composerDisabled}
+          disabledPlaceholder={t('subagent.composerUnavailable')}
+          value={draft} onChange={handleDraftChange}
+          model={displayModel} defaultModel={displayModel} serverDefaultModel={displayModel}
+          modelSource="session" permissionMode={agentLiveState.permissionMode ?? ('manual' as PermissionMode)}
+          planMode={false} swarmMode={false} efforts={supportedEfforts} effort={displayEffort}
+          contextUsage={displayContextTokens !== undefined && displayMaxContextTokens !== undefined
+            ? { used: displayContextTokens, limit: displayMaxContextTokens } : undefined}
+          sessionUsage={composerUsage} sessionId={sessionId} agentProfileCatalogMode={{ mode: 'disabled' }}
+          attachments={attachments} onChangeAttachments={handleAttachmentsChange}
+          onChangeModel={handleChangeAgentModel} onChangePermissionMode={() => {}}
+          onChangePlanMode={() => {}} onChangeSwarmMode={() => {}}
+          onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
+          onSend={handleComposerSend}
+          onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
+          abortPending={stoppingTaskId !== null}
         />
-      ) : null}
-    </>
+        <ResyncStatusBanner
+          resyncing={sessionState.resyncing} resyncFailed={sessionState.resyncFailed}
+          error={sessionState.resyncError}
+          onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+        />
+      </div>}
+      rail={<RightRail
+        className={`app-rail ${railOpen ? 'open' : ''}`} state={agentState} forest={forest}
+        selectedAgentId={agentId}
+        subagent={{ agentId, block: selectedSubagent,
+          pendingInteractionCount: agentPendingInteractionCount, onJumpToSpawn: handleJumpToSpawn }}
+        taskOwnerAgentId={agentId} onCancelTask={onCancelTask}
+        onStopAgentTask={onStopAgentTask} onOpenSubagent={navigation.openAgent}
+        onClose={onCloseRail}
+      />}
+      railOpen={railOpen} railIsOverlay={railIsOverlay} onCloseRail={onCloseRail}
+    />
   );
 
   // Embedded mode (preview tab): the ambient session-level provider already

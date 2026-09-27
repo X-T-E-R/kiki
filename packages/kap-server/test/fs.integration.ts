@@ -2,7 +2,8 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { IModelCatalog, IWorkspaceInstanceManager } from '@kiki/agent-core-v2';
+import { IModelCatalog, ISessionManager, IWorkspaceInstanceManager } from '@kiki/agent-core-v2';
+import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
 import { HostFileSystem } from '@kiki/agent-core-v2/os/backends/node-local/hostFsService';
 import { FakeRuntime } from '@kiki/agent-core-v2/runtime/fakeRuntime';
 import { ErrorCode } from '../src/protocol/error-codes';
@@ -120,6 +121,72 @@ describe('server-v2 /api fs routes', () => {
     const body = (await res.json()) as Envelope<FsEntryWire>;
     expect(body.code).toBe(0);
     expect(body.data.name).toBe('a.txt');
+  });
+
+  it('pins fs actions through idle eviction and releases on failure', async () => {
+    await server!.close();
+    server = undefined;
+    await writeFile(join(home!, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+    const evictionEnv = 'KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION';
+    const previous = process.env[evictionEnv];
+    process.env[evictionEnv] = 'true';
+    let openGate!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { openGate = resolve; });
+    const reached = new Promise<void>((resolve) => { entered = resolve; });
+    const stat = WorkspaceFsService.prototype.stat;
+    let calls = 0;
+    const spy = vi.spyOn(WorkspaceFsService.prototype, 'stat').mockImplementation(async function (this: WorkspaceFsService, input) {
+      calls += 1;
+      if (calls === 1) {
+        entered();
+        await gate;
+      } else {
+        throw new Error('forced stat failure');
+      }
+      return stat.call(this, input);
+    });
+    let releaseRead!: () => void;
+    let readEntered!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const reading = new Promise<void>((resolve) => { readEntered = resolve; });
+    const readBytes = HostFileSystem.prototype.readBytes;
+    const streamSpy = vi.spyOn(HostFileSystem.prototype, 'readBytes').mockImplementation(async function (this: HostFileSystem, ...args) {
+      readEntered();
+      await readGate;
+      return readBytes.apply(this, args);
+    });
+    try {
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!, logLevel: 'silent' });
+      base = `http://127.0.0.1:${server.port}`;
+      await writeFile(join(work!, 'pinned.txt'), 'held');
+      const id = await createSession();
+      const manager = server.core.accessor.get(ISessionManager);
+      const pending = postFs<FsEntryWire>(id, 'stat', { path: 'pinned.txt' });
+      await reached;
+      expect(await manager.evictIfIdle!(id)).toBe(false);
+      openGate();
+      expect((await pending).code).toBe(0);
+      expect(await manager.evictIfIdle!(id)).toBe(true);
+      const failed = await postFs<null>(id, 'stat', { path: 'pinned.txt' });
+      expect(failed.code).toBe(ErrorCode.INTERNAL_ERROR);
+      expect(await manager.evictIfIdle!(id)).toBe(true);
+      const download = fetch(`${base}/api/sessions/${id}/fs/pinned.txt:download`, {
+        headers: authHeaders(server),
+      } as never);
+      await reading;
+      expect(await manager.evictIfIdle!(id)).toBe(false);
+      releaseRead();
+      expect(await (await download).text()).toBe('held');
+      await vi.waitFor(async () => expect(await manager.evictIfIdle!(id)).toBe(true));
+    } finally {
+      openGate();
+      releaseRead();
+      spy.mockRestore();
+      streamSpy.mockRestore();
+      if (previous === undefined) delete process.env[evictionEnv];
+      else process.env[evictionEnv] = previous;
+    }
   });
 
   it('fs:stat returns a file entry with the protocol shape', async () => {

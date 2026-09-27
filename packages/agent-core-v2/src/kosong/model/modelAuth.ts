@@ -72,7 +72,7 @@ export function resolveModelAuthMaterial(
   }
   trace?.record('resolved.auth', {
     kind: 'none',
-    detail: 'no credential resolved at any layer (adapter construction may still read process.env)',
+    detail: 'no credential resolved at any layer (adapter construction receives an empty key to suppress process.env fallback)',
   });
   return {};
 }
@@ -139,6 +139,21 @@ export function deriveProviderId(baseUrl: string): string {
   } catch {
     return baseUrl;
   }
+}
+
+/** Shared endpoint precedence for the requester and the read-only key preview. */
+export function resolveConfiguredModelBaseUrl(
+  model: Pick<ModelRecord, 'baseUrl' | 'protocol'>,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env'>,
+): string | undefined {
+  const fromModel = nonEmpty(model.baseUrl);
+  if (fromModel !== undefined) return fromModel;
+  const fromProvider = nonEmpty(provider?.baseUrl);
+  if (fromProvider !== undefined) return fromProvider;
+  const endpointType = provider?.type ?? model.protocol;
+  return endpointType === undefined
+    ? undefined
+    : nonEmpty(explainProviderEndpoint(endpointType, provider?.env ?? {}).baseUrl);
 }
 
 export function nonEmpty(value: string | undefined): string | undefined {

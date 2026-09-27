@@ -37,6 +37,8 @@ import {
   slowStdioFixture,
   slowToolStdioFixture,
   stderrThenExitFixture,
+  startInProcessHttpMcpServer,
+  startInProcessSseMcpServer,
   stdioFixture,
 } from './stubs';
 
@@ -75,6 +77,26 @@ function stdioConfig(args: string[] = [stdioFixture]) {
     command: process.execPath,
     args,
   };
+}
+
+function captureRemoteRequests(serverUrl: string): {
+  requests: Array<{ method: string; authorization: string | null }>;
+  restore: () => void;
+} {
+  const requests: Array<{ method: string; authorization: string | null }> = [];
+  const origin = new URL(serverUrl).origin;
+  const originalFetch = globalThis.fetch;
+  const spy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.origin === origin) {
+      requests.push({
+        method: init?.method ?? (input instanceof Request ? input.method : 'GET'),
+        authorization: new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get('authorization'),
+      });
+    }
+    return originalFetch(input, init);
+  });
+  return { requests, restore: () => spy.mockRestore() };
 }
 
 describe('McpConnectionManager', () => {
@@ -724,6 +746,159 @@ describe('McpConnectionManager', () => {
       await closeServer(server);
     }
   }, 15000);
+
+  it.each([
+    ['http', 'authorization'],
+    ['http', 'AUTHORIZATION'],
+    ['sse', 'authorization'],
+    ['sse', 'AUTHORIZATION'],
+  ] as const)(
+    'uses only the explicit %s %s header with cached OAuth tokens',
+    async (transport, headerName) => {
+      const server = await (transport === 'http' ? startInProcessHttpMcpServer : startInProcessSseMcpServer)({ authToken: 'new-token' });
+      const oauthService = new McpOAuthService({ store: createMemoryMcpOAuthStore() });
+      const provider = oauthService.getProvider('remote', server.url);
+      await provider.saveTokens({ access_token: 'old-oauth', token_type: 'Bearer' });
+      const captured = captureRemoteRequests(server.url);
+      const cm = createManager({ oauthService });
+      try {
+        await cm.connect('remote', {
+          transport,
+          url: server.url,
+          auth: 'oauth',
+          headers: { [headerName]: 'Bearer new-token' },
+          startupTimeoutMs: 5_000,
+        });
+        expect(cm.get('remote')?.status).toBe('connected');
+        expect(captured.requests.map((request) => request.method)).toEqual(expect.arrayContaining(['GET', 'POST']));
+        expect(captured.requests.every((request) => request.authorization === 'Bearer new-token')).toBe(true);
+        expect(await provider.tokens()).toMatchObject({ access_token: 'old-oauth' });
+      } finally {
+        await cm.shutdown();
+        captured.restore();
+        await server.close();
+      }
+    },
+    15000,
+  );
+
+  it.each(['http', 'sse'] as const)(
+    'uses only the bearer env token over %s despite explicit headers and cached OAuth tokens',
+    async (transport) => {
+      const server = await (transport === 'http' ? startInProcessHttpMcpServer : startInProcessSseMcpServer)({ authToken: 'env-token' });
+      const oauthService = new McpOAuthService({ store: createMemoryMcpOAuthStore() });
+      await oauthService.getProvider('remote', server.url).saveTokens({ access_token: 'old-oauth', token_type: 'Bearer' });
+      const captured = captureRemoteRequests(server.url);
+      const cm = createManager({ oauthService, envLookup: () => 'env-token' });
+      try {
+        await cm.connect('remote', {
+          transport,
+          url: server.url,
+          auth: 'oauth',
+          headers: { AUTHORIZATION: 'Bearer header-token' },
+          bearerTokenEnvVar: 'EXAMPLE_TOKEN',
+          startupTimeoutMs: 5_000,
+        });
+        expect(cm.get('remote')?.status).toBe('connected');
+        expect(captured.requests.map((request) => request.method)).toEqual(expect.arrayContaining(['GET', 'POST']));
+        expect(captured.requests.every((request) => request.authorization === 'Bearer env-token')).toBe(true);
+      } finally {
+        await cm.shutdown();
+        captured.restore();
+        await server.close();
+      }
+    },
+    15000,
+  );
+
+  it.each(['http', 'sse'] as const)(
+    'keeps cached OAuth working over %s with non-auth headers',
+    async (transport) => {
+      const server = await (transport === 'http' ? startInProcessHttpMcpServer : startInProcessSseMcpServer)({ authToken: 'old-oauth' });
+      const oauthService = new McpOAuthService({ store: createMemoryMcpOAuthStore() });
+      await oauthService.getProvider('remote', server.url).saveTokens({ access_token: 'old-oauth', token_type: 'Bearer' });
+      const captured = captureRemoteRequests(server.url);
+      const cm = createManager({ oauthService });
+      try {
+        await cm.connect('remote', {
+          transport,
+          url: server.url,
+          headers: { 'X-Tenant': 'example' },
+          startupTimeoutMs: 5_000,
+        });
+        expect(cm.get('remote')?.status).toBe('connected');
+        expect(captured.requests.map((request) => request.method)).toEqual(expect.arrayContaining(['GET', 'POST']));
+        expect(captured.requests.every((request) => request.authorization === 'Bearer old-oauth')).toBe(true);
+      } finally {
+        await cm.shutdown();
+        captured.restore();
+        await server.close();
+      }
+    },
+    15000,
+  );
+
+  it.each(['http', 'sse'] as const)(
+    'fails closed over %s for an unset bearer env var even with a header and cached OAuth tokens',
+    async (transport) => {
+      const server = await (transport === 'http' ? startInProcessHttpMcpServer : startInProcessSseMcpServer)();
+      const oauthService = new McpOAuthService({ store: createMemoryMcpOAuthStore() });
+      await oauthService.getProvider('remote', server.url).saveTokens({ access_token: 'old-oauth', token_type: 'Bearer' });
+      const captured = captureRemoteRequests(server.url);
+      const cm = createManager({ oauthService, envLookup: () => undefined });
+      try {
+        await cm.connect('remote', {
+          transport,
+          url: server.url,
+          auth: 'oauth',
+          headers: { authorization: 'Bearer static-token' },
+          bearerTokenEnvVar: 'MISSING_TOKEN',
+        });
+        expect(cm.get('remote')).toMatchObject({
+          status: 'failed',
+          error: expect.stringContaining('"MISSING_TOKEN" is not set or is empty'),
+        });
+        expect(captured.requests).toEqual([]);
+      } finally {
+        await cm.shutdown();
+        captured.restore();
+        await server.close();
+      }
+    },
+    15000,
+  );
+
+  it.each(['http', 'sse'] as const)(
+    'does not suggest OAuth after a static Authorization header gets 401 over %s',
+    async (transport) => {
+      const server: HttpServer = createHttpServer((_req, res) => {
+        res.writeHead(401, { 'content-type': 'text/plain' }).end('unauthorized');
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const url = `http://127.0.0.1:${(server.address() as HttpAddress).port}/mcp`;
+      const oauthService = new McpOAuthService({ store: createMemoryMcpOAuthStore() });
+      await oauthService.getProvider('remote', url).saveTokens({ access_token: 'old-oauth', token_type: 'Bearer' });
+      const captured = captureRemoteRequests(url);
+      const cm = createManager({ oauthService });
+      try {
+        await cm.connect('remote', {
+          transport,
+          url,
+          auth: 'oauth',
+          headers: { authorization: 'Bearer wrong-token' },
+          startupTimeoutMs: 5_000,
+        });
+        expect(cm.get('remote')?.status).toBe('failed');
+        expect(captured.requests.length).toBeGreaterThan(0);
+        expect(captured.requests.every((request) => request.authorization === 'Bearer wrong-token')).toBe(true);
+      } finally {
+        await cm.shutdown();
+        captured.restore();
+        await closeServer(server);
+      }
+    },
+    15000,
+  );
 
   it('flips SSE servers into needs-auth when the server returns 401 and no static token is set', async () => {
     const server: HttpServer = createHttpServer((_req, res) => {

@@ -570,6 +570,10 @@ function createFakeTaskService(
       return entry === undefined ? undefined : entryToInfo(entry);
     },
 
+    async getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined> {
+      return service.getTask(taskId);
+    },
+
     list(activeOnly = true): readonly AgentTaskInfo[] {
       const result: AgentTaskInfo[] = [];
       for (const entry of tasks.values()) {
@@ -596,6 +600,10 @@ function createFakeTaskService(
         fullOutputAvailable,
         preview,
       };
+    },
+
+    async getOutputPage(): Promise<undefined> {
+      return undefined;
     },
 
     async readOutput(taskId: string, tail?: number): Promise<string> {

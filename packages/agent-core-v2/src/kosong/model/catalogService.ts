@@ -60,12 +60,14 @@ import {
   deriveProviderId,
   effectiveModelConfig,
   nonEmpty,
+  resolveConfiguredModelBaseUrl,
   resolveModelAuthMaterial,
 } from './modelAuth';
 import { IModelOAuthTokens } from './modelOAuth';
 import type { ResolvedModelAuthMaterial } from './model.types';
 import type { ModelRequester } from './modelRequester';
 import { ModelRequesterImpl } from './modelRequesterImpl';
+import { isApiDefault, resolveGenerationParameters } from './parameters';
 import { drivesThinkingThroughTraits } from './thinking';
 
 type MutableProtocolProviderOptions = {
@@ -343,6 +345,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       providerConfig?.type ?? configuredModel.protocol,
     );
     trace.capture(TRACE.effectiveModel, model);
+    const generation = resolveGenerationParameters(providerConfig, configuredModel);
+    trace.capture(TRACE.generationParameters, generation);
     const wireName = model.name ?? model.model;
     const profileAttribution = profileForAttribution(configuredModel, providerConfig, wireName);
     attributeEffectiveFields(
@@ -353,6 +357,11 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       profileAttribution.inferred,
     );
 
+    const providerType = providerConfig?.type ?? protocol;
+    const resolvedBaseUrl =
+      protocol === 'anthropic' && rawBaseUrl !== undefined
+        ? stripTrailingV1(rawBaseUrl)
+        : rawBaseUrl;
     const auth = resolveModelAuthMaterial(
       {
         modelId: id,
@@ -364,12 +373,6 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     );
     trace.capture(TRACE.authMaterial, auth);
     const authProvider = this.buildAuthProvider(providerName, auth);
-
-    const providerType = providerConfig?.type ?? protocol;
-    const resolvedBaseUrl =
-      protocol === 'anthropic' && rawBaseUrl !== undefined
-        ? stripTrailingV1(rawBaseUrl)
-        : rawBaseUrl;
     if (wireName === undefined) {
       throw new Error2(
         CONFIG_INVALID_ERROR_CODE,
@@ -408,6 +411,15 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       attributeProviderOptions(trace, providerOptions, providerConfig?.env);
     }
     const declared = new Set((model.capabilities ?? []).map((c) => c.trim().toLowerCase()));
+    const selectedEffort = generation.values.thinkingEffort?.trim().toLowerCase();
+    if (selectedEffort === 'off' && declared.has('always_thinking')) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model "${id}" requires thinking; thinking_effort=off is unavailable`);
+    }
+    if (selectedEffort !== undefined && selectedEffort !== 'on' && selectedEffort !== 'off'
+      && model.supportEfforts !== undefined && model.supportEfforts.length > 0
+      && !model.supportEfforts.includes(selectedEffort)) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model "${id}" does not support thinking effort "${selectedEffort}"`);
+    }
 
     trace.capture(TRACE.hostHeaders, this.hostRequestHeaders.headers);
     trace.capture(TRACE.thirdPartyHeaders, this.hostRequestHeaders.thirdPartyHeaders);
@@ -434,9 +446,12 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         defaultEffort: model.defaultEffort,
         overrides: configuredModel.overrides,
         contextBudget: model.contextBudget,
-        maxCompletionTokens: model.maxCompletionTokens,
+        maxCompletionTokens: generation.values.maxCompletionTokens,
         requestParams: model.requestParams,
-        serviceTier: model.serviceTier,
+        serviceTier: isApiDefault(generation.values.serviceTier) ? undefined : generation.values.serviceTier,
+        generationParameters: generation.values,
+        preferredThinkingEffort: generation.sources.thinkingEffort?.detail === '[models.*] legacy generation fields'
+          ? undefined : generation.values.thinkingEffort,
         alwaysThinking: declared.has('always_thinking'),
         providerType,
         providerName,
@@ -477,14 +492,10 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           `Provider "${providerId}" referenced by model "${id}" is not configured.`,
         );
       }
-      const fromModel = nonEmpty(model.baseUrl);
-      const fromProvider = nonEmpty(providerConfig.baseUrl);
-      let baseUrl: string | undefined;
-      if (fromModel !== undefined) {
-        baseUrl = fromModel;
+      const baseUrl = resolveConfiguredModelBaseUrl(model, providerConfig);
+      if (nonEmpty(model.baseUrl) !== undefined) {
         trace.record('resolved.baseUrl', { kind: 'config', detail: 'model.baseUrl' });
-      } else if (fromProvider !== undefined) {
-        baseUrl = fromProvider;
+      } else if (nonEmpty(providerConfig.baseUrl) !== undefined) {
         trace.record('resolved.baseUrl', {
           kind: 'config',
           detail: `provider '${providerId}' baseUrl`,
@@ -495,7 +506,6 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           endpointType === undefined
             ? {}
             : explainProviderEndpoint(endpointType, providerConfig.env ?? {});
-        baseUrl = nonEmpty(endpoint.baseUrl);
         if (endpoint.baseUrlEnvName !== undefined) {
           trace.record('resolved.baseUrl', {
             kind: 'env',

@@ -1,5 +1,6 @@
 import { Disposable, DisposableMap, DisposableStore } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { AgentMessageOrigin, ContextMessage } from '#/agent/contextMemory/types';
@@ -52,6 +53,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     @ISessionContext private readonly session: ISessionContext,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
+    @ISessionManager private readonly sessions: ISessionManager,
   ) {
     super();
     for (const handle of lifecycle.list()) this.attach(handle);
@@ -110,18 +112,36 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       handle = child.agent;
     }
     if (handle === undefined) return acceptance;
-    const delivery = this.deliverOrWake(
+    if (waitForRunningDelivery !== true) {
+      const lease = await this.sessions.acquire?.(this.session.sessionId, 'agent-message-delivery');
+      if (lease === undefined) return acceptance;
+      try {
+        const pinnedHandle = lease.handle.accessor.get(IAgentLifecycleService).get(input.targetAgentId);
+        if (pinnedHandle === undefined) {
+          lease.dispose();
+          return acceptance;
+        }
+        const delivery = this.deliverOrWake(
+          pinnedHandle,
+          acceptance.message,
+          idleWake,
+          input.sourceAgentId,
+          child?.agent === pinnedHandle ? child : undefined,
+        );
+        void delivery.finally(() => lease.dispose()).catch(() => {});
+        return acceptance;
+      } catch (error) {
+        lease.dispose();
+        throw error;
+      }
+    }
+    const resumed = await this.deliverOrWake(
       handle,
       acceptance.message,
       idleWake,
       input.sourceAgentId,
       child,
     );
-    if (waitForRunningDelivery !== true) {
-      void delivery.catch(() => {});
-      return acceptance;
-    }
-    const resumed = await delivery;
     const refreshed = await this.store.accept(storedInput);
     return { ...acceptance, delivery: refreshed.delivery, resumed: resumed || undefined };
   }

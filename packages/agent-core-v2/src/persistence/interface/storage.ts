@@ -142,12 +142,13 @@ export interface StorageReadRange {
 
 export interface StorageReadOptions {
   readonly signal?: AbortSignal;
+  readonly recoverMissing?: boolean;
 }
 
 export interface IFileSystemStorageService {
   readonly _serviceBrand: undefined;
 
-  read(scope: string, key: string): Promise<Uint8Array | undefined>;
+  read(scope: string, key: string, options?: StorageReadOptions): Promise<Uint8Array | undefined>;
   readStream(
     scope: string,
     key: string,

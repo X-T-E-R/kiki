@@ -15,7 +15,7 @@ import {
 } from '#/agent/permissionMode/permissionModeOps';
 import { permissionRulesKey } from '#/agent/permissionRules/permissionRulesOps';
 import { pluginSessionStartSnapshotKey } from '#/agent/plugin/agentPluginOps';
-import { promptAdmissionKey } from '#/agent/prompt/promptOps';
+import { promptAdmissionKey, promptRetryReceiptKey } from '#/agent/prompt/promptOps';
 import { promptQueueKey, promptResolutionKey } from '#/agent/prompt/promptService';
 import { profileActiveToolsKey, profileKey } from '#/agent/profile/profileOps';
 import { runtimeBindingKey } from '#/agent/runtimeBinding/runtimeBindingOps';
@@ -47,6 +47,7 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   permissionRulesKey,
   pluginSessionStartSnapshotKey,
   promptAdmissionKey,
+  promptRetryReceiptKey,
   promptResolutionKey,
   promptQueueKey,
   profileKey,

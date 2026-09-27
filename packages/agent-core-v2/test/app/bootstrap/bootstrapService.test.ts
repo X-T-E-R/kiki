@@ -15,6 +15,7 @@ import {
 } from '#/app/bootstrap/bootstrap';
 import { BootstrapService } from '#/app/bootstrap/bootstrapService';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
@@ -162,12 +163,31 @@ describe('bootstrap() storage seeding', () => {
     try {
       const store = app.accessor.get(IAtomicTomlDocumentStore);
       expect(await store.get('', 'active.toml')).toEqual({ default_model: 'grok-4.6' });
+      await expect(store.getText('', 'active.toml')).resolves.toBe('default_model = "grok-4.6"\n');
       await expect(store.set('', 'active.toml', { default_model: 'other' })).rejects.toMatchObject({
         code: 'storage.permission_denied',
       });
+      await expect(store.setText('', 'active.toml', 'default_model = "other"\n')).rejects.toMatchObject({ code: 'storage.permission_denied' });
+      await expect(store.compareAndSetText('', 'active.toml', 'default_model = "grok-4.6"\n', 'default_model = "other"\n')).rejects.toMatchObject({ code: 'storage.permission_denied' });
       expect(await readFile(configPath, 'utf8')).toBe('default_model = "grok-4.6"\n');
     } finally {
       app.dispose();
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('permits a no-recovery preview read while keeping ordinary store recovery unchanged', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-config-peek-'));
+    const orphan = join(root, 'config.toml.tmp.2147483647.dead');
+    const text = '[models.acme]\nprovider = "acme"\n';
+    await writeFile(orphan, text, 'utf8');
+    try {
+      const store = new TomlAtomicDocumentStore(new FileStorageService(root));
+      await expect(store.getText('', 'config.toml', { recoverMissing: false })).resolves.toBeUndefined();
+      expect(await readdir(root)).toEqual(['config.toml.tmp.2147483647.dead']);
+      await expect(store.getText('', 'config.toml')).resolves.toBe(text);
+      expect(await readdir(root)).toEqual(['config.toml']);
+    } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });

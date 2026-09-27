@@ -83,7 +83,9 @@ describe('server-v2 /api capabilities', () => {
     const webbridge = parsed.capabilities.find((c) => c.id === 'kimi-webbridge');
     expect(webbridge?.supported).toBe(true);
     expect(webbridge?.steps.find((s) => s.id === 'skill')?.state).toBe('missing');
-    expect(webbridge?.steps.find((s) => s.id === 'extension')?.optional).toBe(true);
+    expect(webbridge?.steps.find((s) => s.id === 'extension')?.optional).toBeUndefined();
+    expect(webbridge?.plan?.artifact.url).toContain('/webbridge/v2.0.22/releases/');
+    expect(webbridge?.plan?.artifact.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('gets a single capability and 40418s on an unknown id', async () => {
@@ -99,6 +101,18 @@ describe('server-v2 /api capabilities', () => {
   it('installs 40418 on an unknown id without side effects', async () => {
     const { body } = await postJson<unknown>('/api/capabilities/nope:install');
     expect(body.code).toBe(40418);
+  });
+
+  it('rejects a stale or invented release digest before starting any download', async () => {
+    const res = await fetch(`${base}/api/capabilities/kimi-webbridge:install`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ expectedSha256: '0'.repeat(64) }),
+    } as never);
+    const body = await res.json() as Envelope<unknown>;
+    expect(body.code).toBe(40925);
+    const status = await getJson<unknown>('/api/capabilities/kimi-webbridge');
+    expect(capabilityStatusSchema.parse(status.body.data).install.running).toBe(false);
   });
 
   it('rejects bare ids and unknown actions with 40001', async () => {

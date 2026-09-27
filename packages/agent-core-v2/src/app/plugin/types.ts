@@ -2,6 +2,8 @@ import type { IWaitUntil } from '#/_base/event';
 import type { HookDefConfig } from '#/features/externalHooks/configSection';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
+import type { PluginPrerequisites } from './prerequisites';
+
 export type PluginDiagnosticSeverity = 'error' | 'warn' | 'info';
 
 export interface PluginDiagnostic {
@@ -49,6 +51,7 @@ export interface PluginManifest {
   readonly interface?: PluginInterface;
   readonly skillInstructions?: string;
   readonly systemPrompt?: string;
+  readonly prerequisites?: PluginPrerequisites;
 }
 
 export interface PluginMcpServerState {
@@ -152,6 +155,7 @@ export interface PluginInfo extends PluginSummary {
   readonly manifestKind?: PluginManifestKind;
   readonly manifestPath?: string;
   readonly manifest?: PluginManifest;
+  readonly prerequisites?: { readonly items: PluginPrerequisites; readonly origin: 'kiki-compatibility' | 'plugin-declared' };
   readonly mcpServers: readonly PluginMcpServerInfo[];
   readonly shadowedManifestPath?: string;
   readonly diagnostics: readonly PluginDiagnostic[];

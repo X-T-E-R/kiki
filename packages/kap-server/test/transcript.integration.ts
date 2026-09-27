@@ -29,8 +29,8 @@ import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders, bearerToken } from './helpers/auth';
 import { createKlient } from '@kiki/klient/http';
 import { WebSocket } from 'ws';
-import { AgentTranscript } from '@kiki/transcript';
-import type { SessionViewSubscription } from '@kiki/klient/session-view';
+import { AgentTranscript, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
+import type { SessionViewSignal, SessionViewSubscription } from '@kiki/klient/session-view';
 
 interface Envelope<T> {
   code: number;
@@ -194,7 +194,11 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
   });
 
   async function getJson<T>(path: string): Promise<{ status: number; body: Envelope<T> }> {
-    const res = await fetch(`${base}${path}`, {
+    const url = new URL(path, base);
+    if (/\/transcript(?:\/ops)?$/u.test(url.pathname)) {
+      url.searchParams.set('transcript_coverage_version', String(TRANSCRIPT_COVERAGE_VERSION));
+    }
+    const res = await fetch(url, {
       headers: authHeaders(server as RunningServer),
     } as never);
     return { status: res.status, body: (await res.json()) as Envelope<T> };
@@ -241,6 +245,25 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     agent!.accessor.get(IAgentContextMemoryService).append(...messages);
     await agent!.accessor.get(IWireService).flush();
   }
+
+  it('rejects frozen old REST transcript requests and echoes the negotiated contract on each successful page and catch-up', async () => {
+    const id = await createSession();
+    const oldPage = await fetch(`${base}/api/sessions/${id}/transcript?agent_id=main`, {
+      headers: authHeaders(server as RunningServer),
+    });
+    const oldPageBody = (await oldPage.json()) as Envelope<unknown>;
+    expect(oldPageBody).toMatchObject({ code: 40001, data: null, msg: expect.stringContaining('upgrade Kiki') });
+    const oldOps = await fetch(`${base}/api/sessions/${id}/transcript/ops?agent_id=main&since_seq=0`, {
+      headers: authHeaders(server as RunningServer),
+    });
+    expect(await oldOps.json()).toMatchObject({ code: 40001, data: null });
+    const page = await getJson<TranscriptContract & { transcript_coverage_version: number }>(`/api/sessions/${id}/transcript?agent_id=main`);
+    expect(page.body.code).toBe(0);
+    expect(page.body.data.transcript_coverage_version).toBe(2);
+    const ops = await getJson<OpsCatchupContract & { transcript_coverage_version: number }>(`/api/sessions/${id}/transcript/ops?agent_id=main&since_seq=0`);
+    expect(ops.body.code).toBe(0);
+    expect(ops.body.data.transcript_coverage_version).toBe(2);
+  });
 
   it('streams a live turn tree: deltas flush into full-text frames at step end', async () => {
     const id = await createSession();
@@ -456,8 +479,8 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
       content: ['not-json', '{}'].join(String.fromCodePoint(10)) + String.fromCodePoint(10),
       count: undefined,
     },
-    { label: 'empty', content: '', count: 0 },
-  ] as const)('[STAT-R3] live transcript keeps $label history count semantics', async ({
+    { label: 'empty', content: '', count: undefined },
+  ] as const)('[STAT-R3] live transcript does not certify a tampered $label wire', async ({
     label,
     content,
     count,
@@ -478,6 +501,27 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     );
     expect(body.code).toBe(0);
     expect(body.data.tool_call_count).toBe(count);
+    expect(body.data.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+    if (label === 'missing') {
+      const klient = createKlient({ endpoint: base, token: bearerToken(server!), WebSocket: WebSocket as unknown as typeof globalThis.WebSocket });
+      try {
+        const page = await klient.session(id).view.transcript.page({ agentId: childId });
+        expect(page.coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+        const snapshot = await klient.session(id).view.snapshot();
+        const signals: SessionViewSignal[] = [];
+        const subscription = klient.session(id).view.subscribe({
+          sessionCursor: { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
+          transcriptGrades: { [childId]: 'delta' },
+        }, (signal) => signals.push(signal));
+        try {
+          await vi.waitFor(() => expect(signals.some((signal) => signal.type === 'ready')).toBe(true));
+          expect(signals).toContainEqual(expect.objectContaining({ type: 'transcript',
+            event: expect.objectContaining({ type: 'transcript.reset', coverage: { kind: 'unknown', hasMoreOlder: true } }),
+          }));
+          expect(signals.some((signal) => signal.type === 'protocolError')).toBe(false);
+        } finally { subscription.close(); }
+      } finally { await klient.close(); }
+    }
   });
 
   it.each(['active', 'cancelled', 'cleared', 'exited', 'none'] as const)('reads the current %s child plan after restart without recreating the child', async (mode) => {

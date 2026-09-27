@@ -1,5 +1,5 @@
 function formatValue(value: unknown): string {
-  return typeof value === 'string' ? value : String(value);
+  return value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
 function fieldName(key: string): string {

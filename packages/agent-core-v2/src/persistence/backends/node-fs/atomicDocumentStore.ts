@@ -5,7 +5,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Event } from '#/_base/event';
 
-import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors, type StorageReadOptions } from '#/persistence/interface/storage';
 import {
   IAtomicDocumentStore,
   IAtomicTomlDocumentStore,
@@ -14,6 +14,7 @@ import {
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const exactTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
 
 export const jsonDocumentCodec: DocumentCodec = {
   format: 'json',
@@ -47,7 +48,7 @@ class AtomicDocumentStoreBase implements IAtomicDocumentStore {
     private readonly codec: DocumentCodec,
   ) {}
 
-  private enqueue<T>(scope: string, key: string, operation: () => Promise<T>): Promise<T> {
+  protected enqueue<T>(scope: string, key: string, operation: () => Promise<T>): Promise<T> {
     const id = `${scope}\0${key}`;
     const previous = this.tails.get(id) ?? Promise.resolve();
     const result = previous.then(operation, operation);
@@ -83,10 +84,13 @@ class AtomicDocumentStoreBase implements IAtomicDocumentStore {
     return this.enqueue(scope, key, () => this.readDocument<T>(scope, key));
   }
 
+  protected withWriteLock<T>(_scope: string, _key: string, operation: () => Promise<T>): Promise<T> {
+    return operation();
+  }
+
   async set<T>(scope: string, key: string, value: T): Promise<void> {
-    await this.enqueue(scope, key, () =>
-      this.storage.write(scope, key, this.codec.encode(value), { atomic: true }),
-    );
+    await this.enqueue(scope, key, () => this.withWriteLock(scope, key,
+      () => this.storage.write(scope, key, this.codec.encode(value), { atomic: true })));
   }
 
   async update<T>(
@@ -94,17 +98,18 @@ class AtomicDocumentStoreBase implements IAtomicDocumentStore {
     key: string,
     updater: (current: T | undefined) => T | undefined,
   ): Promise<T | undefined> {
-    return this.enqueue(scope, key, async () => {
+    return this.enqueue(scope, key, () => this.withWriteLock(scope, key, async () => {
       const current = await this.readDocument<T>(scope, key);
       const next = updater(current);
       if (next === undefined || next === current) return current;
       await this.storage.write(scope, key, this.codec.encode(next), { atomic: true });
       return next;
-    });
+    }));
   }
 
   async delete(scope: string, key: string): Promise<void> {
-    await this.enqueue(scope, key, () => this.storage.delete(scope, key));
+    await this.enqueue(scope, key, () => this.withWriteLock(scope, key,
+      () => this.storage.delete(scope, key)));
   }
 
   async list(scope: string, prefix?: string): Promise<readonly string[]> {
@@ -134,13 +139,36 @@ export class TomlAtomicDocumentStore
     super(storage, tomlDocumentCodec);
   }
 
-  async getText(scope: string, key: string): Promise<string | undefined> {
-    const bytes = await this.storage.read(scope, key);
-    return bytes === undefined ? undefined : textDecoder.decode(bytes);
+  private async readText(scope: string, key: string, options?: StorageReadOptions): Promise<string | undefined> {
+    const bytes = await this.storage.read(scope, key, options);
+    return bytes === undefined ? undefined : exactTextDecoder.decode(bytes);
   }
 
-  async setText(scope: string, key: string, text: string): Promise<void> {
-    await this.storage.write(scope, key, textEncoder.encode(text), { atomic: true });
+  protected override async withWriteLock<T>(scope: string, key: string, operation: () => Promise<T>): Promise<T> {
+    const lock = await this.storage.acquireLock(scope, `${key}.cas.lock`);
+    try {
+      return await operation();
+    } finally {
+      await lock.release();
+    }
+  }
+
+  getText(scope: string, key: string, options?: StorageReadOptions): Promise<string | undefined> {
+    return this.enqueue(scope, key, () => this.readText(scope, key, options));
+  }
+
+  setText(scope: string, key: string, text: string): Promise<void> {
+    return this.enqueue(scope, key, () => this.withWriteLock(scope, key,
+      () => this.storage.write(scope, key, textEncoder.encode(text), { atomic: true })));
+  }
+
+  compareAndSetText(scope: string, key: string, expected: string | undefined, next: string | undefined): Promise<boolean> {
+    return this.enqueue(scope, key, () => this.withWriteLock(scope, key, async () => {
+      if (await this.readText(scope, key) !== expected) return false;
+      if (next === undefined) await this.storage.delete(scope, key);
+      else await this.storage.write(scope, key, textEncoder.encode(next), { atomic: true });
+      return true;
+    }));
   }
 }
 

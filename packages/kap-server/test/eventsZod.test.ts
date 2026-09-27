@@ -15,6 +15,8 @@ import {
   assistantDeltaEventSchema,
   kimiErrorPayloadSchema,
   thinkingDeltaEventSchema,
+  taskStartedEventSchema,
+  taskTerminatedEventSchema,
 } from '../src/protocol/events-zod';
 
 const ENGINE_PROMPT_EVENTS = [
@@ -117,5 +119,40 @@ describe('events-zod stream identity', () => {
       partId: 'part-2',
       delta: 'owned thought',
     });
+  });
+});
+
+describe('events-zod task receipt projection', () => {
+  it('preserves verified receipt metadata in task lifecycle frames', () => {
+    const receipt = {
+      schemaVersion: 1 as const,
+      path: 'tasks/agent-12345678/output.log',
+      mediaType: 'text/plain; charset=utf-8' as const,
+      bytes: 14,
+      sha256: 'a'.repeat(64),
+      contentState: 'final' as const,
+      committedAt: '2026-01-01T00:00:00.000Z',
+      sourceTurnId: 4,
+    };
+    const info = {
+      taskId: 'agent-12345678', description: 'child', kind: 'agent' as const,
+      status: 'completed' as const, startedAt: 1, endedAt: 2,
+      receipt, receiptVerification: 'verified' as const,
+    };
+    for (const type of ['task.started', 'task.terminated'] as const) {
+      const frame = { type, info };
+      expect((type === 'task.started' ? taskStartedEventSchema : taskTerminatedEventSchema).parse(frame)).toEqual(frame);
+    }
+  });
+
+  it('keeps unverified and invalid legacy frames without manufacturing a receipt', () => {
+    const info = { taskId: 'agent-12345678', description: 'old child', kind: 'agent',
+      status: 'failed', startedAt: 1, endedAt: 2 };
+    for (const receiptVerification of ['legacy_unverified', 'invalid'] as const) {
+      expect(taskTerminatedEventSchema.parse({ type: 'task.terminated',
+        info: { ...info, receiptVerification } }).info).toMatchObject({ receiptVerification });
+    }
+    expect(taskStartedEventSchema.parse({ type: 'task.started', info: { ...info, status: 'running', endedAt: null } }).info)
+      .not.toHaveProperty('receipt');
   });
 });

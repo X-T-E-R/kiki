@@ -10,7 +10,7 @@ import {
   resolveAnyScopedServiceId,
 } from './channelRegistry';
 import { type ChannelLookup, dispatch } from './dispatcher';
-import { mapError, validationEnvelope, withTimeout } from './errors';
+import { TimeoutError, mapError, validationEnvelope } from './errors';
 
 interface RpcRequest {
   readonly id: string;
@@ -22,6 +22,12 @@ interface RpcRequest {
 }
 
 interface RpcReply {
+  readonly raw: {
+    readonly writableFinished: boolean;
+    readonly destroyed: boolean;
+    once(event: 'close', listener: () => void): unknown;
+    off(event: 'close', listener: () => void): unknown;
+  };
   status(code: number): { send(payload: unknown): unknown };
   send(payload: unknown): unknown;
 }
@@ -93,8 +99,32 @@ function makeHandler(
       );
     }
 
+    const timeoutMs = opts.callTimeoutMs ?? 30_000;
+    const controller = new AbortController();
+    const deadline = {
+      at: timeoutMs > 0 ? performance.now() + timeoutMs : undefined,
+      timeoutMs,
+      signal: controller.signal,
+    };
+    let onClose!: () => void;
+    const disconnected = new Promise<never>((_resolve, reject) => {
+      onClose = () => {
+        if (reply.raw.writableFinished) return;
+        controller.abort();
+        reject(new Error('debug request disconnected'));
+      };
+      reply.raw.once('close', onClose);
+    });
+    if (reply.raw.destroyed && !reply.raw.writableFinished) onClose();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      if (timeoutMs <= 0) return;
+      timer = setTimeout(() => reject(new TimeoutError(timeoutMs)), timeoutMs);
+      timer.unref?.();
+    });
+
     try {
-      const result = await withTimeout(
+      const result = await Promise.race([
         dispatch(
           core,
           scopeKind,
@@ -103,11 +133,15 @@ function makeHandler(
           method,
           arg,
           lookup,
+          deadline,
         ),
-        opts.callTimeoutMs ?? 30_000,
-      );
+        timeout,
+        disconnected,
+      ]);
+      if (controller.signal.aborted) return;
       return reply.send(okEnvelope(result, requestId));
     } catch (error) {
+      if (controller.signal.aborted) return;
       const envelope = mapError(error, requestId);
       const log = requestLog(req);
       if (envelope.code === ErrorCode.INTERNAL_ERROR) {
@@ -115,7 +149,12 @@ function makeHandler(
       } else {
         log?.warn({ err: error, service, method }, 'rpc dispatch failed');
       }
-      return reply.send(envelope);
+      return reply.send(error instanceof TimeoutError
+        ? { ...envelope, msg: `${envelope.msg}; outcome unknown; the operation may still be running` }
+        : envelope);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      reply.raw.off('close', onClose);
     }
   };
 }

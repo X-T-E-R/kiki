@@ -21,10 +21,11 @@ import { SectionCard } from './SectionCard';
 
 export function ConnectionSection() {
   const host = useHost();
-  const { config, meta, wsStatus, socket, disconnect, applyConnection } = useConnection();
+  const { config, meta, wsStatus, socket, scopeId, sshLabel, activateLocal, disconnect, applyConnection } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const isDesktop = host.kind === 'tauri';
+  const isSsh = scopeId.startsWith('ssh:');
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
@@ -39,10 +40,11 @@ export function ConnectionSection() {
   // edited where it is shown instead of behind disconnect → connect screen.
   const [urlDraft, setUrlDraft] = useState(config.url);
   const [tokenDraft, setTokenDraft] = useState(config.token);
+  const [showToken, setShowToken] = useState(false);
   useEffect(() => {
     setUrlDraft(config.url);
     setTokenDraft(config.token);
-  }, [config]);
+  }, [config.url, config.token]);
   const draftsDirty =
     urlDraft.trim() !== config.url.trim() || tokenDraft.trim() !== config.token.trim();
   const requestTimeoutDirty = requestTimeoutDraft !== String(savedRequestTimeoutSeconds);
@@ -60,6 +62,7 @@ export function ConnectionSection() {
   };
 
   const restart = async () => {
+    if (isSsh) return;
     setRestarting(true);
     setFeedback(null);
     try {
@@ -81,6 +84,15 @@ export function ConnectionSection() {
     <div className="space-y-4">
       <SectionCard id="st-card-conn-server" title={t('st.conn.connectedTitle')}>
         <div className="space-y-4">
+          {isSsh ? (
+            <div className="rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 text-[12px] text-ink">
+              <p className="font-semibold">{t('connect.remoteScope')} · {sshLabel}</p>
+              <p className="mt-1 text-ink-soft">{t('connect.sshRemoteSettings')}</p>
+              <button type="button" onClick={activateLocal} className={`${SECONDARY_BUTTON} mt-2`}>
+                {t('connect.switchLocal')}
+              </button>
+            </div>
+          ) : null}
           <div
             role="group"
             aria-label={t('st.conn.statusTitle')}
@@ -106,9 +118,11 @@ export function ConnectionSection() {
                 <dd className="font-mono text-ink">{meta.backend ?? 'v1'}</dd>
               </div>
             </dl>
-            <button type="button" onClick={() => { socket?.nudge(); }} className={SECONDARY_BUTTON}>{t('st.conn.reconnect')}</button>
+            <button type="button" onClick={() => { socket?.nudge(); }} className={SECONDARY_BUTTON}>
+              {t('st.conn.reconnect')}
+            </button>
           </div>
-          <form
+          {!isSsh ? <form
             className="space-y-3"
             onSubmit={(event) => {
               event.preventDefault();
@@ -128,21 +142,31 @@ export function ConnectionSection() {
             </div>
             <div>
               <label htmlFor="st-conn-token" className="mb-1 block text-[11px] font-medium text-ink-soft">{t('connect.token')}</label>
-              <input
-                id="st-conn-token"
-                type="password"
-                className={`${INPUT} font-mono`}
-                value={tokenDraft}
-                onChange={(event) => { setTokenDraft(event.target.value); }}
-                spellCheck={false}
-              />
+              <div className="flex gap-2">
+                <input
+                  id="st-conn-token"
+                  type={showToken ? 'text' : 'password'}
+                  className={`${INPUT} min-w-0 flex-1 font-mono`}
+                  value={tokenDraft}
+                  onChange={(event) => { setTokenDraft(event.target.value); }}
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  aria-label={`${t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')} ${t('connect.token')}`}
+                  onClick={() => { setShowToken((value) => !value); }}
+                >
+                  {t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')}
+                </button>
+              </div>
               <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">{t('st.conn.tokenHint')}</p>
             </div>
             <div className="flex items-center gap-3">
               <button type="submit" className={PRIMARY_BUTTON} disabled={!draftsDirty}>{t('st.conn.apply')}</button>
               <span className="text-[11px] leading-snug text-ink-faint">{t('st.conn.applyHint')}</span>
             </div>
-          </form>
+          </form> : null}
         </div>
       </SectionCard>
 
@@ -182,7 +206,7 @@ export function ConnectionSection() {
         </form>
       </SectionCard>
 
-      <SectionCard id="st-card-conn-owned" title={t('st.conn.ownedTitle')} badge="desktop">
+      {!isSsh ? <SectionCard id="st-card-conn-owned" title={t('st.conn.ownedTitle')} badge="desktop">
         <div className="space-y-3">
           <p className="text-[12.5px] text-ink-soft">
             {t('st.conn.ownedBody')}
@@ -193,11 +217,13 @@ export function ConnectionSection() {
           {!isDesktop ? <Hint>{t('st.conn.browserHint')}</Hint> : null}
           <FeedbackLine feedback={feedback} />
         </div>
-      </SectionCard>
+      </SectionCard> : null}
 
       <SectionCard id="st-card-conn-disconnect" title={t('st.conn.disconnectTitle')}>
         <div className="space-y-3">
-          <p className="text-[12.5px] text-ink-soft">{t('st.conn.disconnectBody')}</p>
+          <p className="text-[12.5px] text-ink-soft">
+            {isSsh ? t('connect.sshDisconnectBody') : t('st.conn.disconnectBody')}
+          </p>
           <button
             type="button"
             data-conn-disconnect
@@ -213,15 +239,15 @@ export function ConnectionSection() {
         open={confirmDisconnect}
         overlayId="confirm-conn-disconnect"
         title={t('st.conn.disconnectConfirmTitle')}
-        body={t('st.conn.disconnectConfirmBody')}
-        confirmLabel={t('sidebar.disconnect')}
+        body={isSsh ? t('connect.sshDisconnectBody') : t('st.conn.disconnectConfirmBody')}
+        confirmLabel={isSsh ? t('connect.switchLocal') : t('sidebar.disconnect')}
         tone="danger"
         onConfirm={() => { setConfirmDisconnect(false); disconnect(); }}
         onCancel={() => { setConfirmDisconnect(false); }}
       />
 
       <ConfirmDialog
-        open={confirmRestart}
+        open={confirmRestart && !isSsh}
         overlayId="confirm-conn-restart"
         title={t('st.restart.confirmTitle')}
         body={

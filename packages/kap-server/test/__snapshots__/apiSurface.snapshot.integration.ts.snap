@@ -94,6 +94,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/config/model-generation-migration",
+    ],
+    [
+      "GET",
       "/api/connections",
     ],
     [
@@ -187,6 +191,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/mcp/auth-statuses",
+    ],
+    [
+      "GET",
+      "/api/mcp/oauth-credentials",
     ],
     [
       "GET",
@@ -430,6 +438,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/config/model-generation-migration/apply",
+    ],
+    [
+      "POST",
+      "/api/config/model-generation-migration/restore",
+    ],
+    [
+      "POST",
       "/api/cron/{tail}",
     ],
     [
@@ -494,6 +510,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/mcp/oauth-credentials:reveal",
+    ],
+    [
+      "POST",
+      "/api/mcp/oauth-credentials:revoke",
+    ],
+    [
+      "POST",
       "/api/mcp/runtime/servers/{tail}",
     ],
     [
@@ -515,6 +539,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/models/{tail}",
+    ],
+    [
+      "POST",
+      "/api/nb-search/credentials/read",
+    ],
+    [
+      "POST",
+      "/api/nb-search/credentials/write",
     ],
     [
       "POST",

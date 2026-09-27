@@ -440,6 +440,7 @@ export class AgentTranscriptLiveAdapter {
       ordinal: n,
       state: 'running',
       origin: mapTurnOrigin(event.origin),
+      promptId: event.promptId,
       message:
         event.promptId === undefined
           ? undefined
@@ -516,6 +517,7 @@ export class AgentTranscriptLiveAdapter {
       ordinal: event.turnId,
       state,
       origin: prev?.origin ?? persisted?.origin ?? { kind: 'other' },
+      promptId: prev?.promptId ?? persisted?.promptId,
       message: prev?.message ?? persisted?.message,
       delivery: prev?.delivery ?? persisted?.delivery,
       prompt: prev?.prompt ?? persisted?.prompt,

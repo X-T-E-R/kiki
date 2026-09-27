@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
-import type { PluginMarketplaceEntry, PluginMarketplaceResponse } from '../../lib/client';
+import type { CapabilityStatus, PluginInfo, PluginMarketplaceEntry, PluginMarketplaceResponse } from '../../lib/client';
 import { PluginsSection } from './PluginsSection';
 
 const PLUGIN = {
@@ -30,7 +30,7 @@ const listPluginMarketplace = vi.fn(async (): Promise<PluginMarketplaceResponse>
   configured: false,
   entries: [],
 }));
-const getPlugin = vi.fn(async () => ({
+const getPlugin = vi.fn(async (): Promise<PluginInfo> => ({
   ...PLUGIN,
   root: '/tmp/notes',
   installedAt: '2026-01-01T00:00:00.000Z',
@@ -45,6 +45,24 @@ const patchConfig = vi.fn(async (body: unknown) => body);
 const setPluginEnabled = vi.fn(async () => ({ ok: true }));
 const removePlugin = vi.fn(async () => ({ ok: true }));
 const installPlugin = vi.fn(async () => PLUGIN);
+const WEBBRIDGE: CapabilityStatus = {
+  id: 'kimi-webbridge', displayName: 'WebBridge', description: 'Browser bridge',
+  supported: true, state: 'not_installed',
+  steps: [
+    { id: 'daemon', state: 'missing' }, { id: 'skill', state: 'missing' },
+    { id: 'extension', state: 'missing' },
+  ],
+  install: { running: false },
+  plan: {
+    artifact: { version: 'v2.0.22', url: 'https://cdn.kimi.com/webbridge/v2.0.22/releases/example',
+      sha256: 'a'.repeat(64), metadataUrl: 'https://cdn.kimi.com/webbridge/v2.0.22/version.json', maxBytes: 1024 },
+    destination: '/home/example/.kimi-webbridge/bin/kimi-webbridge',
+    browserExtensionUrl: 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc',
+    note: 'Not an independent publisher signature',
+  },
+};
+const getCapability = vi.fn(async (): Promise<CapabilityStatus> => WEBBRIDGE);
+const installCapability = vi.fn(async (): Promise<CapabilityStatus> => ({ ...WEBBRIDGE, install: { running: true } }));
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
@@ -57,6 +75,8 @@ vi.mock('../../state/connection', () => ({
       setPluginEnabled,
       removePlugin,
       installPlugin,
+      getCapability,
+      installCapability,
     },
   }),
 }));
@@ -87,6 +107,10 @@ afterEach(() => {
   setPluginEnabled.mockClear();
   removePlugin.mockClear();
   installPlugin.mockClear();
+  getCapability.mockReset();
+  getCapability.mockResolvedValue(WEBBRIDGE);
+  installCapability.mockReset();
+  installCapability.mockResolvedValue({ ...WEBBRIDGE, install: { running: true } });
 });
 
 afterAll(() => {
@@ -165,6 +189,22 @@ describe('PluginsSection', () => {
     await flush();
     expect(getPlugin).toHaveBeenCalledWith('notes');
     expect(container.querySelector('[data-plugin-mcp="notes-mcp"]')).not.toBeNull();
+  });
+
+  it('labels catalog prerequisites without implying authenticated plugin compatibility', async () => {
+    getPlugin.mockResolvedValueOnce({
+      ...PLUGIN, root: '/tmp/notes', installedAt: '2026-01-01T00:00:00.000Z',
+      manifest: { name: 'notes' }, mcpServers: [], diagnostics: [],
+      prerequisites: { origin: 'kiki-compatibility' as const,
+        items: { schemaVersion: 1 as const, items: [{ id: 'webbridge-daemon' as const,
+          kind: 'daemon' as const, required: true }] } },
+    });
+    const container = await renderLeaf();
+    await click(container.querySelector('[data-plugin-details-toggle="notes"]')!);
+    await flush();
+    const prerequisites = container.querySelector('[data-plugin-prerequisites="notes"]');
+    expect(prerequisites?.textContent).toContain('Kiki dependency catalog (compatibility unverified)');
+    expect(prerequisites?.textContent).not.toContain('kiki-compatibility');
   });
 
   it('offers Install for a catalog entry that is not installed', async () => {
@@ -383,6 +423,78 @@ describe('PluginsSection', () => {
     await click(labeledButton(container, 'Save catalog URL'));
     await flush();
     expect(container.textContent).toContain('save failed');
+  });
+
+  it('never prepares runtime merely by browsing or viewing the consent plan', async () => {
+    const container = await renderLeaf();
+    expect(getCapability).toHaveBeenCalledWith('kimi-webbridge');
+    expect(container.querySelector('[data-webbridge-state="not_installed"]')).not.toBeNull();
+    expect(installCapability).not.toHaveBeenCalled();
+    await click(container.querySelector('[data-webbridge-prepare]')!);
+    expect(container.querySelector('[role="alertdialog"]')?.textContent).toContain('SHA-256');
+    expect(installCapability).not.toHaveBeenCalled();
+    await click(labeledButton(container.querySelector('[role="alertdialog"]') as HTMLElement, 'Cancel'));
+    expect(installCapability).not.toHaveBeenCalled();
+  });
+
+  it('submits the pinned digest only after confirmation and supports a separate health check', async () => {
+    const container = await renderLeaf();
+    await click(container.querySelector('[data-webbridge-prepare]')!);
+    await click(labeledButton(container.querySelector('[role="alertdialog"]') as HTMLElement, 'Prepare runtime…'));
+    await flush();
+    expect(installCapability).toHaveBeenCalledWith('kimi-webbridge', WEBBRIDGE.plan?.artifact.sha256);
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+    await click(container.querySelector('[data-webbridge-check]')!);
+    expect(getCapability.mock.calls.length).toBeGreaterThan(1);
+    expect(container.querySelector('[data-webbridge-extension]')?.getAttribute('rel')).toContain('noopener');
+  });
+
+  it('shows a failed runtime attempt with a retry and never reports disconnected extension as ready', async () => {
+    getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'partial', install: { running: false, error: 'checksum mismatch' },
+      steps: [ { id: 'daemon', state: 'ok' }, { id: 'skill', state: 'ok' }, { id: 'extension', state: 'missing' } ] });
+    const container = await renderLeaf();
+    expect(container.querySelector('[data-webbridge-state="partial"]')).not.toBeNull();
+    expect(container.textContent).toContain('checksum mismatch');
+    expect(container.querySelector('[data-webbridge-prepare]')).toBeNull();
+    expect(container.querySelector('[data-webbridge-extension]')).not.toBeNull();
+    getCapability.mockResolvedValue({ ...WEBBRIDGE, install: { running: false, error: 'checksum mismatch' } });
+    await click(container.querySelector('[data-webbridge-check]')!);
+    await flush();
+    expect(container.querySelector('[data-webbridge-prepare]')?.textContent).toBe('Retry runtime…');
+  });
+
+  it('labels a failed detection step with its own copy instead of the raw step id', async () => {
+    getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'partial',
+      steps: [{ id: 'detect', state: 'failed', detail: 'Loopback health endpoint refused the connection' }] });
+    const container = await renderLeaf();
+    const step = container.querySelector('[data-webbridge-step="detect"]')!;
+    expect(step.textContent).toContain('Health check');
+    expect(step.textContent).toContain('Check failed');
+    expect(step.textContent).not.toContain('detect');
+  });
+
+  it('shows observed functionality as ready but distinguishes missing identity and package attestation', async () => {
+    getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'ready',
+      install: { running: false, note: 'existing-loopback-daemon-observed-identity-unverified' },
+      steps: [
+        { id: 'daemon-binary', state: 'missing', optional: true },
+        { id: 'daemon', state: 'ok', detail: 'Loopback status reports running; process identity is not authenticated' },
+        { id: 'skill', state: 'ok' }, { id: 'extension', state: 'ok' },
+        { id: 'daemon-identity', state: 'missing', optional: true,
+          detail: 'Unverified: the loopback status cannot authenticate the responding process or browser extension' },
+        { id: 'plugin-integrity', state: 'missing', optional: true,
+          detail: 'Unverified: publisher URL does not prove ZIP integrity or daemon compatibility' },
+      ] });
+    const container = await renderLeaf();
+    expect(container.querySelector('[data-webbridge-state="ready"]')).not.toBeNull();
+    expect(container.querySelector('[data-webbridge-step="daemon"]')?.getAttribute('data-webbridge-step-kind')).toBe('function');
+    expect(container.querySelector('[data-webbridge-step="plugin-integrity"]')?.getAttribute('data-webbridge-step-kind')).toBe('verification');
+    expect(container.querySelector('[data-webbridge-step="daemon-identity"]')?.textContent).toContain('Unverified');
+    expect(container.textContent).toContain('ZIP integrity');
+    expect(container.querySelector('[data-webbridge-install-note]')?.textContent).toContain('process identity');
+    expect(container.querySelector('[data-webbridge-prepare]')).toBeNull();
+    expect(installCapability).not.toHaveBeenCalled();
   });
 
   it('retries a failed installed-plugin list', async () => {

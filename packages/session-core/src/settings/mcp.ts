@@ -13,15 +13,9 @@ export interface McpEditorDraft {
   readonly args: string;
   readonly env: string;
   readonly url: string;
-}
-
-function mcpSecretMap(
-  config: McpManagedServerConfig | undefined,
-  field: 'env' | 'headers',
-): Readonly<Record<string, string>> | undefined {
-  if (config === undefined || !(field in config)) return undefined;
-  const value = (config as unknown as Record<string, unknown>)[field];
-  return value as Readonly<Record<string, string>> | undefined;
+  readonly headers: string;
+  readonly bearerTokenEnvVar: string;
+  readonly auth?: 'oauth';
 }
 
 function mcpCommonConfig(config: McpManagedServerConfig | undefined) {
@@ -34,21 +28,29 @@ function mcpCommonConfig(config: McpManagedServerConfig | undefined) {
   };
 }
 
-function parseMcpEnv(text: string): Record<string, string> | undefined {
+function parseMcpLines(text: string, field: 'env' | 'headers'): Record<string, string> | undefined {
   const entries: Array<[string, string]> = [];
+  const headerNames = new Set<string>();
   for (const raw of text.split(/\r?\n/u)) {
     if (raw.trim() === '') continue;
     const separator = raw.indexOf('=');
-    if (separator <= 0) throw new Error('st.mcp.envInvalid');
+    if (separator <= 0) throw new Error(`st.mcp.${field}Invalid`);
     const key = raw.slice(0, separator).trim();
-    if (key === '') throw new Error('st.mcp.envInvalid');
+    if (key === '' || (field === 'headers' && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(key))) {
+      throw new Error(`st.mcp.${field}Invalid`);
+    }
+    if (field === 'headers') {
+      const normalized = key.toLowerCase();
+      if (headerNames.has(normalized)) throw new Error('st.mcp.headersDuplicate');
+      headerNames.add(normalized);
+    }
     entries.push([key, raw.slice(separator + 1)]);
   }
   return entries.length === 0 ? undefined : Object.fromEntries(entries);
 }
 
 export function mcpConfigFromDraft(draft: McpEditorDraft): McpServerConfig {
-  const original = draft.original?.config;
+  const original = draft.original?.mutable ? draft.original.config : undefined;
   if (draft.transport === 'stdio') {
     const command = draft.command.trim();
     if (command === '') throw new Error('st.mcp.commandRequired');
@@ -62,7 +64,7 @@ export function mcpConfigFromDraft(draft: McpEditorDraft): McpServerConfig {
       transport: 'stdio',
       command,
       args: args.length === 0 ? undefined : args,
-      env: parseMcpEnv(draft.env),
+      env: parseMcpLines(draft.env, 'env'),
     };
   }
   const url = draft.url.trim();
@@ -71,17 +73,13 @@ export function mcpConfigFromDraft(draft: McpEditorDraft): McpServerConfig {
   } catch {
     throw new Error('st.mcp.urlInvalid');
   }
-  const kept = original !== undefined && original.transport === draft.transport
-    ? {
-        auth: original.auth,
-        bearerTokenEnvVar: original.bearerTokenEnvVar,
-        headers: mcpSecretMap(original, 'headers'),
-      }
-    : {};
+  const sameTarget = original !== undefined && original.transport === draft.transport && original.url === url;
   return {
     ...mcpCommonConfig(original),
-    ...kept,
     transport: draft.transport,
     url,
+    headers: parseMcpLines(draft.headers, 'headers'),
+    bearerTokenEnvVar: draft.bearerTokenEnvVar.trim() || undefined,
+    auth: sameTarget ? draft.auth : undefined,
   };
 }

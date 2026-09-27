@@ -377,8 +377,55 @@ describe('WsConnectionV1 transcript subscriptions (subscribe_v2)', () => {
   }
 
   function controlFrame(type: string, payload: Record<string, unknown>): string {
-    return JSON.stringify({ type, id: 'req-1', payload });
+    return JSON.stringify({ type, id: 'req-1', payload: type === 'subscribe_v2'
+      ? { ...payload, transcript_coverage_version: 2 }
+      : payload });
   }
+
+  it('rejects a frozen old subscribe_v2 fixture before seeding, including a downgrade after a negotiated attach', async () => {
+    const socket = new FakeSocket();
+    const { broadcaster, calls, detaches } = makeCapturingBroadcaster();
+    const conn = makeConn(socket, { broadcaster });
+    const frozenOldRequest = JSON.stringify({ type: 'subscribe_v2', id: 'old-req', payload: {
+      session_id: 's1', transcript: { main: 'delta' },
+    } });
+    socket.emit('message', frozenOldRequest);
+    await vi.waitFor(() => expect(socket.sent.map((frame) => JSON.parse(frame)).some((frame) => frame.id === 'old-req')).toBe(true));
+    expect(socket.sent.map((frame) => JSON.parse(frame)).find((frame) => frame.id === 'old-req')).toMatchObject({
+      type: 'ack', code: 1, msg: expect.stringContaining('upgrade Kiki'),
+    });
+    expect(calls).toHaveLength(0);
+    expect(conn.subscriptions.has('s1')).toBe(false);
+    socket.emit('message', JSON.stringify({ type: 'subscribe_v2', id: 'unsupported', payload: {
+      session_id: 's1', transcript: { main: 'delta' }, transcript_coverage_version: 3,
+    } }));
+    await vi.waitFor(() => expect(socket.sent.map((frame) => JSON.parse(frame)).some((frame) => frame.id === 'unsupported')).toBe(true));
+    expect(socket.sent.map((frame) => JSON.parse(frame)).find((frame) => frame.id === 'unsupported')).toMatchObject({
+      type: 'ack', code: 1, msg: expect.stringContaining('upgrade Kiki'),
+    });
+    expect(calls).toHaveLength(0);
+
+    socket.emit('message', controlFrame('subscribe_v2', { session_id: 's1', transcript: { main: 'delta' } }));
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    socket.emit('message', frozenOldRequest);
+    await vi.waitFor(() => expect(detaches).toHaveLength(1));
+    expect(conn.subscriptions.get('s1')?.transcriptGrades).toBeUndefined();
+    conn.close();
+  });
+
+  it('preserves a non-transcript legacy subscription without coverage opt-in', async () => {
+    const socket = new FakeSocket();
+    const { broadcaster, calls } = makeCapturingBroadcaster();
+    const conn = makeConn(socket, { broadcaster });
+    socket.emit('message', JSON.stringify({ type: 'subscribe_v2', id: 'off', payload: {
+      session_id: 's1', transcript: { '*': 'off' },
+    } }));
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(socket.sent.map((frame) => JSON.parse(frame)).find((frame) => frame.id === 'off')).toMatchObject({
+      code: 0, payload: { accepted: ['s1'] },
+    });
+    conn.close();
+  });
 
   it('forwards subscribe_v2 grades and transcript_since to the broadcaster and stores them per session', async () => {
     const socket = new FakeSocket();
@@ -413,7 +460,7 @@ describe('WsConnectionV1 transcript subscriptions (subscribe_v2)', () => {
       expect(socket.sent.some((f) => JSON.parse(f).type === 'ack')).toBe(true),
     );
     const ack = socket.sent.map((f) => JSON.parse(f)).find((f) => f.type === 'ack');
-    expect(ack).toMatchObject({ code: 0, payload: { accepted: ['s1'], not_found: [] } });
+    expect(ack).toMatchObject({ code: 0, payload: { accepted: ['s1'], not_found: [], transcript_coverage_version: 2 } });
     conn.close();
   });
 

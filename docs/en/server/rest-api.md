@@ -152,10 +152,12 @@ For automatic allocation, send `{}` to `POST /api/sessions`. The server creates 
 | --- | --- |
 | `GET /api/sessions/{session_id}/messages` | Page messages (`before_id` / `after_id` / `role`) |
 | `GET /api/sessions/{session_id}/messages/{message_id}` | Read one message |
-| `GET /api/sessions/{session_id}/transcript` | Turn-paged transcript (requires `agent_id`); global state rides along unpaginated |
-| `GET /api/sessions/{session_id}/transcript/ops` | Op-batch catch-up (`since_seq`); `complete: false` means a full refresh is needed |
+| `GET /api/sessions/{session_id}/transcript` | Turn-paged transcript (requires `agent_id` and `transcript_coverage_version=2`); global state rides along unpaginated |
+| `GET /api/sessions/{session_id}/transcript/ops` | Op-batch catch-up (requires `agent_id`, `since_seq`, and `transcript_coverage_version=2`); `complete: false` means a full refresh is needed |
 | `GET /api/sessions/{session_id}/transcript/user-messages` | Turn-opening user inputs, unpaginated |
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode plan content, path, and review outcome |
+
+Both transcript-page and catch-up requests must send `transcript_coverage_version=2`. Successful responses echo `data.transcript_coverage_version` as the number `2`; a missing or unsupported request version returns envelope code `40001` with an upgrade message, without returning a transcript. When a newer client reads a server that does not confirm coverage, it treats the history as unverified rather than complete.
 
 ### Prompts
 
@@ -362,7 +364,7 @@ Clients send JSON frames `{ "type", "id"?, "payload" }`; every request frame get
 | --- | --- | --- |
 | `subscribe` | `{ session_ids, cursors?, agent_filter? }` | Subscribe to session events; with `cursors` (per-session `{seq, epoch}`) the server replays missed durable events |
 | `unsubscribe` | `{ session_ids }` | Drop session subscriptions |
-| `subscribe_v2` | `{ session_id, transcript, transcript_since? }` | Subscribe to transcript streams (the only transcript channel); `transcript` sets per-agent grades |
+| `subscribe_v2` | `{ session_id, transcript, transcript_since?, transcript_coverage_version: 2 }` | Subscribe to transcript streams (the only transcript channel); `transcript` sets per-agent grades |
 | `unsubscribe_v2` | `{ session_id, agent_ids? }` | Detach transcript streams; omitting `agent_ids` means the whole session |
 | `watch_fs_add` / `watch_fs_remove` | `{ session_id, paths, recursive? }` | Subscribe to / unsubscribe from file-change notifications (`event.fs.changed`) |
 | `client_hello` | `{ client_id }` | Handshake frame; the remaining fields are legacy compatibility |
@@ -392,7 +394,7 @@ After reconnecting, pass each session's last applied `{seq, epoch}` in `subscrib
 
 ### Transcript protocol
 
-`subscribe_v2`'s `transcript` field sets a per-agent grade: `off` / `turn` / `block` / `delta` (the `"*"` key sets the default grade), with higher grades pushing finer detail. An agent with a non-`off` grade receives two frame types: `transcript.reset` (a baseline snapshot; history pages in over REST) and `transcript.ops` (incremental op batches with a per-agent strictly increasing `seq`). The agent's legacy events are suppressed on that connection and carried by transcript frames instead. After a disconnect, resume with `transcript_since`; when the server's op journal cannot cover the gap (REST catch-up returns `complete: false`), do a full refresh. The REST counterparts are `GET .../transcript` (turn-paged) and `GET .../transcript/ops?since_seq=` (op-batch catch-up).
+`subscribe_v2`'s `transcript` field sets a per-agent grade: `off` / `turn` / `block` / `delta` (the `"*"` key sets the default grade), with higher grades pushing finer detail. If any grade is not `off`, send the numeric `transcript_coverage_version: 2` in the payload; the successful acknowledgement echoes it. A missing or unsupported version is rejected before transcript frames are sent; an `off`-only subscription does not need the version. An agent with a non-`off` grade receives two frame types: `transcript.reset` (a baseline snapshot; history pages in over REST) and `transcript.ops` (incremental op batches with a per-agent strictly increasing `seq`). The agent's legacy events are suppressed on that connection and carried by transcript frames instead. After a disconnect, resume with `transcript_since`; when the server's op journal cannot cover the gap (REST catch-up returns `complete: false`), do a full refresh. The REST counterparts are `GET .../transcript` (turn-paged) and `GET .../transcript/ops?since_seq=` (op-batch catch-up).
 
 ## Binary and streaming endpoints
 

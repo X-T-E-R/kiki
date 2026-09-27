@@ -98,8 +98,35 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
     return structuredClone({ items });
   }
 
-  probeProviderModels(draft: ProbeProviderRequest): Promise<ProbeProviderResponse> {
+  async probeProviderModels(draft: ProbeProviderRequest): Promise<ProbeProviderResponse> {
+    await this.config.reload();
     return probeProviderModels({ type: draft.type, baseUrl: draft.base_url, apiKey: draft.api_key });
+  }
+
+  private customRegistrySource(provider: ProviderConfig): { readonly url: string; readonly apiKey: string } | undefined {
+    const source = provider.source;
+    if (source?.['kind'] !== 'apiJson' || typeof source['url'] !== 'string' || typeof source['apiKey'] !== 'string') return undefined;
+    return { url: source['url'], apiKey: source['apiKey'] };
+  }
+
+  private isolateCustomRegistryTarget(
+    config: ManagedKimiConfigShape,
+    providerId: string,
+  ): ManagedKimiConfigShape {
+    const target = config.providers[providerId] as ProviderConfig | undefined;
+    const targetSource = target === undefined ? undefined : this.customRegistrySource(target);
+    if (targetSource === undefined) return config;
+    const providers = Object.fromEntries(Object.entries(config.providers).map(([id, provider]) => {
+      const source = this.customRegistrySource(provider as ProviderConfig);
+      if (id === providerId || source?.url !== targetSource.url || source.apiKey.trim() === '') {
+        return [id, provider];
+      }
+      return [id, {
+        ...provider,
+        source: { ...(provider as ProviderConfig).source, apiKey: '' },
+      }];
+    }));
+    return { ...config, providers: providers as ManagedKimiConfigShape['providers'] };
   }
 
   refreshProviderModels(
@@ -133,19 +160,20 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
 
     const exclusion = this.computeStaticExclusion();
     const configured = this.readUserConfigShape(exclusion);
-    const connections = new Map(Object.entries(configured.providers).map(([id, provider]) =>
-      [id, connectionFingerprint(provider)]));
     const providerId = options.providerId;
-    const target = providerId === undefined ? undefined : configured.providers[providerId];
+    const scoped = providerId === undefined ? configured : this.isolateCustomRegistryTarget(configured, providerId);
+    const connections = new Map(Object.entries(scoped.providers).map(([id, provider]) =>
+      [id, connectionFingerprint(provider)]));
+    const target = providerId === undefined ? undefined : scoped.providers[providerId];
     const initial = providerId !== undefined && target !== undefined && target['oauth'] === undefined && options.apiKey !== undefined
       ? {
-          ...configured,
+          ...scoped,
           providers: {
-            ...configured.providers,
+            ...scoped.providers,
             [providerId]: { ...target, apiKey: options.apiKey },
           },
         }
-      : configured;
+      : scoped;
     const { outboundUserAgent } = await this.identity.resolved();
     const result = await refreshProviderModels(this.buildRefreshHost(exclusion, outboundUserAgent, initial), {
       scope: options.scope,

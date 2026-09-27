@@ -29,9 +29,11 @@ import type {
   WorkspaceInstanceSnapshot,
 } from '@kiki/agent-core-v2';
 import { FakeRuntime } from '@kiki/agent-core-v2/runtime/fakeRuntime';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import Fastify, { type FastifyReply } from 'fastify';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
+import { registerServiceDispatcherRoutes } from '../src/transport/serviceDispatcherRoutes';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -791,6 +793,292 @@ describe('server-v2 /api/debug RPC', () => {
     const json = JSON.stringify(body);
     expect(json).toContain('"stack"');
     expect(json).toContain('dispatch');
+  });
+});
+
+describe('server-v2 /api/debug scoped operation residency', () => {
+  it('pins a live session for async calls and errors without activating a cold session', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+    const home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-debug-residency-'));
+    await writeFile(join(home, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+    let server: RunningServer | undefined;
+    let release!: () => void;
+    try {
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', debugEndpoints: true });
+      const base = `http://127.0.0.1:${server.port}`;
+      const headers = authHeaders(server);
+      const created = await fetch(`${base}/api/sessions`, {
+        method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ metadata: { cwd: home } }),
+      });
+      const sessionId = ((await created.json()) as Envelope<{ id: string }>).data.id;
+      const manager = server.core.accessor.get(ISessionManager);
+      const session = getLiveSessionById(server.core.accessor, sessionId)!;
+      const metadata = session.accessor.get(ISessionMetadata);
+      const originalRead = metadata.read.bind(metadata);
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const read = vi.spyOn(metadata, 'read').mockImplementation(async () => {
+        enter();
+        await gate;
+        return originalRead();
+      });
+      const path = rpc('session', ISessionMetadata, 'read', { sid: sessionId });
+      const running = fetch(`${base}${path}`, { method: 'POST', headers });
+      await Promise.race([
+        entered,
+        running.then((response) => {
+          throw new Error(`debug request completed before read: HTTP ${response.status}`);
+        }),
+      ]);
+      expect(await manager.evictIfIdle!(sessionId)).toBe(false);
+      release();
+      expect(((await (await running).json()) as Envelope<SessionMetaWire>).code).toBe(0);
+      read.mockRestore();
+      expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+      const cold = await fetch(`${base}${path}`, { method: 'POST', headers });
+      expect(((await cold.json()) as Envelope<null>).code).toBe(40401);
+      expect(manager.get(sessionId)).toBeUndefined();
+
+      const restored = await manager.acquire!(sessionId, 'test-setup');
+      expect(restored).toBeDefined();
+      restored!.dispose();
+      const errorResponse = await fetch(`${base}${rpc('session', ISessionMetadata, 'missingMethod', { sid: sessionId })}`, { method: 'POST', headers });
+      expect(((await errorResponse.json()) as Envelope<null>).code).toBe(40001);
+      expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+    } finally {
+      release?.();
+      await server?.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe('server-v2 /api/debug deadline and scoped residency', () => {
+  let server: RunningServer | undefined;
+  let app: ReturnType<typeof Fastify> | undefined;
+  let wireApp: ReturnType<typeof Fastify> | undefined;
+  let home: string | undefined;
+  let sessionId: string;
+  let release: (() => void) | undefined;
+  let responseSends: number;
+
+  async function listenForDisconnect(onClose: () => void): Promise<string> {
+    wireApp = Fastify();
+    wireApp.addHook('onRequest', async (_request: unknown, reply: FastifyReply) => {
+      reply.raw.once('close', onClose);
+    });
+    wireApp.addHook('onSend', async (_request: unknown, _reply: unknown, payload: unknown) => {
+      responseSends += 1;
+      return payload;
+    });
+    registerServiceDispatcherRoutes(wireApp, server!.core, '/api/debug', { callTimeoutMs: 5_000 });
+    return wireApp.listen({ host: '127.0.0.1', port: 0 });
+  }
+
+  beforeEach(async () => {
+    responseSends = 0;
+    vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-debug-deadline-'));
+    await writeFile(join(home, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', debugEndpoints: true });
+    const created = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: 'POST',
+      headers: authHeaders(server, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    });
+    const body = (await created.json()) as Envelope<{ id: string }>;
+    expect(body.code).toBe(0);
+    sessionId = body.data.id;
+    app = Fastify();
+    app.addHook('onSend', async (_request: unknown, _reply: unknown, payload: unknown) => {
+      responseSends += 1;
+      return payload;
+    });
+    registerServiceDispatcherRoutes(app, server.core, '/api/debug', { callTimeoutMs: 120 });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    release?.();
+    await wireApp?.close();
+    await app?.close();
+    await server?.close();
+    if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it('returns one timeout envelope while a started member retains its pin until settlement', async () => {
+    const manager = server!.core.accessor.get(ISessionManager);
+    const metadata = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(ISessionMetadata);
+    const originalRead = metadata.read.bind(metadata);
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(metadata, 'read').mockImplementation(async () => {
+      enter();
+      await gate;
+      return originalRead();
+    });
+
+    const running = app!.inject({ method: 'POST', url: rpc('session', ISessionMetadata, 'read', { sid: sessionId }) });
+    await entered;
+    const response = await running;
+    expect(response.statusCode).toBe(200);
+    const envelope = response.json() as Envelope<null>;
+    expect(envelope.code).toBe(50001);
+    expect(envelope.msg).toBe('call timed out after 120ms; outcome unknown; the operation may still be running');
+    expect(responseSends).toBe(1);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(manager.residencyReport!().pinnedSessions).toBe(1);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(false);
+
+    release?.();
+    await vi.waitFor(() => expect(manager.residencyReport!().pinnedSessions).toBe(0));
+    expect(responseSends).toBe(1);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+  });
+
+  it('does not access or invoke a member after acquire completes past the response deadline', async () => {
+    const manager = server!.core.accessor.get(ISessionManager);
+    const metadata = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(ISessionMetadata);
+    const read = vi.fn(metadata.read.bind(metadata));
+    let getterReads = 0;
+    Object.defineProperty(metadata, 'read', {
+      configurable: true,
+      get: () => { getterReads += 1; return read; },
+    });
+    const acquire = manager.acquire!.bind(manager);
+    let enter!: () => void;
+    let dispose!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const disposed = new Promise<void>((resolve) => { dispose = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(manager, 'acquire').mockImplementation(async (...args) => {
+      const lease = await acquire(...args);
+      if (lease === undefined) return undefined;
+      enter();
+      await gate;
+      return {
+        handle: lease.handle,
+        dispose: () => { lease.dispose(); dispose(); },
+      };
+    });
+
+    const running = app!.inject({ method: 'POST', url: rpc('session', ISessionMetadata, 'read', { sid: sessionId }) });
+    await entered;
+    const response = await running;
+    expect(response.statusCode).toBe(200);
+    const envelope = response.json() as Envelope<null>;
+    expect(envelope.code).toBe(50001);
+    expect(envelope.msg).toBe('call timed out after 120ms; outcome unknown; the operation may still be running');
+    expect(getterReads).toBe(0);
+    expect(read).not.toHaveBeenCalled();
+    expect(manager.residencyReport!().pinnedSessions).toBe(1);
+
+    release?.();
+    await disposed;
+    expect(getterReads).toBe(0);
+    expect(read).not.toHaveBeenCalled();
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+  });
+
+  it('releases the lease when a started member rejects', async () => {
+    const manager = server!.core.accessor.get(ISessionManager);
+    const metadata = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(ISessionMetadata);
+    const read = vi.spyOn(metadata, 'read').mockImplementation(async () => {
+      await Promise.resolve();
+      throw new Error('controlled read failure');
+    });
+    const response = await app!.inject({
+      method: 'POST', url: rpc('session', ISessionMetadata, 'read', { sid: sessionId }),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ code: 50001, msg: 'controlled read failure' });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+  });
+
+  it('does not start a member after the HTTP client disconnects during acquire', async () => {
+    const manager = server!.core.accessor.get(ISessionManager);
+    const metadata = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(ISessionMetadata);
+    const read = vi.spyOn(metadata, 'read');
+    const acquire = manager.acquire!.bind(manager);
+    let close!: () => void;
+    const closed = new Promise<void>((resolve) => { close = resolve; });
+    const address = await listenForDisconnect(close);
+    let enter!: () => void;
+    let dispose!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const disposed = new Promise<void>((resolve) => { dispose = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(manager, 'acquire').mockImplementation(async (...args) => {
+      const lease = await acquire(...args);
+      if (lease === undefined) return undefined;
+      enter();
+      await gate;
+      return {
+        handle: lease.handle,
+        dispose: () => { lease.dispose(); dispose(); },
+      };
+    });
+
+    const controller = new AbortController();
+    const running = fetch(`${address}${rpc('session', ISessionMetadata, 'read', { sid: sessionId })}`, {
+      method: 'POST', signal: controller.signal,
+    });
+    await entered;
+    controller.abort();
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    await closed;
+    expect(manager.residencyReport!().pinnedSessions).toBe(1);
+
+    release?.();
+    await disposed;
+    expect(read).not.toHaveBeenCalled();
+    expect(responseSends).toBe(0);
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+  });
+
+  it('releases a started member pin after client disconnect and real settlement', async () => {
+    const manager = server!.core.accessor.get(ISessionManager);
+    const metadata = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(ISessionMetadata);
+    const originalRead = metadata.read.bind(metadata);
+    let close!: () => void;
+    const closed = new Promise<void>((resolve) => { close = resolve; });
+    const address = await listenForDisconnect(close);
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(metadata, 'read').mockImplementation(async () => {
+      enter();
+      await gate;
+      return originalRead();
+    });
+
+    const controller = new AbortController();
+    const running = fetch(`${address}${rpc('session', ISessionMetadata, 'read', { sid: sessionId })}`, {
+      method: 'POST', signal: controller.signal,
+    });
+    await entered;
+    controller.abort();
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    await closed;
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(manager.residencyReport!().pinnedSessions).toBe(1);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(false);
+
+    release?.();
+    await vi.waitFor(() => expect(manager.residencyReport!().pinnedSessions).toBe(0));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(responseSends).toBe(0);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
   });
 });
 

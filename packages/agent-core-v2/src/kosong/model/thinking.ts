@@ -162,7 +162,8 @@ export function resolveThinkingEffortForModel(
   model: ModelThinkingMetadata | undefined,
   strictValidation = false,
 ): ThinkingEffort {
-  const modelDefault = normalizeRequestedThinkingEffort(model?.overrides?.defaultEffort);
+  const modelDefault = normalizeRequestedThinkingEffort(model?.preferredThinkingEffort)
+    ?? normalizeRequestedThinkingEffort(model?.overrides?.defaultEffort);
   const configured = modelDefault
     ?? normalizeRequestedThinkingEffort(model?.defaultEffort)
     ?? normalizeRequestedThinkingEffort(defaults?.effort);

@@ -7,6 +7,7 @@ import {
   type AgentTask,
   type AgentTaskInfo,
   type AgentTaskOutputSnapshot,
+  type AgentTaskOutputPage,
   type AgentTaskTrackOptions,
   type AgentTaskWaitDelivery,
   type ForegroundTaskReleaseReason,
@@ -159,12 +160,18 @@ class FakeTaskService implements IAgentTaskService {
     return this.entries.get(taskId)?.info;
   }
 
-  list(activeOnly = true, limit?: number): readonly AgentTaskInfo[] {
+  async getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined> {
+    return this.getTask(taskId);
+  }
+
+  list(activeOnly = true, limit?: number, offset = 0): readonly AgentTaskInfo[] {
     const result: AgentTaskInfo[] = [];
+    let skipped = 0;
     for (const entry of this.entries.values()) {
       const info = entry.info;
       if (activeOnly && TERMINAL_STATUSES.has(info.status)) continue;
       if (!activeOnly && TERMINAL_STATUSES.has(info.status) && info.detached === false) continue;
+      if (skipped++ < offset) continue;
       result.push(info);
       if (limit !== undefined && result.length >= limit) break;
     }
@@ -181,6 +188,10 @@ class FakeTaskService implements IAgentTaskService {
   ): Promise<AgentTaskOutputSnapshot> {
     if (this.failSnapshotTaskIds.has(taskId)) throw new Error('snapshot read failed');
     return this.entries.get(taskId)?.output ?? outputSnapshot();
+  }
+
+  async getOutputPage(_taskId: string, _offset: number, _maxBytes: number): Promise<AgentTaskOutputPage | undefined> {
+    return undefined;
   }
 
   async readOutput(taskId: string, tail?: number): Promise<string> {
@@ -275,12 +286,15 @@ describe('TaskListTool', () => {
     expect(TaskListInputSchema.safeParse({}).success).toBe(true);
     expect(TaskListInputSchema.safeParse({ active_only: true, limit: 1 }).success).toBe(true);
     expect(TaskListInputSchema.safeParse({ active_only: true, limit: 0 }).success).toBe(false);
+    expect(TaskListInputSchema.safeParse({ offset: -1 }).success).toBe(false);
+    expect(TaskListInputSchema.safeParse({ offset: 1.5 }).success).toBe(false);
     expect(tool.parameters).toMatchObject({
       type: 'object',
       additionalProperties: false,
       properties: {
         active_only: { type: 'boolean' },
         limit: { type: 'integer' },
+        offset: { type: 'integer', minimum: 0 },
       },
     });
   });
@@ -373,6 +387,51 @@ describe('TaskListTool', () => {
     expect(output).not.toContain('bash-second01');
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('pages through more than 100 terminal tasks without repeating rows', async () => {
+    const tasks = new FakeTaskService();
+    const ids = Array.from({ length: 105 }, (_, index) => `bash-${String(index).padStart(8, '0')}`);
+    for (const taskId of ids) tasks.add(processTask({ taskId, status: 'completed', endedAt: 2 }));
+    const tool = new TaskListTool(tasks);
+    let offset = 0;
+    const seen: string[] = [];
+    for (let page = 0; page < 6; page++) {
+      const result = await executeTool(tool, context(`list_page_${page}`, { active_only: false, limit: 20, offset }));
+      const text = outputString(result);
+      seen.push(...[...text.matchAll(/^task_id: (.+)$/gm)].map((match) => match[1]!));
+      if (page < 5) {
+        expect(text).toContain('has_more: true');
+        offset = Number(/next_offset: (\d+)/.exec(text)?.[1]);
+      } else {
+        expect(text).toContain('has_more: false');
+        expect(text).not.toContain('next_offset:');
+      }
+    }
+    expect(seen).toEqual(ids);
+    const exhausted = await executeTool(tool, context('list_past_end', { active_only: false, offset: 1000 }));
+    expect(outputString(exhausted)).toContain('background_tasks: 0\nNo background tasks found.\nhas_more: false');
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('exposes verified subagent receipt metadata but not a trusted path for invalid or legacy receipts', async () => {
+    const tasks = new FakeTaskService();
+    tasks.add(agentTaskInfo({
+      receipt: { schemaVersion: 1, path: 'tasks/agent-abc12345/output.log', mediaType: 'text/plain; charset=utf-8',
+        bytes: 0, sha256: 'a'.repeat(64), contentState: 'unavailable', committedAt: '2026-01-01T00:00:00.000Z' },
+      receiptVerification: 'verified',
+    }));
+    tasks.add(agentTaskInfo({ taskId: 'agent-legacy01', receiptVerification: 'legacy_unverified' }));
+    tasks.add(agentTaskInfo({ taskId: 'agent-invalid1', receiptVerification: 'invalid' }));
+    const result = await executeTool(new TaskListTool(tasks), context('receipt_list', { active_only: false }));
+    const [verified, legacy, invalid] = outputString(result).split('\n---\n');
+    expect(verified).toContain('receipt_verification: verified');
+    expect(verified).toContain('receipt_path: tasks/agent-abc12345/output.log');
+    expect(verified).toContain('receipt_content_state: unavailable');
+    expect(verified).not.toContain('[object Object]');
+    expect(legacy).toContain('receipt_verification: legacy_unverified');
+    expect(legacy).not.toContain('receipt_path:');
+    expect(invalid).toContain('receipt_verification: invalid');
+    expect(invalid).not.toContain('receipt_path:');
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('includes stop_reason for stopped tasks in all-tasks view', async () => {
     const tasks = new FakeTaskService();
     tasks.add(
@@ -430,12 +489,17 @@ describe('TaskOutputTool', () => {
 
     expect(tool.name).toBe('TaskOutput');
     expect(TaskOutputInputSchema.safeParse({ task_id: 'bash-1' }).success).toBe(true);
+    expect(TaskOutputInputSchema.safeParse({ task_id: 'bash-1', offset: -1 }).success).toBe(false);
+    expect(TaskOutputInputSchema.safeParse({ task_id: 'bash-1', max_bytes: 3 }).success).toBe(false);
+    expect(TaskOutputInputSchema.safeParse({ task_id: 'bash-1', max_bytes: 32 * 1024 + 1 }).success).toBe(false);
     expect(tool.parameters).toMatchObject({
       type: 'object',
       additionalProperties: false,
       required: ['task_id'],
       properties: {
         task_id: { type: 'string' },
+        offset: { type: 'integer', minimum: 0 },
+        max_bytes: { type: 'integer', minimum: 4, maximum: 32768 },
       },
     });
     expect(JSON.stringify(tool.parameters)).not.toContain('"block"');

@@ -103,8 +103,15 @@ export class CapabilityService extends Disposable implements ICapabilityService 
     return this.statusOf(this.requireEntry(id));
   }
 
-  async installCapability(id: string): Promise<CapabilityStatus> {
+  async installCapability(id: string, expectedSha256?: string): Promise<CapabilityStatus> {
     const entry = this.requireEntry(id);
+    if (expectedSha256 !== undefined && entry.plan?.artifact.sha256 !== expectedSha256) {
+      throw new Error2(
+        CapabilityErrors.codes.CAPABILITY_UNSUPPORTED,
+        'Capability release plan changed; refresh the plan and confirm again',
+        { details: { id: entry.id } },
+      );
+    }
     if (!entry.supported) {
       throw new Error2(
         CapabilityErrors.codes.CAPABILITY_UNSUPPORTED,
@@ -168,6 +175,7 @@ export class CapabilityService extends Disposable implements ICapabilityService 
       pluginId: entry.pluginId,
       displayName: entry.displayName,
       description: entry.description,
+      plan: entry.plan,
       install,
     };
     if (!entry.supported) {
@@ -176,7 +184,7 @@ export class CapabilityService extends Disposable implements ICapabilityService 
     const detected = await entry.detect();
     const required = detected.steps.filter((step) => step.optional !== true);
     const requiredOk = required.length > 0 && required.every((step) => step.state === 'ok');
-    const anyOk = detected.steps.some((step) => step.state === 'ok');
+    const anyOk = required.some((step) => step.state === 'ok');
     const state: CapabilityReadiness = requiredOk ? 'ready' : anyOk ? 'partial' : 'not_installed';
     return {
       ...base,
@@ -198,6 +206,7 @@ export class CapabilityService extends Disposable implements ICapabilityService 
         pluginId: entry.pluginId,
         displayName: entry.displayName,
         description: entry.description,
+        plan: entry.plan,
         install,
       };
       if (!entry.supported) {

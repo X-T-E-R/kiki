@@ -2,13 +2,14 @@
 
 import { StrictMode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { writeSettings } from '@kiki/session-core/settings';
 import type { SessionController } from '@kiki/session-core/session';
 import { browserHost, HostProvider } from '../host';
 import { I18nProvider } from '../i18n';
+import { ConnectionSection } from '../components/settings/ConnectionSection';
 import { ConnectionProvider, LiveControllerRegistry, nextGuiLeaseClientId, useConnection } from './connection';
 
 const mocks = vi.hoisted(() => ({
@@ -49,6 +50,8 @@ vi.mock('@tauri-apps/api/event', () => ({
     });
   }),
 }));
+
+vi.mock('../lib/busySessionsHook', () => ({ useBusySessionCount: () => 0 }));
 
 vi.mock('../lib/client', () => ({
   ApiError: class ApiError extends Error {},
@@ -100,7 +103,17 @@ function deferred<T>(): Deferred<T> {
 
 function ConnectedHarness() {
   const connection = useConnection();
-  return <span data-connected-url>{connection.config.url}</span>;
+  const queryClient = useQueryClient();
+  return <>
+    <span data-connected-url>{connection.config.url}</span>
+    <span data-scope-id>{connection.scopeId}</span>
+    <span data-cache-value>{queryClient.getQueryData(['workspaces']) ?? 'empty'}</span>
+    <button type="button" data-write-cache onClick={() => {
+      queryClient.setQueryData(['workspaces'], connection.scopeId);
+    }} />
+    <button type="button" data-switch-ssh onClick={() => void connection.activateSshProfile('host-1', 'a'.repeat(43))} />
+    <button type="button" data-switch-local onClick={connection.activateLocal} />
+  </>;
 }
 
 function StrictLifecycleHarness() {
@@ -142,6 +155,7 @@ beforeEach(() => {
   vi.stubGlobal('__KIKI_PROXY_TARGET__', 'http://127.0.0.1:58627');
   mocks.detectLocalConnection.mockReset();
   mocks.invoke.mockReset();
+  mocks.invoke.mockImplementation((command: string) => command === 'list_ssh_profiles' ? Promise.resolve([]) : Promise.resolve(undefined));
   mocks.meta.mockReset();
   mocks.renewLease.mockReset();
   mocks.renewLease.mockResolvedValue(undefined);
@@ -173,7 +187,7 @@ async function flush(): Promise<void> {
   });
 }
 
-async function mountProvider(strict = false): Promise<HTMLDivElement> {
+async function mountProvider(strict = false, settings = false): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -183,7 +197,7 @@ async function mountProvider(strict = false): Promise<HTMLDivElement> {
   });
   const connection = (
     <ConnectionProvider>
-      {strict ? <StrictLifecycleHarness /> : <ConnectedHarness />}
+      {strict ? <StrictLifecycleHarness /> : <><ConnectedHarness />{settings ? <ConnectionSection /> : null}</>}
     </ConnectionProvider>
   );
   const hosted = strict ? <HostProvider host={browserHost}>{connection}</HostProvider> : connection;
@@ -420,6 +434,223 @@ describe('ConnectionProvider Klient ownership', () => {
 });
 
 describe('ConnectionProvider desktop backend recovery', () => {
+  it('hides direct token editing and local restart in SSH settings scope', async () => {
+    const localConfig = { url: 'http://127.0.0.1:41001', token: 'local-token' };
+    const remoteConfig = { url: 'http://127.0.0.1:42002', token: 'a'.repeat(43) };
+    mocks.detectLocalConnection.mockResolvedValue({ config: localConfig, persist: false });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_ssh_profiles') return Promise.resolve([{ id: 'host-1', label: 'Example', target: { kind: 'alias', alias: 'example' }, releaseChannel: 'stable', remotePort: 58627, serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed' }]);
+      if (command === 'ssh_tunnel_running') return Promise.resolve(true);
+      if (command === 'connect_ssh_profile') return Promise.resolve({ config: remoteConfig, tunnelId: 'tunnel-one',
+        serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed', serverInstanceId: 'remote',
+        serverVersion: '0.1.0', buildId: 'test-build', buildChannel: 'stable',
+      });
+      return Promise.resolve(undefined);
+    });
+    mocks.meta.mockImplementation((url: string) => Promise.resolve(url === remoteConfig.url ? {
+      server_home_id: '46aca369-50e8-4fd3-9c45-606d084450ed', server_id: 'remote',
+      dangerous_bypass_auth: false, server_version: '0.1.0', build_id: 'test-build', build_channel: 'stable',
+    } : { server_version: '0.1.0', server_id: 'local' }));
+    const container = await mountProvider(false, true);
+    expect(container.querySelector('#st-conn-token')).not.toBeNull();
+    expect(container.querySelector('#st-card-conn-owned')).not.toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await flush();
+    expect(container.querySelector('#st-conn-token')).toBeNull();
+    expect(container.querySelector('#st-card-conn-owned')).toBeNull();
+    expect(container.textContent).toContain('Its agent and provider settings live there');
+    expect(mocks.invoke).not.toHaveBeenCalledWith('restart_server');
+  });
+
+  it('fails closed for an older remote server without server_home_id', async () => {
+    const localConfig = { url: 'http://127.0.0.1:41001', token: 'local-token' };
+    const remoteConfig = { url: 'http://127.0.0.1:42002', token: 'a'.repeat(43) };
+    mocks.detectLocalConnection.mockResolvedValue({ config: localConfig, persist: false });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_ssh_profiles') return Promise.resolve([{ id: 'host-1', label: 'Example', target: { kind: 'alias', alias: 'example' }, releaseChannel: 'stable', remotePort: 58627, serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed' }]);
+      if (command === 'ssh_tunnel_running') return Promise.resolve(true);
+      if (command === 'connect_ssh_profile') return Promise.resolve({ config: remoteConfig, tunnelId: 'tunnel-one',
+        serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed', serverInstanceId: 'remote',
+        serverVersion: '0.1.0', buildId: 'test-build', buildChannel: 'stable',
+      });
+      return Promise.resolve(undefined);
+    });
+    mocks.meta.mockImplementation((url: string) => Promise.resolve(url === remoteConfig.url ? {
+      server_id: 'remote', server_version: '0.1.0', build_id: 'test-build', build_channel: 'stable',
+    } : { server_id: 'local' }));
+    const container = await mountProvider();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-connected-url]')).toBeNull();
+    expect(container.textContent).toContain('SSH server identity changed');
+    expect(container.textContent).toContain('SSH connection blocked');
+    const switchLocal = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Switch to this computer');
+    expect(switchLocal).toBeDefined();
+    expect(container.textContent).not.toContain('Retry startup');
+    await act(async () => { switchLocal!.click(); });
+    await flush();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(localConfig.url);
+    expect(mocks.invoke).not.toHaveBeenCalledWith('restart_server');
+  });
+
+  it('blocks a remote server that advertises bearer-auth bypass even when home ID matches', async () => {
+    const homeId = '46aca369-50e8-4fd3-9c45-606d084450ed';
+    const config = { url: 'http://127.0.0.1:42002', token: 'a'.repeat(43) };
+    mocks.detectLocalConnection.mockResolvedValue({
+      config: { url: 'http://127.0.0.1:41001', token: 'local-token' }, persist: false,
+    });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_ssh_profiles') return Promise.resolve([{
+        id: 'host-1', label: 'Example', target: { kind: 'alias', alias: 'example' },
+        releaseChannel: 'stable', remotePort: 58627, serverHomeId: homeId,
+      }]);
+      if (command === 'connect_ssh_profile') return Promise.resolve({
+        config, tunnelId: 'tunnel-one', serverHomeId: homeId,
+        serverInstanceId: 'server-remote', serverVersion: '0.1.0', buildId: null, buildChannel: null,
+      });
+      return Promise.resolve(undefined);
+    });
+    mocks.meta.mockImplementation((url: string) => Promise.resolve(url === config.url ? {
+      server_home_id: homeId, server_id: 'server-remote', server_version: '0.1.0', dangerous_bypass_auth: true,
+    } : { server_id: 'server-local' }));
+    const container = await mountProvider();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-connected-url]')).toBeNull();
+    expect(container.textContent).toContain('SSH server identity changed');
+  });
+
+  it('hides a stale local failure while verifying SSH and restarts only the local backend on fallback', async () => {
+    const localConfig = { url: 'http://127.0.0.1:41001', token: 'local-token' };
+    const remoteConfig = { url: 'http://127.0.0.1:42002', token: 'a'.repeat(43) };
+    const remoteMeta = deferred<object>();
+    mocks.detectLocalConnection.mockRejectedValueOnce(new Error('local backend unavailable'))
+      .mockResolvedValueOnce({ config: localConfig, persist: false });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_ssh_profiles') return Promise.resolve([{ id: 'host-1', label: 'Example', target: { kind: 'alias', alias: 'example' }, releaseChannel: 'stable', remotePort: 58627, serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed' }]);
+      if (command === 'ssh_tunnel_running') return Promise.resolve(true);
+      if (command === 'connect_ssh_profile') return Promise.resolve({ config: remoteConfig, tunnelId: 'tunnel-one',
+        serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed', serverInstanceId: 'remote',
+        serverVersion: '0.1.0', buildId: 'test-build', buildChannel: 'stable',
+      });
+      return Promise.resolve(undefined);
+    });
+    mocks.meta.mockImplementation((url: string) => url === remoteConfig.url
+      ? remoteMeta.promise : Promise.resolve({ server_id: 'local' }));
+    const container = await mountProvider();
+    expect(container.textContent).toContain('local backend unavailable');
+    expect(container.textContent).toContain('Retry startup');
+    const tokenInput = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    expect(tokenInput).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(tokenInput, 'a'.repeat(43));
+      tokenInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const connectButton = tokenInput.closest('label')!.nextElementSibling as HTMLButtonElement;
+    await act(async () => { connectButton.click(); });
+    await flush();
+    expect(container.textContent).toContain('Checking SSH server identity');
+    expect(container.textContent).not.toContain('local backend unavailable');
+    expect(container.querySelector('#connect-token')).toBeNull();
+    await act(async () => remoteMeta.resolve({ server_id: 'remote', server_version: '0.1.0', build_id: 'test-build', build_channel: 'stable' }));
+    await flush();
+    expect(container.textContent).toContain('SSH server identity changed');
+    expect(container.textContent).not.toContain('local backend unavailable');
+    const switchLocal = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Switch to this computer');
+    expect(switchLocal).toBeDefined();
+    await act(async () => { switchLocal!.click(); });
+    await flush();
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(localConfig.url);
+    expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
+  });
+
+  it('isolates local and SSH scope caches and rejects mismatched server identity', async () => {
+    const homeId = '46aca369-50e8-4fd3-9c45-606d084450ed';
+    const localConfig = { url: 'http://127.0.0.1:41001', token: 'local-token' };
+    const remoteConfig = { url: 'http://127.0.0.1:42002', token: 'a'.repeat(43) };
+    const profile = { id: 'host-1', label: 'Example', target: { kind: 'alias', alias: 'example' }, releaseChannel: 'stable', remotePort: 58627, serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed' };
+    const resolved = { config: remoteConfig, tunnelId: 'tunnel-one', serverHomeId: homeId, serverInstanceId: 'server-remote',
+      serverVersion: '0.1.0', buildId: 'test-build', buildChannel: 'stable' };
+    mocks.detectLocalConnection.mockResolvedValue({ config: localConfig, persist: false });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_ssh_profiles') return Promise.resolve([profile]);
+      if (command === 'ssh_tunnel_running') return Promise.resolve(true);
+      if (command === 'connect_ssh_profile') return Promise.resolve(resolved);
+      return Promise.resolve(undefined);
+    });
+    mocks.meta.mockImplementation((url: string) => Promise.resolve(url === remoteConfig.url ? {
+      server_home_id: homeId, server_id: 'server-remote', server_version: '0.1.0', dangerous_bypass_auth: false,
+      build_id: 'test-build', build_channel: 'stable',
+    } : { server_id: 'server-local' }));
+    const container = await mountProvider();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-write-cache]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+    expect(container.querySelector('[data-cache-value]')?.textContent).toBe('empty');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-write-cache]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-local]')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
+    expect(container.querySelector('[data-cache-value]')?.textContent).toBe('local');
+    expect(mocks.klients.filter((entry) => !entry.closed)).toHaveLength(1);
+    expect(mocks.klients.find((entry) => !entry.closed)?.endpoint).toBe(localConfig.url);
+    expect(mocks.invoke).toHaveBeenCalledWith('disconnect_ssh_profile', { id: 'host-1', tunnelId: 'tunnel-one' });
+
+    mocks.meta.mockImplementation((url: string) => Promise.resolve(url === remoteConfig.url ? {
+      server_home_id: 'unexpected-home', server_id: 'server-remote', server_version: '0.1.0',
+      build_id: 'test-build', build_channel: 'stable',
+    } : { server_id: 'server-local' }));
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-connected-url]')).toBeNull();
+    expect(container.textContent).toContain('SSH server identity changed');
+  });
+
+  it('cannot disconnect a newer same-profile SSH tunnel from a late older connection', async () => {
+    const homeId = '46aca369-50e8-4fd3-9c45-606d084450ed';
+    const token = 'a'.repeat(43);
+    const old = deferred<object>();
+    const newer = deferred<object>();
+    let connections = 0;
+    mocks.detectLocalConnection.mockResolvedValue({
+      config: { url: 'http://127.0.0.1:41001', token: 'local-token' }, persist: false,
+    });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_ssh_profiles') return Promise.resolve([{
+        id: 'host-1', label: 'Example', target: { kind: 'alias', alias: 'example' },
+        releaseChannel: 'stable', remotePort: 58627, serverHomeId: homeId,
+      }]);
+      if (command === 'connect_ssh_profile') return ++connections === 1 ? old.promise : newer.promise;
+      if (command === 'ssh_tunnel_running') return Promise.resolve(true);
+      return Promise.resolve(undefined);
+    });
+    mocks.meta.mockImplementation((url: string) => Promise.resolve(url.includes('42002') ? {
+      server_home_id: homeId, server_id: 'server-remote', server_version: '0.1.0', dangerous_bypass_auth: false,
+    } : { server_id: 'server-local' }));
+    const container = await mountProvider();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
+    await flush();
+    const resolved = (tunnelId: string) => ({
+      config: { url: 'http://127.0.0.1:42002', token }, tunnelId,
+      serverHomeId: homeId, serverInstanceId: 'server-remote',
+      serverVersion: '0.1.0', buildId: null, buildChannel: null,
+    });
+    await act(async () => newer.resolve(resolved('newer')));
+    await flush();
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+    await act(async () => old.resolve(resolved('older')));
+    await flush();
+    expect(mocks.invoke).toHaveBeenCalledWith('disconnect_ssh_profile', { id: 'host-1', tunnelId: 'older' });
+    expect(mocks.invoke).not.toHaveBeenCalledWith('disconnect_ssh_profile', { id: 'host-1', tunnelId: 'newer' });
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+  });
+
   it('invalidates stale meta, closes the old socket, and connects only after the new endpoint validates', async () => {
     const oldConfig = { url: 'http://127.0.0.1:41001', token: 'old-token' };
     const intermediateConfig = { url: 'http://127.0.0.1:41501', token: 'middle-token' };

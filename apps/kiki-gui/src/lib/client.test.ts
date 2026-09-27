@@ -12,8 +12,39 @@ import {
   isSessionIndexBuildingError,
   isSessionNotFoundMessage,
   KikiClient,
+  NativeChildPromptConflictError,
   type AgentTranscriptResponse,
 } from './client';
+
+describe('KikiClient capability plan', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('reads the server plan and sends the confirmed digest through the validated klient call', async () => {
+    const sha256 = 'a'.repeat(64);
+    const status = {
+      id: 'kimi-webbridge', displayName: 'WebBridge', description: 'Browser', supported: true,
+      state: 'partial', steps: [{ id: 'extension', state: 'missing' }], install: { running: false },
+      plan: { artifact: { version: 'v2.0.22', url: 'https://example.test/daemon',
+        sha256, metadataUrl: 'https://example.test/version.json', maxBytes: 1024 },
+      destination: '/home/example/bin', note: 'Publisher metadata' },
+    };
+    const calls: Array<{ method: string; params: unknown[] }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as {
+        procedure: { method: string }; params: unknown[];
+      };
+      calls.push({ method: body.procedure.method, params: body.params });
+      return Response.json({ code: 0, msg: 'success', data: status });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'test-token' });
+    expect((await client.getCapability('kimi-webbridge')).plan?.artifact.sha256).toBe(sha256);
+    await client.installCapability('kimi-webbridge', sha256);
+    expect(calls).toEqual([
+      { method: 'getCapability', params: ['kimi-webbridge'] },
+      { method: 'installCapability', params: ['kimi-webbridge', sha256] },
+    ]);
+  });
+});
 
 describe('isSessionNotFoundMessage', () => {
   it('matches the wire envelope message for a missing session', () => {
@@ -184,16 +215,18 @@ describe('KikiClient.sendAgentMessage', () => {
       throw new Error(`unexpected procedure: ${body.procedure.method}`);
     }));
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
-    await client.sendAgentMessage('s1', 'child', 'next step', [{ type: 'text', text: 'next step' }]);
+    const receipt = await client.sendAgentMessage('s1', 'child', 'next step', [{ type: 'text', text: 'next step' }], 'submission-1');
+    expect(receipt).toMatchObject({ delivery: 'delivered', deduplicated: false, payloadConflict: false });
+    expect(receipt?.message).toMatchObject({ messageId: 'message-1', targetAgentId: 'child', senderKind: 'user' });
     expect(calls.map((call) => [call.service, call.method])).toEqual([
       ['sessionMetadata', 'read'], ['agentCollaborationMessagingService', 'sendUserMessage'],
     ]);
     expect(calls[1]?.params[0]).toMatchObject({ targetAgentId: 'child', content: 'next step',
-      idempotencyKey: expect.any(String) });
+      idempotencyKey: 'submission-1' });
     await expect(client.sendAgentMessage('s1', 'child', 'next step', [
       { type: 'text', text: 'next step' },
       { type: 'file', file_id: 'file-1', name: 'file.txt', media_type: 'text/plain', size: 1 },
-    ])).rejects.toThrow('External agent messages support text only');
+    ], 'submission-2')).rejects.toThrow('External agent messages support text only');
     expect(calls.map((call) => call.method)).toEqual(['read', 'sendUserMessage', 'read']);
   });
 
@@ -207,14 +240,79 @@ describe('KikiClient.sendAgentMessage', () => {
         code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
           agents: { child: { type: 'sub', executor: 'native' } } },
       });
-      expect(JSON.parse(init?.body as string)).toMatchObject({ agent_id: 'child', content });
+      const body = JSON.parse(init?.body as string);
+      expect(body).toMatchObject({ agent_id: 'child', content });
+      expect(body).not.toHaveProperty('prompt_id');
       return Response.json({ code: 0, msg: 'success', data: {
         prompt_id: 'p1', user_message_id: 'p1', status: 'running', content,
         created_at: '2026-01-01T00:00:00.000Z',
       } });
     }));
-    await new KikiClient({ baseUrl: 'http://127.0.0.1:8080' }).sendAgentMessage('s1', 'child', 'look', content);
+    const receipt = await new KikiClient({ baseUrl: 'http://127.0.0.1:8080' })
+      .sendAgentMessage('s1', 'child', 'look', content, 'native-submission');
+    // Attachments retain the ordinary prompt route and have no replay guarantee.
+    expect(receipt).toBeNull();
     expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts']);
+  });
+
+  it('sends one native child text key to the prompt route and treats replay as a prompt, not a mailbox delivery', async () => {
+    const accepted = new Map<string, string>();
+    const requests: Array<Record<string, unknown>> = [];
+    let loseFirstResponse = true;
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).endsWith('/api/klient/call')) return Response.json({
+        code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
+          agents: { child: { type: 'sub', executor: 'native' } } },
+      });
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/sessions/s1/prompts');
+      const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      requests.push(body);
+      const key = body['prompt_id'] as string;
+      const content = JSON.stringify(body['content']);
+      const earlier = accepted.get(key);
+      if (earlier !== undefined && earlier !== content) return Response.json({
+        code: 40938, msg: 'prompt.id_conflict', data: null,
+      });
+      accepted.set(key, content);
+      if (loseFirstResponse) {
+        loseFirstResponse = false;
+        throw new Error('response lost after acceptance');
+      }
+      return Response.json({ code: 0, msg: 'success', data: {
+        prompt_id: key, user_message_id: key, status: 'running', content: body['content'],
+        created_at: '2026-01-01T00:00:00.000Z',
+      } });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    const send = (text: string, key: string) => client.sendAgentMessage('s1', 'child', text, [
+      { type: 'text', text },
+    ], key);
+    await expect(send('next step', 'native-key-1')).rejects.toThrow();
+    expect(await send('next step', 'native-key-1')).toBeNull();
+    expect(accepted.size).toBe(1);
+    await expect(send('changed step', 'native-key-1')).rejects.toBeInstanceOf(NativeChildPromptConflictError);
+    expect(requests).toEqual([
+      { agent_id: 'child', prompt_id: 'native-key-1', content: [{ type: 'text', text: 'next step' }] },
+      { agent_id: 'child', prompt_id: 'native-key-1', content: [{ type: 'text', text: 'next step' }] },
+      { agent_id: 'child', prompt_id: 'native-key-1', content: [{ type: 'text', text: 'changed step' }] },
+    ]);
+  });
+
+  it('does not attach a child replay key to a main prompt', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).endsWith('/api/klient/call')) return Response.json({
+        code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} },
+      });
+      const body = JSON.parse(init?.body as string);
+      expect(body).toEqual({ agent_id: 'main', content: [{ type: 'text', text: 'main message' }] });
+      return Response.json({ code: 0, msg: 'success', data: {
+        prompt_id: 'main-prompt', user_message_id: 'main-prompt', status: 'queued',
+        content: body.content, created_at: '2026-01-01T00:00:00.000Z',
+      } });
+    }));
+    await expect(new KikiClient({ baseUrl: 'http://127.0.0.1:8080' })
+      .sendAgentMessage('s1', 'main', 'main message', [{ type: 'text', text: 'main message' }], 'child-key'))
+      .resolves.toBeNull();
   });
 });
 
@@ -951,7 +1049,7 @@ describe('KikiClient.getAgentTranscript', () => {
       attachments: [{ attachmentId: 'att-1', mediaType: 'image/png', name: 'shot.png' }],
     };
     const original = globalThis.fetch;
-    globalThis.fetch = vi.fn(async () => envelope(payload)) as typeof fetch;
+    globalThis.fetch = vi.fn(async () => envelope({ ...payload, transcript_coverage_version: 2 })) as typeof fetch;
     try {
       const response = await transcriptView('sess-1').transcript.page({ agentId: 'child-1' }) as unknown as AgentTranscriptResponse;
       expect(response.agent_id).toBe('child-1');

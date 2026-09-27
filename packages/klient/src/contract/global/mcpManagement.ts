@@ -114,6 +114,18 @@ export const mcpServerAuthStatusSchema = z.object({
   authStatus: mcpServerAuthStateSchema,
 });
 
+export const mcpStoredOAuthIdentitySchema = z.object({
+  credentialId: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+export const mcpStoredOAuthCredentialSchema = mcpStoredOAuthIdentitySchema.extend({
+  serverName: z.string().min(1),
+  displayUrl: z.string().min(1),
+  origin: z.literal('unknown'),
+});
+
+export const mcpRevealedOAuthCredentialSchema = z.object({ canonicalUrl: z.url() });
+
 export const mcpServerAuthBeginResultSchema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('authorization-required'),
@@ -183,7 +195,19 @@ export const mcpManagementContract = {
     output: noResult,
   },
   resetServerAuth: {
-    input: z.tuple([mcpServerLocatorSchema, mcpRegistryQuerySchema.optional()]),
+    input: z.tuple([mcpServerLocatorSchema, mcpRegistryQuerySchema.optional(), z.url().optional()]),
+    output: noResult,
+  },
+  listStoredOAuthCredentials: {
+    input: z.tuple([]),
+    output: z.array(mcpStoredOAuthCredentialSchema),
+  },
+  revealStoredOAuthCredential: {
+    input: z.tuple([mcpStoredOAuthIdentitySchema]),
+    output: mcpRevealedOAuthCredentialSchema,
+  },
+  revokeStoredOAuthCredential: {
+    input: z.tuple([mcpStoredOAuthIdentitySchema]),
     output: noResult,
   },
 } satisfies ServiceContract;

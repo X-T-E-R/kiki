@@ -22,6 +22,8 @@ import {
   IEventDispatcher,
   IBootstrapService,
   PromptEnqueued,
+  PromptRetryCommitted,
+  IWireService,
   IFileService,
   ISessionContext,
   ISessionMetadata,
@@ -287,6 +289,20 @@ describe('server-v2 /api prompts', () => {
       });
       ctx.signal.throwIfAborted();
     }, { before: 'context-injector' });
+  }
+
+  async function createHeldChild(sessionId: string) {
+    await createMainAgent(sessionId);
+    const lifecycle = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({ binding: { profile: 'agent', model: 'stub', thinking: 'high' } });
+    child.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-retry-child-turn', async (ctx) => {
+      await new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      ctx.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    return child;
   }
 
   it.each([undefined, 'stub-alt'])('authenticates the session or requested model rather than an unrelated default: %s', async (model) => {
@@ -918,6 +934,175 @@ describe('server-v2 /api prompts', () => {
     expect(afterResume.body.code).toBe(40938);
     const resumed = getLiveSessionById(server!.core.accessor, id);
     expect((await resumed!.accessor.get(ISessionMetadata).read()).lastPrompt).toBe('first prompt');
+  });
+
+  it('replays one accepted native child prompt after losing the HTTP response and rejects a changed payload', async () => {
+    const id = await createSession(home as string);
+    const child = await createHeldChild(id);
+    const prompt = child.accessor.get(IAgentPromptService);
+    const enqueue = vi.spyOn(prompt, 'enqueue');
+    const payload = {
+      agent_id: child.id, prompt_id: 'native-child-retry', content: [{ type: 'text', text: 'one child run' }],
+    };
+    const first = await fetch(`${base}/api/sessions/${id}/prompts`, {
+      method: 'POST', headers: authHeaders(server!, { 'content-type': 'application/json' }), body: JSON.stringify(payload),
+    });
+    expect(first.status).toBe(200);
+    await first.body?.cancel();
+    const retry = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(retry.body.code, retry.body.msg).toBe(0);
+    expect(retry.body.data).toMatchObject({ prompt_id: payload.prompt_id, content: payload.content });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const changed = await call<null>('POST', `/api/sessions/${id}/prompts`, {
+      ...payload, content: [{ type: 'text', text: 'different child run' }],
+    });
+    expect(changed.body.code).toBe(40938);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    prompt.abort(payload.prompt_id);
+  });
+
+  it('scopes native child prompt retry keys to their target within a session', async () => {
+    const id = await createSession(home as string);
+    const firstChild = await createHeldChild(id);
+    const lifecycle = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService);
+    const otherChild = await lifecycle.create({ binding: { profile: 'agent', model: 'stub', thinking: 'high' } });
+    otherChild.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-other-child-turn', async (ctx) => {
+      await new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      ctx.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const key = 'shared-native-child-key';
+    const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      agent_id: firstChild.id, prompt_id: key, content: [{ type: 'text', text: 'first child' }],
+    });
+    const second = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      agent_id: otherChild.id, prompt_id: key, content: [{ type: 'text', text: 'second child' }],
+    });
+    expect(first.body.code, first.body.msg).toBe(0);
+    expect(second.body.code, second.body.msg).toBe(0);
+    expect(firstChild.accessor.get(IAgentPromptService).list().active?.message.content).toEqual([{ type: 'text', text: 'first child' }]);
+    expect(second.body.data.prompt_id).toBe(key);
+    firstChild.accessor.get(IAgentPromptService).abort(key);
+    otherChild.accessor.get(IAgentPromptService).abort(key);
+  });
+
+  it('reuses a native child key after rejection before prompt acceptance', async () => {
+    const id = await createSession(home as string);
+    const child = await createHeldChild(id);
+    const payload = { agent_id: child.id, prompt_id: 'native-child-rejected', content: [{ type: 'text', text: 'try again' }] };
+    const rejected = await call<null>('POST', `/api/sessions/${id}/prompts`, { ...payload, model: 'not-configured' });
+    expect(rejected.body.code).not.toBe(0);
+    const accepted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(accepted.body.code, accepted.body.msg).toBe(0);
+    child.accessor.get(IAgentPromptService).abort(payload.prompt_id);
+  });
+
+  it('fails closed when a child prompt was accepted but its retry receipt did not commit', async () => {
+    const id = await createSession(home as string);
+    const child = await createHeldChild(id);
+    const dispatcher = child.accessor.get(IEventDispatcher);
+    const dispatch = dispatcher.dispatch.bind(dispatcher);
+    let failOnce = true;
+    vi.spyOn(dispatcher, 'dispatch').mockImplementation(async (event) => {
+      if (event instanceof PromptRetryCommitted && failOnce) {
+        failOnce = false;
+        throw new Error('receipt persist failed');
+      }
+      return dispatch(event);
+    });
+    const prompt = child.accessor.get(IAgentPromptService);
+    const enqueue = vi.spyOn(prompt, 'enqueue');
+    const payload = { agent_id: child.id, prompt_id: 'native-child-uncommitted', content: [{ type: 'text', text: 'ambiguous' }] };
+    const first = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(first.body.code).not.toBe(0);
+    const retry = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(retry.body.code).toBe(40938);
+    expect(retry.body.msg).toContain('accepted without a replayable receipt');
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replay an unflushed child receipt as if it were durably accepted', async () => {
+    const id = await createSession(home as string);
+    const child = await createHeldChild(id);
+    const wire = child.accessor.get(IWireService);
+    const flush = wire.flush.bind(wire);
+    let calls = 0;
+    vi.spyOn(wire, 'flush').mockImplementation(async () => {
+      if (++calls >= 2) throw new Error('storage flush failed');
+      return flush();
+    });
+    const prompt = child.accessor.get(IAgentPromptService);
+    const enqueue = vi.spyOn(prompt, 'enqueue');
+    const payload = { agent_id: child.id, prompt_id: 'native-child-unflushed', content: [{ type: 'text', text: 'needs durability' }] };
+    const first = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(first.body.code).not.toBe(0);
+    const retry = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(retry.body.code).not.toBe(0);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    vi.restoreAllMocks();
+  });
+
+  it('never admits two simultaneous native child submissions of one key', async () => {
+    const id = await createSession(home as string);
+    const child = await createHeldChild(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const dispatch = session.accessor.get(ISessionDispatchService);
+    const recordRun = dispatch.recordRun.bind(dispatch);
+    let entered!: () => void;
+    const entering = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(dispatch, 'recordRun').mockImplementationOnce(async (...args) => {
+      entered();
+      await hold;
+      return recordRun(...args);
+    });
+    const prompt = child.accessor.get(IAgentPromptService);
+    const enqueue = vi.spyOn(prompt, 'enqueue');
+    const payload = { agent_id: child.id, prompt_id: 'native-child-flight', content: [{ type: 'text', text: 'only one' }] };
+    const first = call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    await entering;
+    const concurrent = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(concurrent.body.code).toBe(40938);
+    release();
+    const accepted = await first;
+    expect(accepted.body.code, accepted.body.msg).toBe(0);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const replay = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(replay.body.code).toBe(0);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    prompt.abort(payload.prompt_id);
+  });
+
+  it('replays an accepted native child receipt after server restart without re-enqueueing', async () => {
+    const id = await createSession(home as string);
+    const child = await createHeldChild(id);
+    const payload = { agent_id: child.id, prompt_id: 'native-child-restart', content: [{ type: 'text', text: 'restart once' }] };
+    const accepted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(accepted.body.code, accepted.body.msg).toBe(0);
+    child.accessor.get(IAgentPromptService).abort(payload.prompt_id);
+    await server!.close();
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const resumed = await resumeSessionById(server.core.accessor, id);
+    const lifecycle = resumed!.accessor.get(IAgentLifecycleService);
+    const restored = await lifecycle.create({ agentId: child.id, restoreBinding: {
+      profileName: 'agent', modelAlias: 'stub', thinkingEffort: 'high', executorId: 'native', executorProtocol: 'native',
+    } });
+    restored.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-incorrect-replay', async (ctx) => {
+      await new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      ctx.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const enqueue = vi.spyOn(restored.accessor.get(IAgentPromptService), 'enqueue');
+    const retry = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(retry.body.code, retry.body.msg).toBe(0);
+    expect(retry.body.data).toEqual(accepted.body.data);
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it('rejects a bundled submission with an unknown skill and records nothing', async () => {
@@ -2148,7 +2333,7 @@ describe('server-v2 /api prompts', () => {
         context.signal.throwIfAborted();
       }, { before: 'context-injector' });
     });
-    await call('GET', `/api/sessions/${id}/transcript?agent_id=main`);
+    await call('GET', `/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2`);
     const submitted = await Promise.all(['cold-a', 'cold-b'].map((promptId) =>
       call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
         agent_id: child.id, prompt_id: promptId, content: [{ type: 'text', text: promptId }],
@@ -2162,7 +2347,7 @@ describe('server-v2 /api prompts', () => {
     await vi.waitFor(async () => {
       expect(tasks.getTask(runTasks[0]!)?.status).toBe('killed');
       expect(tasks.getTask(runTasks[1]!)?.status).toBe('running');
-      const transcript = await call<{ tasks: { taskId: string; state: string }[] }>('GET', `/api/sessions/${id}/transcript?agent_id=main`);
+      const transcript = await call<{ tasks: { taskId: string; state: string }[] }>('GET', `/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2`);
       expect(transcript.body.data.tasks.find((task) => task.taskId === runTasks[1])).toMatchObject({ state: 'running' });
     });
     await tasks.stopByUser(runTasks[1]!);

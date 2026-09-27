@@ -46,8 +46,8 @@ import {
 } from './openai-common';
 import {
   mergeProviderRequestAuth,
-  mergeRequestHeaders,
   requestIdentityFetch,
+  mergeRequestHeaders,
   requireProviderApiKey,
   resolveAuthBackedClient,
 } from '../request-auth';
@@ -1224,6 +1224,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       apiKey,
       baseURL: this._baseUrl,
       maxRetries: 0,
+      fetch: requestIdentityFetch,
     };
     const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {
@@ -1231,8 +1232,6 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
     }
     if (this._httpClient !== undefined) {
       clientOpts['httpClient'] = this._httpClient;
-    } else {
-      clientOpts['fetch'] = requestIdentityFetch;
     }
     return new OpenAI(clientOpts as ConstructorParameters<typeof OpenAI>[0]);
   }

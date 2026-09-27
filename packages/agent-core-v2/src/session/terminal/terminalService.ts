@@ -42,6 +42,12 @@ export interface ISessionTerminalService {
 
   create(input: CreateTerminalRequest): Promise<Terminal>;
   list(): Promise<readonly Terminal[]>;
+  /**
+   * Number of live terminal processes and in-flight terminal creations in this session,
+   * including processes without a sink. Idle eviction must not unload the session
+   * while this is greater than zero: unloading kills its terminal processes.
+   */
+  countLiveTerminals(): number;
   get(terminalId: string): Promise<Terminal>;
   attach(
     terminalId: string,
@@ -70,6 +76,7 @@ export class SessionTerminalService extends Disposable implements ISessionTermin
   declare readonly _serviceBrand: undefined;
 
   private readonly records = new Map<string, TerminalRecord>();
+  private pendingCreates = 0;
 
   constructor(
     @IRuntimeResolver private readonly runtimeResolver: IRuntimeResolver,
@@ -80,55 +87,83 @@ export class SessionTerminalService extends Disposable implements ISessionTermin
   }
 
   async create(input: CreateTerminalRequest): Promise<Terminal> {
-    const cols = input.cols ?? DEFAULT_COLS;
-    const rows = input.rows ?? DEFAULT_ROWS;
-    const lease = this.runtimeResolver.acquire(
-      { workspaceId: this.sessionContext.workspaceId, runtimeId: input.runtime_id },
-      ['terminal'],
-    );
-    const view = new RuntimeWorkspaceView(lease.runtime, this.workspace);
-    const cwd = input.cwd === undefined ? view.workDir : view.resolve(input.cwd);
-    const shell = input.shell ?? lease.runtime.environment.shellPath;
-    let process: TerminalProcess;
+    this.pendingCreates += 1;
     try {
-      process = await lease.runtime.terminal!.spawn({ cwd, shell, cols, rows });
-      lease.track({ dispose: () => process.kill() });
-    } catch (error) {
-      lease.dispose();
-      throw error;
+      if (this._store.isDisposed) throw new Error2(ErrorCodes.TERMINAL_NOT_FOUND, 'Terminal service is disposed');
+      const cols = input.cols ?? DEFAULT_COLS;
+      const rows = input.rows ?? DEFAULT_ROWS;
+      const lease = this.runtimeResolver.acquire(
+        { workspaceId: this.sessionContext.workspaceId, runtimeId: input.runtime_id },
+        ['terminal'],
+      );
+      let process: TerminalProcess | undefined;
+      let trackedProcess: { dispose(): void } | undefined;
+      let record: TerminalRecord | undefined;
+      try {
+        const view = new RuntimeWorkspaceView(lease.runtime, this.workspace);
+        const cwd = input.cwd === undefined ? view.workDir : view.resolve(input.cwd);
+        const shell = input.shell ?? lease.runtime.environment.shellPath;
+        process = await lease.runtime.terminal!.spawn({ cwd, shell, cols, rows });
+        if (this._store.isDisposed) throw new Error2(ErrorCodes.TERMINAL_NOT_FOUND, 'Terminal service is disposed');
+        const spawned = process;
+        trackedProcess = lease.track({ dispose: () => spawned.kill() });
+        const terminal: Terminal = {
+          id: `term_${randomUUID()}`,
+          session_id: this.sessionContext.sessionId,
+          cwd,
+          shell,
+          cols,
+          rows,
+          status: 'running',
+          created_at: new Date().toISOString(),
+        };
+        record = {
+          terminal,
+          process,
+          lease,
+          sinks: new Map(),
+          buffer: [],
+          nextSeq: 0,
+          disposables: [],
+          closed: false,
+        };
+        const createdRecord = record;
+        record.disposables.push(process.onProcessData((data) => this.onData(createdRecord, data)));
+        record.disposables.push(process.onProcessExit((event) => this.onExit(createdRecord, event.exitCode)));
+        this.records.set(terminal.id, record);
+        return { ...terminal };
+      } catch (error) {
+        for (const disposable of record?.disposables ?? []) {
+          try {
+            disposable.dispose();
+          } catch {
+          }
+        }
+        try {
+          if (trackedProcess !== undefined) trackedProcess.dispose();
+          else process?.kill();
+        } catch {
+        }
+        lease.dispose();
+        throw error;
+      }
+    } finally {
+      this.pendingCreates -= 1;
     }
-    const terminal: Terminal = {
-      id: `term_${randomUUID()}`,
-      session_id: this.sessionContext.sessionId,
-      cwd,
-      shell,
-      cols,
-      rows,
-      status: 'running',
-      created_at: new Date().toISOString(),
-    };
-    const record: TerminalRecord = {
-      terminal,
-      process,
-      lease,
-      sinks: new Map(),
-      buffer: [],
-      nextSeq: 0,
-      disposables: [],
-      closed: false,
-    };
-    record.disposables.push(
-      process.onProcessData((data) => this.onData(record, data)),
-      process.onProcessExit((event) => this.onExit(record, event.exitCode)),
-    );
-    this.records.set(terminal.id, record);
-    return { ...terminal };
   }
 
   list(): Promise<readonly Terminal[]> {
     return Promise.resolve(
       [...this.records.values()].map((record) => ({ ...record.terminal })),
     );
+  }
+
+  countLiveTerminals(): number {
+    let live = this.pendingCreates;
+    for (const record of this.records.values()) {
+      if (!record.closed) live += 1;
+    }
+    return live;
   }
 
   async get(terminalId: string): Promise<Terminal> {

@@ -54,33 +54,51 @@ export class TaskOutputTool implements ITaskOutputTool {
       return { isError: true, output: `Task not found: ${args.task_id}` };
     }
 
-    const output = await this.tasks.getOutputSnapshot(args.task_id, OUTPUT_PREVIEW_BYTES);
-
+    const paging = args.offset !== undefined || args.max_bytes !== undefined;
+    const page = paging
+      ? await this.tasks.getOutputPage(args.task_id, args.offset ?? 0, args.max_bytes ?? 16 * 1024)
+      : undefined;
+    const output: AgentTaskOutputSnapshot = page === undefined
+      ? await this.tasks.getOutputSnapshot(args.task_id, paging ? 0 : OUTPUT_PREVIEW_BYTES)
+      : { outputPath: page.outputPath, outputSizeBytes: page.totalBytes, previewBytes: 0,
+          truncated: page.hasMore, fullOutputAvailable: true, preview: '' };
+    const fullOutputAvailable = output.fullOutputAvailable && (!paging || page !== undefined);
+    const availablePage = fullOutputAvailable ? page : undefined;
     const lines = [
       formatPlainObject({
         retrievalStatus: retrievalStatus(current.status),
         ...current,
-        outputPath: output.outputPath,
+        receipt: current.receiptVerification === 'verified' && fullOutputAvailable ? current.receipt : undefined,
+        receiptVerification: current.receiptVerification === 'verified' && !output.fullOutputAvailable
+          ? 'invalid' : current.receiptVerification,
+        outputPath: fullOutputAvailable ? output.outputPath : undefined,
         terminalReason: terminalReason(current),
         outputSizeBytes: output.outputSizeBytes,
-        outputPreviewBytes: output.previewBytes,
-        outputTruncated: output.truncated,
-        fullOutputAvailable: output.fullOutputAvailable,
-        fullOutputTool:
-          output.fullOutputAvailable && output.outputPath !== undefined ? 'Read' : undefined,
-        fullOutputHint: fullOutputHint(output),
+        outputPreviewBytes: paging ? undefined : output.previewBytes,
+        outputTruncated: paging ? undefined : output.truncated,
+        fullOutputAvailable,
+        fullOutputTool: fullOutputAvailable && output.outputPath !== undefined ? 'Read' : undefined,
+        fullOutputHint: paging ? undefined : fullOutputHint(output),
+        offset: availablePage?.offset,
+        nextOffset: availablePage?.nextOffset,
+        hasMore: availablePage?.hasMore,
       }),
       '',
     ];
 
-    if (output.truncated) {
-      lines.push(
-        output.fullOutputAvailable && output.outputPath !== undefined
-          ? `[Truncated. Full output: ${output.outputPath}]`
-          : '[Truncated. No persisted full log is available for this task.]',
-      );
+    if (paging) {
+      lines.push(availablePage === undefined ? '[Full output unavailable; no verified page can be returned.]' : '[output]',
+        availablePage?.text ?? '[no output available]');
+    } else {
+      if (output.truncated) {
+        lines.push(
+          fullOutputAvailable && output.outputPath !== undefined
+            ? `[Truncated. Full output: ${output.outputPath}]`
+            : '[Truncated. No persisted full log is available for this task.]',
+        );
+      }
+      lines.push('[output]', output.preview || '[no output available]');
     }
-    lines.push('[output]', output.preview || '[no output available]');
 
     return {
       output: lines.join('\n'),

@@ -29,6 +29,7 @@ import { ModelCatalogErrors } from '#/kosong/model/errors';
 import { deriveProviderId, nonEmpty } from '#/kosong/model/modelAuth';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import type { ModelRecord, ModelsSection } from '#/kosong/model/model';
+import { parametersFromWire, parametersToWire, patchGenerationParameters, resolveGenerationParameters } from '#/kosong/model/parameters';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import type { ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
@@ -212,6 +213,7 @@ function modelEntity(
   defaultProvider: string | undefined,
 ): ModelEntity {
   const ref = resolveProviderRef(record, defaultProvider);
+  const generation = resolveGenerationParameters(providers[ref.providerId], record);
   return {
     id,
     provider_id: ref.providerId,
@@ -226,6 +228,12 @@ function modelEntity(
     default_effort: record.defaultEffort,
     adaptive_thinking: record.adaptiveThinking,
     service_tier: record.serviceTier,
+    parameters: parametersToWire(record.parameters),
+    effective_parameters: parametersToWire(generation.values) ?? {},
+    parameter_sources: Object.fromEntries(Object.entries(generation.sources).map(([key, source]) => [
+      key.replaceAll(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
+      source?.detail ?? source?.kind ?? 'unknown',
+    ])),
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
     protocol: record.protocol,
@@ -326,6 +334,9 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   setOrClear('defaultEffort', patch.default_effort);
   setOrClear('adaptiveThinking', patch.adaptive_thinking);
   setOrClear('serviceTier', patch.service_tier);
+  if (patch.parameters !== undefined) {
+    next['parameters'] = patchGenerationParameters(record.parameters, patch.parameters);
+  }
   if (patch.request_identity !== undefined) {
     if (patch.request_identity === null) {
       setCleared(next, 'requestIdentity');
@@ -369,6 +380,9 @@ function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderReques
     } else {
       next.defaultModel = defaultModel;
     }
+  }
+  if (patch.defaults !== undefined) {
+    next.defaults = patchGenerationParameters(provider.defaults, patch.defaults);
   }
   if (patch.request_identity !== undefined) {
     if (patch.request_identity === null) {
@@ -513,6 +527,7 @@ export class ModelCatalogMutationService
         record.adaptiveThinking = request.adaptive_thinking;
       }
       if (request.service_tier !== undefined) record.serviceTier = request.service_tier;
+      if (request.parameters !== undefined) record.parameters = parametersFromWire(request.parameters);
       if (request.images !== undefined) record.images = imagePolicyFromWire(request.images);
       if (request.request_identity !== undefined) {
         const policy = requestIdentityFromWire(request.request_identity);
@@ -603,6 +618,7 @@ export class ModelCatalogMutationService
       if (request.api_key !== undefined && request.api_key !== '') provider.apiKey = request.api_key;
       const baseUrl = request.base_url === undefined ? undefined : nonEmpty(request.base_url);
       if (baseUrl !== undefined) provider.baseUrl = baseUrl;
+      if (request.defaults !== undefined) provider.defaults = parametersFromWire(request.defaults);
       if (request.images !== undefined) provider.images = imagePolicyFromWire(request.images);
       if (request.request_identity !== undefined) {
         const policy = requestIdentityFromWire(request.request_identity);

@@ -4,7 +4,7 @@
  * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema } from '@kiki/protocol';
+import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, type NbSearchManagedCredentialView } from '@kiki/protocol';
 import { createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
 import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
@@ -427,11 +427,29 @@ export interface ListCronTasksResponse {
   readonly next_offset?: number;
 }
 
-/**
- * Installed-plugin summary from `GET /api/plugins` (mirrors the
- * kap-server `pluginSummarySchema`): identity + enabled/error state + the
- * contribution counts the settings Plugins leaf renders.
- */
+export interface CapabilityStatus {
+  readonly id: 'kimi-cu' | 'kimi-webbridge';
+  readonly pluginId?: string;
+  readonly displayName: string;
+  readonly description: string;
+  readonly supported: boolean;
+  readonly state: 'not_installed' | 'partial' | 'ready' | 'unsupported';
+  readonly steps: readonly {
+    readonly id: string;
+    readonly state: 'ok' | 'missing' | 'failed';
+    readonly detail?: string;
+    readonly optional?: boolean;
+  }[];
+  readonly install: { readonly running: boolean; readonly step?: string; readonly percent?: number; readonly error?: string; readonly note?: string };
+  readonly plan?: {
+    readonly artifact: { readonly version: string; readonly url: string; readonly sha256: string; readonly metadataUrl: string; readonly maxBytes: number };
+    readonly destination: string;
+    readonly browserExtensionUrl?: string;
+    readonly note: string;
+  };
+}
+
+/** Installed plugin summary from GET /api/plugins. */
 export interface PluginSummary {
   readonly id: string;
   readonly displayName: string;
@@ -496,6 +514,12 @@ export interface PluginInfo extends PluginSummary {
   readonly manifestKind?: 'kimi-plugin-root' | 'kimi-plugin-dir';
   readonly manifestPath?: string;
   readonly manifest?: Readonly<Record<string, unknown>>;
+  readonly prerequisites?: {
+    readonly origin: 'kiki-compatibility' | 'plugin-declared';
+    readonly items: { readonly schemaVersion: 1; readonly items: readonly {
+      readonly id: string; readonly kind: string; readonly required: boolean;
+    }[] };
+  };
   readonly mcpServers: readonly PluginMcpServerInfo[];
   readonly shadowedManifestPath?: string;
   readonly diagnostics: readonly PluginDiagnostic[];
@@ -738,6 +762,36 @@ export interface AgentTranscriptResponse {
  */
 export interface ListSessionsOptions extends ListSessionsQuery {
   readonly workspace_id?: string;
+}
+
+/**
+ * Durable-mailbox acceptance for a message sent to a persisted external agent.
+ * `null` means the target is a native agent: its message takes the ordinary
+ * prompt path, which has no mailbox receipt to report.
+ */
+export type AgentMessageReceipt = Awaited<
+  ReturnType<ReturnType<ReturnType<typeof createKlient>['session']>['sendUserAgentMessage']>
+>;
+
+export class ExternalAgentAttachmentUnsupportedError extends Error {
+  constructor() {
+    super('External agent messages support text only. Remove attachments and retry.');
+    this.name = 'ExternalAgentAttachmentUnsupportedError';
+  }
+}
+
+export class NativeChildPromptSendError extends Error {
+  constructor(cause: unknown) {
+    super('Native child prompt result unknown', { cause });
+    this.name = 'NativeChildPromptSendError';
+  }
+}
+
+export class NativeChildPromptConflictError extends NativeChildPromptSendError {
+  constructor(cause: unknown) {
+    super(cause);
+    this.name = 'NativeChildPromptConflictError';
+  }
 }
 
 export class KikiClient {
@@ -997,25 +1051,40 @@ export class KikiClient {
     sessionId: string,
     agentId: string,
     text: string,
-    content?: readonly MessageContent[],
-  ): Promise<void> {
+    content: readonly MessageContent[] | undefined,
+    idempotencyKey: string,
+  ): Promise<AgentMessageReceipt | null> {
     const session = this.klient.session(sessionId);
     const agents = await this.run(() => session.agents());
     if (agents[agentId] !== undefined && (agents[agentId].executor ?? 'native') !== 'native') {
       if (content?.some((part) => part.type !== 'text')) {
-        throw new Error('External agent messages support text only. Remove attachments and retry.');
+        throw new ExternalAgentAttachmentUnsupportedError();
       }
-      await this.run(() => session.sendUserAgentMessage({
+      return this.run(() => session.sendUserAgentMessage({
         targetAgentId: agentId,
         content: text,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
       }));
-      return;
     }
-    await this.submitPrompt(sessionId, {
-      content: content === undefined ? [{ type: 'text', text }] : [...content],
-      agent_id: agentId,
-    });
+    const promptContent = content === undefined ? [{ type: 'text' as const, text }] : [...content];
+    const keyedNativeChild = agentId !== MAIN_AGENT_ID && promptContent.every((part) => part.type === 'text');
+    try {
+      await this.submitPrompt(sessionId, {
+        content: promptContent,
+        agent_id: agentId,
+        // Attachments and main retain their ordinary prompt semantics.
+        ...(keyedNativeChild ? { prompt_id: idempotencyKey } : {}),
+      });
+    } catch (error) {
+      // A 40938 may mean mismatched content, a concurrent first submission,
+      // or an accepted prompt without a replayable receipt. None is success.
+      if (keyedNativeChild && error instanceof ApiError && error.code === 40938) {
+        throw new NativeChildPromptConflictError(error);
+      }
+      if (agentId !== MAIN_AGENT_ID) throw new NativeChildPromptSendError(error);
+      throw error;
+    }
+    return null;
   }
 
   /** Rebind a live agent's model (agent-scoped profile call). */
@@ -1053,6 +1122,18 @@ export class KikiClient {
     return parseKikiConfigResponse(await this.run(this.rest.config.get()));
   }
 
+  previewModelGenerationMigration(): Promise<import('@kiki/protocol').ModelGenerationMigrationPreviewResponse> {
+    return this.run(this.rest.config.previewModelGenerationMigration());
+  }
+
+  applyModelGenerationMigration(revision: string): Promise<import('@kiki/protocol').ModelGenerationMigrationApplyResponse> {
+    return this.run(this.rest.config.applyModelGenerationMigration(revision));
+  }
+
+  restoreModelGenerationMigration(backupKey: string, revision: string): Promise<import('@kiki/protocol').ModelGenerationMigrationRestoreResponse> {
+    return this.run(this.rest.config.restoreModelGenerationMigration(backupKey, revision));
+  }
+
   /** `GET /api/nb-search/capabilities` — secret-free provider/lane/pipeline descriptors. */
   async getNbSearchCapabilities(): Promise<NbSearchCapabilities> {
     return nbSearchCapabilitiesSchema.parse(await this.run(this.rest.nbSearch.capabilities()));
@@ -1061,6 +1142,14 @@ export class KikiClient {
   /** `GET /api/nb-search/test` — on-demand readiness check; callers pass a signal so the panel can cancel. */
   async testNbSearch(signal?: AbortSignal): Promise<NbSearchTestStatus> {
     return nbSearchTestStatusSchema.parse(await this.run(this.rest.nbSearch.test({ signal })));
+  }
+
+  async readNbSearchCredential(instanceId: string, reveal = false): Promise<NbSearchManagedCredentialView> {
+    return nbSearchManagedCredentialViewSchema.parse(await this.run(this.rest.nbSearch.readCredential(instanceId, reveal)));
+  }
+
+  async writeNbSearchCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<NbSearchManagedCredentialView> {
+    return nbSearchManagedCredentialViewSchema.parse(await this.run(this.rest.nbSearch.writeCredential(instanceId, value, expectedVersion, expectedBinding)));
   }
 
   listNamedAgentProfiles(
@@ -1321,6 +1410,18 @@ export class KikiClient {
 
   installPlugin(source: string): Promise<PluginSummary> {
     return this.run(this.rest.plugins.install(source) as Promise<PluginSummary>);
+  }
+
+  listCapabilities(): Promise<readonly CapabilityStatus[]> {
+    return this.run(this.klient.global.capabilities.list() as Promise<readonly CapabilityStatus[]>);
+  }
+
+  getCapability(id: string): Promise<CapabilityStatus> {
+    return this.run(this.klient.global.capabilities.get(id) as Promise<CapabilityStatus>);
+  }
+
+  installCapability(id: string, expectedSha256: string): Promise<CapabilityStatus> {
+    return this.run(this.klient.global.capabilities.install(id, expectedSha256) as Promise<CapabilityStatus>);
   }
 
   setPluginEnabled(pluginId: string, enabled: boolean): Promise<{ readonly ok: true }> {

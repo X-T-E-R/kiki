@@ -326,6 +326,115 @@ describe('SessionTerminalService', () => {
     expect(proc.killed).toBe(true);
     expect(resolver.activeLeases).toBe(0);
   });
+
+  it('counts live terminals so an idle session is never evicted under a running PTY', async () => {
+    const svc = ix.get(ISessionTerminalService);
+    expect(svc.countLiveTerminals()).toBe(0);
+
+    const first = await svc.create({ runtime_id: 'local' });
+    const second = await svc.create({ runtime_id: 'local' });
+    expect(svc.countLiveTerminals()).toBe(2);
+
+    await svc.close(first.id);
+    expect(svc.countLiveTerminals()).toBe(1);
+
+    host.processes[1]!.emitExit(0);
+    expect(svc.countLiveTerminals()).toBe(0);
+  });
+
+  it('releases the live count when the service is disposed at shutdown', async () => {
+    const svc = ix.get(ISessionTerminalService);
+    await svc.create({ runtime_id: 'local' });
+    expect(svc.countLiveTerminals()).toBe(1);
+
+    disposables.dispose();
+
+    expect(svc.countLiveTerminals()).toBe(0);
+  });
+
+  it('leaves no live count behind when the process cannot be spawned', async () => {
+    host.spawn = () => Promise.reject(new Error('pty unavailable'));
+    const svc = ix.get(ISessionTerminalService);
+
+    await expect(svc.create({ runtime_id: 'local' })).rejects.toThrow('pty unavailable');
+
+    expect(svc.countLiveTerminals()).toBe(0);
+    expect(resolver.activeLeases).toBe(0);
+  });
+
+  it('counts a pending spawn before the process becomes a record', async () => {
+    let resolveSpawn!: (process: TerminalProcess) => void;
+    host.spawn = () => new Promise((resolve) => { resolveSpawn = resolve; });
+    const svc = ix.get(ISessionTerminalService);
+
+    const creating = svc.create({ runtime_id: 'local' });
+    expect(await svc.list()).toHaveLength(0);
+    expect(svc.countLiveTerminals()).toBe(1);
+
+    const process = new FakeTerminalProcess();
+    resolveSpawn(process);
+    const terminal = await creating;
+    expect(svc.countLiveTerminals()).toBe(1);
+    await svc.close(terminal.id);
+    expect(svc.countLiveTerminals()).toBe(0);
+  });
+
+  it('kills a spawned process and releases its lease when tracking fails', async () => {
+    const acquire = resolver.acquire.bind(resolver);
+    resolver.acquire = (binding) => {
+      const lease = acquire(binding);
+      return { ...lease, track: () => { throw new Error('runtime draining'); } };
+    };
+    const svc = ix.get(ISessionTerminalService);
+
+    await expect(svc.create({ runtime_id: 'local' })).rejects.toThrow('runtime draining');
+
+    expect(host.processes[0]?.killed).toBe(true);
+    expect(resolver.activeLeases).toBe(0);
+    expect(svc.countLiveTerminals()).toBe(0);
+    expect(await svc.list()).toHaveLength(0);
+  });
+
+  it('cleans up a tracked process if event registration fails', async () => {
+    const process = new FakeTerminalProcess();
+    const disposeListener = vi.fn();
+    host.spawn = () => Promise.resolve(Object.assign(process, {
+      onProcessData: () => ({ dispose: disposeListener }),
+      onProcessExit: () => { throw new Error('listener unavailable'); },
+    }));
+    const svc = ix.get(ISessionTerminalService);
+
+    await expect(svc.create({ runtime_id: 'local' })).rejects.toThrow('listener unavailable');
+    expect(disposeListener).toHaveBeenCalledTimes(1);
+    expect(process.killed).toBe(true);
+    expect(resolver.activeLeases).toBe(0);
+    expect(svc.countLiveTerminals()).toBe(0);
+    expect(await svc.list()).toHaveLength(0);
+  });
+
+  it('kills a process when disposal races a pending spawn', async () => {
+    let resolveSpawn!: (process: TerminalProcess) => void;
+    host.spawn = () => new Promise((resolve) => { resolveSpawn = resolve; });
+    const svc = ix.get(ISessionTerminalService);
+    const creating = svc.create({ runtime_id: 'local' });
+
+    disposables.dispose();
+    const process = new FakeTerminalProcess();
+    resolveSpawn(process);
+    await expect(creating).rejects.toMatchObject({ code: ErrorCodes.TERMINAL_NOT_FOUND });
+    expect(process.killed).toBe(true);
+    expect(resolver.activeLeases).toBe(0);
+    expect(svc.countLiveTerminals()).toBe(0);
+  });
+
+  it('returns a coded error when creating after the session service is disposed', async () => {
+    const svc = ix.get(ISessionTerminalService);
+    disposables.dispose();
+
+    await expect(svc.create({ runtime_id: 'local' })).rejects.toMatchObject({ code: ErrorCodes.TERMINAL_NOT_FOUND });
+    expect(host.processes).toHaveLength(0);
+    expect(svc.countLiveTerminals()).toBe(0);
+  });
 });
 
 describe('HostTerminalService (App scope)', () => {

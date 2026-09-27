@@ -235,6 +235,12 @@ describe('joinPath', () => {
     expect(joinPath('C:/work', 'a/b/../c.png')).toBe('C:/work/a/c.png');
     expect(joinPath('/work/', 'x.ts')).toBe('/work/x.ts');
   });
+
+  it('preserves a UNC share root when resolving Markdown assets', () => {
+    expect(joinPath('\\\\server\\share\\docs', './assets/a.png')).toBe('//server/share/docs/assets/a.png');
+    expect(resolveFileHref('./assets/a.png', '\\\\server\\share\\docs')).toBe('//server/share/docs/assets/a.png');
+    expect(joinPath('//server/share/docs', '../../../private.png')).toBe('//server/share/private.png');
+  });
 });
 
 describe('isAppRouteHref', () => {

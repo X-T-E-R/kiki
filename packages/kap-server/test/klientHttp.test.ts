@@ -11,6 +11,7 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { createKlient } from '@kiki/klient/http';
+import type { SessionViewSignal } from '@kiki/klient/session-view';
 import Fastify from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
@@ -264,6 +265,35 @@ describe('klient HTTP host', () => {
     }
   });
 
+  it('rejects an unnegotiated old view attach and old klient REST transcript reads before seeding', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const created = await klient.global.sessions.create({ workDir: homeDir, title: 'Coverage negotiation' });
+    const page = await fetch(`${endpoint}/api/klient/session-view/${created.id}/transcript?agent_id=main`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(await page.json()).toMatchObject({ code: 40001, data: null, msg: expect.stringContaining('upgrade Kiki') });
+    const catchUp = await fetch(`${endpoint}/api/klient/session-view/${created.id}/transcript/catch-up?agent_id=main&since_seq=0`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(await catchUp.json()).toMatchObject({ code: 40001, data: null });
+    const socket = new WebSocket(`${endpoint.replace(/^http/u, 'ws')}/api/klient/events`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    try {
+      await new Promise<void>((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+      const result = new Promise<unknown>((resolve, reject) => {
+        socket.once('message', (raw) => {
+          try { resolve(JSON.parse(rawToString(raw))); } catch (error) { reject(error); }
+        });
+        socket.once('error', reject);
+      });
+      socket.send(JSON.stringify({ type: 'view_attach', id: 'old-view', sessionId: created.id,
+        data: { generation: 1, input: { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } }));
+      expect(await result).toMatchObject({ type: 'view_error', id: 'old-view', code: 40001,
+        msg: expect.stringContaining('upgrade Kiki') });
+    } finally { socket.close(); await klient.close(); }
+  });
+
   it('shares a resumable session view across two authenticated clients', async () => {
     const clients = [0, 1].map(() => createKlient({ endpoint, token: TOKEN, WebSocket: WebSocket as unknown as typeof globalThis.WebSocket }));
     const subscriptions: Array<{ close(): void; restart(): void }> = [];
@@ -277,7 +307,7 @@ describe('klient HTTP host', () => {
       expect(page.cursor?.epoch).toBeTruthy();
       const catchUp = await clients[1]!.session(created.id).view.transcript.catchUp({ agentId: 'main', since: page.cursor!, grade: 'delta' });
       expect(catchUp).toMatchObject({ session_id: created.id, complete: true, epoch: page.cursor!.epoch });
-      const signals: Array<Array<{ type: string }>> = [[], []];
+      const signals: SessionViewSignal[][] = [[], []];
       clients.forEach((client, index) => {
         const snapshot = snapshots[index]!;
         subscriptions.push(client.session(created.id).view.subscribe({
@@ -286,7 +316,12 @@ describe('klient HTTP host', () => {
         }, (signal) => signals[index]!.push(signal)));
       });
       await vi.waitFor(() => { for (const received of signals) expect(received.some((signal) => signal.type === 'ready')).toBe(true); });
-      for (const received of signals) expect(received.some((signal) => signal.type === 'transcript')).toBe(true);
+      for (const received of signals) {
+        const resets = received.filter((signal) => signal.type === 'transcript' && signal.event.type === 'transcript.reset');
+        expect(resets).toHaveLength(1);
+        expect(resets[0]).toMatchObject({ event: { coverage: { kind: 'full', hasMoreOlder: false } } });
+        expect(received.some((signal) => signal.type === 'protocolError')).toBe(false);
+      }
       subscriptions[0]!.restart();
       await vi.waitFor(() => expect(signals[0]!.filter((signal) => signal.type === 'ready')).toHaveLength(2));
     } finally {

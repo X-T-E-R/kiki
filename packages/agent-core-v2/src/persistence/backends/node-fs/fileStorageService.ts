@@ -90,9 +90,10 @@ export class FileStorageService implements IFileSystemStorageService {
     private readonly baseDir: string,
     private readonly dirMode?: number,
     private readonly fileMode?: number,
+    private readonly recoverMissingDocuments = true,
   ) {}
 
-  async read(scope: string, key: string): Promise<Uint8Array | undefined> {
+  async read(scope: string, key: string, options: StorageReadOptions = {}): Promise<Uint8Array | undefined> {
     const filePath = this.pathFor(scope, key);
     for (let attempt = 0; ; attempt += 1) {
       let bytes: Uint8Array;
@@ -102,6 +103,7 @@ export class FileStorageService implements IFileSystemStorageService {
         if (!isEnoent(error)) {
           throw toStorageIoError(error, { path: filePath, op: 'read' });
         }
+        if (!this.recoverMissingDocuments || options.recoverMissing === false) return undefined;
         const recovered = await recoverOrphanedTempFile(filePath);
         if (!recovered) return undefined;
         continue;

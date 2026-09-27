@@ -4,6 +4,7 @@ import path from 'node:path';
 import { HookDefSchema, type HookDefConfig } from '#/features/externalHooks/configSection';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
 
+import { pluginPrerequisitesSchema } from './prerequisites';
 import {
   PLUGIN_NAME_REGEX,
   type PluginCommandEntry,
@@ -119,6 +120,18 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     typeof raw['skillInstructions'] === 'string' ? raw['skillInstructions'] : undefined;
 
   const systemPrompt = await readSystemPrompt(pluginRoot, raw, diagnostics);
+  let prerequisites: PluginManifest['prerequisites'];
+  if (raw['x-kiki'] !== undefined) {
+    const extension = isObject(raw['x-kiki']) ? raw['x-kiki'] : undefined;
+    if (extension === undefined || extension['prerequisites'] !== undefined) {
+      const result = pluginPrerequisitesSchema.safeParse(extension?.['prerequisites']);
+      if (!result.success) {
+        diagnostics.push({ severity: 'warn', message: 'Invalid x-kiki.prerequisites; no runtime preparation will be attempted' });
+      } else {
+        prerequisites = result.data;
+      }
+    }
+  }
 
   recordUnsupportedRuntimeFields(raw, diagnostics);
 
@@ -140,6 +153,7 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     interface: readInterface(raw['interface']),
     skillInstructions,
     systemPrompt,
+    prerequisites,
   };
 
   return { manifest, manifestKind, manifestPath, shadowedManifestPath, diagnostics };

@@ -44,10 +44,12 @@ import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetad
 import { ISessionHistoryMutationService } from '#/session/historyMutation/historyMutation';
 import { KeyReservationRegistry } from '#/session/dispatch/reservation';
 import type { PartsTransformer, WireRecord } from '#/wire/record';
+import { IWireService } from '#/wire/wire';
 
 import {
   IAgentPromptService,
   promptAdmission,
+  promptRetry,
   type DeferredAppendTiming,
   type PromptCompletion,
   type PromptExecutionBinding,
@@ -67,7 +69,7 @@ import {
 import { promptMetadataTextFromContentParts } from './promptMetadataText';
 import { capturePromptGoalId, hasPromptRuntimeControls, preparePromptRuntimeControls, readPromptRuntimeControlChanges, validatePromptRuntimeControls } from './runtimeControls';
 import { PromptStepRequest, RetryStepRequest, SteerStepRequest } from './promptStepRequests';
-import { PromptAccepted, promptAdmissionKey } from './promptOps';
+import { PromptAccepted, PromptRetryCommitted, promptAdmissionKey, promptRetryReceiptKey, type PromptRetryReceipt } from './promptOps';
 import { daemonFileRefFromPart } from '#/agent/media/mediaRef';
 import { materializePromptDaemonRefs } from '#/agent/media/promptMediaIntake';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
@@ -563,9 +565,11 @@ export class AgentPromptService implements IAgentPromptService {
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @ISessionHistoryMutationService
     private readonly historyMutation: ISessionHistoryMutationService,
+    @IWireService private readonly wire: IWireService,
   ) {
     this.states.contributeState(promptLaunchingKey);
     this.states.contributeState(promptAdmissionKey);
+    this.states.contributeState(promptRetryReceiptKey);
     this.states.contributeState(promptResolutionKey);
     this.states.contributeState(promptQueueKey);
     this.dispatcher.hooks.onDidRestore.register('prompt-queue', async (_ctx, next) => {
@@ -603,7 +607,43 @@ export class AgentPromptService implements IAgentPromptService {
     }
   }
 
-  [promptAdmission](promptId?: string): PromptReservation {
+  readonly [promptRetry] = {
+    lookup: async (promptId: string, fingerprint: string): Promise<PromptRetryReceipt | undefined> => {
+      this.assertNativePromptExecutor();
+      const committed = this.states.get(promptRetryReceiptKey).get(promptId);
+      if (committed === undefined) {
+        if (this.states.get(promptAdmissionKey).has(promptId)) {
+          throw new Error2(
+            ErrorCodes.PROMPT_ID_CONFLICT,
+            `prompt_id '${promptId}' was accepted without a replayable receipt; inspect the child before resubmitting`,
+          );
+        }
+        return undefined;
+      }
+      if (committed.fingerprint !== fingerprint) {
+        throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+      }
+      await this.wire.flush();
+      return committed.receipt;
+    },
+    commit: async (promptId: string, fingerprint: string, receipt: PromptRetryReceipt): Promise<void> => {
+      const existing = this.states.get(promptRetryReceiptKey).get(promptId);
+      if (existing !== undefined) {
+        if (existing.fingerprint !== fingerprint || JSON.stringify(existing.receipt) !== JSON.stringify(receipt)) {
+          throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+        }
+        await this.wire.flush();
+        return;
+      }
+      if (!this.states.get(promptAdmissionKey).has(promptId)) {
+        throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is not accepted`);
+      }
+      await this.dispatcher.dispatch(new PromptRetryCommitted({ promptId, fingerprint, receipt }));
+      await this.wire.flush();
+    },
+  };
+
+  [promptAdmission](promptId?: string, durableAcceptance = false): PromptReservation {
     this.assertNativePromptExecutor();
     if (promptId !== undefined && promptId.length === 0) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_id must not be empty');
@@ -642,6 +682,7 @@ export class AgentPromptService implements IAgentPromptService {
         reservation.commit(id);
         if (signal?.aborted) throw submissionCancelled(id);
         await this.dispatcher.dispatch(new PromptAccepted({ promptId: id }));
+        if (durableAcceptance) await this.wire.flush();
         if (signal?.aborted) throw submissionCancelled(id);
         return this.enqueue({ id, message, execution, appendTiming, deferredDisabledTools, signal });
       },
@@ -1204,7 +1245,11 @@ export class AgentPromptService implements IAgentPromptService {
     }
     for (const item of this.pending.slice()) this.abort(item.id, reason);
     if (this.launchingPrompt !== undefined) this.abort(this.launchingPrompt.record.id, reason);
-    if (this.active !== undefined) this.abort(this.active.id, reason);
+    const active = this.active;
+    if (active !== undefined) {
+      this.abort(active.id, reason);
+      await active.turn.result;
+    }
   }
 
   async inject(message: ContextMessage): Promise<Turn | undefined> {

@@ -1,4 +1,5 @@
 @import '@xterm/xterm/css/xterm.css';
+@import 'katex/dist/katex.min.css';
 @import 'tailwindcss';
 
 /* Let Tailwind see the utility classes used inside Streamdown's dist (the
@@ -503,6 +504,24 @@ body[data-pane-resizing='true'] {
   display: contents;
 }
 
+/* Fullscreen preview covers the shell's sibling rail. Lift only the occupied
+ * rail slot above it; dialogs at z-50 still take precedence. */
+.conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden]))
+  .conversation-rail-slot:has(.app-rail-shell) {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+}
+
+@media (max-width: 1023px) {
+  .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden]))
+    .app-overlay-backdrop {
+    z-index: 44;
+  }
+}
+
 .preview-workspace {
   position: relative;
   display: flex;
@@ -778,6 +797,10 @@ body[data-pane-resizing='true'] {
 }
 .kiki-md a:hover {
   text-decoration-color: var(--color-accent);
+}
+.kiki-md img {
+  max-width: 100%;
+  height: auto;
 }
 .kiki-md blockquote {
   border-left: 2px solid var(--color-hairline-strong);

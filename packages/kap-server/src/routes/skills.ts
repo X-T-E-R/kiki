@@ -17,7 +17,6 @@ import {
   isError2,
   isUserActivatableSkillType,
   normalizeSkillName,
-  resumeSessionById,
   sessionMediaOriginalsDir,
   type ContentPart,
   type ISessionScopeHandle,
@@ -36,6 +35,7 @@ import {
   type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
+import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent } from '../transport/mainAgent';
 import { ErrorCode } from '../protocol/error-codes';
@@ -78,7 +78,7 @@ const skillTailParamsSchema = z.object({
 });
 
 type ResolvedSession =
-  | { readonly handle: ISessionScopeHandle }
+  | { readonly handle: ISessionScopeHandle; readonly lease: SessionOperationLease }
   | { readonly envelope: ReturnType<typeof errEnvelope> };
 
 async function resolveActivatedSession(
@@ -86,8 +86,9 @@ async function resolveActivatedSession(
   sessionId: string,
   requestId: string,
 ): Promise<ResolvedSession> {
-  const handle = await resumeSessionById(core.accessor, sessionId);
-  if (handle !== undefined) return { handle };
+  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  if (lease.handle !== undefined) return { handle: lease.handle, lease };
+  lease.dispose();
 
   const summary = await core.accessor.get(ISessionIndex).get(sessionId);
   const msg =
@@ -154,11 +155,20 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
       const { session_id } = req.params;
       const live = core.accessor.get(ISessionManager).get(session_id);
       if (live !== undefined) {
-        const catalog = live.accessor.get(ISessionSkillCatalog);
-        await catalog.ready;
-        const skills = catalog.catalog.listSkills().map(toProtocolSkill);
-        reply.send(okEnvelope({ skills }, req.id));
-        return;
+        const operation = await acquireSessionOperation(core, session_id, 'operation');
+        try {
+          if (operation.handle === undefined) {
+            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+            return;
+          }
+          const catalog = operation.handle.accessor.get(ISessionSkillCatalog);
+          await catalog.ready;
+          const skills = catalog.catalog.listSkills().map(toProtocolSkill);
+          reply.send(okEnvelope({ skills }, req.id));
+          return;
+        } finally {
+          operation.dispose();
+        }
       }
       const summary = await core.accessor.get(ISessionIndex).get(session_id);
       if (summary === undefined) {
@@ -313,6 +323,8 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
       } catch (err) {
         await preparedMedia?.discard();
         sendMappedError(reply, req.id, err);
+      } finally {
+        resolved.lease.dispose();
       }
     },
   );

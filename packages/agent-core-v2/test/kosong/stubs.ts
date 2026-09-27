@@ -90,6 +90,14 @@ export class StubConfigService implements IConfigService {
     return Promise.resolve();
   }
 
+  applyModelGenerationMigration(): Promise<{ backupKey: string; revision: string }> {
+    return Promise.reject(new Error('Migration is not available in StubConfigService'));
+  }
+
+  restoreModelGenerationMigration(): Promise<{ revision: string }> {
+    return Promise.reject(new Error('Migration is not available in StubConfigService'));
+  }
+
   diagnostics(): readonly ConfigDiagnostic[] {
     return [];
   }

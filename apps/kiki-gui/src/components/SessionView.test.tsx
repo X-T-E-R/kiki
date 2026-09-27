@@ -59,6 +59,8 @@ import {
   isTerminalEscapeTarget,
   resolveAllApprovals,
   resolveApprovalShortcutTarget,
+  approvalShortcutRoot,
+  collectApprovalShortcutCards,
   resolveControlledFlag,
   resolveControlledValue,
   resolvePlanGate,
@@ -745,6 +747,32 @@ describe('resolveApprovalShortcutTarget', () => {
   });
 });
 
+describe('approval shortcut workspace scope', () => {
+  it('picks only main cards when the keyboard target is outside the preview', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<div data-agent-workspace-target="main"><button data-approval-id="main-1"></button></div>' +
+      '<aside data-preview-workspace><section data-preview-tabpanel="panel:child"><div data-agent-workspace-target="child"><button data-approval-id="child-1"></button></div></section></aside>';
+    const cards = collectApprovalShortcutCards(approvalShortcutRoot(root, root, undefined)!);
+    expect(cards.map((card) => card.id)).toEqual(['main-1']);
+    const childButton = root.querySelector('[data-approval-id="child-1"]')!;
+    expect(collectApprovalShortcutCards(approvalShortcutRoot(root, childButton, undefined)!).map((card) => card.id))
+      .toEqual(['child-1']);
+    // At narrow widths the panel covers main even if focus remained on the
+    // document body after opening it; no keyboard decision reaches behind it.
+    expect(collectApprovalShortcutCards(approvalShortcutRoot(root, root, undefined, true)!).map((card) => card.id))
+      .toEqual(['child-1']);
+  });
+
+  it('scopes routed child and ignores hidden preview tabs', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<div data-agent-workspace-target="child"><button data-approval-id="route"></button></div>' +
+      '<aside data-preview-workspace><section data-preview-tabpanel="panel:other" hidden><div data-agent-workspace-target="other"><button data-approval-id="hidden"></button></div></section></aside>';
+    expect(collectApprovalShortcutCards(approvalShortcutRoot(root, root, 'child')!).map((card) => card.id))
+      .toEqual(['route']);
+    expect(approvalShortcutRoot(root, root.querySelector('[data-approval-id="hidden"]'), 'child')).toBeNull();
+  });
+});
+
 describe('isApprovalShortcutAmbiguous', () => {
   const card = (
     id: string,
@@ -859,6 +887,21 @@ describe('shouldHandleGlobalAbortOnEscape', () => {
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, terminalOpen: true })).toBe(false);
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, inFormField: true })).toBe(false);
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, key: 'Enter' })).toBe(false);
+  });
+
+  it('does not abort a running main turn for body-focused Escape while child preview is fullscreen', () => {
+    const running = { ...createViewState('session-test'), busy: true, abortablePromptId: 'p-main' };
+    const abortActive = vi.fn();
+    const attemptAbort = (fullscreenPreviewOpen: boolean, defaultPrevented = false) => {
+      if (canAbortActiveTurn(running) && shouldHandleGlobalAbortOnEscape({
+        ...ready, defaultPrevented, fullscreenPreviewOpen,
+      })) abortActive();
+    };
+    attemptAbort(true); // Listener ran before the preview's fullscreen closer.
+    attemptAbort(true, true); // Listener ran after that closer claimed Escape.
+    expect(abortActive).not.toHaveBeenCalled();
+    attemptAbort(false); // Without preview chrome, Escape still aborts main.
+    expect(abortActive).toHaveBeenCalledTimes(1);
   });
 
   it('uses an in-flight engine id rather than requiring a visible user prompt', () => {

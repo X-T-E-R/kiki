@@ -24,6 +24,19 @@ export interface CapabilityDetectResult {
   readonly steps: readonly CapabilityStep[];
 }
 
+export interface CapabilityInstallPlan {
+  readonly artifact: {
+    readonly version: string;
+    readonly url: string;
+    readonly sha256: string;
+    readonly metadataUrl: string;
+    readonly maxBytes: number;
+  };
+  readonly destination: string;
+  readonly browserExtensionUrl?: string;
+  readonly note: string;
+}
+
 export interface CapabilityStatus {
   readonly id: CapabilityId;
   /** Plugin identifier used to provide this capability's agent wiring. */
@@ -34,6 +47,7 @@ export interface CapabilityStatus {
   readonly state: CapabilityReadiness;
   readonly version?: string;
   readonly steps: readonly CapabilityStep[];
+  readonly plan?: CapabilityInstallPlan;
   readonly install: CapabilityInstallProgress;
 }
 
@@ -58,6 +72,7 @@ export interface CapabilityEntry {
   readonly displayName: string;
   readonly description: string;
   readonly supported: boolean;
+  readonly plan?: CapabilityInstallPlan;
   detect(): Promise<CapabilityDetectResult>;
   install(report: CapabilityInstallReporter): Promise<string | undefined>;
 }

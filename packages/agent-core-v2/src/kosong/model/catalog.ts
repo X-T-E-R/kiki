@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { generationParametersSchema } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
@@ -21,6 +22,7 @@ import {
 import type { ModelInspection } from './inspection';
 import type { ModelRecord } from './model';
 import { effectiveModelConfig } from './modelAuth';
+import { parametersToWire, type GenerationParameters } from './parameters';
 import type { ModelRequester } from './modelRequester';
 
 export interface AuthProvider {
@@ -60,6 +62,8 @@ export interface Model {
   readonly maxCompletionTokens?: number;
   readonly requestParams?: ModelRecord['requestParams'];
   readonly serviceTier?: ServiceTier;
+  readonly generationParameters?: GenerationParameters;
+  readonly preferredThinkingEffort?: string;
   readonly alwaysThinking: boolean;
   readonly providerType?: string;
   readonly providerName: string;
@@ -93,6 +97,7 @@ export const modelCatalogItemSchema = z.object({
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
+  parameters: generationParametersSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
   images: imagePolicyWireSchema.optional(),
 });
@@ -110,6 +115,7 @@ export const providerCatalogItemSchema = z.object({
   type: z.string().min(1),
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
+  defaults: generationParametersSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
   images: imagePolicyWireSchema.optional(),
   api_key: z.string().min(1).optional(),
@@ -159,6 +165,7 @@ export function toProtocolModel(
     support_efforts: model.supportEfforts === undefined ? undefined : [...model.supportEfforts],
     default_effort: model.defaultEffort,
     service_tier: model.serviceTier,
+    parameters: parametersToWire(record.parameters),
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
   };
@@ -181,6 +188,7 @@ export function toProtocolModelFallback(
     support_efforts: effective.supportEfforts,
     default_effort: effective.defaultEffort,
     service_tier: effective.serviceTier,
+    parameters: parametersToWire(record.parameters),
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
   };
@@ -202,6 +210,7 @@ export function toProtocolProvider(
     type: provider.type ?? 'openai',
     base_url: provider.baseUrl,
     default_model: defaultModel,
+    defaults: parametersToWire(provider.defaults),
     request_identity: requestIdentityToWire(provider.requestIdentity),
     images: imagePolicyToWire(provider.images),
     api_key: key.api_key,

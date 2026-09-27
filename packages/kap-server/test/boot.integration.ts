@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { pino } from 'pino';
+import WebSocket from 'ws';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -22,6 +23,7 @@ import {
 import { Event } from '@kiki/agent-core-v2/_base/event';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';
+import { rotateServerToken } from '../src/services/auth/persistentToken';
 import { IGlobalSearchService } from '../src/search/searchService';
 import { createServerLogger } from '../src/services/pinoLoggerService';
 import { listenWithPortRetry, type RunningServer, startServer } from '../src/start';
@@ -176,6 +178,55 @@ describe('server-v2 boot', () => {
     restoreExternalDelegationEnv(externalDelegationEnv);
   });
 
+  it('rejects unsafe SSH-managed binds before registering a server', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-ssh-managed-refuse-'));
+    await expect(startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      homeDir: home,
+      host: '0.0.0.0',
+      port: 0,
+      sshManaged: true,
+    })).rejects.toThrow('SSH-managed servers require loopback');
+    expect(await listLiveServerInstances(home)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('publishes private SSH home identity and revokes both WebSocket authorities on rotation', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-ssh-managed-'));
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      homeDir: home,
+      host: '127.0.0.1',
+      port: 0,
+      logLevel: 'silent',
+      sshManaged: true,
+      buildId: 'test-build',
+      buildChannel: 'stable',
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+    const token = server.authTokenService.getToken();
+    const meta = await (await authedFetch(server, base, '/api/meta')).json() as {
+      data: { server_home_id: string; server_id: string };
+    };
+    expect(meta.data.server_home_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(meta.data.server_home_id).not.toContain(home);
+    expect(meta.data.server_id).toBe(server.serverId);
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/klient/events`, `kimi-code.bearer.${token}`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      const closed = new Promise<number>((resolve) => ws.once('close', resolve));
+      const rotated = await rotateServerToken(home);
+      expect(rotated).not.toBe(token);
+      expect((await fetch(`${base}/api/meta`, { headers: { Authorization: `Bearer ${token}` } })).status).toBe(401);
+      expect((await fetch(`${base}/api/meta`, { headers: { Authorization: `Bearer ${rotated}` } })).status).toBe(200);
+      expect(await withTimeout(closed, 4_000)).toBe(4001);
+    } finally {
+      ws.terminate();
+    }
+  });
+
   it('boots agent-core-v2 and serves the basic /api routes', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-'));
     server = await startServer({
@@ -199,14 +250,19 @@ describe('server-v2 boot', () => {
     expect(healthBody.data.ok).toBe(true);
     expect(typeof healthBody.request_id).toBe('string');
 
+    const anonymousMeta = await fetch(`${base}/api/meta`);
+    expect(anonymousMeta.status).toBe(401);
+    expect(await anonymousMeta.text()).not.toContain(home);
     const meta = await authedFetch(server, base, '/api/meta');
     expect(meta.status).toBe(200);
     const metaBody = await meta.json() as {
       code: number;
-      data: { server_id: string; server_version: string; capabilities: Record<string, boolean> };
+      data: { server_id: string; server_home_id: string; server_version: string; capabilities: Record<string, boolean> };
     };
     expect(metaBody.code).toBe(0);
     expect(typeof metaBody.data.server_id).toBe('string');
+    expect(metaBody.data.server_home_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(metaBody.data.server_home_id).not.toContain(home);
     expect(typeof metaBody.data.server_version).toBe('string');
     expect(metaBody.data.capabilities).toBeDefined();
 

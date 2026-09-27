@@ -206,7 +206,7 @@ export function Sidebar({
 }) {
   const host = useHost();
   const navigate = useGuardedNavigate();
-  const { client, meta, wsStatus } = useConnection();
+  const { client, meta, wsStatus, scopeId } = useConnection();
   const { t, locale } = useI18n();
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
@@ -841,6 +841,7 @@ export function Sidebar({
       {menu !== null ? (
         <SessionMenu
           session={menu.session}
+          scopeId={scopeId}
           x={menu.x}
           y={menu.y}
           onClose={() => { setMenu(null); }}
@@ -1196,6 +1197,7 @@ function SidebarViewMenu({
  * be clamped inside the viewport on both axes (right-click near an edge). */
 function SessionMenu({
   session,
+  scopeId,
   x,
   y,
   onClose,
@@ -1206,6 +1208,7 @@ function SessionMenu({
   onRestore,
 }: {
   session: Session;
+  scopeId: string;
   x: number;
   y: number;
   onClose: () => void;
@@ -1261,7 +1264,7 @@ function SessionMenu({
   // editor actions ride the desktop opener commands, so the browser build
   // degrades to the two copy entries only.
   const cwd = session.metadata.cwd;
-  const desktop = host.revealPath !== undefined && host.openPath !== undefined;
+  const desktop = !scopeId.startsWith('ssh:') && host.revealPath !== undefined && host.openPath !== undefined;
   const runAndClose = (label: string, action: () => Promise<void>) => {
     onClose();
     runToastAction(label, action);

@@ -13,7 +13,12 @@ export function formatTaskList(tasks: readonly AgentTaskInfo[], activeOnly: bool
   const label = activeOnly ? 'active_background_tasks' : 'background_tasks';
   const header = `${label}: ${String(tasks.length)}`;
   if (tasks.length === 0) return `${header}\nNo background tasks found.`;
-  return `${header}\n${tasks.map((task) => formatPlainObject(task)).join('\n---\n')}`;
+  return `${header}\n${tasks.map((task) => formatPlainObject({
+    ...task,
+    receipt: task.receiptVerification === 'verified' ? task.receipt : undefined,
+    receiptPath: task.receiptVerification === 'verified' ? task.receipt?.path : undefined,
+    receiptContentState: task.receiptVerification === 'verified' ? task.receipt?.contentState : undefined,
+  })).join('\n---\n')}`;
 }
 
 export class TaskListTool implements ITaskListTool {
@@ -32,9 +37,17 @@ export class TaskListTool implements ITaskListTool {
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, listScope),
       execute: async () => {
         const activeOnly = args.active_only ?? true;
-        const tasks = this.tasks.list(activeOnly, args.limit ?? 20);
+        const limit = args.limit ?? 20;
+        const offset = args.offset ?? 0;
+        const results = this.tasks.list(activeOnly, limit + 1, offset);
+        const hasMore = results.length > limit;
+        const tasks = await Promise.all(results.slice(0, limit).map((task) => this.tasks.getTaskSnapshot(task.taskId)
+          .then((snapshot) => snapshot ?? task)));
         return {
-          output: formatTaskList(tasks, activeOnly),
+          output: [formatTaskList(tasks, activeOnly), formatPlainObject({
+            hasMore,
+            nextOffset: hasMore ? offset + limit : undefined,
+          })].join('\n'),
           isError: false,
         };
       },

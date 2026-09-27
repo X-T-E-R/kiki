@@ -62,7 +62,7 @@ import type {
 } from '@kiki/agent-core-v2/agent/shellCommand/shellCommandService';
 
 import type { TurnStepRetryingPayload } from '@kiki/agent-core-v2/agent/stepRetry/stepRetryService';
-import type { AgentTaskStatus } from '@kiki/agent-core-v2/agent/task/types';
+import type { AgentTaskReceipt, AgentTaskStatus } from '@kiki/agent-core-v2/agent/task/types';
 import type {
   ToolCallStartedPayload,
   ToolProgressPayload,
@@ -418,6 +418,17 @@ const kimiErrorPayloadObjectSchema = z.object({
   cause: kimiErrorPayloadSchema.optional(),
 });
 
+export const agentTaskReceiptSchema = z.object({
+  schemaVersion: z.literal(1),
+  path: z.string(),
+  mediaType: z.literal('text/plain; charset=utf-8'),
+  bytes: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  contentState: z.enum(['final', 'unavailable']),
+  committedAt: isoDateTimeSchema,
+  sourceTurnId: z.number().int().nonnegative().optional(),
+}) satisfies z.ZodType<AgentTaskReceipt>;
+
 export const taskInfoBaseSchema = z.object({
   taskId: z.string(),
   description: z.string(),
@@ -432,6 +443,8 @@ export const taskInfoBaseSchema = z.object({
   ownerAgentId: z.string().optional(),
   ownerTurnId: z.number().int().nonnegative().optional(),
   goalId: z.string().optional(),
+  receipt: agentTaskReceiptSchema.optional(),
+  receiptVerification: z.enum(['verified', 'legacy_unverified', 'invalid']).optional(),
 });
 
 export const processTaskInfoSchema = taskInfoBaseSchema.extend({

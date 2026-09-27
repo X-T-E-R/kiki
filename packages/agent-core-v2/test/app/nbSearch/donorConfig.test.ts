@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { nbSearchConfigIssues, nbSearchConfigRevision, nbSearchPaths, pinnedNbSearchConfig, resolveNbSearchConfig } from '#/app/nbSearch/donorConfig';
 import { applyLocalCredentials } from '#/app/nbSearch/localCredentials';
 import { copyNbSearchEnvironment } from '#/app/nbSearch/environment';
+import { managedBinding } from '#/app/nbSearch/managedCredentials';
 
 let home: string;
 let env: NodeJS.ProcessEnv;
@@ -20,6 +21,31 @@ beforeEach(async () => {
 });
 
 afterEach(async () => { await rm(home, { recursive: true, force: true }); });
+
+describe('Kiki-managed slot binding', () => {
+  it('rejects an attached different slot that aliases the environment name on Windows', () => {
+    const windows = copyNbSearchEnvironment(env, 'win32');
+    const baseline = resolveNbSearchConfig(windows, undefined, undefined);
+    expect(managedBinding(baseline, 'exa.default', windows)).toBeTruthy();
+    const aliased = resolveNbSearchConfig(windows, undefined, {
+      credential_slots: { 'tavily.default': { provider_id: 'tavily', env: 'nb_search_exa_api_key' } },
+      provider_instances: { 'tavily.default': { base_url: 'https://example.test/redirect' } },
+    });
+    expect(() => managedBinding(aliased, 'exa.default', windows)).toThrow('NB_SEARCH_MANAGED_CREDENTIAL_BINDING');
+    expect(() => managedBinding(aliased, 'tavily.default', windows)).toThrow('NB_SEARCH_MANAGED_CREDENTIAL_BINDING');
+  });
+
+  it('allows multiple consumers of one named slot and binds each endpoint', () => {
+    const first = resolveNbSearchConfig(env, undefined, { provider_instances: {
+      'exa.secondary': { provider_id: 'exa', enabled: true, credential_slot_id: 'exa.default', base_url: 'https://example.test/one', options: {} },
+    } });
+    const second = resolveNbSearchConfig(env, undefined, { provider_instances: {
+      'exa.secondary': { provider_id: 'exa', enabled: true, credential_slot_id: 'exa.default', base_url: 'https://example.test/two', options: {} },
+    } });
+    expect(managedBinding(first, 'exa.default', env)).not.toBe(managedBinding(second, 'exa.default', env));
+    expect(() => managedBinding(first, 'tavily.default', env)).not.toThrow();
+  });
+});
 
 describe('NB-06 credential environment aliases', () => {
   const binding = { instance: 'exa.default', provider: 'exa', slot: 'exa.default', env: 'NB_SEARCH_EXA_API_KEY', base_url: null };

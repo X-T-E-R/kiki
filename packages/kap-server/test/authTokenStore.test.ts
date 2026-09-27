@@ -143,6 +143,31 @@ describe('tokenStore', () => {
     expect(store.isValid(original)).toBe(false);
     await store.dispose();
   });
+
+  it('fails closed on missing, malformed and unreadable managed tokens; revokes by generation', async () => {
+    const store = await createTokenStore(join(tmpDir, 'managed'), { managed: true });
+    const original = store.getToken();
+    const initialGeneration = store.generation();
+    rmSync(store.tokenPath);
+    expect(store.isValid(original)).toBe(false);
+    expect(store.getToken()).toBe('');
+    expect(store.generation()).toBe(initialGeneration + 1);
+    await writePrivateFile(store.tokenPath, 'not-a-token');
+    expect(store.isValid(original)).toBe(false);
+    const rotated = await rotateServerToken(join(tmpDir, 'managed'));
+    expect(store.isValid(rotated)).toBe(true);
+    expect(store.isValid(original)).toBe(false);
+    expect(store.generation()).toBe(initialGeneration + 2);
+    await store.dispose();
+  });
+
+  it.skipIf(process.platform === 'win32')('rejects a newly world-readable managed token even when unchanged', async () => {
+    const store = await createTokenStore(join(tmpDir, 'managed'), { managed: true });
+    const token = store.getToken();
+    chmodSync(store.tokenPath, 0o644);
+    expect(store.isValid(token)).toBe(false);
+    await store.dispose();
+  });
 });
 
 describe('persistentToken', () => {

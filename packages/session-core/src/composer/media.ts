@@ -274,17 +274,18 @@ function parseFileUrl(value: string): string | undefined {
 export function joinPath(base: string, relative: string): string {
   const combined = `${base.replace(/[\\/]+$/, '')}/${relative}`.replaceAll('\\', '/');
   const absolute = combined.startsWith('/');
+  const unc = combined.startsWith('//');
   const stack: string[] = [];
   for (const segment of combined.split('/')) {
     if (segment === '' || segment === '.') continue;
     if (segment === '..') {
-      if (stack.length > 0 && stack.at(-1) !== '..') stack.pop();
+      if (stack.length > (unc ? 2 : 0) && stack.at(-1) !== '..') stack.pop();
       else if (!absolute) stack.push('..');
       continue;
     }
     stack.push(segment);
   }
-  return `${absolute ? '/' : ''}${stack.join('/')}`;
+  return `${unc ? '//' : absolute ? '/' : ''}${stack.join('/')}`;
 }
 
 /**

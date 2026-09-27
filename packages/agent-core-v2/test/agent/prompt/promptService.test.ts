@@ -685,6 +685,23 @@ describe('AgentPromptService', () => {
     expect(prompt.list()).toEqual({ active: undefined, pending: [] });
   });
 
+  it('does not finish draining an active prompt before its terminal event is published', async () => {
+    const { prompt, loop, eventBus } = harness({ manualTurnResult: true });
+    const aborted: string[] = [];
+    eventBus.subscribe(PromptAborted, (event) => aborted.push(event.promptId));
+    const handle = await prompt.enqueue({ id: 'active', message: message('active') });
+    await handle.launched;
+    let drained = false;
+    const drain = prompt.drain(new Error('closing')).then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    expect(aborted).toEqual([]);
+    loop.settleActive({ type: 'cancelled', steps: 0, reason: new Error('closing') });
+    await drain;
+    expect(aborted).toEqual(['active']);
+    expect(prompt.list().active).toBeUndefined();
+  });
+
   it('settles queued prompts when Loop admission closes during teardown', async () => {
     const { prompt, loop, plan } = harness({ manualTurnResult: true });
     await prompt.enqueue({ message: message('active') });

@@ -2,6 +2,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import type { McpServerConfigView } from '#/mcpCore/configView';
+import type { McpRevealedOAuthCredential, McpStoredOAuthCredential, McpStoredOAuthIdentity } from '#/mcpCore/oauth/service';
 import type {
   McpRegistryPluginOrigin,
   McpRegistryQuery,
@@ -167,8 +168,17 @@ export interface IMcpManagementService {
   /** Tear down a flow without finishing it; unknown flows are ignored. */
   cancelServerAuth(handle: Pick<McpServerAuthFlowHandle, 'flowId'>): Promise<void>;
 
-  /** Clear stored credentials; the invalidation event reaches live sessions. */
-  resetServerAuth(locator: McpServerLocator, query?: McpRegistryQuery): Promise<void>;
+  /** Clear stored credentials; an expected URL prevents registry drift from changing the target. */
+  resetServerAuth(locator: McpServerLocator, query?: McpRegistryQuery, expectedCanonicalUrl?: string): Promise<void>;
+
+  /** Offline masked inventory of credentials in this Kiki home; origin is not tracked. */
+  listStoredOAuthCredentials(): Promise<readonly McpStoredOAuthCredential[]>;
+
+  /** Reveal the full resource URL only after an explicit request for its opaque id. */
+  revealStoredOAuthCredential(target: McpStoredOAuthIdentity): Promise<McpRevealedOAuthCredential>;
+
+  /** Remove exactly one stored credential identity, including orphaned identities. */
+  revokeStoredOAuthCredential(target: McpStoredOAuthIdentity): Promise<void>;
 }
 
 export const IMcpManagementService: ServiceIdentifier<IMcpManagementService> =

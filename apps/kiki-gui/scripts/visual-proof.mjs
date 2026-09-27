@@ -140,6 +140,12 @@ const STRINGS = {
     nbSearchReady: 'Ready',
     nbSearchDegraded: 'Degraded',
     nbSearchUnconfigured: 'Not configured',
+    nbSearchManagedStored: 'Saved on this server',
+    nbSearchManagedEmpty: 'No Kiki-managed value saved',
+    nbSearchManagedReveal: 'Reveal saved value',
+    nbSearchManagedHide: 'Hide',
+    nbSearchManagedSave: 'Save / overwrite',
+    nbSearchManagedClear: 'Clear saved value',
     loadMore: 'Load more sessions',
     searchLoadMore: 'Load more results',
     workspaceFilterAll: 'All workspaces',
@@ -332,6 +338,12 @@ const STRINGS = {
     nbSearchReady: '就绪',
     nbSearchDegraded: '部分可用',
     nbSearchUnconfigured: '未配置',
+    nbSearchManagedStored: '已保存在此服务器',
+    nbSearchManagedEmpty: '尚无 Kiki 管理的凭据',
+    nbSearchManagedReveal: '查看已存值',
+    nbSearchManagedHide: '隐藏',
+    nbSearchManagedSave: '保存／覆写',
+    nbSearchManagedClear: '清除已存值',
     loadMore: '加载更多会话',
     searchLoadMore: '加载更多结果',
     workspaceFilterAll: '全部工作区',
@@ -610,7 +622,7 @@ async function resizeViewport(width) {
 
 async function sendPrompt(text) {
   await page.fill('textarea', text);
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   console.log(`[flow] sent: ${text}`);
 }
 
@@ -1196,7 +1208,7 @@ async function scenarioEmptyStates() {
   await page.click(`text=${S.newSession}`);
   await page.waitForSelector(`text=${S.newSession}`, { timeout: 5000 });
   await page.fill('textarea', 'Fixture blank session');
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await page.waitForURL(/\/s\//, { timeout: 10_000 });
   await page.waitForSelector('text=Fixture blank session', { timeout: 10_000 });
   await shot('empty-states-created');
@@ -1224,7 +1236,7 @@ async function scenarioNewNoWorkspace() {
   await shot('new-no-workspace');
   const createRequest = page.waitForRequest((request) =>
     request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   const body = (await createRequest).postDataJSON();
   if (body.workspace_id !== undefined || body.metadata?.cwd !== undefined) {
     throw new Error(`automatic workspace creation must omit workspace_id and cwd: ${JSON.stringify(body)}`);
@@ -1238,7 +1250,7 @@ async function scenarioDraftFlow() {
   });
   await page.waitForSelector(`text=${S.newSession}`, { timeout: 10_000 });
   await page.fill('textarea', 'Run the fixture draft flow.');
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await page.waitForURL(/\/s\//, { timeout: 10_000 });
   await page.waitForSelector('[data-phase="active"]', { timeout: 10_000 });
   await page.waitForSelector('text=Here is the fixture answer', { timeout: 20_000 });
@@ -1315,7 +1327,7 @@ async function scenarioHeroShell() {
   await page.evaluate(() => {
     window.__heroTextarea = document.querySelector('textarea');
   });
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await page.waitForURL(/\/s\//, { timeout: 10_000 });
   await page.waitForSelector('[data-phase="active"]', { timeout: 10_000 });
   const identity = await page.evaluate(() => ({
@@ -1764,6 +1776,33 @@ async function scenarioSettingsWrite() {
   await shot('settings-write-reloaded');
 }
 
+async function scenarioConnectionToken() {
+  await page.goto(`${WEB_URL}/settings/connection?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  const card = page.locator('#st-card-conn-server');
+  await card.waitFor({ state: 'visible', timeout: 10_000 });
+  const input = card.locator('#st-conn-token');
+  if (await input.inputValue() !== FIXTURE_TOKEN || await input.getAttribute('type') !== 'password') {
+    throw new Error('fixture connection token must be prefilled and masked');
+  }
+  await card.scrollIntoViewIfNeeded();
+  await shot('settings-connection-token-masked');
+  const toggle = card.locator('button[aria-label]');
+  if (await toggle.count() !== 1) {
+    throw new Error('expected one accessible token visibility control');
+  }
+  await toggle.click();
+  if (await input.getAttribute('type') !== 'text') {
+    throw new Error('saved connection token did not become visible');
+  }
+  await shot('settings-connection-token-revealed');
+  await toggle.click();
+  if (await input.getAttribute('type') !== 'password') {
+    throw new Error('saved connection token did not become masked again');
+  }
+}
+
 async function scenarioSettingsInvalid() {
   // Client-side validation with no server round-trip: the plan-enter approval
   // timeout floor (5s) rejects an under-floor draft with an inline alert and
@@ -2204,6 +2243,32 @@ async function scenarioSettingsNbSearch() {
   }
   await shot('settings-nbsearch-reloaded');
 
+  const exaCard = page.locator('#st-card-search-providers details', { hasText: 'exa.default' });
+  await exaCard.locator('summary').click();
+  const credentialInput = exaCard.locator('input[autocomplete="off"]');
+  const reveal = exaCard.getByRole('button', { name: S.nbSearchManagedReveal, exact: true });
+  await exaCard.getByText(S.nbSearchManagedStored, { exact: false }).waitFor();
+  if (await reveal.isDisabled()) throw new Error('fixture managed credential reveal is disabled after config reload');
+  await reveal.click();
+  await page.waitForFunction(() => document.querySelector('#st-card-search-providers details input[autocomplete="off"][type="text"]')?.value === 'fixture-managed-exa-key');
+  await exaCard.scrollIntoViewIfNeeded();
+  await shot('settings-nbsearch-credential-revealed');
+  await credentialInput.fill('fixture-managed-exa-updated');
+  await exaCard.getByRole('button', { name: S.nbSearchManagedSave, exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#st-card-search-providers details input[autocomplete="off"]')?.value === '');
+  await shot('settings-nbsearch-credential-saved');
+  await reveal.click();
+  await page.waitForFunction(() => document.querySelector('#st-card-search-providers details input[autocomplete="off"][type="text"]')?.value === 'fixture-managed-exa-updated');
+  await exaCard.getByRole('button', { name: S.nbSearchManagedHide, exact: true }).click();
+  if (await credentialInput.getAttribute('type') !== 'password'
+    || await credentialInput.inputValue() !== 'fixture-managed-exa-updated') {
+    throw new Error('managed credential hide did not mask the updated value');
+  }
+  await exaCard.getByRole('button', { name: S.nbSearchManagedClear, exact: true }).click();
+  await exaCard.getByText(S.nbSearchManagedEmpty, { exact: false }).waitFor();
+  if (await reveal.isEnabled()) throw new Error('cleared managed credential must not remain revealable');
+  await shot('settings-nbsearch-credential-cleared');
+
   // Diagnostics are explicit: nothing runs until the button is pressed.
   await openTab('advanced');
   await page.locator('#st-card-search-diagnostics').scrollIntoViewIfNeeded();
@@ -2565,7 +2630,7 @@ async function scenarioQueue() {
   await page.waitForTimeout(300);
   await shot('queue-edit-roundtrip');
   await page.fill('textarea', 'C: clear me out. (edited)');
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await page.waitForSelector('[data-queue-edit-banner]', { state: 'detached', timeout: 10_000 });
   // Confirmed: the composer hands the pre-edit draft back (empty here)…
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
@@ -2712,7 +2777,7 @@ async function scenarioBurst() {
   // Idle baseline: the same press→POST path before any flood begins.
   await page.fill('textarea', 'Start the burst.');
   const idlePressedAt = await page.evaluate(() => performance.now());
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await page.waitForFunction(() => window.__promptFetches.length > 0, undefined, { timeout: 5000 });
   const idleLatency = await page.evaluate(
     (start) => window.__promptFetches[0] - start,
@@ -2737,7 +2802,7 @@ async function scenarioBurst() {
   const fetchesBefore = await page.evaluate(() => window.__promptFetches.length);
   await page.fill('textarea', 'B: second during burst.');
   const pressedAt = await page.evaluate(() => performance.now());
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await page.waitForFunction((before) => window.__promptFetches.length > before, fetchesBefore, { timeout: 5000 });
   const latency = await page.evaluate(
     (start) => window.__promptFetches[window.__promptFetches.length - 1] - start,
@@ -3317,7 +3382,7 @@ async function scenarioSlashCommands() {
   const draft = await page.inputValue('textarea');
   if (draft !== '/review ') throw new Error(`expected "/review " after accept, saw "${draft}"`);
   await page.type('textarea', '--strict');
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await waitForText('Skill /review ran in the fixture');
   await shot('slash-commands-activated');
   const activation = await control({ action: 'session', session_id: 'session_fixture_slash' });
@@ -3352,7 +3417,7 @@ async function scenarioSlashCommands() {
   // holds the send behind an explicit confirm; the proof walks through the
   // gate, then still asserts the draft ships verbatim as a plain prompt.
   await page.fill('textarea', '/notarealcommand hello');
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await page.waitForSelector('[data-slash-confirm]', { timeout: 5000 });
   await shot('slash-commands-unknown-confirm');
   await page.locator('[data-slash-confirm] button', { hasText: S.sendAnyway }).click();
@@ -3402,7 +3467,7 @@ async function scenarioAttachments() {
   await shot('attachments-image');
   // Send: text part carries the @path mention, image rides as a base64 part.
   await page.type('textarea', 'what is in these?');
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await waitForText('Attachments received by the fixture.');
   const state = await control({ action: 'session', session_id: 'session_fixture_attach' });
   const content = state.data?.last_prompt_submission?.content ?? [];
@@ -3525,7 +3590,7 @@ async function scenarioSelectionAnnotate() {
   // blockquote, then the typed text.
   await page.click('textarea');
   await page.type('textarea', TYPED);
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await waitForText('Selection annotations received by the fixture.');
   const state = await control({ action: 'session', session_id: 'session_fixture_selection_annotate' });
   const content = state.data?.last_prompt_submission?.content ?? [];
@@ -3817,7 +3882,7 @@ async function scenarioContextRing() {
 
   // Now prove the ring recolors live during a stream.
   await page.fill('textarea', 'Push the context over the danger threshold.');
-  await page.press('textarea', 'Enter');
+  await page.press('textarea', 'Control+Enter');
   await page.waitForFunction(
     () => document.querySelector('[data-context-meter]')?.getAttribute('data-context-level') === 'danger',
     { timeout: 15_000 },
@@ -4131,6 +4196,7 @@ const SCENARIOS = [
   ['settings', scenarioSettings],
   ['settings-search', scenarioSettingsSearch],
   ['settings-write', scenarioSettingsWrite],
+  ['connection-token', scenarioConnectionToken],
   ['settings-invalid', scenarioSettingsInvalid],
   ['settings-browser-editable', scenarioSettingsBrowserEditable],
   ['settings-communication', scenarioSettingsCommunication],

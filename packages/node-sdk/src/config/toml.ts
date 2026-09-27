@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { chmod, mkdir, open } from 'node:fs/promises';
-import { dirname } from 'pathe';
+import { basename, dirname } from 'pathe';
+import { readConfigDocumentSnapshot, writeConfigDocument } from '@kiki/agent-core-v2/app/config/configDocument';
+import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
+import { TomlAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
 
 import { ErrorCodes, KimiError } from '../errors';
 import { credentialsPathFor, mergeConfigCredentials, splitConfigCredentials } from './credentials';
@@ -25,8 +27,7 @@ import {
   type ThinkingConfig,
   validateConfig,
 } from './schema';
-import { atomicWrite } from '../internal/fs';
-import { parse as parseToml, stringify as stringifyToml, TomlError } from 'smol-toml';
+import { parse as parseToml, TomlError } from 'smol-toml';
 
 /* ------------------------------------------------------------------ */
 /*  Key helpers – reuse generic snake / camel conversion instead of    */
@@ -57,27 +58,18 @@ const DEFAULT_CREDENTIALS_FILE_TEXT = `# ~/.kiki/credentials.toml
 `;
 
 /**
- * Create `config.toml` and its companion `credentials.toml` when missing. Both
- * are owner-only (`0600`); the credentials file is scaffolded empty so the
+ * Create `config.toml` and its companion `credentials.toml` when missing.
+ * Requests owner-only mode (`0600`) on POSIX; Windows access follows the
+ * existing directory ACL. The credentials file is scaffolded empty so the
  * write path never has to create it with the process umask.
  */
 export async function ensureConfigFile(filePath: string): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
-  await createFileIfMissing(filePath, DEFAULT_CONFIG_FILE_TEXT);
-  await createFileIfMissing(credentialsPathFor(filePath), DEFAULT_CREDENTIALS_FILE_TEXT);
-}
-
-async function createFileIfMissing(filePath: string, text: string): Promise<void> {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(filePath, 'wx', 0o600);
-    await handle.writeFile(text, 'utf-8');
-  } catch (error) {
-    if (isFileExistsError(error)) return;
-    throw error;
-  } finally {
-    await handle?.close();
-  }
+  await withConfigWrite(filePath, async (store, key) => {
+    if (await store.getText('', key, { recoverMissing: false }) === undefined) await store.setText('', key, DEFAULT_CONFIG_FILE_TEXT);
+    if (await store.getText('', 'credentials.toml', { recoverMissing: false }) === undefined) {
+      await store.setText('', 'credentials.toml', DEFAULT_CREDENTIALS_FILE_TEXT);
+    }
+  });
 }
 
 /**
@@ -533,46 +525,61 @@ function transformLoopControlData(data: Record<string, unknown>): Record<string,
 /*  Write / stringify                                                  */
 /* ------------------------------------------------------------------ */
 
-export async function writeConfigFile(filePath: string, config: KimiConfig): Promise<void> {
-  // Final guard: never persist the env-synthesized model/provider to disk,
-  // even if a caller passes back the runtime config as a patch (see
-  // stripEnvModelConfig / the getConfig -> setConfig round-trip).
+export interface ConfigWriteSnapshot {
+  readonly configText: string | undefined;
+  readonly credentialsText: string | undefined;
+  readonly loaded?: KimiConfig;
+}
+
+export function readConfigWriteSnapshot(filePath: string): ConfigWriteSnapshot {
+  const read = (name: string) => existsSync(name) ? readFileSync(name, 'utf-8') : undefined;
+  return { configText: read(filePath), credentialsText: read(credentialsPathFor(filePath)) };
+}
+
+export async function writeConfigFile(filePath: string, config: KimiConfig, expected?: ConfigWriteSnapshot): Promise<void> {
   const validated = validateConfig(stripEnvModelConfig(config));
-  await writeConfigData(filePath, configToTomlData(validated));
+  const separated = splitConfigCredentials(configToTomlData(validated));
+  await withConfigWrite(filePath, async (store, key) => {
+    const before = await readConfigDocumentSnapshot(store, key, { recoverMissing: false });
+    const credentials = await readConfigDocumentSnapshot(store, 'credentials.toml', { recoverMissing: false });
+    if (expected !== undefined && (before.text !== expected.configText || credentials.text !== expected.credentialsText)) {
+      throw new KimiError(ErrorCodes.CONFIG_INVALID, 'Configuration changed during login; retry without overwriting other changes.');
+    }
+    let nextConfig = separated.config;
+    let nextCredentials = { ...separated.credentials };
+    if (expected?.loaded !== undefined) {
+      const originalData = configToTomlData(validateConfig(stripEnvModelConfig(expected.loaded)));
+      const nextData = configToTomlData(validated);
+      const changed = new Set([...Object.keys(originalData), ...Object.keys(nextData)]
+        .filter((domain) => JSON.stringify(originalData[domain]) !== JSON.stringify(nextData[domain])));
+      nextConfig = { ...before.data };
+      nextCredentials = { ...credentials.data };
+      for (const domain of changed) {
+        if (separated.config[domain] === undefined) delete nextConfig[domain];
+        else nextConfig[domain] = separated.config[domain];
+        if (separated.credentials[domain] === undefined) delete nextCredentials[domain];
+        else nextCredentials[domain] = separated.credentials[domain];
+      }
+    }
+    const writtenCredentials = await writeConfigDocument(store, 'credentials.toml', credentials.data, credentials.text, nextCredentials);
+    try {
+      await writeConfigDocument(store, key, before.data, before.text, nextConfig);
+    } catch (error) {
+      if (writtenCredentials !== undefined && await store.getText('', key, { recoverMissing: false }) === before.text) {
+        await store.compareAndSetText('', 'credentials.toml', writtenCredentials, credentials.text);
+      }
+      throw error;
+    }
+  });
 }
 
-/**
- * Persist one TOML document across the two files: secrets go to
- * `credentials.toml` (owner-only), everything else to `config.toml`, which
- * therefore never carries a credential. `config.toml` remains the full-state
- * document — a secret absent from `data` is removed from `credentials.toml`
- * too, mirroring a normal config rewrite.
- *
- * The credentials file is written first: a crash between the two writes can
- * then only leave a secret duplicated in `config.toml`, never dropped.
- */
-async function writeConfigData(filePath: string, data: Record<string, unknown>): Promise<void> {
-  const separated = splitConfigCredentials(data);
-  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
-  await writeCredentialsData(filePath, separated.credentials);
-  await atomicWrite(filePath, `${stringifyToml(separated.config)}\n`);
-}
-
-async function writeCredentialsData(
-  configPath: string,
-  credentials: Record<string, unknown>,
-): Promise<void> {
-  const credentialsPath = credentialsPathFor(configPath);
-  // Nothing to store and no file to clear: skip rather than create an empty
-  // companion for a secret-free config.
-  if (Object.keys(credentials).length === 0 && !existsSync(credentialsPath)) return;
-  await atomicWrite(credentialsPath, `${stringifyToml(credentials)}\n`, undefined, 0o600);
-  // Re-apply the mode after replacement on platforms that support it.
-  try {
-    await chmod(credentialsPath, 0o600);
-  } catch {
-    // Best-effort: platforms without POSIX modes (Windows) keep the write.
-  }
+export async function withConfigWrite<T>(
+  filePath: string,
+  operation: (store: import('@kiki/agent-core-v2/persistence/interface/atomicDocumentStore').IAtomicTomlDocumentStore, key: string) => Promise<T>,
+): Promise<T> {
+  const storage = new FileStorageService(dirname(filePath), 0o700, 0o600, false);
+  const store = new TomlAtomicDocumentStore(storage);
+  return operation(store, basename(filePath));
 }
 
 export function configToTomlData(config: KimiConfig): Record<string, unknown> {
@@ -869,12 +876,4 @@ function setDefined(target: Record<string, unknown>, key: string, value: unknown
   } else {
     delete target[key];
   }
-}
-
-function isFileExistsError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: unknown }).code === 'EEXIST'
-  );
 }

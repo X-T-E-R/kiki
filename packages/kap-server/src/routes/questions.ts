@@ -2,7 +2,8 @@ import {
   type Interaction,
   ISessionInteractionService,
   ISessionQuestionService,
-  resumeSessionById,
+  ISessionIndex,
+  getLiveSessionById,
   type QuestionAnswers,
   type QuestionItem,
   type QuestionOption,
@@ -28,6 +29,7 @@ import {
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { withSessionOperation } from '../lib/sessionOperationLease';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
 import { parseActionSuffix } from './action-suffix';
@@ -79,16 +81,24 @@ export function registerQuestionsRoutes(app: QuestionRouteHost, core: Scope): vo
     },
     async (req, reply) => {
       const { session_id } = req.params;
-      const handle = await resumeSessionById(core.accessor, session_id);
-      if (handle === undefined) {
-        reply.send(
-          errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
-        );
-        return;
+      if (getLiveSessionById(core.accessor, session_id) === undefined) {
+        const summary = await core.accessor.get(ISessionIndex).get(session_id);
+        if (getLiveSessionById(core.accessor, session_id) === undefined) {
+          reply.send(summary === undefined
+            ? errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id)
+            : okEnvelope({ items: [] }, req.id));
+          return;
+        }
       }
-      const pending = handle.accessor.get(ISessionInteractionService).listPending('question');
-      const items = pending.map((i) => toWireQuestion(i, session_id));
-      reply.send(okEnvelope({ items }, req.id));
+      await withSessionOperation(core, session_id, async (handle) => {
+        if (handle === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+          return;
+        }
+        const pending = handle.accessor.get(ISessionInteractionService).listPending('question');
+        const items = pending.map((i) => toWireQuestion(i, session_id));
+        reply.send(okEnvelope({ items }, req.id));
+      });
     },
   );
   app.get(listRoute.path, listRoute.options, listRoute.handler as Parameters<QuestionRouteHost['get']>[2]);
@@ -122,106 +132,116 @@ export function registerQuestionsRoutes(app: QuestionRouteHost, core: Scope): vo
         resourceLabel: 'question',
       });
 
-      const handle = await resumeSessionById(core.accessor, session_id);
-      if (handle === undefined) {
-        reply.send(
-          errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
-        );
-        return;
-      }
-
-      const interaction = handle.accessor.get(ISessionInteractionService);
-
-      let questionId: string;
-      let action: 'resolve' | 'dismiss';
-      if (parsed.kind === 'invalid') {
-        if (
-          interaction.listPending('question').some((i) => i.id === tail) ||
-          interaction.isRecentlyResolved(tail)
-        ) {
-          questionId = tail;
-          action = 'resolve';
-        } else {
-          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, parsed.reason, req.id));
+      if (getLiveSessionById(core.accessor, session_id) === undefined) {
+        const summary = await core.accessor.get(ISessionIndex).get(session_id);
+        if (getLiveSessionById(core.accessor, session_id) === undefined) {
+          reply.send(summary === undefined
+            ? errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id)
+            : parsed.kind === 'invalid'
+              ? errEnvelope(ErrorCode.VALIDATION_FAILED, parsed.reason, req.id)
+              : errEnvelope(ErrorCode.QUESTION_NOT_FOUND, `question ${parsed.id} not found`, req.id));
           return;
         }
-      } else {
-        questionId = parsed.id;
-        action = parsed.kind === 'bare' ? 'resolve' : parsed.action;
       }
+      await withSessionOperation(core, session_id, async (handle) => {
+        if (handle === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+          return;
+        }
 
-      const pendingInteraction = interaction
-        .listPending('question')
-        .find((i) => i.id === questionId);
+        const interaction = handle.accessor.get(ISessionInteractionService);
 
-      if (pendingInteraction === undefined) {
-        if (interaction.isRecentlyResolved(questionId)) {
+        let questionId: string;
+        let action: 'resolve' | 'dismiss';
+        if (parsed.kind === 'invalid') {
+          if (
+            interaction.listPending('question').some((i) => i.id === tail) ||
+            interaction.isRecentlyResolved(tail)
+          ) {
+            questionId = tail;
+            action = 'resolve';
+          } else {
+            reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, parsed.reason, req.id));
+            return;
+          }
+        } else {
+          questionId = parsed.id;
+          action = parsed.kind === 'bare' ? 'resolve' : parsed.action;
+        }
+
+        const pendingInteraction = interaction
+          .listPending('question')
+          .find((i) => i.id === questionId);
+
+        if (pendingInteraction === undefined) {
+          if (interaction.isRecentlyResolved(questionId)) {
+            reply.send({
+              code: ErrorCode.APPROVAL_ALREADY_RESOLVED,
+              msg: `question ${questionId} already resolved`,
+              data: { resolved: false as const },
+              request_id: req.id,
+            });
+            return;
+          }
+          reply.send(
+            errEnvelope(ErrorCode.QUESTION_NOT_FOUND, `question ${questionId} not found`, req.id),
+          );
+          return;
+        }
+
+        const questions = handle.accessor.get(ISessionQuestionService);
+
+        if (action === 'dismiss') {
+          questions.dismiss(questionId);
+          requestLog(req)?.info(
+            { session_id, question_id: questionId, action: 'dismiss' },
+            'question dismissed',
+          );
           reply.send({
-            code: ErrorCode.APPROVAL_ALREADY_RESOLVED,
-            msg: `question ${questionId} already resolved`,
-            data: { resolved: false as const },
+            code: ErrorCode.QUESTION_DISMISSED,
+            msg: `question ${questionId} dismissed`,
+            data: { dismissed: true as const, dismissed_at: new Date().toISOString() },
             request_id: req.id,
           });
           return;
         }
-        reply.send(
-          errEnvelope(ErrorCode.QUESTION_NOT_FOUND, `question ${questionId} not found`, req.id),
+
+        const bodyParse = questionResolveRequestSchema.safeParse(req.body);
+        if (!bodyParse.success) {
+          const details = bodyParse.error.issues.map((issue) => ({
+            path: issue.path.join('.'),
+            message: issue.message,
+          }));
+          const first = details[0];
+          const msg =
+            first === undefined
+              ? 'validation failed'
+              : first.path === ''
+                ? first.message
+                : `${first.path}: ${first.message}`;
+          reply.send({
+            code: ErrorCode.VALIDATION_FAILED,
+            msg,
+            data: null,
+            request_id: req.id,
+            details,
+          });
+          return;
+        }
+
+        const result = toInProcessResponse(
+          bodyParse.data,
+          toWireQuestion(pendingInteraction, session_id),
         );
-        return;
-      }
-
-      const questions = handle.accessor.get(ISessionQuestionService);
-
-      if (action === 'dismiss') {
-        questions.dismiss(questionId);
+        questions.answer(questionId, result);
         requestLog(req)?.info(
-          { session_id, question_id: questionId, action: 'dismiss' },
-          'question dismissed',
+          { session_id, question_id: questionId, action: 'answer' },
+          'question answered',
         );
-        reply.send({
-          code: ErrorCode.QUESTION_DISMISSED,
-          msg: `question ${questionId} dismissed`,
-          data: { dismissed: true as const, dismissed_at: new Date().toISOString() },
-          request_id: req.id,
-        });
-        return;
-      }
-
-      const bodyParse = questionResolveRequestSchema.safeParse(req.body);
-      if (!bodyParse.success) {
-        const details = bodyParse.error.issues.map((issue) => ({
-          path: issue.path.join('.'),
-          message: issue.message,
-        }));
-        const first = details[0];
-        const msg =
-          first === undefined
-            ? 'validation failed'
-            : first.path === ''
-              ? first.message
-              : `${first.path}: ${first.message}`;
-        reply.send({
-          code: ErrorCode.VALIDATION_FAILED,
-          msg,
-          data: null,
-          request_id: req.id,
-          details,
-        });
-        return;
-      }
-
-      const result = toInProcessResponse(
-        bodyParse.data,
-        toWireQuestion(pendingInteraction, session_id),
-      );
-      questions.answer(questionId, result);
-      requestLog(req)?.info(
-        { session_id, question_id: questionId, action: 'answer' },
-        'question answered',
-      );
-      reply.send(
-        okEnvelope({ resolved: true as const, resolved_at: new Date().toISOString() }, req.id),
-      );
+        reply.send(
+          okEnvelope({ resolved: true as const, resolved_at: new Date().toISOString() }, req.id),
+        );
+      });
     },
   );
   app.post(

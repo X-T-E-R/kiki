@@ -13,6 +13,7 @@ import { downloadZip, extractZip } from './archive';
 import { loadPluginCommand } from './commands';
 import { resolveGithubCommitSha, resolveGithubSource } from './github-resolver';
 import { parseManifest, type ParsedManifestResult } from './manifest';
+import { resolvePluginPrerequisites } from './prerequisites';
 import { resolveInstallSource } from './source';
 import { readInstalled, writeInstalled, type InstalledRecord } from './store';
 import type { PluginAgentRoot } from './types';
@@ -651,6 +652,10 @@ function recordToInfo(record: PluginRecord): PluginInfo {
     manifestKind: record.manifestKind,
     manifestPath: record.manifestPath,
     manifest: record.manifest,
+    prerequisites: resolvePluginPrerequisites({
+      id: record.id, version: record.manifest?.version,
+      source: record.originalSource, declared: record.manifest?.prerequisites,
+    }),
     mcpServers: pluginMcpServersInfo(record),
     shadowedManifestPath: record.shadowedManifestPath,
     diagnostics: record.diagnostics,

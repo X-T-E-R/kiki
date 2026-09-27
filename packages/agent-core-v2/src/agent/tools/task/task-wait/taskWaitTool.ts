@@ -306,7 +306,10 @@ export class TaskWaitTool implements ITaskWaitTool {
     const lines = [
       formatPlainObject({
         ...info,
-        outputPath: output.outputPath,
+        receipt: info.receiptVerification === 'verified' && output.fullOutputAvailable ? info.receipt : undefined,
+        receiptVerification: info.receiptVerification === 'verified' && !output.fullOutputAvailable
+          ? 'invalid' : info.receiptVerification,
+        outputPath: output.fullOutputAvailable ? output.outputPath : undefined,
         terminalReason: terminalReason(info),
         outputSizeBytes: output.outputSizeBytes,
         outputPreviewBytes: output.previewBytes,

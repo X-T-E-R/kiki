@@ -145,6 +145,9 @@ export class FixtureKlient {
         suffix = 'transcript/ops';
         schema = view.sessionViewTranscriptCatchUpOutputSchema;
       }
+      if (suffix !== 'snapshot' && query.get('transcript_coverage_version') !== '2') {
+        throw invalid('Transcript coverage requires a newer client; upgrade Kiki before reading transcripts.');
+      }
       // Reuse the existing routes/projector, validating their projection at the new boundary.
       const response = { writeHead() {}, end: (raw) => {
         const envelope = JSON.parse(raw);
@@ -160,7 +163,8 @@ export class FixtureKlient {
           data = catchUp(session, query.get('agent_id'), { epoch: query.get('epoch') ?? undefined, seq: Number(query.get('since_seq')) });
           data = { ...data, batches: data.batches.map((batch) => ({ ...batch, ops: filterOpsForGrade(query.get('grade') ?? 'delta', batch.ops) })).filter((batch) => batch.ops.length > 0) };
         }
-        server.envelope(res, parse(schema, data));
+        const validated = parse(schema, data);
+        server.envelope(res, suffix === 'snapshot' ? validated : { ...validated, transcript_coverage_version: 2 });
       } };
       return server.route(response, `/sessions/${encodeURIComponent(sessionId)}/${suffix}`, query, undefined, 'GET');
     } catch (error) {
@@ -660,10 +664,14 @@ export class FixtureKlient {
         const input = parse(view.sessionViewSubscribeInputSchema, frame.data?.input);
         const generation = frame.data?.generation;
         if (!Number.isInteger(generation) || generation < 0) throw invalid('invalid generation');
+        const coverageVersion = frame.data?.transcript_coverage_version;
+        if (Object.values(input.transcriptGrades).some((grade) => grade !== 'off') && coverageVersion !== 2) {
+          throw invalid('Transcript coverage requires a newer client; upgrade Kiki before reading transcripts.');
+        }
         const session = this.server.sessions.get(frame.sessionId);
         if (session === undefined) throw invalid('session not found', 40401);
         const previous = state.views.get(frame.id);
-        const active = { id: frame.id, sessionId: frame.sessionId, input, generation };
+        const active = { id: frame.id, sessionId: frame.sessionId, input, generation, coverageVersion };
         state.views.set(frame.id, active);
         const currentSessionCursor = { seq: session.seq, epoch: session.epoch };
         const cursor = input.sessionCursor;
@@ -734,7 +742,9 @@ export class FixtureKlient {
   }
 
   signal(socket, active, signal) {
-    this.server.sendFrame(socket, { type: 'view_signal', id: active.id, data: parse(view.sessionViewSignalSchema, { ...signal, generation: active.generation }) });
+    const data = parse(view.sessionViewSignalSchema, { ...signal, generation: active.generation });
+    this.server.sendFrame(socket, { type: 'view_signal', id: active.id,
+      data: active.coverageVersion === 2 ? { ...data, transcript_coverage_version: 2 } : data });
   }
 
   deliver(socket, active, frame) {

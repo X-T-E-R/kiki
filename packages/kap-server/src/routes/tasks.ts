@@ -91,8 +91,10 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
       const matching = query.status === undefined ? all : all.filter((task) => task.status === query.status);
       const page = matching.slice(offset, offset + pageSize);
       const has_more = matching.length > offset + pageSize;
+      const fresh = await Promise.all(page.map(async (info) =>
+        (await resolved.tasks?.getTaskSnapshot(info.taskId)) ?? info));
       reply.send(okEnvelope({
-        items: page.map((info) => toWireTask(session_id, info)),
+        items: fresh.map((info) => toWireTask(session_id, info)),
         has_more,
         next_offset: has_more ? offset + pageSize : undefined,
       }, req.id));
@@ -132,14 +134,14 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
         return;
       }
 
-      const found = resolved.tasks?.getTask(task_id);
+      const found = await resolved.tasks?.getTaskSnapshot(task_id);
       if (found === undefined) {
         reply.send(taskNotFound(session_id, task_id, req.id));
         return;
       }
 
       let output: { preview: string; bytes: number } | undefined;
-      if (query.with_output === true && resolved.tasks !== undefined) {
+      if (query.with_output === true && resolved.tasks !== undefined && found.receiptVerification !== 'invalid') {
         const tailBytes = query.output_bytes ?? DEFAULT_TASK_OUTPUT_PREVIEW_BYTES;
         try {
           const preview = await resolved.tasks.readOutput(task_id, tailBytes);

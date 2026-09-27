@@ -252,7 +252,7 @@ describe('TomlAtomicDocumentStore', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
   let storage: InMemoryStorageService;
-  let config: IAtomicDocumentStore;
+  let config: IAtomicTomlDocumentStore;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -278,6 +278,36 @@ describe('TomlAtomicDocumentStore', () => {
     await config.set<State>('session', 'config.toml', { title: 'old' });
     await config.set<State>('session', 'config.toml', { title: 'new', count: 2 });
     expect(await config.get<State>('session', 'config.toml')).toEqual({ title: 'new', count: 2 });
+  });
+
+  it('serializes exact-text CAS against queued writers and refuses stale bytes', async () => {
+    await config.setText('', 'config.toml', 'title = "before"\n');
+    const first = config.compareAndSetText('', 'config.toml', 'title = "before"\n', 'title = "after"\n');
+    const stale = config.compareAndSetText('', 'config.toml', 'title = "before"\n', 'title = "lost"\n');
+    expect(await first).toBe(true);
+    expect(await stale).toBe(false);
+    expect(await config.getText('', 'config.toml')).toBe('title = "after"\n');
+    expect(await config.compareAndSetText('', 'backup.toml', undefined, 'title = "before"\n')).toBe(true);
+    expect(await config.compareAndSetText('', 'backup.toml', undefined, 'overwrite')).toBe(false);
+    await config.set('', 'config.toml', { title: 'generic writer' });
+    expect(await config.compareAndSetText('', 'config.toml', 'title = "after"\n', 'title = "lost"\n')).toBe(false);
+    const fromGeneric = await config.getText('', 'config.toml');
+    await config.update('', 'config.toml', (value: { title: string } | undefined) => ({ ...value, title: 'updated' }));
+    expect(await config.compareAndSetText('', 'config.toml', fromGeneric, 'title = "lost"\n')).toBe(false);
+    await config.delete('', 'config.toml');
+    expect(await config.compareAndSetText('', 'config.toml', undefined, 'title = "new"\n')).toBe(true);
+  });
+
+  it('preserves a UTF-8 BOM in exact-text reads, CAS writes and backups', async () => {
+    const original = '\uFEFFtitle = "before"\n';
+    const updated = '\uFEFFtitle = "after"\n';
+    await storage.write('', 'config.toml', new TextEncoder().encode(original));
+    expect(await config.getText('', 'config.toml')).toBe(original);
+    expect(await config.get('', 'config.toml')).toEqual({ title: 'before' });
+    expect(await config.compareAndSetText('', 'config.toml', original, updated)).toBe(true);
+    expect(await config.compareAndSetText('', 'config.toml.bak', undefined, original)).toBe(true);
+    expect(await storage.read('', 'config.toml')).toEqual(new TextEncoder().encode(updated));
+    expect(await storage.read('', 'config.toml.bak')).toEqual(new TextEncoder().encode(original));
   });
 
   it('value is persisted as TOML through the underlying IFileSystemStorageService', async () => {

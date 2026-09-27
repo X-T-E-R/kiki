@@ -10,10 +10,8 @@ import {
   IWorkspaceFsService,
   IWorkspaceInstanceManager,
   IWorkspaceService,
-  getLiveSessionById,
-  resumeSessionById,
   isError2,
-  Error2,
+  type ISessionScopeHandle,
   type Scope,
 } from '@kiki/agent-core-v2';
 import {
@@ -49,6 +47,7 @@ import {
 } from '../lib/fileLaunch';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
+import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
@@ -77,6 +76,7 @@ interface FsRouteHost {
 }
 
 interface FsDownloadReply {
+  readonly raw: { once(event: 'finish' | 'close', listener: () => void): unknown };
   type(mime: string): FsDownloadReply;
   header(name: string, value: string | number): FsDownloadReply;
   code(status: number): FsDownloadReply;
@@ -208,12 +208,10 @@ function createRuntimeFs(
 
 function acquireSessionFs(
   core: Scope,
-  sessionId: string,
+  session: ISessionScopeHandle,
   runtimeId: string,
   required: readonly RuntimeCapability[],
 ): RuntimeFsScope {
-  const session = getLiveSessionById(core.accessor, sessionId);
-  if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
   const context = session.accessor.get(ISessionContext);
   const workspace = session.accessor.get(ISessionWorkspaceContext);
   return createRuntimeFs(core, context.workspaceId, workspace, runtimeId, required);
@@ -284,9 +282,10 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       }
       const fsAction = action as FsAction;
 
-      const session = await resumeSessionById(core.accessor, session_id);
+      let operation: SessionOperationLease | undefined;
       let runtimeFs: RuntimeFsScope | undefined;
       try {
+        operation = await acquireSessionOperation(core, session_id, 'operation');
         const result = z.object({ runtime_id: z.string().min(1).optional() }).passthrough().safeParse(req.body ?? {});
         if (!result.success) {
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'request body must be an object', req.id));
@@ -299,11 +298,11 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         if (fsAction === 'search' || fsAction === 'grep' || fsAction === 'git_status' || fsAction === 'diff') {
           required.push('process');
         }
-        runtimeFs = session === undefined && fsAction === 'search'
+        runtimeFs = operation.handle === undefined && fsAction === 'search'
           ? await resolveWorkspaceFs(core, session_id, runtimeId, required)
-          : session === undefined
+          : operation.handle === undefined
             ? undefined
-            : acquireSessionFs(core, session_id, runtimeId, required);
+            : acquireSessionFs(core, operation.handle, runtimeId, required);
         if (runtimeFs === undefined) {
           reply.send(
             errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
@@ -358,6 +357,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         sendMappedError(reply, req, err);
       } finally {
         runtimeFs?.lease.dispose();
+        operation?.dispose();
       }
     },
   );
@@ -493,76 +493,57 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         return;
       }
 
-      const session = await resumeSessionById(core.accessor, session_id);
-      if (session === undefined) {
-        reply.send(
-          errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
-        );
-        return;
-      }
-
-      let resolved: Awaited<ReturnType<IWorkspaceFsService['resolveDownload']>>;
+      let operation: SessionOperationLease | undefined;
       let runtimeFs: RuntimeFsScope | undefined;
+      let stream: Readable | undefined;
       try {
-        runtimeFs = acquireSessionFs(core, session_id, req.query.runtime_id ?? 'local', ['fs']);
-        resolved = await runtimeFs.fs.resolveDownload(relPath);
-      } catch (err) {
-        runtimeFs?.lease.dispose();
-        sendMappedError(reply, req, err);
-        return;
-      }
-
-      const r = reply as unknown as FsDownloadReply;
-      const headers = req.headers;
-
-      const ifNoneMatch = pickHeader(headers, 'if-none-match');
-      if (ifNoneMatch !== undefined && ifNoneMatch === resolved.etag) {
-        runtimeFs.lease.dispose();
-        r.code(304).header('etag', resolved.etag).send('');
-        return;
-      }
-
-      r.header('etag', resolved.etag);
-      r.header('last-modified', resolved.modifiedAt.toUTCString());
-      r.header(
-        'content-disposition',
-        `attachment; filename="${sanitizeFilename(resolved.relative)}"`,
-      );
-      r.type(resolved.mime);
-
-      const rangeHeader = pickHeader(headers, 'range');
-      const range = parseRangeHeader(rangeHeader, resolved.size);
-      if (range !== null) {
-        r.code(206)
-          .header('content-length', String(range.length))
-          .header('content-range', `bytes ${range.start}-${range.end}/${resolved.size}`);
-        const stream = createRuntimeReadStream(runtimeFs, resolved.absolute, range.start, range.length);
-        stream.on('error', (error: unknown) => {
-          requestLog(req)?.warn(
-            { session_id, path: relPath, err: error },
-            'fs download stream error',
-          );
-          try {
-            stream.destroy();
-          } catch {
-          }
-        });
-        return r.send(stream) as unknown as void;
-      }
-
-      r.code(200).header('content-length', String(resolved.size));
-      const stream = createRuntimeReadStream(runtimeFs, resolved.absolute, 0, resolved.size);
-      stream.on('error', (error: unknown) => {
-        requestLog(req)?.warn(
-          { session_id, path: relPath, err: error },
-          'fs download stream error',
-        );
-        try {
-          stream.destroy();
-        } catch {
+        operation = await acquireSessionOperation(core, session_id, 'operation');
+        if (operation.handle === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+          return;
         }
-      });
-      return r.send(stream) as unknown as void;
+        runtimeFs = acquireSessionFs(core, operation.handle, req.query.runtime_id ?? 'local', ['fs']);
+        const resolved = await runtimeFs.fs.resolveDownload(relPath);
+        const r = reply as unknown as FsDownloadReply;
+        const ifNoneMatch = pickHeader(req.headers, 'if-none-match');
+        if (ifNoneMatch !== undefined && ifNoneMatch === resolved.etag) {
+          r.code(304).header('etag', resolved.etag).send('');
+          return;
+        }
+
+        r.header('etag', resolved.etag);
+        r.header('last-modified', resolved.modifiedAt.toUTCString());
+        r.header('content-disposition', `attachment; filename="${sanitizeFilename(resolved.relative)}"`);
+        r.type(resolved.mime);
+        const range = parseRangeHeader(pickHeader(req.headers, 'range'), resolved.size);
+        if (range !== null) {
+          r.code(206)
+            .header('content-length', String(range.length))
+            .header('content-range', `bytes ${range.start}-${range.end}/${resolved.size}`);
+        } else {
+          r.code(200).header('content-length', String(resolved.size));
+        }
+        stream = createRuntimeReadStream(runtimeFs, resolved.absolute, range?.start ?? 0, range?.length ?? resolved.size);
+        const downloadStream = stream;
+        r.raw.once('finish', () => operation?.dispose());
+        r.raw.once('close', () => { downloadStream.destroy(); operation?.dispose(); });
+        downloadStream.on('error', (error: unknown) => {
+          requestLog(req)?.warn({ session_id, path: relPath, err: error }, 'fs download stream error');
+          downloadStream.destroy();
+        });
+        return r.send(downloadStream) as unknown as void;
+      } catch (err) {
+        if (stream !== undefined) {
+          stream.destroy();
+          operation?.dispose();
+        }
+        sendMappedError(reply, req, err);
+      } finally {
+        if (stream === undefined) {
+          runtimeFs?.lease.dispose();
+          operation?.dispose();
+        }
+      }
     },
   );
   app.get(

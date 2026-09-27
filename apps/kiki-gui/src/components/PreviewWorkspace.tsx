@@ -159,24 +159,41 @@ export function PreviewWorkspace({
   const { t } = useI18n();
   const [menu, setMenu] = useState<{ tab: PreviewTabModel; x: number; y: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [narrow, setNarrow] = useState(() =>
+    typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1023px)').matches,
+  );
   const dragKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 1023px)');
+    const update = () => { setNarrow(media.matches); };
+    update();
+    media.addEventListener('change', update);
+    return () => { media.removeEventListener('change', update); };
+  }, []);
 
   const normalizedTabs = useMemo(
     () => tabs.map(normalizeTabInput),
     [tabs],
   );
 
-  // Esc exits fullscreen
+  // The shared rail owns the first Escape even if this listener runs before
+  // SessionView's rail closer. The next unclaimed Escape exits fullscreen.
   useEffect(() => {
     if (!isFullscreen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setIsFullscreen(false);
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (workspaceNavigation?.sharedRail?.open) {
+        event.preventDefault();
+        workspaceNavigation.sharedRail.toggle();
+        return;
       }
+      event.preventDefault();
+      setIsFullscreen(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [isFullscreen]);
+  }, [isFullscreen, workspaceNavigation?.sharedRail]);
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
     if (isFullscreen) return;
@@ -215,11 +232,16 @@ export function PreviewWorkspace({
   // `.preview-workspace` set a display of their own, so only an inline style
   // reliably wins regardless of stylesheet order.
   const hiddenStyle = hidden ? { display: 'none' as const } : undefined;
-  const containerStyle = isFullscreen ? hiddenStyle : { width, ...hiddenStyle };
+  const containerStyle = isFullscreen ? hiddenStyle : {
+    width: narrow ? '100vw' : width,
+    maxWidth: narrow ? 'none' : undefined,
+    ...hiddenStyle,
+  };
 
   return (
     <aside
       data-preview-workspace
+      data-preview-fullscreen={isFullscreen ? '' : undefined}
       hidden={hidden}
       aria-label={t('preview.title')}
       className={containerClasses}
@@ -234,7 +256,7 @@ export function PreviewWorkspace({
           onDoubleClick={() => { onWidthChange(clampPreviewWidth(Math.min(MAX_WIDTH, Math.floor(window.innerWidth * 0.6)), window.innerWidth), true); }}
         />
       ) : null}
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-hairline pl-2 pr-1">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-hairline pl-2 pr-1 lg:h-9">
         <div role="tablist" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {normalizedTabs.map((tab, index) => {
             const key = previewTabKey(tab);
@@ -304,7 +326,7 @@ export function PreviewWorkspace({
           title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
           aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
           data-preview-fullscreen-toggle
-          className="shrink-0 rounded-md px-1.5 py-0.5 text-[12px] text-ink-faint transition-colors hover:text-ink"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 lg:w-7"
         >
           {isFullscreen ? '⤢' : '⛶'}
         </button>
@@ -313,7 +335,7 @@ export function PreviewWorkspace({
           onClick={onCollapse}
           title={t('preview.collapse')}
           aria-label={t('preview.collapse')}
-          className="shrink-0 rounded-md px-1.5 py-0.5 text-[12px] text-ink-faint transition-colors hover:text-ink"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 lg:w-7"
         >
           »
         </button>
@@ -452,10 +474,9 @@ function AgentTabWorkspace({
   // card flattens into it while `bg-bubble-user` darkens.
   // Tab-local rail: removed. The app has ONE right rail (the shell's rail
   // slot); when this tab is the focused surface, SessionView retargets that
-  // shared rail at this tab's agent through the preview focus bridge, so an
-  // embedded second rail here would fork the panel the user asked to keep
-  // single. The tab-local header keeps identity + status; navigation lives in
-  // the relations row and the tab strip.
+  // shared rail at this tab's agent through the preview focus bridge. The
+  // tab-local header can reopen that rail without mounting a second one,
+  // including when the narrow overlay obscures the main header.
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-paper" data-agent-tab-workspace={agentId}>
       <div ref={setHeaderSlot} className="shrink-0" />
@@ -466,9 +487,9 @@ function AgentTabWorkspace({
           sessionState={sessionState}
           forest={forest}
           navigation={navigation}
-          railOpen={false}
+          railOpen={navigation.sharedRail?.open ?? false}
           railIsOverlay={false}
-          onToggleRail={() => {}}
+          onToggleRail={navigation.sharedRail?.toggle ?? (() => {})}
           onCloseRail={() => {}}
           onCancelTask={onCancelTask ?? (() => {})}
           onStopAgentTask={onStopAgentTask ?? (() => Promise.resolve())}
@@ -476,7 +497,7 @@ function AgentTabWorkspace({
           inheritMediaPreview
           transcriptVisible={visible}
           showPreviewToggle={false}
-          showRailToggle={false}
+          showRailToggle={navigation.sharedRail !== undefined}
           showBreadcrumb={false}
         />
       </div>
@@ -682,6 +703,7 @@ function PreviewPanelTab({
   return (
     <div
       role="tab"
+      tabIndex={0}
       aria-selected={active}
       title={`Agent: ${name} (${tab.agentId})`}
       draggable
@@ -701,11 +723,18 @@ function PreviewPanelTab({
         onDrop();
       }}
       onClick={onActivate}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onActivate();
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-7 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none ${
+      className={`group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 ${
         active
           ? 'border-hairline bg-paper font-medium text-ink'
           : 'border-transparent text-ink-faint hover:text-ink-soft'
@@ -724,7 +753,7 @@ function PreviewPanelTab({
           event.stopPropagation();
           onClose();
         }}
-        className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
+        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-sm text-[13px] leading-none transition-colors hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 lg:w-5 ${
           active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
         }`}
       >
@@ -753,6 +782,7 @@ function TabContextMenu({
 }) {
   const host = useHost();
   const { t } = useI18n();
+  const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
   const closeRef = useRef(onCloseMenu);
   closeRef.current = onCloseMenu;
   useEffect(() => {
@@ -828,7 +858,7 @@ function TabContextMenu({
           >
             {t('file.copyAbsolutePath')}
           </button>
-          {host.revealPath !== undefined && host.openPath !== undefined ? (
+          {!remoteScope && host.revealPath !== undefined && host.openPath !== undefined ? (
             <>
               <button
                 type="button"
@@ -986,7 +1016,7 @@ function PreviewSkillView({
             </button>
           </div>
         ) : mode === 'rendered' ? (
-          <Markdown text={state.content} />
+          <Markdown mode="static" text={state.content} />
         ) : (
           <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">{state.content}</pre>
         )}
@@ -1176,6 +1206,13 @@ function TextTabView({
   const client = connection?.client;
   const [controller, setController] = useState<HostFileEditorController | null>(null);
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
+  const [fullMarkdown, setFullMarkdown] = useState<{
+    controller: HostFileEditorController; client: KikiClient; path: string;
+    generation: number; text: string;
+  } | null>(null);
+  const [loadingFull, setLoadingFull] = useState(false);
+  const [fullError, setFullError] = useState(false);
+  const fullLoadId = useRef(0);
   useEffect(() => {
     if (navigation?.line !== undefined) setMode('source');
   }, [navigation]);
@@ -1209,6 +1246,11 @@ function TextTabView({
     [controller],
   );
   const snap = useSyncExternalStore(subscribe, getState);
+  useEffect(() => {
+    setLoadingFull(false);
+    setFullError(false);
+    return () => { fullLoadId.current += 1; };
+  }, [client, path, snap.generation]);
 
   const dirty = snap.dirty;
   useEffect(() => {
@@ -1220,6 +1262,25 @@ function TextTabView({
   const editable = controller?.editable ?? false;
   const showEditor = !markdown || mode === 'source';
   const clientForDownload = client;
+  const fullText = fullMarkdown?.controller === controller && fullMarkdown.client === client &&
+    fullMarkdown.path === path && fullMarkdown.generation === snap.generation
+    ? fullMarkdown.text : undefined;
+  const normalizedPath = path.replaceAll('\\', '/');
+  const documentDirectory = normalizedPath.slice(0, normalizedPath.lastIndexOf('/')) || '/';
+  const loadFullMarkdown = async () => {
+    if (client === undefined || controller === null || loadingFull) return;
+    const loadId = ++fullLoadId.current;
+    setLoadingFull(true);
+    setFullError(false);
+    try {
+      const text = await client.readHostFile(path);
+      if (loadId === fullLoadId.current) setFullMarkdown({ controller, client, path, generation: snap.generation, text });
+    } catch {
+      if (loadId === fullLoadId.current) setFullError(true);
+    } finally {
+      if (loadId === fullLoadId.current) setLoadingFull(false);
+    }
+  };
 
   return (
     <>
@@ -1326,9 +1387,26 @@ function TextTabView({
         </div>
       ) : null}
       {!editable && snap.status === 'ready' ? (
-        <p className="shrink-0 border-b border-hairline bg-paper/60 px-3 py-1 text-[10.5px] text-ink-faint">
-          {snap.oversized ? t('preview.oversized') : t('preview.editUnsupported')}
-        </p>
+        <div className={`flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5 text-[11px] ${
+          snap.oversized && fullText === undefined
+            ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
+            : 'border-hairline bg-paper/60 text-ink-faint'
+        }`} data-preview-size-notice>
+          <span>{snap.oversized && fullText === undefined
+            ? t('preview.oversized') : t('preview.editUnsupported')}</span>
+          {markdown && snap.oversized && fullText === undefined ? (
+            <button
+              type="button"
+              data-load-full-markdown
+              disabled={loadingFull}
+              onClick={() => { void loadFullMarkdown(); }}
+              className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium disabled:opacity-50"
+            >
+              {loadingFull ? t('preview.loading') : t('preview.loadFullFile')}
+            </button>
+          ) : null}
+          {fullError ? <span role="alert">{t('preview.failed')}</span> : null}
+        </div>
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col">
         {snap.status === 'loading' ? (
@@ -1340,9 +1418,9 @@ function TextTabView({
           <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
         ) : showEditor ? (
           <CodeEditor
-            key={path}
+            key={fullText !== undefined ? `${path}:full` : path}
             path={path}
-            value={snap.draft}
+            value={fullText ?? snap.draft}
             generation={snap.generation}
             navigation={navigation}
             readOnly={!editable}
@@ -1352,7 +1430,7 @@ function TextTabView({
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-auto p-4">
-            <Markdown text={snap.draft} />
+            <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} />
           </div>
         )}
       </div>

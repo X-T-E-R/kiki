@@ -91,6 +91,34 @@ afterEach(() => {
 });
 
 describe('manual provider discovery', () => {
+  it('uses a persisted provider key for user-directed refresh and probe', async () => {
+    const fetchMock = vi.fn(async () => catalogResponse('remote-new'));
+    vi.stubGlobal('fetch', fetchMock);
+    const { host, discovery } = await createHost(sections);
+    try {
+      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      await discovery.probeProviderModels({ type: 'openai', base_url: connection.baseUrl, api_key: connection.apiKey });
+      expect(fetchMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: `Bearer ${connection.apiKey}` }),
+      }));
+    } finally { host.dispose(); }
+  });
+
+  it('uses a persisted Google key through the normal discovery probe path', async () => {
+    const fetchMock = vi.fn(async () => catalogResponse('gemini-1'));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = {
+      type: 'google-genai',
+      baseUrl: 'https://generativelanguage.example.test/v1',
+      apiKey: 'sk-google-persisted',
+    };
+    const { host, discovery } = await createHost({ ...sections, providers: { gateway: provider } });
+    try {
+      await discovery.probeProviderModels({ type: 'google-genai', base_url: provider.baseUrl, api_key: provider.apiKey });
+      expect(fetchMock).toHaveBeenCalled();
+    } finally { host.dispose(); }
+  });
+
   it('does not fetch on construction or read and returns a defensive copy of unconfigured suggestions', async () => {
     const fetchMock = vi.fn(async () => catalogResponse('remote-existing', 'remote-new'));
     vi.stubGlobal('fetch', fetchMock);
@@ -99,7 +127,7 @@ describe('manual provider discovery', () => {
     try {
       expect(await discovery.listDiscoveredModels()).toEqual({ items: [] });
       expect(fetchMock).not.toHaveBeenCalled();
-      const result = await discovery.refreshProviderModels({ providerId: 'gateway' });
+      const result = await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-copy' });
       expect(result.changed).toEqual([]);
       expect(result.unchanged).toEqual(['gateway']);
       expect(result.failed).toEqual([]);
@@ -136,7 +164,7 @@ describe('manual provider discovery', () => {
     } finally { host.dispose(); }
   });
 
-  it('redacts a failed draft-key probe and leaves the stored key usable', async () => {
+  it('redacts a failed draft-key probe and leaves the stored key untouched', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(Response.json({ error: { message: 'invalid key sk-draft' } }, { status: 401 }))
       .mockResolvedValueOnce(catalogResponse('remote-new'));
@@ -147,9 +175,9 @@ describe('manual provider discovery', () => {
       expect(failed.failed).toHaveLength(1);
       expect(JSON.stringify(failed)).not.toContain('sk-draft');
       expect(config.get('providers')).toEqual(sections.providers);
-      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-retry' });
       expect(fetchMock).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: 'Bearer sk-example-key' }),
+        headers: expect.objectContaining({ Authorization: 'Bearer sk-draft-retry' }),
       }));
     } finally { host.dispose(); }
   });
@@ -158,7 +186,7 @@ describe('manual provider discovery', () => {
     vi.stubGlobal('fetch', vi.fn(async () => catalogResponse('remote-new')));
     const first = await createHost(sections);
     try {
-      await first.discovery.refreshProviderModels({ providerId: 'gateway' });
+      await first.discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-copy' });
       await first.config.replaceSections({ models: { ...sections.models, custom: { provider: 'gateway', model: 'remote-new' } } });
       expect((await first.discovery.listDiscoveredModels()).items[0]?.models).toEqual([]);
       const second = await createHost(sections);
@@ -170,19 +198,19 @@ describe('manual provider discovery', () => {
   it('keeps the last successful suggestions with a failed-attempt status then clears them on an empty success', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(catalogResponse('remote-new'))
-      .mockResolvedValueOnce(Response.json({ error: { message: 'invalid key: sk-example-key' } }, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ error: { message: 'invalid key: sk-draft-copy' } }, { status: 401 }))
       .mockResolvedValueOnce(catalogResponse());
     vi.stubGlobal('fetch', fetchMock);
     const { host, discovery } = await createHost(sections);
     try {
-      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-copy' });
       const before = (await discovery.listDiscoveredModels()).items[0]!;
-      const failed = await discovery.refreshProviderModels({ providerId: 'gateway' });
-      expect(failed.failed[0]?.reason).not.toContain('sk-example-key');
+      const failed = await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-copy' });
+      expect(failed.failed[0]?.reason).not.toContain('sk-draft-copy');
       expect((await discovery.listDiscoveredModels()).items[0]).toMatchObject({
         fetched_at: before.fetched_at, failure_reason: expect.any(String), models: [{ remote_id: 'remote-new' }],
       });
-      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-copy' });
       expect((await discovery.listDiscoveredModels()).items[0]).toMatchObject({ models: [] });
       expect((await discovery.listDiscoveredModels()).items[0]).not.toHaveProperty('failure_reason');
     } finally { host.dispose(); }
@@ -195,7 +223,7 @@ describe('manual provider discovery', () => {
     vi.stubGlobal('fetch', fetchMock);
     const { host, discovery, config, models } = await createHost(sections);
     try {
-      const refresh = discovery.refreshProviderModels({ providerId: 'gateway' });
+      const refresh = discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-copy' });
       await vi.waitFor(() => { expect(fetchMock).toHaveBeenCalledOnce(); });
       await config.replaceSections({
         providers: { gateway: { ...connection, apiKey: 'sk-replacement' } },
@@ -217,7 +245,7 @@ describe('manual provider discovery', () => {
     vi.stubGlobal('fetch', vi.fn(async () => catalogResponse('remote-new')));
     const { host, discovery, config } = await createHost(sections);
     try {
-      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-draft-copy' });
       await config.replaceSections({ providers });
       expect(await discovery.listDiscoveredModels()).toEqual({ items: [] });
     } finally { host.dispose(); }
@@ -253,13 +281,38 @@ describe('manual provider discovery', () => {
     } finally { host.dispose(); }
   });
 
+  it('rejects a persisted sibling registry key before grouped retry candidates can fetch', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(init?.headers).not.toMatchObject({ Authorization: expect.any(String) });
+      return Response.json({ error: 'invalid fixture' }, { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registryUrl = 'https://registry.example.test/api.json';
+    const providers = {
+      gateway: { type: 'openai', source: { kind: 'apiJson', url: registryUrl, apiKey: '' } },
+      sibling: { type: 'openai', source: { kind: 'apiJson', url: registryUrl, apiKey: 'sk-sibling-fixture' } },
+    };
+    const { host, discovery } = await createHost({ ...sections, providers });
+    try {
+      const result = await discovery.refreshProviderModels({ providerId: 'gateway' });
+      expect(result.failed).toHaveLength(1);
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { host.dispose(); }
+  });
+
   it('suggests custom-registry entries without importing providers or writing config', async () => {
     const fetchMock = vi.fn(async () => Response.json({
       gateway: { id: 'gateway', name: 'Example', api: 'https://changed.example.test', type: 'openai', models: { m1: { id: 'm1', name: 'M1' } } },
       other: { id: 'other', name: 'Other', api: 'https://other.example.test', type: 'openai', models: { m2: { id: 'm2' } } },
     }));
     vi.stubGlobal('fetch', fetchMock);
-    const providers = { gateway: { ...connection, source: { kind: 'apiJson', url: 'https://registry.example.test/api.json', apiKey: 'sk-registry' } } };
+    const providers = {
+      gateway: {
+        type: connection.type,
+        baseUrl: connection.baseUrl,
+        source: { kind: 'apiJson', url: 'https://registry.example.test/api.json', apiKey: '' },
+      },
+    };
     const { host, discovery, config } = await createHost({ ...sections, providers });
     const writes = vi.spyOn(config, 'replaceSections');
     try {
@@ -275,13 +328,17 @@ describe('manual provider discovery', () => {
   it('treats managed-endpoint API-key providers as user-owned suggestions', async () => {
     const baseUrl = 'https://api.managed.example.test/coding/v1';
     vi.stubEnv('KIKI_CODE_BASE_URL', baseUrl);
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ id: 'kimi-next', context_length: 262144 }] })));
+    const fetchMock = vi.fn(async () => Response.json({ data: [{ id: 'kimi-next', context_length: 262144 }] }));
+    vi.stubGlobal('fetch', fetchMock);
     const { host, discovery, config } = await createHost({ ...sections, providers: { gateway: { type: 'kimi', baseUrl, apiKey: 'sk-distributed' } } });
     const writes = vi.spyOn(config, 'replaceSections');
     try {
-      const result = await discovery.refreshProviderModels();
+      const result = await discovery.refreshProviderModels({ providerId: 'gateway', apiKey: 'sk-distributed-draft' });
       expect(result.changed).toEqual([]);
       expect(result.discovered?.[0]?.models).toEqual([expect.objectContaining({ remote_id: 'kimi-next', max_context_size: 262144 })]);
+      expect(fetchMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer sk-distributed-draft' }),
+      }));
       expect(writes).not.toHaveBeenCalled();
       expect(config.get('defaultModel')).toBe('gateway/fast');
       expect(config.get('models')).toEqual(sections.models);
@@ -300,12 +357,18 @@ describe('manual provider discovery', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const { host, discovery, config, models } = await createHost({
-      providers: { [KIMI_CODE_PROVIDER_NAME]: { type: 'kimi', baseUrl: 'https://api.example.test/v1', oauth: { storage: 'file', key: 'oauth/kimi-code' } } },
+      providers: {
+        [KIMI_CODE_PROVIDER_NAME]: { type: 'kimi', baseUrl: 'https://api.example.test/v1', oauth: { storage: 'file', key: 'oauth/kimi-code' } },
+        gateway: { type: 'openai', baseUrl: 'https://gateway.example.test/v1', apiKey: 'sk-static-sibling' },
+      },
       models: {},
     }, stubOAuthService(stubTokenProvider(['access-token'])));
     const writes = vi.spyOn(config, 'replaceSections');
     try {
-      const [first] = await Promise.all([discovery.refreshProviderModels(), discovery.refreshProviderModels()]);
+      const [first] = await Promise.all([
+        discovery.refreshProviderModels({ scope: 'oauth' }),
+        discovery.refreshProviderModels({ scope: 'oauth' }),
+      ]);
       expect(first.changed).toHaveLength(1);
       expect(first.discovered).toBeUndefined();
       expect(models.list()['kimi-code/kimi-k2']).toBeDefined();

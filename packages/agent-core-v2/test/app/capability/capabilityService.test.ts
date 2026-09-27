@@ -118,6 +118,16 @@ describe('CapabilityService', () => {
     expect(status.version).toBe('v1.11.3');
   });
 
+  it('does not count optional provenance as observed function', async () => {
+    const service = fakeService([fakeEntry({ id: 'kimi-webbridge', detect: { steps: [
+      { id: 'daemon', state: 'missing' },
+      { id: 'daemon-binary', state: 'ok', optional: true },
+    ] } })]);
+    const status = await service.getCapability('kimi-webbridge');
+    expect(status.state).toBe('not_installed');
+    expect(status.steps.find((step) => step.id === 'daemon-binary')?.state).toBe('ok');
+  });
+
   it('reports not_installed when no step is ok, and unsupported as-is', async () => {
     const service = fakeService([
       fakeEntry({ id: 'kimi-cu', detect: { steps: [{ id: 'plugin', state: 'missing' }] } }),

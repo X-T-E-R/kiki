@@ -34,6 +34,7 @@ import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-
 import {
   mergeProviderRequestAuth,
   mergeRequestHeaders,
+  requestIdentityFetch,
 } from '#/kosong/provider/bases/request-auth';
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import { resolveAuthoredRequestIdentity } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -46,6 +47,7 @@ import {
   resolveProviderEndpoint,
 } from '#/kosong/provider/providerDefinition';
 import '#/kosong/provider/providers/kimi/kimi.contrib';
+import { KimiFiles } from '#/kosong/provider/providers/kimi/kimi-files';
 import '#/kosong/provider/providers/standard.contrib';
 
 registerProviderDefinition({
@@ -856,6 +858,14 @@ describe('google-genai vertex mode (providerOptions)', () => {
     expect(Reflect.get(provider, '_vertexai')).toBe(false);
     expect(Reflect.get(provider, '_project')).toBeUndefined();
     expect(Reflect.get(provider, '_location')).toBeUndefined();
+  });
+
+  it('allows a normal Google API key to reach the configured client seam', async () => {
+    const factory = vi.fn(() => { throw new Error('google-client-seam'); });
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-2.5-flash', clientFactory: factory });
+    await expect(provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: 'sk-google' } }))
+      .rejects.toThrow('google-client-seam');
+    expect(factory).toHaveBeenCalledOnce();
   });
 
   it('prefers VERTEXAI_API_KEY over GOOGLE_API_KEY through the definition endpoint chain', () => {
@@ -1820,7 +1830,7 @@ describe('Anthropic max-tokens profile', () => {
     expect(above.params['max_tokens']).toBe(128000);
   });
 
-  it('lets an explicit constructor defaultMaxTokens win over the per-turn budget', async () => {
+  it('applies a profile and remaining-context cap beneath an explicit constructor default', async () => {
     const provider = new AnthropicChatProvider({
       model: 'claude-opus-4-7',
       apiKey: 'sk-probe',
@@ -1828,9 +1838,11 @@ describe('Anthropic max-tokens profile', () => {
       defaultMaxTokens: 999999,
     });
 
-    const { params } = await captureAnthropicBody(provider, { maxCompletionTokens: 5000 });
+    const { params } = await captureAnthropicBody(provider, { maxCompletionTokens: 12000, maxContextTokens: 20000, usedContextTokens: 12000 });
 
-    expect(params['max_tokens']).toBe(999999);
+    expect(params['max_tokens']).toBe(8000);
+    const profile = await captureAnthropicBody(provider, { maxCompletionTokens: 5000 });
+    expect(profile.params['max_tokens']).toBe(5000);
   });
 });
 
@@ -2038,5 +2050,65 @@ describe('provider-aware accepted image mimes', () => {
     await expect(
       provider.generate('sys', [], historyWith(url)),
     ).rejects.toThrow(/Unsupported media type for base64 image: image\/heic/);
+  });
+});
+
+describe('outbound transport', () => {
+  const destination = 'https://api.example.test/v1';
+  const auth = { apiKey: 'sk-configured' };
+
+  it.each(['openai', 'openai_responses', 'anthropic'] as const)(
+    'checks the final SDK request URL and disables redirects for %s', async (protocol) => {
+      const request = await captureRejectedFetch(() => {
+        const provider = registry.createChatProvider({
+          protocol, modelName: 'fixture-model', baseUrl: destination,
+        });
+        return provider.generate('', [], PROBE_HISTORY, { auth });
+      });
+      expect(request.url).toMatch(/^https:\/\/api\.example\.test\/v1\//);
+      expect(request.redirect).toBe('error');
+      expect(request.headers.get('authorization') ?? request.headers.get('x-api-key'))
+        .toContain('sk-configured');
+    },
+  );
+
+  it('does not follow an actual HTTP redirect carrying the configured key', async () => {
+    let redirectedCount = 0;
+    const redirected = createServer((_req, res) => {
+      redirectedCount += 1;
+      res.writeHead(204);
+      res.end();
+    });
+    await new Promise<void>((resolve) => redirected.listen(0, '127.0.0.1', resolve));
+    const redirectPort = (redirected.address() as { port: number }).port;
+    let sourceKey: string | undefined;
+    const origin = createServer((req, res) => {
+      sourceKey = req.headers.authorization;
+      res.writeHead(302, { Location: `http://127.0.0.1:${redirectPort}/stolen` });
+      res.end();
+    });
+    try {
+      await new Promise<void>((resolve) => origin.listen(0, '127.0.0.1', resolve));
+      const source = `http://127.0.0.1:${(origin.address() as { port: number }).port}/v1`;
+      await expect(requestIdentityFetch(`${source}/models`, {
+        headers: { Authorization: `Bearer ${auth.apiKey}` },
+      })).rejects.toThrow();
+      expect(sourceKey).toBe('Bearer sk-configured');
+      expect(redirectedCount).toBe(0);
+    } finally {
+      await Promise.all([origin, redirected].map(async (server) => {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }));
+    }
+  });
+
+  it('uses the configured key for Kimi video upload', async () => {
+    const files = new KimiFiles({ baseUrl: destination });
+    const request = await captureRejectedFetch(() => files.uploadVideo({
+      mimeType: 'video/mp4', data: new Uint8Array([0, 0, 0, 0]), filename: 'sample.mp4',
+    }, { auth }));
+    expect(request.url).toMatch(/^https:\/\/api\.example\.test\/v1\//);
+    expect(request.redirect).toBe('error');
   });
 });

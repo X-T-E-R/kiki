@@ -19,6 +19,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   CatalogModelItem,
   DiscoveredModel,
+  GenerationParametersWire,
+  GenerationParametersPatch,
+  GetModelResponse,
+  GetProviderResponse,
   ModelCatalogItem,
   ProviderCatalogItem,
 } from '@kiki/protocol';
@@ -428,6 +432,7 @@ function ModelDraftRow({
   onChange,
   onRemove,
   onSetDefault,
+  onSaved,
 }: {
   model: ProviderModelDraft;
   index: number;
@@ -437,6 +442,7 @@ function ModelDraftRow({
   onChange: (patch: Partial<ProviderModelDraft>) => void;
   onRemove: () => void;
   onSetDefault: () => void;
+  onSaved?: () => Promise<void>;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(model.remoteId === '');
@@ -610,6 +616,7 @@ function ModelDraftRow({
             onChange={(images) => { onChange(images); }}
             inheritLabel={t('st.images.inheritProvider')}
           />
+          {model.id !== '' ? <SavedGenerationParametersEditor scope="model" id={model.id} onSaved={onSaved} /> : null}
           <div className="border-t border-hairline pt-3">
             <RequestIdentityLayerEditor
               value={model}
@@ -636,6 +643,8 @@ export function ProviderFields({
   managed = false,
   idLocked = false,
   refreshProviderId,
+  baselineBaseUrl,
+  baselineType,
   catalogModels = [],
   onRefreshed,
 }: {
@@ -654,6 +663,13 @@ export function ProviderFields({
   idLocked?: boolean;
   /** When set, Test connection uses the server-side provider discovery service. */
   refreshProviderId?: string;
+  /**
+   * The saved connection target. A server-side probe always runs against the
+   * stored address and protocol, so a draft key may only be sent while both
+   * still match the values this form holds.
+   */
+  baselineBaseUrl?: string;
+  baselineType?: ProviderDraft['type'];
   /**
    * Model-picker options. A saved provider passes its configured models plus
    * the local directory and any fetched suggestions (see
@@ -689,6 +705,13 @@ export function ProviderFields({
     setProbeFeedback(null);
     try {
       if (refreshProviderId !== undefined) {
+        // The server-side probe always runs against the stored connection, so
+        // an unsaved address or protocol would send a draft key to the old one.
+        if ((baselineBaseUrl !== undefined && draft.baseUrl !== baselineBaseUrl)
+          || (baselineType !== undefined && draft.type !== baselineType)) {
+          setProbeFeedback({ tone: 'info', text: t('st.fetchModels.unsavedTarget') });
+          return;
+        }
         const draftKey = !draft.clearApiKey && draft.apiKey !== baselineApiKey && draft.apiKey !== ''
           ? draft.apiKey
           : undefined;
@@ -852,6 +875,7 @@ export function ProviderFields({
               });
             }}
             onSetDefault={() => { onChange({ ...draft, defaultModel: model.id || model.remoteId }); }}
+            onSaved={onRefreshed}
           />
         ))}
       </div>
@@ -1082,6 +1106,8 @@ export function ProviderEditor({
             onChange={setDraft}
             hasStoredKey={provider.has_api_key}
             baselineApiKey={baseline.apiKey}
+            baselineBaseUrl={baseline.baseUrl}
+            baselineType={baseline.type}
             apiKeyEnv={provider.api_key_env}
             managed={managed}
             idLocked
@@ -1090,6 +1116,7 @@ export function ProviderEditor({
             onRefreshed={onSaved}
           />
         </fieldset>
+        <SavedGenerationParametersEditor scope="provider" id={provider.id} onSaved={onSaved} />
         {/* OAuth-managed providers keep the save button for the editable
             fields; the credential clear/delete danger zone stays hidden. */}
         <div className="flex flex-wrap items-center gap-2">
@@ -1143,6 +1170,177 @@ export function ProviderEditor({
         onCancel={() => { setConfirming(null); }}
       />
     </details>
+  );
+}
+
+type ParameterKey = keyof GenerationParametersWire;
+const PARAMETER_KEYS = ['temperature', 'top_p', 'max_completion_tokens', 'thinking_effort', 'service_tier'] as const satisfies readonly ParameterKey[];
+
+function parameterLabel(key: ParameterKey, zh: boolean): string {
+  const labels = zh
+    ? { temperature: '温度', top_p: 'Top P', max_completion_tokens: '最大生成 token', thinking_effort: '思考模式 / 档位', service_tier: '服务档位' }
+    : { temperature: 'Temperature', top_p: 'Top P', max_completion_tokens: 'Max generated tokens', thinking_effort: 'Thinking mode / effort', service_tier: 'Service tier' };
+  return labels[key];
+}
+
+function parameterValue(value: GenerationParametersWire[ParameterKey], zh: boolean): string {
+  if (value === undefined) return '—';
+  if (typeof value === 'object') return zh ? 'API 默认' : 'API default';
+  return String(value);
+}
+
+export function SavedGenerationParametersEditor({
+  scope, id, onSaved,
+}: {
+  scope: 'model' | 'provider';
+  id: string;
+  onSaved?: () => Promise<void>;
+}) {
+  const { client } = useConnection();
+  const { locale } = useI18n();
+  const zh = locale.startsWith('zh');
+  const queryClient = useQueryClient();
+  const query = useQuery<GetModelResponse | GetProviderResponse>({
+    queryKey: ['generation-entity', scope, id],
+    queryFn: () => scope === 'model' ? client.getModel(id) : client.getProviderEntity(id),
+  });
+  const entity = query.data;
+  const configured = entity === undefined ? undefined : scope === 'model'
+    ? (entity as { parameters?: GenerationParametersWire }).parameters
+    : (entity as { defaults?: GenerationParametersWire }).defaults;
+  const effective = entity !== undefined && 'effective_parameters' in entity
+    ? entity.effective_parameters : undefined;
+  const sources = entity !== undefined && 'parameter_sources' in entity
+    ? entity.parameter_sources : undefined;
+  const supportEfforts = entity !== undefined && 'support_efforts' in entity
+    ? entity.support_efforts : undefined;
+  const alwaysThinking = entity !== undefined && 'capabilities' in entity
+    ? entity.capabilities?.includes('always_thinking') === true : false;
+  const [draft, setDraft] = useState<GenerationParametersWire>({});
+  const [baseline, setBaseline] = useState<GenerationParametersWire>({});
+  const [revision, setRevision] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const dirty = PARAMETER_KEYS.some((key) => JSON.stringify(draft[key]) !== JSON.stringify(baseline[key]));
+  useDirtyReporter(`generation:${scope}:${id}`, dirty);
+
+  useEffect(() => {
+    if (entity === undefined || dirty || saving || entity.revision === revision) return;
+    const next = configured ?? {};
+    setDraft(next);
+    setBaseline(next);
+    setRevision(entity.revision);
+  }, [entity, configured, dirty, saving, revision]);
+
+  const change = (key: ParameterKey, value: GenerationParametersWire[ParameterKey]) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+    setFeedback(null);
+  };
+  const save = async () => {
+    const patch: Record<string, unknown> = {};
+    for (const key of PARAMETER_KEYS) {
+      if (JSON.stringify(draft[key]) !== JSON.stringify(baseline[key])) patch[key] = draft[key] ?? null;
+    }
+    if (Object.keys(patch).length === 0) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      if (scope === 'model') {
+        if (draft.thinking_effort === 'off' && alwaysThinking) {
+          throw new Error(zh ? '该模型声明强制思考，不能选择关闭。' : 'This model requires thinking; Off is unavailable.');
+        }
+        await client.updateModel(id, { base_revision: revision, parameters: patch as GenerationParametersPatch });
+      } else {
+        await client.updateProvider(id, { base_revision: revision, defaults: patch as GenerationParametersPatch });
+      }
+      setBaseline(draft);
+      await Promise.all([
+        query.refetch(),
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['providers'] }),
+        queryClient.invalidateQueries({ queryKey: ['model-entity'] }),
+      ]);
+      await onSaved?.();
+      setFeedback({ tone: 'success', text: zh ? '已保存。下一次请求生效；角色上限仍可收紧。' : 'Saved for future requests; profile limits may still reduce the budget.' });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (query.isError) return <FeedbackLine feedback={{ tone: 'error', text: errorText(locale, query.error) }} />;
+  if (entity === undefined || revision === '') return <Hint>{zh ? '正在读取参数…' : 'Loading parameters…'}</Hint>;
+  return (
+    <div className="space-y-3 rounded-lg border border-hairline bg-panel/50 p-3" data-generation-editor={`${scope}:${id}`}>
+      <p className="text-[11px] font-semibold text-ink-soft">
+        {scope === 'provider' ? (zh ? '供应商默认请求参数' : 'Provider request defaults') : (zh ? '此模型的请求参数' : 'Model request parameters')}
+      </p>
+      <Hint>{scope === 'provider'
+        ? (zh ? '影响此供应商下未覆盖的模型；已有模型及角色覆盖保持优先。' : 'Applies to models without local overrides; model and profile overrides take precedence.')
+        : (zh ? '继承值来自供应商；最大生成 token 是偏好，仍受模型和角色硬上限约束。' : 'Inherits provider defaults; generated-token preferences remain subject to model and profile caps.')}</Hint>
+      {PARAMETER_KEYS.map((key) => {
+        const value = draft[key];
+        const mode = value === undefined ? 'inherit' : typeof value === 'object' ? 'api_default' : 'custom';
+        const label = parameterLabel(key, zh);
+        const canOmit = key === 'temperature' || key === 'top_p' || key === 'service_tier';
+        return (
+          <div key={key} className="grid gap-1 sm:grid-cols-[9rem_8rem_minmax(0,1fr)] sm:items-center">
+            <label className="text-[11px] font-medium text-ink-soft" htmlFor={`${scope}-${id}-${key}`}>{label}</label>
+            <select
+              aria-label={`${label} ${zh ? '模式' : 'mode'}`}
+              className={SMALL_INPUT}
+              value={mode}
+              disabled={saving}
+              onChange={(event) => {
+                const next = event.target.value;
+                change(key, next === 'inherit' ? undefined : next === 'api_default' ? { kind: 'api_default' }
+                  : key === 'thinking_effort' ? 'on' : key === 'service_tier' ? 'auto' : key === 'max_completion_tokens' ? 8192 : 0);
+              }}
+            >
+              <option value="inherit">{zh ? '继承 / 未设置' : 'Inherit / unset'}</option>
+              <option value="custom">{zh ? '自定义' : 'Custom'}</option>
+              {canOmit ? <option value="api_default">{zh ? 'API 默认（不发送）' : 'API default (omit)'}</option> : null}
+            </select>
+            <div>
+              {mode === 'custom' && key === 'service_tier' ? (
+                <select id={`${scope}-${id}-${key}`} className={SMALL_INPUT} value={typeof value === 'string' ? value : 'auto'} disabled={saving}
+                  onChange={(event) => { change(key, event.target.value as GenerationParametersWire['service_tier']); }}>
+                  {(['auto', 'default', 'flex', 'priority'] as const).map((tier) => <option key={tier} value={tier}>{tier}</option>)}
+                </select>
+              ) : mode === 'custom' && key === 'thinking_effort' ? (
+                <div className="flex gap-1">
+                  <select className={SMALL_INPUT} aria-label={zh ? '思考选择' : 'Thinking choice'}
+                    value={value === 'on' || value === 'off' ? value : 'effort'} disabled={saving}
+                    onChange={(event) => { change(key, event.target.value === 'effort' ? (supportEfforts?.[0] ?? 'high') : event.target.value); }}>
+                    <option value="on">{zh ? '自动' : 'Auto'}</option>
+                    <option value="off" disabled={alwaysThinking}>{zh ? '关闭' : 'Off'}</option>
+                    <option value="effort">{zh ? '指定档位' : 'Specific effort'}</option>
+                  </select>
+                  {value !== 'on' && value !== 'off' ? <input id={`${scope}-${id}-${key}`} className={SMALL_INPUT} value={typeof value === 'string' ? value : ''}
+                    disabled={saving} list={supportEfforts?.length ? `${scope}-${id}-efforts` : undefined}
+                    onChange={(event) => { change(key, event.target.value); }} /> : null}
+                  {supportEfforts?.length ? <datalist id={`${scope}-${id}-efforts`}>{supportEfforts.map((effort) => <option key={effort} value={effort} />)}</datalist> : null}
+                </div>
+              ) : mode === 'custom' ? (
+                <input id={`${scope}-${id}-${key}`} className={SMALL_INPUT} type="number" min={key === 'max_completion_tokens' ? 1 : 0}
+                  max={key === 'top_p' ? 1 : undefined} step={key === 'max_completion_tokens' ? 1 : 'any'}
+                  value={typeof value === 'number' ? value : 0} disabled={saving}
+                  onChange={(event) => { change(key, Number(event.target.value)); }} />
+              ) : null}
+              {scope === 'model' ? <p className="text-[10px] text-ink-faint">
+                {zh ? '生效' : 'Effective'}: {parameterValue(effective?.[key], zh)} · {sources?.[key] ?? (zh ? '适配器 / API 默认' : 'adapter / API default')}
+              </p> : null}
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-2">
+        <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving} onClick={() => void save()}>{saving ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存参数' : 'Save parameters')}</button>
+        {dirty ? <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={() => { setDraft(baseline); setFeedback(null); }}>{zh ? '放弃修改' : 'Discard changes'}</button> : null}
+      </div>
+      <FeedbackLine feedback={feedback} />
+    </div>
   );
 }
 

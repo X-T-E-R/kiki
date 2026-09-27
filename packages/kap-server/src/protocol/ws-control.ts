@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import {
+  TRANSCRIPT_COVERAGE_VERSION,
   transcriptSubscribeV2PayloadSchema,
   type TranscriptSubscribeV2Payload,
 } from '@kiki/transcript';
@@ -184,7 +185,9 @@ export const subscribeAckPayloadSchema = z.object({
 
 export const subscribeAckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema);
 
-export const subscribeV2AckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema);
+export const subscribeV2AckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema.extend({
+  transcript_coverage_version: z.literal(TRANSCRIPT_COVERAGE_VERSION).optional(),
+}));
 
 export const unsubscribeV2AckMessageSchema = wsAckEnvelopeSchema(subscribeAckPayloadSchema);
 

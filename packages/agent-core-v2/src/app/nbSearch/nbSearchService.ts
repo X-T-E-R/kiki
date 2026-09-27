@@ -134,6 +134,29 @@ export class NbSearchService implements INbSearchService {
     if (runtime === undefined) throw configurationError(status);
   }
 
+  async readManagedCredential(instanceId: string, reveal: boolean) {
+    await this.config.ready;
+    return this.sources.withSource(
+      this.config.get<NbSearchSourceConfig | undefined>(NB_SEARCH_SOURCE_SECTION)?.reuse_local_config ?? true,
+      this.config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION),
+      (source) => this.sources.readManaged(source, instanceId, reveal),
+    );
+  }
+
+  async writeManagedCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string) {
+    await this.config.ready;
+    const config = this.config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION);
+    return this.sources.withSource(
+      this.config.get<NbSearchSourceConfig | undefined>(NB_SEARCH_SOURCE_SECTION)?.reuse_local_config ?? true,
+      config,
+      (source) => this.sources.writeManaged(source, () => ({
+        config: this.config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION),
+        reuseLocalConfig: this.config.get<NbSearchSourceConfig | undefined>(NB_SEARCH_SOURCE_SECTION)?.reuse_local_config ?? true,
+        generation: this.#generation,
+      }), instanceId, value, expectedVersion, expectedBinding),
+    );
+  }
+
   async #requireRuntime(admission?: FetchFileAdmission): Promise<NbSearchRuntime> {
     const { runtime, status } = await this.#currentRuntime(admission);
     if (runtime === undefined) throw configurationError(status);

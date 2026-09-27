@@ -192,6 +192,7 @@ export class SessionController {
   private readonly agentTranscripts = new Map<string, AgentTranscript>();
   private readonly olderPages = new Map<string, AgentTranscriptSnapshot>();
   private readonly transcriptCursors = new Map<string, TranscriptCursor>();
+  private readonly appliedTranscriptGrades = new Map<string, TranscriptGrade>();
   private readonly publishedTranscriptCursors = new Map<string, TranscriptCursor>();
   private readonly toolCountObservations = new Map<string, ToolCountObservation>();
   private readonly toolCountSpans = new Map<string, ToolCountSpan[]>();
@@ -528,7 +529,16 @@ export class SessionController {
         if (!this.completesRewriteHold(hold, event.cursor)) return;
         this.clearRewriteHold(hold.token);
       }
-      this.applyTranscriptReset(event.agent_id, event.snapshot, event.coverage, event.cursor);
+      const appliedCursor = this.transcriptCursors.get(event.agent_id);
+      const appliedGrade = this.appliedTranscriptGrades.get(event.agent_id);
+      const pending = this.pendingTranscriptBatches.get(event.agent_id);
+      const seenThrough = Math.max(appliedCursor?.seq ?? -1, pending?.throughSeq ?? -1);
+      if (hold === undefined && !this.catchupByAgent.has(event.agent_id) &&
+          appliedCursor?.epoch !== undefined && event.cursor.epoch === appliedCursor.epoch &&
+          (event.cursor.seq < seenThrough ||
+            (event.cursor.seq === seenThrough && appliedGrade !== undefined &&
+              GRADE_RANK[event.grade] <= GRADE_RANK[appliedGrade]))) return;
+      this.applyTranscriptReset(event.agent_id, event.snapshot, event.coverage, event.cursor, event.grade);
       return;
     }
     if (hold !== undefined && event.agent_id === MAIN_AGENT_ID) {
@@ -780,6 +790,7 @@ export class SessionController {
       this.pendingTranscriptAgents.clear();
       this.catchupReplay.clear();
       this.transcriptCursors.clear();
+      this.appliedTranscriptGrades.clear();
       this.setState(
         setResyncing(
           {
@@ -920,6 +931,7 @@ export class SessionController {
         loadingOlder: false,
         fetchedOlder: true,
         olderError: undefined,
+        historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown' : undefined,
       });
       return older.items.length > 0;
     } catch (error) {
@@ -942,6 +954,7 @@ export class SessionController {
     snapshot: AgentTranscriptSnapshot,
     coverage: TranscriptCoverage,
     cursor: TranscriptCursor,
+    grade: TranscriptGrade,
   ): void {
     this.pendingTranscriptBatches.delete(agentId);
     this.pendingTranscriptAgents.delete(agentId);
@@ -951,6 +964,7 @@ export class SessionController {
     if (coverage.kind === 'full') this.olderPages.delete(agentId);
     store.apply([{ op: 'reset', agentId, snapshot, coverage }]);
     this.transcriptCursors.set(agentId, cursor);
+    this.appliedTranscriptGrades.set(agentId, grade);
     this.viewHandle?.updateTranscriptCursor(agentId, cursor);
     this.forestDirtyAgents.add(agentId);
     this.publishProjectedAgent(agentId, store, {
@@ -958,6 +972,10 @@ export class SessionController {
       olderError: undefined,
       retainPendingPrompts: true,
       transcriptReset: coverage.kind === 'full',
+      historyCoverageKind: coverage.kind === 'full' ? 'full'
+        : coverage.kind === 'unknown' ||
+          (agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId))?.historyCoverageKind === 'unknown'
+          ? 'unknown' : 'tail',
     });
   }
 
@@ -1188,7 +1206,7 @@ export class SessionController {
   private publishProjectedAgent(
     agentId: string,
     _store: AgentTranscript,
-    options?: Partial<Pick<SessionViewState, 'loadingOlder' | 'fetchedOlder' | 'olderError'>> & {
+    options?: Partial<Pick<SessionViewState, 'loadingOlder' | 'fetchedOlder' | 'olderError' | 'historyCoverageKind'>> & {
       readonly retainPendingPrompts?: boolean;
       readonly transcriptReset?: boolean;
     },
@@ -1214,6 +1232,7 @@ export class SessionController {
             loadingOlder: options.loadingOlder ?? next.loadingOlder,
             fetchedOlder: options.fetchedOlder ?? next.fetchedOlder,
             olderError: options.olderError ?? next.olderError,
+            historyCoverageKind: options.historyCoverageKind ?? next.historyCoverageKind,
           };
     const forestChanged = this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
       ? this.publishForest()

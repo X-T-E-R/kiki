@@ -129,6 +129,7 @@ describe('`kimi web` ready banner', () => {
       {
         startServerForeground: runner,
         resolveToken: () => 'tok',
+        resolveHomeId: () => '46aca369-50e8-4fd3-9c45-606d084450ed',
         openUrl: vi.fn(),
         stdout,
         stderr,
@@ -140,6 +141,7 @@ describe('`kimi web` ready banner', () => {
     expect(plain).toContain('Local:');
     expect(plain).toContain('http://127.0.0.1:58628/#token=tok');
     expect(plain).toContain('Token:');
+    expect(plain).toContain('SSH home ID: 46aca369-50e8-4fd3-9c45-606d084450ed');
     // Loopback bind shows a Network hint for enabling network access.
     expect(plain).toContain('Network:');
     expect(plain).toContain('use --host to enable');
@@ -158,6 +160,19 @@ describe('`kimi web` ready banner', () => {
     // Title is above the URLs; Logs/Stop are at the bottom.
     expect(plain.indexOf('Kiki server ready')).toBeLessThan(plain.indexOf('Local:'));
     expect(plain.indexOf('Logs:')).toBeLessThan(plain.indexOf('Stop:'));
+  });
+
+  it('does not read or print SSH home identity without bearer authentication', async () => {
+    const { handleWebCommand } = await import('#/cli/sub/web/run');
+    const { runner } = makeRunner();
+    const { stdout, stderr, readStdout } = makeIo();
+    await handleWebCommand({ port: '58627', open: false }, {
+      startServerForeground: runner,
+      resolveToken: () => undefined,
+      resolveHomeId: () => { throw new Error('must not read without bearer'); },
+      openUrl: vi.fn(), stdout, stderr,
+    });
+    expect(stripAnsi(readStdout())).not.toContain('SSH home ID');
   });
 
   it('uses the TUI dark palette for the ready banner', async () => {
@@ -220,6 +235,7 @@ describe('`kimi web` ready banner', () => {
       {
         startServerForeground: runner,
         resolveToken: () => 'tok',
+        resolveHomeId: () => { throw new Error('bypass must not read the SSH home ID'); },
         openUrl,
         stdout,
         stderr,
@@ -234,6 +250,7 @@ describe('`kimi web` ready banner', () => {
     // The token is irrelevant when bypassed — neither printed nor carried in
     // any URL (so it cannot leak via copy/paste of the banner).
     expect(plain).not.toContain('tok');
+    expect(plain).not.toContain('SSH home ID');
     expect(plain).not.toContain('#token=');
     // The opened browser URL carries no token fragment either.
     expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:58627');

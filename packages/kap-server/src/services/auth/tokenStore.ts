@@ -7,6 +7,7 @@ export interface TokenStore {
   readonly tokenPath: string;
   getToken(): string;
   isValid(candidate: string): boolean;
+  generation(): number;
   dispose(): Promise<void>;
 }
 
@@ -21,7 +22,7 @@ export interface TokenStore {
  *
  * `dispose()` is intentionally a no-op: the token must survive shutdown.
  */
-export async function createTokenStore(homeDir: string): Promise<TokenStore> {
+export async function createTokenStore(homeDir: string, options: { readonly managed?: boolean } = {}): Promise<TokenStore> {
   const tokenPath = serverTokenPath(homeDir);
   const initial = await loadOrCreateServerToken(homeDir);
   const initialStat = statSync(tokenPath);
@@ -30,23 +31,40 @@ export async function createTokenStore(homeDir: string): Promise<TokenStore> {
     mtimeMs: initialStat.mtimeMs,
     ino: initialStat.ino,
   };
+  let generation = 0;
+  let valid = true;
 
   const currentToken = (): string => {
+    if (options.managed) {
+      try {
+        const st = statSync(tokenPath);
+        if (!st.isFile() || (process.platform !== 'win32' && (st.mode & 0o077) !== 0)) {
+          throw new Error('server token file permissions are invalid');
+        }
+        const token = readFileSync(tokenPath, 'utf8').trim();
+        if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('server token file is invalid');
+        if (!valid || token !== cache.token) generation += 1;
+        valid = true;
+        cache = { token, mtimeMs: st.mtimeMs, ino: st.ino };
+        return token;
+      } catch {
+        if (valid) generation += 1;
+        valid = false;
+        return '';
+      }
+    }
     let st: ReturnType<typeof statSync>;
     try {
       st = statSync(tokenPath);
     } catch {
       return cache.token;
     }
-    if (st.mtimeMs === cache.mtimeMs && st.ino === cache.ino) {
-      return cache.token;
-    }
-    if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) {
-      return cache.token;
-    }
+    if (st.mtimeMs === cache.mtimeMs && st.ino === cache.ino) return cache.token;
+    if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) return cache.token;
     try {
       const token = readFileSync(tokenPath, 'utf8').trim();
       if (token.length > 0) {
+        if (token !== cache.token) generation += 1;
         cache = { token, mtimeMs: st.mtimeMs, ino: st.ino };
       }
     } catch {
@@ -57,12 +75,14 @@ export async function createTokenStore(homeDir: string): Promise<TokenStore> {
   return {
     tokenPath,
     getToken: currentToken,
+    generation(): number {
+      currentToken();
+      return generation;
+    },
     isValid(candidate: string): boolean {
       const tokenBuf = Buffer.from(currentToken());
       const candidateBuf = Buffer.from(candidate);
-      if (candidateBuf.length !== tokenBuf.length) {
-        return false;
-      }
+      if (tokenBuf.length === 0 || candidateBuf.length !== tokenBuf.length) return false;
       return timingSafeEqual(candidateBuf, tokenBuf);
     },
     async dispose(): Promise<void> {

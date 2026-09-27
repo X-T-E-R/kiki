@@ -1,6 +1,8 @@
 import { MAIN_AGENT_ID, type Scope } from '@kiki/agent-core-v2';
 import {
   isPlainAgentId,
+  TRANSCRIPT_CLIENT_UPGRADE_MESSAGE,
+  TRANSCRIPT_COVERAGE_VERSION,
   transcriptOpsCatchupResponseSchema,
   transcriptOpsQuerySchema,
   transcriptPlanResponseSchema,
@@ -53,6 +55,7 @@ const transcriptQueryCoercion = z
     before_turn: z.string().min(1).optional(),
     after_turn: z.string().min(1).optional(),
     page_size: z.coerce.number().int().min(1).max(100).optional(),
+    transcript_coverage_version: z.string().optional(),
   })
   .superRefine((value, ctx) => {
     if (value.before_turn !== undefined && value.after_turn !== undefined) {
@@ -120,7 +123,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
       path: '/sessions/{session_id}/transcript',
       params: sessionIdParamSchema,
       querystring: transcriptQueryCoercion,
-      success: { data: transcriptResponseSchema },
+      success: { data: transcriptResponseSchema.extend({ transcript_coverage_version: z.literal(TRANSCRIPT_COVERAGE_VERSION) }) },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
@@ -132,6 +135,10 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
     async (req, reply) => {
       const { session_id } = req.params;
       const query = req.query;
+      if (query.transcript_coverage_version !== String(TRANSCRIPT_COVERAGE_VERSION)) {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, TRANSCRIPT_CLIENT_UPGRADE_MESSAGE, req.id));
+        return;
+      }
       const data = await withReplyCloseSignal(replySignalSource(reply), (signal) =>
         readSessionViewTranscriptPage(transcriptService, session_id, {
           agentId: query.agent_id,
@@ -145,7 +152,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         sendSessionNotFound(reply, req.id, session_id);
         return;
       }
-      reply.send(okEnvelope(data, req.id));
+      reply.send(okEnvelope({ ...data, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, req.id));
     },
   );
   app.get(route.path, route.options, route.handler as Parameters<TranscriptRouteHost['get']>[2]);
@@ -156,7 +163,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
       path: '/sessions/{session_id}/transcript/ops',
       params: sessionIdParamSchema,
       querystring: transcriptOpsQuerySchema,
-      success: { data: transcriptOpsCatchupResponseSchema },
+      success: { data: transcriptOpsCatchupResponseSchema.extend({ transcript_coverage_version: z.literal(TRANSCRIPT_COVERAGE_VERSION) }) },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
@@ -168,7 +175,10 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
     async (req, reply) => {
       const { session_id } = req.params;
       const query = req.query;
-
+      if (query.transcript_coverage_version !== String(TRANSCRIPT_COVERAGE_VERSION)) {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, TRANSCRIPT_CLIENT_UPGRADE_MESSAGE, req.id));
+        return;
+      }
       const data = await readSessionViewTranscriptCatchUp(transcriptService, session_id, {
         agentId: query.agent_id,
         since: { epoch: query.epoch, seq: query.since_seq },
@@ -178,7 +188,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         sendSessionNotFound(reply, req.id, session_id);
         return;
       }
-      reply.send(okEnvelope(data, req.id));
+      reply.send(okEnvelope({ ...data, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, req.id));
     },
   );
   app.get(opsRoute.path, opsRoute.options, opsRoute.handler as Parameters<TranscriptRouteHost['get']>[2]);

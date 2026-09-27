@@ -22,6 +22,7 @@ export type StepHeader = Omit<TranscriptStep, 'frames'>;
 
 export type TranscriptCoverage =
   | { readonly kind: 'full'; readonly hasMoreOlder: false }
+  | { readonly kind: 'unknown'; readonly hasMoreOlder: true }
   | {
       readonly kind: 'tail';
       readonly fromTurnId?: TurnId;

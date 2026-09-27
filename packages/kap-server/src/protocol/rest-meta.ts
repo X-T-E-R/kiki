@@ -58,6 +58,7 @@ export const metaResponseSchema = z.object({
   build_channel: z.string().min(1).optional(),
   capabilities: metaCapabilitiesSchema,
   server_id: z.string().min(1),
+  server_home_id: z.string().uuid().optional(),
   started_at: isoDateTimeSchema,
   open_in_apps: z.array(fsOpenInAppIdSchema),
   dangerous_bypass_auth: z.boolean(),

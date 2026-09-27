@@ -24,6 +24,7 @@ export async function readSessionViewTranscriptPage(
   if (store !== undefined) {
     await transcriptService.whenReady(sessionId);
     await transcriptService.ensureAgentHistory(sessionId, input.agentId);
+    const liveVerified = await transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId);
     const transcript = store.ensureAgent(input.agentId);
     if (transcript.hasMoreOlder && input.beforeTurn !== undefined) {
       const cold = await transcriptService.readColdSnapshot(
@@ -34,21 +35,25 @@ export async function readSessionViewTranscriptPage(
       );
       if (cold === undefined) return undefined;
       const page = paginateTurns(cold.items, pageQuery);
+      const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
+        cold.toolCallCountKnown === true;
       return {
         session_id: sessionId, agent_id: input.agentId,
-        items: page.items, has_more: page.hasMore, tool_call_count: cold.toolCallCount,
+        items: page.items, has_more: page.hasMore, tool_call_count: verified ? cold.toolCallCount : undefined,
         tasks: cold.tasks, interactions: cold.interactions, attachments: cold.attachments,
         todos: cold.todos, prompts: cold.prompts, meta: cold.meta, agents: store.agents(),
         pending_interactions: transcript.listPendingInteractions(),
         cursor: transcriptService.getTranscriptCursor(sessionId, input.agentId),
-        coverage: coverageForItems(page.items, page.hasMore),
+        coverage: coverageForItems(page.items, page.hasMore, verified),
       } as unknown as TranscriptResponse;
     }
     const snapshot = transcript.snapshot();
     const page = paginateTurns(transcript.getItems(), pageQuery);
+    const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
+      snapshot.toolCallCountKnown === true;
     return {
       session_id: sessionId, agent_id: input.agentId,
-      items: page.items, has_more: page.hasMore, tool_call_count: snapshot.toolCallCount,
+      items: page.items, has_more: page.hasMore, tool_call_count: verified ? snapshot.toolCallCount : undefined,
       tasks: [...transcript.getTasks().values()],
       interactions: [...transcript.getInteractions().values()],
       attachments: [...transcript.getAttachments().values()],
@@ -57,7 +62,7 @@ export async function readSessionViewTranscriptPage(
       meta: transcript.getMeta(), agents: store.agents(),
       pending_interactions: transcript.listPendingInteractions(),
       cursor: transcriptService.getTranscriptCursor(sessionId, input.agentId),
-      coverage: coverageForItems(page.items, page.hasMore),
+      coverage: coverageForItems(page.items, page.hasMore, verified),
     } as unknown as TranscriptResponse;
   }
   const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
@@ -73,7 +78,7 @@ export async function readSessionViewTranscriptPage(
     items: page.items, has_more: page.hasMore, tool_call_count: snapshot.toolCallCount,
     tasks: snapshot.tasks, interactions: snapshot.interactions, attachments: snapshot.attachments,
     todos: snapshot.todos, prompts: snapshot.prompts, meta: snapshot.meta, agents: roster,
-    pending_interactions: [], cursor: undefined, coverage: coverageForItems(page.items, page.hasMore),
+    pending_interactions: [], cursor: undefined, coverage: coverageForItems(page.items, page.hasMore, snapshot.toolCallCountKnown === true),
   } as unknown as TranscriptResponse;
 }
 
@@ -100,7 +105,8 @@ export async function readSessionViewTranscriptCatchUp(
   } as unknown as TranscriptOpsCatchupResponse;
 }
 
-function coverageForItems(items: readonly { readonly kind: string; readonly turnId?: string }[], hasMoreOlder: boolean) {
+function coverageForItems(items: readonly { readonly kind: string; readonly turnId?: string }[], hasMoreOlder: boolean, verified: boolean) {
+  if (!verified) return { kind: 'unknown' as const, hasMoreOlder: true as const };
   if (!hasMoreOlder) return { kind: 'full' as const, hasMoreOlder: false as const };
   const turns = items.filter((item) => item.kind === 'turn');
   return { kind: 'tail' as const, fromTurnId: turns[0]?.turnId, throughTurnId: turns.at(-1)?.turnId, hasMoreOlder };

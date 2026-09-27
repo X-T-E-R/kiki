@@ -97,6 +97,31 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('requires bearer and affirmative confirmation in the model migration REST facade', async () => {
+    const revision = 'a'.repeat(64);
+    const backup = 'config.toml.generation-backup-123e4567-e89b-42d3-a456-426614174000';
+    const seen: Array<{ path: string; method: string; body: unknown }> = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer server-token');
+      const path = new URL(String(input)).pathname;
+      seen.push({ path, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(init.body as string) });
+      return envelope(path.endsWith('/apply') ? { backup_key: backup, revision } : path.endsWith('/restore') ? { revision } : { revision, changes: [], needs_review: [], backups: [] });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'server-token', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.config.previewModelGenerationMigration();
+      await channel.rest.config.applyModelGenerationMigration(revision);
+      await channel.rest.config.restoreModelGenerationMigration(backup, revision);
+      expect(seen).toEqual([
+        { path: '/api/config/model-generation-migration', method: 'GET', body: undefined },
+        { path: '/api/config/model-generation-migration/apply', method: 'POST', body: { revision, confirmed: true } },
+        { path: '/api/config/model-generation-migration/restore', method: 'POST', body: { backup_key: backup, revision, confirmed: true } },
+      ]);
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('routes cron list and task actions through /api/cron with the disambiguating session query', async () => {
     const seen: { pathname: string; method: string; sessionId: string | null }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

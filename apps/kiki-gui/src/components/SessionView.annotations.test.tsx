@@ -46,7 +46,9 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
   return { ...actual, SessionController: StubSessionController };
 });
 vi.mock('./ConversationShell', () => ({
+  EMPTY_SLOTS: { header: null, dock: null, heroFooter: null, rail: null, footer: null, preview: null },
   useConversationShell: () => ({ slots: { header: null, dock: null, rail: null, footer: null } }),
+  useOptionalConversationShell: () => ({ slots: { header: null, dock: null, rail: null, footer: null } }),
   useRegisterSeat: (next: { composer: unknown }) => { seat.composer = next.composer; },
 }));
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));

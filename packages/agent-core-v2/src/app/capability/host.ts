@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -66,7 +67,7 @@ export async function runCommand(
 
 export type FetchLike = (
   url: string,
-  init?: { signal?: AbortSignal },
+  init?: { signal?: AbortSignal; redirect?: 'manual' },
 ) => Promise<{
   ok: boolean;
   status: number;
@@ -79,8 +80,15 @@ export async function downloadToFile(
   destPath: string,
   onPercent?: (percent: number) => void,
   fetchImpl: FetchLike = fetch as unknown as FetchLike,
-  options: { idleTimeoutMs?: number } = {},
+  options: { idleTimeoutMs?: number; sha256?: string; maxBytes?: number } = {},
 ): Promise<number> {
+  if (options.sha256 !== undefined && !/^[0-9a-f]{64}$/.test(options.sha256)) {
+    throw new Error('A verified download requires a valid SHA-256 digest');
+  }
+  if (options.sha256 !== undefined && new URL(url).protocol !== 'https:') {
+    throw new Error('A verified download requires HTTPS');
+  }
+  const hash = options.sha256 === undefined ? undefined : createHash('sha256');
   const idleTimeoutMs = options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
   const headerController = new AbortController();
   const headerTimer = setTimeout(() => {
@@ -89,7 +97,10 @@ export async function downloadToFile(
   headerTimer.unref?.();
   let resp;
   try {
-    resp = await fetchImpl(url, { signal: headerController.signal });
+    resp = await fetchImpl(url, {
+      signal: headerController.signal,
+      redirect: hash === undefined ? undefined : 'manual',
+    });
   } catch (error) {
     if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
       throw new Error(`Failed to download ${url}: no response within ${idleTimeoutMs}ms`, {
@@ -104,6 +115,9 @@ export async function downloadToFile(
     throw new Error(`Failed to download ${url}: HTTP ${resp.status}`);
   }
   const total = Number(resp.headers.get('content-length') ?? 0);
+  if (options.maxBytes !== undefined && Number.isFinite(total) && total > options.maxBytes) {
+    throw new Error(`Download exceeds ${options.maxBytes} bytes`);
+  }
   await mkdir(path.dirname(destPath), { recursive: true });
   let received = 0;
   let idleTimer: NodeJS.Timeout | undefined;
@@ -111,6 +125,11 @@ export async function downloadToFile(
     transform(chunk: Buffer, _encoding, callback) {
       armIdleWatchdog();
       received += chunk.length;
+      if (options.maxBytes !== undefined && received > options.maxBytes) {
+        callback(new Error(`Download exceeds ${options.maxBytes} bytes`));
+        return;
+      }
+      hash?.update(chunk);
       if (total > 0 && onPercent !== undefined) {
         onPercent(Math.min(99, Math.floor((received / total) * 100)));
       }
@@ -133,6 +152,9 @@ export async function downloadToFile(
     );
   } finally {
     if (idleTimer !== undefined) clearTimeout(idleTimer);
+  }
+  if (hash !== undefined && hash.digest('hex') !== options.sha256) {
+    throw new Error('Downloaded artifact SHA-256 does not match the pinned release');
   }
   onPercent?.(100);
   return received;

@@ -58,6 +58,7 @@ import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
 import { drainSessionMetadataWrites, toEpochMs } from '#/session/sessionMetadata/sessionMetadataService';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
+import { ISessionTerminalService } from '#/session/terminal/terminalService';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   AGENT_WIRE_RECORD_KEY,
@@ -66,6 +67,7 @@ import {
 } from '#/wire/record';
 import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { repairWireJournal } from '#/wire/repair';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY } from '#/wire/transcriptReceipt';
 import { IModelService } from '#/kosong/model/model';
 import { IProviderService } from '#/kosong/provider/provider';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
@@ -540,6 +542,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (activity.busy || activity.pendingInteraction !== 'none') return false;
     const agents = handle.accessor.get(IAgentLifecycleService);
     if (agents.countPendingBackgroundTasks() > 0) return false;
+    if (handle.accessor.get(ISessionTerminalService).countLiveTerminals() > 0) return false;
     const externalRoot = await this.docs.get(
       join(sessionScopeOf(this.handlerScope, sessionId), 'external-delegation'),
       'root',
@@ -560,6 +563,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const finalActivity = handle.accessor.get(ISessionActivityView).state();
     if (finalActivity.busy || finalActivity.pendingInteraction !== 'none') return false;
     if (agents.countPendingBackgroundTasks() > 0) return false;
+    if (handle.accessor.get(ISessionTerminalService).countLiveTerminals() > 0) return false;
+    await this.drainAgents(handle);
     this.sessions.delete(sessionId);
     handle.dispose();
     await drainLogCloses();
@@ -989,7 +994,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         rel === 'logs' ||
         rel === 'external-delegation' ||
         rel === 'upcoming-goals.json' ||
-        entry.name === AGENT_WIRE_RECORD_KEY
+        entry.name === AGENT_WIRE_RECORD_KEY ||
+        entry.name === WIRE_TRANSCRIPT_RECEIPT_KEY
       ) {
         continue;
       }

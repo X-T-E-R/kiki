@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
+import type { ModelCatalogItem, ModelGenerationMigrationPreviewResponse, ProviderCatalogItem } from '@kiki/protocol';
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -25,7 +25,7 @@ import { ChipSelect } from '../ChipSelect';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
-import { ContextStepper, ImagePolicyEditor } from '../ProviderFields';
+import { ContextStepper, ImagePolicyEditor, SavedGenerationParametersEditor } from '../ProviderFields';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { SearchableSelect } from '../SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
@@ -136,6 +136,7 @@ export function ModelCatalogCard() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['models'] }),
       queryClient.invalidateQueries({ queryKey: ['providers'] }),
+      queryClient.invalidateQueries({ queryKey: ['generation-entity'] }),
       queryClient.invalidateQueries({ queryKey: ['config'] }),
     ]);
   }, [queryClient]);
@@ -567,12 +568,149 @@ export function CatalogRefreshCard() {
   );
 }
 
+const MIGRATION_REASON_KEYS: Readonly<Record<ModelGenerationMigrationPreviewResponse['needs_review'][number]['code'], I18nKey>> = {
+  invalid_model: 'st.modelMigration.reasonInvalidModel',
+  invalid_parameters: 'st.modelMigration.reasonInvalidParameters',
+  invalid_value: 'st.modelMigration.reasonInvalidValue',
+  differs: 'st.modelMigration.reasonDiffers',
+  ambiguous: 'st.modelMigration.reasonAmbiguous',
+  default_effort: 'st.modelMigration.reasonDefaultEffort',
+  max_output_size: 'st.modelMigration.reasonMaxOutputSize',
+};
+
+export function ModelGenerationMigrationCard() {
+  const { client } = useConnection();
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const [preview, setPreview] = useState<ModelGenerationMigrationPreviewResponse | null>(null);
+  const [busy, setBusy] = useState<'preview' | 'apply' | 'restore' | null>(null);
+  const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<{ type: 'apply' } | { type: 'restore'; backupKey: string } | null>(null);
+  const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const inFlight = useRef(false);
+
+  const refresh = async () => {
+    setBusy('preview');
+    setPreview(null);
+    try {
+      setPreview(await client.previewModelGenerationMigration());
+      setMessage(null);
+    } catch {
+      setMessage({ tone: 'error', text: t('st.modelMigration.failed') });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirm = async () => {
+    if (preview === null || confirmation === null || inFlight.current) return;
+    const selected = confirmation;
+    inFlight.current = true;
+    setConfirmation(null);
+    setBusy(selected.type);
+    setRestoringKey(selected.type === 'restore' ? selected.backupKey : null);
+    try {
+      if (selected.type === 'apply') {
+        await client.applyModelGenerationMigration(preview.revision);
+        setMessage({ tone: 'success', text: t('st.modelMigration.applied', { count: preview.changes.length }) });
+        setPreview(null);
+      } else {
+        await client.restoreModelGenerationMigration(selected.backupKey, preview.revision);
+        setMessage({ tone: 'success', text: t('st.modelMigration.restored') });
+        setPreview(null);
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['config'] }),
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['providers'] }),
+        queryClient.invalidateQueries({ queryKey: ['generation-entity'] }),
+      ]);
+    } catch (error) {
+      setPreview(null);
+      const conflict = error !== null && typeof error === 'object' && 'code' in error && error.code === 40941;
+      setMessage({ tone: 'error', text: t(conflict ? 'st.modelMigration.conflict' : 'st.modelMigration.failed') });
+    } finally {
+      inFlight.current = false;
+      setRestoringKey(null);
+      setBusy(null);
+    }
+  };
+
+  return (
+    <SectionCard id="st-card-model-migration" title={t('st.modelMigration.title')}>
+      <div className="space-y-3">
+        <Hint>{t('st.modelMigration.hint')}</Hint>
+        <button type="button" className={SECONDARY_BUTTON} disabled={busy !== null} onClick={() => void refresh()}>
+          {t(busy === 'preview' ? 'st.modelMigration.previewing' : 'st.modelMigration.preview')}
+        </button>
+        {preview !== null ? (
+          <>
+            {preview.changes.length === 0 ? <Hint>{t('st.modelMigration.noChanges')}</Hint> : (
+              <div>
+                <p className="text-xs font-medium text-ink">{t('st.modelMigration.changesTitle')}</p>
+                <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-ink-soft">
+                  {preview.changes.map(({ model_id: model, fields }) => (
+                    <li key={model}>{t('st.modelMigration.changeRow', { model, fields: fields.join(', ') })}</li>
+                  ))}
+                </ul>
+                <button type="button" className={`${PRIMARY_BUTTON} mt-2`} disabled={busy !== null} onClick={() => { setConfirmation({ type: 'apply' }); }}>
+                  {t(busy === 'apply' ? 'st.modelMigration.applying' : 'st.modelMigration.apply')}
+                </button>
+              </div>
+            )}
+            {preview.needs_review.length > 0 ? (
+              <div>
+                <p className="text-xs font-medium text-ink">{t('st.modelMigration.needsReviewTitle')}</p>
+                <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-ink-soft">
+                  {preview.needs_review.map(({ model_id: model, code, field }, index) => (
+                    <li key={`${model}-${code}-${index}`}>{t('st.modelMigration.needsReviewRow', {
+                      model, reason: t(MIGRATION_REASON_KEYS[code], { field: field ?? '' }),
+                    })}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {preview.backups.length > 0 ? (
+              <div>
+                <p className="text-xs font-medium text-ink">{t('st.modelMigration.backupListTitle')}</p>
+                <ul className="mt-1 space-y-2">
+                  {preview.backups.map((backup) => (
+                    <li key={backup} className="flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+                      <code className="break-all">{backup}</code>
+                      <button type="button" className={SECONDARY_BUTTON}
+                        disabled={busy !== null}
+                        onClick={() => { setConfirmation({ type: 'restore', backupKey: backup }); }}>
+                        {t(restoringKey === backup ? 'st.modelMigration.restoring' : 'st.modelMigration.restore')}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+        {message !== null ? <p role={message.tone === 'error' ? 'alert' : 'status'} className={message.tone === 'error' ? 'text-xs text-danger' : 'text-xs text-success'}>{message.text}</p> : null}
+      </div>
+      <ConfirmDialog
+        open={confirmation !== null}
+        title={t(confirmation?.type === 'restore' ? 'st.modelMigration.restoreConfirmTitle' : 'st.modelMigration.applyConfirmTitle')}
+        body={t(confirmation?.type === 'restore' ? 'st.modelMigration.restoreConfirmBody' : 'st.modelMigration.applyConfirmBody')}
+        consequences={confirmation?.type === 'restore' ? [confirmation.backupKey] : preview?.changes.map(({ model_id: model, fields }) => t('st.modelMigration.changeRow', { model, fields: fields.join(', ') }))}
+        confirmLabel={t(confirmation?.type === 'restore' ? 'st.modelMigration.restoreConfirmAction' : 'st.modelMigration.applyConfirmAction')}
+        onConfirm={() => void confirm()}
+        onCancel={() => { setConfirmation(null); }}
+      />
+    </SectionCard>
+  );
+}
+
 /** Tab 2 body of the merged "Models & providers" entry. */
 export function ModelsTab() {
   return (
     <div className="space-y-4">
       <ModelCatalogCard />
       <CatalogRefreshCard />
+      <ModelGenerationMigrationCard />
     </div>
   );
 }
@@ -886,6 +1024,7 @@ function ModelCatalogRowEditor({
         onChange={(images) => { setDraft({ ...draft, ...images }); }}
         inheritLabel={t('st.images.inheritProvider')}
       />
+      <SavedGenerationParametersEditor scope="model" id={entity.id} onSaved={onSaved} />
       <div className="border-t border-hairline pt-3">
         <RequestIdentityLayerEditor
           value={draft}

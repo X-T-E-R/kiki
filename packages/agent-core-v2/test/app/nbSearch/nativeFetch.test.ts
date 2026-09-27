@@ -39,7 +39,7 @@ beforeEach(async () => {
   ix = createServices(disposables, { additionalServices: (reg) => {
     const config = { home: fixture, jobs_root: path.join(fixture, 'jobs'), fetch: { file_scopes: [{ id: 'fixture', root: fixture }] } };
     reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'], get: ((domain: string) => domain === NB_SEARCH_SECTION ? config : undefined) as IConfigService['get'] });
-    reg.defineInstance(INbSearchSourceStore, { _serviceBrand: undefined, withSource: async (_reuse, _config, use) => use({ env: { NB_SEARCH_CONFIG: path.join(fixture, 'config.json'), NB_SEARCH_HOME: fixture, NB_SEARCH_JINA_API_KEY: 'fixture-key' }, config, status: { reuse_local_config: false, layers: ['defaults', 'kiki'], local_config: 'ignored', availability: 'ready', issues: [] } }) });
+    reg.defineInstance(INbSearchSourceStore, { _serviceBrand: undefined, readManaged: vi.fn(), writeManaged: vi.fn(), withSource: async (_reuse, _config, use) => use({ env: { NB_SEARCH_CONFIG: path.join(fixture, 'config.json'), NB_SEARCH_HOME: fixture, NB_SEARCH_JINA_API_KEY: 'fixture-key' }, config, status: { reuse_local_config: false, layers: ['defaults', 'kiki'], local_config: 'ignored', availability: 'ready', issues: [] } }) });
     reg.define(INbSearchService, NbSearchService);
     reg.definePartialInstance(IAgentRuntimeService, { inspect: () => runtime, acquire: () => ({ runtime, track: (value) => value, dispose() {} }) });
     reg.definePartialInstance(ISessionWorkspaceContext, { workDir: fixture, additionalDirs: [] });

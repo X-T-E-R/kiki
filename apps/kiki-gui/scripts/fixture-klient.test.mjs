@@ -74,7 +74,7 @@ test('fixture serves the GUI global facades through typed contracts and shared f
   const client = createKlient({ endpoint, token: FIXTURE_TOKEN, WebSocket });
   try {
     const models = await client.global.kosong.listModels();
-    assert.ok(models.some((model) => model.model === 'fixture/kiki-pro'));
+    assert.ok(models.some((model) => model.id === 'fixture/kiki-pro'));
     const providers = await client.global.kosong.listProviders();
     assert.ok(providers.some((provider) => provider.id === 'fixture'));
     const rawProfiles = await fetch(`${endpoint}/api/agents?workspace_id=wd_fixture_000000000000`, { headers }).then((response) => response.json());
@@ -212,13 +212,39 @@ test('fixture fails closed for missing auth, unsupported methods and invalid ord
     assert.notEqual((await call({ procedure: { scope: 'core', service: 'unknown', method: 'read' }, params: [] })).code, 0);
     assert.equal((await call({ procedure: { scope: 'core', service: 'agentPanelService', method: 'read' }, params: [{}] })).code, 40001);
     const sid = [...fixture.sessions.keys()][0];
-    const response = await fetch(`${endpoint}/api/klient/session-view/${sid}/transcript?agent_id=main&page_size=101`, { headers }).then((result) => result.json());
-    assert.equal(response.code, 40001);
+    const route = `${endpoint}/api/klient/session-view/${sid}/transcript?agent_id=main`;
+    const invalidPage = await fetch(`${route}&page_size=101`, { headers }).then((result) => result.json());
+    assert.equal(invalidPage.code, 40001);
+    const legacyPage = await fetch(route, { headers }).then((result) => result.json());
+    assert.equal(legacyPage.code, 40001);
+    assert.match(legacyPage.msg, /newer client/);
+    const confirmedPage = await fetch(`${route}&transcript_coverage_version=2`, { headers }).then((result) => result.json());
+    assert.equal(confirmedPage.code, 0);
+    assert.equal(confirmedPage.data.transcript_coverage_version, 2);
+    const catchUpRoute = `${endpoint}/api/klient/session-view/${sid}/transcript/catch-up?agent_id=main&since_seq=0&epoch=${fixture.sessions.get(sid).transcript.epoch}`;
+    const legacyCatchUp = await fetch(catchUpRoute, { headers }).then((result) => result.json());
+    assert.equal(legacyCatchUp.code, 40001);
+    assert.match(legacyCatchUp.msg, /newer client/);
+    const confirmedCatchUp = await fetch(`${catchUpRoute}&transcript_coverage_version=2`, { headers }).then((result) => result.json());
+    assert.equal(confirmedCatchUp.code, 0);
+    assert.equal(confirmedCatchUp.data.transcript_coverage_version, 2);
     const socket = new WebSocket(endpoint.replace('http:', 'ws:') + '/api/klient/events', [`kimi-code.bearer.${FIXTURE_TOKEN}`]);
     await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
     const received = new Promise((resolve) => socket.once('message', (raw) => resolve(JSON.parse(String(raw)))));
     socket.send(JSON.stringify({ type: 'view_attach', id: 'invalid', sessionId: sid, data: { generation: 1, input: {} } }));
     assert.equal((await received).type, 'view_error');
+    const legacyReply = new Promise((resolve) => socket.once('message', (raw) => resolve(JSON.parse(String(raw)))));
+    socket.send(JSON.stringify({ type: 'view_attach', id: 'legacy', sessionId: sid,
+      data: { generation: 2, input: { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } }));
+    const legacyFrame = await legacyReply;
+    assert.equal(legacyFrame.type, 'view_error');
+    assert.match(legacyFrame.msg, /newer client/);
+    const supportedReply = new Promise((resolve) => socket.once('message', (raw) => resolve(JSON.parse(String(raw)))));
+    socket.send(JSON.stringify({ type: 'view_attach', id: 'supported', sessionId: sid,
+      data: { generation: 3, transcript_coverage_version: 2, input: { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } }));
+    const supportedFrame = await supportedReply;
+    assert.equal(supportedFrame.type, 'view_signal');
+    assert.equal(supportedFrame.data.transcript_coverage_version, 2);
     socket.terminate();
   } finally { await fixture.stop(); }
 });

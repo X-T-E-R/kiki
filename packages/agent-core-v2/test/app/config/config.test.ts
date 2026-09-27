@@ -16,7 +16,7 @@ import {
   toErrorPayload,
 } from '#/errors';
 import { WIRE_PROTOCOL_VERSION } from '#/wire/migration/migration';
-import { createTestAgent, type TestAgentContext } from '../../harness';
+import { createTestAgent, permissionModeServices, type TestAgentContext } from '../../harness';
 import { DEFAULT_TEST_SYSTEM_PROMPT } from '../../harness/snapshots';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -34,6 +34,8 @@ import {
   type RegisterSectionOptions,
 } from '#/app/config/config';
 import { ConfigRegistry, ConfigService } from '#/app/config/configService';
+import { applyModelGenerationMigration, prepareModelGenerationMigration, previewModelGenerationMigration, restoreModelGenerationMigration } from '#/app/config/modelGenerationMigration';
+import { migrateConfigCredentials, migrateThinkingEffortMaxToHigh } from '#/app/config/migrations';
 import { ConfigSectionContribution } from '#/app/config/configSectionContributions';
 import { ConfigWriteValidatorContribution } from '#/app/config/configWriteValidation';
 import { CRON_SECTION, DEFAULT_CRON_CONFIG, type CronConfig } from '#/app/cron/configSection';
@@ -75,6 +77,8 @@ import {
 } from '#/app/kosongConfig/configSection';
 import '#/app/kosongConfig/envOverlay';
 import type { IModelService } from '#/kosong/model/model';
+import { resolveModelAuthMaterial } from '#/kosong/model/modelAuth';
+import type { ProviderConfig } from '#/kosong/provider/provider';
 import { type ThinkingConfig } from '#/kosong/model/thinking';
 import {
   KEEP_ALIVE_ON_EXIT_ENV,
@@ -286,6 +290,9 @@ describe('Agent config', () => {
   });
 
   it('keeps turn-start config for later steps and applies updates to the next turn', async () => {
+    await ctx.dispose();
+    ctx = createTestAgent(permissionModeServices('manual'));
+    profile = ctx.get(IAgentProfileService);
     const lookupCall: ToolCall = {
       type: 'function',
       id: 'call_lookup',
@@ -1227,6 +1234,23 @@ describe('config behavior', () => {
     return { config, disposables, storage };
   }
 
+  it('round-trips generation defaults and tagged model overrides without touching sibling fields', async () => {
+    const source = '[providers."managed:kimi-code"]\ntype = "kimi"\n[providers."managed:kimi-code".defaults]\ntemperature = 0\nmax_completion_tokens = 8192\n[models."short.alias"]\nprovider = "managed:kimi-code"\nmodel = "vendor/model:v1"\nmax_context_size = 200000\n[models."short.alias".parameters]\nmax_completion_tokens = 16384\n[models."short.alias".parameters.top_p]\nkind = "api_default"\n';
+    const { config, disposables, storage } = await createConfig({}, source);
+    try {
+      expect(config.get(PROVIDERS_SECTION)).toMatchObject({ 'managed:kimi-code': { defaults: { temperature: 0, maxCompletionTokens: 8192 } } });
+      expect(config.get(MODELS_SECTION)).toMatchObject({ 'short.alias': { parameters: { maxCompletionTokens: 16384, topP: { kind: 'api_default' } } } });
+      await config.replace(MODELS_SECTION, { 'short.alias': { provider: 'managed:kimi-code', model: 'vendor/model:v1', maxContextSize: 200000,
+        parameters: { maxCompletionTokens: 16384, topP: { kind: 'api_default' }, temperature: 0 } } });
+      const persisted = new TextDecoder().decode(await storage.read('', 'config.toml'));
+      expect(persisted).toContain('max_completion_tokens = 16384');
+      expect(persisted).toContain('kind = "api_default"');
+      expect(persisted).toContain('temperature = 0');
+      expect(persisted).toContain('model = "vendor/model:v1"');
+      expect(persisted).toContain('max_completion_tokens = 8192');
+    } finally { disposables.dispose(); }
+  });
+
   it('parses and writes model service_tier while rejecting unknown tier values', async () => {
     const { config, disposables, storage } = await createConfig({}, '[models."example/fast"]\nmodel = "fast"\nservice_tier = "priority"\n');
     try {
@@ -1378,7 +1402,7 @@ describe('entry-keyed section salvage', () => {
       acme: { type: 'openai', apiKey: 'sk-acme' },
       bad: { type: 123 },
     });
-    expect(config.inspect<Record<string, unknown>>(PROVIDERS_SECTION).value).toEqual({
+    expect(config.inspect<Record<string, unknown>>(PROVIDERS_SECTION).value ?? {}).toEqual({
       acme: { type: 'openai', apiKey: 'sk-acme' },
     });
 
@@ -2762,6 +2786,21 @@ describe('ConfigService thinking effort max migration', () => {
     disposables.dispose();
   });
 
+  it('rewrites the first thinking table when a BOM immediately precedes its header', async () => {
+    const storage = new InMemoryStorageService();
+    const ix = new TestInstantiationService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    try {
+      const store = ix.get(IAtomicTomlDocumentStore);
+      const original = '\uFEFF[thinking]\neffort = "max"\n';
+      await storage.write('', 'fixture.toml', new TextEncoder().encode(original));
+      await migrateThinkingEffortMaxToHigh(store, 'fixture.toml', homeDir);
+      expect(await store.getText('', 'fixture.toml')).toBe('\uFEFF[thinking]\neffort = "high"\n');
+      expect(readMarkers()['thinking-effort-max-to-high']).toBeDefined();
+    } finally { ix.dispose(); }
+  });
+
   it('honors a hand-set max once the marker exists', async () => {
     writeFileSync(
       join(homeDir, 'migrations-effort.json'),
@@ -2781,6 +2820,38 @@ describe('ConfigService thinking effort max migration', () => {
     expect(readMarkers()['thinking-effort-max-to-high']).toBeDefined();
 
     disposables.dispose();
+  });
+
+  it('does not replace another writer during the old thinking migration or mark it complete', async () => {
+    const storage = new InMemoryStorageService();
+    const first = new TestInstantiationService();
+    const second = new TestInstantiationService();
+    for (const ix of [first, second]) {
+      ix.stub(IFileSystemStorageService, storage);
+      ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    }
+    const store = first.get(IAtomicTomlDocumentStore);
+    const other = second.get(IAtomicTomlDocumentStore);
+    const initial = '[thinking]\neffort = "max"\n';
+    const changed = `${initial}\n[other]\nvalue = 3\n`;
+    try {
+      await store.setText('', 'fixture.toml', initial);
+      let injected = false;
+      const setText = store.setText.bind(store);
+      vi.spyOn(store, 'setText').mockImplementation(async (scope, key, next) => {
+        if (key === 'fixture.toml' && !injected) { injected = true; await other.setText(scope, key, changed); }
+        return setText(scope, key, next);
+      });
+      const compare = store.compareAndSetText.bind(store);
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, before, next) => {
+        if (key === 'fixture.toml' && !injected) { injected = true; await other.setText(scope, key, changed); }
+        return compare(scope, key, before, next);
+      });
+      await migrateThinkingEffortMaxToHigh(store, 'fixture.toml', homeDir);
+      expect(injected).toBe(true);
+      expect(await other.getText('', 'fixture.toml')).toBe(changed);
+      expect(() => readMarkers()).toThrow();
+    } finally { first.dispose(); second.dispose(); }
   });
 });
 
@@ -2804,11 +2875,14 @@ describe('ConfigService replaceSections', () => {
 
   async function createSectionsConfig(toml = SEED_TOML) {
     const disposables = new DisposableStore();
+    const homeDir = mkdtempSync(join(tmpdir(), 'kiki-cfg-replace-sections-'));
+    const bootstrap = stubBootstrap(homeDir);
+    disposables.add({ dispose: () => rmSync(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }) });
     const ix = disposables.add(new TestInstantiationService());
     const storage = new InMemoryStorageService();
     await storage.write('', 'config.toml', new TextEncoder().encode(toml));
     ix.stub(ILogService, stubLog());
-    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg-replace-sections'));
+    ix.stub(IBootstrapService, bootstrap);
     ix.stub(IFileSystemStorageService, storage);
     ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
     ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
@@ -2821,8 +2895,7 @@ describe('ConfigService replaceSections', () => {
 
   it('applies every domain in one transition and writes each changed file once, clearing undefined domains', async () => {
     const { config, disposables, store } = await createSectionsConfig();
-    const setSpy = vi.spyOn(store, 'set');
-    const setTextSpy = vi.spyOn(store, 'setText');
+    const casSpy = vi.spyOn(store, 'compareAndSetText');
 
     await config.replaceSections({
       [PROVIDERS_SECTION]: { acme: { type: 'openai', apiKey: 'sk-acme-2' } },
@@ -2831,7 +2904,7 @@ describe('ConfigService replaceSections', () => {
       [THINKING_SECTION]: undefined,
     });
 
-    expect([...setSpy.mock.calls, ...setTextSpy.mock.calls].map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials.toml']);
+    expect(casSpy.mock.calls.map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials.toml']);
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
       acme: { type: 'openai', apiKey: 'sk-acme-2' },
     });
@@ -2848,15 +2921,14 @@ describe('ConfigService replaceSections', () => {
 
   it('treats null as clear — the wire encoding JSON transports use for undefined', async () => {
     const { config, disposables, store } = await createSectionsConfig();
-    const setSpy = vi.spyOn(store, 'set');
-    const setTextSpy = vi.spyOn(store, 'setText');
+    const casSpy = vi.spyOn(store, 'compareAndSetText');
 
     await config.replaceSections({
       [DEFAULT_MODEL_SECTION]: null,
       [PROVIDERS_SECTION]: { acme: { type: 'openai', apiKey: 'sk-acme-2' } },
     });
 
-    expect([...setSpy.mock.calls, ...setTextSpy.mock.calls].map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials.toml']);
+    expect(casSpy.mock.calls.map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials.toml']);
     expect(config.get(DEFAULT_MODEL_SECTION)).toBeUndefined();
     expect(config.inspect(DEFAULT_MODEL_SECTION).userValue).toBeUndefined();
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
@@ -2870,6 +2942,219 @@ describe('ConfigService replaceSections', () => {
     disposables.dispose();
   });
 
+  it('rolls back the credential write when the config CAS rejects a concurrent change', async () => {
+    const { config, disposables, store } = await createSectionsConfig();
+    try {
+      const credentialBefore = await store.getText('', 'credentials.toml');
+      const configBefore = await store.getText('', 'config.toml');
+      const compare = store.compareAndSetText.bind(store);
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) =>
+        key === 'config.toml' ? false : compare(scope, key, expected, next));
+      await expect(config.replaceSections({ [PROVIDERS_SECTION]: { acme: { type: 'openai', apiKey: 'sk-next', baseUrl: 'https://example.test/v1' } } }))
+        .rejects.toThrow('Configuration changed while writing');
+      expect(await store.getText('', 'credentials.toml')).toBe(credentialBefore);
+      expect(await store.getText('', 'config.toml')).toBe(configBefore);
+      expect(config.inspect(PROVIDERS_SECTION).userValue).toMatchObject({ acme: { apiKey: 'sk-acme' } });
+    } finally { disposables.dispose(); }
+  });
+
+  it('does not use a rejected new key with a concurrently changed provider endpoint after restart', async () => {
+    const { config, disposables, store, storage } = await createSectionsConfig();
+    const other = disposables.add(new TestInstantiationService());
+    other.stub(IFileSystemStorageService, storage);
+    other.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    const secondStore = other.get(IAtomicTomlDocumentStore);
+    try {
+      const before = await secondStore.getText('', 'config.toml');
+      const credentialBefore = await secondStore.getText('', 'credentials.toml');
+      const external = before!.replace('type = "openai"', 'type = "openai"\nbase_url = "https://other.example.test/v1"');
+      const compare = store.compareAndSetText.bind(store);
+      let interleaved = false;
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+        if (key === 'config.toml' && !interleaved) {
+          interleaved = true;
+          await secondStore.setText(scope, key, external);
+          return false;
+        }
+        return compare(scope, key, expected, next);
+      });
+      await expect(config.replaceSections({ [PROVIDERS_SECTION]: { acme: { type: 'openai', apiKey: 'sk-next', baseUrl: 'https://new.example.test/v1' } } }))
+        .rejects.toThrow('Configuration changed while writing');
+      expect(interleaved).toBe(true);
+      expect(await secondStore.getText('', 'config.toml')).toBe(external);
+      expect(await secondStore.getText('', 'credentials.toml')).toBe(credentialBefore);
+      const restarted = disposables.add(new TestInstantiationService());
+      restarted.stub(ILogService, stubLog());
+      restarted.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg-replace-sections'));
+      restarted.stub(IFileSystemStorageService, storage);
+      restarted.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+      restarted.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+      restarted.set(IConfigService, new SyncDescriptor(ConfigService));
+      const loaded = restarted.get(IConfigService);
+      await loaded.ready;
+      expect(loaded.get<Record<string, { apiKey?: string; baseUrl?: string }>>(PROVIDERS_SECTION)['acme']).toMatchObject({
+        apiKey: 'sk-acme', baseUrl: 'https://other.example.test/v1',
+      });
+      expect(loaded.get<Record<string, { apiKey?: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).not.toBe('sk-next');
+    } finally { disposables.dispose(); }
+  });
+
+  it('fails closed on restart when credential rollback loses a race with a third writer', async () => {
+    const { config, disposables, store, storage } = await createSectionsConfig();
+    const other = disposables.add(new TestInstantiationService());
+    other.stub(IFileSystemStorageService, storage);
+    other.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    const secondStore = other.get(IAtomicTomlDocumentStore);
+    try {
+      const original = await secondStore.getText('', 'config.toml');
+      const external = original!.replace('type = "openai"', 'type = "openai"\nbase_url = "https://other.example.test/v1"');
+      const compare = store.compareAndSetText.bind(store);
+      let replacedConfig = false;
+      let replacedCredentials = false;
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+        if (key === 'config.toml' && !replacedConfig) {
+          replacedConfig = true;
+          await secondStore.setText(scope, key, external);
+          return false;
+        }
+        if (key === 'credentials.toml' && next !== undefined && next.includes('sk-acme') && !replacedCredentials) {
+          replacedCredentials = true;
+          await secondStore.setText(scope, key, '[providers.acme]\napi_key = "sk-third"\n');
+        }
+        return compare(scope, key, expected, next);
+      });
+      await expect(config.replaceSections({ [PROVIDERS_SECTION]: { acme: { type: 'openai', apiKey: 'sk-next', baseUrl: 'https://new.example.test/v1' } } }))
+        .rejects.toThrow('rollback could not be completed');
+      expect(replacedConfig && replacedCredentials).toBe(true);
+      expect(await secondStore.getText('', 'config.toml')).toBe(external);
+      expect(await secondStore.getText('', 'credentials.toml')).toContain('sk-third');
+      const restarted = disposables.add(new TestInstantiationService());
+      restarted.stub(ILogService, stubLog());
+      restarted.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg-replace-sections'));
+      restarted.stub(IFileSystemStorageService, storage);
+      restarted.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+      restarted.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+      restarted.set(IConfigService, new SyncDescriptor(ConfigService));
+      const loaded = restarted.get(IConfigService);
+      await loaded.ready;
+      const provider = loaded.get<Record<string, { apiKey?: string; baseUrl?: string; type?: string }>>(PROVIDERS_SECTION)['acme']!;
+      expect(provider).toMatchObject({ apiKey: 'sk-third', baseUrl: 'https://other.example.test/v1' });
+      expect(resolveModelAuthMaterial({ modelId: 'acme/m1', model: { provider: 'acme', model: 'm1' }, provider, providerName: 'acme' }))
+        .toMatchObject({ apiKey: 'sk-third' });
+    } finally { disposables.dispose(); }
+  });
+
+  it('uses an existing provider key across models and endpoint edits without confirmation', async () => {
+    const { config, disposables, store } = await createSectionsConfig(
+      SEED_TOML.replace('api_key = "sk-acme"', 'api_key = "sk-acme"\nbase_url = "https://api.openai.com/v1"'),
+    );
+    try {
+      await config.replace(MODELS_SECTION, {
+        'acme/m1': { provider: 'acme', model: 'm1', maxContextSize: 1000 },
+        'acme/m2': { provider: 'acme', model: 'm2', maxContextSize: 1000 },
+      });
+      for (const modelId of ['acme/m1', 'acme/m2']) {
+        const provider = config.get<Record<string, ProviderConfig>>(PROVIDERS_SECTION)['acme']!;
+        expect(resolveModelAuthMaterial({ modelId, model: { provider: 'acme', model: modelId }, provider, providerName: 'acme' }))
+          .toMatchObject({ apiKey: 'sk-acme' });
+      }
+      await config.replace(PROVIDERS_SECTION, { acme: { type: 'openai', apiKey: 'sk-acme', baseUrl: 'https://other.example.test/v1' } });
+      const changed = config.get<Record<string, ProviderConfig>>(PROVIDERS_SECTION)['acme']!;
+      expect(changed).toMatchObject({ apiKey: 'sk-acme', baseUrl: 'https://other.example.test/v1' });
+      expect(resolveModelAuthMaterial({ modelId: 'acme/m2', model: { provider: 'acme', model: 'm2' }, provider: changed, providerName: 'acme' }))
+        .toMatchObject({ apiKey: 'sk-acme' });
+      expect(await store.getText('', 'credentials.toml')).toContain('sk-acme');
+    } finally { disposables.dispose(); }
+  });
+
+  it('publishes a rotated provider key on hot reload without disabling model requests', async () => {
+    const { config, disposables, store } = await createSectionsConfig();
+    try {
+      const published: ProviderConfig[] = [];
+      const listener = config.onDidSectionChange((event) => {
+        if (event.domain === PROVIDERS_SECTION) published.push((event.value as Record<string, ProviderConfig>)['acme']!);
+      });
+      try {
+        const before = await store.getText('', 'credentials.toml');
+        await store.setText('', 'credentials.toml', before!.replace('sk-acme', 'sk-rotated'));
+        await config.reload();
+        const provider = published.at(-1)!;
+        expect(provider.apiKey).toBe('sk-rotated');
+        expect(config.get<Record<string, ProviderConfig>>(PROVIDERS_SECTION)['acme']).toEqual(provider);
+        expect(config.getAll()[PROVIDERS_SECTION]).toMatchObject({ acme: provider });
+        const auth = resolveModelAuthMaterial({ modelId: 'acme/m1', model: { provider: 'acme', model: 'm1' }, provider, providerName: 'acme' });
+        expect(auth).toMatchObject({ apiKey: 'sk-rotated' });
+      } finally { listener.dispose(); }
+    } finally { disposables.dispose(); }
+  });
+
+  it('keeps a stored provider env-bag API key available without endpoint confirmation', async () => {
+    const { config, disposables, store } = await createSectionsConfig();
+    try {
+      await config.replaceSections({ [PROVIDERS_SECTION]: { acme: {
+        type: 'openai', env: { OPENAI_API_KEY: 'sk-in-env' }, baseUrl: 'https://api.openai.com/v1',
+      } } });
+      const provider = config.get<Record<string, ProviderConfig>>(PROVIDERS_SECTION)['acme']!;
+      expect(resolveModelAuthMaterial({ modelId: 'acme/m1', model: { provider: 'acme', model: 'm1' }, provider, providerName: 'acme' }))
+        .toMatchObject({ apiKey: 'sk-in-env' });
+      expect(await store.getText('', 'config.toml')).not.toContain('sk-in-env');
+      expect(await store.getText('', 'credentials.toml')).toContain('sk-in-env');
+    } finally { disposables.dispose(); }
+  });
+
+  it('restores both files when the config write reports failure after publishing bytes', async () => {
+    const { config, disposables, store, storage } = await createSectionsConfig();
+    try {
+      const credentialBefore = await store.getText('', 'credentials.toml');
+      const configBefore = await store.getText('', 'config.toml');
+      const originalWrite = storage.write.bind(storage);
+      let fail = true;
+      storage.write = async (scope, key, bytes, options) => {
+        await originalWrite(scope, key, bytes, options);
+        if (key === 'config.toml' && fail) {
+          fail = false;
+          throw new Error('injected after publish');
+        }
+      };
+      await expect(config.replaceSections({ [PROVIDERS_SECTION]: { acme: {
+        type: 'openai', apiKey: 'sk-next', baseUrl: 'https://example.test/v1',
+      } } })).rejects.toThrow('injected after publish');
+      expect(await store.getText('', 'credentials.toml')).toBe(credentialBefore);
+      expect(await store.getText('', 'config.toml')).toBe(configBefore);
+      expect(config.inspect(PROVIDERS_SECTION).userValue).toMatchObject({ acme: { apiKey: 'sk-acme' } });
+    } finally { disposables.dispose(); }
+  });
+
+  it('rebases credential edits from the exact CAS bytes when a second store updates a secret between reads', async () => {
+    const { config, disposables, store, storage } = await createSectionsConfig();
+    const other = disposables.add(new TestInstantiationService());
+    other.stub(IFileSystemStorageService, storage);
+    other.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    const secondStore = other.get(IAtomicTomlDocumentStore);
+    try {
+      await config.reload();
+      const original = await store.getText('', 'credentials.toml');
+      expect(original).toContain('sk-acme');
+      const external = original!.replace('sk-acme', 'sk-external');
+      const readText = store.getText.bind(store);
+      let interleaved = false;
+      vi.spyOn(store, 'getText').mockImplementation(async (scope, key) => {
+        if (key === 'credentials.toml' && !interleaved) {
+          interleaved = true;
+          await secondStore.setText(scope, key, external);
+        }
+        return readText(scope, key);
+      });
+      await config.set(PROVIDERS_SECTION, { other: { type: 'openai', apiKey: 'sk-other' } });
+      expect(interleaved).toBe(true);
+      const current = await secondStore.getText('', 'credentials.toml');
+      expect(current).toContain('sk-external');
+      expect(current).toContain('sk-other');
+      expect(current).not.toContain('sk-acme');
+      expect(config.get<Record<string, { apiKey: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).toBe('sk-external');
+    } finally { disposables.dispose(); }
+  });
+
   it('fires change events only after all domains have taken effect', async () => {
     const { config, disposables } = await createSectionsConfig();
     const domains: string[] = [];
@@ -2879,7 +3164,7 @@ describe('ConfigService replaceSections', () => {
     config.onDidSectionChange((e) => {
       domains.push(e.domain);
       snapshotDuringFirstEvent ??= {
-        providers: config.get(PROVIDERS_SECTION),
+        providers: config.get<Record<string, unknown>>(PROVIDERS_SECTION),
         models: config.get(MODELS_SECTION),
         defaultModel: config.get(DEFAULT_MODEL_SECTION),
         thinking: config.get(THINKING_SECTION),
@@ -3147,5 +3432,403 @@ describe('ConfigService persistence guards', () => {
     expect(await stored(storage)).toBe('[thinking]\nenabled = false\n');
 
     disposables.dispose();
+  });
+});
+
+describe('legacy credential migration failure recovery', () => {
+  const legacy = '[providers.acme]\ntype = "openai"\napi_key = "sk-legacy"\n';
+
+  async function fixture() {
+    const storage = new InMemoryStorageService();
+    const first = new TestInstantiationService();
+    const second = new TestInstantiationService();
+    for (const ix of [first, second]) {
+      ix.stub(IFileSystemStorageService, storage);
+      ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    }
+    const store = first.get(IAtomicTomlDocumentStore);
+    await store.setText('', 'fixture.toml', legacy);
+    return { storage, first, second, store, other: second.get(IAtomicTomlDocumentStore) };
+  }
+
+  it('moves a legacy key once and keeps a byte-exact recovery backup', async () => {
+    const { first, second, store, other } = await fixture();
+    try {
+      await migrateConfigCredentials(store, 'fixture.toml', stubLog());
+      expect(await other.getText('', 'credentials.toml')).toContain('sk-legacy');
+      expect(await other.getText('', 'fixture.toml')).not.toContain('sk-legacy');
+      const backups = await other.list('', 'fixture.toml.bak-');
+      expect(backups).toHaveLength(1);
+      expect(await other.getText('', backups[0]!)).toBe(legacy);
+      await migrateConfigCredentials(store, 'fixture.toml', stubLog());
+      expect(await other.list('', 'fixture.toml.bak-')).toEqual(backups);
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('resumes a crash between the two file writes without replacing the already moved secret', async () => {
+    const { first, second, store, other } = await fixture();
+    try {
+      const moved = '[providers.acme]\napi_key = "sk-legacy"\n';
+      await other.setText('', 'credentials.toml', moved);
+      await migrateConfigCredentials(store, 'fixture.toml', stubLog());
+      expect(await other.getText('', 'credentials.toml')).toBe(moved);
+      expect(await other.getText('', 'fixture.toml')).not.toContain('sk-legacy');
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('does not leave moved secrets after a concurrent config change rejects the second CAS', async () => {
+    const { first, second, store, other } = await fixture();
+    try {
+      const external = `${legacy}\n[thinking]\neffort = "high"\n`;
+      const compare = store.compareAndSetText.bind(store);
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+        if (key === 'fixture.toml') {
+          await other.setText(scope, key, external);
+          return false;
+        }
+        return compare(scope, key, expected, next);
+      });
+      await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('Configuration changed');
+      expect(await other.getText('', 'fixture.toml')).toBe(external);
+      expect(await other.getText('', 'credentials.toml')).toBeUndefined();
+      const backups = await other.list('', 'fixture.toml.bak-');
+      expect(backups).toHaveLength(1);
+      expect(await other.getText('', backups[0]!)).toBe(legacy);
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('preserves a concurrently rotated inline key and migrates it on the next attempt', async () => {
+    const { first, second, store, other } = await fixture();
+    try {
+      const rotated = legacy.replace('sk-legacy', 'sk-rotated');
+      const compare = store.compareAndSetText.bind(store);
+      let interleaved = false;
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+        if (key === 'fixture.toml' && !interleaved) {
+          interleaved = true;
+          await other.setText(scope, key, rotated);
+          return false;
+        }
+        return compare(scope, key, expected, next);
+      });
+      await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('Configuration changed');
+      expect(interleaved).toBe(true);
+      expect(await other.getText('', 'fixture.toml')).toBe(rotated);
+      expect(await other.getText('', 'credentials.toml')).toBeUndefined();
+      await migrateConfigCredentials(store, 'fixture.toml', stubLog());
+      expect(await other.getText('', 'credentials.toml')).toContain('sk-rotated');
+      expect(await other.getText('', 'credentials.toml')).not.toContain('sk-legacy');
+      expect(await other.getText('', 'fixture.toml')).not.toContain('sk-rotated');
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('refuses to overwrite a concurrent credentials update during rollback or on the next migration', async () => {
+    const { first, second, store, other } = await fixture();
+    try {
+      const rotated = legacy.replace('sk-legacy', 'sk-rotated');
+      const externalCredentials = '[providers.acme]\napi_key = "sk-external"\n';
+      const compare = store.compareAndSetText.bind(store);
+      let interleavedConfig = false;
+      let interleavedRollback = false;
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+        if (key === 'fixture.toml' && !interleavedConfig) {
+          interleavedConfig = true;
+          await other.setText(scope, key, rotated);
+          return false;
+        }
+        if (key === 'credentials.toml' && next === undefined && !interleavedRollback) {
+          interleavedRollback = true;
+          await other.setText(scope, key, externalCredentials);
+        }
+        return compare(scope, key, expected, next);
+      });
+      await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('rollback could not complete');
+      expect(interleavedRollback).toBe(true);
+      expect(await other.getText('', 'fixture.toml')).toBe(rotated);
+      expect(await other.getText('', 'credentials.toml')).toBe(externalCredentials);
+      const backups = await other.list('', 'fixture.toml.bak-');
+      await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('conflicting');
+      expect(await other.list('', 'fixture.toml.bak-')).toEqual(backups);
+      expect(await other.getText('', 'fixture.toml')).toBe(rotated);
+      expect(await other.getText('', 'credentials.toml')).toBe(externalCredentials);
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('merges credentials at distinct secret paths without treating them as conflicts', async () => {
+    const { first, second, store, other } = await fixture();
+    try {
+      await other.setText('', 'credentials.toml', '[providers.other]\napi_key = "sk-other"\n');
+      await migrateConfigCredentials(store, 'fixture.toml', stubLog());
+      const migrated = await other.getText('', 'credentials.toml');
+      expect(migrated).toContain('sk-other');
+      expect(migrated).toContain('sk-legacy');
+      expect(await other.getText('', 'fixture.toml')).not.toContain('sk-legacy');
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('retains migrated credentials when another writer removes the legacy inline key before config CAS', async () => {
+    const { first, second, store, other } = await fixture();
+    try {
+      const external = '[providers.acme]\ntype = "openai"\n[thinking]\neffort = "high"\n';
+      const compare = store.compareAndSetText.bind(store);
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+        if (key === 'fixture.toml') {
+          await other.setText(scope, key, external);
+          return false;
+        }
+        return compare(scope, key, expected, next);
+      });
+      await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('credentials retained');
+      expect(await other.getText('', 'fixture.toml')).toBe(external);
+      expect(await other.getText('', 'credentials.toml')).toContain('sk-legacy');
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('refuses to replace credentials changed by another store after the migration snapshot', async () => {
+    const { first, second, store, other } = await fixture();
+    try {
+      const external = '[providers.acme]\napi_key = "sk-external"\n';
+      const compare = store.compareAndSetText.bind(store);
+      let interleaved = false;
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+        if (key === 'credentials.toml' && !interleaved) {
+          interleaved = true;
+          await other.setText(scope, key, external);
+        }
+        return compare(scope, key, expected, next);
+      });
+      await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('Configuration changed');
+      expect(interleaved).toBe(true);
+      expect(await other.getText('', 'fixture.toml')).toBe(legacy);
+      expect(await other.getText('', 'credentials.toml')).toBe(external);
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('rolls back both files when the config write fails after publishing the migrated bytes', async () => {
+    const { first, second, store, other, storage } = await fixture();
+    try {
+      const write = storage.write.bind(storage);
+      let fail = true;
+      storage.write = async (scope, key, bytes, options) => {
+        await write(scope, key, bytes, options);
+        if (key === 'fixture.toml' && fail) {
+          fail = false;
+          throw new Error('config failed after publish');
+        }
+      };
+      await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('config failed after publish');
+      expect(await other.getText('', 'fixture.toml')).toBe(legacy);
+      expect(await other.getText('', 'credentials.toml')).toBeUndefined();
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('does not change config if writing credentials fails after publishing', async () => {
+    const { first, second, store, other, storage } = await fixture();
+    try {
+      const write = storage.write.bind(storage);
+      let fail = true;
+      storage.write = async (scope, key, bytes, options) => {
+        await write(scope, key, bytes, options);
+        if (key === 'credentials.toml' && fail) {
+          fail = false;
+          throw new Error('credentials failed after publish');
+        }
+      };
+      await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('credentials failed after publish');
+      expect(await other.getText('', 'fixture.toml')).toBe(legacy);
+      expect(await other.getText('', 'credentials.toml')).toBeUndefined();
+    } finally { first.dispose(); second.dispose(); }
+  });
+});
+
+describe('explicit model generation migration', () => {
+  const text = [
+    '# Preserve unrelated material exactly',
+    '[providers."managed:kimi-code"]',
+    'type = "kimi"',
+    '',
+    '[models."short.alias"]',
+    'provider = "managed:kimi-code"',
+    'model = "vendor/model:v1"',
+    'max_context_size = 200000',
+    'max_completion_tokens = 8192',
+    'unknown_extension = "keep"',
+    '',
+    '[models."short.alias".request_params]',
+    'temperature = 0',
+    'top_p = 0.8',
+    'enabled = false',
+    '',
+    '[models."short.alias".overrides]',
+    'max_output_size = 32768',
+    '',
+  ].join('\n');
+
+  function fixture() {
+    const storage = new InMemoryStorageService();
+    const ix = new TestInstantiationService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    return { storage, ix, store: ix.get(IAtomicTomlDocumentStore) };
+  }
+
+  it('keeps a UTF-8 BOM byte-for-byte in migration backup, config write and restore', async () => {
+    const { ix, storage, store } = fixture();
+    try {
+      const original = `\uFEFF${text}`;
+      const raw = new TextEncoder().encode(original);
+      await storage.write('', 'fixture.toml', raw);
+      const prepared = await previewModelGenerationMigration(store, 'fixture.toml');
+      const { backupKey } = await applyModelGenerationMigration(store, 'fixture.toml', prepared);
+      expect(await storage.read('', backupKey!)).toEqual(raw);
+      expect((await storage.read('', 'fixture.toml'))?.slice(0, 3)).toEqual(new Uint8Array([0xEF, 0xBB, 0xBF]));
+      await restoreModelGenerationMigration(store, 'fixture.toml', prepared, backupKey!);
+      expect(await storage.read('', 'fixture.toml')).toEqual(raw);
+    } finally { ix.dispose(); }
+  });
+
+  it('migrates a BOM immediately followed by the first models table without moving its byte offsets', async () => {
+    const { ix, storage, store } = fixture();
+    try {
+      const original = '\uFEFF[models."short.alias"]\nprovider = "acme"\nrequest_params = { temperature = 0.3 }\n';
+      await storage.write('', 'fixture.toml', new TextEncoder().encode(original));
+      const prepared = await previewModelGenerationMigration(store, 'fixture.toml');
+      expect(prepared.preview.changes).toEqual([{ modelId: 'short.alias', fields: ['temperature'] }]);
+      expect(prepared.nextText.startsWith('\uFEFF[models."short.alias"]\n')).toBe(true);
+      expect(prepared.nextText).toContain('temperature = 0.3');
+      const { backupKey } = await applyModelGenerationMigration(store, 'fixture.toml', prepared);
+      expect(await store.getText('', backupKey!)).toBe(original);
+      await restoreModelGenerationMigration(store, 'fixture.toml', prepared, backupKey!);
+      expect(await storage.read('', 'fixture.toml')).toEqual(new TextEncoder().encode(original));
+    } finally { ix.dispose(); }
+  });
+
+  it('keeps the first BOM-prefixed scalar byte offset while migrating a later models table', async () => {
+    const { ix, store } = fixture();
+    try {
+      const original = '\uFEFFtitle = "keep"\n[models."short.alias"]\nprovider = "acme"\nrequest_params = { temperature = 0.3 }\n';
+      await store.setText('', 'fixture.toml', original);
+      const prepared = await previewModelGenerationMigration(store, 'fixture.toml');
+      expect(prepared.preview.changes).toEqual([{ modelId: 'short.alias', fields: ['temperature'] }]);
+      expect(prepared.nextText.startsWith('\uFEFFtitle = "keep"\n')).toBe(true);
+    } finally { ix.dispose(); }
+  });
+
+  it('previews without writing, adds only unambiguous copies and restores from a byte-exact backup', async () => {
+    const { ix, store } = fixture();
+    try {
+      await store.setText('', 'fixture.toml', text);
+      const prepared = await previewModelGenerationMigration(store, 'fixture.toml');
+      expect(prepared.preview.changes).toEqual([{ modelId: 'short.alias', fields: ['temperature', 'top_p', 'max_completion_tokens'] }]);
+      expect(prepared.preview.needsConfirmation).toContainEqual(expect.objectContaining({ modelId: 'short.alias', reason: expect.stringContaining('max_output_size') }));
+      expect(await store.getText('', 'fixture.toml')).toBe(text);
+      const applied = await applyModelGenerationMigration(store, 'fixture.toml', prepared);
+      expect(applied.backupKey).toBeDefined();
+      expect(await store.getText('', applied.backupKey!)).toBe(text);
+      expect(await store.getText('', 'fixture.toml')).toContain('unknown_extension = "keep"');
+      expect(await store.getText('', 'fixture.toml')).toContain('enabled = false');
+      expect(await store.getText('', 'fixture.toml')).toContain('max_completion_tokens = 8192');
+      await restoreModelGenerationMigration(store, 'fixture.toml', prepared, applied.backupKey!);
+      expect(await store.getText('', 'fixture.toml')).toBe(text);
+    } finally { ix.dispose(); }
+  });
+
+  it('detects stale previews and refuses recovery after another writer changes the target', async () => {
+    const { ix, store } = fixture();
+    try {
+      await store.setText('', 'fixture.toml', text);
+      const prepared = await previewModelGenerationMigration(store, 'fixture.toml');
+      await store.setText('', 'fixture.toml', `${text}\n[unrelated]\nvalue = 1\n`);
+      await expect(applyModelGenerationMigration(store, 'fixture.toml', prepared)).rejects.toThrow('changed after preview');
+      await store.setText('', 'fixture.toml', text);
+      const { backupKey } = await applyModelGenerationMigration(store, 'fixture.toml', prepared);
+      await store.setText('', 'fixture.toml', `${prepared.nextText}\n[unrelated]\nvalue = 2\n`);
+      await expect(restoreModelGenerationMigration(store, 'fixture.toml', prepared, backupKey!)).rejects.toThrow('refusing to overwrite');
+    } finally { ix.dispose(); }
+  });
+
+  it('removes the sensitive orphan backup when config CAS definitively refuses publication', async () => {
+    const { ix, store, storage } = fixture();
+    try {
+      await store.setText('', 'fixture.toml', text);
+      const prepared = await previewModelGenerationMigration(store, 'fixture.toml');
+      const external = `${text}\n[other]\nvalue = 3\n`;
+      const other = new TestInstantiationService();
+      other.stub(IFileSystemStorageService, storage);
+      other.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+      const secondStore = other.get(IAtomicTomlDocumentStore);
+      const compare = store.compareAndSetText.bind(store);
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+        if (key === 'fixture.toml') await secondStore.setText(scope, key, external);
+        return compare(scope, key, expected, next);
+      });
+      try {
+        await expect(applyModelGenerationMigration(store, 'fixture.toml', prepared)).rejects.toThrow('changed during migration');
+        expect(await secondStore.getText('', 'fixture.toml')).toBe(external);
+        expect(await secondStore.list('', 'fixture.toml.generation-backup-')).toEqual([]);
+      } finally { other.dispose(); }
+    } finally { ix.dispose(); }
+  });
+
+  it('does not roll back another writer that published identical migrated bytes before our rejected CAS', async () => {
+    const { ix, store, storage } = fixture();
+    const other = new TestInstantiationService();
+    other.stub(IFileSystemStorageService, storage);
+    other.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    try {
+      await store.setText('', 'fixture.toml', text);
+      const prepared = await previewModelGenerationMigration(store, 'fixture.toml');
+      const second = other.get(IAtomicTomlDocumentStore);
+      const compare = store.compareAndSetText.bind(store);
+      let interleaved = false;
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
+        if (key === 'fixture.toml' && !interleaved) {
+          interleaved = true;
+          await second.compareAndSetText(scope, key, expected, next);
+        }
+        return compare(scope, key, expected, next);
+      });
+      await expect(applyModelGenerationMigration(store, 'fixture.toml', prepared)).rejects.toThrow('changed during migration');
+      expect(interleaved).toBe(true);
+      expect(await second.getText('', 'fixture.toml')).toBe(prepared.nextText);
+      expect(await second.list('', 'fixture.toml.generation-backup-')).toEqual([]);
+    } finally { ix.dispose(); other.dispose(); }
+  });
+
+  it('keeps config and backup intact for inspection after an ambiguous post-publish error', async () => {
+    const { ix, store, storage } = fixture();
+    try {
+      await store.setText('', 'fixture.toml', text);
+      const prepared = await previewModelGenerationMigration(store, 'fixture.toml');
+      const originalWrite = storage.write.bind(storage);
+      let fail = true;
+      storage.write = async (scope, key, bytes, options) => {
+        await originalWrite(scope, key, bytes, options);
+        if (key === 'fixture.toml' && fail) {
+          fail = false;
+          throw new Error('injected after publish');
+        }
+      };
+      await expect(applyModelGenerationMigration(store, 'fixture.toml', prepared)).rejects.toThrow('outcome is uncertain');
+      expect(await store.getText('', 'fixture.toml')).toBe(prepared.nextText);
+      const backups = await store.list('', 'fixture.toml.generation-backup-');
+      expect(backups).toHaveLength(1);
+      expect(await store.getText('', backups[0]!)).toBe(text);
+    } finally { ix.dispose(); }
+  });
+
+  it('accepts a config without a models table as a read-only no-op preview', () => {
+    const plain = '[thinking]\nenabled = false\n';
+    const prepared = prepareModelGenerationMigration(plain);
+    expect(prepared.preview.changes).toEqual([]);
+    expect(prepared.nextText).toBe(plain);
+  });
+
+  it('does not silently coerce conflicts, uncertain limits or malformed model entries', () => {
+    const source = `${text}\n[models."other"]\nmodel = "x"\nmax_completion_tokens = 16384\n[models."other".parameters]\nmax_completion_tokens = 4096\n`;
+    const prepared = prepareModelGenerationMigration(source);
+    expect(prepared.preview.needsConfirmation).toContainEqual(expect.objectContaining({ modelId: 'other', reason: expect.stringContaining('differs') }));
+    expect(prepared.nextText).toContain('max_completion_tokens = 4096');
+    expect(() => prepareModelGenerationMigration('[models."broken"\n')).toThrow();
   });
 });

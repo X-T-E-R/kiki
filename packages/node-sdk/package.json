@@ -73,6 +73,7 @@
   },
   "dependencies": {
     "@antfu/utils": "^9.3.0",
+    "@kiki/agent-core-v2": "workspace:^",
     "@nb-corp/nb-search": "file:../../vendor/nb-search-0.4.0-4218580a.tgz",
     "own-work": "file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz",
     "pathe": "^2.0.3",
@@ -81,7 +82,6 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@kiki/agent-core-v2": "workspace:^",
     "@kiki/protocol": "workspace:^",
     "@kiki/kaos": "workspace:^",
     "@kiki/oauth": "workspace:^",

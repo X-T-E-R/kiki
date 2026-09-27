@@ -3,8 +3,9 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { errorText } from '@kiki/session-core/i18n';
+import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import type {
+  CapabilityStatus,
   PluginInfo,
   PluginMarketplaceEntry,
   PluginSummary,
@@ -102,6 +103,16 @@ function PluginManifestBlock({ info }: { info: PluginInfo }) {
 
   return (
     <div className="space-y-2">
+      {info.prerequisites !== undefined ? (
+        <div className="text-[11px] text-ink-soft" data-plugin-prerequisites={info.id}>
+          <p>{t('st.plugins.prerequisiteSource')} · {info.prerequisites.origin === 'kiki-compatibility'
+            ? t('st.plugins.prerequisiteCatalog') : t('st.plugins.prerequisitePluginDeclared')}</p>
+          <ul>{info.prerequisites.items.items.map((item) => (
+            <li key={item.id}>{item.id} · {item.kind} · {item.required ? t('st.plugins.required') : t('st.plugins.optional')}</li>
+          ))}</ul>
+          <Hint>{t('st.plugins.prerequisiteCaution')}</Hint>
+        </div>
+      ) : <Hint>{t('st.plugins.unverifiedRuntime')}</Hint>}
       <div>
         <p className="text-[11px] font-medium text-ink-soft">{t('st.plugins.mcpServers')}</p>
         {mcp.length === 0 ? (
@@ -613,15 +624,125 @@ function AddPluginCard() {
   );
 }
 
-/**
- * Plugins leaf (redesign §12 batch 5): installed plugins with enable / disable /
- * uninstall / manifest inspection, plus an add card for local path, zip URL, and
- * a user-configured marketplace (empty source is a how-to, not an error).
- */
+const WEBBRIDGE_STEP_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
+  'daemon-binary': 'st.plugins.runtimeStep.daemon-binary',
+  daemon: 'st.plugins.runtimeStep.daemon',
+  'daemon-identity': 'st.plugins.runtimeStep.daemon',
+  skill: 'st.plugins.runtimeStep.skill',
+  'plugin-integrity': 'st.plugins.runtimeStep.skill',
+  extension: 'st.plugins.runtimeStep.extension',
+  detect: 'st.plugins.runtimeStep.detect',
+};
+
+function WebBridgeReadiness() {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const [confirming, setConfirming] = useState<CapabilityStatus | null>(null);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [requesting, setRequesting] = useState(false);
+  const query = useQuery({
+    queryKey: ['capability', 'kimi-webbridge'],
+    queryFn: () => client.getCapability('kimi-webbridge'),
+    refetchInterval: (result) => result.state.data?.install.running ? 1_000 : false,
+  });
+  const capability = query.data;
+  const prepare = async (plan: CapabilityStatus) => {
+    const digest = plan.plan?.artifact.sha256;
+    if (digest === undefined) return;
+    setConfirming(null);
+    setRequesting(true);
+    setFeedback(null);
+    try {
+      await client.installCapability('kimi-webbridge', digest);
+      await query.refetch();
+      setFeedback({ tone: 'info', text: t('st.plugins.runtimeStarted') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setRequesting(false);
+    }
+  };
+  return (
+    <SectionCard id="st-card-webbridge" title={t('st.plugins.runtimeTitle')}>
+      <div className="space-y-2" data-webbridge-readiness>
+        <Hint>{t('st.plugins.runtimeHint')}</Hint>
+        {query.isPending ? <BusyHint>{t('st.plugins.loading')}</BusyHint> : query.isError ? (
+          <QueryRetry error={query.error} onRetry={() => { void query.refetch(); }} />
+        ) : capability !== undefined ? (
+          <>
+            <p className="text-[12px] text-ink-soft" data-webbridge-state={capability.state}>
+              {t(`st.plugins.runtimeState.${capability.state}`)}
+            </p>
+            <ul className="space-y-1">
+              {capability.steps.map((step) => {
+                const stepLabelKey = WEBBRIDGE_STEP_LABEL_KEYS[step.id];
+                return (
+                  <li className="text-[11px] text-ink-soft" key={step.id} data-webbridge-step={step.id}
+                    data-webbridge-step-kind={step.optional === true ? 'verification' : 'function'}>
+                    {stepLabelKey === undefined ? step.id : t(stepLabelKey)}
+                    {' · '}{step.optional === true ? `${t('st.plugins.optional')} · ` : ''}
+                    {t(`st.plugins.runtimeStepState.${step.state}`)}
+                    {step.detail ? ` · ${step.detail}` : ''}
+                  </li>
+                );
+              })}
+            </ul>
+            {capability.state === 'ready' && capability.steps.some((step) => step.optional === true && step.state !== 'ok') ? (
+              <Hint>{t('st.plugins.runtimeIdentityUnverified')}</Hint>
+            ) : null}
+            {capability.install.running ? <BusyHint>{capability.install.step ?? t('st.plugins.runtimeStarted')}</BusyHint> : null}
+            {capability.install.error ? <p className="text-[11px] text-danger" role="alert">{capability.install.error}</p> : null}
+            {capability.install.note ? <p className="text-[11px] text-ink-soft" data-webbridge-install-note>
+              {capability.install.note.endsWith('identity-unverified') || capability.install.note.endsWith('extension-unverified')
+                ? t('st.plugins.runtimeIdentityUnverified') : capability.install.note}
+            </p> : null}
+            {capability.plan?.browserExtensionUrl === 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc' ? (
+              <a className="inline-block text-[11px] font-medium text-accent hover:underline"
+                href={capability.plan.browserExtensionUrl} target="_blank" rel="noopener noreferrer"
+                data-webbridge-extension>
+                {t('st.plugins.browserExtension')}
+              </a>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={SECONDARY_BUTTON} onClick={() => { void query.refetch(); }} data-webbridge-check>
+                {t('st.plugins.checkHealth')}
+              </button>
+              {capability.plan !== undefined && capability.steps.some((step) => step.id === 'daemon' &&
+                step.state === 'missing' && !step.detail?.startsWith('Unverified: loopback status')) ? (
+                <button type="button" className={PRIMARY_BUTTON} data-webbridge-prepare
+                  disabled={requesting || capability.install.running}
+                  onClick={() => { setConfirming(capability); }}>
+                  {capability.install.error ? t('st.plugins.retryRuntime') : t('st.plugins.prepareRuntime')}
+                </button>
+              ) : null}
+            </div>
+          </>
+        ) : null}
+        <FeedbackLine feedback={feedback} />
+      </div>
+      {confirming?.plan !== undefined ? (
+        <ConfirmDialog open overlayId="confirm-webbridge-runtime"
+          title={t('st.plugins.runtimeConfirmTitle')}
+          body={t('st.plugins.runtimeConfirmBody')}
+          consequences={[
+            `${confirming.plan.artifact.version} · ${confirming.plan.artifact.url}`,
+            `SHA-256 ${confirming.plan.artifact.sha256}`,
+            confirming.plan.destination,
+            confirming.plan.note,
+          ]}
+          confirmLabel={t('st.plugins.prepareRuntime')}
+          onCancel={() => { setConfirming(null); }}
+          onConfirm={() => { void prepare(confirming); }} />
+      ) : null}
+    </SectionCard>
+  );
+}
+
 export function PluginsSection() {
   return (
     <div className="space-y-4">
       <InstalledPluginsCard />
+      <WebBridgeReadiness />
       <AddPluginCard />
     </div>
   );

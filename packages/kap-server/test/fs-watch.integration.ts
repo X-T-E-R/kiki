@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2';
+import { IRuntimeResolver, ISessionManager, IWorkspaceInstanceManager } from '@kiki/agent-core-v2';
 import type { HostFsChange, IHostFsWatchService } from '@kiki/agent-core-v2/os/interface/hostFsWatch';
 import { FakeRuntime } from '@kiki/agent-core-v2/runtime/fakeRuntime';
 import type { RuntimeProviderRuntimeHandle } from '@kiki/agent-core-v2/runtime/runtimeUnitHost';
@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 
 import { startServer, type RunningServer } from '../src/start';
+import { FsWatchBridge, type FsChangedFrame, type FsWatchConnection } from '../src/transport/ws/v1/fsWatchBridge';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 let tmpDir: string;
@@ -159,7 +160,353 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const WATCH_SETTLE_MS = 150;
 
+async function connectUnsubscribed(r: RunningServer, clientId: string): Promise<Conn> {
+  const conn = await openConn(wsUrl(r));
+  await receiveType(conn, 'server_hello', 1000);
+  conn.ws.send(JSON.stringify({ type: 'client_hello', id: clientId, payload: { client_id: clientId, subscriptions: [] } }));
+  expect((await receiveType(conn, 'ack', 1000)).code).toBe(0);
+  return conn;
+}
+
+async function controlledWatch(r: RunningServer, runtimeId: string) {
+  const pending: Array<{ ready: Promise<void>; release(): void; disposed: number; fire(change: HostFsChange): void }> = [];
+  let workspaceId = '';
+  let registered: RuntimeProviderRuntimeHandle | undefined;
+  const watch = {
+    watch: () => {
+      let release!: () => void;
+      const ready = new Promise<void>((resolve) => { release = resolve; });
+      const listeners = new Set<(change: HostFsChange) => void>();
+      const item = {
+        ready,
+        release,
+        disposed: 0,
+        fire: (change: HostFsChange) => { for (const listener of listeners) listener(change); },
+      };
+      pending.push(item);
+      return {
+        ready,
+        onDidChange: (listener: (change: HostFsChange) => void) => {
+          listeners.add(listener);
+          return { dispose: () => { listeners.delete(listener); } };
+        },
+        dispose: () => { item.disposed++; },
+      };
+    },
+  } as unknown as IHostFsWatchService;
+  const makeRuntime = (generation: string) => Object.assign(new FakeRuntime(
+    { workspaceId, runtimeId, generation },
+    { capabilities: ['watch'], pathClass: process.platform === 'win32' ? 'win32' : 'posix' },
+  ), { watch });
+  const provider = await r.core.accessor.get(IWorkspaceInstanceManager).addProvider({
+    id: `${runtimeId}-provider`,
+    imports: { root: [], imports: [], local: [] },
+    attach: async (context, host) => {
+      workspaceId = context.id;
+      registered = host.registerRuntime(makeRuntime(`${runtimeId}-generation`));
+      return { dispose: () => registered?.remove() };
+    },
+  });
+  return {
+    pending,
+    provider,
+    replace: () => registered!.update(() => makeRuntime(`${runtimeId}-replacement`)),
+  };
+}
+
+function pauseNextResolvedWatch(bridge: FsWatchBridge) {
+  const original = Reflect.get(bridge, 'resolveSession') as (
+    conn: FsWatchConnection, sessionId: string, runtimeId: string,
+  ) => Promise<unknown>;
+  let entered!: () => void;
+  let release!: () => void;
+  let armed = false;
+  let captured: unknown;
+  const reached = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const spy = vi.spyOn(bridge as unknown as { resolveSession: typeof original }, 'resolveSession')
+    .mockImplementation(async (...args) => {
+      const sw = await original.apply(bridge, args);
+      if (armed) {
+        armed = false;
+        captured = sw;
+        entered();
+        await gate;
+      }
+      return sw;
+    });
+  return {
+    arm: () => { armed = true; },
+    reached,
+    captured: () => captured,
+    release,
+    dispose: () => spy.mockRestore(),
+  };
+}
+
 describe('WS fs watch (kap-server)', () => {
+  it('pins an unsubscribed watch through ready and lifetime, cancelling an unready watch on disconnect', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+    writeFileSync(join(bridgeHome, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+    const r = await boot();
+    const sid = await createSession(r);
+    const manager = r.core.accessor.get(ISessionManager);
+    const { pending, provider } = await controlledWatch(r, 'watch-pin');
+    let conn: Conn | undefined;
+    try {
+      conn = await connectUnsubscribed(r, 'unsubscribed-one');
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'pending-one', payload: { session_id: sid, runtime_id: 'watch-pin', paths: ['src'] } }));
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      expect(await manager.evictIfIdle!(sid)).toBe(false);
+      pending[0]!.release();
+      expect((await receiveType(conn, 'ack', 1500)).code).toBe(0);
+      expect(await manager.evictIfIdle!(sid)).toBe(false);
+      const closedOne = new Promise<void>((resolve) => conn!.ws.once('close', () => resolve()));
+      conn.ws.close();
+      await closedOne;
+      await vi.waitFor(() => expect(pending[0]?.disposed).toBe(1));
+      expect(await manager.evictIfIdle!(sid)).toBe(true);
+      const warm = await manager.acquire!(sid, 'test-setup');
+      expect(warm).toBeDefined();
+      warm!.dispose();
+
+      conn = await connectUnsubscribed(r, 'unsubscribed-two');
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'pending-two', payload: { session_id: sid, runtime_id: 'watch-pin', paths: ['src'] } }));
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
+      expect(await manager.evictIfIdle!(sid)).toBe(false);
+      const closedTwo = new Promise<void>((resolve) => conn!.ws.once('close', () => resolve()));
+      conn.ws.close();
+      await closedTwo;
+      await vi.waitFor(() => expect(pending[1]?.disposed).toBe(1));
+      expect(await manager.evictIfIdle!(sid)).toBe(true);
+    } finally {
+      for (const watch of pending) watch.release();
+      conn?.ws.close();
+      await provider.dispose();
+    }
+  });
+
+  it.each([
+    ['pending', 'archive'],
+    ['active', 'archive'],
+    ['active', 'close'],
+  ] as const)('releases a %s unsubscribed watch on explicit %s without reviving its old handle', async (phase, lifecycle) => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+    writeFileSync(join(bridgeHome, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+    const r = await boot();
+    const sid = await createSession(r);
+    const manager = r.core.accessor.get(ISessionManager);
+    const { pending, provider } = await controlledWatch(r, 'archive-watch');
+    const resolver = r.core.accessor.get(IRuntimeResolver);
+    const runtimeAcquire = resolver.acquire.bind(resolver);
+    let runtimeDisposals = 0;
+    const runtimeSpy = vi.spyOn(resolver, 'acquire').mockImplementation((...args) => {
+      const lease = runtimeAcquire(...args);
+      if (args[0].runtimeId !== 'archive-watch') return lease;
+      return {
+        runtime: lease.runtime,
+        track: lease.track.bind(lease),
+        dispose: () => { runtimeDisposals++; lease.dispose(); },
+      };
+    });
+    const acquire = manager.acquire!.bind(manager);
+    let pins = 0;
+    let releases = 0;
+    const leaseSpy = vi.spyOn(manager, 'acquire').mockImplementation(async (...args) => {
+      const lease = await acquire(...args);
+      if (lease === undefined || args[1] !== 'fs-watch') return lease;
+      pins++;
+      return {
+        handle: lease.handle,
+        dispose: () => { releases++; pins--; lease.dispose(); },
+      };
+    });
+    const conn = await connectUnsubscribed(r, `${lifecycle}-${phase}`);
+    let reconnected: Conn | undefined;
+    try {
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'before-archive', payload: { session_id: sid, runtime_id: 'archive-watch', paths: ['src'] } }));
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      expect(pins).toBe(1);
+      if (phase === 'active') {
+        pending[0]!.release();
+        expect((await receiveType(conn, 'ack', 1500)).code).toBe(0);
+      }
+      if (lifecycle === 'archive') await manager.archive(sid);
+      else await manager.close(sid);
+      if (phase === 'pending') expect((await receiveType(conn, 'ack', 1500)).code).toBe(40409);
+      await vi.waitFor(() => expect(pending[0]?.disposed).toBe(1));
+      expect(pins).toBe(0);
+      expect(releases).toBe(1);
+      expect(runtimeDisposals).toBe(1);
+      expect(manager.get(sid)).toBeUndefined();
+      pending[0]!.release();
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'after-lifecycle', payload: { session_id: sid, runtime_id: 'archive-watch', paths: ['src'] } }));
+      expect((await receiveType(conn, 'ack', 1500)).code).toBe(40409);
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'empty-after-lifecycle', payload: { session_id: sid, runtime_id: 'archive-watch', paths: [] } }));
+      expect((await receiveType(conn, 'ack', 1500)).code).toBe(40409);
+      expect(pending).toHaveLength(1);
+      expect(manager.get(sid)).toBeUndefined();
+      if (lifecycle === 'archive') {
+        reconnected = await connectUnsubscribed(r, `reconnected-${phase}`);
+        reconnected.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'reconnected', payload: { session_id: sid, runtime_id: 'archive-watch', paths: ['src'] } }));
+        expect((await receiveType(reconnected, 'ack', 1500)).code).toBe(40409);
+        expect(pending).toHaveLength(1);
+      }
+    } finally {
+      for (const watch of pending) watch.release();
+      conn.ws.close();
+      reconnected?.ws.close();
+      leaseSpy.mockRestore();
+      runtimeSpy.mockRestore();
+      await provider.dispose();
+    }
+  });
+
+  it('treats empty watch additions as no-op or clearing updates without acquiring a lease', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+    writeFileSync(join(bridgeHome, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+    const r = await boot();
+    const sid = await createSession(r);
+    const manager = r.core.accessor.get(ISessionManager);
+    const { pending, provider } = await controlledWatch(r, 'empty-watch');
+    const acquire = vi.spyOn(manager, 'acquire');
+    const conn = await connectUnsubscribed(r, 'empty-watch');
+    try {
+      for (const [id, payload] of [
+        ['empty-one', { session_id: sid, runtime_id: 'empty-watch', paths: [] }],
+        ['empty-two', { session_id: sid, runtime_id: 'empty-watch' }],
+      ] as const) {
+        conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id, payload }));
+        const ack = await receiveType(conn, 'ack', 1500);
+        expect(ack.code).toBe(0);
+        expect(ack.payload).toMatchObject({ watched_paths: [], current_count: 0 });
+      }
+      expect(acquire).not.toHaveBeenCalled();
+      expect(pending).toHaveLength(0);
+      expect(await manager.evictIfIdle!(sid)).toBe(true);
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'empty-cold', payload: { session_id: sid, runtime_id: 'empty-watch', paths: [] } }));
+      expect((await receiveType(conn, 'ack', 1500)).code).toBe(40409);
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'empty-unknown', payload: { session_id: 'unknown', runtime_id: 'empty-watch', paths: [] } }));
+      expect((await receiveType(conn, 'ack', 1500)).code).toBe(40409);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(manager.get(sid)).toBeUndefined();
+      const warm = await manager.acquire!(sid, 'test-setup');
+      expect(warm).toBeDefined();
+      warm!.dispose();
+      acquire.mockClear();
+
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'nonempty', payload: { session_id: sid, runtime_id: 'empty-watch', paths: ['src'] } }));
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      pending[0]!.release();
+      expect((await receiveType(conn, 'ack', 1500)).payload).toMatchObject({ watched_paths: ['src'], current_count: 1 });
+      expect(await manager.evictIfIdle!(sid)).toBe(false);
+      acquire.mockClear();
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'clear', payload: { session_id: sid, runtime_id: 'empty-watch', paths: [] } }));
+      const cleared = await receiveType(conn, 'ack', 1500);
+      expect(cleared.code).toBe(0);
+      expect(cleared.payload).toMatchObject({ watched_paths: [], current_count: 0 });
+      expect(acquire).not.toHaveBeenCalled();
+      expect(pending[0]?.disposed).toBe(1);
+      expect(await manager.evictIfIdle!(sid)).toBe(true);
+      conn.ws.send(JSON.stringify({ type: 'watch_fs_add', id: 'repeat-clear', payload: { session_id: sid, runtime_id: 'empty-watch', paths: [] } }));
+      expect((await receiveType(conn, 'ack', 1500)).payload).toMatchObject({ watched_paths: [], current_count: 0 });
+      expect(pending[0]?.disposed).toBe(1);
+      expect(pending).toHaveLength(1);
+    } finally {
+      for (const watch of pending) watch.release();
+      conn.ws.close();
+      acquire.mockRestore();
+      await provider.dispose();
+    }
+  });
+
+  it('rejects an add resolved against a watch archived before its continuation', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+    writeFileSync(join(bridgeHome, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+    const r = await boot();
+    const sid = await createSession(r);
+    const manager = r.core.accessor.get(ISessionManager);
+    const { pending, provider } = await controlledWatch(r, 'raced-archive');
+    const bridge = new FsWatchBridge({ core: r.core });
+    const conn: FsWatchConnection = { id: 'raced-archive-conn', send: vi.fn() };
+    let paused: ReturnType<typeof pauseNextResolvedWatch> | undefined;
+    try {
+      const first = bridge.addWatch(conn, sid, ['src'], 'raced-archive');
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      pending[0]!.release();
+      expect(await first).toMatchObject({ code: 0, watched_paths: ['src'], current_count: 1 });
+      paused = pauseNextResolvedWatch(bridge);
+      paused.arm();
+      const second = bridge.addWatch(conn, sid, ['docs'], 'raced-archive');
+      await paused.reached;
+      const watches = Reflect.get(bridge, 'bySession') as Map<string, unknown>;
+      expect(paused.captured()).toBe(watches.get(`${sid}\0raced-archive`));
+      await manager.archive(sid);
+      expect(pending[0]?.disposed).toBe(1);
+      expect(watches.has(`${sid}\0raced-archive`)).toBe(false);
+      paused.release();
+      expect(await second).toMatchObject({ code: 40409 });
+      expect((Reflect.get(bridge, 'connPathCount') as Map<string, number>).get(conn.id) ?? 0).toBe(0);
+      expect(manager.residencyReport?.().pinnedSessions).toBe(0);
+      expect(await bridge.addWatch(conn, sid, ['docs'], 'raced-archive')).toMatchObject({ code: 40409 });
+      expect(pending).toHaveLength(1);
+    } finally {
+      paused?.release();
+      paused?.dispose();
+      bridge.dispose();
+      await provider.dispose();
+    }
+  });
+
+  it('rejects a stale-generation add and delivers through the replacement watch', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+    writeFileSync(join(bridgeHome, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+    const r = await boot();
+    const sid = await createSession(r);
+    const manager = r.core.accessor.get(ISessionManager);
+    const { pending, provider, replace } = await controlledWatch(r, 'raced-replace');
+    const bridge = new FsWatchBridge({ core: r.core });
+    const sent = vi.fn<FsWatchConnection['send']>();
+    const conn: FsWatchConnection = { id: 'raced-replace-conn', send: sent };
+    let paused: ReturnType<typeof pauseNextResolvedWatch> | undefined;
+    try {
+      const first = bridge.addWatch(conn, sid, ['src'], 'raced-replace');
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      pending[0]!.release();
+      expect(await first).toMatchObject({ code: 0, watched_paths: ['src'], current_count: 1 });
+      paused = pauseNextResolvedWatch(bridge);
+      paused.arm();
+      const stale = bridge.addWatch(conn, sid, ['docs'], 'raced-replace');
+      await paused.reached;
+      const watches = Reflect.get(bridge, 'bySession') as Map<string, unknown>;
+      expect(paused.captured()).toBe(watches.get(`${sid}\0raced-replace`));
+      await replace();
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
+      pending[1]!.release();
+      await vi.waitFor(() => expect(watches.get(`${sid}\0raced-replace`)).not.toBe(paused!.captured()));
+      expect(pending[0]?.disposed).toBe(1);
+      paused.release();
+      expect(await stale).toMatchObject({ code: 40409 });
+      expect((Reflect.get(bridge, 'connPathCount') as Map<string, number>).get(conn.id)).toBe(1);
+      const retry = await bridge.addWatch(conn, sid, ['docs'], 'raced-replace');
+      expect(retry).toMatchObject({ code: 0, watched_paths: ['docs', 'src'], current_count: 2 });
+      pending[1]!.fire({ path: join(workspace, 'docs', 'fresh.txt'), action: 'created', kind: 'file' });
+      await vi.waitFor(() => expect(sent.mock.calls.some(([frame]) => {
+        const event = frame as FsChangedFrame;
+        return event.type === 'event.fs.changed' && event.payload.changes.some((change) => change.path === 'docs/fresh.txt');
+      })).toBe(true));
+      expect(manager.residencyReport?.().pinnedSessions).toBe(1);
+      bridge.detachConnection(conn);
+      expect(manager.residencyReport?.().pinnedSessions).toBe(0);
+      expect(pending[1]?.disposed).toBe(1);
+    } finally {
+      paused?.release();
+      paused?.dispose();
+      bridge.dispose();
+      await provider.dispose();
+    }
+  });
+
   it('subscribe src → create file → receive event.fs.changed', async () => {
     const r = await boot();
     const sid = await createSession(r);

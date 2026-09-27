@@ -89,13 +89,13 @@ export class KosongConfigService extends Disposable implements IKosongConfigServ
     switch (e.domain) {
       case PROVIDERS_SECTION:
         this.providers.loadAll(
-          (e.value as ProvidersSection | undefined) ?? {},
+          this.config.get<ProvidersSection>(PROVIDERS_SECTION) ?? {},
           this.providers.getDefaultProvider(),
         );
         break;
       case MODELS_SECTION:
         this.models.loadAll(
-          (e.value as ModelsSection | undefined) ?? {},
+          this.config.get<ModelsSection>(MODELS_SECTION) ?? {},
           this.models.getDefaultModel(),
         );
         break;

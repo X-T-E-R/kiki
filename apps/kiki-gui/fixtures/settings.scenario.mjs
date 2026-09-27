@@ -63,6 +63,7 @@ export default {
       },
     },
   },
+  nbSearchManagedCredentials: { 'exa.default': 'fixture-managed-exa-key' },
   // /api/nb-search/* — secret-free capabilities + on-demand readiness for
   // the Search & retrieval settings leaf. Matches the partial nb_search seed
   // above: WebSearch ready on exa.search, FetchURL degraded (jina.reader has

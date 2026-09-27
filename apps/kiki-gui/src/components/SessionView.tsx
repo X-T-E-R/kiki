@@ -1,7 +1,8 @@
 /**
- * SessionView — live transcript + composer for /s/:id.
+ * SessionView — session command and composer owner for /s/:id and child routes.
  *
- * Mirrors the previous App-session surface, now isolated as a route target.
+ * Renders main and child through AgentWorkspace while retaining the resident
+ * ConversationShell composer seat across /new → /s/:id.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -11,7 +12,7 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
 
-import { AgentWorkspace, PanelIcon, ResyncStatusBanner, type AgentWorkspaceNavigation } from './agent-workspace';
+import { AgentWorkspace, PanelIcon, ResyncStatusBanner, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -27,7 +28,7 @@ import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
-import { Transcript, useStableForest, type TranscriptRowActions } from './Transcript';
+import { useStableForest, type TranscriptRowActions } from './Transcript';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import {
@@ -223,8 +224,7 @@ function Header({
   // The amber badge doubles as a locator: clicking it smooth-scrolls the
   // transcript to the first unresolved approval card.
   const scrollToFirstApproval = () => {
-    document
-      .querySelector('[data-approval-id]')
+    document.querySelector('[data-agent-workspace-target="main"] [data-approval-id]')
       ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
@@ -234,7 +234,7 @@ function Header({
   };
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
+    <WorkspaceHeader main>
       <button
         type="button"
         onClick={onToggleSidebar}
@@ -318,7 +318,7 @@ function Header({
       >
         <PanelIcon className="h-[13px] w-[13px]" />
       </button>
-    </header>
+    </WorkspaceHeader>
   );
 }
 
@@ -910,6 +910,26 @@ export function collectApprovalShortcutCards(
   });
 }
 
+/** Route and visible tab timelines may coexist; a global y/n press belongs to
+ * one workspace, never to the first matching card elsewhere in the document. */
+export function approvalShortcutRoot(
+  root: ParentNode,
+  target: EventTarget | null,
+  routedAgentId?: string,
+  previewCoversMain = false,
+): ParentNode | null {
+  const element = target instanceof Element ? target : null;
+  const focusedPreview = element?.closest<HTMLElement>('[data-preview-workspace]');
+  const preview = focusedPreview ?? (previewCoversMain
+    ? root.querySelector<HTMLElement>('[data-preview-workspace]:not([hidden])') : null);
+  if (preview !== null && preview !== undefined && !preview.hidden) {
+    return preview.querySelector('[data-preview-tabpanel]:not([hidden]) [data-agent-workspace-target]');
+  }
+  return Array.from(root.querySelectorAll<HTMLElement>('[data-agent-workspace-target]')).find(
+    (workspace) => workspace.dataset['agentWorkspaceTarget'] === (routedAgentId ?? MAIN_AGENT_ID),
+  ) ?? null;
+}
+
 /** True when Escape should go to the PTY instead of closing chrome or aborting. */
 export function isTerminalEscapeTarget(target: EventTarget | null): boolean {
   if (target === null || typeof Element === 'undefined' || !(target instanceof Element)) {
@@ -944,10 +964,11 @@ export function shouldHandleGlobalAbortOnEscape(input: {
   terminalFocused: boolean;
   terminalOpen: boolean;
   inFormField: boolean;
+  fullscreenPreviewOpen?: boolean;
 }): boolean {
   if (input.key !== 'Escape') return false;
   return !input.defaultPrevented && !input.overlayOpen && !input.terminalFocused &&
-    !input.terminalOpen && !input.inFormField;
+    !input.terminalOpen && !input.inFormField && !input.fullscreenPreviewOpen;
 }
 
 export function canAbortActiveTurn(
@@ -1154,6 +1175,10 @@ export function SessionView({
   const [railOpen, setRailOpen] = useState(
     () => typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 1024px)').matches,
   );
+  // A desktop rail becomes a fixed drawer on resize. Do not let that drawer
+  // cover a full-width preview tab that was already open; a deliberate rail
+  // toggle while narrow still works because this runs only at the breakpoint.
+  useEffect(() => { if (railIsOverlay) setRailOpen(false); }, [railIsOverlay]);
   // Focused panel-tab agent: the active agent panel tab in the preview
   // workspace, reported up by the bridge below. This is the shared right
   // rail's owner when the user is looking at an embedded subagent view — the
@@ -1612,6 +1637,11 @@ export function SessionView({
       if (controller === null) return;
       const target = event.target as HTMLElement | null;
       if (event.key === 'Escape') {
+        // A child route or a focused preview tab owns its own keyboard surface.
+        // Escape there must never abort the main agent behind the panel.
+        if (selectedAgentId !== undefined ||
+          (target?.closest('[data-preview-workspace]') as HTMLElement | null)?.hidden === false ||
+          (railIsOverlay && document.querySelector('[data-preview-workspace]:not([hidden])') !== null)) return;
         const inFormField =
           target !== null &&
           (target.tagName === 'INPUT' ||
@@ -1625,6 +1655,9 @@ export function SessionView({
           terminalFocused: isTerminalEscapeTarget(event.target),
           terminalOpen,
           inFormField,
+          // Focus falls back to body when Hide panel unmounts its button. The
+          // visible fullscreen preview still owns Escape at desktop widths.
+          fullscreenPreviewOpen: document.querySelector('[data-preview-workspace][data-preview-fullscreen]:not([hidden])') !== null,
         })) return;
         const current = controller.getState();
         if (canAbortActiveTurn(current)) {
@@ -1658,7 +1691,9 @@ export function SessionView({
       ) {
         return;
       }
-      const cards = collectApprovalShortcutCards();
+      const shortcutRoot = approvalShortcutRoot(document, event.target, selectedAgentId, railIsOverlay);
+      if (shortcutRoot === null) return;
+      const cards = collectApprovalShortcutCards(shortcutRoot);
       const approvalId = resolveApprovalShortcutTarget(cards);
       if (approvalId === undefined) {
         // Ambiguous press (several visible cards, nothing focused): a plain
@@ -1684,7 +1719,7 @@ export function SessionView({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [controller, t, terminalOpen]);
+  }, [controller, t, terminalOpen, selectedAgentId, railIsOverlay]);
 
   const actions = useMemo(() => {
     if (controller === null) return null;
@@ -2181,9 +2216,11 @@ export function SessionView({
         void navigate(`/s/${sessionId}`);
         return;
       }
-      const isNarrow = typeof window !== 'undefined' && window.innerWidth < 1024;
       const mode = liveSettings.subagentPanelOpenMode;
-      if (mode === 'fullscreen' || isNarrow || previewRef.current === null) {
+      // A narrow viewport uses the same preview tab as desktop. Its shell
+      // becomes a full-width overlay; only the explicit fullscreen preference
+      // or action navigates to the agent route.
+      if (mode === 'fullscreen' || previewRef.current === null) {
         void navigate(agentDetailPath(sessionId, agentId));
         return;
       }
@@ -2205,12 +2242,12 @@ export function SessionView({
     },
     [location.pathname, navigate, sessionId],
   );
-  const agentWorkspaceNavigation = useMemo<AgentWorkspaceNavigation>(
-    () => ({ openAgent, openAgentRoute, openSession }),
-    [openAgent, openAgentRoute, openSession],
-  );
   const toggleRail = useCallback(() => { setRailOpen((value) => !value); }, []);
   const closeRail = useCallback(() => { setRailOpen(false); }, []);
+  const agentWorkspaceNavigation = useMemo<AgentWorkspaceNavigation>(
+    () => ({ openAgent, openAgentRoute, openSession, sharedRail: { open: railOpen, toggle: toggleRail } }),
+    [openAgent, openAgentRoute, openSession, railOpen, toggleRail],
+  );
 
   // ---- shared-rail focus (panel-tab subagent) ----
   // The routed agent page owns the rail through AgentWorkspace; when the user
@@ -2582,8 +2619,8 @@ export function SessionView({
   }, [client, sessionId, t]);
 
   const composerBusy = canAbortActiveTurn(state);
-  // The subagent page is read-only chrome over the same session: active
-  // geometry, no composer (as before this change).
+  // Child routes dock their mailbox composer locally in AgentWorkspace;
+  // only main publishes the resident prompt composer to ConversationShell.
   const seat = useMemo<ConversationSeat>(() => ({
     phase:
       selectedAgentId === undefined
@@ -2708,10 +2745,6 @@ export function SessionView({
   ]);
   useRegisterSeat(seat);
 
-  // The backdrop exists only while a drawer actually overlays the transcript:
-  // below lg the rail becomes a fixed overlay (see .app-rail in index.css).
-  // The app-level sidebar renders its own backdrop from App.
-  const showBackdrop = railIsOverlay && railOpen;
   // Main-transcript projection, memoized so unrelated publishes don't rescan
   // the full block list; per-delta publishes reuse it when blocks/forest are
   // untouched.
@@ -2801,92 +2834,77 @@ export function SessionView({
       onStopAgentTask={stopAgentTask}
     >
       <PreviewFocusBridge onFocusedAgent={setPanelFocusAgent} />
-      {slots.header !== null
-        ? createPortal(
-            <Header
-              controller={controller}
-              railOpen={railOpen}
-              terminalAvailable={terminalAvailable}
-              terminalOpen={terminalOpen}
-              onToggleRail={() => { setRailOpen((value) => !value); }}
-              onToggleTerminal={toggleTerminalPanel}
-              onToggleSidebar={onToggleSidebar}
-              onRenameSession={renameSession}
-              onSessionAction={runSessionAction}
-              onRequestBatchResolve={handleBatchResolve}
-            />,
-            slots.header,
-          )
-        : null}
-
-      {/* The contents wrapper keeps the transcript's flex geometry untouched
-          while giving the selection-quote button a containment root. */}
-      <div ref={transcriptQuoteRef} className="contents">
-        <Transcript
-          state={{
-            ...state,
-            blocks: mainTranscriptBlocks,
-          }}
-          onLoadOlder={handleLoadOlder}
-          onResolveApproval={handleResolveApproval}
-          onAnswerQuestion={handleAnswerQuestion}
-          onDismissQuestion={handleDismissQuestion}
-          onCancelQueued={handleCancelQueuedChips}
-          onRetryLoad={handleRetryLoad}
-          forest={forest}
-          onOpenAgent={openAgent}
-          rowActions={transcriptRowActions}
-        />
-      </div>
-      <SelectionQuoteButton
-        containerRef={transcriptQuoteRef}
-        onQuote={handleQuoteSelection}
-        onAnnotate={handleAnnotateSelection}
-      />
-      {slots.dock !== null
-        ? createPortal(
-            <>
-              <ResyncStatusBanner
-                resyncing={state.resyncing}
-                resyncFailed={state.resyncFailed}
-                error={state.resyncError}
-                onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+      <AgentWorkspace
+        target={{ sessionId, agentId: MAIN_AGENT_ID }}
+        controller={controller}
+        sessionState={state}
+        forest={forest}
+        navigation={agentWorkspaceNavigation}
+        railOpen={railOpen}
+        railIsOverlay={railIsOverlay}
+        onToggleRail={toggleRail}
+        onCloseRail={closeRail}
+        onCancelTask={handleCancelTask}
+        onStopAgentTask={stopAgentTask}
+        inheritMediaPreview
+        main={{
+          header: <Header
+            controller={controller} railOpen={railOpen}
+            terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
+            onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
+            onToggleSidebar={onToggleSidebar} onRenameSession={renameSession}
+            onSessionAction={runSessionAction} onRequestBatchResolve={handleBatchResolve}
+          />,
+          timeline: {
+            state: { ...state, blocks: mainTranscriptBlocks },
+            onLoadOlder: handleLoadOlder,
+            onResolveApproval: handleResolveApproval,
+            onAnswerQuestion: handleAnswerQuestion,
+            onDismissQuestion: handleDismissQuestion,
+            onCancelQueued: handleCancelQueuedChips,
+            onRetryLoad: handleRetryLoad,
+            forest,
+            onOpenAgent: openAgent,
+            rowActions: transcriptRowActions,
+          },
+          timelineRef: transcriptQuoteRef,
+          timelineOverlay: <SelectionQuoteButton
+            containerRef={transcriptQuoteRef}
+            onQuote={handleQuoteSelection} onAnnotate={handleAnnotateSelection}
+          />,
+          dock: <>
+            <ResyncStatusBanner
+              resyncing={state.resyncing} resyncFailed={state.resyncFailed}
+              error={state.resyncError}
+              onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+            />
+            {state.goal !== undefined && state.goal !== null ? (
+              <GoalCard goal={state.goal} onRefresh={handleGoalRefresh} onUpdate={handleGoalUpdate}
+                onPause={handleGoalPause} onResume={handleGoalResume} onCancel={handleGoalCancel} />
+            ) : null}
+            {recoveryHold ? (
+              <RecoveryHoldBar count={state.queuedPromptIds.length} pending={recoveryPending}
+                onConfirm={handleRecoveryConfirm} />
+            ) : null}
+            {queuedItems.length > 0 ? (
+              <QueueStrip
+                items={queuedItems} onSendNow={handleSendNowQueued} onRemove={handleCancelQueued}
+                onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
+                onMove={handleMoveQueued} onChangeTiming={handleQueuedTiming}
+                editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
+                sendNowDisabled={state.resyncing || state.resyncFailed}
               />
-              {state.goal !== undefined && state.goal !== null ? (
-                <GoalCard
-                  goal={state.goal}
-                  onRefresh={handleGoalRefresh}
-                  onUpdate={handleGoalUpdate}
-                  onPause={handleGoalPause}
-                  onResume={handleGoalResume}
-                  onCancel={handleGoalCancel}
-                />
-              ) : null}
-              {recoveryHold ? (
-                <RecoveryHoldBar
-                  count={state.queuedPromptIds.length}
-                  pending={recoveryPending}
-                  onConfirm={handleRecoveryConfirm}
-                />
-              ) : null}
-              {queuedItems.length > 0 ? (
-                <QueueStrip
-                  items={queuedItems}
-                  onSendNow={handleSendNowQueued}
-                  onRemove={handleCancelQueued}
-                  onRemoveAttachment={handleRemoveQueuedAttachment}
-                  onEdit={handleStartQueueEdit}
-                  onMove={handleMoveQueued}
-                  onChangeTiming={handleQueuedTiming}
-                  editingPromptId={queueEdit?.promptId}
-                  onClearAll={handleClearQueue}
-                  sendNowDisabled={state.resyncing || state.resyncFailed}
-                />
-              ) : null}
-            </>,
-            slots.dock,
-          )
-        : null}
+            ) : null}
+          </>,
+          rail: <RightRail
+            className={`app-rail ${railOpen ? 'open' : ''}`}
+            state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
+            subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
+            onCancelTask={handleCancelTask} onStopAgentTask={stopAgentTask}
+            onOpenSubagent={openAgent} onClose={closeRail}
+          />,
+        }}
+      />
       {slots.footer !== null && terminalOpen && currentTerminalManager !== null
         ? createPortal(
             <TerminalPanel
@@ -2899,40 +2917,6 @@ export function SessionView({
             slots.footer,
           )
         : null}
-
-      {slots.rail !== null && railOpen
-        ? createPortal(
-            <RightRail
-              className={`app-rail ${railOpen ? 'open' : ''}`}
-              state={focusState}
-              forest={forest}
-              selectedAgentId={panelFocusAgent}
-              subagent={focusSubagent}
-              taskOwnerAgentId={focusTaskOwner}
-              onCancelTask={handleCancelTask}
-              onStopAgentTask={stopAgentTask}
-              onOpenSubagent={openAgent}
-            />,
-            slots.rail,
-          )
-        : null}
-
-      {showBackdrop ? (
-        <div
-          role="button"
-          tabIndex={-1}
-          aria-label={t('sv.closePanel')}
-          className="app-overlay-backdrop lg:hidden"
-          onClick={() => {
-            setRailOpen(false);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              setRailOpen(false);
-            }
-          }}
-        />
-      ) : null}
 
       <div aria-live="polite" aria-atomic="true" className="sr-only">
         {state.pendingInteraction === 'approval'

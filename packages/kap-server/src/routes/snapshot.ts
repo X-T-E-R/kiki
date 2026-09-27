@@ -9,7 +9,6 @@ import {
   ISessionContext,
   ISessionMetadata,
   IWorkspaceService,
-  resumeSessionById,
   type AgentMeta,
   type IAgentScopeHandle,
   type Scope,
@@ -17,6 +16,7 @@ import {
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
@@ -109,8 +109,23 @@ export async function assembleSnapshot(
   sessionId: string,
   mode: 'transcript' | undefined,
 ): Promise<SessionSnapshotResponse> {
+  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  try {
+    return await assembleSnapshotFromLease(core, broadcaster, sessionId, mode, lease);
+  } finally {
+    lease.dispose();
+  }
+}
+
+async function assembleSnapshotFromLease(
+  core: Scope,
+  broadcaster: SessionEventBroadcaster,
+  sessionId: string,
+  mode: 'transcript' | undefined,
+  lease: SessionOperationLease,
+): Promise<SessionSnapshotResponse> {
   const compact = mode === 'transcript';
-  const handle = await resumeSessionById(core.accessor, sessionId);
+  const handle = lease.handle;
   if (handle === undefined) {
     throw new SnapshotNotFoundError(sessionId);
   }

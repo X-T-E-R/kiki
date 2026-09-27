@@ -87,6 +87,8 @@ const ENTITY: GetModelResponse = {
   capabilities: ['chat'],
   support_efforts: ['high'],
   adaptive_thinking: true,
+  effective_parameters: {},
+  parameter_sources: {},
   revision: 'rev-7',
   issues: [],
 };
@@ -217,6 +219,26 @@ describe('ModelCatalogCard row editor', () => {
       max_context_size: 64000,
       capabilities: ['image_in', 'tool_use'],
     }));
+  });
+
+  it('edits model generation preferences independently of metadata, including zero and API default', async () => {
+    getModel.mockResolvedValue({ ...ENTITY, effective_parameters: { temperature: 0.7, max_completion_tokens: 8192 }, parameter_sources: { temperature: '[providers.*.defaults]' } });
+    const container = await renderCard();
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const editor = container.querySelector<HTMLElement>('[data-generation-editor="model:kimi-code/kimi-k2"]')!;
+    expect(editor.textContent).toContain('[providers.*.defaults]');
+    const tempMode = editor.querySelector<HTMLSelectElement>('select[aria-label="Temperature mode"]')!;
+    await act(async () => { setSelectValue(tempMode, 'custom'); });
+    expect(editor.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe('0');
+    const topMode = editor.querySelector<HTMLSelectElement>('select[aria-label="Top P mode"]')!;
+    await act(async () => { setSelectValue(topMode, 'api_default'); });
+    await act(async () => { [...editor.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save parameters')!.click(); });
+    expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
+      base_revision: 'rev-7', parameters: { temperature: 0, top_p: { kind: 'api_default' } },
+    });
+    expect(patchConfig).not.toHaveBeenCalled();
   });
 
   it('reads the model entity and saves a sparse patch with its revision', async () => {

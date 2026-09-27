@@ -60,6 +60,7 @@
  * a snapshot entry's `terminals: [{shell?, cwd?, cols?, rows?, banner?}]`.
  */
 
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -80,6 +81,19 @@ import {
 
 export const FIXTURE_TOKEN = 'kiki-fixture-token';
 const DEFAULT_PORT = 58901;
+const fixtureHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+function fixtureSearchCredentialBinding(config, instanceId) {
+  const instance = config?.nb_search?.provider_instances?.[instanceId];
+  const slotId = instance?.credential_slot_id;
+  const slot = config?.nb_search?.credential_slots?.[slotId];
+  if (slotId === undefined || slot === undefined || slot.provider_id !== instance.provider_id) return null;
+  const consumers = Object.entries(config.nb_search.provider_instances)
+    .filter(([, candidate]) => candidate.credential_slot_id === slotId)
+    .map(([id, candidate]) => ({ id, provider_id: candidate.provider_id, base_url: candidate.base_url ?? null }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return { slotId, binding: fixtureHash({ slotId, slot, consumers }) };
+}
 
 /**
  * nb-search fallback when a scenario does not seed the domain: the runtime
@@ -460,6 +474,7 @@ class FixtureServer {
   constructor() {
     this.scenario = null; // { name, data }
     this.config = {};
+    this.nbSearchCredentials = new Map();
     this.providers = [];
     this.models = [];
     this.modelsDeclared = false;
@@ -494,6 +509,13 @@ class FixtureServer {
       default_permission_mode: 'manual',
       providers: {},
     });
+    this.nbSearchCredentials = new Map();
+    for (const [slotId, value] of Object.entries(data.nbSearchManagedCredentials ?? {})) {
+      const instanceId = Object.entries(this.config.nb_search?.provider_instances ?? {})
+        .find(([, instance]) => instance.credential_slot_id === slotId)?.[0];
+      const target = fixtureSearchCredentialBinding(this.config, instanceId);
+      if (target !== null) this.nbSearchCredentials.set(slotId, { value, binding: target.binding, version: fixtureHash({ value, binding: target.binding }) });
+    }
     this.providers = structuredClone(data.providers ?? []);
     this.models = structuredClone(data.models ?? []).map(normalizeFixtureModel);
     // A scenario that declares `models: []` means an unconfigured server, not
@@ -1403,6 +1425,34 @@ class FixtureServer {
         rows.splice(rows.indexOf(task), 1);
         return this.envelope(res, { deleted: true });
       }
+    }
+    if ((path === '/nb-search/credentials/read' || path === '/nb-search/credentials/write') && method === 'POST') {
+      const target = fixtureSearchCredentialBinding(this.config, body?.instance_id);
+      if (target === null) return this.envelope(res, null, 40001, 'Unknown nb-search credential slot.');
+      const current = this.nbSearchCredentials.get(target.slotId);
+      const version = current?.version ?? 'none';
+      if (path.endsWith('/write')) {
+        if (typeof body.expected_binding !== 'string' || !/^[a-f0-9]{64}$/.test(body.expected_binding)
+          || (body.value !== null && (typeof body.value !== 'string' || body.value.trim() === ''))
+          || typeof body.expected_version !== 'string') return this.envelope(res, null, 40001, 'Invalid managed credential request.');
+        if (body.expected_binding !== target.binding || body.expected_version !== version) {
+          return this.envelope(res, null, 40941, 'Managed nb-search credential or binding changed; reload.');
+        }
+        if (body.value === null) this.nbSearchCredentials.delete(target.slotId);
+        else this.nbSearchCredentials.set(target.slotId, {
+          value: body.value,
+          binding: target.binding,
+          version: fixtureHash({ value: body.value, binding: target.binding }),
+        });
+      }
+      const saved = this.nbSearchCredentials.get(target.slotId);
+      const active = saved !== undefined && saved.binding === target.binding;
+      return this.envelope(res, {
+        instance_id: body.instance_id, slot_id: target.slotId, stored: saved !== undefined,
+        active, source: active ? 'managed' : 'none', version: saved?.version ?? 'none',
+        binding_version: target.binding,
+        value: path.endsWith('/read') && body.reveal === true && active ? saved.value : undefined,
+      });
     }
     // nb-search: secret-free capabilities + on-demand readiness, seeded per
     // scenario (`nbSearchCapabilities` / `nbSearchTest`). A seed shaped

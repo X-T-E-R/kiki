@@ -1,6 +1,7 @@
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { join } from 'pathe';
 import { LifecycleScope } from '#/app/scopes';
@@ -22,6 +23,8 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { WarningIssued } from '#/agent/profile/profileOps';
@@ -336,6 +339,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       priorAgentMeta = (await this.sessionMetadata.read()).agents?.[agentId];
       const wire = handle.accessor.get(IWireService);
       await wire.seal();
+      await wire.beginTranscriptEpoch?.();
       handle.accessor.get(IAgentStateService).contributeState(interactionKey);
       this.subscribeInteractionBus(handle);
       this.subscribeUsage(handle);
@@ -662,10 +666,21 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const compactionSettled = compaction?.promise.catch(() => undefined) ?? Promise.resolve();
     const reason = abortError('Agent removed');
     execution.cancel(reason);
+    const loop = handle.accessor.get(IAgentLoopService);
+    for (const turnId of loop.status().pendingTurnIds) loop.cancel(turnId, reason);
+    loop.cancel(undefined, reason);
+    const promptDrain = handle.accessor.get(IAgentPromptService).drain(reason);
     if (compaction !== null && !compaction.abortController.signal.aborted) {
       compaction.abortController.abort(reason);
     }
-    await Promise.all([execution.shutdown(reason), compactionSettled]);
+    await Promise.all([execution.shutdown(reason), compactionSettled, promptDrain]);
+    await loop.settled();
+    try {
+      await handle.accessor.get(IEventDispatcher).flush();
+      await handle.accessor.get(IWireService).sealTranscriptEpoch?.();
+    } catch (error) {
+      onUnexpectedError(error);
+    }
     handle.dispose();
     this.onDidDisposeEmitter.fire(agentId);
   }

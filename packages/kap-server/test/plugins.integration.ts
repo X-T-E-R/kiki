@@ -515,6 +515,21 @@ describe('server-v2 /api plugins', () => {
     expect(missing.body.code).toBe(40419);
   });
 
+  it('reports plugin-declared prerequisites without granting compatibility to a spoofed official name', async () => {
+    const source = await makePluginDir('kimi-webbridge', '1.11.3');
+    await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({ name: 'kimi-webbridge', version: '1.11.3',
+      'x-kiki': { prerequisites: { schemaVersion: 1, items: [
+        { id: 'browser', kind: 'browser-extension', required: true },
+      ] } },
+    }));
+    await call('POST', '/api/plugins', { source });
+    const info = await call<{ prerequisites?: { origin: string; items: { items: { id: string }[] } } }>(
+      'GET', '/api/plugins/kimi-webbridge');
+    expect(info.body.data.prerequisites).toMatchObject({
+      origin: 'plugin-declared', items: { items: [{ id: 'browser' }] },
+    });
+  });
+
   it('expands ~ in local catalog paths like the CLI loader', async () => {
     await server?.close();
     const fakeHome = await mkdtemp(join(tmpdir(), 'kimi-tilde-home-'));

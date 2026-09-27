@@ -61,6 +61,7 @@ import type {
   McpServerTestResult,
   McpServerTestTarget,
 } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
+import type { McpRevealedOAuthCredential, McpStoredOAuthCredential, McpStoredOAuthIdentity } from '@kiki/agent-core-v2/mcpCore/oauth/service';
 import type {
   AnonymousProviderInput,
   GenerateEvent,
@@ -235,7 +236,7 @@ export interface GlobalKosongFacade {
   /** Sparse local-model patch — unlisted fields, including unknown ones, are preserved. */
   updateModel(id: string, patch: PatchModelRequest): Promise<ModelEntity>;
   deleteModel(id: string, options?: { readonly baseRevision?: string }): Promise<void>;
-  /** One connection plus the revision the next patch must carry. Never reveals a stored secret. */
+  /** One connection plus its patch revision and stored API key; environment values are not returned. */
   readProviderEntity(id: string): Promise<ProviderEntity>;
   /** Create a connection; it may carry zero models. */
   createProvider(input: CreateProviderRequest): Promise<ProviderEntity>;
@@ -279,7 +280,7 @@ export interface GlobalFlagsFacade {
 export interface GlobalCapabilitiesFacade {
   list(): Promise<readonly CapabilityStatus[]>;
   get(id: string): Promise<CapabilityStatus>;
-  install(id: string): Promise<CapabilityStatus>;
+  install(id: string, expectedSha256?: string): Promise<CapabilityStatus>;
 }
 
 export interface GlobalPluginsFacade {
@@ -353,7 +354,10 @@ export interface GlobalMcpFacade {
   /** Aborting the signal stops this wait, not the shared authorization flow. */
   completeAuth(input: { flowId: string; timeoutMs?: number }, options?: Pick<CallOptions, 'signal'>): Promise<void>;
   cancelAuth(input: { flowId: string }): Promise<void>;
-  resetAuth(input: { locator: McpServerLocator; cwd?: string }): Promise<void>;
+  resetAuth(input: { locator: McpServerLocator; cwd?: string; expectedCanonicalUrl?: string }): Promise<void>;
+  listStoredOAuthCredentials(): Promise<readonly McpStoredOAuthCredential[]>;
+  revealStoredOAuthCredential(target: McpStoredOAuthIdentity): Promise<McpRevealedOAuthCredential>;
+  revokeStoredOAuthCredential(target: McpStoredOAuthIdentity): Promise<void>;
 }
 
 /** One downloaded upload: its metadata plus the buffered bytes. */
@@ -670,8 +674,8 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     capabilities: {
       list: () => call('capabilityService', 'listCapabilities', []) as Promise<readonly CapabilityStatus[]>,
       get: (id) => call('capabilityService', 'getCapability', [id]) as Promise<CapabilityStatus>,
-      install: (id) =>
-        call('capabilityService', 'installCapability', [id]) as Promise<CapabilityStatus>,
+      install: (id, expectedSha256) =>
+        call('capabilityService', 'installCapability', expectedSha256 === undefined ? [id] : [id, expectedSha256]) as Promise<CapabilityStatus>,
     },
 
     hostFs: {
@@ -790,8 +794,16 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         }) as Promise<void>,
       cancelAuth: ({ flowId }) =>
         call('mcpManagementService', 'cancelServerAuth', [{ flowId }]) as Promise<void>,
-      resetAuth: ({ locator, cwd }) =>
-        call('mcpManagementService', 'resetServerAuth', [locator, { cwd }]) as Promise<void>,
+      resetAuth: ({ locator, cwd, expectedCanonicalUrl }) =>
+        call('mcpManagementService', 'resetServerAuth', expectedCanonicalUrl === undefined
+          ? [locator, { cwd }]
+          : [locator, { cwd }, expectedCanonicalUrl]) as Promise<void>,
+      listStoredOAuthCredentials: () =>
+        call('mcpManagementService', 'listStoredOAuthCredentials', []) as Promise<readonly McpStoredOAuthCredential[]>,
+      revealStoredOAuthCredential: (target) =>
+        call('mcpManagementService', 'revealStoredOAuthCredential', [target]) as Promise<McpRevealedOAuthCredential>,
+      revokeStoredOAuthCredential: (target) =>
+        call('mcpManagementService', 'revokeStoredOAuthCredential', [target]) as Promise<void>,
     },
 
     env,

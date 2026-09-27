@@ -143,6 +143,18 @@ const mcpServerAuthStatusSchema = z.object({
   authStatus: mcpServerAuthStateSchema,
 });
 
+const mcpStoredOAuthIdentitySchema = z.object({ credentialId: z.string().regex(/^[a-f0-9]{64}$/) });
+const mcpStoredOAuthCredentialSchema = mcpStoredOAuthIdentitySchema.extend({
+  serverName: serverNameSchema,
+  displayUrl: z.string().min(1),
+  origin: z.literal('unknown'),
+});
+const mcpRevealedOAuthCredentialSchema = z.object({ canonicalUrl: z.url() });
+const authResetBodySchema = z.intersection(
+  mcpServerLocatorSchema,
+  z.object({ expectedCanonicalUrl: z.url().optional() }),
+);
+
 const mcpServerInspectionSchema = z.object({
   serverId: z.string(),
   locator: mcpServerLocatorSchema,
@@ -523,7 +535,7 @@ export function registerV2McpRoutes(app: V2McpRouteHost, core: Scope): void {
     {
       method: 'POST',
       path: '/mcp/auth::reset',
-      body: mcpServerLocatorSchema,
+      body: authResetBodySchema,
       querystring: serverScopedQuerySchema,
       success: { data: z.null() },
       errors: namedServerOAuthErrorSchemas,
@@ -533,7 +545,7 @@ export function registerV2McpRoutes(app: V2McpRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       try {
-        await management().resetServerAuth(req.body, { cwd: req.query.cwd });
+        await management().resetServerAuth(req.body, { cwd: req.query.cwd }, req.body.expectedCanonicalUrl);
         reply.send(okEnvelope(null, req.id));
       } catch (err) {
         sendMappedError(reply, req.id, err);
@@ -544,5 +556,77 @@ export function registerV2McpRoutes(app: V2McpRouteHost, core: Scope): void {
     authResetRoute.path,
     (authResetRoute.options),
     authResetRoute.handler as Parameters<V2McpRouteHost['post']>[2],
+  );
+
+  const storedOAuthRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/mcp/oauth-credentials',
+      success: { data: z.array(mcpStoredOAuthCredentialSchema) },
+      errors: baseErrorSchemas,
+      description: 'List masked OAuth credential identities in this Kiki home without returning full resource URLs, tokens, or claiming a configuration origin.',
+      tags: ['v2-mcp'],
+    },
+    async (req, reply) => {
+      try {
+        reply.send(okEnvelope(await management().listStoredOAuthCredentials(), req.id));
+      } catch (err) {
+        sendMappedError(reply, req.id, err);
+      }
+    },
+  );
+  app.get(
+    storedOAuthRoute.path,
+    (storedOAuthRoute.options),
+    storedOAuthRoute.handler as Parameters<V2McpRouteHost['get']>[2],
+  );
+
+  const revealStoredOAuthRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/mcp/oauth-credentials::reveal',
+      body: mcpStoredOAuthIdentitySchema,
+      success: { data: mcpRevealedOAuthCredentialSchema },
+      errors: namedServerOAuthErrorSchemas,
+      description: 'Explicitly reveal the full resource URL for one saved OAuth credential in this Kiki home.',
+      tags: ['v2-mcp'],
+    },
+    async (req, reply) => {
+      try {
+        reply.send(okEnvelope(await management().revealStoredOAuthCredential(req.body), req.id));
+      } catch (err) {
+        sendMappedError(reply, req.id, err);
+      }
+    },
+  );
+  app.post(
+    revealStoredOAuthRoute.path,
+    (revealStoredOAuthRoute.options),
+    revealStoredOAuthRoute.handler as Parameters<V2McpRouteHost['post']>[2],
+  );
+
+  const revokeStoredOAuthRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/mcp/oauth-credentials::revoke',
+      body: mcpStoredOAuthIdentitySchema,
+      success: { data: z.null() },
+      errors: namedServerOAuthErrorSchemas,
+      description: 'Clear one exact saved OAuth credential identity, including an identity no longer in the server catalog.',
+      tags: ['v2-mcp'],
+    },
+    async (req, reply) => {
+      try {
+        await management().revokeStoredOAuthCredential(req.body);
+        reply.send(okEnvelope(null, req.id));
+      } catch (err) {
+        sendMappedError(reply, req.id, err);
+      }
+    },
+  );
+  app.post(
+    revokeStoredOAuthRoute.path,
+    (revokeStoredOAuthRoute.options),
+    revokeStoredOAuthRoute.handler as Parameters<V2McpRouteHost['post']>[2],
   );
 }

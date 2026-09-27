@@ -1,3 +1,5 @@
+import { createHmac, randomBytes } from 'node:crypto';
+
 import { auth, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 
 import type { ILogger as Logger } from '#/_base/log/log';
@@ -108,10 +110,33 @@ export interface McpOAuthTokenState {
   readonly expired: boolean;
 }
 
+export interface McpStoredOAuthCredential {
+  readonly credentialId: string;
+  readonly serverName: string;
+  readonly displayUrl: string;
+  readonly origin: 'unknown';
+}
+
+export interface McpStoredOAuthIdentity {
+  readonly credentialId: string;
+}
+
+export interface McpRevealedOAuthCredential {
+  readonly canonicalUrl: string;
+}
+
 const REFRESH_AHEAD_MS = 120_000;
 const MAX_TIMER_DELAY_MS = 0x7fffffff;
 const DEFAULT_AUTH_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
+
+function opaqueCredentialId(key: Buffer, serverName: string, canonicalUrl: string): string {
+  return createHmac('sha256', key).update(mcpOAuthStoreKey(serverName, canonicalUrl)).digest('hex');
+}
+
+function maskedCredentialUrl(canonicalUrl: string): string {
+  return `${new URL(canonicalUrl).origin}/…`;
+}
 
 const defaultScheduler: McpOAuthScheduler = {
   now: () => Date.now(),
@@ -123,6 +148,7 @@ const defaultScheduler: McpOAuthScheduler = {
 };
 
 export class McpOAuthService {
+  private readonly credentialIdKey = randomBytes(32);
   private readonly store: McpOAuthStore;
   private readonly clientLabel: string | undefined;
   private readonly resolveClientName: (() => string | undefined) | undefined;
@@ -193,6 +219,62 @@ export class McpOAuthService {
     };
   }
 
+  async listStoredCredentials(): Promise<readonly McpStoredOAuthCredential[]> {
+    const credentials: McpStoredOAuthCredential[] = [];
+    for (const key of await this.store.list()) {
+      if (!key.endsWith(META_SUFFIX)) continue;
+      const meta = await readStoreMeta(this.store, key, this.log);
+      if (meta === undefined) continue;
+      let canonicalUrl: string;
+      try {
+        canonicalUrl = canonicalMcpOAuthResource(meta.serverUrl);
+        if (key !== `${mcpOAuthStoreKey(meta.serverName, canonicalUrl)}${META_SUFFIX}`) continue;
+        if (!(await this.tokenState(meta.serverName, canonicalUrl)).hasTokens) continue;
+      } catch {
+        this.log.warn('skipping unreadable MCP OAuth credential', { file: key });
+        continue;
+      }
+      credentials.push({
+        credentialId: opaqueCredentialId(this.credentialIdKey, meta.serverName, canonicalUrl),
+        serverName: meta.serverName,
+        displayUrl: maskedCredentialUrl(canonicalUrl),
+        origin: 'unknown',
+      });
+    }
+    return credentials.toSorted((a, b) => a.serverName.localeCompare(b.serverName) || a.credentialId.localeCompare(b.credentialId));
+  }
+
+  async revealStoredCredential(credentialId: string): Promise<McpRevealedOAuthCredential> {
+    const identity = await this.resolveStoredIdentity(credentialId);
+    return { canonicalUrl: identity.canonicalUrl };
+  }
+
+  async revokeStoredCredential(target: McpStoredOAuthIdentity): Promise<void> {
+    const identity = await this.resolveStoredIdentity(target.credentialId);
+    await this.invalidate(identity.serverName, identity.canonicalUrl);
+  }
+
+  private async resolveStoredIdentity(credentialId: string): Promise<{ serverName: string; canonicalUrl: string }> {
+    if (/^[a-f0-9]{64}$/.test(credentialId)) {
+      for (const key of await this.store.list()) {
+        if (!key.endsWith(META_SUFFIX)) continue;
+        const meta = await readStoreMeta(this.store, key, this.log);
+        if (meta === undefined) continue;
+        try {
+          const canonicalUrl = canonicalMcpOAuthResource(meta.serverUrl);
+          if (key !== `${mcpOAuthStoreKey(meta.serverName, canonicalUrl)}${META_SUFFIX}`) continue;
+          if (opaqueCredentialId(this.credentialIdKey, meta.serverName, canonicalUrl) !== credentialId) continue;
+          if ((await this.tokenState(meta.serverName, canonicalUrl)).hasTokens) {
+            return { serverName: meta.serverName, canonicalUrl };
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+    throw new Error2(ErrorCodes.MCP_SERVER_NOT_FOUND, 'Stored MCP OAuth credential was not found');
+  }
+
   onEvent(listener: McpOAuthEventListener): () => void {
     this.listeners.add(listener);
     return () => {
@@ -248,11 +330,8 @@ export class McpOAuthService {
         const state = await this.tokenState(meta.serverName, meta.serverUrl);
         if (!state.hasTokens || !state.hasRefreshToken || state.expiresAt === undefined) continue;
         this.scheduleRefresh(meta.serverName, meta.serverUrl, state.expiresAt);
-      } catch (error) {
-        this.log.warn('skipping MCP OAuth credential during proactive-refresh sweep', {
-          file: key,
-          error: error instanceof Error ? error : String(error),
-        });
+      } catch {
+        this.log.warn('skipping MCP OAuth credential during proactive-refresh sweep', { file: key });
       }
     }
   }
@@ -705,7 +784,13 @@ async function readStoreMeta(
   key: string,
   log: Logger,
 ): Promise<McpOAuthStoreMeta | undefined> {
-  const raw: unknown = await store.read(key);
+  let raw: unknown;
+  try {
+    raw = await store.read(key);
+  } catch {
+    log.warn('ignoring unreadable MCP OAuth meta file', { file: key });
+    return undefined;
+  }
   if (raw === undefined) return undefined;
   if (typeof raw !== 'object' || raw === null) {
     log.warn('ignoring malformed MCP OAuth meta file', { file: key });
@@ -717,7 +802,7 @@ async function readStoreMeta(
     return undefined;
   }
   if (URL.parse(serverUrl) === null) {
-    log.warn('ignoring MCP OAuth meta file with unparseable serverUrl', { file: key, serverUrl });
+    log.warn('ignoring MCP OAuth meta file with unparseable serverUrl', { file: key });
     return undefined;
   }
   return { serverName, serverUrl };

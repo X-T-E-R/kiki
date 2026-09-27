@@ -14,6 +14,7 @@ import {
 } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
+import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptConflictError, NativeChildPromptSendError } from '../../lib/client';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { AgentTreeView } from '../AgentTreeView';
 import { AgentWorkspace } from './AgentWorkspace';
@@ -22,6 +23,7 @@ const harness = vi.hoisted(() => ({
   header: null as HTMLElement | null,
   dock: null as HTMLElement | null,
   shellEnabled: true,
+  scopeId: 'direct:one',
   listModels: vi.fn(),
   sendAgentMessage: vi.fn(),
   stopAgentTask: vi.fn(),
@@ -39,6 +41,7 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
+    scopeId: harness.scopeId,
     client: {
       listModels: harness.listModels,
       listSessionSkills: harness.listSessionSkills,
@@ -86,7 +89,8 @@ vi.mock('../mediaPreview', () => ({
 vi.mock('../RightRail', () => ({ RightRail: () => null }));
 vi.mock('../../host', () => ({ useHost: () => harness.host }));
 vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
-vi.mock('../Transcript', () => ({ Transcript: () => null }));
+vi.mock('../Transcript', () => ({ Transcript: ({ state, agentId }: { state: { blocks: readonly unknown[] }; agentId?: string }) =>
+  <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length} /> }));
 vi.mock('./ResyncStatusBanner', () => ({ ResyncStatusBanner: () => null }));
 vi.mock('../../lib/toasts', () => ({ pushToast: harness.pushToast }));
 
@@ -112,6 +116,7 @@ beforeEach(() => {
     metrics: {},
   });
   harness.shellEnabled = true;
+  harness.scopeId = 'direct:one';
   harness.host = { kind: 'browser' };
   harness.mediaProviderProps.length = 0;
   harness.listSessionSkills.mockResolvedValue({ skills: [] });
@@ -227,7 +232,7 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
   await act(async () => { sendButton?.click(); });
   expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'next step', [
     { type: 'text', text: 'next step' },
-  ]);
+  ], expect.any(String));
   const modelSelect = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
   expect(modelSelect.disabled).toBe(false);
   await act(async () => { modelSelect.click(); });
@@ -237,6 +242,301 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
   expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Abort the running prompt"]')?.click(); });
   expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
+});
+
+/** Minimal durable-mailbox acceptance returned by `client.sendAgentMessage`. */
+function mailboxReceipt(overrides: {
+  delivery: 'queued' | 'delivered';
+  resumed?: boolean;
+  deduplicated?: boolean;
+  payloadConflict?: boolean;
+}) {
+  return {
+    message: {
+      messageId: 'message-1', sessionId: 'session', sourceAgentId: 'main', sourceTaskName: 'user',
+      senderKind: 'user' as const, targetAgentId: 'child', targetTaskName: 'child',
+      content: 'next step', acceptedAt: 1, targetSeq: 1,
+    },
+    deduplicated: overrides.deduplicated ?? false,
+    payloadConflict: overrides.payloadConflict ?? false,
+    delivery: overrides.delivery,
+    resumed: overrides.resumed,
+  };
+}
+
+async function sendFromComposer(text: string): Promise<HTMLTextAreaElement> {
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, text);
+  await settle();
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>('[aria-label="Send message"], [aria-label="Queue prompt"]')?.click();
+  });
+  await settle();
+  return textarea;
+}
+
+it('toasts a queued mailbox receipt and clears the draft once the send settles', async () => {
+  harness.sendAgentMessage.mockResolvedValue(mailboxReceipt({ delivery: 'queued' }));
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'next step', [
+    { type: 'text', text: 'next step' },
+  ], expect.any(String));
+  // A queued message reads as informational, not as a fresh delivery.
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'info',
+    text: translate('en', 'agentMessage.pending'),
+  });
+  expect(textarea.value).toBe('');
+});
+
+it('marks a delivered mailbox receipt that resumed the agent', async () => {
+  harness.sendAgentMessage.mockResolvedValue(mailboxReceipt({ delivery: 'delivered', resumed: true }));
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  await sendFromComposer('next step');
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'success',
+    text: `${translate('en', 'agentMessage.delivered')} · ${translate('en', 'subagent.event.resumed')}`,
+  });
+});
+
+it('presents a deduplicated receipt as already accepted, not as a fresh delivery', async () => {
+  // The mailbox already held an equivalent message, so a queued delivery state
+  // must not leak through as this send having queued a new prompt.
+  harness.sendAgentMessage.mockResolvedValue(mailboxReceipt({ delivery: 'queued', deduplicated: true }));
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'info',
+    text: translate('en', 'agentMessage.deduplicated'),
+  });
+  expect(harness.pushToast).not.toHaveBeenCalledWith({
+    tone: 'info',
+    text: translate('en', 'agentMessage.pending'),
+  });
+  expect(textarea.value).toBe('');
+});
+
+it('fails closed on a payload conflict and keeps the draft instead of reading as delivered', async () => {
+  harness.sendAgentMessage.mockResolvedValue(
+    mailboxReceipt({ delivery: 'delivered', payloadConflict: true }),
+  );
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  // The current text was not accepted: report it, never claim a delivery, and
+  // never clear the draft.
+  expect(harness.pushToast).not.toHaveBeenCalled();
+  expect(textarea.value).toBe('next step');
+  expect(dock.textContent).toContain(translate('en', 'agentMessage.payloadConflict'));
+  const conflictedKey = harness.sendAgentMessage.mock.calls[0]?.[4];
+  await clickComposerSend();
+  expect(harness.sendAgentMessage.mock.calls[1]?.[4]).toBe(conflictedKey);
+  expect(textarea.value).toBe('next step');
+});
+
+it('sends a native child without faking a mailbox receipt', async () => {
+  // A native child keeps the prompt route; the composer must not invent a
+  // queued/delivered receipt for a delivery it cannot observe.
+  harness.sendAgentMessage.mockResolvedValue(null);
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'next step', [
+    { type: 'text', text: 'next step' },
+  ], expect.any(String));
+  expect(harness.pushToast).not.toHaveBeenCalled();
+  expect(textarea.value).toBe('');
+});
+
+it('keeps the draft and raises no receipt when the mailbox send rejects', async () => {
+  harness.sendAgentMessage.mockRejectedValue(new Error('mailbox unavailable'));
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  expect(harness.pushToast).not.toHaveBeenCalled();
+  // The rejected send never reached the clear step, so the draft survives.
+  expect(textarea.value).toBe('next step');
+});
+
+async function clickComposerSend() {
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>('[aria-label="Send message"], [aria-label="Queue prompt"]')?.click();
+  });
+  await settle();
+}
+
+it('reuses one pending submission after a lost response, then releases it for an independent send', async () => {
+  const accepted = new Map<string, string>();
+  harness.sendAgentMessage.mockImplementation(async (_session: string, _agent: string, text: string, _content: unknown, key: string) => {
+    if (typeof key !== 'string' || key.length === 0) throw new Error('missing idempotency key');
+    const previous = accepted.get(key);
+    if (previous !== undefined) return mailboxReceipt({ delivery: 'queued', deduplicated: true });
+    accepted.set(key, text); // server accepted durably before the response was lost
+    if (accepted.size === 1) throw new Error('response lost after accept');
+    return mailboxReceipt({ delivery: 'queued' });
+  });
+  await renderWorkspace();
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  expect(textarea.value).toBe('next step');
+  expect(accepted.size).toBe(1);
+  await clickComposerSend();
+  expect(accepted.size).toBe(1);
+  expect(harness.sendAgentMessage.mock.calls[1]?.[4]).toBe(harness.sendAgentMessage.mock.calls[0]?.[4]);
+  expect(textarea.value).toBe('');
+  expect(harness.pushToast).toHaveBeenCalledWith({ tone: 'info', text: translate('en', 'agentMessage.deduplicated') });
+  await sendFromComposer('next step');
+  expect(accepted.size).toBe(2);
+  expect(harness.sendAgentMessage.mock.calls[2]?.[4]).not.toBe(harness.sendAgentMessage.mock.calls[0]?.[4]);
+});
+
+it('replays a lost native prompt response under the same key without a mailbox delivery toast', async () => {
+  const accepted = new Map<string, string>();
+  harness.sendAgentMessage.mockImplementation(async (_session: string, _agent: string, text: string, _content: unknown, key: string) => {
+    const previous = accepted.get(key);
+    if (previous !== undefined) {
+      if (previous !== text) throw new NativeChildPromptConflictError(new Error('prompt.id_conflict'));
+      return null; // Replay of the native prompt receipt, not a mailbox receipt.
+    }
+    accepted.set(key, text);
+    throw new NativeChildPromptSendError(new Error('response lost after native prompt acceptance'));
+  });
+  await renderWorkspace();
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  expect(textarea.value).toBe('next step');
+  expect(dock.querySelector('[role="alert"]')?.textContent).toBe(translate('en', 'agentMessage.promptOutcomeUnknown'));
+  await clickComposerSend();
+  expect(accepted.size).toBe(1);
+  expect(harness.sendAgentMessage.mock.calls[1]?.[4]).toBe(harness.sendAgentMessage.mock.calls[0]?.[4]);
+  expect(textarea.value).toBe('');
+  expect(dock.querySelector('[role="alert"]')).toBeNull();
+  expect(harness.pushToast).not.toHaveBeenCalled();
+  await sendFromComposer('independent step');
+  expect(harness.sendAgentMessage.mock.calls[2]?.[4]).not.toBe(harness.sendAgentMessage.mock.calls[0]?.[4]);
+});
+
+it('keeps an ambiguous native conflict pending until an explicit edited send uses a new key', async () => {
+  harness.sendAgentMessage.mockRejectedValueOnce(new NativeChildPromptConflictError(new Error('prompt.id_conflict')))
+    .mockRejectedValueOnce(new NativeChildPromptConflictError(new Error('accepted without replayable receipt')))
+    .mockResolvedValueOnce(null);
+  await renderWorkspace();
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  const firstKey = harness.sendAgentMessage.mock.calls[0]?.[4];
+  expect(textarea.value).toBe('next step');
+  expect(dock.textContent).toContain(translate('en', 'agentMessage.promptOutcomeUnknown'));
+  await clickComposerSend();
+  expect(harness.sendAgentMessage.mock.calls[1]?.[4]).toBe(firstKey);
+  expect(textarea.value).toBe('next step');
+  await typeText(textarea, 'different step');
+  await clickComposerSend();
+  expect(harness.sendAgentMessage.mock.calls[2]?.[4]).not.toBe(firstKey);
+  expect(textarea.value).toBe('');
+  expect(harness.pushToast).not.toHaveBeenCalled();
+});
+
+it('retains attached draft on unknown native outcome and does not disguise an external rejection', async () => {
+  harness.sendAgentMessage.mockRejectedValueOnce(new Error('response lost after attachment acceptance'))
+    .mockRejectedValueOnce(new ExternalAgentAttachmentUnsupportedError());
+  harness.host = { kind: 'browser', pickFiles: async () => [{
+    name: 'shot.png', size: 1, type: 'image/png',
+    read: async () => new File(['x'], 'shot.png', { type: 'image/png' }),
+  }] };
+  await renderWorkspace();
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'inspect');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+  await clickComposerSend();
+  const firstKey = harness.sendAgentMessage.mock.calls[0]?.[4];
+  expect(textarea.value).toBe('inspect');
+  expect(dock.textContent).toContain(translate('en', 'agentMessage.attachmentOutcomeUnknown'));
+  expect(harness.pushToast).not.toHaveBeenCalled();
+  await clickComposerSend();
+  expect(harness.sendAgentMessage.mock.calls[1]?.[4]).toBe(firstKey);
+  expect(dock.textContent).toContain('External agent messages support text only');
+  expect(dock.textContent).not.toContain(translate('en', 'agentMessage.attachmentOutcomeUnknown'));
+});
+
+it('starts a new submission after an edit, even when undo restores the original text', async () => {
+  harness.sendAgentMessage.mockRejectedValue(new Error('response lost'));
+  await renderWorkspace();
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  const firstKey = harness.sendAgentMessage.mock.calls[0]?.[4];
+  await typeText(textarea, 'revised');
+  await sendFromComposer('next step');
+  expect(harness.sendAgentMessage.mock.calls[1]?.[4]).not.toBe(firstKey);
+  await sendFromComposer('new step');
+  expect(harness.sendAgentMessage.mock.calls[2]?.[4]).not.toBe(harness.sendAgentMessage.mock.calls[1]?.[4]);
+});
+
+it('isolates pending submissions across connection, session, and target switches', async () => {
+  harness.sendAgentMessage.mockRejectedValue(new Error('response lost'));
+  await renderWorkspace();
+  await settle();
+  await sendFromComposer('next step');
+  const firstKey = harness.sendAgentMessage.mock.calls[0]?.[4];
+  harness.scopeId = 'direct:two';
+  await renderWorkspace();
+  await clickComposerSend();
+  const secondKey = harness.sendAgentMessage.mock.calls[1]?.[4];
+  expect(secondKey).not.toBe(firstKey);
+  await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'child' } });
+  await clickComposerSend();
+  const thirdKey = harness.sendAgentMessage.mock.calls[2]?.[4];
+  expect(thirdKey).not.toBe(secondKey);
+  const main = testForest().roots[0]!;
+  const other: AgentTreeNode = { ...testForest().byId['child']!, agentId: 'other', name: 'other' };
+  await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'other' }, forest: {
+    roots: [main], byId: { ...testForest().byId, other },
+  } });
+  await clickComposerSend();
+  expect(harness.sendAgentMessage.mock.calls[3]?.[4]).not.toBe(thirdKey);
+  expect(harness.sendAgentMessage.mock.calls[3]?.slice(0, 2)).toEqual(['other-session', 'other']);
+});
+
+it('changes the pending submission key when attachment payload changes', async () => {
+  harness.sendAgentMessage.mockRejectedValue(new Error('response lost'));
+  harness.host = { kind: 'browser', pickFiles: async () => [{
+    name: 'shot.png', size: 1, type: 'image/png',
+    read: async () => new File(['x'], 'shot.png', { type: 'image/png' }),
+  }] };
+  await renderWorkspace();
+  await settle();
+  await sendFromComposer('next step');
+  const firstKey = harness.sendAgentMessage.mock.calls[0]?.[4];
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+  await clickComposerSend();
+  expect(harness.sendAgentMessage.mock.calls[1]?.[4]).not.toBe(firstKey);
+  expect(harness.sendAgentMessage.mock.calls[1]?.[3]).toEqual(expect.arrayContaining([
+    expect.objectContaining({ type: 'image' }),
+  ]));
+});
+
+it('does not erase an edited draft when the in-flight receipt finally arrives', async () => {
+  let resolveSend: (receipt: ReturnType<typeof mailboxReceipt>) => void = () => undefined;
+  harness.sendAgentMessage.mockImplementation(() => new Promise((resolve) => { resolveSend = resolve; }));
+  await renderWorkspace();
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'next step');
+  await clickComposerSend();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
+  await typeText(textarea, 'edited while sending');
+  await act(async () => { resolveSend(mailboxReceipt({ delivery: 'queued' })); });
+  await settle();
+  expect(textarea.value).toBe('edited while sending');
+  expect(harness.pushToast).not.toHaveBeenCalled();
 });
 
 it.each([false, true])('updates a mounted child tree and composer after send and settlement (preview=%s)', async (preview) => {
@@ -283,7 +583,7 @@ it.each([false, true])('updates a mounted child tree and composer after send and
   expect(dock.querySelector('[aria-label="Abort the running prompt"]')).toBeNull();
   await typeText(textarea, 'continue');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click(); });
-  expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'continue', [{ type: 'text', text: 'continue' }]);
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'continue', [{ type: 'text', text: 'continue' }], expect.any(String));
   const publishStatus = async (status: 'background' | 'completed') => {
     const busy = status === 'background';
     await act(async () => {
@@ -327,7 +627,7 @@ it.each(['completed', 'cancelled', 'failed'] as const)(
     await act(async () => { sendButton?.click(); });
     expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'wake up', [
       { type: 'text', text: 'wake up' },
-    ]);
+    ], expect.any(String));
     const modelSelect = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
     await act(async () => { modelSelect.click(); });
     await act(async () => {
@@ -892,4 +1192,35 @@ it('renders the agent context meter in the preview-tab dock slots', async () => 
     previewHeader.remove();
     previewDock.remove();
   }
+});
+
+it('hosts main in the shared timeline and chrome without child commands or another preview provider', async () => {
+  const sessionState = { ...createViewState('session'), loaded: true };
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'main' },
+    sessionState,
+    forest: testForest(),
+    inheritMediaPreview: true,
+    main: {
+      header: <header data-main-header>Session controls</header>,
+      timeline: {
+        state: sessionState,
+        onLoadOlder: vi.fn().mockResolvedValue(false),
+        onResolveApproval: vi.fn().mockResolvedValue(undefined),
+        onAnswerQuestion: vi.fn().mockResolvedValue(undefined),
+        onDismissQuestion: vi.fn().mockResolvedValue(undefined),
+      },
+      dock: <div data-main-dock>Goal and queue</div>,
+      rail: <div data-main-rail>Session details</div>,
+    },
+    railOpen: true,
+    slots: { header, dock, rail: container, heroFooter: null, footer: null, preview: null },
+  });
+  expect(header.querySelector('[data-main-header]')).not.toBeNull();
+  expect(container.querySelector('[data-agent-workspace-target="main"] [data-timeline-agent="main"]')).not.toBeNull();
+  expect(dock.querySelector('[data-main-dock]')?.textContent).toContain('Goal and queue');
+  expect(container.querySelector('[data-main-rail]')).not.toBeNull();
+  expect(dock.querySelector('[data-composer-variant="subagent"]')).toBeNull();
+  expect(harness.sendAgentMessage).not.toHaveBeenCalled();
+  expect(harness.mediaProviderProps).toHaveLength(0);
 });

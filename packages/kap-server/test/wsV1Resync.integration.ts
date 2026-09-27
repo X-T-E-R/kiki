@@ -238,7 +238,7 @@ describe('server-v2 /api/ws resync', () => {
   }
 
   async function getTranscript(sessionId: string): Promise<TranscriptResponse> {
-    const res = await fetch(`${base}/api/sessions/${sessionId}/transcript?agent_id=main`, {
+    const res = await fetch(`${base}/api/sessions/${sessionId}/transcript?agent_id=main&transcript_coverage_version=2`, {
       headers: authHeaders(server as RunningServer),
     } as never);
     const body = (await res.json()) as { code: number; data: TranscriptResponse };
@@ -307,7 +307,7 @@ describe('server-v2 /api/ws resync', () => {
         await c.next((frame) => frame.type === 'server_hello');
         c.send({ type: 'client_hello', id: 'hello', payload: withToken({ client_id: 'example-client' }) });
         await c.next((frame) => frame.type === 'ack' && frame.id === 'hello');
-        c.send({ type: 'subscribe_v2', id: 'seed', payload: { session_id: sid, transcript: { '*': 'off', main: 'delta' } } });
+        c.send({ type: 'subscribe_v2', id: 'seed', payload: { session_id: sid, transcript: { '*': 'off', main: 'delta' }, transcript_coverage_version: 2 } });
         const reset = await c.next((frame) => frame.type === 'transcript.reset', 20_000);
         expect(Buffer.byteLength(JSON.stringify(reset))).toBeGreaterThan(4 << 20);
         const payload = transcriptResetPayload(reset);
@@ -330,7 +330,7 @@ describe('server-v2 /api/ws resync', () => {
     const history = new Set(integerRange(230, 249).map((id) => `t${id}`));
     let before = 't230';
     for (let page = 0; page < 20; page += 1) {
-      const older = await fetch(`${base}/api/sessions/${sid}/transcript?agent_id=main&before_turn=${before}&page_size=20`, {
+      const older = await fetch(`${base}/api/sessions/${sid}/transcript?agent_id=main&before_turn=${before}&page_size=20&transcript_coverage_version=2`, {
         headers: authHeaders(server as RunningServer),
       });
       const body = await older.json() as { code: number; data: TranscriptResponse & { has_more: boolean } };
@@ -465,10 +465,10 @@ describe('server-v2 /api/ws resync', () => {
     c1.send({
       type: 'subscribe_v2',
       id: 't-live',
-      payload: { session_id: sid, transcript: { main: 'delta' } },
+      payload: { session_id: sid, transcript: { main: 'delta' }, transcript_coverage_version: 2 },
     });
     const transcriptAck = await c1.next((f) => f.type === 'ack' && f.id === 't-live');
-    expect(ackPayload(transcriptAck)).toMatchObject({ accepted: [sid], resync_required: [] });
+    expect(ackPayload(transcriptAck)).toMatchObject({ accepted: [sid], resync_required: [], transcript_coverage_version: 2 });
     const reset = await c1.next(
       (f) => f.type === 'transcript.reset' && transcriptResetPayload(f).agent_id === 'main',
     );
@@ -548,6 +548,7 @@ describe('server-v2 /api/ws resync', () => {
       payload: {
         session_id: sid,
         transcript: { main: 'delta' },
+        transcript_coverage_version: 2,
         transcript_since: { main: transcriptCursor },
       },
     });
@@ -613,6 +614,7 @@ describe('server-v2 /api/ws resync', () => {
       payload: {
         session_id: sid,
         transcript: { main: 'delta' },
+        transcript_coverage_version: 2,
         transcript_since: { main: transcriptCursor },
       },
     });

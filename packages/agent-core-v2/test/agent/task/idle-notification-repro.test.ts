@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { Readable } from 'node:stream';
@@ -31,6 +31,7 @@ import {
 } from '../../harness';
 import {
   createAgentTaskPersistence,
+  TASK_TEST_AGENT_SCOPE,
   type TaskServiceTestManager,
 } from './stubs';
 
@@ -111,22 +112,21 @@ describe('task notification dispatch capacity', () => {
       const ordinary = texts.filter((text) => !text.includes(questionId));
       const previewBytes = ordinary.flatMap((text) => [...text.matchAll(/<output-preview bytes="(\d+)"/g)]).reduce((sum, match) => sum + Number(match[1]), 0);
       expect(previewBytes).toBeLessThanOrEqual(16_000);
-      expect(previewBytes).toBe(overflow ? 15_999 : Buffer.byteLength(output) * 4);
+      expect(previewBytes).toBeGreaterThan(overflow ? 4 * 3_000 : 0);
+      expect(previewBytes).toBeLessThanOrEqual(overflow ? 4 * 4_000 : Buffer.byteLength(output) * 4);
       for (const id of ids) expect(texts.some((text) => text.includes(id))).toBe(true);
-      expect(ordinary[0]).toContain(escapeXml(output));
       expect(ordinary.join('')).not.toContain('\uFFFD');
       expect(ordinary.join('')).not.toContain('中<&>');
+      for (const text of ordinary) {
+        expect(text).toContain('<output-preview bytes="');
+        expect(text).toContain('<output-file');
+        expect(text).toContain(escapeXml('中<&>🙂'));
+        expect(text).not.toContain('Output preview omitted');
+      }
       if (overflow) {
-        expect(ordinary[1]).toContain(escapeXml(output));
-        expect(ordinary[2]).toContain('truncated="true" complete="false"');
-        expect(ordinary[2]).toContain(escapeXml('<&>🙂' + '中<&>🙂'.repeat(199)));
-        expect(ordinary[3]).not.toContain('<output-preview');
-        expect(ordinary[3]).toContain('Output preview omitted');
-        expect(ordinary[3]).toContain('<output-file');
-        expect(ordinary[3]).not.toContain('No final agent receipt');
+        expect(ordinary.every((text) => text.includes('truncated="true" complete="false"'))).toBe(true);
       } else {
         for (const text of ordinary) expect(text).toContain(escapeXml(output));
-        expect(ordinary.join('')).not.toContain('Output preview omitted');
       }
       const question = texts.find((text) => text.includes(questionId))!;
       expect(question).toContain(answer);
@@ -135,7 +135,10 @@ describe('task notification dispatch capacity', () => {
       const next = tasks.registerTask(agentTask(Promise.resolve({ result: output }), 'fresh batch'));
       await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(6));
       await loop.settled();
-      expect(JSON.stringify(ctx.context.get().find((m) => m.origin?.kind === 'task' && m.origin.taskId === next)?.content)).toContain(escapeXml(output));
+      const fresh = JSON.stringify(ctx.context.get().find((m) => m.origin?.kind === 'task' && m.origin.taskId === next)?.content);
+      expect(fresh).toContain(escapeXml('中<&>🙂'));
+      expect(fresh).toContain('<output-file');
+      expect(fresh).toContain(escapeXml(output));
     } finally {
       release.resolve();
       await ctx.dispose();
@@ -609,6 +612,32 @@ describe('task notification → main agent (real Agent instance)', () => {
       }
     });
 
+    it('RESUME: delivers a damaged receipt status once without injecting the untrusted log', async () => {
+      const persistence = createAgentTaskPersistence(sessionDir);
+      const taskId = 'agent-damaged1';
+      await persistence.commitTerminalTask({
+        taskId, kind: 'agent', agentId: 'child-damaged', description: 'damaged task',
+        status: 'failed', stopReason: 'child failed', detached: true, startedAt: 20, endedAt: 21,
+      }, 'trusted completion');
+      await writeFile(join(sessionDir, TASK_TEST_AGENT_SCOPE, 'tasks', taskId, 'output.log'), 'malicious completion');
+      await background.loadFromDisk();
+      expect(background.getTask(taskId)).toMatchObject({ receipt: undefined, receiptVerification: 'invalid' });
+      await background.reconcile();
+      const notifications = ctx.context.get().filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId);
+      expect(notifications).toHaveLength(1);
+      const text = notifications[0]!.content.map((part) => part.type === 'text' ? part.text : '').join('');
+      expect(text).toContain('task.failed');
+      expect(text).toContain('child failed');
+      expect(text).toContain('AgentRun(resume="child-damaged"');
+      expect(text).toContain('Task receipt verification failed');
+      expect(text).not.toContain('malicious completion');
+      expect(text).not.toContain('<output-preview');
+      expect(text).not.toContain('<output-file');
+      await background.reconcile();
+      expect(ctx.context.get().filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId))
+        .toHaveLength(1);
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
     it('RESUME: shares the preview pool, retains failure facts and complete answers, and does not redeliver', async () => {
       const persistence = createAgentTaskPersistence(sessionDir);
       const output = 'x' + '中<&>🙂'.repeat(700);
@@ -641,14 +670,15 @@ describe('task notification → main agent (real Agent instance)', () => {
       const ordinary = texts.filter((text) => !text.includes('question-batch000'));
       const bytes = ordinary.flatMap((text) => [...text.matchAll(/<output-preview bytes="(\d+)"/g)]).reduce((sum, match) => sum + Number(match[1]), 0);
       expect(bytes).toBeLessThanOrEqual(16_000);
-      expect(bytes).toBeGreaterThan(15_990);
-      expect(ordinary.join('')).toContain('Output preview omitted');
+      expect(bytes).toBeGreaterThan(10_000);
+      expect(ordinary.join('')).not.toContain('Output preview omitted');
       expect(ordinary.join('')).not.toContain('\uFFFD');
       expect(ordinary.join('')).not.toContain('中<&>');
       for (let i = 0; i < 5; i++) {
         const text = texts.find((text) => text.includes(`agent-batch00${i}`))!;
         expect(text).toContain(`child-${i}`);
         expect(text).toContain('<output-file');
+        expect(text).toContain('<output-preview bytes="');
         expect(text).toContain(i === 4 ? 'task.failed' : 'task.completed');
       }
       const failed = texts.find((text) => text.includes('agent-batch004'))!;

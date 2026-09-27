@@ -46,6 +46,8 @@ function configWith(value: unknown): IConfigService {
     replace: async () => {},
     replaceSections: async () => {},
     reload: async () => {},
+    applyModelGenerationMigration: async () => { throw new Error('Migration is not available in configWith'); },
+    restoreModelGenerationMigration: async () => { throw new Error('Migration is not available in configWith'); },
     diagnostics: () => [],
   };
 }

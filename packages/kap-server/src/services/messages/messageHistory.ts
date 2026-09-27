@@ -11,14 +11,15 @@ import {
   createContextTranscriptReducer,
   ensureMainAgent,
   followSessionLifecycles,
-  resumeSessionById,
   type ContextMessage,
   type ContextTranscript,
   type IAgentScopeHandle,
+  type ISessionScopeHandle,
   type Scope,
   type WireRecord,
 } from '@kiki/agent-core-v2';
 
+import { acquireSessionOperation } from '../../lib/sessionOperationLease';
 import type { Message, MessageRole } from '../../protocol/message';
 import { toProtocolMessage } from './messageProjection';
 
@@ -125,33 +126,41 @@ export async function listMessages(
   sessionId: string,
   query: MessageListQuery,
 ): Promise<PageResponse<Message>> {
-  const history = await loadActiveMessageHistory(core, sessionId);
-  const requestedSize = query.page_size ?? DEFAULT_PAGE_SIZE;
-  const pageSize = Math.min(Math.max(requestedSize, 1), MAX_PAGE_SIZE);
-  const pivotId = query.before_id ?? query.after_id;
-  const pivotIndex = pivotId === undefined
-    ? undefined
-    : resolveMessageIndex(sessionId, history.messages, history.explicitIndexes, pivotId);
-  const high = query.before_id !== undefined && pivotIndex !== undefined
-    ? pivotIndex - 1
-    : history.messages.length - 1;
-  const low = query.after_id !== undefined && pivotIndex !== undefined ? pivotIndex + 1 : 0;
-  const selected: Array<{ readonly index: number; readonly message: ContextMessage }> = [];
-  for (let index = high; index >= low && selected.length <= pageSize; index -= 1) {
-    const message = history.messages[index];
-    if (message !== undefined) selected.push({ index, message });
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  if (summary === undefined) throw new SessionNotFoundError(sessionId);
+  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  try {
+    if (lease.handle === undefined) throw new SessionNotFoundError(sessionId);
+    const history = await loadActiveMessageHistory(core, lease.handle, sessionId, summary.createdAt);
+    const requestedSize = query.page_size ?? DEFAULT_PAGE_SIZE;
+    const pageSize = Math.min(Math.max(requestedSize, 1), MAX_PAGE_SIZE);
+    const pivotId = query.before_id ?? query.after_id;
+    const pivotIndex = pivotId === undefined
+      ? undefined
+      : resolveMessageIndex(sessionId, history.messages, history.explicitIndexes, pivotId);
+    const high = query.before_id !== undefined && pivotIndex !== undefined
+      ? pivotIndex - 1
+      : history.messages.length - 1;
+    const low = query.after_id !== undefined && pivotIndex !== undefined ? pivotIndex + 1 : 0;
+    const selected: Array<{ readonly index: number; readonly message: ContextMessage }> = [];
+    for (let index = high; index >= low && selected.length <= pageSize; index -= 1) {
+      const message = history.messages[index];
+      if (message !== undefined) selected.push({ index, message });
+    }
+    const hasMore = selected.length > pageSize;
+    const page = selected.slice(0, pageSize);
+    const hydrated = await rehydrate(history.agent, page.map((entry) => entry.message));
+    const projected = hydrated.map((message, pageIndex) => {
+      const index = page[pageIndex]!.index;
+      return toProtocolMessage(sessionId, index, message, history.createdAt, history.createdAtMs[index]);
+    });
+    const filtered = query.role !== undefined
+      ? projected.filter((message) => message.role === query.role)
+      : projected;
+    return { items: filtered, has_more: hasMore };
+  } finally {
+    lease.dispose();
   }
-  const hasMore = selected.length > pageSize;
-  const page = selected.slice(0, pageSize);
-  const hydrated = await rehydrate(history.agent, page.map((entry) => entry.message));
-  const projected = hydrated.map((message, pageIndex) => {
-    const index = page[pageIndex]!.index;
-    return toProtocolMessage(sessionId, index, message, history.createdAt, history.createdAtMs[index]);
-  });
-  const filtered = query.role !== undefined
-    ? projected.filter((message) => message.role === query.role)
-    : projected;
-  return { items: filtered, has_more: hasMore };
 }
 
 export async function getMessage(
@@ -159,24 +168,32 @@ export async function getMessage(
   sessionId: string,
   messageId: string,
 ): Promise<Message> {
-  const history = await loadActiveMessageHistory(core, sessionId);
-  const index = resolveMessageIndex(
-    sessionId,
-    history.messages,
-    history.explicitIndexes,
-    messageId,
-  );
-  if (index === undefined) throw new MessageNotFoundError(sessionId, messageId);
-  const contextMessage = history.messages[index];
-  if (contextMessage === undefined) throw new MessageNotFoundError(sessionId, messageId);
-  const [hydrated] = await rehydrate(history.agent, [contextMessage]);
-  return toProtocolMessage(
-    sessionId,
-    index,
-    hydrated!,
-    history.createdAt,
-    history.createdAtMs[index],
-  );
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  if (summary === undefined) throw new SessionNotFoundError(sessionId);
+  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  try {
+    if (lease.handle === undefined) throw new SessionNotFoundError(sessionId);
+    const history = await loadActiveMessageHistory(core, lease.handle, sessionId, summary.createdAt);
+    const index = resolveMessageIndex(
+      sessionId,
+      history.messages,
+      history.explicitIndexes,
+      messageId,
+    );
+    if (index === undefined) throw new MessageNotFoundError(sessionId, messageId);
+    const contextMessage = history.messages[index];
+    if (contextMessage === undefined) throw new MessageNotFoundError(sessionId, messageId);
+    const [hydrated] = await rehydrate(history.agent, [contextMessage]);
+    return toProtocolMessage(
+      sessionId,
+      index,
+      hydrated!,
+      history.createdAt,
+      history.createdAtMs[index],
+    );
+  } finally {
+    lease.dispose();
+  }
 }
 
 export async function loadMessageHistoryEntries(
@@ -185,30 +202,36 @@ export async function loadMessageHistoryEntries(
 ): Promise<readonly MessageHistoryEntry[]> {
   const summary = await core.accessor.get(ISessionIndex).get(sessionId);
   if (summary === undefined) throw new SessionNotFoundError(sessionId);
-  const session = await resumeSessionById(core.accessor, sessionId);
-  if (session === undefined) return [];
-  const agent = await ensureMainAgent(session);
-  const transcript = await readTranscript(core, agent);
-  const merged = mergeLiveTail(
-    transcript,
-    agent.accessor.get(IAgentContextMemoryService).get(),
-  );
-  let previousMs = Number.NEGATIVE_INFINITY;
-  return merged.messages.map((contextMessage, index) => {
-    const baseMs = merged.times[index] ?? summary.createdAt + index;
-    const createdAtMs = Math.max(previousMs + 1, baseMs);
-    previousMs = createdAtMs;
-    return {
-      index,
-      contextMessage,
-      message: toProtocolMessage(sessionId, index, contextMessage, summary.createdAt, createdAtMs),
-    };
-  });
+  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  try {
+    if (lease.handle === undefined) return [];
+    const agent = await ensureMainAgent(lease.handle);
+    const transcript = await readTranscript(core, agent);
+    const merged = mergeLiveTail(
+      transcript,
+      agent.accessor.get(IAgentContextMemoryService).get(),
+    );
+    let previousMs = Number.NEGATIVE_INFINITY;
+    return merged.messages.map((contextMessage, index) => {
+      const baseMs = merged.times[index] ?? summary.createdAt + index;
+      const createdAtMs = Math.max(previousMs + 1, baseMs);
+      previousMs = createdAtMs;
+      return {
+        index,
+        contextMessage,
+        message: toProtocolMessage(sessionId, index, contextMessage, summary.createdAt, createdAtMs),
+      };
+    });
+  } finally {
+    lease.dispose();
+  }
 }
 
 async function loadActiveMessageHistory(
   core: Scope,
+  session: ISessionScopeHandle,
   sessionId: string,
+  createdAt: number,
 ): Promise<{
   readonly agent: IAgentScopeHandle;
   readonly createdAt: number;
@@ -216,15 +239,11 @@ async function loadActiveMessageHistory(
   readonly createdAtMs: readonly number[];
   readonly explicitIndexes: ReadonlyMap<string, number>;
 }> {
-  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
-  if (summary === undefined) throw new SessionNotFoundError(sessionId);
-  const session = await resumeSessionById(core.accessor, sessionId);
-  if (session === undefined) throw new SessionNotFoundError(sessionId);
   const agent = await ensureMainAgent(session);
-  const entry = await refreshMessageHistoryCache(core, agent, sessionId, summary.createdAt);
+  const entry = await refreshMessageHistoryCache(core, agent, sessionId, createdAt);
   return {
     agent,
-    createdAt: summary.createdAt,
+    createdAt,
     messages: entry.messages,
     createdAtMs: entry.createdAtMs,
     explicitIndexes: entry.explicitIndexes,

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import type { AddressInfo as HttpAddress } from 'node:net';
 
@@ -399,6 +400,81 @@ describe('McpOAuthService credential bookkeeping', () => {
     expect(fixture.events).toEqual([
       { type: 'tokens-saved', serverName: SERVER_NAME, serverUrl: SERVER_URL },
     ]);
+  });
+
+  it('lists only masked identities, reveals on request and revokes by an exact opaque id', async () => {
+    const fixture = makeFixture();
+    cleanups.push(() => fixture.service.dispose());
+    const secretUrl = 'https://user:fixture-secret@host.example.test/mcp?api_key=fixture-secret';
+    await fixture.service.getProvider(SERVER_NAME, secretUrl).saveTokens({
+      access_token: 'fixture-token', token_type: 'Bearer',
+    });
+    await fixture.service.getProvider(SERVER_NAME, SERVER_URL).saveTokens({
+      access_token: 'other-fixture-token', token_type: 'Bearer',
+    });
+    const otherUrl = 'https://other.example.test/mcp';
+    await fixture.store.write(`${mcpOAuthStoreKey('fake', otherUrl)}${META_SUFFIX}`, {
+      serverName: SERVER_NAME, serverUrl: secretUrl,
+    });
+    const credentials = await fixture.service.listStoredCredentials();
+    expect(credentials).toHaveLength(2);
+    expect(JSON.stringify(credentials)).not.toContain('fixture-secret');
+    expect(JSON.stringify(credentials)).not.toContain('fixture-token');
+    const secret = credentials.find((item) => item.displayUrl.includes('host.example.test'))!;
+    expect(secret).toMatchObject({ serverName: SERVER_NAME, displayUrl: 'https://host.example.test/…', origin: 'unknown' });
+    expect(secret.credentialId).toMatch(/^[a-f0-9]{64}$/);
+    expect(await fixture.service.revealStoredCredential(secret.credentialId)).toEqual({ canonicalUrl: secretUrl });
+    await expect(fixture.service.revokeStoredCredential({ credentialId: 'a'.repeat(64) }))
+      .rejects.toMatchObject({ code: 'mcp.server_not_found' });
+    expect((await fixture.service.tokenState(SERVER_NAME, secretUrl)).hasTokens).toBe(true);
+    await fixture.service.revokeStoredCredential({ credentialId: secret.credentialId });
+    expect((await fixture.service.tokenState(SERVER_NAME, secretUrl)).hasTokens).toBe(false);
+    expect((await fixture.service.tokenState(SERVER_NAME, SERVER_URL)).hasTokens).toBe(true);
+    await expect(fixture.service.revealStoredCredential(secret.credentialId))
+      .rejects.toMatchObject({ code: 'mcp.server_not_found' });
+  });
+
+  it('does not expose a brute-forceable PIN identity and rejects stale ids after a service restart', async () => {
+    const fixture = makeFixture();
+    cleanups.push(() => fixture.service.dispose());
+    const urls = [
+      'https://pin.example.test/mcp?pin=0000',
+      'https://pin.example.test/mcp?pin=0001',
+    ];
+    for (const url of urls) {
+      await fixture.service.getProvider(SERVER_NAME, url).saveTokens({ access_token: 'fixture-token', token_type: 'Bearer' });
+    }
+    const first = await fixture.service.listStoredCredentials();
+    expect(first).toHaveLength(2);
+    expect(first.map(({ displayUrl }) => displayUrl)).toEqual(['https://pin.example.test/…', 'https://pin.example.test/…']);
+    expect(new Set(first.map(({ credentialId }) => credentialId)).size).toBe(2);
+    expect(await fixture.service.listStoredCredentials()).toEqual(first);
+    const ids = new Set(first.map(({ credentialId }) => credentialId));
+    for (let pin = 0; pin < 10_000; pin++) {
+      const candidate = `https://pin.example.test/mcp?pin=${String(pin).padStart(4, '0')}`;
+      const publicDigest = createHash('sha256').update(mcpOAuthStoreKey(SERVER_NAME, candidate)).digest('hex');
+      expect(ids.has(publicDigest)).toBe(false);
+    }
+
+    const restarted = makeFixture(fixture.store);
+    cleanups.push(() => restarted.service.dispose());
+    const next = await restarted.service.listStoredCredentials();
+    expect(next).toHaveLength(2);
+    expect(next.every(({ credentialId }) => !ids.has(credentialId))).toBe(true);
+    await expect(restarted.service.revealStoredCredential(first[0]!.credentialId))
+      .rejects.toMatchObject({ code: 'mcp.server_not_found' });
+    await expect(restarted.service.revokeStoredCredential({ credentialId: first[0]!.credentialId }))
+      .rejects.toMatchObject({ code: 'mcp.server_not_found' });
+    await expect(restarted.service.revokeStoredCredential({ credentialId: 'f'.repeat(64) }))
+      .rejects.toMatchObject({ code: 'mcp.server_not_found' });
+    for (const url of urls) expect((await restarted.service.tokenState(SERVER_NAME, url)).hasTokens).toBe(true);
+
+    const firstUrl = (await restarted.service.revealStoredCredential(next[0]!.credentialId)).canonicalUrl;
+    expect(urls).toContain(firstUrl);
+    await restarted.service.revokeStoredCredential({ credentialId: next[0]!.credentialId });
+    expect((await restarted.service.tokenState(SERVER_NAME, firstUrl)).hasTokens).toBe(false);
+    const otherUrl = urls.find((url) => url !== firstUrl)!;
+    expect((await restarted.service.tokenState(SERVER_NAME, otherUrl)).hasTokens).toBe(true);
   });
 
   it('treats tokens without expiry data as non-expiring', async () => {

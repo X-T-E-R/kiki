@@ -18,7 +18,7 @@ import { ProfileDetailSections, type ProfileDetailSectionsProps } from './Profil
 const { client } = vi.hoisted(() => ({
   client: { listNamedAgentProfiles: vi.fn(), readHostFile: vi.fn() },
 }));
-vi.mock('../../state/connection', () => ({ useOptionalConnection: () => ({ client }) }));
+vi.mock('../../state/connection', () => ({ useOptionalConnection: () => ({ client, scopeId: 'local' }) }));
 
 const BOUND_FILE = '/ws-one/.kiki/agents/agent.md';
 const OTHER_FILE = '/ws-two/.kiki/agents/agent.md';

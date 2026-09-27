@@ -59,7 +59,7 @@ function Get-ReleaseId([string]$MainPath, [string]$SidecarPath) {
 try {
     [IO.Directory]::CreateDirectory($candidateRoot) | Out-Null
     [IO.Directory]::CreateDirectory($desktopRoot) | Out-Null
-    [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki.exe'), 'main-build-a')
+    [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki-desktop.exe'), 'main-build-a')
     [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki-server.exe'), 'sidecar-build-a')
 
     $common = @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-CandidateRoot', $candidateRoot)
@@ -69,9 +69,9 @@ try {
     $firstManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     Assert-True ($null -ne $firstManifest.gitSha -and $firstManifest.gitSha -match '^[0-9a-f]{40}$|^unknown$') 'current.json does not carry a git sha.'
     $firstRelease = Join-Path (Join-Path $runtimeRoot 'releases') $firstManifest.releaseId
-    Assert-True (Test-Path -LiteralPath (Join-Path $firstRelease 'kiki.exe') -PathType Leaf) 'Initial promotion did not copy kiki.exe.'
+    Assert-True (Test-Path -LiteralPath (Join-Path $firstRelease 'kiki-desktop.exe') -PathType Leaf) 'Initial promotion did not copy kiki-desktop.exe.'
     Assert-True (Test-Path -LiteralPath (Join-Path $firstRelease 'kiki-server.exe') -PathType Leaf) 'Initial promotion did not copy kiki-server.exe.'
-    Assert-Equal 'main-build-a' ([IO.File]::ReadAllText((Join-Path $firstRelease 'kiki.exe'))) 'Promoted GUI bytes differ from the candidate.'
+    Assert-Equal 'main-build-a' ([IO.File]::ReadAllText((Join-Path $firstRelease 'kiki-desktop.exe'))) 'Promoted GUI bytes differ from the candidate.'
     Assert-Equal 'sidecar-build-a' ([IO.File]::ReadAllText((Join-Path $firstRelease 'kiki-server.exe'))) 'Promoted backend bytes differ from the candidate.'
     Assert-True (Test-Path -LiteralPath (Join-Path $firstRelease 'build-info.txt') -PathType Leaf) 'Initial promotion did not write build-info.txt.'
     $buildInfoText = [IO.File]::ReadAllText((Join-Path $firstRelease 'build-info.txt'))
@@ -90,11 +90,11 @@ try {
     Assert-Equal $manifestTextBeforeFailure ([IO.File]::ReadAllText($manifestPath)) 'Missing-artifact promotion changed current.json.'
 
     [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki-server.exe'), 'sidecar-build-b')
-    [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki.exe'), 'main-build-b')
-    $secondReleaseId = Get-ReleaseId (Join-Path $candidateRoot 'kiki.exe') (Join-Path $candidateRoot 'kiki-server.exe')
+    [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki-desktop.exe'), 'main-build-b')
+    $secondReleaseId = Get-ReleaseId (Join-Path $candidateRoot 'kiki-desktop.exe') (Join-Path $candidateRoot 'kiki-server.exe')
     $invalidExistingRelease = Join-Path (Join-Path $runtimeRoot 'releases') $secondReleaseId
     [IO.Directory]::CreateDirectory($invalidExistingRelease) | Out-Null
-    [IO.File]::WriteAllText((Join-Path $invalidExistingRelease 'kiki.exe'), 'corrupt-copy')
+    [IO.File]::WriteAllText((Join-Path $invalidExistingRelease 'kiki-desktop.exe'), 'corrupt-copy')
     [IO.File]::WriteAllText((Join-Path $invalidExistingRelease 'kiki-server.exe'), 'sidecar-build-b')
     $verificationOutput = Invoke-Controller $common 1
     Assert-True ($verificationOutput -match 'failed copy verification') 'Corrupt release failure did not report copy verification.'

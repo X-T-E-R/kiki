@@ -1764,6 +1764,17 @@ function transcriptDistanceFromEnd(scroll: HTMLElement): number {
 }
 
 describe('virtualized transcript scrolling', () => {
+  it('warns that unverified history is partial without claiming the beginning was reached', async () => {
+    const container = await renderTranscript([userBlock({ id: 'known-turn', text: 'known message' })], undefined, {
+      historyCoverageKind: 'unknown', hasMoreHistory: true, oldestMessageId: 'known-turn', fetchedOlder: true,
+    });
+    const warning = container.querySelector('[role="status"]');
+    expect(warning?.textContent).toContain('History completeness is unverified');
+    expect(warning?.textContent).toContain('Earlier messages may be missing');
+    expect(warning?.textContent).not.toContain('beginning of history');
+    expect(warning?.querySelector('button')).not.toBeNull();
+  });
+
   it('positions the next row in the same resize delivery instead of a later animation frame', async () => {
     const { root, container } = makeRoot();
     await renderSettled(root, virtualTranscript(transcriptState([
@@ -2025,17 +2036,139 @@ describe('virtualized transcript scrolling', () => {
     expect(after.offset).toBe(before.offset);
   });
 
-  it('loads older history when the virtual first row mounts at the top edge', async () => {
-    const onLoadOlder = vi.fn(async () => false);
-    const state = { ...transcriptState(virtualBlocks(100, 'history')), hasMoreHistory: true };
+  it('loads one older page only after an upward browsing gesture at the top edge', async () => {
+    const onLoadOlder = vi.fn(async () => true);
+    const current = virtualBlocks(100, 'history');
+    const state = { ...transcriptState(current), hasMoreHistory: true };
     const { root, container } = makeRoot();
     await renderSettled(root, virtualTranscript(state, onLoadOlder));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
+    expect(onLoadOlder).not.toHaveBeenCalled();
 
     await setTranscriptScroll(scroll, 0);
     await settleVirtualizer();
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder));
+    await settleVirtualizer();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await setTranscriptScroll(scroll, 0);
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it('loads an older page from the top button without a wheel gesture', async () => {
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    const loadButton = scroll.querySelector<HTMLButtonElement>('button.mx-auto.block.rounded-full');
+    expect(loadButton).not.toBeNull();
+    await act(async () => { loadButton!.click(); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads one page when an upward gesture reaches the top from further away', async () => {
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 5000);
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    await setTranscriptScroll(scroll, 0);
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { label: 'a transcript reset', resetVersion: 1, nextBlocks: virtualBlocks(2, 'replacement') },
+    { label: 'content shortening', resetVersion: 0, nextBlocks: virtualBlocks(2, 'replacement') },
+  ])('discards an old upward intent when $label moves the viewport to the top', async ({ resetVersion, nextBlocks }) => {
+    const onLoadOlder = vi.fn(async () => true);
+    const initial = { ...transcriptState(virtualBlocks(100, 'history')), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(initial, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await setTranscriptScroll(scroll, 5000);
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).not.toHaveBeenCalled();
+
+    await renderSettled(root, virtualTranscript({ ...initial, blocks: nextBlocks, transcriptResetVersion: resetVersion }, onLoadOlder));
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat a delayed programmatic scroll as the old upward gesture', async () => {
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await setTranscriptScroll(scroll, 5000);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    try {
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+      expect(onLoadOlder).not.toHaveBeenCalled();
+      clock.mockReturnValue(2001);
+      await setTranscriptScroll(scroll, 0);
+      expect(onLoadOlder).not.toHaveBeenCalled();
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+      expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('ignores an upward gesture overtaken by a pending reset anchor restoration', async () => {
+    const onLoadOlder = vi.fn(async () => true);
+    const state = { ...transcriptState(virtualBlocks(100, 'anchor-reset')), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+
+    let nextFrame = 1;
+    const frames = new Map<number, FrameRequestCallback>();
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      const id = nextFrame;
+      nextFrame += 1;
+      frames.set(id, callback);
+      return id;
+    });
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { frames.delete(id); });
+    try {
+      await renderSettled(root, virtualTranscript({ ...state, transcriptResetVersion: 1 }, onLoadOlder));
+      expect(frames.size).toBeGreaterThan(0);
+      await setTranscriptScroll(scroll, 5000);
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+      expect(onLoadOlder).not.toHaveBeenCalled();
+      await act(async () => {
+        for (let iteration = 0; iteration < 10 && frames.size > 0; iteration += 1) {
+          const batch = [...frames.entries()];
+          frames.clear();
+          for (const [, callback] of batch) callback(performance.now());
+        }
+      });
+      expect(scroll.scrollTop).toBeLessThanOrEqual(48);
+      expect(onLoadOlder).not.toHaveBeenCalled();
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+      expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      raf.mockRestore();
+      cancel.mockRestore();
+    }
   });
 
   it('restores the end or reading anchor after a full measurement reset', async () => {

@@ -827,6 +827,78 @@ describe('agent collaboration safe-boundary delivery', () => {
     },
   );
 
+  it('holds an independent lease after background send returns until running delivery settles', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    target.setRunning(true);
+    const lifecycle = lifecycleHarness([target.handle]);
+    const residency = residencyHarness(lifecycle.service);
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }), dispatchHarness(), residency.manager);
+
+    const acceptance = await service.send({
+      ...sendInput('background delivery', 'background-delivery'),
+      waitForRunningDelivery: false,
+    });
+    await waitUntil(() => target.pendingSteers() === 1);
+    expect(acceptance.delivery).toBe('queued');
+    expect(residency.acquire).toHaveBeenCalledWith('session-1', 'agent-message-delivery');
+    expect(residency.pins()).toBe(1);
+    expect(await residency.manager.evictIfIdle?.('session-1')).toBe(false);
+    expect((await store.accept(messageInput('background delivery', 'background-delivery'))).delivery).toBe('queued');
+
+    await target.beginStepBoundary(1);
+    await waitUntil(() => residency.pins() === 0);
+    expect((await store.accept(messageInput('background delivery', 'background-delivery'))).delivery).toBe('delivered');
+    expect(await residency.manager.evictIfIdle?.('session-1')).toBe(true);
+    service.dispose();
+  });
+
+  it('releases a background delivery lease on cancellation and leaves the message queued', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    target.setRunning(true);
+    const lifecycle = lifecycleHarness([target.handle]);
+    const residency = residencyHarness(lifecycle.service);
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }), dispatchHarness(), residency.manager);
+
+    const acceptance = await service.send({
+      ...sendInput('cancelled delivery', 'cancelled-delivery'),
+      waitForRunningDelivery: false,
+    });
+    await waitUntil(() => target.pendingSteers() === 1);
+    expect(residency.pins()).toBe(1);
+    target.setRunning(false);
+    await waitUntil(() => residency.pins() === 0);
+    expect((await store.accept(messageInput('cancelled delivery', 'cancelled-delivery'))).delivery).toBe('queued');
+    expect(acceptance.delivery).toBe('queued');
+    expect(await residency.manager.evictIfIdle?.('session-1')).toBe(true);
+    service.dispose();
+  });
+
+  it('releases a background delivery lease when the mailbox claim fails', async () => {
+    const persisted = mailboxStore(tempDir());
+    const failure = new Error('claim failed');
+    let attempt = 0;
+    const store = wrapStore(persisted, {
+      nextQueued: async () => { attempt++; throw failure; },
+    });
+    const target = agentHandle('agent-target');
+    target.setRunning(true);
+    const lifecycle = lifecycleHarness([target.handle]);
+    const residency = residencyHarness(lifecycle.service);
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }), dispatchHarness(), residency.manager);
+
+    const accepted = await service.send({
+      ...sendInput('failed claim', 'failed-claim'),
+      waitForRunningDelivery: false,
+    });
+    expect(accepted.delivery).toBe('queued');
+    await waitUntil(() => attempt === 1 && residency.pins() === 0);
+    expect((await persisted.accept(messageInput('failed claim', 'failed-claim'))).delivery).toBe('queued');
+    expect(await residency.manager.evictIfIdle?.('session-1')).toBe(true);
+    service.dispose();
+  });
+
   it('injects AgentSend into a running target at its next step boundary before acknowledging delivery', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
@@ -1595,14 +1667,41 @@ function metadataHarness(
   } as unknown as ISessionMetadata;
 }
 
+function residencyHarness(lifecycle: AgentLifecycle) {
+  let pins = 0;
+  const acquire = vi.fn(async (_sessionId: string, _reason: string) => {
+    pins++;
+    return {
+      handle: {
+        id: 'session-1',
+        kind: LifecycleScope.Session,
+        accessor: {
+          get: <T>(id: ServiceIdentifier<T>): T => {
+            if (id === IAgentLifecycleService) return lifecycle as T;
+            throw new Error('unexpected session service');
+          },
+        },
+        dispose: () => {},
+      },
+      dispose: () => { pins--; },
+    };
+  });
+  const manager = {
+    acquire,
+    evictIfIdle: async (_sessionId: string) => pins === 0,
+  } as unknown as ISessionManager;
+  return { manager, acquire, pins: () => pins };
+}
+
 function messagingService(
   store: IAgentCollaborationMessageStore,
   lifecycle: AgentLifecycle,
   session: ISessionContext,
   metadata: ISessionMetadata,
   dispatch: ISessionDispatchService = dispatchHarness(),
+  manager: ISessionManager = residencyHarness(lifecycle).manager,
 ): AgentCollaborationMessagingService {
-  return new AgentCollaborationMessagingService(store, lifecycle, session, metadata, dispatch);
+  return new AgentCollaborationMessagingService(store, lifecycle, session, metadata, dispatch, manager);
 }
 
 function dispatchHarness(

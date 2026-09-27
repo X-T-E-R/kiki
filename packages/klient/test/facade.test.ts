@@ -218,6 +218,21 @@ describe('facade routing', () => {
     ]);
   });
 
+  it('forwards an explicitly confirmed capability digest without changing legacy one-argument calls', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const status = {
+      id: 'kimi-webbridge', displayName: 'WebBridge', description: 'Browser bridge',
+      supported: true, state: 'partial', steps: [], install: { running: false },
+    };
+    channel.result = status;
+    const digest = 'a'.repeat(64);
+    await expect(klient.global.capabilities.install('kimi-webbridge', digest)).resolves.toEqual(status);
+    expect(channel.calls).toEqual([
+      { scope: {}, service: 'capabilityService', method: 'installCapability', args: ['kimi-webbridge', digest] },
+    ]);
+  });
+
   it('env() fans out property reads and merges them', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);

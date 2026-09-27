@@ -6,7 +6,6 @@ import '@fontsource/space-grotesk/700.css';
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/600.css';
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
@@ -23,26 +22,18 @@ import './index.css';
 // dark-theme user gets a paper-white flash on every launch.
 startThemeSync(hostAdapter);
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { retry: 1, staleTime: 0, refetchOnWindowFocus: false },
-  },
-});
-
 createRoot(document.querySelector('#root')!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <HostProvider>
-        <I18nProvider>
-          <ConnectionProvider>
-            <BrowserRouter>
-              <AppErrorBoundary>
-                <App />
-              </AppErrorBoundary>
-            </BrowserRouter>
-          </ConnectionProvider>
-        </I18nProvider>
-      </HostProvider>
-    </QueryClientProvider>
+    <HostProvider>
+      <I18nProvider>
+        <ConnectionProvider>
+          <BrowserRouter>
+            <AppErrorBoundary>
+              <App />
+            </AppErrorBoundary>
+          </BrowserRouter>
+        </ConnectionProvider>
+      </I18nProvider>
+    </HostProvider>
   </StrictMode>,
 );

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type OpenAI from 'openai';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 
@@ -145,6 +145,39 @@ describe('ModelRequesterImpl request execution', () => {
     expect(provider.calls.map((call) => call.options?.serviceTier)).toEqual(['flex', 'priority', undefined, 'flex']);
   });
 
+  it('applies configured zero, API default, false extras and output preference to direct and profiled requests', async () => {
+    const provider = new FakeChatProvider();
+    const requester = new ModelRequesterImpl({
+      ...modelWith(staticAuth()), maxCompletionTokens: 16384, maxOutputSize: 32768,
+      requestParams: { temperature: 0.7, top_p: 0.8, feature_enabled: false },
+      generationParameters: { temperature: 0, topP: { kind: 'api_default' }, maxCompletionTokens: 16384 },
+    }, registryReturning(provider));
+    await collect(requester.request(INPUT));
+    await collect(requester.request(INPUT, undefined, { maxCompletionTokens: 12000, usedContextTokens: 118000 }));
+    expect(provider.calls[0]?.options).toMatchObject({
+      sampling: { temperature: 0, topP: undefined }, maxCompletionTokens: 16384,
+      requestParams: { feature_enabled: false, temperature: 0.7 },
+    });
+    expect(provider.calls[0]?.options?.requestParams).not.toHaveProperty('top_p');
+    expect(provider.calls[1]?.options?.maxCompletionTokens).toBe(10000);
+    await collect(requester.request(INPUT, undefined, { requestParams: { top_p: 0.3 } }));
+    expect(provider.calls[2]?.options?.requestParams?.['top_p']).toBe(0.3);
+    await expect(collect(requester.request(INPUT, undefined, { usedContextTokens: 128000 })))
+      .rejects.toThrow('no remaining context');
+    expect(provider.calls).toHaveLength(3);
+  });
+
+  it('does not turn an unconfigured output preference into the full context size', async () => {
+    const provider = new FakeChatProvider();
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider));
+    await collect(requester.request(INPUT));
+    expect(provider.calls[0]?.options?.maxCompletionTokens).toBeUndefined();
+    await collect(requester.request(INPUT, undefined, { usedContextTokens: 0 }));
+    expect(provider.calls[1]?.options?.maxCompletionTokens).toBeUndefined();
+    await collect(requester.request(INPUT, undefined, { maxContextTokens: 20000, usedContextTokens: 18000 }));
+    expect(provider.calls[2]?.options?.maxCompletionTokens).toBe(2000);
+  });
+
   it('sends resolved sampling and tier while clamping the final Responses output to remaining context', async () => {
     let payload: unknown;
     const provider = new OpenAIResponsesChatProvider({
@@ -167,6 +200,13 @@ describe('ModelRequesterImpl request execution', () => {
       model: 'example-model', service_tier: 'flex', temperature: 0.4, top_p: 0.8,
       max_output_tokens: 200, seed: 42,
     });
+  });
+
+  it('passes configured static keys through the normal auth path', async () => {
+    const provider = new FakeChatProvider();
+    const requester = new ModelRequesterImpl(modelWith(staticAuth('sk-old')), registryReturning(provider));
+    await collect(requester.request(INPUT));
+    expect(provider.calls[0]?.options?.auth).toEqual({ apiKey: 'sk-old' });
   });
 
   it('maps ModelRequestParams onto GenerateOptions 1:1', async () => {

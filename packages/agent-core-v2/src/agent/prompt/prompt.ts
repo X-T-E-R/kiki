@@ -114,8 +114,8 @@ export interface PromptPayload {
   readonly disabledTools?: readonly string[];
   /**
    * Client-chosen prompt record id, echoed on the consuming turn's
-   * `turn.started` (`promptId`). A duplicate id rejects the submission before
-   * any session state is touched.
+   * `turn.started` (`promptId`). Direct core submissions reject duplicate ids;
+   * the server's bounded native-child text retry path can replay its own durable receipt.
    */
   readonly promptId?: string;
 }
@@ -152,12 +152,23 @@ export interface PromptReservation extends IDisposable {
 
 export const promptAdmission = Symbol('promptAdmission');
 
-type PromptAdmissionHook = (promptId?: string) => PromptReservation;
+type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean) => PromptReservation;
 
-export function reservePrompt(service: IAgentPromptService, promptId?: string): PromptReservation {
+export function reservePrompt(service: IAgentPromptService, promptId?: string, durableAcceptance = false): PromptReservation {
   return (service as IAgentPromptService & { [promptAdmission]: PromptAdmissionHook })[
     promptAdmission
-  ](promptId);
+  ](promptId, durableAcceptance);
+}
+
+export const promptRetry = Symbol('promptRetry');
+
+export interface PromptRetryHook {
+  lookup(promptId: string, fingerprint: string): Promise<import('./promptOps').PromptRetryReceipt | undefined>;
+  commit(promptId: string, fingerprint: string, receipt: import('./promptOps').PromptRetryReceipt): Promise<void>;
+}
+
+export function promptRetryFor(service: IAgentPromptService): PromptRetryHook {
+  return (service as IAgentPromptService & { [promptRetry]: PromptRetryHook })[promptRetry];
 }
 
 export interface IAgentPromptService {

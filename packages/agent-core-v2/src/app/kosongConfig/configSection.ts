@@ -23,12 +23,14 @@ import type {
   ModelRecord,
   ModelsSection,
 } from '#/kosong/model/model';
+import type { GenerationParameters } from '#/kosong/model/parameters';
 import type { ThinkingConfig } from '#/kosong/model/thinking';
 import { ENV_MODEL_PROVIDER_KEY, type OAuthRef, type ProviderConfig, type ProvidersSection } from '#/kosong/provider/provider';
-export { ENV_MODEL_PROVIDER_KEY } from '#/kosong/provider/provider';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
+
+export { ENV_MODEL_PROVIDER_KEY } from '#/kosong/provider/provider';
 
 export const PROVIDERS_SECTION = 'providers';
 
@@ -71,12 +73,23 @@ export const ImagePolicyConfigSchema = z.object({
 
 const StringRecordSchema = z.record(z.string(), z.string());
 
+const ApiDefaultSchema = z.object({ kind: z.literal('api_default') }).strict();
+export const GenerationParametersSchema = z.object({
+  temperature: z.union([z.number().finite().min(0), ApiDefaultSchema]).optional(),
+  topP: z.union([z.number().finite().min(0).max(1), ApiDefaultSchema]).optional(),
+  maxCompletionTokens: z.number().int().positive().finite().optional(),
+  thinkingEffort: z.string().trim().min(1).optional(),
+  serviceTier: z.union([z.enum(['auto', 'default', 'flex', 'priority']), ApiDefaultSchema]).optional(),
+});
+type _AssertGenerationParameters = AssertExact<Equal<z.infer<typeof GenerationParametersSchema>, GenerationParameters>>;
+
 const ProviderConfigObjectSchema = z.object({
   modelSource: ModelSourceSchema.optional(),
 
   baseUrl: z.string().optional(),
   customHeaders: StringRecordSchema.optional(),
   defaultModel: z.string().optional(),
+  defaults: GenerationParametersSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
   images: ImagePolicyConfigSchema.optional(),
 
@@ -146,7 +159,7 @@ function providerEntryFromToml(data: Record<string, unknown>): Record<string, un
     const targetKey = snakeToCamel(key);
     if (targetKey === 'oauth') {
       out[targetKey] = isPlainObject(value) ? transformPlainObject(value) : value;
-    } else if (targetKey === 'requestIdentity' || targetKey === 'images') {
+    } else if (targetKey === 'requestIdentity' || targetKey === 'images' || targetKey === 'defaults') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'env' || targetKey === 'customHeaders') {
       out[targetKey] = isPlainObject(value) ? cloneRecord(value) : value;
@@ -177,7 +190,7 @@ function providerEntryToToml(
   for (const [key, value] of Object.entries(provider)) {
     if (key === 'oauth' && isPlainObject(value)) {
       out[camelToSnake(key)] = plainObjectToToml(value, undefined);
-    } else if ((key === 'requestIdentity' || key === 'images') && isPlainObject(value)) {
+    } else if ((key === 'requestIdentity' || key === 'images' || key === 'defaults') && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if ((key === 'env' || key === 'customHeaders') && value !== undefined) {
       out[camelToSnake(key)] = cloneRecord(value);
@@ -261,6 +274,7 @@ const ModelBaseSchema = z.object({
   maxCompletionTokens: z.number().int().min(1).optional(),
   serviceTier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
   requestParams: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+  parameters: GenerationParametersSchema.optional(),
   images: ImagePolicyConfigSchema.optional(),
 });
 
@@ -276,6 +290,7 @@ export const ModelOverrideSchema = ModelBaseSchema.omit({
   model: true,
   betaApi: true,
   images: true,
+  parameters: true,
 }).partial();
 
 const CognitionPathRefSchema = z.union([
@@ -382,6 +397,9 @@ export const modelsFromToml = (rawSnake: unknown): unknown => {
     if (isPlainObject(converted['images'])) {
       converted['images'] = deepSnakeToCamel(converted['images']);
     }
+    if (isPlainObject(converted['parameters'])) {
+      converted['parameters'] = deepSnakeToCamel(converted['parameters']);
+    }
     out[id] = converted;
   }
   return out;
@@ -408,6 +426,8 @@ export const modelsToToml = (value: unknown, rawSnake: unknown): unknown => {
         merged['request_identity'] = deepCamelToSnake(field);
       } else if (key === 'images' && isPlainObject(field)) {
         merged['images'] = deepCamelToSnake(field);
+      } else if (key === 'parameters' && isPlainObject(field)) {
+        merged['parameters'] = deepCamelToSnake(field);
       } else {
         setDefined(merged, camelToSnake(key), field);
       }

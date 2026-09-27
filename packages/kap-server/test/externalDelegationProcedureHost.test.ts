@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { ISessionExternalDelegationService, resumeSessionById } from '@kiki/agent-core-v2';
+import { ISessionExternalDelegationService, ISessionManager } from '@kiki/agent-core-v2';
 import Fastify from 'fastify';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,11 +11,6 @@ import {
 } from '../src/procedures/http';
 
 const ensureMainAgent = vi.hoisted(() => vi.fn());
-
-vi.mock('@kiki/agent-core-v2', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@kiki/agent-core-v2')>();
-  return { ...actual, resumeSessionById: vi.fn() };
-});
 
 vi.mock('../src/transport/mainAgent', () => ({ ensureMainAgent }));
 
@@ -46,22 +41,31 @@ describe('ExternalDelegationProcedureHost', () => {
     list: vi.fn(),
   };
 
+  const acquire = vi.fn();
+  const release = vi.fn();
+  const core = { accessor: { get: (identifier: unknown) => identifier === ISessionManager ? { acquire } : undefined } } as never;
+
   beforeEach(() => {
     for (const method of Object.values(service)) method.mockReset();
-    vi.mocked(resumeSessionById).mockResolvedValue({
-      accessor: {
-        get(identifier: unknown) {
-          assert.equal(identifier, ISessionExternalDelegationService);
-          return service;
+    acquire.mockReset();
+    release.mockReset();
+    acquire.mockResolvedValue({
+      handle: {
+        accessor: {
+          get(identifier: unknown) {
+            assert.equal(identifier, ISessionExternalDelegationService);
+            return service;
+          },
         },
       },
-    } as never);
+      dispose: release,
+    });
     ensureMainAgent.mockResolvedValue(undefined);
   });
 
   it('injects seat authority and removes raw agent identifiers', async () => {
     service.dispatch.mockResolvedValue(dispatchView);
-    const host = new ExternalDelegationProcedureHost({} as never);
+    const host = new ExternalDelegationProcedureHost(core);
 
     const output = await host.call(seat, 'dispatch', {
       target: 'named',
@@ -89,8 +93,28 @@ describe('ExternalDelegationProcedureHost', () => {
     }));
   });
 
+  it('keeps a procedure pinned until completion and releases on failure', async () => {
+    let resume!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const reached = new Promise<void>((resolve) => { entered = resolve; });
+    service.dispatch.mockImplementation(async () => {
+      entered();
+      await gate;
+      throw new Error('procedure failed');
+    });
+    const host = new ExternalDelegationProcedureHost(core);
+    const pending = host.call(seat, 'dispatch', { target: 'named', taskName: 'probe', message: 'inspect' });
+    await reached;
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
+    resume();
+    await expect(pending).rejects.toThrow('procedure failed');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('projects real approval, question, and prompt origins without rewriting opaque display content', async () => {
-    const host = new ExternalDelegationProcedureHost({} as never);
+    const host = new ExternalDelegationProcedureHost(core);
     service.interactions.mockResolvedValue({
       items: [{
         interactionId: 'interaction-1',
@@ -249,7 +273,7 @@ describe('ExternalDelegationProcedureHost', () => {
   });
 
   it('closes embedded seat klients idempotently', async () => {
-    const host = new ExternalDelegationProcedureHost({} as never);
+    const host = new ExternalDelegationProcedureHost(core);
     const klient = host.klient(seat);
 
     await klient.close();
@@ -267,7 +291,7 @@ describe('ExternalDelegationProcedureHost', () => {
         input.signal?.addEventListener('abort', () => reject(input.signal?.reason), { once: true });
       });
     });
-    const host = new ExternalDelegationProcedureHost({} as never);
+    const host = new ExternalDelegationProcedureHost(core);
     const klient = host.klient(seat);
 
     const pending = klient.wait({ dispatchId: 'dispatch-1' });

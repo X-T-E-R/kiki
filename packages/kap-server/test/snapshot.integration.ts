@@ -16,7 +16,9 @@ import {
   IAgentProfileService,
   IAgentSwarmService,
   IAgentUsageService,
+  ISessionApprovalService,
   ISessionInteractionService,
+  ISessionQuestionService,
   ISessionContext,
   ISessionIndex,
   ISessionMetadata,
@@ -151,7 +153,7 @@ describe('server-v2 snapshot route enrichment', () => {
         [
           ISessionManager,
           {
-            resume: async () => session,
+            acquire: async () => ({ handle: session, dispose: () => {} }),
             get: () => undefined,
             list: () => [],
           },
@@ -1174,7 +1176,7 @@ describe('legacy snapshot message tail projection', () => {
       accessor: fakeAccessor([
         [
           ISessionManager,
-          { resume: async () => session, get: () => undefined, list: () => [] },
+          { acquire: async () => ({ handle: session, dispose: () => {} }), get: () => undefined, list: () => [] },
         ],
         [IWorkspaceService, { get: async () => ({ root: '/workspace' }) }],
       ]),
@@ -1270,4 +1272,443 @@ describe('legacy snapshot message tail projection', () => {
     expect(messages.items[0]?.id).toBe(`msg_${sessionId}_000005`);
     expect(messages.items.at(-1)?.content).toEqual([{ type: 'text', text: 'm104' }]);
   });
+});
+
+describe('server-v2 session operation lease', () => {
+  const EVICTION_ENV = 'KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION';
+  let server: RunningServer | undefined;
+  let home: string | undefined;
+  let base: string;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-session-lease-'));
+    await writeFile(
+      join(home, 'config.toml'),
+      ['[session_residency]', 'idle_ttl_ms = 0', 'min_idle_ms = 0', 'sweep_interval_ms = 300000', ''].join('\n'),
+      'utf-8',
+    );
+    process.env[EVICTION_ENV] = 'true';
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+  });
+
+  afterEach(async () => {
+    delete process.env[EVICTION_ENV];
+    if (server !== undefined) {
+      await server.close();
+      server = undefined;
+    }
+    if (home !== undefined) {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      home = undefined;
+    }
+  });
+
+  async function createSession(): Promise<string> {
+    const res = await fetch(`${base}/api/sessions`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    } as never);
+    const body = (await res.json()) as { code: number; data: { id: string } };
+    expect(body.code).toBe(0);
+    return body.data.id;
+  }
+
+  async function ensureMainAgent(sessionId: string): Promise<void> {
+    const session = getLiveSessionById(server!.core.accessor, sessionId);
+    if (session === undefined) throw new Error(`session ${sessionId} not found`);
+    const agents = session.accessor.get(IAgentLifecycleService);
+    if (agents.get('main') === undefined) await agents.create({ agentId: 'main' });
+  }
+
+  function managerOf(): ISessionManager {
+    return server!.core.accessor.get(ISessionManager);
+  }
+
+  function spyLeases(manager: ISessionManager): { acquires: string[]; disposals: string[] } {
+    const acquires: string[] = [];
+    const disposals: string[] = [];
+    const acquire = manager.acquire!.bind(manager);
+    vi.spyOn(manager, 'acquire').mockImplementation(async (sessionId, reason, options) => {
+      acquires.push(`${sessionId}:${reason}`);
+      const lease = await acquire(sessionId, reason, options);
+      if (lease === undefined) return undefined;
+      return {
+        handle: lease.handle,
+        dispose: () => {
+          disposals.push(sessionId);
+          lease.dispose();
+        },
+      };
+    });
+    return { acquires, disposals };
+  }
+
+  function pauseFirstIndexRead(sessionId: string): { reached: Promise<void>; release(): void } {
+    const index = server!.core.accessor.get(ISessionIndex);
+    const get = index.get.bind(index);
+    const reached = deferred();
+    const gate = deferred();
+    let first = true;
+    vi.spyOn(index, 'get').mockImplementation(async (id) => {
+      if (id === sessionId && first) {
+        first = false;
+        reached.resolve();
+        await gate.promise;
+      }
+      return get(id);
+    });
+    return { reached: reached.promise, release: gate.resolve };
+  }
+
+  function enqueueInteraction(sessionId: string, kind: 'questions' | 'approvals'): string {
+    const session = getLiveSessionById(server!.core.accessor, sessionId)!;
+    if (kind === 'questions') {
+      return session.accessor.get(ISessionQuestionService).enqueue({
+        id: 'q-lease-race', questions: [{ question: 'Choose', options: [{ label: 'Yes' }] }],
+      }).id;
+    }
+    const interaction = session.accessor.get(ISessionInteractionService);
+    interaction.acquireConsumer('race-test');
+    return session.accessor.get(ISessionApprovalService).enqueue({
+      id: 'approval-lease-race', toolCallId: 'tc-lease-race', toolName: 'Bash', action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    }).id;
+  }
+
+  it('keeps the session pinned while the snapshot route awaits and releases it in finally', async () => {
+    const sessionId = await createSession();
+    await ensureMainAgent(sessionId);
+    const manager = managerOf();
+    const gate = deferred();
+    let reached!: () => void;
+    const reachedPromise = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const broadcaster = {
+      getSnapshotState: async (
+        _sessionId: string,
+        options: { captureMessages?: boolean; capture?: () => Promise<unknown> },
+      ) => {
+        const captured = await options.capture?.();
+        reached();
+        await gate.promise;
+        return {
+          seq: 0,
+          epoch: 'ep_lease',
+          contextMessageCount: 0,
+          captured,
+          pendingApprovals: [],
+          pendingQuestions: [],
+          contextMessages: [],
+          contextMessageTimes: [],
+          currentPromptId: undefined,
+          inFlightTurn: null,
+          status: undefined,
+          subagents: [],
+        };
+      },
+      getTranscriptToolCallCounts: async () => new Map<string, number>(),
+    };
+
+    const outcome = assembleSnapshot(server!.core, broadcaster as never, sessionId, 'transcript').then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await reachedPromise;
+
+    await expect(manager.evictIfIdle!(sessionId)).resolves.toBe(false);
+    expect(manager.residencyReport!().pinnedSessions).toBe(1);
+    expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeDefined();
+
+    gate.resolve();
+    const result = await outcome;
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.session.id).toBe(sessionId);
+
+    await expect(manager.evictIfIdle!(sessionId)).resolves.toBe(true);
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
+  });
+
+  it('releases the operation lease once the snapshot response is served', async () => {
+    const sessionId = await createSession();
+    await ensureMainAgent(sessionId);
+    const manager = managerOf();
+    const leases = spyLeases(manager);
+
+    const res = await fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    const body = (await res.json()) as { code: number; data: { session: { id: string } } };
+    expect(body.code).toBe(0);
+    expect(body.data.session.id).toBe(sessionId);
+    expect(leases.acquires).toEqual([`${sessionId}:operation`]);
+    expect(leases.disposals).toEqual([sessionId]);
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
+
+    await expect(manager.evictIfIdle!(sessionId)).resolves.toBe(true);
+  });
+
+  it('releases the session operation when snapshot assembly rejects', async () => {
+    const sessionId = await createSession();
+    await ensureMainAgent(sessionId);
+    const manager = managerOf();
+    const broadcaster = {
+      getSnapshotState: async () => { throw new Error('capture failed'); },
+    };
+    await expect(assembleSnapshot(server!.core, broadcaster as never, sessionId, 'transcript'))
+      .rejects.toThrow('capture failed');
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+  });
+
+  it('pins a message read through hydration and releases the pin after serving it', async () => {
+    const sessionId = await createSession();
+    await ensureMainAgent(sessionId);
+    const manager = managerOf();
+    const agent = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const wire = agent.accessor.get(IWireService);
+    const flush = wire.flush.bind(wire);
+    const gate = deferred();
+    const reached = deferred();
+    vi.spyOn(wire, 'flush').mockImplementation(async () => {
+      reached.resolve();
+      await gate.promise;
+      return flush();
+    });
+    const response = fetch(`${base}/api/sessions/${sessionId}/messages`, {
+      headers: authHeaders(server as RunningServer),
+    } as never).then(async (res) => (await res.json()) as { code: number; data?: { items: unknown[] } });
+    try {
+      await Promise.race([reached.promise, response.then(() => { throw new Error('message read finished before the barrier'); })]);
+      expect(manager.residencyReport!().pinnedSessions).toBe(1);
+      expect(await manager.evictIfIdle!(sessionId)).toBe(false);
+    } finally {
+      gate.resolve();
+    }
+    const body = await response;
+    expect(body.code).toBe(0);
+    expect(body.data?.items).toEqual([]);
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+  });
+
+  it('pins an approval write from resume through decision and releases it afterward', async () => {
+    const sessionId = await createSession();
+    const manager = managerOf();
+    const session = getLiveSessionById(server!.core.accessor, sessionId)!;
+    session.accessor.get(ISessionInteractionService).acquireConsumer('lease-test');
+    const approvalId = session.accessor.get(ISessionApprovalService).enqueue({
+      toolCallId: 'tc-lease', toolName: 'Bash', action: 'run', display: { kind: 'command', command: 'pwd' },
+    }).id;
+    const resume = manager.resume.bind(manager);
+    const gate = deferred();
+    const reached = deferred();
+    vi.spyOn(manager, 'resume').mockImplementation(async (id, options) => {
+      const handle = await resume(id, options);
+      reached.resolve();
+      await gate.promise;
+      return handle;
+    });
+    const response = fetch(`${base}/api/sessions/${sessionId}/approvals/${approvalId}`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ decision: 'approved' }),
+    } as never).then(async (res) => (await res.json()) as { code: number });
+    try {
+      await Promise.race([reached.promise, response.then(() => { throw new Error('approval write finished before the barrier'); })]);
+      expect(manager.residencyReport!().pinnedSessions).toBe(1);
+      expect(await manager.evictIfIdle!(sessionId)).toBe(false);
+    } finally {
+      gate.resolve();
+    }
+    expect((await response).code).toBe(0);
+    expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+  });
+
+  it('answers cold volatile interaction reads and missing actions without reactivating the session', async () => {
+    const sessionId = await createSession();
+    const manager = managerOf();
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+    const leases = spyLeases(manager);
+    for (const kind of ['questions', 'approvals']) {
+      const res = await fetch(`${base}/api/sessions/${sessionId}/${kind}?status=pending`, {
+        headers: authHeaders(server as RunningServer),
+      } as never);
+      expect((await res.json()) as { code: number; data: { items: unknown[] } }).toMatchObject({
+        code: 0, data: { items: [] },
+      });
+    }
+    const approval = await fetch(`${base}/api/sessions/${sessionId}/approvals/missing`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ decision: 'approved' }),
+    } as never);
+    const question = await fetch(`${base}/api/sessions/${sessionId}/questions/missing`, {
+      method: 'POST', headers: authHeaders(server as RunningServer),
+    } as never);
+    expect((await approval.json()) as { code: number }).toMatchObject({ code: 40404 });
+    expect((await question.json()) as { code: number }).toMatchObject({ code: 40405 });
+    expect(leases.acquires).toEqual([]);
+    expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
+  });
+
+  it.each(['questions', 'approvals'] as const)(
+    'returns live %s interactions when restore completes during a cold index read',
+    async (kind) => {
+      const sessionId = await createSession();
+      const manager = managerOf();
+      expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+      const paused = pauseFirstIndexRead(sessionId);
+      const response = fetch(`${base}/api/sessions/${sessionId}/${kind}?status=pending`, {
+        headers: authHeaders(server as RunningServer),
+      } as never).then(async (res) => (await res.json()) as {
+        code: number; data: { items: Array<{ question_id?: string; approval_id?: string }> };
+      });
+      let interactionId: string;
+      try {
+        await Promise.race([paused.reached, response.then(() => { throw new Error('list finished before index read'); })]);
+        expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
+        expect(await manager.resume(sessionId)).toBeDefined();
+        interactionId = enqueueInteraction(sessionId, kind);
+      } finally {
+        paused.release();
+      }
+      const leases = spyLeases(manager);
+      const body = await response;
+      expect(body.code).toBe(0);
+      expect(body.data.items).toHaveLength(1);
+      expect(body.data.items[0]?.[kind === 'questions' ? 'question_id' : 'approval_id']).toBe(interactionId!);
+      expect(leases.acquires).toEqual([`${sessionId}:operation`]);
+      expect(leases.disposals).toEqual([sessionId]);
+      expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    },
+  );
+
+  it('pins a restored session before awaiting its operation lease after the index race', async () => {
+    const sessionId = await createSession();
+    const manager = managerOf();
+    expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+    const pausedIndex = pauseFirstIndexRead(sessionId);
+    const response = fetch(`${base}/api/sessions/${sessionId}/questions?status=pending`, {
+      headers: authHeaders(server as RunningServer),
+    } as never).then(async (res) => (await res.json()) as {
+      code: number; data: { items: Array<{ question_id: string }> };
+    });
+    const acquireEntered = deferred();
+    const acquireGate = deferred();
+    try {
+      await Promise.race([pausedIndex.reached, response.then(() => { throw new Error('list finished before index read'); })]);
+      expect(await manager.resume(sessionId)).toBeDefined();
+      const questionId = enqueueInteraction(sessionId, 'questions');
+      const originalResume = manager.resume.bind(manager);
+      vi.spyOn(manager, 'resume').mockImplementation(async (id, options) => {
+        acquireEntered.resolve();
+        await acquireGate.promise;
+        return originalResume(id, options);
+      });
+      const leases = spyLeases(manager);
+      pausedIndex.release();
+      await Promise.race([acquireEntered.promise, response.then(() => { throw new Error('list finished before lease acquire'); })]);
+      expect(manager.residencyReport!().pinnedSessions).toBe(1);
+      expect(await manager.evictIfIdle!(sessionId)).toBe(false);
+      acquireGate.resolve();
+      expect(await response).toMatchObject({ code: 0, data: { items: [{ question_id: questionId }] } });
+      expect(leases.acquires).toEqual([`${sessionId}:operation`]);
+      expect(leases.disposals).toEqual([sessionId]);
+      expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    } finally {
+      pausedIndex.release();
+      acquireGate.resolve();
+    }
+  });
+
+  it.each(['questions', 'approvals'] as const)(
+    'submits to live %s interactions when restore completes during a cold index read',
+    async (kind) => {
+      const sessionId = await createSession();
+      const manager = managerOf();
+      expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+      const paused = pauseFirstIndexRead(sessionId);
+      const interactionId = kind === 'questions' ? 'q-lease-race' : 'approval-lease-race';
+      const response = fetch(`${base}/api/sessions/${sessionId}/${kind}/${interactionId}`, {
+        method: 'POST',
+        headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+        body: JSON.stringify(kind === 'questions'
+          ? { answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } } }
+          : { decision: 'approved' }),
+      } as never).then(async (res) => (await res.json()) as { code: number; data?: { resolved: boolean } });
+      try {
+        await Promise.race([paused.reached, response.then(() => { throw new Error('action finished before index read'); })]);
+        expect(await manager.resume(sessionId)).toBeDefined();
+        expect(enqueueInteraction(sessionId, kind)).toBe(interactionId);
+      } finally {
+        paused.release();
+      }
+      const leases = spyLeases(manager);
+      const body = await response;
+      expect(body).toMatchObject({ code: 0, data: { resolved: true } });
+      const interaction = getLiveSessionById(server!.core.accessor, sessionId)!
+        .accessor.get(ISessionInteractionService);
+      expect(interaction.listPending(kind === 'questions' ? 'question' : 'approval')).toEqual([]);
+      expect(leases.acquires).toEqual([`${sessionId}:operation`]);
+      expect(leases.disposals).toEqual([sessionId]);
+      expect(manager.residencyReport!().pinnedSessions).toBe(0);
+    },
+  );
+
+  it.each(['questions', 'approvals'] as const)(
+    'does not activate a still-cold %s list after a delayed index read',
+    async (kind) => {
+      const sessionId = await createSession();
+      const manager = managerOf();
+      expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+      const leases = spyLeases(manager);
+      const paused = pauseFirstIndexRead(sessionId);
+      const response = fetch(`${base}/api/sessions/${sessionId}/${kind}?status=pending`, {
+        headers: authHeaders(server as RunningServer),
+      } as never).then(async (res) => (await res.json()) as { code: number; data: { items: unknown[] } });
+      try {
+        await paused.reached;
+      } finally {
+        paused.release();
+      }
+      expect(await response).toMatchObject({ code: 0, data: { items: [] } });
+      expect(leases.acquires).toEqual([]);
+      expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
+    },
+  );
+
+  it.each(['questions', 'approvals'] as const)(
+    'does not activate a still-cold %s action after a delayed index read',
+    async (kind) => {
+      const sessionId = await createSession();
+      const manager = managerOf();
+      expect(await manager.evictIfIdle!(sessionId)).toBe(true);
+      const leases = spyLeases(manager);
+      const paused = pauseFirstIndexRead(sessionId);
+      const response = fetch(`${base}/api/sessions/${sessionId}/${kind}/missing`, {
+        method: 'POST',
+        headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+        body: JSON.stringify(kind === 'questions' ? { answers: {} } : { decision: 'approved' }),
+      } as never).then(async (res) => (await res.json()) as { code: number });
+      try {
+        await paused.reached;
+      } finally {
+        paused.release();
+      }
+      expect((await response).code).toBe(kind === 'questions' ? 40405 : 40404);
+      expect(leases.acquires).toEqual([]);
+      expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
+    },
+  );
 });

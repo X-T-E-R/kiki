@@ -13,6 +13,7 @@ import { getProviderDefinition } from '../provider/providerDefinition';
 import type { ResolvedImagePolicy } from '../provider/providerImagePolicy';
 
 import type { ModelRecord } from './model';
+import type { GenerationParameters, ResolvedGenerationParameters } from './parameters';
 import type { ResolvedModelAuthMaterial } from './model.types';
 
 export interface InspectedAuth {
@@ -38,6 +39,8 @@ export interface InspectedResolvedModel {
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
   readonly serviceTier?: ServiceTier;
+  readonly generationParameters?: GenerationParameters;
+  readonly preferredThinkingEffort?: string;
   readonly alwaysThinking: boolean;
   readonly headers: Readonly<Record<string, string>>;
   readonly imagePolicy: ResolvedImagePolicy;
@@ -70,6 +73,7 @@ export interface ModelInspection {
 export const TRACE = {
   configuredModel: 'configuredModel',
   effectiveModel: 'effectiveModel',
+  generationParameters: 'generationParameters',
   providerConfig: 'providerConfig',
   providerName: 'providerName',
   providerSynthesized: 'providerSynthesized',
@@ -233,6 +237,8 @@ interface ResolvedModelLike {
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
   readonly serviceTier?: ServiceTier;
+  readonly generationParameters?: GenerationParameters;
+  readonly preferredThinkingEffort?: string;
   readonly alwaysThinking: boolean;
   readonly headers: Readonly<Record<string, string>>;
   readonly imagePolicy: ResolvedImagePolicy;
@@ -261,6 +267,7 @@ export function assembleModelInspection(args: {
   const providerSynthesized = trace.captured<boolean>(TRACE.providerSynthesized) === true;
   const rawBaseUrl = trace.captured<string>(TRACE.rawBaseUrl);
   const authMaterial = trace.captured<ResolvedModelAuthMaterial>(TRACE.authMaterial) ?? {};
+  const generation = required<ResolvedGenerationParameters>(trace, TRACE.generationParameters, 'generation parameters');
 
   const sources = new Map<string, InspectionSource>([
     ...trace.sources,
@@ -316,6 +323,9 @@ export function assembleModelInspection(args: {
 
   sources.set('model', { kind: 'config', detail: 'the [models.*] section entry' });
   sources.set('model.id', { kind: 'config', detail: 'the [models.*] section key' });
+  for (const [key, source] of Object.entries(generation.sources)) {
+    if (source !== undefined) sources.set(`resolved.generationParameters.${key}`, source);
+  }
   sources.set('resolved.headers', {
     kind: 'synthesized',
     detail: 'env < host < provider customHeaders merge (later wins)',
@@ -400,6 +410,8 @@ export function assembleModelInspection(args: {
       supportEfforts: model.supportEfforts,
       defaultEffort: model.defaultEffort,
       serviceTier: model.serviceTier,
+      generationParameters: generation.values,
+      preferredThinkingEffort: model.preferredThinkingEffort,
       alwaysThinking: model.alwaysThinking,
       headers: model.headers,
       imagePolicy: model.imagePolicy,

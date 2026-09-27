@@ -8,6 +8,7 @@ import { filterWorkspaces, sortWorkspacesByPinnedThenRecency } from '@kiki/sessi
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { SshProfilesPanel } from '../SshProfilesPanel';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Dialog } from '../Dialog';
 import { useGuardedNavigate } from '../dirtyGuard';
@@ -15,7 +16,7 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 
 export function WorkspacesSection() {
-  const { client } = useConnection();
+  const { client, scopeId, sshLabel, activateSshProfile, activateLocal } = useConnection();
   const { t, tp, locale, time } = useI18n();
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
@@ -58,6 +59,15 @@ export function WorkspacesSection() {
     <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}>
       <div className="space-y-2">
         <Hint>{t('st.workspaces.hint')}</Hint>
+        <p className="text-[12px] font-semibold text-accent">
+          {sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${sshLabel}`}
+        </p>
+        {scopeId.startsWith('ssh:') ? (
+          <button type="button" onClick={activateLocal} className={SECONDARY_BUTTON}>
+            {t('connect.switchLocal')}
+          </button>
+        ) : null}
+        <SshProfilesPanel onConnect={activateSshProfile} />
         {items.length > 0 ? (
           <input
             type="text"

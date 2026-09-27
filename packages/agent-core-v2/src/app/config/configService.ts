@@ -7,7 +7,6 @@ import { BugIndicatingError, Error2, ErrorCodes, onUnexpectedError } from '#/err
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ILogService } from '#/_base/log/log';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-
 import {
   type AnyEnvBindings,
   type ConfigChangedEvent,
@@ -30,7 +29,7 @@ import {
   IConfigService,
 } from './config';
 import { deepEqual, deepMerge, describeUnknownError, isPlainObject } from './configPure';
-import { writeConfigDocument } from './configDocument';
+import { readConfigDocumentSnapshot, writeConfigDocument } from './configDocument';
 import { mergeConfigCredentials, splitConfigCredentials } from './credentials';
 import {
   ConfigSectionContribution,
@@ -43,6 +42,7 @@ import {
 import { getConfigOverlayContributions } from './configOverlayContributions';
 import { collectRemovedSectionDiagnostics } from './deprecations';
 import { CREDENTIALS_KEY, migrateConfigCredentials, migrateThinkingEffortMaxToHigh } from './migrations';
+import { applyModelGenerationMigration as applyGeneration, isModelGenerationBackupKey, listModelGenerationBackups, modelGenerationRevision, prepareModelGenerationMigration as prepareGeneration, previewModelGenerationMigration as previewGeneration, restoreModelGenerationMigration as restoreGeneration } from './modelGenerationMigration';
 import {
   applySectionToToml,
   camelToSnake,
@@ -337,9 +337,7 @@ export class ConfigService extends Disposable implements IConfigService {
   }
 
   get<T = unknown>(domain: string): T {
-    if (Object.prototype.hasOwnProperty.call(this.memory, domain)) {
-      return this.memory[domain] as T;
-    }
+    if (Object.prototype.hasOwnProperty.call(this.memory, domain)) return this.memory[domain] as T;
     return this.freshEffective()[domain] as T;
   }
 
@@ -549,6 +547,57 @@ export class ConfigService extends Disposable implements IConfigService {
     await this.enqueueStateTransition(() => this.load('reload'));
   }
 
+  async previewModelGenerationMigration() {
+    await this.ready;
+    const prepared = await previewGeneration(this.documentStore, this.configKey);
+    return {
+      revision: modelGenerationRevision(prepared.originalText),
+      changes: prepared.preview.changes,
+      needsReview: prepared.preview.needsConfirmation.map(({ modelId, code, field }) => ({ modelId, code, ...(field === undefined ? {} : { field }) })),
+      backups: await listModelGenerationBackups(this.documentStore, this.configKey),
+    };
+  }
+
+  async applyModelGenerationMigration(expectedRevision: string): Promise<{ readonly backupKey: string; readonly revision: string }> {
+    await this.ready;
+    return this.enqueueStateTransition(async () => {
+      this.assertPersistable();
+      if (this.bootstrap.configReadOnly) throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Configuration is read-only');
+      const prepared = await previewGeneration(this.documentStore, this.configKey);
+      if (modelGenerationRevision(prepared.originalText) !== expectedRevision) {
+        throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Config changed since migration preview');
+      }
+      const { backupKey } = await applyGeneration(this.documentStore, this.configKey, prepared);
+      if (backupKey === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'No model parameter changes to migrate');
+      this.invalidateFresh();
+      await this.load('reload', true);
+      this.assertPersistable();
+      return { backupKey, revision: modelGenerationRevision(prepared.nextText) };
+    });
+  }
+
+  async restoreModelGenerationMigration(backupKey: string, expectedRevision: string): Promise<{ readonly revision: string }> {
+    await this.ready;
+    return this.enqueueStateTransition(async () => {
+      this.assertPersistable();
+      if (this.bootstrap.configReadOnly) throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Configuration is read-only');
+      if (!isModelGenerationBackupKey(this.configKey, backupKey)) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Invalid migration backup key');
+      const backup = await this.documentStore.getText(CONFIG_SCOPE, backupKey, { recoverMissing: false });
+      if (backup === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Migration backup missing');
+      const prepared = prepareGeneration(backup);
+      const current = await this.documentStore.getText(CONFIG_SCOPE, this.configKey, { recoverMissing: false });
+      if (current === undefined || modelGenerationRevision(current) !== expectedRevision || prepared.nextText !== current) {
+        throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Config changed since restore preview');
+      }
+      if (prepared.originalText === prepared.nextText) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Backup contains no migratable model changes');
+      await restoreGeneration(this.documentStore, this.configKey, prepared, backupKey);
+      this.invalidateFresh();
+      await this.load('reload', true);
+      this.assertPersistable();
+      return { revision: modelGenerationRevision(prepared.originalText) };
+    });
+  }
+
   private enqueueStateTransition<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.stateChain.then(() => fn());
     this.stateChain = run.then(
@@ -558,20 +607,18 @@ export class ConfigService extends Disposable implements IConfigService {
     return run;
   }
 
-  private async load(source: ConfigChangeSource): Promise<void> {
+  private async load(source: ConfigChangeSource, skipCredentialMigration = false): Promise<void> {
     this.diagnosticsList.length = 0;
     let fileData: ResolvedConfig = {};
     let failed = false;
     try {
-      if (source === 'reload' && !this.bootstrap.configReadOnly) {
+      if (source === 'reload' && !skipCredentialMigration && !this.bootstrap.configReadOnly) {
         await migrateConfigCredentials(this.documentStore, this.configKey, this.log);
       }
-      const data = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, this.configKey);
-      const credentials = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, CREDENTIALS_KEY);
-      fileData = mergeConfigCredentials(
-        data !== undefined && isPlainObject(data) ? data : {},
-        credentials !== undefined && isPlainObject(credentials) ? credentials : {},
-      );
+      const readOptions = this.bootstrap.configReadOnly ? { recoverMissing: false } : undefined;
+      const configSnapshot = await readConfigDocumentSnapshot(this.documentStore, this.configKey, readOptions);
+      const credentialSnapshot = await readConfigDocumentSnapshot(this.documentStore, CREDENTIALS_KEY, readOptions);
+      fileData = mergeConfigCredentials(configSnapshot.data, credentialSnapshot.data);
     } catch (error) {
       failed = true;
       const message =
@@ -842,7 +889,7 @@ export class ConfigService extends Disposable implements IConfigService {
     if (!this.tainted) return;
     throw new Error2(
       ErrorCodes.CONFIG_PERSIST_BLOCKED,
-      `Refusing to persist config: ${this.bootstrap.configPath} could not be read; fix the file and reload before writing.`,
+      `Refusing to persist config: ${this.bootstrap.configPath} or credentials.toml needs inspection; fix the files and reload before writing.`,
     );
   }
 
@@ -860,17 +907,27 @@ export class ConfigService extends Disposable implements IConfigService {
     replaceSecrets = false,
   ): Promise<void> {
     this.assertPersistable();
+    await this.persistDomainsGuarded(this.documentStore, domains, rebase, replaceSecrets);
+    this.invalidateFresh();
+  }
+
+  private async persistDomainsGuarded(
+    store: IAtomicTomlDocumentStore,
+    domains: readonly string[],
+    rebase: (stagedRaw: ResolvedConfig, stagedRawSnake: ResolvedConfig) => void,
+    replaceSecrets: boolean,
+  ): Promise<void> {
     let config: ResolvedConfig = {};
     let credentials: ResolvedConfig = {};
     let configText: string | undefined;
     let credentialsText: string | undefined;
     try {
-      const configData = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, this.configKey);
-      const credentialsData = await this.documentStore.get<ResolvedConfig>(CONFIG_SCOPE, CREDENTIALS_KEY);
-      config = configData !== undefined && isPlainObject(configData) ? configData : {};
-      credentials = credentialsData !== undefined && isPlainObject(credentialsData) ? credentialsData : {};
-      configText = await this.documentStore.getText(CONFIG_SCOPE, this.configKey);
-      credentialsText = await this.documentStore.getText(CONFIG_SCOPE, CREDENTIALS_KEY);
+      const configSnapshot = await readConfigDocumentSnapshot(store, this.configKey);
+      const credentialsSnapshot = await readConfigDocumentSnapshot(store, CREDENTIALS_KEY);
+      config = configSnapshot.data;
+      credentials = credentialsSnapshot.data;
+      configText = configSnapshot.text;
+      credentialsText = credentialsSnapshot.text;
     } catch (error) {
       const message =
         error instanceof TomlError
@@ -904,8 +961,29 @@ export class ConfigService extends Disposable implements IConfigService {
       applySectionToToml(stagedRawSnake, domain, stagedRaw[domain], this.registry);
     }
     const separated = splitConfigCredentials(stagedRawSnake);
-    await writeConfigDocument(this.documentStore, CREDENTIALS_KEY, credentials, credentialsText, separated.credentials);
-    await writeConfigDocument(this.documentStore, this.configKey, config, configText, separated.config);
+    let writtenCredentials: string | undefined;
+    try {
+      writtenCredentials = await writeConfigDocument(store, CREDENTIALS_KEY, credentials, credentialsText, separated.credentials);
+    } catch (error) {
+      if (error instanceof Error2 && error.code === ErrorCodes.CONFIG_PERSIST_BLOCKED) this.tainted = true;
+      throw error;
+    }
+    try {
+      await writeConfigDocument(store, this.configKey, config, configText, separated.config);
+    } catch (error) {
+      if (error instanceof Error2 && error.code === ErrorCodes.CONFIG_PERSIST_BLOCKED) this.tainted = true;
+      if (writtenCredentials !== undefined) {
+        try {
+          if (!await store.compareAndSetText(CONFIG_SCOPE, CREDENTIALS_KEY, writtenCredentials, credentialsText)) {
+            throw new Error('Credential rollback conflicted with another writer', { cause: error });
+          }
+        } catch (rollbackError) {
+          this.tainted = true;
+          throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Config write failed; credential rollback could not be completed. Reload and inspect both config files.', { cause: rollbackError });
+        }
+      }
+      throw error;
+    }
     this.rawSnake = stagedRawSnake;
     this.raw = stagedRaw;
   }

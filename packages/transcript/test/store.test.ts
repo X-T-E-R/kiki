@@ -69,11 +69,11 @@ describe('AgentTranscript', () => {
     expect(turn.steps[0]?.frames.map((f) => f.kind)).toEqual(['tool']);
   });
 
-  it('keeps a bounded resident tail without emitting history-removal operations', () => {
-    const tx = new AgentTranscript('main', { tailTurns: 20, maxBytes: 16 << 20 });
+  it('retains completed history when resident limits have no durable clearance', () => {
+    const tx = new AgentTranscript('main', { tailTurns: 2, maxBytes: 1_024 });
     const emitted: TranscriptOperation[][] = [];
     tx.onChange((event) => emitted.push([...event.ops]));
-    for (let ordinal = 0; ordinal < 10_000; ordinal += 1) {
+    for (let ordinal = 0; ordinal < 40; ordinal += 1) {
       tx.apply([{
         op: 'turn.upsert',
         turn: {
@@ -87,12 +87,151 @@ describe('AgentTranscript', () => {
       }]);
     }
 
-    expect(tx.getItems().filter((item) => item.kind === 'turn')).toHaveLength(20);
-    expect(tx.getItems().filter((item) => item.kind === 'turn').at(0)?.turnId).toBe('t9980');
-    expect(tx.hasMoreOlder).toBe(true);
-    expect(tx.residentReport()).toMatchObject({ turns: 20, trimmedTurns: 9_980, overBudget: false });
+    expect(tx.getItems().filter((item) => item.kind === 'turn')).toHaveLength(40);
+    expect(tx.getTurn('t0')?.prompt).toBe('prompt-0');
+    expect(tx.hasMoreOlder).toBe(false);
+    expect(tx.residentReport()).toMatchObject({ turns: 40, trimmedTurns: 0, overBudget: true });
+    expect(tx.snapshot({ tailTurns: 2 }).items.filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t38', 't39']);
+    expect(tx.snapshot({ tailTurns: 2 }).hasMoreOlder).toBe(true);
     expect(emitted.flat().some((operation) => operation.op === 'items.remove')).toBe(false);
   });
+
+  it('reports turn-count pressure even when resident bytes are below the byte limit', () => {
+    const limits = { tailTurns: 1, maxBytes: 1 << 20 };
+    const tx = new AgentTranscript('main', limits);
+    const smallTurn = (ordinal: number): TurnUpsertOp => ({
+      op: 'turn.upsert',
+      turn: { kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, prompt: 'x' },
+    });
+    tx.apply([smallTurn(0)]);
+    expect(tx.residentReport()).toMatchObject({ turns: 1, overBudget: false });
+    tx.apply([smallTurn(1)]);
+    expect(tx.residentReport()).toMatchObject({ turns: 2, trimmedTurns: 0, overBudget: true });
+    expect(tx.residentReport().estimatedBytes).toBeLessThan(limits.maxBytes);
+    const unbounded = new AgentTranscript('main');
+    unbounded.apply([smallTurn(0), smallTurn(1)]);
+    expect(unbounded.residentReport().overBudget).toBe(false);
+  });
+
+  it('does not lose completed or revised turns while deferred dehydration succeeds or fails', async () => {
+    const tx = new AgentTranscript('main', { tailTurns: 1, maxBytes: 1 });
+    const first: TurnUpsertOp = {
+      op: 'turn.upsert',
+      turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'before' },
+    };
+    const second: TurnUpsertOp = {
+      op: 'turn.upsert',
+      turn: { ...first.turn, turnId: 't1', ordinal: 1, prompt: 'second' },
+    };
+    tx.apply([first, second]);
+    const appended: TurnUpsertOp[] = [];
+    let resolve!: () => void;
+    const dehydration = new Promise<void>((done) => { resolve = done; });
+    const durableAppend = dehydration.then(() => { appended.push(first); });
+    expect(tx.getTurn('t0')?.prompt).toBe('before');
+    expect(appended).toEqual([]);
+    tx.apply([{ ...first, turn: { ...first.turn, prompt: 'late revision' } }]);
+    resolve();
+    await durableAppend;
+    expect(appended).toEqual([first]);
+    expect(tx.getTurn('t0')?.prompt).toBe('late revision');
+    let reject!: (error: Error) => void;
+    const failedDehydration = new Promise<void>((done, fail) => { reject = fail; });
+    const failedAppend = failedDehydration.then(() => { appended.push(second); });
+    reject(new Error('blob offload failed'));
+    await expect(failedAppend).rejects.toThrow('blob offload failed');
+    expect(appended).toEqual([first]);
+    expect(tx.getItems().filter((item) => item.kind === 'turn')).toHaveLength(2);
+    expect(tx.residentReport()).toMatchObject({ turns: 2, trimmedTurns: 0, overBudget: true });
+    const tail = tx.snapshot({ tailTurns: 1 });
+    expect(tail.items.filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t1']);
+    tx.apply([{ op: 'reset', agentId: 'main', coverage: { kind: 'tail', fromTurnId: 't1', throughTurnId: 't1', hasMoreOlder: true }, snapshot: tail }]);
+    expect(tx.getTurn('t0')?.prompt).toBe('late revision');
+  });
+
+  it('merges unknown coverage without erasing known turns or entities', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'known' } },
+      { op: 'task.upsert', task: { taskId: 'task-0', kind: 'subagent', name: 'kept', state: 'running', detached: false, outputTail: '' } },
+    ]);
+    tx.apply([{
+      op: 'reset', agentId: 'main', coverage: { kind: 'unknown', hasMoreOlder: true },
+      snapshot: { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, toolCallCountKnown: false },
+    }]);
+    expect(tx.getTurn('t0')?.prompt).toBe('known');
+    expect(tx.getTask('task-0')).toBeDefined();
+    expect(tx.hasMoreOlder).toBe(true);
+    expect(tx.snapshot().toolCallCountKnown).toBe(false);
+    tx.apply([{ op: 'turn.upsert', turn: {
+      kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'newest',
+    } }]);
+    tx.apply([{ op: 'reset', agentId: 'main', coverage: { kind: 'unknown', hasMoreOlder: true },
+      snapshot: { items: [
+        { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'readable prefix', steps: [] },
+      ], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, toolCallCountKnown: false },
+    }]);
+    expect(tx.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t0', 't1', 't2']);
+  });
+
+  it('does not downgrade an overlapping completed turn or entity on an unknown reset', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'known' } },
+      { op: 'step.upsert', turnId: 't0', step: { kind: 'step', turnId: 't0', stepId: 't0.1', ordinal: 1, state: 'completed' } },
+      { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: { kind: 'text', role: 'assistant', frameId: 't0.1.a1', text: 'complete answer' } },
+      { op: 'task.upsert', task: { taskId: 'task-0', kind: 'subagent', name: 'known', state: 'completed', detached: false, outputTail: 'done' } },
+    ]);
+    const originalTurn = tx.getTurn('t0');
+    tx.apply([{ op: 'reset', agentId: 'main', coverage: { kind: 'unknown', hasMoreOlder: true },
+      snapshot: { items: [
+        { kind: 'turn', turnId: 't0', ordinal: 0, state: 'running', origin: { kind: 'user' }, steps: [] },
+        { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'new readable turn', steps: [] },
+      ], tasks: [
+        { taskId: 'task-0', kind: 'subagent', name: 'degraded', state: 'running', detached: false, outputTail: '' },
+        { taskId: 'task-1', kind: 'subagent', name: 'new', state: 'running', detached: false, outputTail: '' },
+      ], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, toolCallCountKnown: false },
+    }]);
+    expect(tx.getTurn('t0')).toBe(originalTurn);
+    expect(tx.getTurn('t0')).toMatchObject({
+      state: 'completed', prompt: 'known', steps: [{ frames: [{ text: 'complete answer' }] }],
+    });
+    expect(tx.getTask('task-0')).toMatchObject({ state: 'completed', name: 'known', outputTail: 'done' });
+    expect(tx.getTurn('t1')?.prompt).toBe('new readable turn');
+    expect(tx.getTask('task-1')?.name).toBe('new');
+    expect(tx.hasMoreOlder).toBe(true);
+  });
+
+  it.each(['completed', 'running'] as const)(
+    'does not resurrect a frame deleted by a trusted full reset from an overlapping unknown %s turn',
+    (state) => {
+      const tx = new AgentTranscript('main');
+      const withFrame = {
+        kind: 'turn' as const, turnId: 't0', ordinal: 0, state,
+        origin: { kind: 'user' as const }, prompt: 'known',
+        steps: [{ kind: 'step' as const, stepId: 't0.1', turnId: 't0', ordinal: 1, state: 'completed' as const,
+          frames: [{ kind: 'text' as const, role: 'assistant' as const, frameId: 't0.1.f1', text: 'removed' }],
+        }],
+      };
+      const empty = { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} };
+      tx.apply([{ op: 'reset', agentId: 'main', coverage: { kind: 'full', hasMoreOlder: false },
+        snapshot: { ...empty, items: [withFrame] },
+      }]);
+      tx.apply([{ op: 'reset', agentId: 'main', coverage: { kind: 'full', hasMoreOlder: false },
+        snapshot: { ...empty, items: [{ ...withFrame, steps: [] }] },
+      }]);
+      const trustedTurn = tx.getTurn('t0');
+      expect(trustedTurn?.steps).toEqual([]);
+      tx.apply([{ op: 'reset', agentId: 'main', coverage: { kind: 'unknown', hasMoreOlder: true },
+        snapshot: { ...empty, items: [withFrame, { ...withFrame, turnId: 't1', ordinal: 1, prompt: 'new' }],
+          toolCallCountKnown: false },
+      }]);
+      expect(tx.getTurn('t0')).toBe(trustedTurn);
+      expect(tx.getTurn('t0')?.steps).toEqual([]);
+      expect(tx.getTurn('t1')?.prompt).toBe('new');
+      expect(tx.snapshot().toolCallCountKnown).toBe(false);
+    },
+  );
 
   it('never trims a running turn to satisfy the resident byte target', () => {
     const tx = new AgentTranscript('main', { tailTurns: 1, maxBytes: 1_024 });

@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   IAgentLifecycleService,
   IAgentTaskService,
+  ISessionContext,
   getLiveSessionById,
   IModelCatalog,
   type AgentTask,
@@ -262,6 +263,38 @@ describe('server-v2 /api/sessions/{sid}/tasks', () => {
       receipt: { schemaVersion: 1, path: `tasks/${taskId}/output.log`, bytes: 15, contentState: 'final' },
     });
     expect(response.body.data.output_bytes).toBeLessThanOrEqual(response.body.data.total_bytes ?? 0);
+  });
+
+  it('refreshes same-size receipt corruption on GET and paginated list without leaking preview or byte count', async () => {
+    const id = await createSession();
+    const tasks = await mainAgentTasks(id);
+    const taskId = tasks.registerTask({
+      ...fakeTask('agent'),
+      async start(sink) {
+        sink.setFinalOutput?.('original report');
+        await sink.settle({ status: 'completed' });
+      },
+    });
+    await tasks.wait(taskId);
+    const path = `/api/sessions/${id}/tasks`;
+    const before = await getJson<TaskWire>(`${path}/${taskId}?with_output=true`);
+    expect(before.body.data).toMatchObject({ receipt_verification: 'verified', total_bytes: 15 });
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const outputPath = join(session.accessor.get(ISessionContext).sessionDir, 'agents', 'main', 'tasks', taskId, 'output.log');
+    await writeFile(outputPath, 'altered  report');
+    expect(Buffer.byteLength('altered  report')).toBe(Buffer.byteLength('original report'));
+    const after = await getJson<TaskWire>(`${path}/${taskId}?with_output=true`);
+    expect(after.body.code).toBe(0);
+    expect(after.body.data).toMatchObject({ receipt_verification: 'invalid', status: 'completed' });
+    expect(after.body.data).not.toHaveProperty('receipt');
+    expect(after.body.data).not.toHaveProperty('total_bytes');
+    expect(after.body.data).not.toHaveProperty('output_preview');
+    const list = await getJson<ListWire>(`${path}?page_size=1&offset=0`);
+    expect(list.body.code).toBe(0);
+    const item = list.body.data.items.find((task) => task.id === taskId);
+    expect(item).toMatchObject({ receipt_verification: 'invalid', status: 'completed' });
+    expect(item).not.toHaveProperty('receipt');
+    expect(item).not.toHaveProperty('total_bytes');
   });
 
   it('reports run_in_background from the task detached flag', async () => {

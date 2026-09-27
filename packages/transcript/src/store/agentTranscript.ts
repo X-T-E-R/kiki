@@ -62,8 +62,6 @@ export class AgentTranscript {
   readonly #appendDirty = new Set<string>();
   readonly #toolCalls = new Map<string, TranscriptToolCallLookup>();
   readonly #toolCallIdByFrame = new Map<string, string>();
-  #trimmedTurns = 0;
-  #estimatedBytes = 0;
 
   constructor(
     readonly agentId: AgentId,
@@ -123,7 +121,6 @@ export class AgentTranscript {
       index = run.nextIndex;
     }
     this.#state = state;
-    this.trimResidentState();
     if (accepted.length > 0) {
       const event: TranscriptChangeEvent = { agentId: this.agentId, ops: accepted };
       for (const listener of this.#listeners) listener(event);
@@ -248,46 +245,15 @@ export class AgentTranscript {
 
   residentReport(): TranscriptResidentReport {
     const turns = this.#state.items.filter((item) => item.kind === 'turn').length;
-    const limit = this.residentLimits?.maxBytes;
+    const estimatedBytes = estimateResidentStateBytes(this.#state);
+    const limits = this.residentLimits;
     return {
       turns,
-      estimatedBytes: this.#estimatedBytes,
-      trimmedTurns: this.#trimmedTurns,
-      overBudget: limit !== undefined && this.#estimatedBytes > limit,
+      estimatedBytes,
+      trimmedTurns: 0,
+      overBudget: limits !== undefined &&
+        (estimatedBytes > limits.maxBytes || turns > limits.tailTurns),
     };
-  }
-
-  private trimResidentState(): void {
-    const limits = this.residentLimits;
-    this.#estimatedBytes = estimateResidentStateBytes(this.#state);
-    if (limits === undefined) return;
-    const tailTurns = Math.max(0, Math.floor(limits.tailTurns));
-    const maxBytes = Math.max(1, Math.floor(limits.maxBytes));
-    let turnCount = 0;
-    for (const item of this.#state.items) {
-      if (item.kind === 'turn') turnCount += 1;
-    }
-    let estimatedBytes = this.#estimatedBytes;
-    if (turnCount <= tailTurns && estimatedBytes <= maxBytes) return;
-    const drop = new Set<string>();
-    for (const item of this.#state.items) {
-      if (item.kind !== 'turn' || item.state === 'running') continue;
-      if (turnCount <= tailTurns && estimatedBytes <= maxBytes) break;
-      drop.add(item.turnId);
-      turnCount -= 1;
-      estimatedBytes -= estimateResidentValueBytes(item);
-    }
-    if (drop.size === 0) return;
-    this.#state = {
-      ...this.#state,
-      items: this.#state.items.filter(
-        (item) => item.kind !== 'turn' || !drop.has(item.turnId),
-      ),
-      hasMoreOlder: true,
-    };
-    this.#trimmedTurns += drop.size;
-    this.#estimatedBytes = estimateResidentStateBytes(this.#state);
-    this.rebuildToolCallIndex(this.#state.items);
   }
 
   private syncToolCallIndex(op: TranscriptOperation, state: AgentState): void {

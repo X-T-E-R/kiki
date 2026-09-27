@@ -42,6 +42,7 @@ export interface AgentTimelineState {
   readonly cursor: TranscriptCursor | undefined;
   readonly resetGeneration: number;
   readonly hasMoreHistory: boolean;
+  readonly historyCoverageKind: SessionViewState['historyCoverageKind'];
   readonly oldestMessageId: string | undefined;
   readonly loadingOlder: boolean;
   readonly olderError: string | undefined;
@@ -100,6 +101,7 @@ export function selectAgentTimelineState(source: AgentWorkspaceSource, agentId: 
     cursor: source.getAgentTranscriptCursor(agentId),
     resetGeneration: state.transcriptResetVersion,
     hasMoreHistory: state.hasMoreHistory,
+    historyCoverageKind: state.historyCoverageKind,
     oldestMessageId: state.oldestMessageId,
     loadingOlder: state.loadingOlder,
     olderError: state.olderError,

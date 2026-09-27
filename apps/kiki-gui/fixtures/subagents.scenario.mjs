@@ -11,7 +11,7 @@ export default {
       agent_transcripts: {
         'agent-research': {
           agent_id: 'agent-research',
-          has_more: false,
+          has_more: true,
           items: [
             {
               kind: 'turn',
@@ -48,6 +48,18 @@ export default {
                 },
               ],
             },
+            ...Array.from({ length: 44 }, (_, index) => {
+              const ordinal = index + 2;
+              return {
+                kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed',
+                origin: { kind: 'user' }, prompt: `Research question ${ordinal}`,
+                steps: [{
+                  kind: 'step', stepId: `t${ordinal}.1`, turnId: `t${ordinal}`, ordinal: 1,
+                  state: 'completed',
+                  frames: [{ kind: 'text', frameId: `research-report-${ordinal}`, role: 'assistant', text: `Research finding ${ordinal} of 45.` }],
+                }],
+              };
+            }),
           ],
         },
         'agent-review': {

@@ -1,16 +1,19 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
 import type { Writable } from 'node:stream';
 import { join } from 'pathe';
 import type { IHostProcess } from '#/os/interface/hostProcess';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IAgentTaskService } from '#/agent/task/task';
+import { AgentTaskPersistence, IAgentTaskService } from '#/agent/task/task';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { TERMINAL_STATUSES } from '#/agent/task/types';
 import { TaskOutputTool } from '#/agent/tools/task/task-output/taskOutputTool';
+import { TaskListTool } from '#/agent/tools/task/task-list/taskListTool';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
-import { createAgentTaskPersistence, type TaskServiceTestManager } from './stubs';
+import { createAgentTaskPersistence, TASK_TEST_SESSION_SCOPE, TASK_TEST_AGENT_SCOPE, type TaskServiceTestManager } from './stubs';
 import { taskServices, createTestAgent, homeDirServices, type TestAgentContext } from '../../harness';
 import { executeTool, type TestExecutableToolContext } from '../../tools/fixtures/execute-tool';
 
@@ -173,6 +176,129 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     expect(snapshot.fullOutputAvailable).toBe(true);
     expect(snapshot.preview).toContain(tail);
     expect(snapshot.preview).not.toContain(head);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('pages a restored long receipt by stable UTF-8 byte offsets without dropping characters', async () => {
+    const receipt = `HEAD🙂${'中🙂'.repeat(6_000)}TAIL`;
+    const taskId = registerProcess(manager, immediateProcess(0, receipt), 'produce report', 'long report');
+    await manager.wait(taskId);
+
+    const restored = createTaskService(sessionDir);
+    try {
+      await restored.manager.loadFromDisk();
+      const tool = new TaskOutputTool(restored.manager);
+      let offset = 0;
+      let combined = '';
+      for (let index = 0; index < 40; index++) {
+        const result = await executeTool(tool, toolContext(`page_${index}`, { task_id: taskId, offset, max_bytes: 2049 }));
+        const text = outputString(result);
+        expect(result.isError ?? false).toBe(false);
+        expect(text).toContain('receipt_verification: verified');
+        expect(text).toContain('full_output_available: true');
+        expect(text).toContain(`output_path: ${persistence.taskOutputFile(taskId)}`);
+        const page = text.split('\n[output]\n')[1]!;
+        expect(page).not.toContain('\uFFFD');
+        combined += page;
+        const next = Number(/^next_offset: (\d+)$/m.exec(text)?.[1]);
+        expect(next).toBeGreaterThan(offset);
+        expect(Buffer.byteLength(page, 'utf-8')).toBeLessThanOrEqual(2049);
+        if (text.includes('has_more: false')) {
+          expect(next).toBe(Buffer.byteLength(receipt, 'utf-8'));
+          break;
+        }
+        offset = next;
+      }
+      expect(combined).toBe(receipt);
+      const middle = await executeTool(tool, toolContext('mid_codepoint', { task_id: taskId, offset: 5, max_bytes: 4 }));
+      expect(outputString(middle)).toContain('offset: 8\nnext_offset: 11');
+      expect(outputString(middle)).toContain('[output]\n中');
+      const exhausted = await executeTool(tool, toolContext('past_end', { task_id: taskId, offset: 100_000, max_bytes: 4 }));
+      expect(outputString(exhausted)).toContain('has_more: false');
+      expect(outputString(exhausted)).toContain(`next_offset: ${Buffer.byteLength(receipt, 'utf-8')}`);
+    } finally {
+      await restored.ctx.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('does not page an invalid or legacy-unverified terminal receipt as trusted full output', async () => {
+    const taskId = registerProcess(manager, immediateProcess(0, 'original content'), 'echo', 'tampered');
+    await manager.wait(taskId);
+    await persistence.appendTaskOutput(taskId, 'corruption');
+    const legacyId = 'bash-legacy01';
+    await persistence.writeTask({
+      taskId: legacyId, kind: 'process', description: 'old task', status: 'completed', detached: true,
+      startedAt: 1, endedAt: 2, command: 'echo old', pid: 1, exitCode: 0,
+    });
+    await persistence.appendTaskOutput(legacyId, 'old output');
+
+    const restored = createTaskService(sessionDir);
+    try {
+      await restored.manager.loadFromDisk();
+      expect(restored.manager.getTask(taskId)).toMatchObject({ receipt: undefined, receiptVerification: 'invalid' });
+      expect(restored.manager.getTask(legacyId)).toMatchObject({ receiptVerification: 'legacy_unverified' });
+      for (const [id, verification] of [[taskId, 'invalid'], [legacyId, 'legacy_unverified']] as const) {
+        const result = await executeTool(new TaskOutputTool(restored.manager), toolContext(`untrusted_${id}`, { task_id: id, offset: 0 }));
+        const text = outputString(result);
+        expect(text).toContain(`receipt_verification: ${verification}`);
+        expect(text).toContain('full_output_available: false');
+        expect(text).toContain('[Full output unavailable; no verified page can be returned.]');
+        expect(text).not.toContain('output_path:');
+        expect(text).not.toContain('[output]\n');
+      }
+    } finally {
+      await restored.ctx.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('refuses a same-size log mutation after receipt verification without advertising the full log', async () => {
+    const taskId = registerProcess(manager, immediateProcess(0, 'original content'), 'echo', 'mutated');
+    await manager.wait(taskId);
+    expect((await manager.getOutputSnapshot(taskId, 0)).fullOutputAvailable).toBe(true);
+    const before = await executeTool(new TaskListTool(manager), toolContext('list_before_change', { active_only: false }));
+    expect(outputString(before)).toContain('receipt_verification: verified');
+    writeFileSync(persistence.taskOutputFile(taskId), 'modified content');
+    expect(Buffer.byteLength('modified content')).toBe(Buffer.byteLength('original content'));
+    const after = await executeTool(new TaskListTool(manager), toolContext('list_after_change', { active_only: false }));
+    expect(outputString(after)).toContain('receipt_verification: invalid');
+    expect(outputString(after)).not.toContain('receipt_sha256:');
+    expect(await manager.getTaskSnapshot(taskId)).toMatchObject({ receipt: undefined, receiptVerification: 'invalid' });
+    const result = await executeTool(new TaskOutputTool(manager), toolContext('changed_after_commit', { task_id: taskId, offset: 0 }));
+    const text = outputString(result);
+    expect(text).toContain('full_output_available: false');
+    expect(text).not.toContain('output_path:');
+    expect(text).not.toContain('[output]\nmodified content');
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('pages the verified fallback log despite a same-size orphan primary output', async () => {
+    const taskId = 'bash-fallbac1';
+    const storage = new FileStorageService(sessionDir);
+    const legacy = new AgentTaskPersistence(join(sessionDir, TASK_TEST_SESSION_SCOPE), TASK_TEST_SESSION_SCOPE,
+      new JsonAtomicDocumentStore(storage), storage);
+    await legacy.commitTerminalTask({
+      taskId, kind: 'process', command: 'echo', pid: 1, exitCode: 0,
+      description: 'fallback receipt', status: 'completed', detached: true, startedAt: 1, endedAt: 2,
+    }, 'fallback text');
+    const restored = createTaskService(sessionDir);
+    try {
+      await restored.manager.loadFromDisk();
+      expect((await restored.manager.getOutputSnapshot(taskId, 0)).outputPath)
+        .toBe(join(sessionDir, TASK_TEST_SESSION_SCOPE, 'tasks', taskId, 'output.log'));
+      const outputPath = join(sessionDir, TASK_TEST_AGENT_SCOPE, 'tasks', taskId, 'output.log');
+      mkdirSync(join(sessionDir, TASK_TEST_AGENT_SCOPE, 'tasks', taskId), { recursive: true });
+      writeFileSync(outputPath, 'primary decoy');
+      expect(Buffer.byteLength('primary decoy')).toBe(Buffer.byteLength('fallback text'));
+      const snapshot = await restored.manager.getOutputSnapshot(taskId, 100);
+      expect(snapshot).toMatchObject({ preview: 'fallback text', fullOutputAvailable: true });
+      expect(snapshot.outputPath).not.toBe(outputPath);
+      expect((await restored.manager.getOutputPage(taskId, 0, 100))?.text).toBe('fallback text');
+      const result = await executeTool(new TaskOutputTool(restored.manager), toolContext('fallback_page', { task_id: taskId, offset: 0 }));
+      expect(outputString(result)).toContain('[output]\nfallback text');
+      expect(outputString(result)).not.toContain('primary decoy');
+    } finally {
+      await restored.ctx.dispose();
+    }
+    await manager.loadFromDisk();
+    await manager.reconcile();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('getOutputSnapshot verifies an empty output log for a silent terminal task', async () => {

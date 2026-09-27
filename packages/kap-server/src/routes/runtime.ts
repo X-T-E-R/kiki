@@ -2,12 +2,12 @@ import {
   Error2,
   ErrorCodes,
   IAgentRuntimeBindingService,
-  resumeSessionById,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { RuntimeError } from '@kiki/agent-core-v2/runtime/runtimeRegistry';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
@@ -49,8 +49,9 @@ export function registerRuntimeRoutes(app: RuntimeRouteHost, core: Scope): void 
       tags: ['sessions'],
     },
     async (req, reply) => {
-      const service = await resolveRuntime(core, req.params.session_id);
-      reply.send(okEnvelope(toResponse(service.get()), req.id));
+      await withRuntime(core, req.params.session_id, async (service) => {
+        reply.send(okEnvelope(toResponse(service.get()), req.id));
+      });
     },
   );
   app.get(getRoute.path, getRoute.options, getRoute.handler as Parameters<RuntimeRouteHost['get']>[2]);
@@ -73,8 +74,9 @@ export function registerRuntimeRoutes(app: RuntimeRouteHost, core: Scope): void 
     },
     async (req, reply) => {
       try {
-        const service = await resolveRuntime(core, req.params.session_id);
-        reply.send(okEnvelope(toResponse(service.switch(req.body.runtime_id)), req.id));
+        await withRuntime(core, req.params.session_id, async (service) => {
+          reply.send(okEnvelope(toResponse(service.switch(req.body.runtime_id)), req.id));
+        });
       } catch (error) {
         if (error instanceof RuntimeError) {
           const code = error.code === 'runtime.not_found'
@@ -90,13 +92,12 @@ export function registerRuntimeRoutes(app: RuntimeRouteHost, core: Scope): void 
   app.post(switchRoute.path, switchRoute.options, switchRoute.handler as Parameters<RuntimeRouteHost['post']>[2]);
 }
 
-async function resolveRuntime(core: Scope, sessionId: string): Promise<IAgentRuntimeBindingService> {
-  const session = await resumeSessionById(core.accessor, sessionId);
-  if (session === undefined) {
-    throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-  }
-  const agent = await ensureMainAgent(session);
-  return agent.accessor.get(IAgentRuntimeBindingService);
+async function withRuntime<T>(core: Scope, sessionId: string, work: (service: IAgentRuntimeBindingService) => Promise<T>): Promise<T> {
+  return withSessionOperation(core, sessionId, async (session) => {
+    if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    const agent = await ensureMainAgent(session);
+    return work(agent.accessor.get(IAgentRuntimeBindingService));
+  });
 }
 
 function toResponse(binding: { workspaceId: string; runtimeId: string }): RuntimeBindingResponse {

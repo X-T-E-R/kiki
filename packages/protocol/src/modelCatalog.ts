@@ -67,6 +67,24 @@ export type RequestIdentityPolicyWire = z.infer<typeof requestIdentityPolicySche
 export const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
 export type ServiceTierWire = z.infer<typeof serviceTierSchema>;
 
+export const apiDefaultParameterSchema = z.object({ kind: z.literal('api_default') }).strict();
+export const generationParametersSchema = z.object({
+  temperature: z.union([z.number().finite().min(0), apiDefaultParameterSchema]).optional(),
+  top_p: z.union([z.number().finite().min(0).max(1), apiDefaultParameterSchema]).optional(),
+  max_completion_tokens: z.number().int().positive().finite().optional(),
+  thinking_effort: z.string().trim().min(1).optional(),
+  service_tier: z.union([serviceTierSchema, apiDefaultParameterSchema]).optional(),
+}).strict();
+export type GenerationParametersWire = z.infer<typeof generationParametersSchema>;
+export const generationParametersPatchSchema = z.object({
+  temperature: generationParametersSchema.shape.temperature.unwrap().nullable().optional(),
+  top_p: generationParametersSchema.shape.top_p.unwrap().nullable().optional(),
+  max_completion_tokens: generationParametersSchema.shape.max_completion_tokens.unwrap().nullable().optional(),
+  thinking_effort: generationParametersSchema.shape.thinking_effort.unwrap().nullable().optional(),
+  service_tier: generationParametersSchema.shape.service_tier.unwrap().nullable().optional(),
+}).strict();
+export type GenerationParametersPatch = z.infer<typeof generationParametersPatchSchema>;
+
 export const imageMimeSchema = z.preprocess(
   (value) => {
     if (typeof value !== 'string') return value;
@@ -120,6 +138,7 @@ export const modelCatalogItemSchema = z.object({
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
+  parameters: generationParametersSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
   images: imagePolicySchema.optional(),
 });
@@ -130,6 +149,7 @@ export const providerCatalogItemSchema = z.object({
   type: z.string().min(1),
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
+  defaults: generationParametersSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
   images: imagePolicySchema.optional(),
   api_key: z.string().min(1).optional(),
@@ -227,6 +247,9 @@ export const modelEntitySchema = z.object({
   default_effort: z.string().optional(),
   adaptive_thinking: z.boolean().optional(),
   service_tier: serviceTierSchema.optional(),
+  parameters: generationParametersSchema.optional(),
+  effective_parameters: generationParametersSchema,
+  parameter_sources: z.record(z.string(), z.string()),
   request_identity: requestIdentityPolicySchema.optional(),
   images: imagePolicySchema.optional(),
   protocol: z.string().min(1).optional(),
@@ -256,6 +279,7 @@ export const patchModelRequestSchema = z
     default_effort: z.string().min(1).nullable().optional(),
     adaptive_thinking: z.boolean().nullable().optional(),
     service_tier: serviceTierSchema.nullable().optional(),
+    parameters: generationParametersPatchSchema.nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
     images: imagePolicyPatchSchema.nullable().optional(),
   })
@@ -281,6 +305,7 @@ export const createModelRequestSchema = z
     default_effort: z.string().min(1).optional(),
     adaptive_thinking: z.boolean().optional(),
     service_tier: serviceTierSchema.optional(),
+    parameters: generationParametersSchema.optional(),
     request_identity: requestIdentityPolicySchema.optional(),
     images: imagePolicySchema.optional(),
   })
@@ -301,6 +326,7 @@ export const patchProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().nullable().optional(),
     default_model: z.string().min(1).nullable().optional(),
+    defaults: generationParametersPatchSchema.nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
     images: imagePolicyPatchSchema.nullable().optional(),
   })
@@ -396,6 +422,7 @@ export const createProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
+    defaults: generationParametersSchema.optional(),
     request_identity: requestIdentityPolicySchema.optional(),
     images: imagePolicySchema.optional(),
     models: z.array(createProviderModelSchema).optional(),

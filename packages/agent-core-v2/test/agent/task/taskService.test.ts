@@ -504,6 +504,10 @@ describe('AgentTaskService', () => {
       expect(internals.cachedOutputs.size).toBe(0);
     }
     expect(svc.list(false).map((info) => info.taskId)).toEqual(ids);
+    expect(svc.list(false, 40, 0).map((info) => info.taskId)).toEqual(ids.slice(0, 40));
+    expect(svc.list(false, 40, 40).map((info) => info.taskId)).toEqual(ids.slice(40, 80));
+    expect(svc.list(false, 40, 80).map((info) => info.taskId)).toEqual(ids.slice(80));
+    expect(svc.list(false, 40, ids.length)).toEqual([]);
     for (let i = 0; i < ids.length; i++) {
       expect(await svc.readOutput(ids[i]!)).toBe([
         'process-output', 'agent-output', '{"answers":{"choice":"yes"}}', 'tracked-output',

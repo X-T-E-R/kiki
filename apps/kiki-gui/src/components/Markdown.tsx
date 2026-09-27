@@ -2,8 +2,8 @@
  * Markdown renderer for assistant/user text, built on Streamdown (streaming-
  * safe incomplete-block parsing, GFM tables/strikethrough/task-lists) with
  * shiki highlighting lazy-loaded via ./streamdown-plugins (codeg's pattern).
- * Fenced code renders through KikiCodeBlock chrome (language + copy +
- * collapse). Typography lives in `.kiki-md` (index.css).
+ * Fenced code uses KikiCodeBlock chrome; complete Mermaid fences render through
+ * the lazy-loaded Streamdown engine. Typography lives in `.kiki-md` (index.css).
  */
 
 import { memo, useMemo, useState, type ReactNode } from 'react';
@@ -15,13 +15,15 @@ import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { runToastAction } from '../lib/toasts';
+import { useOptionalConnection } from '../state/connection';
 import type { TimelineAnnotation } from '@kiki/session-core/composer';
 import {
   resolveFileReference,
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
 } from '@kiki/session-core/composer/media';
-import { KikiCodeBlock } from './markdown/KikiCodeBlock';
+import { KikiMarkdownPre } from './markdown/KikiCodeBlock';
+import { MarkdownFileImage } from './markdown/MarkdownFileImage';
 import { projectTextWithAnnotationMarks, rehypeAnnotationMarks } from './markdown/annotationMarks';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { useMediaPreview } from './mediaPreviewContext';
@@ -65,11 +67,12 @@ interface MdastLike {
   children?: MdastLike[];
 }
 
-function remarkLocalFileLinks() {
+function remarkLocalFileLinks(includeImages = false) {
   return (tree: MdastLike) => {
     const visit = (node: MdastLike) => {
-      if (node.type === 'link' && typeof node.url === 'string') {
-        const wrapped = wrapFileLinkTarget(node.url);
+      if ((node.type === 'link' || (includeImages && node.type === 'image')) && typeof node.url === 'string') {
+        const target = node.type === 'image' ? node.url.split(/[?#]/, 1)[0]! : node.url;
+        const wrapped = wrapFileLinkTarget(target);
         if (wrapped !== undefined) node.url = wrapped;
       }
       node.children?.forEach(visit);
@@ -79,6 +82,7 @@ function remarkLocalFileLinks() {
 }
 
 const REMARK_PLUGINS = [remarkLocalFileLinks];
+const DOCUMENT_REMARK_PLUGINS = [function remarkDocumentAssets() { return remarkLocalFileLinks(true); }];
 
 /**
  * Link renderer: local file paths (absolute, file://, or workspace-relative)
@@ -89,14 +93,17 @@ const REMARK_PLUGINS = [remarkLocalFileLinks];
  * Right-click raises a small menu (G-1): file links get preview/copy-path/
  * copy-absolute plus the desktop opener pair; external links get open/copy.
  */
-function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNode }) {
+function MarkdownAnchor({ href, children, documentDirectory }: {
+  href?: string; children?: ReactNode; documentDirectory?: string;
+}) {
   const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
+  const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const target = href === undefined ? undefined : (unwrapFileLinkTarget(href) ?? href);
-  const fileReference =
-    preview !== null && target !== undefined ? resolveFileReference(target, preview.cwd) : undefined;
+  const fileReference = preview !== null && target !== undefined
+    ? resolveFileReference(target, documentDirectory ?? preview.cwd) : undefined;
   const filePath = fileReference?.path;
 
   const openMenu = (event: React.MouseEvent) => {
@@ -114,7 +121,7 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
         label: t('file.copyAbsolutePath'),
         run: () => copyTextToClipboard(filePath),
       },
-      ...(host.revealPath !== undefined && host.openPath !== undefined
+      ...(!remoteScope && host.revealPath !== undefined && host.openPath !== undefined
         ? [
             { separator: true } as const,
             {
@@ -203,16 +210,20 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
 }
 
 const components: Components = {
-  pre: KikiCodeBlock as Components['pre'],
+  pre: KikiMarkdownPre as Components['pre'],
   a: MarkdownAnchor as Components['a'],
 };
 
 export const Markdown = memo(function Markdown({
   text,
+  mode = 'streaming',
+  documentDirectory,
   preserveEdgeMargins = false,
   annotationTargets,
 }: {
   text: string;
+  mode?: 'streaming' | 'static';
+  documentDirectory?: string;
   /** Streaming-prefix chunks keep their natural first/last block margins so
    * adjacent chunks' margins collapse like a single parse; standalone usage
    * zeroes them (see `.kiki-md--edges` in index.css). */
@@ -243,6 +254,11 @@ export const Markdown = memo(function Markdown({
   // annotation set changes; the transcript keeps the array identity stable
   // otherwise (useStableAnnotationTargets), so unrelated renders never thrash.
   const annotationKey = annotationTargets?.map((target) => target.id).join('\n') ?? '';
+  const renderers = useMemo<Components>(() => documentDirectory === undefined ? components : {
+    ...components,
+    a: (props) => <MarkdownAnchor {...props} documentDirectory={documentDirectory} />,
+    img: (props) => <MarkdownFileImage {...props} documentDirectory={documentDirectory} />,
+  }, [documentDirectory]);
   if (plain) {
     return (
       <div className={className}>
@@ -258,14 +274,16 @@ export const Markdown = memo(function Markdown({
     <div className={className}>
       <Streamdown
         key={annotationKey}
-        mode="streaming"
+        mode={mode}
+        parseIncompleteMarkdown={mode === 'streaming'}
         plugins={plugins}
         // The bare remarkPlugins prop REPLACES Streamdown's defaults, so
         // spread them back in — dropping remark-gfm kills GFM tables,
         // strikethrough, task-lists, and autolinks.
-        remarkPlugins={[...Object.values(defaultRemarkPlugins), ...REMARK_PLUGINS]}
+        remarkPlugins={[...Object.values(defaultRemarkPlugins), ...(documentDirectory === undefined
+          ? REMARK_PLUGINS : DOCUMENT_REMARK_PLUGINS)]}
         rehypePlugins={rehypePlugins}
-        components={components}
+        components={renderers}
         // kiki draws its own chrome; streamdown's built-in action rows stay off.
         controls={{ table: false, code: false, mermaid: false }}
       >

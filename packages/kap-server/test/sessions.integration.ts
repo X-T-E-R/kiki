@@ -1397,6 +1397,30 @@ describe('server-v2 /api/sessions', () => {
     expect(cancelled.body.data).toBeNull();
   });
 
+  it('keeps a source overlay resident until its owner releases it, including replacements', async () => {
+    await (server as RunningServer).close();
+    vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+    await writeFile(join(home as string, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0,
+      homeDir: home as string, logLevel: 'silent', debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const agentFile = join(home as string, 'pinned-overlay-agent.md');
+    await writeFile(agentFile, '---\nname: pinned-overlay-agent\ndescription: leased\n---\n\nLeased.\n');
+    const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home as string } });
+    const id = created.body.data.id;
+    const manager = server.core.accessor.get(ISessionManager);
+    const lease = await postJson<{ lease_id: string }>('/api/leases', {});
+    const body = { lease_id: lease.body.data.lease_id, agent_files: [agentFile], skill_dirs: [] };
+    expect((await postJson(`/api/sessions/${id}/source-overlay`, body)).body.code).toBe(0);
+    expect(await manager.evictIfIdle!(id)).toBe(false);
+    expect((await postJson(`/api/sessions/${id}/source-overlay`, body)).body.code).toBe(0);
+    expect(await manager.evictIfIdle!(id)).toBe(false);
+    expect((await postJson(`/api/sessions/${id}/source-overlay`, { ...body, agent_files: [] })).body.code).toBe(0);
+    expect(await manager.evictIfIdle!(id)).toBe(true);
+  });
+
   it('isolates explicit source overlays by active lease and releases them independently', async () => {
     const cwd = home as string;
     const overlayRoot = join(cwd, 'session-overlays');

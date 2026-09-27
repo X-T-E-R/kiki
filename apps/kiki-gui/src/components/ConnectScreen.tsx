@@ -11,9 +11,10 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import type { ConnectionConfig } from '../state/connectionConfig';
+import type { ConnectionConfig, SshProfile } from '../state/connectionConfig';
 import type { DesktopBootStatus, DesktopFailureInfo } from '../state/desktopConnection';
 import { Wordmark } from './Wordmark';
+import { SshProfilesPanel } from './SshProfilesPanel';
 
 declare const __KIKI_PROXY_TARGET__: string;
 
@@ -27,6 +28,9 @@ export function ConnectScreen({
   desktopFailure,
   onRetryDesktop,
   onCancelDesktopBoot,
+  onConnectSsh,
+  onSwitchLocal,
+  sshProfile,
 }: {
   initial: ConnectionConfig;
   connecting: boolean;
@@ -37,7 +41,22 @@ export function ConnectScreen({
   desktopFailure: DesktopFailureInfo | null;
   onRetryDesktop: () => void;
   onCancelDesktopBoot: () => void;
+  onConnectSsh: (id: string, token: string) => Promise<void>;
+  onSwitchLocal?: () => void;
+  sshProfile?: SshProfile;
 }) {
+  if (onSwitchLocal !== undefined) {
+    return (
+      <Card>
+        {desktopFailure !== null ? (
+          <>
+            <DesktopFailureCard failure={desktopFailure} onRetry={onRetryDesktop} onSwitchLocal={onSwitchLocal} />
+            <div className="px-7 pb-7"><SshProfilesPanel onConnect={onConnectSsh} selectedProfile={sshProfile} /></div>
+          </>
+        ) : <SshCheckingCard onSwitchLocal={onSwitchLocal} />}
+      </Card>
+    );
+  }
   if (desktopBoot !== null) {
     return (
       <Card>
@@ -49,6 +68,7 @@ export function ConnectScreen({
     return (
       <Card>
         <DesktopFailureCard failure={desktopFailure} onRetry={onRetryDesktop} />
+        <div className="px-7 pb-7"><SshProfilesPanel onConnect={onConnectSsh} /></div>
       </Card>
     );
   }
@@ -67,7 +87,7 @@ export function ConnectScreen({
 
 function Card({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-full items-center justify-center bg-paper px-4">
+    <div className="flex h-full items-center justify-center overflow-y-auto bg-paper px-4 py-4">
       <div className="anim-enter w-full max-w-[420px]">
         <div className="rounded-2xl border border-hairline bg-panel shadow-[0_1px_2px_rgba(28,25,23,0.04),0_12px_32px_-16px_rgba(28,25,23,0.12)]">
           <div className="h-[3px] rounded-t-2xl bg-accent" />
@@ -87,6 +107,20 @@ function useElapsedSeconds(startedAtMs: number): number {
     return () => { window.clearInterval(timer); };
   }, [startedAtMs]);
   return Math.max(0, Math.floor((now - startedAtMs) / 1000));
+}
+
+function SshCheckingCard({ onSwitchLocal }: { onSwitchLocal: () => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="px-7 pt-6 pb-7">
+      <Wordmark size="lg" />
+      <p className="mt-2 text-[13px] text-ink-soft">{t('connect.sshChecking')}</p>
+      <button type="button" onClick={onSwitchLocal}
+        className="mt-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-accent">
+        {t('connect.switchLocal')}
+      </button>
+    </div>
+  );
 }
 
 function DesktopBootCard({ boot, onCancel }: { boot: DesktopBootStatus; onCancel: () => void }) {
@@ -117,9 +151,11 @@ function DesktopBootCard({ boot, onCancel }: { boot: DesktopBootStatus; onCancel
 function DesktopFailureCard({
   failure,
   onRetry,
+  onSwitchLocal,
 }: {
   failure: DesktopFailureInfo;
   onRetry: () => void;
+  onSwitchLocal?: () => void;
 }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
@@ -143,7 +179,7 @@ function DesktopFailureCard({
     <div className="px-7 pt-6 pb-7">
       <Wordmark size="lg" />
       <p className="mt-2 text-[13px] font-semibold text-danger">
-        {t('connect.desktopFailedTitle')}
+        {t(onSwitchLocal === undefined ? 'connect.desktopFailedTitle' : 'connect.sshFailedTitle')}
       </p>
       <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] leading-relaxed text-danger">
         {failure.message}
@@ -157,10 +193,10 @@ function DesktopFailureCard({
       <div className="mt-4 flex gap-2">
         <button
           type="button"
-          onClick={onRetry}
+          onClick={onSwitchLocal ?? onRetry}
           className="flex-1 rounded-lg bg-accent px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-accent-deep"
         >
-          {t('connect.desktopRetry')}
+          {t(onSwitchLocal === undefined ? 'connect.desktopRetry' : 'connect.switchLocal')}
         </button>
         <button
           type="button"
@@ -191,6 +227,7 @@ function BrowserConnectForm({
   const { t } = useI18n();
   const [url, setUrl] = useState(initial.url);
   const [token, setToken] = useState(initial.token);
+  const [showToken, setShowToken] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [detectNote, setDetectNote] = useState<string | null>(null);
 
@@ -257,15 +294,25 @@ function BrowserConnectForm({
         <label htmlFor="connect-token" className="mb-1 block text-[12px] font-medium text-ink-soft">
           {t('connect.token')}
         </label>
-        <input
-          id="connect-token"
-          className="mb-5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
-          placeholder="~/.kiki/server.token"
-          value={token}
-          onChange={(event) => { setToken(event.target.value); }}
-          spellCheck={false}
-          type="password"
-        />
+        <div className="mb-5 flex gap-2">
+          <input
+            id="connect-token"
+            className="min-w-0 flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
+            placeholder="~/.kiki/server.token"
+            value={token}
+            onChange={(event) => { setToken(event.target.value); }}
+            spellCheck={false}
+            type={showToken ? 'text' : 'password'}
+          />
+          <button
+            type="button"
+            className="rounded-lg border border-hairline px-3 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+            aria-label={`${t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')} ${t('connect.token')}`}
+            onClick={() => { setShowToken((value) => !value); }}
+          >
+            {t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')}
+          </button>
+        </div>
 
         {error !== null ? (
           <div className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] text-danger">

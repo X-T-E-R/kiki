@@ -1,31 +1,18 @@
-import { constants } from 'node:fs';
-import { access, chmod, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { constants, createReadStream } from 'node:fs';
+import { access, chmod, copyFile, link, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import {
-  kimiCdnContentUrl,
-  kimiRegionProfile,
-  resolveKimiRegion,
-} from '@kiki/oauth';
-
 import { downloadToFile, runCommand } from '../host';
-import type {
-  CapabilityDetectResult,
-  CapabilityEntry,
-  CapabilityInstallReporter,
-  CapabilityStep,
-} from '../types';
+import { isRecognizedWebbridgePluginSource } from '../../plugin/prerequisites';
+import { webbridgeArtifact } from '../verifiedArtifacts';
+import type { CapabilityDetectResult, CapabilityEntry, CapabilityInstallReporter, CapabilityStep } from '../types';
 import type { CapabilityEntryContext } from './context';
 
 const PLUGIN_ID = 'kimi-webbridge';
-const PLUGIN_ZIP_PATH = 'plugins/official/kimi-webbridge.zip';
-const BINARY_CDN_PATH = 'webbridge/latest/releases';
-const DEFAULT_DAEMON_BASE_URL = 'http://127.0.0.1:10086';
-const STATUS_TIMEOUT_MS = 1_500;
-const START_TIMEOUT_MS = 30_000;
-const START_POLL_INTERVAL_MS = 500;
-const START_POLL_ATTEMPTS = 20;
+const DAEMON_BASE_URL = 'http://127.0.0.1:10086';
+const BROWSER_EXTENSION_URL = 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc';
 
 interface DaemonStatus {
   readonly running?: boolean;
@@ -33,270 +20,128 @@ interface DaemonStatus {
   readonly extension_connected?: boolean;
 }
 
-function binaryAssetName(platform: NodeJS.Platform, arch: string): string | undefined {
-  if (platform === 'darwin') {
-    if (arch === 'arm64') return 'kimi-webbridge-darwin-arm64';
-    if (arch === 'x64') return 'kimi-webbridge-darwin-amd64';
-    return undefined;
-  }
-  if (platform === 'linux') {
-    if (arch === 'arm64') return 'kimi-webbridge-linux-arm64';
-    if (arch === 'x64') return 'kimi-webbridge-linux-amd64';
-    return undefined;
-  }
-  if (platform === 'win32' && arch === 'x64') return 'kimi-webbridge-windows-amd64.exe';
-  return undefined;
+async function sha256Of(file: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
 }
 
 export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): CapabilityEntry {
-  const baseUrl = ctx.webbridgeBaseUrl ?? DEFAULT_DAEMON_BASE_URL;
+  const artifact = ctx.webbridgeArtifact ?? webbridgeArtifact(ctx.platform, ctx.arch);
+  const baseUrl = ctx.webbridgeBaseUrl ?? DAEMON_BASE_URL;
   const binDir = path.join(ctx.userHomeDir, '.kimi-webbridge', 'bin');
-  const binName = ctx.platform === 'win32' ? 'kimi-webbridge.exe' : 'kimi-webbridge';
-  const binPath = path.join(binDir, binName);
-  const userSourceSkillDirs = [
-    {
-      label: 'kimi-code',
-      path: path.join(ctx.kimiHomeDir, 'skills', 'kimi-webbridge'),
-    },
-    {
-      label: 'agents',
-      path: path.join(ctx.userHomeDir, '.agents', 'skills', 'kimi-webbridge'),
-    },
-  ];
-  const standaloneSkillBackupDir = path.join(
-    ctx.kimiHomeDir,
-    'backups',
-    'kimi-webbridge-skills',
-  );
-  const supported = binaryAssetName(ctx.platform, ctx.arch) !== undefined;
-  let standaloneSkillBackupPath: string | undefined;
-  let standaloneSkillMigrationError: string | undefined;
+  const binPath = path.join(binDir, ctx.platform === 'win32' ? 'kimi-webbridge.exe' : 'kimi-webbridge');
 
-  async function exists(p: string): Promise<boolean> {
-    return access(p).then(
-      () => true,
-      () => false,
-    );
-  }
-
-  async function executable(p: string): Promise<boolean> {
-    return access(p, constants.X_OK).then(
-      () => true,
-      () => false,
-    );
+  async function exists(file: string): Promise<boolean> {
+    return access(file).then(() => true, () => false);
   }
 
   async function fetchDaemonStatus(): Promise<DaemonStatus | undefined> {
-    const fetchImpl = ctx.fetchImpl ?? fetch;
+    if (baseUrl !== DAEMON_BASE_URL) return undefined;
     try {
-      const resp = await fetchImpl(`${baseUrl}/status`, {
-        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+      const resp = await (ctx.fetchImpl ?? fetch)(`${DAEMON_BASE_URL}/status`, {
+        signal: AbortSignal.timeout(1_500),
+        redirect: 'manual',
       });
       if (!resp.ok) return undefined;
-      return (await resp.json()) as DaemonStatus;
+      const payload: unknown = await resp.json();
+      if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+      const data = payload as Record<string, unknown>;
+      if (typeof data['running'] !== 'boolean' || typeof data['version'] !== 'string' ||
+          typeof data['extension_connected'] !== 'boolean') return undefined;
+      return {
+        running: data['running'],
+        version: data['version'],
+        extension_connected: data['extension_connected'],
+      };
     } catch {
       return undefined;
     }
   }
 
-  async function standaloneSkillDirs(): Promise<readonly (typeof userSourceSkillDirs)[number][]> {
-    const checked = await Promise.all(
-      userSourceSkillDirs.map(async (entry) => ({ ...entry, present: await exists(entry.path) })),
-    );
-    return checked.filter((entry) => entry.present);
-  }
-
-  async function migrateStandaloneSkills(): Promise<string | undefined> {
-    const skills = await standaloneSkillDirs();
-    if (skills.length === 0) return undefined;
-    await mkdir(standaloneSkillBackupDir, { recursive: true });
-    const backupRoot = await mkdtemp(path.join(standaloneSkillBackupDir, 'migration-'));
-    for (const skill of skills) {
-      await rename(skill.path, path.join(backupRoot, skill.label));
-    }
-    return backupRoot;
-  }
-
   async function detect(): Promise<CapabilityDetectResult> {
-    const steps: CapabilityStep[] = [];
-
     const binaryPresent = await exists(binPath);
-    const binaryUsable =
-      binaryPresent && (ctx.platform === 'win32' || (await executable(binPath)));
-    steps.push({
-      id: 'daemon-binary',
-      state: binaryUsable ? 'ok' : 'missing',
-      detail: binaryPresent && !binaryUsable ? 'not executable' : undefined,
-    });
-
+    const binaryUsable = binaryPresent &&
+      (ctx.platform === 'win32' || await access(binPath, constants.X_OK).then(() => true, () => false));
+    const binaryVerified = binaryUsable && artifact !== undefined &&
+      (await sha256Of(binPath)) === artifact.sha256;
     const daemon = await fetchDaemonStatus();
-    const daemonRunning = daemon?.running === true;
-    steps.push({
-      id: 'daemon',
-      state: daemonRunning ? 'ok' : 'missing',
-      detail: daemonRunning ? daemon?.version : undefined,
-    });
-
-    const installed = await ctx.plugins.listPlugins();
-    const plugin = installed.find((p) => p.id === PLUGIN_ID);
-    const mcpGap =
-      plugin !== undefined && plugin.enabledMcpServerCount < plugin.mcpServerCount
-        ? `mcp ${plugin.enabledMcpServerCount}/${plugin.mcpServerCount} enabled`
-        : undefined;
-    const pluginOk =
-      plugin !== undefined &&
-      plugin.enabled &&
-      plugin.state === 'ok' &&
-      plugin.enabledMcpServerCount === plugin.mcpServerCount;
-    steps.push({
-      id: 'skill',
-      state: pluginOk ? 'ok' : 'missing',
-      detail: mcpGap ?? plugin?.version,
-    });
-
-    const standaloneSkills = await standaloneSkillDirs();
-    if (standaloneSkills.length > 0) {
-      steps.push({
-        id: 'standalone-skill-migration',
-        state: 'missing',
-        detail:
-          standaloneSkillMigrationError ?? standaloneSkills.map((item) => item.path).join(', '),
-        optional: true,
-      });
-    } else if (await exists(standaloneSkillBackupDir)) {
-      steps.push({
-        id: 'standalone-skill-migration',
-        state: 'ok',
-        detail: standaloneSkillBackupPath ?? standaloneSkillBackupDir,
-        optional: true,
-      });
-    }
-
-    steps.push({
-      id: 'extension',
-      state: daemon?.extension_connected === true ? 'ok' : 'missing',
-      optional: true,
-    });
-
+    const running = daemon?.running === true;
+    const plugin = (await ctx.plugins.listPlugins()).find((item) => item.id === PLUGIN_ID);
+    const pluginEnabled = plugin?.enabled === true && plugin.state === 'ok' &&
+      plugin.hasErrors !== true && plugin.enabledMcpServerCount === plugin.mcpServerCount;
+    const knownSource = isRecognizedWebbridgePluginSource(PLUGIN_ID, plugin?.originalSource);
+    const steps: CapabilityStep[] = [
+      { id: 'daemon-binary', state: binaryVerified ? 'ok' : 'missing', optional: running,
+        detail: binaryPresent && !binaryUsable ? 'not executable' :
+          binaryUsable && !binaryVerified ? 'Unverified: installed daemon binary does not match the pinned release SHA-256' : undefined },
+      { id: 'daemon', state: running ? 'ok' : 'missing',
+        detail: running ? `Loopback status reports running (${daemon.version}); responding process identity is not authenticated` : undefined },
+      { id: 'skill', state: pluginEnabled ? 'ok' : 'missing',
+        detail: plugin === undefined ? 'Install the plugin package separately; it will remain disabled until explicitly enabled' :
+          !plugin.enabled ? 'Plugin is disabled' :
+          plugin.state !== 'ok' || plugin.hasErrors === true ? 'Plugin reports an error' :
+          plugin.enabledMcpServerCount !== plugin.mcpServerCount ? 'Plugin MCP servers are not all enabled' : undefined },
+      { id: 'extension', state: running && daemon.extension_connected === true ? 'ok' : 'missing',
+        detail: running && daemon.extension_connected === false ? 'Browser extension is not connected (installation cannot be inferred)' :
+          running && daemon.extension_connected === true ? 'Connection is reported by the loopback service, not independently authenticated' : undefined },
+      { id: 'daemon-identity', state: 'missing', optional: true,
+        detail: 'Unverified: the loopback status cannot authenticate the responding process or browser extension' },
+      { id: 'plugin-integrity', state: 'missing', optional: true,
+        detail: knownSource ? 'Unverified: publisher URL and plugin version do not prove ZIP integrity or daemon compatibility' :
+          'Unverified: local or unknown plugin source and daemon compatibility have not been attested' },
+    ];
     return { steps, version: daemon?.version };
   }
 
-  async function waitForDaemon(): Promise<void> {
-    for (let attempt = 0; attempt < START_POLL_ATTEMPTS; attempt += 1) {
-      const status = await fetchDaemonStatus();
-      if (status?.running === true) return;
-      await new Promise((resolve) => {
-        setTimeout(resolve, START_POLL_INTERVAL_MS);
-      });
-    }
-    throw new Error(`WebBridge daemon did not come up on ${baseUrl} — check ~/.kimi-webbridge/logs`);
-  }
-
   async function install(report: CapabilityInstallReporter): Promise<string | undefined> {
-    const asset = binaryAssetName(ctx.platform, ctx.arch);
-    if (asset === undefined) {
-      throw new Error(`kimi-webbridge is not supported on ${ctx.platform}/${ctx.arch}`);
-    }
-
-    const before = await detect();
-    const stepStates = new Map(before.steps.map((step) => [step.id, step.state]));
-    const readyBefore = before.steps
-      .filter((step) => step.optional !== true)
-      .every((step) => step.state === 'ok');
-    const standaloneSkillMigrationPending =
-      stepStates.get('standalone-skill-migration') === 'missing';
-    if (stepStates.get('daemon-binary') !== 'ok' || readyBefore) {
-      await installBinary(report, asset);
-    }
-
+    if (artifact === undefined) throw new Error(`WebBridge has no verified artifact for ${ctx.platform}/${ctx.arch}`);
     const status = await fetchDaemonStatus();
-    if (status?.running !== true) {
-      report('daemon');
-      const started = await runCommand(ctx.hostProcess, binPath, ['start'], {
-        timeout: START_TIMEOUT_MS,
-      });
-      if (started.code !== 0) {
-        throw new Error(`kimi-webbridge start failed: ${started.stderr || started.stdout}`);
-      }
-      await waitForDaemon();
-    }
-
-    report('skill');
-    const region = (await ctx.resolveRegion?.()) ?? resolveKimiRegion();
-    const summary = await ctx.plugins.installPlugin({
-      source: `${kimiRegionProfile(region).cdnBase}/${PLUGIN_ZIP_PATH}`,
-    });
-    if (!summary.enabled) {
-      await ctx.plugins.setPluginEnabled({ id: PLUGIN_ID, enabled: true });
-    }
-
-    if (standaloneSkillMigrationPending) {
-      report('standalone-skill-migration');
+    if (status?.running === true) return 'existing-loopback-daemon-observed-identity-unverified';
+    if (!(await exists(binPath))) {
+      report('download', 0);
+      const workDir = await mkdtemp(path.join(tmpdir(), 'kiki-webbridge-'));
+      const staging = path.join(workDir, 'daemon');
+      const sibling = path.join(binDir, `.${path.basename(binPath)}-${process.pid}-${Date.now()}.tmp`);
       try {
-        standaloneSkillBackupPath = await migrateStandaloneSkills();
-        standaloneSkillMigrationError = undefined;
-      } catch (error) {
-        standaloneSkillMigrationError =
-          `Could not back up the standalone kimi-webbridge skill: ${error instanceof Error ? error.message : String(error)}`;
+        await downloadToFile(artifact.url, staging, (percent) => report('download', percent),
+          ctx.fetchImpl, { sha256: artifact.sha256, maxBytes: artifact.maxBytes });
+        if (await sha256Of(staging) !== artifact.sha256) throw new Error('WebBridge staging checksum changed');
+        await mkdir(binDir, { recursive: true });
+        await copyFile(staging, sibling, constants.COPYFILE_EXCL);
+        if (await sha256Of(sibling) !== artifact.sha256) throw new Error('WebBridge copy checksum changed');
+        if (ctx.platform !== 'win32') await chmod(sibling, 0o755);
+        await link(sibling, binPath);
+      } finally {
+        await rm(sibling, { force: true }).catch(() => undefined);
+        await rm(workDir, { recursive: true, force: true });
       }
     }
-    return standaloneSkillMigrationPending && standaloneSkillMigrationError === undefined
-      ? 'user-skill-migrated'
-      : undefined;
-  }
-
-  async function installBinary(
-    report: CapabilityInstallReporter,
-    asset: string,
-  ): Promise<void> {
-    report('download', 0);
-    const url = kimiCdnContentUrl(`${BINARY_CDN_PATH}/${asset}`);
-    const staging = path.join(
-      tmpdir(),
-      `kimi-webbridge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ctx.platform === 'win32' ? '.exe' : ''}`,
-    );
-    try {
-      await downloadToFile(
-        url,
-        staging,
-        (percent) => {
-          report('download', percent);
-        },
-        ctx.fetchImpl,
-      );
-      await mkdir(binDir, { recursive: true });
-      await rename(staging, binPath).catch(async (error: NodeJS.ErrnoException) => {
-        if (error.code !== 'EXDEV') throw error;
-        await renameAcrossDevicesFallback(staging, binPath);
-      });
-      if (ctx.platform !== 'win32') await chmod(binPath, 0o755);
-    } finally {
-      await rm(staging, { force: true }).catch(() => undefined);
+    if (await sha256Of(binPath) !== artifact.sha256) {
+      throw new Error(`Existing WebBridge binary is not the pinned ${artifact.version} artifact; no overwrite or launch was attempted`);
     }
+    report('daemon');
+    const started = await runCommand(ctx.hostProcess, binPath, ['start'], { timeout: 30_000 });
+    if (started.code !== 0) throw new Error(`WebBridge start failed: ${started.stderr || started.stdout}`);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if ((await fetchDaemonStatus())?.running === true) return 'loopback-daemon-observed-identity-and-extension-unverified';
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error('WebBridge daemon did not report a valid status on 127.0.0.1:10086');
   }
 
   return {
     id: 'kimi-webbridge',
     pluginId: PLUGIN_ID,
     displayName: 'Kimi Browser Extension',
-    description:
-      'Control your real browser (with your login sessions) — navigate, click, type, read pages, and screenshot any website.',
-    supported,
+    description: 'Control your browser through a local WebBridge daemon and a browser-approved extension.',
+    supported: artifact !== undefined,
+    plan: artifact === undefined ? undefined : {
+      artifact, destination: binPath,
+      browserExtensionUrl: BROWSER_EXTENSION_URL,
+      note: 'The pinned SHA-256 comes from the publisher release metadata, not an independently verified signature. The plugin package and browser extension require separate user action. Existing binaries are never replaced.',
+    },
     detect,
     install,
   };
 }
-
-async function renameAcrossDevicesFallback(from: string, to: string): Promise<void> {
-  const { copyFile } = await import('node:fs/promises');
-  const sibling = `${to}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    await copyFile(from, sibling);
-    await rename(sibling, to);
-  } finally {
-    await rm(sibling, { force: true }).catch(() => undefined);
-  }
-  await rm(from, { force: true });
-}
-
-export const __kimiWebbridgeInternals = { binaryAssetName, renameAcrossDevicesFallback };

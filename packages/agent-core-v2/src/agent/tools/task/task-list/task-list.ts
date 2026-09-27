@@ -17,6 +17,14 @@ export const TaskListInputSchema = z.object({
     .default(20)
     .describe('Maximum number of tasks to return.')
     .optional(),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .max(Number.MAX_SAFE_INTEGER)
+    .default(0)
+    .describe('Number of matching tasks to skip before returning the page.')
+    .optional(),
 });
 
 export type TaskListInput = z.infer<typeof TaskListInputSchema>;

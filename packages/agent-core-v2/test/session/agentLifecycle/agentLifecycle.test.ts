@@ -94,6 +94,7 @@ import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataServic
 import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { AgentCollaborationRegistry, IAgentCollaborationRegistry, COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import { createWireMetadataRecord, type WireRecord } from '#/wire/record';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -381,19 +382,8 @@ describe('AgentLifecycleService', () => {
       _serviceBrand: undefined,
       drain: promptDrain,
     } as unknown as IAgentPromptService);
-    executionCancel = vi.fn<IAgentExecutionService['cancel']>((reason) => {
-      let cancelled = false;
-      for (const turnId of [...loopPendingTurnIds]) {
-        cancelled = loopCancel(turnId, reason) || cancelled;
-      }
-      return loopCancel(undefined, reason) || cancelled;
-    });
-    executionShutdown = vi.fn<IAgentExecutionService['shutdown']>(async (reason) => {
-      await Promise.all([
-        loopSettled(),
-        promptDrain(reason instanceof Error ? reason : new Error(String(reason))),
-      ]);
-    });
+    executionCancel = vi.fn<IAgentExecutionService['cancel']>(() => false);
+    executionShutdown = vi.fn<IAgentExecutionService['shutdown']>(async () => {});
     ix.stub(IAgentExecutionService, {
       _serviceBrand: undefined,
       run: async () => { throw new Error('unexpected run'); },
@@ -1406,6 +1396,59 @@ describe('AgentLifecycleService', () => {
       type: 'metadata',
       protocol_version: createWireMetadataRecord().protocol_version,
     });
+  });
+
+  it('opens a durable transcript acceptance epoch before an agent runs and seals after removal', async () => {
+    const storage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.stub(IAppendLogStore, new AppendLogStore(storage));
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'child' });
+    const scope = ix.get(ISessionContext).scope('agents/child');
+    const open = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+      (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+    ).toString('utf8')));
+    expect(open).toMatchObject({ state: 'open', trusted: true });
+    handle.accessor.get(IWireService).appendRecord({ type: 'turn.prompt', turnId: 0 });
+    await svc.remove('child');
+    const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+      (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+    ).toString('utf8')));
+    expect(sealed).toMatchObject({ state: 'sealed', trusted: true, epoch: open?.epoch, wire: { size: expect.any(Number), sha256: expect.any(String) } });
+    expect(sealed?.wire?.size).toBeGreaterThan(0);
+  });
+
+  it('waits for a direct loop to settle before sealing its accepted transcript', async () => {
+    const storage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.stub(IAppendLogStore, new AppendLogStore(storage));
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'child' });
+    const wire = handle.accessor.get(IWireService);
+    const scope = ix.get(ISessionContext).scope('agents/child');
+    let releaseLoop!: () => void;
+    const loopGate = new Promise<void>((resolve) => { releaseLoop = resolve; });
+    let enteredLoop!: () => void;
+    const loopEntered = new Promise<void>((resolve) => { enteredLoop = resolve; });
+    loopSettled.mockImplementationOnce(async () => {
+      enteredLoop();
+      await loopGate;
+    });
+    const removal = svc.remove('child');
+    await loopEntered;
+    const stillOpen = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+      (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+    ).toString('utf8')));
+    expect(stillOpen?.state).toBe('open');
+    wire.appendRecord({ type: 'turn.ended', turnId: 0, reason: 'cancelled' });
+    releaseLoop();
+    await removal;
+    const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+      (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+    ).toString('utf8')));
+    const persisted = await storage.read(scope, AGENT_WIRE_RECORD_KEY);
+    expect(Buffer.from(persisted!).toString('utf8')).toContain('"type":"turn.ended"');
+    expect(sealed).toMatchObject({ state: 'sealed', trusted: true, wire: { size: persisted!.byteLength } });
   });
 
   it('does not re-seal a wire log that already has records', async () => {

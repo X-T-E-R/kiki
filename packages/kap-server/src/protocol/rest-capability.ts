@@ -26,6 +26,13 @@ export const capabilityStatusSchema = z.object({
   state: z.enum(['not_installed', 'partial', 'ready', 'unsupported']),
   version: z.string().optional(),
   steps: z.array(capabilityStepSchema),
+  plan: z.object({
+    artifact: z.object({
+      version: z.string(), url: z.string().url(), sha256: z.string().regex(/^[0-9a-f]{64}$/),
+      metadataUrl: z.string().url(), maxBytes: z.number().int().positive(),
+    }),
+    destination: z.string(), browserExtensionUrl: z.string().url().optional(), note: z.string(),
+  }).optional(),
   install: capabilityInstallProgressSchema,
 });
 export type CapabilityStatusWire = z.infer<typeof capabilityStatusSchema>;

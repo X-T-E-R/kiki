@@ -9,7 +9,6 @@ import {
   ITelemetryService,
   ensureMainAgent,
   isError2,
-  resumeSessionById,
   sessionMediaOriginalsDir,
   type Scope,
 } from '@kiki/agent-core-v2';
@@ -30,6 +29,7 @@ import {
   resolvePromptMediaFiles,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
+import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { parseActionSuffix } from './action-suffix';
 import {
@@ -187,6 +187,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
     },
     async (req, reply) => {
       let preparedMedia: Awaited<ReturnType<typeof resolvePromptMediaFiles>> | undefined;
+      let lease: SessionOperationLease | undefined;
       let enqueued = false;
       try {
         const { session_id, tail } = req.params as { session_id: string; tail: string };
@@ -200,7 +201,8 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
           return;
         }
-        const session = await resumeSessionById(core.accessor, session_id);
+        lease = await acquireSessionOperation(core, session_id, 'operation');
+        const session = lease.handle;
         if (session === undefined) throw new Error2('session.not_found', `session ${session_id} does not exist`);
         const agent = await ensureMainAgent(session);
         if (parsed.action === 'edit') {
@@ -242,6 +244,8 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
       } catch (err) {
         if (!enqueued) await preparedMedia?.discard();
         sendMappedError(reply, req, err);
+      } finally {
+        lease?.dispose();
       }
     },
   );

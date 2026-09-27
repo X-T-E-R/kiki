@@ -486,6 +486,12 @@ describe('contract schemas', () => {
       coverage: { kind: 'full', hasMoreOlder: false },
     });
     expect(ok.success).toBe(true);
+    expect(transcriptResponseSchema.parse({ ...ok.data, coverage: { kind: 'unknown', hasMoreOlder: true } }).coverage).toEqual({ kind: 'unknown', hasMoreOlder: true });
+    expect(transcriptResetPayloadSchema.safeParse({
+      session_id: 's1', agent_id: 'main', snapshot: { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} },
+      grade: 'turn', coverage: { kind: 'unknown', hasMoreOlder: true }, cursor: { seq: 0, epoch: 'e1' },
+    }).success).toBe(true);
+    expect(transcriptResponseSchema.safeParse({ ...ok.data, coverage: { kind: 'unknown', hasMoreOlder: false } }).success).toBe(false);
     expect(transcriptResponseSchema.parse({ ...ok.data, tool_call_count: 3 }).tool_call_count).toBe(3);
     expect(
       transcriptResponseSchema.safeParse({ ...ok.data, tool_call_count: -1 }).success,

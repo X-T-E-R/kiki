@@ -91,6 +91,7 @@ export function registerCapabilitiesRoutes(app: CapabilitiesRouteHost, core: Sco
       method: 'POST',
       path: '/capabilities/{tail}',
       params: capabilityTailParamsSchema,
+      body: z.object({ expectedSha256: z.string().regex(/^[0-9a-f]{64}$/).optional() }),
       success: { data: capabilityStatusSchema },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
@@ -116,7 +117,7 @@ export function registerCapabilitiesRoutes(app: CapabilitiesRouteHost, core: Sco
       try {
         const capability = await core.accessor
           .get(ICapabilityService)
-          .installCapability(parsed.id);
+          .installCapability(parsed.id, req.body.expectedSha256);
         reply.send(okEnvelope(capability, req.id));
       } catch (error) {
         reply.send(mapCapabilityError(error, req.id));

@@ -15,6 +15,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -1571,6 +1572,7 @@ function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
 const TRANSCRIPT_ESTIMATED_ROW_HEIGHT = 120;
 const TRANSCRIPT_OVERSCAN = 6;
 const TRANSCRIPT_END_THRESHOLD = 80;
+const TRANSCRIPT_OLDER_INTENT_MS = 1000;
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 
 type TranscriptVirtualNode = GroupedDisplayNode | undefined;
@@ -1769,37 +1771,31 @@ function JumpToBottom({
   );
 }
 
-/** Top edge loads history; end anchoring owns viewport preservation. */
-function TopEdge({ state, onLoadOlder, scrollRef }: {
+function TopEdge({ state, onLoadOlder }: {
   state: SessionViewState;
   onLoadOlder: () => Promise<boolean>;
-  scrollRef: { readonly current: HTMLDivElement | null };
 }) {
   const { t } = useI18n();
-  const inflightRef = useRef(false);
 
-  useEffect(() => {
-    const element = scrollRef.current;
-    if (element === null) return;
-    const onScroll = () => {
-      if (
-        inflightRef.current ||
-        state.loadingOlder ||
-        state.olderError !== undefined ||
-        !state.hasMoreHistory ||
-        element.scrollTop > 48
-      ) {
-        return;
-      }
-      inflightRef.current = true;
-      void onLoadOlder().finally(() => {
-        inflightRef.current = false;
-      });
-    };
-    element.addEventListener('scroll', onScroll, { passive: true });
-    onScroll();
-    return () => { element.removeEventListener('scroll', onScroll); };
-  }, [scrollRef, state.loadingOlder, state.hasMoreHistory, state.olderError, onLoadOlder]);
+  if (state.historyCoverageKind === 'unknown') {
+    return (
+      <div role="status" className="mx-auto flex max-w-[440px] flex-col items-center gap-1.5 rounded-lg border border-hairline bg-panel px-4 py-3 text-center">
+        <p className="text-[11.5px] font-medium text-ink">{t('transcript.historyUnverified')}</p>
+        <p className="text-[10.5px] text-ink-soft">{t('transcript.historyUnverifiedHint')}</p>
+        {state.olderError !== undefined ? <p className="text-[10.5px] text-danger">{state.olderError}</p> : null}
+        {state.loadingOlder ? <span className="text-[10.5px] text-ink-faint">{t('transcript.loadingEarlier')}</span> : null}
+        {!state.loadingOlder && state.hasMoreHistory && state.oldestMessageId !== undefined ? (
+          <button
+            type="button"
+            onClick={() => { void onLoadOlder(); }}
+            className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
+          >
+            {t(state.olderError === undefined ? 'transcript.loadEarlier' : 'transcript.retryEarlier')}
+          </button>
+        ) : null}
+      </div>
+    );
+  }
 
   if (state.loadingOlder) {
     return (
@@ -1831,6 +1827,17 @@ function TopEdge({ state, onLoadOlder, scrollRef }: {
         <span className="text-[10.5px] text-ink-faint">{t('transcript.beginning')}</span>
         <span className="h-px flex-1 bg-hairline" />
       </div>
+    );
+  }
+  if (state.hasMoreHistory) {
+    return (
+      <button
+        type="button"
+        onClick={() => { void onLoadOlder(); }}
+        className="mx-auto block rounded-full border border-hairline px-3 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
+      >
+        {t('transcript.loadEarlier')}
+      </button>
     );
   }
   return null;
@@ -2269,11 +2276,83 @@ export function Transcript({
     return [...indexes].sort((left, right) => left - right);
   }, [pinnedIndexes]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const olderIntentRef = useRef(false);
+  const olderIntentAtRef = useRef(0);
+  const olderInflightRef = useRef(false);
+  const loadOlderRef = useRef(onLoadOlder);
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element === null) return;
+    let touchY: number | undefined;
+    let pointerY: number | undefined;
+    const recordIntent = (upward: boolean) => {
+      olderIntentRef.current = upward;
+      if (upward) olderIntentAtRef.current = Date.now();
+    };
+    const loadAtTop = () => {
+      if (!olderIntentRef.current) return;
+      if (Date.now() - olderIntentAtRef.current > TRANSCRIPT_OLDER_INTENT_MS) {
+        olderIntentRef.current = false;
+        return;
+      }
+      if (olderInflightRef.current || state.loadingOlder || state.olderError !== undefined ||
+          !state.hasMoreHistory || element.scrollTop > 48) return;
+      olderIntentRef.current = false;
+      olderInflightRef.current = true;
+      void loadOlderRef.current().finally(() => { olderInflightRef.current = false; });
+    };
+    const onWheel = (event: WheelEvent) => {
+      recordIntent(event.deltaY < 0);
+      loadAtTop();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, [contenteditable="true"]')) return;
+      if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) recordIntent(true);
+      else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) recordIntent(false);
+      loadAtTop();
+    };
+    const onTouchStart = (event: TouchEvent) => { touchY = event.touches[0]?.clientY; };
+    const onTouchMove = (event: TouchEvent) => {
+      const next = event.touches[0]?.clientY;
+      if (touchY !== undefined && next !== undefined && next !== touchY) recordIntent(next > touchY);
+      touchY = next;
+      loadAtTop();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      pointerY = event.offsetX >= element.clientWidth - 20 ? event.clientY : undefined;
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (pointerY === undefined || event.buttons === 0) return;
+      recordIntent(event.clientY < pointerY);
+      pointerY = event.clientY;
+      loadAtTop();
+    };
+    const onPointerUp = () => { pointerY = undefined; };
+    element.addEventListener('wheel', onWheel, { passive: true });
+    element.addEventListener('keydown', onKeyDown);
+    element.addEventListener('touchstart', onTouchStart, { passive: true });
+    element.addEventListener('touchmove', onTouchMove, { passive: true });
+    element.addEventListener('pointerdown', onPointerDown);
+    element.addEventListener('pointermove', onPointerMove);
+    element.addEventListener('pointerup', onPointerUp);
+    element.addEventListener('scroll', loadAtTop, { passive: true });
+    return () => {
+      element.removeEventListener('wheel', onWheel);
+      element.removeEventListener('keydown', onKeyDown);
+      element.removeEventListener('touchstart', onTouchStart);
+      element.removeEventListener('touchmove', onTouchMove);
+      element.removeEventListener('pointerdown', onPointerDown);
+      element.removeEventListener('pointermove', onPointerMove);
+      element.removeEventListener('pointerup', onPointerUp);
+      element.removeEventListener('scroll', loadAtTop);
+    };
+  }, [state.loadingOlder, state.hasMoreHistory, state.olderError]);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
     atEnd: true,
     key: undefined,
     offset: 0,
   });
+  loadOlderRef.current = onLoadOlder;
   const initialScrollDoneRef = useRef(false);
   const initialScrollFrameRef = useRef<number | null>(null);
   const measuredResetRef = useRef(state.transcriptResetVersion);
@@ -2291,6 +2370,14 @@ export function Transcript({
   // follow survives. Returning true only there leaves the fork's default
   // backward-scroll and above-fold rules untouched.
   const virtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
+  const priorHistoryShapeRef = useRef({ resetVersion: state.transcriptResetVersion, length: virtualNodes.length });
+  useInsertionEffect(() => {
+    const prior = priorHistoryShapeRef.current;
+    if (prior.resetVersion !== state.transcriptResetVersion || virtualNodes.length < prior.length) {
+      olderIntentRef.current = false;
+    }
+    priorHistoryShapeRef.current = { resetVersion: state.transcriptResetVersion, length: virtualNodes.length };
+  }, [state.transcriptResetVersion, virtualNodes.length]);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: virtualNodes.length,
     getScrollElement: () => scrollRef.current,
@@ -2384,6 +2471,7 @@ export function Transcript({
     if (pending === null || pending.frame !== null) return;
     pending.frame = requestAnimationFrame(() => {
       if (pendingResetRestoreRef.current !== pending) return;
+      olderIntentRef.current = false;
       const { anchor } = pending;
       if (anchor.atEnd) {
         virtualizer.scrollToEnd();
@@ -2480,7 +2568,7 @@ export function Transcript({
                 className="absolute left-0 w-full"
               >
                 <div className="mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6">
-                  {first ? <TopEdge state={state} onLoadOlder={onLoadOlder} scrollRef={scrollRef} /> : null}
+                  {first ? <TopEdge state={state} onLoadOlder={onLoadOlder} /> : null}
                   {node === undefined ? null : (
                     <TranscriptRow
                       node={node}

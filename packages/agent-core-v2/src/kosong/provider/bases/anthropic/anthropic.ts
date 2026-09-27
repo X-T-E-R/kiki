@@ -63,8 +63,8 @@ import {
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
 import {
   mergeProviderRequestAuth,
-  mergeRequestHeaders,
   requestIdentityFetch,
+  mergeRequestHeaders,
   resolveAuthBackedClient,
 } from '../request-auth';
 import { normalizeToolCallIdsForProvider, sanitizeToolCallId } from '../tool-call-id';
@@ -828,7 +828,6 @@ export class AnthropicChatProvider implements ChatProvider {
   private readonly _supportEfforts: readonly string[] | undefined;
   private readonly _betaApi: boolean;
   private readonly _thinkingEffort: ThinkingEffort | undefined;
-  private readonly _explicitMaxTokens: boolean;
   private readonly _hooks: AnthropicHooks | undefined;
   private readonly _acceptedImageMimes: ReadonlySet<string>;
 
@@ -849,7 +848,6 @@ export class AnthropicChatProvider implements ChatProvider {
     this._defaultHeaders = options.defaultHeaders;
     this._clientFactory = options.clientFactory;
     this._client = this._apiKey === undefined ? undefined : this._buildClient(this._apiKey);
-    this._explicitMaxTokens = options.defaultMaxTokens !== undefined;
     this._generationKwargs = {
       max_tokens: options.defaultMaxTokens ?? resolveDefaultMaxTokens(options.model),
       betaFeatures: options.betaFeatures ?? [INTERLEAVED_THINKING_BETA],
@@ -960,10 +958,7 @@ export class AnthropicChatProvider implements ChatProvider {
       const existingCap = kwargs.max_tokens;
       kwargs = {
         ...kwargs,
-        max_tokens:
-          existingCap === undefined || this._explicitMaxTokens
-            ? (existingCap ?? requestedCap)
-            : Math.min(existingCap, requestedCap),
+        max_tokens: existingCap === undefined ? requestedCap : Math.min(existingCap, requestedCap),
       };
     }
 

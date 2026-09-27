@@ -233,6 +233,23 @@ describe('KosongConfigService awaited-mutation semantics', () => {
 });
 
 describe('KosongConfigService config → kosong sync', () => {
+  it('pushes the current config publication instead of a stale section event payload', async () => {
+    const { config, providers, bridge } = await createBridge();
+    const raw = { gateway: { type: 'openai', apiKey: 'sk-old' } };
+    const published = { gateway: { type: 'openai', apiKey: 'sk-current' } };
+    const originalGet = config.get.bind(config);
+    vi.spyOn(config, 'get').mockImplementation((domain: string) => {
+      if (domain === PROVIDERS_SECTION) return published;
+      return originalGet(domain);
+    });
+    try {
+      await config.set(PROVIDERS_SECTION, raw);
+      expect(providers.get('gateway')).toMatchObject(published.gateway);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
   it('pushes config section writes into the registries', async () => {
     const { config, providers, models, bridge } = await createBridge(seededSections);
     try {

@@ -233,6 +233,12 @@ function setInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function setSelectValue(select: HTMLSelectElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+  setter.call(select, value);
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 function buttonByText(container: HTMLElement, text: string): HTMLButtonElement {
   const button = [...container.querySelectorAll('button')].find(
     (candidate) => candidate.textContent === text,
@@ -287,6 +293,20 @@ describe('ProviderEditor save channel', () => {
     expect(key.value).toBe('sk-inline');
   });
 
+  it('saves provider defaults as a scoped sparse patch and clears only the selected field', async () => {
+    getProviderEntity.mockResolvedValue({ ...COLON_PROVIDER, revision: 'provider-rev-1', defaults: { temperature: 0, max_completion_tokens: 8192 } });
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    const editor = container.querySelector<HTMLElement>('[data-generation-editor="provider:edge:gateway"]')!;
+    expect(editor.textContent).toContain('models without local overrides');
+    const temperature = editor.querySelector<HTMLSelectElement>('select[aria-label="Temperature mode"]')!;
+    await act(async () => { setSelectValue(temperature, 'inherit'); });
+    const tokens = editor.querySelector<HTMLSelectElement>('select[aria-label="Max generated tokens mode"]')!;
+    await act(async () => { setSelectValue(tokens, 'custom'); });
+    await act(async () => { [...editor.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save parameters')!.click(); });
+    expect(updateProvider).toHaveBeenCalledWith('edge:gateway', { base_revision: 'provider-rev-1', defaults: { temperature: null } });
+    expect(updateModel).not.toHaveBeenCalled();
+  });
+
   it('probes with a changed unsaved key but uses the stored key when untouched', async () => {
     refreshProvider.mockResolvedValue({ changed: [], unchanged: [COLON_PROVIDER.id], failed: [] });
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
@@ -297,6 +317,70 @@ describe('ProviderEditor save channel', () => {
     await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
     expect(refreshProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, 'sk-draft');
     expect(updateProvider).not.toHaveBeenCalled();
+  });
+
+  it('never sends a draft key to the saved address while the draft connection is unsaved', async () => {
+    refreshProvider.mockResolvedValue({ changed: [], unchanged: [COLON_PROVIDER.id], failed: [] });
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    const url = [...container.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(async () => {
+      setInputValue(url, 'https://edge-2.example.test/v1');
+      setInputValue(key, 'YOUR_API_KEY');
+    });
+    await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
+    expect(refreshProvider).not.toHaveBeenCalled();
+    expect(updateProvider).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Save this connection first');
+
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
+      base_url: 'https://edge-2.example.test/v1', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',
+    });
+    await act(async () => { setInputValue(key, 'sk-next'); });
+    await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
+    expect(refreshProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, 'sk-next');
+  });
+
+  it('never sends a draft key to the saved protocol while the draft protocol is unsaved', async () => {
+    refreshProvider.mockResolvedValue({ changed: [], unchanged: [COLON_PROVIDER.id], failed: [] });
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    const protocol = [...container.querySelectorAll<HTMLSelectElement>('select')].find((select) => select.value === COLON_PROVIDER.type)!;
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(async () => {
+      setSelectValue(protocol, 'anthropic');
+      setInputValue(key, 'YOUR_API_KEY');
+    });
+    await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
+    expect(refreshProvider).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Save this connection first');
+
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
+      type: 'anthropic', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',
+    });
+    await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
+    expect(refreshProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, undefined);
+  });
+
+  it('keeps the stored key editable in place and clears it only through a named confirmation', async () => {
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    expect(key.value).toBe('sk-stored');
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+
+    await act(async () => { buttonByText(container, 'Clear stored API key').click(); });
+    const dialog = container.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    expect(dialog.getAttribute('aria-label')).toBe('Clear the stored API key?');
+    expect(dialog.textContent).toContain(COLON_PROVIDER.id);
+    expect(updateProvider).not.toHaveBeenCalled();
+
+    await act(async () => { buttonByText(dialog, 'Clear key').click(); });
+    expect(updateProvider).toHaveBeenLastCalledWith(COLON_PROVIDER.id, {
+      api_key: '', base_revision: 'provider-rev-1',
+    });
+    expect(key.value).toBe('');
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
   });
 
   it('keeps provider A draft and baseline through provider B save and real query invalidation', async () => {
@@ -327,7 +411,7 @@ describe('ProviderEditor save channel', () => {
     expect(apiKey.value).toBe('YOUR_API_KEY');
     expect(buttonByText(first, 'Save provider').disabled).toBe(false);
     expect(reportDirty.mock.calls.findLast(([id]) => id === 'provider:edge:gateway')).toEqual(['provider:edge:gateway', true]);
-    expect(getProviderEntity.mock.calls.filter(([id]) => id === 'edge:gateway')).toHaveLength(1);
+    expect(getProviderEntity.mock.calls.filter(([id]) => id === 'edge:gateway')).toHaveLength(3);
     await act(async () => { buttonByText(first, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenCalledWith('edge:gateway', {
       base_url: 'https://draft.example.test/v1', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',
@@ -344,13 +428,15 @@ describe('ProviderEditor save channel', () => {
     getProviderEntity.mockResolvedValue({ ...external, revision: 'provider-rev-2' });
     listProviders.mockResolvedValue({ items: [external, MANAGED_PROVIDER] });
     refreshProvider.mockResolvedValue({ changed: [{ provider_id: COLON_PROVIDER.id, added: 1, removed: 0 }], failed: [], unchanged: [] });
-    await act(async () => { buttonByText(first, 'Test connection & pull models').click(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const readsBeforeRefresh = listProviders.mock.calls.length;
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['providers'] });
+    });
     await act(async () => {
       client.setQueryData(['models'], { items: [...FAST_MODELS, { ...MANAGED_MODELS[0], display_name: 'Background catalog change' }] });
     });
+    expect(listProviders.mock.calls.length).toBeGreaterThan(readsBeforeRefresh);
     expect(baseUrl.value).toBe('https://draft.example.test/v1');
-    expect(getProviderEntity.mock.calls.filter(([id]) => id === 'edge:gateway')).toHaveLength(1);
     updateProvider.mockRejectedValueOnce(new Error('Provider changed since it was read.'));
     await act(async () => { buttonByText(first, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenCalledWith('edge:gateway', {

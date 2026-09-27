@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { createReadStream } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { readFile, stat } from 'node:fs/promises';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
@@ -12,12 +13,19 @@ import {
   IQueryStore,
   ISessionIndex,
   ISessionMetadata,
+  IWireService,
   followSessionLifecycles,
   getLiveSessionById,
+  type IAgentScopeHandle,
   type IDisposable,
   type Scope,
   type SessionMeta,
 } from '@kiki/agent-core-v2';
+import {
+  WIRE_TRANSCRIPT_RECEIPT_KEY,
+  digestWireBytes,
+  parseWireTranscriptReceipt,
+} from '@kiki/agent-core-v2/wire/transcriptReceipt';
 import {
   AgentTranscript,
   AgentTranscriptDraft,
@@ -81,6 +89,11 @@ const DEFAULT_TOOL_CALL_COUNT_MAX_FILES = 64;
 const DEFAULT_TOOL_CALL_COUNT_CACHE_ENTRIES = 256;
 const DEFAULT_TOOL_CALL_COUNT_CACHE_BYTES = 8 << 20;
 const DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES = 64 << 10;
+const COLD_SNAPSHOT_CACHE_TTL_MS = 15_000;
+const COLD_SNAPSHOT_CACHE_MAX_BYTES = 4 << 20;
+const COLD_SNAPSHOT_CACHE_MAX_ENTRIES = 32;
+const UNVERIFIED_RESIDENT_MAX_BYTES = 4 << 20;
+const UNVERIFIED_RESIDENT_MAX_AGENTS = 16;
 
 export interface TranscriptToolCallCountLimits {
   readonly maxBytesPerRequest?: number;
@@ -128,9 +141,13 @@ interface LiveEntry {
   ready: Promise<void>;
   readonly agentBackfills: Map<string, Promise<void>>;
   readonly agentHistory: Map<string, AgentHistoryState>;
+  readonly agentWires: Map<string, IWireService>;
+  readonly pendingDisposals: Map<string, Promise<void>>;
+  readonly unavailableAgents: Set<string>;
   readonly opsJournals: Map<string, AgentOpsJournal>;
   opsJournalSessionBytes: number;
   readonly agentToolCallStates: Map<string, MaterializedAgentToolCallState>;
+  readonly agentCreation: IDisposable;
   readonly agentDisposal: IDisposable;
 }
 
@@ -199,6 +216,14 @@ interface ColdSnapshotFlight {
   settled: boolean;
 }
 
+interface ColdSnapshotCacheEntry {
+  readonly snapshot: AgentTranscriptSnapshot;
+  readonly fingerprint: string;
+  readonly bytes: number;
+  readonly expiresAt: number;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 type TranscriptOpsListener = (event: TranscriptChangeEvent, cursor: TranscriptCursor) => void;
 
 export const TRANSCRIPT_OPS_JOURNAL_CAPACITY = 2000;
@@ -213,6 +238,8 @@ export interface TranscriptMemoryReport {
   readonly residentBytes: number;
   readonly trimmedTurns: number;
   readonly overBudgetAgents: number;
+  readonly unverifiedResidentAgents: number;
+  readonly unverifiedResidentBytes: number;
   readonly opsJournalBytes: number;
   readonly opsJournalBatches: number;
   readonly opsJournalDroppedBytes: number;
@@ -257,6 +284,10 @@ export class TranscriptService {
   private readonly opsJournalLimits: Required<TranscriptOpsJournalLimits>;
   private readonly wireRecordReader: NonNullable<TranscriptServiceDeps['wireRecordReader']>;
   private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
+  private readonly coldSnapshotCache = new Map<string, ColdSnapshotCacheEntry>();
+  private coldSnapshotCacheBytes = 0;
+  private readonly unverifiedResident = new Map<string, { transcript: AgentTranscript; bytes: number }>();
+  private unverifiedResidentBytes = 0;
   private opsJournalTotalBytes = 0;
   private opsJournalDroppedBytes = 0;
   private coldReadsCompleted = 0;
@@ -336,18 +367,30 @@ export class TranscriptService {
       }
       throw error;
     }
+    const agents = session.accessor.get(IAgentLifecycleService);
+    const agentWires = new Map<string, IWireService>();
+    const captureWire = (handle: IAgentScopeHandle): void => {
+      try {
+        const wire = handle.accessor.get(IWireService);
+        if (wire !== undefined) agentWires.set(handle.id, wire);
+      } catch {
+      }
+    };
+    for (const handle of agents.list()) captureWire(handle);
     const entry: LiveEntry = {
       store,
       binding,
       ready: Promise.resolve(),
       agentBackfills: new Map(),
       agentHistory: new Map(),
+      agentWires,
+      pendingDisposals: new Map(),
+      unavailableAgents: new Set(),
       opsJournals: new Map(),
       opsJournalSessionBytes: 0,
       agentToolCallStates: new Map(),
-      agentDisposal: session.accessor
-        .get(IAgentLifecycleService)
-        .onDidDispose((agentId) => this.evictAgent(sessionId, store, agentId)),
+      agentCreation: agents.onDidCreate(captureWire),
+      agentDisposal: agents.onDidDispose((agentId) => this.evictAgent(sessionId, store, agentId)),
     };
     this.live.set(sessionId, entry);
     entry.ready = (async () => {
@@ -362,17 +405,14 @@ export class TranscriptService {
     return store;
   }
 
-  /**
-   * A released subagent keeps its roster entry, but its in-memory transcript,
-   * ops journal, and backfill marker go away with the engine scope; the next
-   * read rebuilds them from the persisted wire.
-   */
   private evictAgent(sessionId: string, store: TranscriptStore, agentId: string): void {
     if (agentId === MAIN_AGENT_ID) return;
     const entry = this.live.get(sessionId);
     if (entry === undefined || entry.store !== store) return;
     const session = getLiveSessionById(this.deps.core.accessor, sessionId);
     if (session?.accessor.get(IAgentLifecycleService).get(agentId) !== undefined) return;
+    const wire = entry.agentWires.get(agentId);
+    entry.agentWires.delete(agentId);
     entry.agentBackfills.delete(agentId);
     entry.agentHistory.delete(agentId);
     const journal = entry.opsJournals.get(agentId);
@@ -381,7 +421,90 @@ export class TranscriptService {
       entry.opsJournals.delete(agentId);
     }
     entry.agentToolCallStates.delete(agentId);
+    if (wire !== undefined) {
+      const transcript = store.getAgent(agentId);
+      if (transcript !== undefined && !entry.unavailableAgents.has(agentId)) {
+        this.retainUnverifiedResident(sessionId, agentId, transcript);
+      }
+      let pending!: Promise<void>;
+      pending = Promise.resolve().then(() => wire.flush()).then(
+        () => {
+          if (this.live.get(sessionId) === entry && !entry.unavailableAgents.has(agentId)) {
+            this.deleteUnverifiedResident(`${sessionId}\0${agentId}`);
+          }
+        },
+        (error: unknown) => {
+          if (this.live.get(sessionId) !== entry) return;
+          entry.unavailableAgents.add(agentId);
+          this.deps.logger?.warn(
+            { sessionId, agentId, error },
+            'transcript: disposed agent wire flush failed; refusing later reads',
+          );
+        },
+      ).finally(() => {
+        if (entry.pendingDisposals.get(agentId) === pending) entry.pendingDisposals.delete(agentId);
+      });
+      entry.pendingDisposals.set(agentId, pending);
+    }
     store.evictAgentTranscript(agentId);
+  }
+
+  private deleteUnverifiedResident(key: string): void {
+    const retained = this.unverifiedResident.get(key);
+    if (retained === undefined) return;
+    this.unverifiedResident.delete(key);
+    this.unverifiedResidentBytes -= retained.bytes;
+  }
+
+  private retainUnverifiedResident(sessionId: string, agentId: string, transcript: AgentTranscript): void {
+    const key = `${sessionId}\0${agentId}`;
+    this.deleteUnverifiedResident(key);
+    const bytes = transcript.residentReport().estimatedBytes;
+    if (bytes > UNVERIFIED_RESIDENT_MAX_BYTES) {
+      this.deps.logger?.warn({ sessionId, agentId }, 'transcript: unverified resident history exceeds quarantine budget');
+      return;
+    }
+    while (
+      this.unverifiedResidentBytes + bytes > UNVERIFIED_RESIDENT_MAX_BYTES ||
+      this.unverifiedResident.size >= UNVERIFIED_RESIDENT_MAX_AGENTS
+    ) {
+      const oldest = this.unverifiedResident.keys().next().value;
+      if (oldest === undefined) break;
+      this.deleteUnverifiedResident(oldest);
+    }
+    this.unverifiedResident.set(key, { transcript, bytes });
+    this.unverifiedResidentBytes += bytes;
+  }
+
+  /** Best-effort diagnostic salvage only; never a complete history and evicted at the quarantine budget or session close. */
+  getUnverifiedAgentSnapshot(
+    sessionId: string,
+    agentId: string,
+  ): { readonly snapshot: AgentTranscriptSnapshot; readonly complete: false } | undefined {
+    const retained = this.unverifiedResident.get(`${sessionId}\0${agentId}`);
+    return retained === undefined ? undefined : { snapshot: retained.transcript.snapshot(), complete: false };
+  }
+
+  private assertReadableAgent(sessionId: string, agentId: string): void {
+    const entry = this.live.get(sessionId);
+    if (entry === undefined || agentId === MAIN_AGENT_ID) return;
+    if (entry.pendingDisposals.has(agentId)) {
+      throw new Error(`Transcript for disposed agent "${agentId}" is awaiting wire flush`);
+    }
+    if (!entry.unavailableAgents.has(agentId)) return;
+    throw new Error(
+      `Transcript for disposed agent "${agentId}" is unavailable: live facts were not verified against durable history`,
+    );
+  }
+
+  isTranscriptLiveCoverageVerified(sessionId: string, agentId: string): boolean {
+    const wire = this.live.get(sessionId)?.agentWires.get(agentId);
+    return wire?.verifyTranscriptLiveEpoch === undefined || wire.isTranscriptLiveEpochVerified?.() === true;
+  }
+
+  async verifyTranscriptLiveCoverage(sessionId: string, agentId: string): Promise<boolean> {
+    const wire = this.live.get(sessionId)?.agentWires.get(agentId);
+    return wire?.verifyTranscriptLiveEpoch === undefined || await this.hasVerifiedLiveEpoch(sessionId, agentId);
   }
 
   /**
@@ -405,10 +528,13 @@ export class TranscriptService {
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
     await entry.ready;
+    await entry.pendingDisposals.get(agentId);
+    this.assertReadableAgent(sessionId, agentId);
     let backfill = entry.agentBackfills.get(agentId);
     const history = entry.agentHistory.get(agentId);
     if (history?.status === 'failed') {
       const changed = await this.historyFailureChanged(sessionId, agentId, history);
+      this.assertReadableAgent(sessionId, agentId);
       if (!changed) return;
       if (entry.agentBackfills.get(agentId) === backfill) entry.agentBackfills.delete(agentId);
       backfill = entry.agentBackfills.get(agentId);
@@ -420,6 +546,7 @@ export class TranscriptService {
       entry.agentBackfills.set(agentId, backfill);
     }
     await backfill;
+    this.assertReadableAgent(sessionId, agentId);
     if (this.live.get(sessionId)?.store === entry.store) {
       entry.binding.seedRunningTasks(agentId);
       entry.binding.seedPendingInteractions(agentId);
@@ -530,6 +657,7 @@ export class TranscriptService {
     }
     const entry = this.live.get(sessionId);
     if (entry?.store !== store) return;
+    if (entry.unavailableAgents.has(agentId)) return;
     const existing = store.agents().find((d) => d.agentId === agentId);
     const hasContent =
       snapshot !== undefined && (snapshot.items.length > 0 || snapshot.tasks.length > 0);
@@ -673,6 +801,7 @@ export class TranscriptService {
   }
 
   getTranscriptCursor(sessionId: string, agentId: string): TranscriptCursor {
+    this.assertReadableAgent(sessionId, agentId);
     const journal = this.journalFor(sessionId, agentId);
     return journal === undefined
       ? { epoch: undefined, seq: 0 }
@@ -689,6 +818,7 @@ export class TranscriptService {
     sinceInput: TranscriptCursor | number,
   ): TranscriptOpsCatchup | undefined {
     if (this.forSessionLive(sessionId) === undefined) return undefined;
+    this.assertReadableAgent(sessionId, agentId);
     const journal = this.journalFor(sessionId, agentId);
     if (journal === undefined) return undefined;
     const since = typeof sinceInput === 'number' ? { epoch: undefined, seq: sinceInput } : sinceInput;
@@ -749,6 +879,8 @@ export class TranscriptService {
     const entry = this.live.get(sessionId);
     if (entry === undefined) return result;
     for (const agentId of new Set(agentIds)) {
+      if (entry.unavailableAgents.has(agentId)) continue;
+      if (!this.isTranscriptLiveCoverageVerified(sessionId, agentId)) continue;
       if (entry.agentHistory.get(agentId)?.status !== 'complete') continue;
       const state = entry.agentToolCallStates.get(agentId);
       if (state !== undefined) {
@@ -770,6 +902,9 @@ export class TranscriptService {
     const candidateAgentIds: string[] = [];
     for (const agentId of new Set(agentIds)) {
       if (!isPlainAgentId(agentId)) continue;
+      if (entry?.unavailableAgents.has(agentId)) continue;
+      if (!await this.verifyTranscriptLiveCoverage(sessionId, agentId) ||
+          !this.isTranscriptLiveCoverageVerified(sessionId, agentId)) continue;
       const history = entry?.agentHistory.get(agentId);
       if (history !== undefined) {
         if (history.status !== 'complete') continue;
@@ -809,6 +944,11 @@ export class TranscriptService {
         const info = await stat(candidate.wirePath);
         if (!Number.isSafeInteger(info.size) || info.size < 0) {
           candidate.reason = 'failed';
+          continue;
+        }
+        if (!await this.hasVerifiedWireReceipt(candidate.wirePath, info.size)) {
+          candidate.reason = 'failed';
+          this.deletePersistedToolCallState(candidate.wirePath);
           continue;
         }
         candidate.size = info.size;
@@ -1067,7 +1207,8 @@ export class TranscriptService {
       try {
         const info = await stat(wirePath);
         if (!Number.isSafeInteger(info.size) || info.size < 0) return 'invalid';
-        return `file:${fileFingerprint(info)}`;
+        const receipt = await stat(join(dirname(wirePath), WIRE_TRANSCRIPT_RECEIPT_KEY)).catch(() => undefined);
+        return `file:${fileFingerprint(info)}:receipt:${receipt === undefined ? 'missing' : fileFingerprint(receipt)}`;
       } catch (error) {
         const code = (error as NodeJS.ErrnoException | undefined)?.code;
         return code === 'ENOENT' ? 'missing' : `error:${code ?? 'unknown'}`;
@@ -1102,6 +1243,34 @@ export class TranscriptService {
     );
   }
 
+  private deleteColdSnapshotCache(key: string): void {
+    const entry = this.coldSnapshotCache.get(key);
+    if (entry === undefined) return;
+    clearTimeout(entry.timer);
+    this.coldSnapshotCache.delete(key);
+    this.coldSnapshotCacheBytes -= entry.bytes;
+  }
+
+  private admitColdSnapshotCache(key: string, fingerprint: string, snapshot: AgentTranscriptSnapshot): void {
+    if (snapshot.toolCallCountKnown !== true) return;
+    const bytes = estimateColdSnapshotBytes(snapshot, COLD_SNAPSHOT_CACHE_MAX_BYTES);
+    if (bytes > COLD_SNAPSHOT_CACHE_MAX_BYTES) return;
+    this.deleteColdSnapshotCache(key);
+    while (this.coldSnapshotCacheBytes + bytes > COLD_SNAPSHOT_CACHE_MAX_BYTES ||
+           this.coldSnapshotCache.size >= COLD_SNAPSHOT_CACHE_MAX_ENTRIES) {
+      const oldest = this.coldSnapshotCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.deleteColdSnapshotCache(oldest);
+    }
+    const expiresAt = Date.now() + COLD_SNAPSHOT_CACHE_TTL_MS;
+    const timer = setTimeout(() => {
+      if (this.coldSnapshotCache.get(key)?.timer === timer) this.deleteColdSnapshotCache(key);
+    }, COLD_SNAPSHOT_CACHE_TTL_MS);
+    timer.unref();
+    this.coldSnapshotCache.set(key, { snapshot, fingerprint, bytes, expiresAt, timer });
+    this.coldSnapshotCacheBytes += bytes;
+  }
+
   /**
    * Rebuild one agent's transcript snapshot for a cold session from its
    * persisted wire records, streaming the wire under the cold-read fences.
@@ -1124,13 +1293,18 @@ export class TranscriptService {
     signal?: AbortSignal,
   ): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
+    await this.live.get(sessionId)?.pendingDisposals.get(agentId);
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
     if (preserveOpenTurnIds !== undefined) {
-      return this.loadColdSnapshot(
+      const snapshot = await this.loadColdSnapshot(
         sessionId,
         agentId,
         preserveOpenTurnIds,
         signal ?? new AbortController().signal,
       );
+      this.assertReadableAgent(sessionId, agentId);
+      return snapshot;
     }
     const key = `${sessionId}\0${agentId}`;
     let flight = this.coldSnapshotFlights.get(key);
@@ -1148,7 +1322,9 @@ export class TranscriptService {
       flight = created;
       this.coldSnapshotFlights.set(key, flight);
     }
-    return this.awaitColdSnapshot(flight, signal);
+    const snapshot = await this.awaitColdSnapshot(flight, signal);
+    this.assertReadableAgent(sessionId, agentId);
+    return snapshot;
   }
 
   private async awaitColdSnapshot(
@@ -1181,6 +1357,55 @@ export class TranscriptService {
     }
   }
 
+  private async hasVerifiedWireReceipt(
+    wirePath: string,
+    wireSize: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const receiptPath = join(dirname(wirePath), WIRE_TRANSCRIPT_RECEIPT_KEY);
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(receiptPath, { signal });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+    signal?.throwIfAborted();
+    let receipt: ReturnType<typeof parseWireTranscriptReceipt>;
+    try {
+      receipt = parseWireTranscriptReceipt(JSON.parse(bytes.toString('utf8')));
+    } catch {
+      return false;
+    }
+    if (receipt?.state !== 'sealed' || !receipt.trusted || receipt.wire?.size !== wireSize) return false;
+    const digest = await digestWireBytes(createReadStream(wirePath, { signal }));
+    signal?.throwIfAborted();
+    if (digest.size === 0 || !digest.endsWithNewline ||
+        digest.size !== receipt.wire.size || digest.sha256 !== receipt.wire.sha256) return false;
+    const currentReceipt = await readFile(receiptPath, { signal }).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    });
+    signal?.throwIfAborted();
+    return currentReceipt !== undefined && bytes.equals(currentReceipt);
+  }
+
+  private async hasVerifiedLiveEpoch(sessionId: string, agentId: string): Promise<boolean> {
+    const entry = this.live.get(sessionId);
+    const wire = entry?.agentWires.get(agentId);
+    if (wire?.verifyTranscriptLiveEpoch === undefined) return false;
+    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
+    const agent = session?.accessor.get(IAgentLifecycleService).get(agentId);
+    if (agent === undefined) return false;
+    try {
+      const verified = await wire.verifyTranscriptLiveEpoch();
+      return verified && this.live.get(sessionId) === entry &&
+        session?.accessor.get(IAgentLifecycleService).get(agentId) === agent;
+    } catch {
+      return false;
+    }
+  }
+
   private async loadColdSnapshot(
     sessionId: string,
     agentId: string,
@@ -1199,6 +1424,22 @@ export class TranscriptService {
       agentId,
       WIRE_FILE,
     );
+    let info = await stat(wirePath).catch(() => undefined);
+    signal.throwIfAborted();
+    const sealed = info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info.size, signal);
+    const liveVerified = !sealed && info !== undefined && await this.hasVerifiedLiveEpoch(sessionId, agentId);
+    if (liveVerified) info = await stat(wirePath).catch(() => undefined);
+    const verified = sealed || liveVerified;
+    signal.throwIfAborted();
+    const fingerprint = info === undefined ? undefined : fileIdentity(info);
+    const cacheFingerprint = info === undefined ? undefined : `${fingerprint}:${fileFingerprint(info)}`;
+    if (verified && preserveOpenTurnIds === undefined) {
+      const cached = this.coldSnapshotCache.get(wirePath);
+      if (cached !== undefined) {
+        if (cached.fingerprint === cacheFingerprint && cached.expiresAt > Date.now()) return cached.snapshot;
+        this.deleteColdSnapshotCache(wirePath);
+      }
+    }
     const transcript = new AgentTranscriptDraft(agentId);
     const reducer = new TranscriptFactReducer(transcript);
     const adapter = new TranscriptWireAdapter(agentId, {
@@ -1206,11 +1447,9 @@ export class TranscriptService {
       tool: (toolCallId) => transcript.getToolCall(toolCallId),
       task: (taskId) => transcript.getTask(taskId),
     });
-    const info = await stat(wirePath).catch(() => undefined);
-    const fingerprint = info === undefined ? undefined : fileIdentity(info);
     const checkpointKey = `${summary.workspaceId}\0${sessionId}\0${agentId}`;
     const checkpointStore = this.deps.core.accessor.get(IQueryStore) as IQueryStore | undefined;
-    const checkpoint = fingerprint === undefined || preserveOpenTurnIds !== undefined
+    const checkpoint = !sealed || fingerprint === undefined || preserveOpenTurnIds !== undefined
       ? undefined
       : await readTranscriptProjectionCheckpoint(
           checkpointStore,
@@ -1263,6 +1502,7 @@ export class TranscriptService {
       if (
         preserveOpenTurnIds === undefined &&
         complete &&
+        sealed &&
         readResult !== undefined &&
         fingerprint !== undefined &&
         (checkpoint?.recordCount ?? 0) + readResult.recordCount >= TRANSCRIPT_CHECKPOINT_MIN_RECORDS
@@ -1288,10 +1528,22 @@ export class TranscriptService {
       reducer.apply(adapter.finish());
       for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
       const snapshot = transcript.snapshot();
-      return complete
+      const stillVerified = verified && (sealed
+        ? await this.hasVerifiedWireReceipt(wirePath, info!.size, signal)
+        : await this.hasVerifiedLiveEpoch(sessionId, agentId));
+      const after = stillVerified ? await stat(wirePath).catch(() => undefined) : undefined;
+      const unchanged = after !== undefined && `${fileIdentity(after)}:${fileFingerprint(after)}` === cacheFingerprint;
+      const proven = complete && stillVerified && unchanged;
+      const result = proven
         ? knownSnapshot(snapshot, countToolCallFrames(snapshot.items))
-        : { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false };
+        : { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: true };
+      if (proven && preserveOpenTurnIds === undefined && cacheFingerprint !== undefined && !signal.aborted) {
+        try { this.admitColdSnapshotCache(wirePath, cacheFingerprint, result); }
+        catch { this.deleteColdSnapshotCache(wirePath); }
+      }
+      return result;
     } catch (error) {
+      if (signal.aborted) throw signal.reason ?? new DOMException('The cold transcript read was aborted', 'AbortError');
       this.logTranscriptFailure(sessionId, agentId, error);
       return unknownSnapshot();
     }
@@ -1397,6 +1649,8 @@ export class TranscriptService {
       residentBytes,
       trimmedTurns,
       overBudgetAgents,
+      unverifiedResidentAgents: this.unverifiedResident.size,
+      unverifiedResidentBytes: this.unverifiedResidentBytes,
       opsJournalBytes: this.opsJournalTotalBytes,
       opsJournalBatches,
       opsJournalDroppedBytes: this.opsJournalDroppedBytes,
@@ -1421,18 +1675,23 @@ export class TranscriptService {
 
   dispose(): void {
     this.eventLoopDelay.disable();
+    for (const key of this.coldSnapshotCache.keys()) this.deleteColdSnapshotCache(key);
     for (const sessionId of this.live.keys()) this.dropSession(sessionId);
   }
 
   /** Dispose the live store + binding for a session (session closed / server shutdown). */
   dropSession(sessionId: string): void {
     this.opsListeners.delete(sessionId);
+    for (const key of this.unverifiedResident.keys()) {
+      if (key.startsWith(`${sessionId}\0`)) this.deleteUnverifiedResident(key);
+    }
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
     this.live.delete(sessionId);
     for (const journal of entry.opsJournals.values()) {
       this.disposeOpsJournal(entry, journal);
     }
+    entry.agentCreation.dispose();
     entry.agentDisposal.dispose();
     entry.binding.dispose();
   }
@@ -1640,6 +1899,7 @@ function unknownSnapshot(): AgentTranscriptSnapshot {
     toolCallCount: undefined,
     toolCallCountKnown: false,
     meta: {},
+    hasMoreOlder: true,
   };
 }
 
@@ -1707,6 +1967,28 @@ function positiveLimit(value: number | undefined, fallback: number): number {
 
 function nonNegativeLimit(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+}
+
+function estimateColdSnapshotBytes(snapshot: AgentTranscriptSnapshot, cap: number): number {
+  let bytes = 0;
+  const stack: unknown[] = [snapshot];
+  const seen = new Set<object>();
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (typeof value === 'string') bytes += value.length * 2;
+    else if (typeof value === 'number' || typeof value === 'boolean') bytes += 8;
+    else if (typeof value === 'object' && value !== null && !seen.has(value)) {
+      seen.add(value);
+      bytes += 64;
+      if (Array.isArray(value)) for (const item of value) stack.push(item);
+      else for (const [key, item] of Object.entries(value)) {
+        bytes += key.length * 2;
+        stack.push(item);
+      }
+    }
+    if (bytes > cap) return bytes;
+  }
+  return bytes;
 }
 
 function estimateOpsJournalBatchBytes(ops: readonly TranscriptOperation[], cap: number): number {
