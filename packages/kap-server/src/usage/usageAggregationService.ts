@@ -29,10 +29,11 @@ const DEFAULT_LIMITS: UsageAggregationLimits = {
   sessionScanLimit: 500,
   wireRecordBudget: 200_000,
   deadlineMs: 1_500,
-  cacheTtlMs: 90_000,
-  cacheMaxEntries: 256,
-  cacheMaxRecords: 50_000,
-  cacheMaxEntryRecords: 10_000,
+  cacheTtlMs: 0,
+  cacheMaxEntries: 500,
+  cacheMaxRecords: 200_000,
+  cacheMaxEntryRecords: 100_000,
+  cacheMaxBytes: 128 * 1024 * 1024,
   drilldownSessionLimit: 100,
   drilldownTurnLimit: 100,
 };
@@ -45,6 +46,7 @@ export interface UsageAggregationLimits {
   readonly cacheMaxEntries: number;
   readonly cacheMaxRecords: number;
   readonly cacheMaxEntryRecords: number;
+  readonly cacheMaxBytes: number;
   readonly drilldownSessionLimit: number;
   readonly drilldownTurnLimit: number;
 }
@@ -72,7 +74,9 @@ interface SessionRecords {
 
 interface SessionCacheEntry {
   readonly expiresAt: number;
-  readonly records: readonly NormalizedUsageRecord[];
+  readonly persisted: PersistentSessionRecords;
+  readonly complete: boolean;
+  readonly bytes: number;
 }
 
 interface WireCheckpoint {
@@ -92,6 +96,7 @@ interface PersistentSessionRecords {
 
 interface SessionLoadResult {
   readonly session: SessionRecords;
+  readonly persisted: PersistentSessionRecords;
   readonly scannedRecordCount: number;
   readonly incompleteReason: UsageResponse['reliability']['incomplete_reason'];
 }
@@ -157,6 +162,8 @@ interface BucketAccumulator {
   startAt: number;
   endAt: number;
   readonly groups: Map<string, GroupAccumulator>;
+  readonly turnKeys: Set<string>;
+  requestCount: number;
   readonly drilldownSessions: Map<string, DrilldownSessionAccumulator>;
   drilldownSessionsTruncated: boolean;
 }
@@ -165,6 +172,8 @@ interface SessionAccumulator extends AggregateAccumulator {
   readonly summary: SessionSummary;
   readonly deleted: boolean;
   readonly unknownPriceModels: Set<string>;
+  readonly modelCounts: Map<string, number>;
+  readonly profileNames: Set<string>;
 }
 
 export class UsagePageTokenMismatchError extends Error {}
@@ -175,6 +184,7 @@ export class UsageAggregationService {
   private readonly sessionFlights = new Map<string, Promise<SessionLoadResult>>();
   private readonly limits: UsageAggregationLimits;
   private cachedRecordCount = 0;
+  private cachedBytes = 0;
 
   constructor(
     private readonly core: Scope,
@@ -257,10 +267,10 @@ export class UsageAggregationService {
   ): Promise<SessionRecords | undefined> {
     const cacheKey = sessionKey(summary);
     const cached = this.cache.get(cacheKey);
-    if (cached !== undefined) {
+    if (cached?.complete && await this.cacheIsCurrent(summary, cached.persisted)) {
       this.cache.delete(cacheKey);
       this.cache.set(cacheKey, cached);
-      return { summary, records: cached.records, complete: true, deleted: false };
+      return { summary, records: cached.persisted.records, complete: true, deleted: false };
     }
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
@@ -278,8 +288,26 @@ export class UsageAggregationService {
     }
     budget.remainingRecords -= result.scannedRecordCount;
     if (result.incompleteReason !== null) budget.incompleteReason = result.incompleteReason;
-    if (result.session.complete) this.cacheSession(cacheKey, result.session.records);
+    this.cacheSession(cacheKey, result.persisted, result.session.complete);
     return result.session;
+  }
+
+  private async cacheIsCurrent(summary: SessionSummary, persisted: PersistentSessionRecords): Promise<boolean> {
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
+    const agentIds = await storage.list(`${sessionScope}/agents`);
+    if (agentIds.length !== Object.keys(persisted.agents).length) return false;
+    for (const agentId of agentIds) {
+      const checkpoint = persisted.agents[agentId];
+      if (checkpoint === undefined || !checkpoint.valid || checkpoint.offset !== checkpoint.size) return false;
+      const wireScope = agentScopeOf(sessionScope, agentId);
+      const [size, mtimeMs] = await Promise.all([
+        storage.size(wireScope, AGENT_WIRE_RECORD_KEY),
+        storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY),
+      ]);
+      if ((size ?? 0) !== checkpoint.size || (mtimeMs ?? 0) !== checkpoint.mtimeMs) return false;
+    }
+    return true;
   }
 
   private async loadSessionIncremental(
@@ -289,7 +317,7 @@ export class UsageAggregationService {
   ): Promise<SessionLoadResult> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const cacheKey = sessionKey(summary);
-    const persisted = await this.readPersistentSession(storage, cacheKey);
+    const persisted = this.cache.get(cacheKey)?.persisted ?? await this.readPersistentSession(storage, cacheKey);
     const workspaceScope = workspacePersistenceScope('sessions', summary.workspaceId);
     const sessionScope = sessionScopeOf(workspaceScope, summary.id);
     const agentIds = await storage.list(`${sessionScope}/agents`);
@@ -374,18 +402,32 @@ export class UsageAggregationService {
       records,
       agents,
     };
-    try {
-      await storage.write(
-        PERSISTENCE_SCOPE,
-        persistenceKey(cacheKey),
-        Buffer.from(JSON.stringify(next)),
-        { atomic: true },
-      );
-    } catch {
-      complete = false;
+    const changed = records.length !== persisted.records.length ||
+      Object.keys(agents).length !== Object.keys(persisted.agents).length ||
+      agentIds.some((agentId) => {
+        const previous = persisted.agents[agentId];
+        const current = agents[agentId];
+        return current !== undefined && (previous === undefined ||
+          current.offset !== previous.offset || current.size !== previous.size ||
+          current.mtimeMs !== previous.mtimeMs || current.boundaryHash !== previous.boundaryHash);
+      });
+    let stored = !changed;
+    if (changed) {
+      try {
+        await storage.write(
+          PERSISTENCE_SCOPE,
+          persistenceKey(cacheKey),
+          Buffer.from(JSON.stringify(next)),
+          { atomic: true },
+        );
+        stored = true;
+      } catch {
+        complete = false;
+      }
     }
     return {
       session: { summary, records, complete, deleted: false },
+      persisted: stored ? next : persisted,
       scannedRecordCount,
       incompleteReason,
     };
@@ -458,21 +500,28 @@ export class UsageAggregationService {
   }
 
   private pruneExpired(now: number): void {
+    if (this.limits.cacheTtlMs === 0) return;
     for (const [key, entry] of this.cache) {
       if (entry.expiresAt <= now) this.deleteCacheEntry(key, entry);
     }
   }
 
-  private cacheSession(
-    key: string,
-    records: readonly NormalizedUsageRecord[],
-  ): void {
-    if (records.length > this.limits.cacheMaxEntryRecords) return;
+  private cacheSession(key: string, persisted: PersistentSessionRecords, complete: boolean): void {
     const existing = this.cache.get(key);
     if (existing !== undefined) this.deleteCacheEntry(key, existing);
+    const records = persisted.records;
+    if (records.length > this.limits.cacheMaxEntryRecords) return;
+    const bytes = records.reduce((total, record) => total + 384 + 2 * (
+      (record.sourceAgentId?.length ?? 0) + record.model.length +
+      (record.agentId?.length ?? 0) + (record.parentAgentId?.length ?? 0) +
+      (record.provider?.length ?? 0) + (record.modelAlias?.length ?? 0) +
+      (record.profileName?.length ?? 0)
+    ), 256 + Object.keys(persisted.agents).length * 256);
+    if (bytes > this.limits.cacheMaxBytes) return;
     while (
       this.cache.size >= this.limits.cacheMaxEntries ||
-      this.cachedRecordCount + records.length > this.limits.cacheMaxRecords
+      this.cachedRecordCount + records.length > this.limits.cacheMaxRecords ||
+      this.cachedBytes + bytes > this.limits.cacheMaxBytes
     ) {
       const oldest = this.cache.entries().next().value;
       if (oldest === undefined) return;
@@ -480,14 +529,18 @@ export class UsageAggregationService {
     }
     this.cache.set(key, {
       expiresAt: this.now() + this.limits.cacheTtlMs,
-      records,
+      persisted,
+      complete,
+      bytes,
     });
     this.cachedRecordCount += records.length;
+    this.cachedBytes += bytes;
   }
 
   private deleteCacheEntry(key: string, entry: SessionCacheEntry): void {
     this.cache.delete(key);
-    this.cachedRecordCount -= entry.records.length;
+    this.cachedRecordCount -= entry.persisted.records.length;
+    this.cachedBytes -= entry.bytes;
   }
 
   private aggregate(
@@ -508,17 +561,20 @@ export class UsageAggregationService {
     let latestAt: number | undefined;
     const includesDeletedSessions = sessions.some((session) => session.deleted);
     const pricing = this.core.accessor.get(IModelPricingService);
+    const scanIncomplete = budget.incompleteReason !== null;
+    let processedRecords = 0;
 
     sessionLoop: for (let sessionIndex = 0; sessionIndex < sessions.length; sessionIndex += 1) {
       const session = sessions[sessionIndex] as SessionRecords;
       for (const record of session.records) {
-        if (this.now() >= budget.deadlineAt) {
+        if (!scanIncomplete && processedRecords > 0 && this.now() >= budget.deadlineAt) {
           budget.incompleteReason = 'deadline';
           for (let index = sessionIndex; index < sessions.length; index += 1) {
             incompleteSessionIds.add((sessions[index] as SessionRecords).summary.id);
           }
           break sessionLoop;
         }
+        processedRecords += 1;
         if (!inRange(record.time, query.range) || !matchesFilters(record, query)) continue;
         const cost = pricing.calculate(record.model, record.usage);
         addAggregate(total, record, cost);
@@ -534,6 +590,8 @@ export class UsageAggregationService {
             startAt: bucket.startAt,
             endAt: bucket.endAt,
             groups: new Map(),
+            turnKeys: new Set(),
+            requestCount: 0,
             drilldownSessions: new Map(),
             drilldownSessionsTruncated: false,
           };
@@ -541,6 +599,10 @@ export class UsageAggregationService {
         } else if (query.granularity === 'session') {
           bucketAcc.startAt = Math.min(bucketAcc.startAt, record.time);
           bucketAcc.endAt = Math.max(bucketAcc.endAt, record.time + 1);
+        }
+        bucketAcc.requestCount += 1;
+        if (record.turnId !== undefined) {
+          bucketAcc.turnKeys.add(`${session.summary.id}\0${record.agentId ?? record.sourceAgentId ?? ''}\0${record.turnId}`);
         }
         const groupKey = dimensionKey(query.dimension, record, session.summary);
         let group = bucketAcc.groups.get(groupKey);
@@ -589,12 +651,19 @@ export class UsageAggregationService {
             deleted: session.deleted,
             ...emptyAggregate(),
             unknownPriceModels: new Set(),
+            modelCounts: new Map(),
+            profileNames: new Set(),
           };
           sessionAccumulators.set(session.summary.id, sessionAcc);
         }
         addAggregate(sessionAcc, record, cost);
         if (cost === undefined) sessionAcc.unknownPriceModels.add(record.model);
+        sessionAcc.modelCounts.set(record.model, (sessionAcc.modelCounts.get(record.model) ?? 0) + 1);
+        if (record.profileName !== undefined) sessionAcc.profileNames.add(record.profileName);
       }
+    }
+    if (budget.incompleteReason === null && this.now() >= budget.deadlineAt) {
+      budget.incompleteReason = 'deadline';
     }
 
     const sessionItems = [...sessionAccumulators.values()].toSorted(compareSessions);
@@ -627,6 +696,8 @@ export class UsageAggregationService {
           key: bucket.key,
           start_at: bucket.startAt,
           end_at: bucket.endAt,
+          turn_count: bucket.turnKeys.size,
+          request_count: bucket.requestCount,
           groups: [...bucket.groups.values()]
             .toSorted((a, b) => b.cost - a.cost || a.key.localeCompare(b.key))
             .map((group) => ({
@@ -664,6 +735,8 @@ export class UsageAggregationService {
           archived: item.summary.archived,
           deleted: item.deleted,
           usage: aggregateWire(item),
+          primary_model: [...item.modelCounts].toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? null,
+          profile_names: [...item.profileNames].toSorted(),
           unknown_price_models: [...item.unknownPriceModels].toSorted(),
         })),
         total: sessionItems.length,

@@ -81,6 +81,8 @@ export const usageTrendBucketSchema = z.object({
   key: z.string(),
   start_at: z.number().int().nonnegative(),
   end_at: z.number().int().nonnegative(),
+  turn_count: z.number().int().nonnegative().optional(),
+  request_count: z.number().int().nonnegative().optional(),
   groups: z.array(usageGroupSchema),
   drilldown: z.object({
     sessions: z.array(
@@ -105,6 +107,8 @@ export const usageSessionItemSchema = z.object({
   archived: z.boolean(),
   deleted: z.boolean(),
   usage: usageAggregateSchema,
+  primary_model: z.string().nullable().optional(),
+  profile_names: z.array(z.string()).optional(),
   unknown_price_models: z.array(z.string()),
 });
 

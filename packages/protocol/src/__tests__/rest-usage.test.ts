@@ -66,6 +66,29 @@ describe('usage REST schemas', () => {
     expect(usageResponseSchema.safeParse(baseline).success).toBe(true);
     expect(usageResponseSchema.safeParse({ ...enriched, reliability: { ...enriched.reliability, usage_coverage: { known_records: 0, missing_records: -1, legacy_zero_records: 0 } } }).success).toBe(false);
   });
+  it('accepts additive bucket counts and session attribution from the server', () => {
+    const baseline = response();
+    const aggregate = baseline.summary;
+    const enriched = {
+      ...baseline,
+      trend: [{
+        key: '0', start_at: 0, end_at: 1, turn_count: 2, request_count: 3,
+        groups: [], drilldown: { sessions: [], sessions_truncated: false },
+      }],
+      sessions: {
+        ...baseline.sessions,
+        items: [{
+          id: 's', workspace_id: 'w', title: null, created_at: 0, updated_at: 0,
+          archived: false, deleted: false, usage: aggregate, unknown_price_models: [],
+          primary_model: 'model-a', profile_names: ['reviewer', 'worker'],
+        }],
+      },
+    };
+    expect(usageResponseSchema.parse(enriched).trend[0]?.request_count).toBe(3);
+    expect(usageResponseSchema.parse(enriched).sessions.items[0]?.profile_names).toEqual(['reviewer', 'worker']);
+    expect(usageResponseSchema.safeParse({ ...enriched, trend: [{ ...enriched.trend[0], turn_count: -1 }] }).success).toBe(false);
+  });
+
   it('parses repeated attribution and workspace filters', () => {
     expect(
       usageQuerySchema.parse({

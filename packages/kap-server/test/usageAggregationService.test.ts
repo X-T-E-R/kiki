@@ -22,6 +22,7 @@ interface Fixture {
   readonly service: UsageAggregationService;
   readonly reads: Map<string, number>;
   readonly readBytes: Map<string, number>;
+  readonly checkpointReads: Map<string, number>;
   readonly retainedQueries: readonly RetainedUsageListQuery[];
   setWire(scope: string, records: readonly WireRecord[]): void;
   restart(): UsageAggregationService;
@@ -96,9 +97,11 @@ function fixture(
     complete: true,
     scannedRecords: 0,
   },
+  onCheckpointRead: (bytes: number) => void = () => {},
 ): Fixture {
   const reads = new Map<string, number>();
   const readBytes = new Map<string, number>();
+  const checkpointReads = new Map<string, number>();
   const retainedQueries: RetainedUsageListQuery[] = [];
   const wires = new Map<string, Buffer>();
   const wireMtimes = new Map<string, number>();
@@ -132,7 +135,14 @@ function fixture(
     list: async () => ['main'],
     size: async (wireScope: string) => wires.get(wireScope)?.length,
     mtime: async (wireScope: string) => wireMtimes.get(wireScope),
-    read: async (storageScope: string, key: string) => persisted.get(`${storageScope}/${key}`),
+    read: async (storageScope: string, key: string) => {
+      const value = persisted.get(`${storageScope}/${key}`);
+      if (value !== undefined) {
+        checkpointReads.set(key, (checkpointReads.get(key) ?? 0) + value.byteLength);
+        onCheckpointRead(value.byteLength);
+      }
+      return value;
+    },
     write: async (storageScope: string, key: string, data: Uint8Array) => {
       persisted.set(`${storageScope}/${key}`, Uint8Array.from(data));
     },
@@ -178,6 +188,7 @@ function fixture(
     service: new UsageAggregationService(core, now, limits),
     reads,
     readBytes,
+    checkpointReads,
     retainedQueries,
     setWire,
     restart: () => new UsageAggregationService(core, now, limits),
@@ -239,6 +250,24 @@ describe('UsageAggregationService accounting evidence', () => {
       expect(response.reliability.scanned_sessions).toBe(1);
       expect(response.reliability.coverage.earliest_at).toBe(scenario.covered ? at : null);
     }
+  });
+
+  it('counts distinct agent turns and requests per bucket, and attributes the primary billing model', async () => {
+    const records = [
+      { ...usageRecord(10, 1), agentId: 'main', model: 'model-b', profileName: 'worker' },
+      { ...usageRecord(11, 1), agentId: 'main', model: 'model-b', profileName: 'worker' },
+      { ...usageRecord(12, 1), agentId: 'child', model: 'model-a', profileName: 'reviewer' },
+      { ...usageRecord(13), agentId: 'main', model: 'model-a' },
+    ];
+    const { service } = fixture([summary('session-a', 'workspace-a')], {
+      [scope('workspace-a', 'session-a')]: records,
+    }, () => 100);
+    const response = await query(service);
+    expect(response.trend[0]).toMatchObject({ turn_count: 2, request_count: 4 });
+    expect(response.sessions.items[0]).toMatchObject({
+      primary_model: 'model-a',
+      profile_names: ['reviewer', 'worker'],
+    });
   });
 });
 
@@ -309,9 +338,10 @@ describe('UsageAggregationService cache budgets', () => {
     );
 
     const result = await query(service);
-    expect(result.summary.session_count).toBe(0);
+    expect(result.summary.session_count).toBe(1);
+    expect(result.summary.tokens.output).toBe(1);
     expect(result.reliability).toMatchObject({
-      incomplete_sessions: 1,
+      complete: false,
       incomplete_reason: 'deadline',
     });
   });
@@ -355,6 +385,30 @@ describe('UsageAggregationService cache budgets', () => {
     await query(service, { 'workspace.id': 'workspace-a' });
     await query(service, { 'workspace.id': 'workspace-b' });
     expect(service.cacheStatus()).toEqual({ entries: 1, records: 1 });
+  });
+
+  it('enforces a byte cap and skips caching oversized entries', async () => {
+    const { service } = fixture(
+      [summary('session-a', 'workspace-a')],
+      { [scope('workspace-a', 'session-a')]: [usageRecord(10, 1)] },
+      () => 0,
+      { cacheMaxBytes: 200, deadlineMs: 10_000 },
+    );
+    expect((await query(service)).summary.tokens.output).toBe(1);
+    expect(service.cacheStatus()).toEqual({ entries: 0, records: 0 });
+    expect((await query(service)).summary.tokens.output).toBe(1);
+  });
+
+  it('detects a new wire tail without a TTL-based reread of its checkpoint', async () => {
+    const wireScope = scope('workspace-a', 'session-a');
+    const first = usageRecord(10, 1);
+    const appended = usageRecord(11, 2);
+    const instance = fixture([summary('session-a', 'workspace-a')], { [wireScope]: [first] }, () => 0);
+    await query(instance.service);
+    const checkpointBytes = [...instance.checkpointReads.values()].reduce((sum, bytes) => sum + bytes, 0);
+    instance.setWire(wireScope, [first, appended]);
+    expect((await query(instance.service)).summary.tokens.output).toBe(2);
+    expect([...instance.checkpointReads.values()].reduce((sum, bytes) => sum + bytes, 0)).toBe(checkpointBytes);
   });
 
   it('reads only an appended wire tail after the cache expires', async () => {
@@ -435,6 +489,49 @@ describe('UsageAggregationService cache budgets', () => {
     expect(second.summary.tokens.output).toBe(1);
     expect(reads.get(wireScope)).toBe(2);
   });
+
+  it('reuses a warmed fleet projection without rereading large checkpoints on repeated requests', async () => {
+    const sessions = Array.from({ length: 337 }, (_, index) => summary(`session-${index}`, 'workspace-a'));
+    const large = (count: number, time: number) => Array.from({ length: count }, () => ({ ...usageRecord(time, 1), modelAlias: 'x'.repeat(170) }));
+    let time = 0;
+    let chargeReads = false;
+    const instance = fixture(
+      sessions,
+      { [scope('workspace-a', 'session-0')]: large(65_000, 10), [scope('workspace-a', 'session-1')]: large(56_000, 11) },
+      () => time,
+      { deadlineMs: 1_500 },
+      { items: [], complete: true, scannedRecords: 0 },
+      (bytes) => { if (chargeReads) time += Math.ceil(bytes / 20_000); },
+    );
+    const initial = await query(instance.service);
+    expect(initial.summary.tokens.output).toBe(121_000);
+    chargeReads = true;
+    const readBefore = [...instance.checkpointReads.values()].reduce((sum, bytes) => sum + bytes, 0);
+    const started = performance.now();
+    const second = await query(instance.service);
+    const elapsedMs = performance.now() - started;
+    const readAfter = [...instance.checkpointReads.values()].reduce((sum, bytes) => sum + bytes, 0);
+    console.info('usage 337-session warm query', { elapsedMs, checkpointBytes: readAfter - readBefore, simulatedClockMs: time });
+    expect(second.reliability).toMatchObject({ complete: true, scanned_sessions: 337 });
+    expect(second.summary.tokens.output).toBe(121_000);
+    expect(readAfter - readBefore).toBe(0);
+
+    const cold = instance.restart();
+    time = 0;
+    const coldStarted = performance.now();
+    const coldFirst = await query(cold);
+    const coldFirstMs = performance.now() - coldStarted;
+    const coldReadBytes = [...instance.checkpointReads.values()].reduce((sum, bytes) => sum + bytes, 0) - readAfter;
+    const warmStarted = performance.now();
+    const coldSecond = await query(cold);
+    const coldSecondMs = performance.now() - warmStarted;
+    console.info('usage checkpoint restart', { coldFirstMs, coldSecondMs, coldReadBytes, simulatedClockMs: time });
+    expect(coldFirst.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
+    expect(coldFirst.reliability.usage_coverage?.known_records).toBeGreaterThan(0);
+    expect(coldSecond.reliability).toMatchObject({ complete: true, scanned_sessions: 337 });
+    expect(coldSecond.summary.tokens.output).toBe(121_000);
+    expect([...instance.checkpointReads.values()].reduce((sum, bytes) => sum + bytes, 0) - readAfter - coldReadBytes).toBeLessThan(100_000);
+  }, 60_000);
 });
 
 describe('UsageAggregationService timezone ranges', () => {

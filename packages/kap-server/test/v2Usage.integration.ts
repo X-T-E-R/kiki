@@ -269,6 +269,13 @@ describe('server /api/usage', () => {
         turn_ids_truncated: false,
       },
     ]);
+    expect(data.trend.map((bucket) => [bucket.turn_count, bucket.request_count])).toEqual([
+      [0, 1], [1, 1], [1, 1],
+    ]);
+    expect(data.sessions.items.find((item) => item.id === 'session-high')).toMatchObject({
+      primary_model: 'billing-a',
+      profile_names: ['worker'],
+    });
     expect(data.reliability.unknown_price_models).toEqual(['unknown-price']);
     expect(data.reliability.includes_deleted_sessions).toBe(false);
   });
