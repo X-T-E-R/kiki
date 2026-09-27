@@ -83,6 +83,7 @@ export const namedAgentProfileSchema = z.object({
   workspace_id: z.string().optional(),
   workspace_ids: z.array(z.string()).optional(),
   source_file: z.string().optional(),
+  prompt: z.string().optional(),
   main: z.boolean(),
   override: z.boolean().optional(),
   executor: z.string().optional(),
@@ -378,6 +379,26 @@ export const updateNamedAgentRouteSchema = z.object({
   { message: 'route update must include description or model_alias' },
 );
 
+export const createNamedAgentProfileRequestSchema = z.object({
+  workspace_id: z.string().min(1),
+  name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'name must be kebab-case'),
+  scope: z.enum(['user', 'project']),
+  template: z.union([z.enum(['blank', 'implementer', 'reviewer']), z.string().regex(/^duplicate:[a-z0-9]+(?:-[a-z0-9]+)*$/)]).optional(),
+  main: z.boolean().optional(),
+  description: z.string().trim().min(1).optional(),
+  when_to_use: z.string().trim().min(1).optional(),
+  pinned_model_alias: modelAliasSchema.optional(),
+  thinking_effort: z.string().trim().min(1).optional(),
+  tools: z.array(z.string().trim().min(1)).optional(),
+  prompt: z.string().optional(),
+}).strict().superRefine((value, context) => {
+  if (value.template === undefined || value.template === 'blank') {
+    if (value.description === undefined) context.addIssue({ code: 'custom', path: ['description'], message: 'description is required for blank profiles' });
+    if (value.prompt?.trim() === '' || value.prompt === undefined) context.addIssue({ code: 'custom', path: ['prompt'], message: 'prompt is required for blank profiles' });
+  }
+});
+export type CreateNamedAgentProfileRequest = z.infer<typeof createNamedAgentProfileRequestSchema>;
+
 export const updateNamedAgentProfileRequestSchema = z.object({
   scope: z.enum(['user', 'project', 'extra']),
   workspace_id: z.string().min(1),
@@ -390,6 +411,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
   tools: profileStringListSchema,
   disallowed_tools: profileStringListSchema,
   routes: z.array(updateNamedAgentRouteSchema).optional(),
+  prompt: z.string().optional(),
   raw_text: z.string().optional(),
 }).strict().superRefine((value, context) => {
   const hasStructuredUpdate =
@@ -400,6 +422,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
     value.service_tier !== undefined ||
     value.tools !== undefined ||
     value.disallowed_tools !== undefined ||
+    value.prompt !== undefined ||
     (value.routes !== undefined && value.routes.length > 0);
   if (value.raw_text !== undefined && hasStructuredUpdate) {
     context.addIssue({

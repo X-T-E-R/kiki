@@ -12,6 +12,7 @@ import type {
   GoalSnapshot,
   GetCatalogProviderResponse,
   ListMcpServersResponse,
+  CreateNamedAgentProfileRequest,
   ListNamedAgentProfilesQuery,
   ListNamedAgentProfilesResponse,
   ListShippedAgentProfilesResponse,
@@ -240,6 +241,7 @@ export interface HttpRestFacade {
 
   readonly agents: {
     list(query?: string | ListNamedAgentProfilesQuery): Promise<ListNamedAgentProfilesResponse>;
+    create(body: CreateNamedAgentProfileRequest): Promise<NamedAgentProfile>;
     update(name: string, body: UpdateNamedAgentProfileRequest): Promise<NamedAgentProfile>;
     /** Shipped (built-in) profile templates: management status and restore-original. */
     readonly shipped: {

@@ -25,6 +25,7 @@ import {
 import {
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
+  createNamedAgentProfileRequestSchema,
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
   namedAgentProfileNameParamsSchema,
@@ -46,6 +47,14 @@ interface AgentProfilesRouteHost {
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
     handler: (
       req: { id: string; query: { expand?: boolean; workspace_id?: string } },
+      reply: { send(payload: unknown): unknown },
+    ) => Promise<void> | void,
+  ): unknown;
+  post(
+    path: string,
+    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
+    handler: (
+      req: { id: string; body: unknown },
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
@@ -169,6 +178,65 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     listRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2],
   );
 
+  const createRoute = defineRoute({
+    method: 'POST',
+    path: '/agent-profiles',
+    body: createNamedAgentProfileRequestSchema,
+    success: { data: namedAgentProfileSchema },
+    errors: {
+      [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
+      [ErrorCode.WORKSPACE_NOT_FOUND]: {},
+      [ErrorCode.AGENT_PROFILE_ALREADY_EXISTS]: {},
+    },
+    description: 'Create a file-backed named agent profile in the user or project scope',
+    tags: ['agents'],
+  }, async (req, reply) => {
+    const workspace = await core.accessor.get(IWorkspaceService).get(req.body.workspace_id);
+    if (workspace === undefined) {
+      reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, `workspace ${req.body.workspace_id} does not exist`, req.id));
+      return;
+    }
+    const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: workspace.id });
+    try {
+      await lease.instance.program.ready;
+      const created = await lease.instance.program.agentProfileWriter.create({
+        name: req.body.name,
+        scope: req.body.scope,
+        template: req.body.template,
+        main: req.body.main,
+        description: req.body.description,
+        whenToUse: req.body.when_to_use,
+        modelAlias: req.body.pinned_model_alias,
+        thinkingEffort: req.body.thinking_effort,
+        tools: req.body.tools,
+        prompt: req.body.prompt,
+      });
+      reply.send(okEnvelope(toNamedAgentProfile({
+        sourceId: created.sourceId,
+        priority: 0,
+        workspaceKey: created.workspaceKey,
+        contribution: { profiles: [created.profile], routes: created.routes },
+      }, created.profile, new Set(core.accessor.get(IConfigService).get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? [])), req.id));
+    } catch (error) {
+      if (isError2(error) && error.code === ErrorCodes.VALIDATION_FAILED) {
+        const issues = Array.isArray(error.details?.['issues'])
+          ? error.details['issues']
+          : [{ path: '', message: error.message }];
+        reply.send({ ...errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id), details: issues });
+        return;
+      }
+      if (isError2(error) && error.code === AgentProfileWriteErrors.codes.PROFILE_ALREADY_EXISTS) {
+        reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_ALREADY_EXISTS, error.message, req.id));
+        return;
+      }
+      throw error;
+    } finally {
+      lease.dispose();
+    }
+  });
+  app.post(createRoute.path, createRoute.options,
+    createRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
   const updateRoute = defineRoute(
     {
       method: 'PATCH',
@@ -219,6 +287,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
             description: route.description,
             modelAlias: route.model_alias,
           })),
+          prompt: req.body.prompt,
           rawText: req.body.raw_text,
         });
         reply.send(okEnvelope(toNamedAgentProfile(
@@ -420,6 +489,7 @@ function toNamedAgentProfile(
     workspace_id: registration.workspaceKey,
     workspace_ids: workspaceIds === undefined ? undefined : [...workspaceIds],
     source_file: profile.sourcePath,
+    prompt: profile.fileDefinition?.prompt,
     main: profile.main === true,
     override: profile.override === true ? true : undefined,
     executor: executorId,

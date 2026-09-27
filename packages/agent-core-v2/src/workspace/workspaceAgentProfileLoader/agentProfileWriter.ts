@@ -12,6 +12,19 @@ export interface AgentProfileRouteUpdate {
   readonly modelAlias?: string | null;
 }
 
+export interface AgentProfileCreateRequest {
+  readonly name: string;
+  readonly scope: 'user' | 'project';
+  readonly template?: string;
+  readonly main?: boolean;
+  readonly description?: string;
+  readonly whenToUse?: string;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
+  readonly tools?: readonly string[];
+  readonly prompt?: string;
+}
+
 export interface AgentProfileWriteRequest {
   readonly name: string;
   readonly scope: AgentProfileWriteScope;
@@ -24,6 +37,7 @@ export interface AgentProfileWriteRequest {
   readonly tools?: readonly string[] | null;
   readonly disallowedTools?: readonly string[] | null;
   readonly routes?: readonly AgentProfileRouteUpdate[];
+  readonly prompt?: string;
   readonly rawText?: string;
 }
 
@@ -40,5 +54,6 @@ export interface AgentProfileWriteResult {
  *  after reload. */
 export interface IAgentProfileWriter {
   readonly _serviceBrand: undefined;
+  create(request: AgentProfileCreateRequest): Promise<AgentProfileWriteResult>;
   update(request: AgentProfileWriteRequest): Promise<AgentProfileWriteResult>;
 }

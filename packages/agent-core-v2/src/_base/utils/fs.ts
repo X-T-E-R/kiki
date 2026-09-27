@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { closeSync, fsyncSync, openSync } from 'node:fs';
 import * as nodeFs from 'node:fs';
-import { chmod, open, rename, unlink } from 'node:fs/promises';
+import { chmod, link, open, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'pathe';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
@@ -132,6 +132,21 @@ export async function atomicWrite(
         await unlink(tmpPath);
       } catch {
       }
+    }
+  }
+}
+
+export async function atomicCreate(filePath: string, content: string): Promise<void> {
+  const tmpPath = `${filePath}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
+  try {
+    await atomicWrite(tmpPath, content);
+    await link(tmpPath, filePath);
+    await syncDir(dirname(filePath));
+  } finally {
+    try {
+      await unlink(tmpPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
 }

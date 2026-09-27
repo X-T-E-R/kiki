@@ -779,6 +779,7 @@ describe('GET /api/agents', () => {
       workspace_id: expect.any(String),
       workspace_ids: [expect.any(String), expect.any(String)],
       source_file: profilePath.replaceAll('\\', '/'),
+      prompt: 'Review the change.',
       main: true,
       executor: 'native',
       executor_protocol: 'native',
@@ -1516,6 +1517,66 @@ describe('GET /api/agents', () => {
     );
   });
 
+  it('creates, rejects collisions and invalid names, duplicates a template, and round-trips prompt edits', async () => {
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const session = await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    });
+    expect(((await session.json()) as Envelope<unknown>).code).toBe(0);
+    const listed = (await (await authedFetch(server, base, '/api/agents')).json()) as Envelope<unknown>;
+    const workspaceId = listNamedAgentProfilesResponseSchema.parse(listed.data).items
+      .find((profile) => profile.source === 'user')?.workspace_id;
+    expect(workspaceId).toBeTruthy();
+    const post = async (body: Record<string, unknown>) => {
+      const response = await authedFetch(server!, base, '/api/agent-profiles', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspace_id: workspaceId, scope: 'user', ...body }),
+      });
+      return (await response.json()) as Envelope<unknown>;
+    };
+    const created = await post({
+      name: 'custom-reviewer', description: 'Review carefully', when_to_use: 'After changes',
+      main: false, pinned_model_alias: 'inherit', tools: ['Read'], prompt: 'Inspect the candidate.',
+    });
+    expect(created.code).toBe(0);
+    expect(created.data).toMatchObject({
+      name: 'custom-reviewer', source: 'user', main: false, prompt: 'Inspect the candidate.',
+      tools: ['Read'], when_to_use: 'After changes',
+    });
+    const path = join(home!, 'agents', 'custom-reviewer.md');
+    const original = await readFile(path, 'utf8');
+    expect(original).toContain('model_alias: "inherit"');
+    expect((await post({ name: 'custom-reviewer', description: 'overwrite', prompt: 'No' })).code)
+      .toBe(ErrorCode.AGENT_PROFILE_ALREADY_EXISTS);
+    expect((await post({ name: '../escape', description: 'invalid', prompt: 'No' })).code)
+      .toBe(ErrorCode.VALIDATION_FAILED);
+    expect(await readFile(path, 'utf8')).toBe(original);
+
+    const duplicated = await post({ name: 'custom-copy', template: 'duplicate:custom-reviewer' });
+    expect(duplicated.code).toBe(0);
+    expect(duplicated.data).toMatchObject({ name: 'custom-copy', prompt: 'Inspect the candidate.', tools: ['Read'] });
+    const copiedText = await readFile(join(home!, 'agents', 'custom-copy.md'), 'utf8');
+    expect(copiedText).toContain('name: "custom-copy"');
+    expect(copiedText).toContain('tools: ["Read"]');
+
+    const patch = await authedFetch(server, base, '/api/agents/custom-reviewer', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace_id: workspaceId, scope: 'user', prompt: 'Revised\nsecond line.' }),
+    });
+    const patched = (await patch.json()) as Envelope<unknown>;
+    expect(patched.code).toBe(0);
+    expect(patched.data).toMatchObject({ prompt: 'Revised\nsecond line.', description: 'Review carefully' });
+    const after = await readFile(path, 'utf8');
+    expect(after.slice(0, after.indexOf('---\n\n'))).toBe(original.slice(0, original.indexOf('---\n\n')));
+    const reread = (await (await authedFetch(server, base, '/api/agents')).json()) as Envelope<unknown>;
+    expect(listNamedAgentProfilesResponseSchema.parse(reread.data).items.find((profile) => profile.name === 'custom-reviewer'))
+      .toMatchObject({ prompt: 'Revised\nsecond line.' });
+  });
+
   it('returns field details when the PATCH body requests non-editable fields', async () => {
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -1640,6 +1701,7 @@ describe('GET /agents named resolution', () => {
     const handlers = new Map<string, (req: unknown, reply: { send(payload: unknown): unknown }) => unknown>();
     const app = {
       get: (path: string, _options: unknown, handler: never) => { handlers.set(path, handler); },
+      post: () => {},
       patch: () => {},
     };
     const core = {

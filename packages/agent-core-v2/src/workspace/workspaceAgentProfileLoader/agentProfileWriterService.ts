@@ -1,6 +1,10 @@
 import { parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
+import { join } from 'pathe';
 
-import { atomicWrite } from '#/_base/utils/fs';
+import { atomicCreate, atomicWrite } from '#/_base/utils/fs';
+import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { EXAMPLE_AGENT_PROFILE_TEMPLATES } from '#/app/shippedAgentProfiles/examples/exampleAgentProfiles';
+import { SHIPPED_AGENT_PROFILE_TEMPLATES } from '#/app/shippedAgentProfiles/shippedAgentProfiles';
 import { Error2 } from '#/_base/errors/errors';
 import { CoreErrors } from '#/_base/errors/codes';
 import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
@@ -9,6 +13,7 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 
 import { parseAgentFileText } from './internal/agentFile';
+import { projectAgentRoots, userAgentRoots, projectAgentRootCandidates } from './internal/agentRoots';
 import { parseAgentRouteFileText } from './internal/agentRouteFile';
 import type { AgentFileSource } from './internal/types';
 import type { IExtraAgentProfileLoader } from './extraAgentProfileLoader';
@@ -16,6 +21,7 @@ import type { IUserAgentProfileLoader } from './userAgentProfileLoader';
 import type { IWorkspaceAgentProfileLoader } from './workspaceAgentProfileLoader';
 import { AgentProfileWriteErrors } from './errors';
 import type {
+  AgentProfileCreateRequest,
   AgentProfileWriteRequest,
   AgentProfileWriteResult,
   AgentProfileWriteScope,
@@ -64,6 +70,7 @@ const TOP_LEVEL_KEYS = new Set([
   'tools',
   'disallowedTools',
   'routes',
+  'prompt',
   'rawText',
 ]);
 const ROUTE_KEYS = new Set(['id', 'description', 'modelAlias']);
@@ -84,8 +91,89 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     private readonly userLoader: IUserAgentProfileLoader,
     private readonly workspaceLoader: IWorkspaceAgentProfileLoader,
     private readonly extraLoader: IExtraAgentProfileLoader,
+    private readonly bootstrap: IBootstrapService,
     private readonly atomicTextWriter: AtomicTextWriter = atomicWrite,
   ) {}
+
+  create(request: AgentProfileCreateRequest): Promise<AgentProfileWriteResult> {
+    const operation = this.tail.catch(() => undefined).then(() => this.doCreate(request));
+    this.tail = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  private async doCreate(request: AgentProfileCreateRequest): Promise<AgentProfileWriteResult> {
+    validateCreateRequest(request);
+    const sourceId = SOURCE_BY_SCOPE[request.scope];
+    const exists = this.registry.entries().some((entry) =>
+      entry.sourceId === sourceId && entry.workspaceKey === this.workspace.workspaceId
+      && entry.contribution.profiles.some((profile) => profile.name === request.name)
+    );
+    if (exists) throw profileExistsError(request.name);
+    if (this.registry.entries().some((entry) => entry.sourceId === 'builtin'
+      && entry.contribution.profiles.some((profile) => profile.name === request.name))) {
+      throw profileExistsError(request.name);
+    }
+    const roots = request.scope === 'user'
+      ? await userAgentRoots(this.fs, this.bootstrap.userAgentProfileHomeDir, this.bootstrap.osHomeDir)
+      : await projectAgentRoots(this.fs, this.workspace.cwd);
+    const fallbackRoot = request.scope === 'user'
+      ? join(this.bootstrap.userAgentProfileHomeDir, 'agents')
+      : (await projectAgentRootCandidates(this.fs, this.workspace.cwd)).candidates[0]!;
+    const directory = roots[0]?.path ?? fallbackRoot;
+    await this.fs.mkdir(directory, { recursive: true });
+    const path = join(await this.fs.realpath(directory), `${request.name}.md`);
+    let text: string;
+    if (request.template === undefined || request.template === 'blank') {
+      text = `---\nname: ${JSON.stringify(request.name)}\ndescription: ${JSON.stringify(request.description)}\n---\n\n${request.prompt}\n`;
+    } else if (request.template === 'implementer' || request.template === 'reviewer') {
+      text = EXAMPLE_AGENT_PROFILE_TEMPLATES.find((template) => template.id === request.template)!.text;
+      text = updateFrontmatterScalar(text, 'name', request.name);
+    } else {
+      const originalName = request.template.slice('duplicate:'.length);
+      const source = this.registry.entries()
+        .filter((entry) => entry.workspaceKey === undefined || entry.workspaceKey === this.workspace.workspaceId)
+        .toSorted((left, right) => right.priority - left.priority)
+        .map((entry) => entry.contribution.profiles.findLast((profile) => profile.name === originalName))
+        .find((profile) => profile !== undefined);
+      const shipped = SHIPPED_AGENT_PROFILE_TEMPLATES.find((template) => template.id === originalName);
+      if (source?.sourcePath !== undefined && !source.sourcePath.includes('://')) {
+        text = await this.fs.readText(source.sourcePath);
+      } else if (shipped !== undefined) {
+        text = shipped.text;
+      } else {
+        throw validationError([{ path: 'template', message: `profile ${originalName} is unavailable or has no file template` }]);
+      }
+      text = updateFrontmatterScalar(text, 'name', request.name);
+      text = updateFrontmatterScalar(text, 'override', null);
+    }
+    if (request.main !== undefined) text = updateFrontmatterScalar(text, 'main', request.main);
+    if (request.description !== undefined) text = updateFrontmatterScalar(text, 'description', request.description);
+    if (request.whenToUse !== undefined) text = updateFrontmatterScalar(text, 'whenToUse', request.whenToUse);
+    if (request.modelAlias !== undefined) text = updateFrontmatterScalar(text, 'model_alias', request.modelAlias);
+    if (request.thinkingEffort !== undefined) text = updateFrontmatterScalar(text, 'thinking_effort', request.thinkingEffort);
+    if (request.tools !== undefined) text = updateFrontmatterScalar(text, 'tools', request.tools);
+    if (request.prompt !== undefined && request.template !== undefined && request.template !== 'blank') {
+      text = replacePromptBody(text, request.prompt);
+    }
+    const parsed = parseAgentFileText({ path, source: FILE_SOURCE_BY_SCOPE[request.scope], text });
+    if (parsed.name !== request.name) throw validationError([{ path: 'name', message: 'profile name does not match request' }]);
+    try {
+      await atomicCreate(path, text);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw profileExistsError(request.name);
+      throw error;
+    }
+    await this.loaderFor(request.scope).reload();
+    const registration = this.registry.entries().find((entry) =>
+      entry.sourceId === sourceId && entry.workspaceKey === this.workspace.workspaceId
+    );
+    const profile = registration?.contribution.profiles.find((candidate) =>
+      candidate.name === request.name && candidate.sourcePath === path
+    );
+    if (profile === undefined) throw new Error2(AgentProfileWriteErrors.codes.PROFILE_NOT_FOUND,
+      `Agent profile "${request.name}" did not load after creation`);
+    return { sourceId, workspaceKey: this.workspace.workspaceId, profile, routes: [] };
+  }
 
   update(request: AgentProfileWriteRequest): Promise<AgentProfileWriteResult> {
     const operation = this.tail.catch(() => undefined).then(() => this.doUpdate(request));
@@ -142,6 +230,11 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     }
     if (request.disallowedTools !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'disallowedTools', request.disallowedTools);
+    }
+    if (request.prompt !== undefined) {
+      nextProfileText = system && !nextProfileText.startsWith('---')
+        ? `${request.prompt}${preferredEol(profileText)}`
+        : replacePromptBody(nextProfileText, request.prompt);
     }
     if (system) {
       if (nextProfileText.trim() === '') {
@@ -276,6 +369,45 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
   }
 }
 
+function profileExistsError(name: string): Error2 {
+  return new Error2(AgentProfileWriteErrors.codes.PROFILE_ALREADY_EXISTS,
+    `Agent profile "${name}" already exists`);
+}
+
+function validateCreateRequest(request: AgentProfileCreateRequest): void {
+  const issues: ValidationIssue[] = [];
+  if (!isRecord(request)) throw validationError([{ path: '', message: 'request must be an object' }]);
+  if (typeof request.name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(request.name)) {
+    issues.push({ path: 'name', message: 'name must be kebab-case' });
+  }
+  if (request.scope !== 'user' && request.scope !== 'project') {
+    issues.push({ path: 'scope', message: 'scope must be user or project' });
+  }
+  if (request.template !== undefined && request.template !== 'blank'
+    && request.template !== 'implementer' && request.template !== 'reviewer'
+    && (typeof request.template !== 'string' || !/^duplicate:[a-z0-9]+(?:-[a-z0-9]+)*$/.test(request.template))) {
+    issues.push({ path: 'template', message: 'unknown profile template' });
+  }
+  if (request.main !== undefined && typeof request.main !== 'boolean') {
+    issues.push({ path: 'main', message: 'main must be boolean' });
+  }
+  validateRequiredString(request.description, 'description', issues);
+  validateRequiredString(request.whenToUse, 'whenToUse', issues);
+  validateModelAlias(request.modelAlias, 'modelAlias', issues);
+  validateRequiredString(request.thinkingEffort, 'thinkingEffort', issues);
+  validateStringList(request.tools, 'tools', issues);
+  if (request.prompt !== undefined && typeof request.prompt !== 'string') {
+    issues.push({ path: 'prompt', message: 'prompt must be a string' });
+  }
+  if (request.template === undefined || request.template === 'blank') {
+    if (request.description === undefined) issues.push({ path: 'description', message: 'description is required' });
+    if (typeof request.prompt !== 'string' || request.prompt.trim() === '') {
+      issues.push({ path: 'prompt', message: 'prompt is required' });
+    }
+  }
+  if (issues.length > 0) throw validationError(issues);
+}
+
 function validateRequest(request: AgentProfileWriteRequest): void {
   const issues: ValidationIssue[] = [];
   if (!isRecord(request)) {
@@ -298,6 +430,9 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   validateServiceTier(request.serviceTier, issues);
   validateStringList(request.tools, 'tools', issues);
   validateStringList(request.disallowedTools, 'disallowedTools', issues);
+  if (request.prompt !== undefined && typeof request.prompt !== 'string') {
+    issues.push({ path: 'prompt', message: 'prompt must be a string' });
+  }
   if (request.rawText !== undefined && typeof request.rawText !== 'string') {
     issues.push({ path: 'rawText', message: 'rawText must be a string' });
   }
@@ -338,6 +473,7 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.serviceTier,
     request.tools,
     request.disallowedTools,
+    request.prompt,
   ];
   const hasStructuredUpdate = structuredFields.some((value) => value !== undefined)
     || (Array.isArray(request.routes) && request.routes.length > 0);
@@ -421,10 +557,18 @@ function readOnlyError(name: string, source: string): Error2 {
   );
 }
 
+function replacePromptBody(text: string, prompt: string): string {
+  const block = locateFrontmatter(text);
+  const newline = text.indexOf('\n', block.contentEnd);
+  const prefix = newline === -1 ? `${text}${preferredEol(text)}` : text.slice(0, newline + 1);
+  const eol = preferredEol(text);
+  return `${prefix}${eol}${prompt.trim()}${eol}`;
+}
+
 function updateFrontmatterScalar(
   text: string,
   key: string,
-  value: string | readonly string[] | null,
+  value: string | boolean | readonly string[] | null,
 ): string {
   const block = locateFrontmatter(text);
   const lines = scanLines(block.content);

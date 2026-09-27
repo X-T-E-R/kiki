@@ -13,6 +13,7 @@ import type {
   FsSearchResponse,
   GetCatalogProviderResponse,
   ListMcpServersResponse,
+  CreateNamedAgentProfileRequest,
   ListNamedAgentProfilesQuery,
   ListNamedAgentProfilesResponse,
   ListShippedAgentProfilesResponse,
@@ -254,6 +255,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       list: (query?: string | ListNamedAgentProfilesQuery) => transport.json<ListNamedAgentProfilesResponse>('/agents', {
         query: typeof query === 'string' ? { workspace_id: query } : query,
       }),
+      create: (body: CreateNamedAgentProfileRequest) => transport.json<NamedAgentProfile>(
+        '/agent-profiles', { method: 'POST', body },
+      ),
       update: (name: string, body: UpdateNamedAgentProfileRequest) => transport.json<NamedAgentProfile>(
         `/agents/${encodeURIComponent(name)}`,
         { method: 'PATCH', body },

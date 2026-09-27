@@ -389,6 +389,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     userLoader,
     workspaceLoader,
     extraLoader,
+    bootstrap,
     opts?.atomicTextWriter,
   );
 
@@ -630,6 +631,71 @@ describe('agent profile loaders + session catalog', () => {
         expect(cleared.profile.serviceTier).toBeUndefined();
         expect(cleared.profile.tools).toBeUndefined();
         expect(cleared.profile.disallowedTools).toBeUndefined();
+      });
+    });
+  });
+
+  it('creates scoped profiles without overwriting and duplicates a loaded template', async () => {
+    await withFixture(async (fixture) => {
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const created = await stack.writer.create({
+          name: 'new-reviewer', scope: 'user', description: 'New reviewer', main: false,
+          tools: ['Read'], prompt: 'Inspect changes carefully.',
+        });
+        expect(created.profile).toMatchObject({ name: 'new-reviewer', description: 'New reviewer', tools: ['Read'] });
+        expect(created.profile.fileDefinition?.prompt).toBe('Inspect changes carefully.');
+        expect(stack.catalog.get('new-reviewer')?.name).toBe('new-reviewer');
+        const path = join(fixture.homeDir, 'agents', 'new-reviewer.md');
+        expect(await readFile(path, 'utf8')).toContain('main: false');
+        await expect(stack.writer.create({
+          name: 'new-reviewer', scope: 'user', description: 'Overwritten', prompt: 'No.',
+        })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.PROFILE_ALREADY_EXISTS });
+        await expect(stack.writer.create({
+          name: '../bad', scope: 'user', description: 'Bad', prompt: 'No.',
+        })).rejects.toMatchObject({ code: 'validation.failed' });
+        expect(await readFile(path, 'utf8')).toContain('New reviewer');
+        const unindexedPath = join(fixture.homeDir, 'agents', 'unindexed.md');
+        await writeFile(unindexedPath, 'not a valid profile');
+        await expect(stack.writer.create({
+          name: 'unindexed', scope: 'user', description: 'No overwrite', prompt: 'No.',
+        })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.PROFILE_ALREADY_EXISTS });
+        expect(await readFile(unindexedPath, 'utf8')).toBe('not a valid profile');
+
+        const copy = await stack.writer.create({
+          name: 'new-reviewer-copy', scope: 'project', template: 'duplicate:new-reviewer',
+          description: 'Duplicated reviewer',
+        });
+        expect(copy.profile.fileDefinition?.prompt).toBe('Inspect changes carefully.');
+        expect(copy.profile.description).toBe('Duplicated reviewer');
+        expect(await readFile(join(fixture.workDir, '.kiki', 'agents', 'new-reviewer-copy.md'), 'utf8'))
+          .toContain('tools: ["Read"]');
+        const example = await stack.writer.create({
+          name: 'example-reviewer', scope: 'project', template: 'reviewer',
+        });
+        expect(example.profile.fileDefinition?.prompt).toContain('You are the `reviewer` subagent.');
+        expect(example.profile.modelAlias).toBe('inherit');
+        const shippedCopy = await stack.writer.create({
+          name: 'copy-explore', scope: 'project', template: 'duplicate:explore',
+        });
+        expect(shippedCopy.profile.fileDefinition?.prompt).toBeTruthy();
+        expect(shippedCopy.profile.name).toBe('copy-explore');
+      });
+    });
+  });
+
+  it('updates the prompt body without changing frontmatter and rejects an invalid empty body', async () => {
+    await withFixture(async (fixture) => {
+      const original = '---\r\nname: body-test\r\ndescription: Body test\r\nwhenToUse: Keep this field\r\ntools: [Read]\r\n---\r\n\r\nOriginal prompt.\r\n';
+      const path = await writeAgent(join(fixture.homeDir, 'agents'), 'body-test.md', original);
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const result = await stack.writer.update({ name: 'body-test', scope: 'user', prompt: 'New first line.\nNew second line.' });
+        expect(result.profile.fileDefinition?.prompt).toBe('New first line.\nNew second line.');
+        expect(await readFile(path, 'utf8')).toBe(original.slice(0, original.indexOf('Original prompt.')) + 'New first line.\nNew second line.\r\n');
+        await expect(stack.writer.update({ name: 'body-test', scope: 'user', prompt: ' ' }))
+          .rejects.toMatchObject({ code: 'validation.failed' });
+        expect(stack.catalog.get('body-test')?.fileDefinition?.prompt).toBe('New first line.\nNew second line.');
       });
     });
   });
