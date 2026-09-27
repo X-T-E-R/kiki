@@ -20,10 +20,12 @@ interface DispatchDeadline {
   readonly at?: number;
   readonly timeoutMs: number;
   readonly signal: AbortSignal;
+  readonly elapsed?: () => boolean;
 }
 
 function assertBeforeDeadline(deadline: DispatchDeadline | undefined): void {
   if (deadline?.signal.aborted) throw new Error('debug request disconnected');
+  if (deadline?.elapsed?.() === true) throw new TimeoutError(deadline.timeoutMs);
   if (deadline?.at !== undefined && performance.now() >= deadline.at) {
     throw new TimeoutError(deadline.timeoutMs);
   }

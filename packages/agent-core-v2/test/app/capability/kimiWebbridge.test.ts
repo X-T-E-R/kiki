@@ -50,7 +50,7 @@ function fixture(root: string, options: { status?: object; binary?: Uint8Array; 
       await options.onDownload?.();
       return new Response(options.binary ?? bytes);
     }
-    throw new Error(`Unexpected network access ${url}`);
+    throw new Error(`Unexpected network access ${String(url)}`);
   }) as unknown as typeof fetch;
   const context: CapabilityEntryContext = {
     platform: 'darwin', arch: 'arm64', kimiHomeDir: path.join(root, 'kiki'),

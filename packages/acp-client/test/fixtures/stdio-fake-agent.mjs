@@ -199,8 +199,11 @@ async function handle(message) {
   if (message.method === 'session/set_config_option') {
     const option = configOptions.find((candidate) => candidate.id === message.params.configId);
     if (option) option.currentValue = message.params.value;
-    result(message.id, { configOptions });
+    // Notify before confirming so a client that starts its turn immediately
+    // after the response cannot record this startup notification as a turn
+    // event; ordering the response first makes that a race.
     update({ sessionUpdate: 'config_option_update', configOptions });
+    result(message.id, { configOptions });
     return;
   }
   if (message.method === 'session/set_mode') {

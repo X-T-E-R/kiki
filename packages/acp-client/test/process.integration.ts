@@ -135,8 +135,11 @@ describe('ACP process state machine', () => {
       'usage',
       'unknown',
     ]);
-    expect(result.stderrTail).toContain('PERMISSION=');
+    // The turn result's stderrTail is a best-effort snapshot (stderr is a pipe
+    // independent of ACP stdout), so wait for the retained tail to collect the
+    // agent's diagnostic and assert it never leaked into the stdout events.
     expect(events.some((event) => JSON.stringify(event).includes('PERMISSION='))).toBe(false);
+    await waitFor(() => client.stderrTail().includes('PERMISSION='));
   });
 
   it('configures an already-open session before prompting', async () => {
@@ -303,8 +306,9 @@ describe('ACP process state machine', () => {
       signal: controller.signal,
       session: { cwd },
     });
-    const result = await handle.completion;
-    expect(result.stderrTail).toContain('"outcome":"cancelled"');
+    await handle.completion;
+    await waitFor(() => client.stderrTail().includes('"outcome":"cancelled"'));
+    expect(client.stderrTail()).toContain('"outcome":"cancelled"');
   });
 
   it('kills the real Windows process tree after TERM and KILL escalation', async () => {

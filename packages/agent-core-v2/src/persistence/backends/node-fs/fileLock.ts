@@ -413,7 +413,7 @@ class FileLock implements IStorageLock {
     try {
       const payload = knownPayload ?? await this.readPayload(watchPath);
       await stat(watchPath);
-      if (payload !== undefined) return ownerProcessAlive(payload);
+      if (payload !== undefined) return await ownerProcessAlive(payload);
       const entry = basename(watchPath);
       const prefix = `${basename(this.lockPath)}.watch-`;
       const namedPid = Number(entry.slice(prefix.length).split('-')[0]);

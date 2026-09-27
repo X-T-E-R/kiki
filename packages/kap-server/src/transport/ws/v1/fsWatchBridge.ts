@@ -236,7 +236,7 @@ export class FsWatchBridge {
     for (const pending of this.rebuilding.values()) pending.abort.abort();
     for (const subscription of this.registrySubscriptions.values()) subscription.dispose();
     this.registrySubscriptions.clear();
-    for (const sw of [...this.bySession.values()]) this.teardownSession(sw);
+    for (const sw of this.bySession.values()) this.teardownSession(sw);
     this.connPathCount.clear();
   }
 
@@ -244,7 +244,7 @@ export class FsWatchBridge {
     for (const [key, pending] of this.rebuilding) {
       if (key.startsWith(`${sessionId}\0`)) pending.abort.abort();
     }
-    for (const sw of [...this.bySession.values()]) {
+    for (const sw of this.bySession.values()) {
       if (sw.id !== sessionId) continue;
       for (const { conn, paths } of sw.conns.values()) {
         this.connPathCount.set(conn.id, Math.max(0, this.countFor(conn.id) - paths.size));

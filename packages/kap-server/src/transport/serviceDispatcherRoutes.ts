@@ -101,10 +101,12 @@ function makeHandler(
 
     const timeoutMs = opts.callTimeoutMs ?? 30_000;
     const controller = new AbortController();
+    let deadlineElapsed = false;
     const deadline = {
       at: timeoutMs > 0 ? performance.now() + timeoutMs : undefined,
       timeoutMs,
       signal: controller.signal,
+      elapsed: () => deadlineElapsed,
     };
     let onClose!: () => void;
     const disconnected = new Promise<never>((_resolve, reject) => {
@@ -119,7 +121,10 @@ function makeHandler(
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       if (timeoutMs <= 0) return;
-      timer = setTimeout(() => reject(new TimeoutError(timeoutMs)), timeoutMs);
+      timer = setTimeout(() => {
+        deadlineElapsed = true;
+        reject(new TimeoutError(timeoutMs));
+      }, timeoutMs);
       timer.unref?.();
     });
 

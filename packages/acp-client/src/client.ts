@@ -513,6 +513,10 @@ export class AcpProcessClient {
         ) {
           this.#setState('ready');
         }
+        // stderr is a pipe independent of the ACP stdout stream, so there is no
+        // ordering guarantee between an agent's stderr write and its prompt
+        // response. This snapshot is a best-effort view of the stderr received
+        // so far; `stderrTail()` retains the live tail.
         return { response, session, stderrTail: this.stderrTail() };
       } catch (error) {
         const failure =

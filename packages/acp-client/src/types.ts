@@ -160,6 +160,14 @@ export interface AcpTurnRequest {
 export interface AcpTurnResult {
   readonly response: PromptResponse;
   readonly session: AcpOpenSessionResult;
+  /**
+   * Best-effort snapshot of the agent's stderr received when the prompt
+   * response was processed. stderr is a pipe independent of the ACP stdout
+   * stream, so there is no ordering guarantee between a stderr write and the
+   * response: this may omit bytes the agent had written but the client had not
+   * yet read. Read `AcpProcessClient.stderrTail()` for the live retained tail,
+   * and treat this field as diagnostics rather than a completeness contract.
+   */
   readonly stderrTail: string;
 }
 
