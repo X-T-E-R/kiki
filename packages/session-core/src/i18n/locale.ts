@@ -10,6 +10,7 @@
 
 import { en } from './en';
 import { zh } from './zh';
+import { errorToText } from '../util/errorText';
 
 export type Locale = 'en' | 'zh';
 export type I18nKey = keyof typeof en;
@@ -84,5 +85,5 @@ export class LocalizedError extends Error {
 /** Localize a caught error when it carries an issue; otherwise pass through. */
 export function errorText(locale: Locale, error: unknown): string {
   if (error instanceof LocalizedError) return issueText(locale, error.issue);
-  return error instanceof Error ? error.message : String(error);
+  return errorToText(error, translate(locale, 'common.unknownError'));
 }

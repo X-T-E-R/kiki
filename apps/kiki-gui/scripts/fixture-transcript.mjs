@@ -842,7 +842,12 @@ export class TranscriptProjector {
                 name: payload.name ?? existing?.name ?? 'tool',
                 state: isError ? 'error' : 'done',
                 output: payload.output,
-                error: isError ? String(payload.output ?? 'error') : undefined,
+                // Same rule as the live adapters: the error line is readable text, never a stringified object.
+                error: isError
+                  ? (typeof payload.output === 'string'
+                    ? payload.output
+                    : payload.output?.stderr || payload.output?.message || payload.output?.stdout || 'error')
+                  : undefined,
               },
             },
           ],

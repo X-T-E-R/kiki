@@ -8,6 +8,8 @@
  * when a push would overflow, so a burst of failures never floods the screen.
  */
 
+import { errorToText } from '@kiki/session-core/util';
+
 export type ToastTone = 'success' | 'info' | 'error';
 
 export interface ToastRetry {
@@ -64,7 +66,7 @@ export function pushToast(input: ToastInput): number {
 }
 
 function actionErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return errorToText(error);
 }
 
 export function runToastAction(label: string, action: () => void | Promise<void>): void {
