@@ -75,8 +75,8 @@
 //   subagent.spawned                   (none)                                                                src/session/subagent/mirrorAgentRun.ts
 //   subagent.started                   (none)                                                                src/session/subagent/mirrorAgentRun.ts
 //   subagent.suspended                 (none)                                                                src/features/swarm/session/sessionSwarmService.ts
-//   swarm_mode.enter                   swarm                                                                 src/features/swarm/swarmOps.ts
-//   swarm_mode.exit                    contextMemory, swarm                                                  src/features/swarm/swarmOps.ts
+//   swarm_mode.enter                   (none)                                                                src/features/swarm/swarmOps.ts
+//   swarm_mode.exit                    contextMemory                                                         src/features/swarm/swarmOps.ts
 //   task.notified                      (none)                                                                src/agent/task/taskOps.ts
 //   task.started                       task                                                                  src/agent/task/taskOps.ts
 //   task.terminated                    task                                                                  src/agent/task/taskOps.ts
@@ -482,7 +482,7 @@ interface PermissionRecordApprovalResultPayload {
 interface PermissionSetModePayload {
   _name: 'permission.set_mode';
   /** PermissionMode */
-  mode: 'manual' | 'yolo' | 'auto';
+  mode: 'manual' | 'auto' | 'review' | 'yolo';
 }
 
 /**
@@ -649,9 +649,8 @@ interface PromptEnqueuedPayload {
     profile?: string;
     model?: string;
     thinking?: string;
-    permissionMode?: 'manual' | 'yolo' | 'auto';
+    permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
     planGate?: z.infer<typeof PlanGateSchema>;
-    swarmMode?: boolean;
     goalObjective?: string;
     goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
     goalInitialStatus?: 'active' | 'paused';
@@ -728,9 +727,8 @@ interface PromptReplacedPayload {
     profile?: string;
     model?: string;
     thinking?: string;
-    permissionMode?: 'manual' | 'yolo' | 'auto';
+    permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
     planGate?: z.infer<typeof PlanGateSchema>;
-    swarmMode?: boolean;
     goalObjective?: string;
     goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
     goalInitialStatus?: 'active' | 'paused';
@@ -880,17 +878,16 @@ interface SubagentSuspendedPayload {
 }
 
 /**
- * states: swarm
+ * states: (none)
  * owner: src/features/swarm/swarmOps.ts
  */
 interface SwarmModeEnterPayload {
   _name: 'swarm_mode.enter';
-  /** SwarmModeTrigger */
   trigger: 'manual' | 'task' | 'tool';
 }
 
 /**
- * states: contextMemory, swarm · blobs: contextMemory
+ * states: contextMemory · blobs: contextMemory
  * owner: src/features/swarm/swarmOps.ts
  */
 interface SwarmModeExitPayload {

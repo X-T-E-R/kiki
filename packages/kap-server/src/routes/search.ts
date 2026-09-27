@@ -86,7 +86,7 @@ export function registerSearchRoutes(app: SearchRouteHost, core: Scope): void {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
       },
       description:
-        'Global full-text search over user messages, assistant replies and session titles across all sessions',
+        'Global full-text search over user messages, assistant replies, tool results and session titles across all sessions',
       tags: ['search'],
     },
     async (req, reply) => {

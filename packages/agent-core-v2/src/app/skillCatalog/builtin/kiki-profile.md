@@ -9,21 +9,21 @@ Author and repair Kiki agent profile files. An agent profile is one Markdown fil
 
 ## Where profiles live
 
-Kiki discovers profile files by scope; more specific scopes win on a name collision: **Explicit (`--agent-file` / `profile_file`) > Project > Extra > User > Plugin > Built-in**.
+Kiki discovers profile files by scope; more specific scopes win on a name collision: **Explicit (`--agent-file` / `profile_file`) > Project > Extra > User > Built-in copies > Plugin**.
 
 | Scope | Location |
 | --- | --- |
-| User (all projects) | `$KIKI_HOME/agents/` (default `~/.kiki/agents/`); falls back to `~/.agents/agents/` |
-| Project (nearest `.git` root) | `.kiki/agents/`; falls back to `.agents/agents/` |
+| User (all projects) | `$KIKI_HOME/agents/` (default `~/.kiki/agents/`) and `~/.agents/agents/` |
+| Project (nearest `.git` root) | `.kiki/agents/` and `.agents/agents/` |
 | Extra | `extra_agent_dirs` entries in `config.toml` |
-| Plugin | the enabled plugin's manifest `agents` field |
-| Built-in | shipped with Kiki; lowest priority |
+| Built-in copies | installed under `$KIKI_HOME/agents/builtin/`, loaded in the user scope after ordinary user files |
+| Plugin | the enabled plugin's manifest `agents` field; lowest priority |
 
 Rules that surprise people:
 
 - Each directory is scanned recursively for `.md` files. Dot-directories, `node_modules`, and `_private` are skipped.
-- A directory-discovered file does **not** replace a same-name built-in profile unless its frontmatter declares `override: true`.
-- Files are watched and hot-reload about 200 ms after you save — no restart or `/reload` needed.
+- The higher-priority same-name file wins without `override: true`; `override` is legacy metadata. A project file named `agent.md` therefore replaces the default main agent.
+- Files are watched and hot-reload about 200 ms after you save — no restart or `/reload` needed. An existing session's main agent keeps its bound snapshot until **Rebuild context**.
 - `$KIKI_HOME/SYSTEM.md` permanently overrides the default main agent's prompt. It is not part of directory discovery: without a frontmatter fence only the prompt body is replaced; with a `---` YAML fence it loads as a normal profile named `agent` with `override` forced on.
 - A file that fails validation is skipped with a warning and never reaches the catalog — the role simply "does not exist" for dispatch. Always verify a new file actually loads (see the verify section).
 
@@ -71,16 +71,18 @@ The body is rendered as a template on every prompt build. Useful variables: `${s
 | Field | One-line rule |
 | --- | --- |
 | `description`, `whenToUse` | Written for the dispatcher — the main agent reads these to pick roles |
-| `override` | Allow replacing a same-name built-in (default `false`) |
+| `override` | Legacy metadata (default `false`); scope precedence decides the winner |
 | `main` | `true` marks a main-agent candidate (GUI selector); hidden from the `AgentRun` default role list |
-| `private` | Hidden from public role listings; still resolvable by explicit name or as a scoped source |
-| `model_alias` | Exact alias from `[models]` for a fixed model, or `inherit` to follow the dispatch caller's model |
-| `allowed_models` / `deny_models` | Narrowing lists matched by canonical identity; a single-item `allowed_models` is the hard pin |
-| `thinking_effort` / `allowed_efforts` | Effort pin and its allowlist |
+| `private` | Hidden from dispatch and selection lists; running agents keep working, new dispatches fail |
+| `model_alias` | Exact alias from `[models]` for a fixed model, or `inherit` to follow the dispatch caller's model (subagents only) |
+| `allowed_models` / `deny_models` | Advisory recommendations matched by canonical identity; other executable models still run with an advisory. Machine `[subagent].deny_models` is the hard block |
+| `thinking_effort` / `allowed_efforts` | Effort pin and its recommended set |
+| `spawn_constraints` | Advisory limits for this role's children: `allowed_models`, `deny_models`, `allowed_efforts`, `disallowed_tools` |
 | `model_profiles` | Per-alias recipes: `alias` + optional `when`, `thinking_effort`, `prompt_mode` (`prepend`/`append`/`wrap`), `prompt`, `prompt_overrides`, budgets. `when` is shown to the dispatcher |
 | `tools` / `disallowedTools` | Omit or `*` = all tools; `[]` = none; `mcp__server__*` globs for MCP; deny applies after allow |
-| `subagents` | Allowlist of dispatchable roles; omit or `*` = all; `[]` = leaf |
-| `executor` | Omit for the native engine; external ids come from `agent-executors.toml`; main profiles are native-only |
+| `disabled-tool-groups` | Withhold built-in groups such as `shell` or `web`; a tool named in `tools` survives |
+| `subagents` / `subagent_policy` | Allowlist of dispatchable roles (omit or `*` = all; `[]` = leaf); `strict` enforces it, `advisory` only records deviations |
+| `executor` / `executor_options` | Omit for the native engine; external ids come from `agent-executors.toml`; options are a scalar map and need `executor`; main profiles are native-only |
 | `service_tier` | `auto`, `default`, `flex`, or `priority` |
 | `request_params` | Scalar map (string/number/boolean) sent with every request |
 | `context_budget` / `max_completion_tokens` | Caps only; the smallest declared layer wins |
@@ -106,11 +108,11 @@ prompt_overrides:
 - **Default replace is the trap.** If the role should keep the default environment, skills, or plugin scaffolding, use `prepend` / `append` / `inherit`, or place `${base_prompt}` deliberately — don't assume anything is merged for you.
 - **Field-only tweak? Don't fork the prompt.** To change a built-in role's model, tools, or a few prompt fields, use `system_prompt_mode: inherit` with an empty body instead of copying the stock prompt text.
 - **Write `description` and `whenToUse` for the dispatcher.** State the task shapes this role owns and what it returns; the main agent chooses roles from that text alone.
-- **Pin deliberately.** Pair `model_alias` with a single-item `allowed_models` for a hard pin; add `model_profiles[].when` lines so alternate models stay a conscious dispatch choice. An `allowed_models` list without `model_alias` loads with a warning and makes unnamed dispatch fail closed.
+- **Pin deliberately.** `model_alias` selects the default model; `allowed_models` only recommends, so pair them and add `model_profiles[].when` lines so alternate models stay a conscious dispatch choice. An `allowed_models` list without `model_alias` loads with a warning and makes unnamed dispatch fail closed. Use machine `[subagent].deny_models` when a model must never run.
 - **Keep sub-agent prompts self-contained.** A sub-agent sees neither the caller's history nor your `AGENTS.md` unless the template includes it.
 - **Prefer the smallest tool surface that can do the job.** `tools` + `disallowedTools` are both a model-facing declaration and an execution-time gate.
 - **Editing surfaces share one parser.** Settings → Agents in the GUI and direct file edits validate with the same rules, and files hot-reload; pick whichever surface is convenient.
-- **Treat project-level profiles as code from the repo.** A project file with `override: true` can replace a built-in agent's whole prompt — review `.kiki/agents/` in unfamiliar repositories before running Kiki there.
+- **Treat project-level profiles as code from the repo.** A same-name project file replaces a built-in agent's whole prompt without needing `override: true` — review `.kiki/agents/` and `.agents/agents/` in unfamiliar repositories before running Kiki there.
 
 ## Optional example subagent profiles
 

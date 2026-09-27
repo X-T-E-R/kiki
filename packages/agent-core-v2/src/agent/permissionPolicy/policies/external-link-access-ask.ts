@@ -11,14 +11,6 @@ export class ExternalLinkAccessAskPermissionPolicyService implements PermissionP
   evaluate(context: ResolvedToolExecutionHookContext): PermissionPolicyResult | undefined {
     const access = fileAccesses(context).find((item) => item.implicitExternal === true);
     if (access === undefined || this.mode.mode === 'yolo') return undefined;
-    if (this.mode.mode === 'auto') {
-      const requested = (context.args as { path?: unknown }).path;
-      const rawPath = typeof requested === 'string' ? requested : access.path;
-      return {
-        kind: 'deny',
-        message: `[external_target_approval] Path "${rawPath}" resolves to external target "${access.path}". Switch to manual mode to approve access to the target, or address the actual target directly instead of following the link.`,
-      };
-    }
     return { kind: 'ask' };
   }
 }

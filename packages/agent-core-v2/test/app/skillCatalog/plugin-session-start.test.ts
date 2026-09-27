@@ -239,7 +239,13 @@ describe('plugin session-start dynamic injection', () => {
 
     await injectDynamic(ctx);
 
-    expect(ctx.context.get()).toEqual([]);
+    expect(ctx.context.get()).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        origin: expect.objectContaining({ kind: 'injection', variant: 'permission_mode' }),
+        content: [expect.objectContaining({ text: expect.stringContaining('Auto permission mode is active') })],
+      }),
+    ]);
   });
 
   it('resolves sessionStart skills by plugin identity when names collide', async () => {

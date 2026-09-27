@@ -135,7 +135,7 @@ export interface AfkToggleEvent {
   enabled: boolean;
 }
 
-export type TelemetryPermissionMode = 'manual' | 'yolo' | 'auto';
+export type TelemetryPermissionMode = 'manual' | 'auto' | 'review' | 'yolo';
 
 export interface PermissionPolicyDecisionEvent {
   turn_id: number;

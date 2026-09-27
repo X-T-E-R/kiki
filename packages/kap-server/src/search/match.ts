@@ -32,7 +32,7 @@ export interface NormalizedQuery {
   readonly container?: { readonly sessionId?: string; readonly agentId?: string };
   /** Restrict to one workspace. */
   readonly workspaceId?: string;
-  readonly role?: 'user' | 'assistant' | 'title';
+  readonly role?: 'user' | 'assistant' | 'tool' | 'title';
   readonly startTime?: number;
   readonly endTime?: number;
   readonly sort: 'score' | 'time_desc' | 'time_asc';

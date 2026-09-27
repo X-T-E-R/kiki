@@ -173,6 +173,18 @@ describe('AgentPermissionModeService (wire-backed)', () => {
     svc.setModeCeiling('auto');
     svc.setMode('yolo');
     expect(svc.mode).toBe('auto');
+    svc.setMode('review');
+    expect(svc.mode).toBe('auto');
+  });
+
+  it('ranks review between auto and yolo', () => {
+    svc.setModeCeiling('review');
+    svc.setMode('yolo');
+    expect(svc.mode).toBe('review');
+    svc.setMode('auto');
+    expect(svc.mode).toBe('auto');
+    svc.setMode('review');
+    expect(svc.mode).toBe('review');
   });
 
   it('dispatch persists a flat { type, mode } record (no payload key)', async () => {
@@ -203,11 +215,23 @@ describe('AgentPermissionModeService (wire-backed)', () => {
     svc.setMode('auto');
     const autoReminder = await runRegisteredInjection();
     expect(autoReminder).toContain('Auto permission mode is active');
+    expect(autoReminder).toContain('sensitive-file access, external-link access');
+    expect(autoReminder).toContain('AskUserQuestion remains available');
     expect(autoReminder).toContain('ExitPlanMode is also approved automatically');
     expect(await runRegisteredInjection()).toBeUndefined();
 
     svc.setMode('manual');
     expect(await runRegisteredInjection()).toContain('Auto permission mode is no longer active');
+  });
+
+  it('announces reviewer routing and re-announces it after compaction', async () => {
+    svc.setMode('review');
+    expect(await runRegisteredInjection()).toContain('Approve for me permission mode is active');
+    expect(await runRegisteredInjection()).toBeUndefined();
+    spliceReminderOut();
+    expect(await runRegisteredInjection()).toContain('reviewed first');
+    svc.setMode('manual');
+    expect(await runRegisteredInjection()).toContain('Approve for me permission mode is no longer active');
   });
 
   it('re-announces auto mode after the live reminder is spliced out (compaction / undo)', async () => {

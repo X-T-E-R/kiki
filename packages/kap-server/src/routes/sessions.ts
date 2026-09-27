@@ -370,7 +370,6 @@ export function registerSessionsRoutes(
         if (
           body.agent_config?.permission_mode !== undefined
           || body.agent_config?.plan_mode !== undefined
-          || body.agent_config?.swarm_mode !== undefined
         ) {
           await applyAgentRuntimeControls(await ensureMainAgent(handle), body.agent_config);
         }
@@ -827,7 +826,7 @@ export function registerSessionsRoutes(
                 assertSessionIdle(source);
                 const entries = await loadMessageHistoryEntries(core, parsed.id);
                 const boundary = resolveForkMessageBoundary(entries, throughMessageId);
-                return core.accessor.get(ISessionManager).fork({
+                return await core.accessor.get(ISessionManager).fork({
                   sourceSessionId: parsed.id,
                   title: body.title,
                   metadata: body.metadata,

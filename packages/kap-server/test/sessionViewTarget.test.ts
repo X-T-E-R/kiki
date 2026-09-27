@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionViewSignal } from '@kiki/klient';
+import { TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 import { SessionViewTarget } from '../src/transport/klient/sessionViewTarget';
 import { SessionViewHttpConnection } from '../src/transport/klient/sessionViewHttp';
 import type { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';
@@ -83,7 +84,7 @@ describe('SessionViewTarget', () => {
     const send = vi.fn();
     const errors = vi.fn();
     const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors);
-    connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: { generation: 1, input: { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } });
+    connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: { generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION, input: { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } });
     await vi.waitFor(() => { expect(resolveAttach).toBeDefined(); });
     connection.dispose();
     resolveAttach!(true);

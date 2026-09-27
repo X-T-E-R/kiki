@@ -206,6 +206,17 @@ describe('SessionInteractionService', () => {
     expect(svc.hasConsumer()).toBe(false);
   });
 
+  it('dismisses unanswered questions when their last consumer disconnects', async () => {
+    const svc = ix.get(ISessionInteractionService);
+    svc.acquireConsumer('gui');
+    const pending = svc.request<unknown, unknown>({ id: 'question', kind: 'question', payload: {} });
+
+    svc.releaseConsumer('gui');
+
+    await expect(pending).resolves.toEqual({ cancelled: true, reason: 'no_consumer' });
+    expect(svc.listPending('question')).toEqual([]);
+  });
+
   it('scoped consumer coverage follows live agent lineages', () => {
     const svc = ix.get(ISessionInteractionService);
     const agents = new Set(['child-a']);

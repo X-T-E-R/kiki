@@ -1417,7 +1417,7 @@ export class AgentTranscriptLiveAdapter {
     contextTokens?: number;
     maxContextTokens?: number;
     contextUsage?: number;
-    permission?: 'manual' | 'yolo' | 'auto';
+    permission?: 'manual' | 'auto' | 'review' | 'yolo';
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
     const modes: { plan?: Record<string, never> | null; swarm?: Record<string, never> | null } = {};
@@ -1440,7 +1440,7 @@ export class AgentTranscriptLiveAdapter {
       contextTokens?: number;
       maxContextTokens?: number;
       contextUsage?: number;
-      permission?: 'manual' | 'yolo' | 'auto';
+      permission?: 'manual' | 'auto' | 'review' | 'yolo';
     } = {};
     let hasStatusSlice = false;
     if (event.model !== undefined) {

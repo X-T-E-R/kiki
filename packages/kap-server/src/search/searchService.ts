@@ -638,7 +638,7 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   /**
    * Route: a container-scoped query on a session that is live in this process
-   * scans the in-memory transcript store instead of the index, in both terms
+   * scans the in-memory transcript store unless indexOnly is set, in both terms
    * and literal mode. Anything else takes the index route. The live route
    * never falls back on error — the store being in hand means the session is
    * alive, so a scan failure is a real error, not a degradation signal.
@@ -646,7 +646,8 @@ export class GlobalSearchService implements IGlobalSearchService {
   async search(input: GlobalSearchQuery): Promise<GlobalSearchPage> {
     const q = normalizeQuery(input, this.maxQueryTerms);
     const sessionId = q.container?.sessionId;
-    const liveStore = sessionId !== undefined ? this.liveSource?.forSessionLive(sessionId) : undefined;
+    const liveStore = sessionId !== undefined && input.indexOnly !== true
+      ? this.liveSource?.forSessionLive(sessionId) : undefined;
     if (liveStore !== undefined && sessionId !== undefined) {
       return this.searchLive(q, sessionId, liveStore, input.pageToken);
     }
@@ -710,11 +711,11 @@ export class GlobalSearchService implements IGlobalSearchService {
    * route searches (`MessageDoc` / `TitleDoc`), each with a stable synthetic
    * key for keyset pagination:
    *   - one user doc per non-empty `turn.prompt` (turn ordinal + turn time);
-   *   - one assistant doc per assistant-role text frame (turn ordinal +
-   *     stepId); thinking / tool / notice frames are skipped;
+   *   - one assistant doc per assistant-role text frame and one tool doc per
+   *     non-empty tool result (turn ordinal + stepId); thinking and notices are skipped;
    *   - one title doc from the session-index summary, same as the sync path.
    * Text is trimmed and empty results skipped, mirroring the index side's
-   * `wireExtract` (which trims both user and assistant text).
+   * `wireExtract`.
    */
   private async collectLiveDocs(
     sessionId: string,
@@ -758,18 +759,23 @@ export class GlobalSearchService implements IGlobalSearchService {
         for (const step of item.steps) {
           const stepTime = parseTime(step.endedAt ?? step.startedAt ?? item.startedAt);
           for (const frame of step.frames) {
-            if (frame.kind !== 'text' || frame.role !== 'assistant') continue;
-            const text = frame.text.trim();
+            const role = frame.kind === 'tool' ? 'tool' : frame.kind === 'text' && frame.role === 'assistant' ? 'assistant' : undefined;
+            if (role === undefined) continue;
+            const output = frame.kind === 'tool' ? frame.output : frame.kind === 'text' ? frame.text : undefined;
+            const text = (typeof output === 'string' ? output :
+              Array.isArray(output) ? output.filter((part): part is { type: 'text'; text: string } =>
+                part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string')
+                .map((part) => part.text).join('') : '').trim();
             if (text.length === 0) continue;
             docs.push({
-              key: `${sessionId}/${agentId}/live/a/${frame.frameId}`,
+              key: `${sessionId}/${agentId}/live/${role}/${frame.frameId}`,
               value: {
                 kind: 'message',
                 sessionId,
                 workspaceId,
                 sessionTitle,
                 agentId,
-                role: 'assistant',
+                role,
                 text: text.length > MAX_DOC_TEXT_CHARS ? text.slice(0, MAX_DOC_TEXT_CHARS) : text,
                 time: stepTime,
                 turn: item.ordinal,

@@ -60,9 +60,8 @@ export function makeErrorPayload(
  * - `KimiError`: passthrough.
  * - `APIStatusError`: 429 -> rate_limit, 401 -> auth_error, otherwise -> api_error.
  *   Exception: a quota-exhausted 429 maps to api_error (retryable: false) —
- *   the rate_limit code would re-mint a rate-limit error across the wire
- *   boundary and drive the swarm requeue/suspend loop, which cannot help
- *   until the account is recharged.
+ *   the rate_limit code would re-mint a retryable rate-limit error across the
+ *   wire boundary, though retries cannot help until the account is recharged.
  * - `APIConnectionError` / `APITimeoutError`: connection_error.
  * - `ChatProviderError`: api_error.
  *

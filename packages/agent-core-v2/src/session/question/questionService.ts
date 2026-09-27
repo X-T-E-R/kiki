@@ -23,6 +23,7 @@ export class SessionQuestionService implements ISessionQuestionService {
     req: QuestionRequest,
     options?: { signal?: AbortSignal; agentId?: string; detached?: boolean },
   ): Promise<QuestionResult> {
+    if (!this.interaction.hasConsumer({ agentId: options?.agentId })) return Promise.resolve(null);
     const id = requestId(req);
     const pending = this.interaction.request<QuestionRequest, unknown>({
       id,

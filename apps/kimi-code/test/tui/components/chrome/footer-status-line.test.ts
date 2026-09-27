@@ -24,7 +24,6 @@ const baseState: AppState = {
   stepRetry: null,
   planMode: false,
   inputMode: 'prompt',
-  swarmMode: false,
   theme: 'dark',
   editorCommand: null,
   notifications: { enabled: true, condition: 'unfocused' },

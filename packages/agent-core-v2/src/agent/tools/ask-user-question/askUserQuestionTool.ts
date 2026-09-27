@@ -8,6 +8,8 @@ import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IConfigService } from '#/app/config/config';
+import { INTERACTION_SECTION, type InteractionConfig } from './configSection';
 import type { QuestionAnsweredEvent, QuestionDismissedEvent } from '#/app/telemetry/events';
 import type {
   ExecutableToolContext,
@@ -24,6 +26,7 @@ import type {
   QuestionResult,
 } from '#/session/question/question';
 import {
+  AskUserQuestionInputSchema,
   AskUserQuestionInputSchemaWithBackground,
   IAskUserQuestionTool,
   questionUniquenessError,
@@ -48,13 +51,20 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
+    @IConfigService private readonly config: IConfigService,
   ) {
-    this.description = `${DESCRIPTION}- Set background=true when you can keep working without the answer. This starts a background question task and returns a task_id immediately. The answer arrives automatically in a later turn — you do not need to poll, sleep, or check on it. Continue with other work; never fabricate or predict the answer.`;
+    this.description = this.isBlocking()
+      ? DESCRIPTION
+      : `${DESCRIPTION}- Set background=true when you can keep working without the answer. This starts a background question task and returns a task_id immediately. The answer arrives automatically in a later turn — you do not need to poll, sleep, or check on it. Continue with other work; never fabricate or predict the answer.`;
     this.parameters = toInputJsonSchema(this.inputSchema());
   }
 
+  private isBlocking(): boolean {
+    return this.config.get<InteractionConfig | undefined>(INTERACTION_SECTION)?.askUserQuestion === 'blocking';
+  }
+
   resolveExecution(args: AskUserQuestionInput): ToolExecution {
-    const isBackground = args.background === true;
+    const isBackground = args.background === true && !this.isBlocking();
     return {
       description: isBackground
         ? `Starting background question: ${questionDescription(args.questions)}`
@@ -73,15 +83,15 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
       return { isError: true, output: uniquenessError };
     }
 
-    if (args.background === true) {
+    if (args.background === true && !this.isBlocking()) {
       return this.executeInBackground(args, { toolCallId, turnId, signal, trace });
     }
 
-    return this.executeQuestion(args, { toolCallId, turnId, signal, trace });
+    return this.executeQuestion(this.isBlocking() ? { ...args, background: false } : args, { toolCallId, turnId, signal, trace });
   }
 
   private inputSchema(): z.ZodType<AskUserQuestionInput> {
-    return AskUserQuestionInputSchemaWithBackground;
+    return this.isBlocking() ? AskUserQuestionInputSchema : AskUserQuestionInputSchemaWithBackground;
   }
 
   private executeInBackground(

@@ -3,7 +3,7 @@ import type { ExecutableToolResult } from '#/tool/toolContract';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 import type { PermissionRule } from '#/agent/permissionRules/permissionRules';
 
-export type PermissionMode = 'manual' | 'yolo' | 'auto';
+export type PermissionMode = 'manual' | 'auto' | 'review' | 'yolo';
 
 
 export interface ApprovalRequest {
@@ -19,6 +19,7 @@ export interface ApprovalResponse {
   scope?: 'session';
   feedback?: string;
   selectedLabel?: string;
+  reviewer?: { backend: 'model' | 'jev'; reason: string; confidence: number };
 }
 
 export interface PermissionData {

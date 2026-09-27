@@ -2,11 +2,17 @@
 import { randomUUID } from 'node:crypto';
 
 import { IInstantiationService } from '#/_base/di/instantiation';
+import { ILogService } from '#/_base/log/log';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable, isUserCancellation } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IConfigService } from '#/app/config/config';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { reviewPermission, type ReviewerVerdict } from './permissionReviewer';
 import type {
   ApprovalResponse,
   PermissionPolicyResolution,
@@ -51,6 +57,7 @@ export interface PermissionApprovalResolvedPayload extends PermissionApprovalReq
   readonly scope?: 'session';
   readonly feedback?: string;
   readonly selectedLabel?: string;
+  readonly reviewer?: { readonly backend: 'model' | 'jev'; readonly reason: string; readonly confidence: number };
   readonly error?: string;
 }
 
@@ -62,6 +69,9 @@ export interface PermissionApprovalResolved extends PermissionApprovalResolvedPa
 
 export class AgentToolApprovalService extends Service implements IAgentToolApprovalService {
   declare readonly _serviceBrand: undefined;
+  private denialTurnId: number | undefined;
+  private consecutiveDenials = 0;
+  private reviewQueue: Promise<void> = Promise.resolve();
 
   constructor(
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
@@ -71,6 +81,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
   }
@@ -133,13 +144,43 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
 
     let response: ApprovalResponse;
     const approvalService = this.tryApprovalService();
-    if (approvalService === undefined) {
+    const reviewer = this.modeService.mode === 'review'
+      && origin !== 'user-configured-ask'
+      && display.kind !== 'external_permission'
+      ? await this.review(context, origin, result.reason)
+      : undefined;
+    context.signal.throwIfAborted();
+    let userApprovalRequest = approvalRequest;
+    let automatedResponse: ApprovalResponse | undefined;
+    if (reviewer !== undefined && reviewer.outcome !== 'ask' && approvalService !== undefined) {
+      const proposed: ApprovalResponse = {
+        decision: reviewer.outcome === 'allow' ? 'approved' : 'rejected',
+        feedback: `${reviewer.outcome === 'allow' ? 'Approved' : 'Denied'} by reviewer: ${reviewer.reason}`,
+        reviewer: { backend: reviewer.backend, reason: reviewer.reason, confidence: reviewer.confidence },
+      };
+      try {
+        approvalService.enqueue(approvalRequest);
+        approvalService.decide(approvalRequest.id, proposed);
+        automatedResponse = proposed;
+        void this.dispatcher.dispatch(new PermissionApprovalRequested(approvalContext));
+      } catch {
+        userApprovalRequest = { ...approvalRequest, id: `approval_${randomUUID()}` };
+        try {
+          approvalService.decide(approvalRequest.id, { decision: 'cancelled' });
+        } catch {
+          this.log.debug('permission reviewer cleanup could not resolve the failed approval');
+        }
+      }
+    }
+    if (automatedResponse !== undefined) {
+      response = automatedResponse;
+    } else if (approvalService === undefined) {
       response = { decision: 'cancelled' };
     } else {
-      void this.dispatcher.dispatch(new PermissionApprovalRequested(approvalContext));
+      void this.dispatcher.dispatch(new PermissionApprovalRequested({ ...approvalContext, id: userApprovalRequest.id }));
       try {
         response = await abortable(
-          approvalService.request(approvalRequest),
+          approvalService.request(userApprovalRequest),
           context.signal,
         );
         context.signal.throwIfAborted();
@@ -161,6 +202,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
         void this.dispatcher.dispatch(
           new PermissionApprovalResolved({
             ...approvalContext,
+            id: userApprovalRequest.id,
             decision: 'error',
             error: error instanceof Error ? error.message : String(error),
           }),
@@ -181,6 +223,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       void this.dispatcher.dispatch(
         new PermissionApprovalResolved({
           ...approvalContext,
+          id: userApprovalRequest.id,
           ...response,
         }),
       );
@@ -210,14 +253,18 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       trace_id: context.trace?.traceId,
     });
 
-    const resolved = result.resolveApproval?.(response);
+    const resolved = response.reviewer !== undefined && response.decision === 'rejected'
+      ? undefined
+      : result.resolveApproval?.(response);
     if (resolved !== undefined) {
       return this.resolvePermissionResolution(resolved, context, origin);
     }
 
     if (response.decision === 'approved') return undefined;
     return {
-      veto: denyToolExecution(this.formatApprovalRejectionMessage(name, response)),
+      veto: denyToolExecution(response.reviewer === undefined
+        ? this.formatApprovalRejectionMessage(name, response)
+        : this.formatDenyMessage(`Tool "${name}" was not run. ${response.feedback ?? 'Denied by reviewer.'}`)),
     };
   }
 
@@ -244,6 +291,41 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       return `${message} Try a different approach — don't retry the same call, don't attempt to bypass the restriction.`;
     }
     return message;
+  }
+
+  private async review(
+    context: ResolvedToolExecutionHookContext,
+    policyName: string,
+    policyReason: unknown,
+  ): Promise<ReviewerVerdict | undefined> {
+    let unlock = (): void => {};
+    const lock = new Promise<void>((resolve) => { unlock = resolve; });
+    const previous = this.reviewQueue;
+    this.reviewQueue = previous.then(() => lock, () => lock);
+    await previous;
+    try {
+      if (this.denialTurnId !== context.turnId) {
+        this.denialTurnId = context.turnId;
+        this.consecutiveDenials = 0;
+      }
+      if (this.consecutiveDenials >= 3 || context.signal.aborted) return undefined;
+      let verdict: ReviewerVerdict | undefined;
+      try {
+        verdict = await this.instantiation.invokeFunction((accessor) => reviewPermission({
+          config: accessor.get(IConfigService),
+          catalog: accessor.get(IModelCatalog),
+          memory: accessor.get(IAgentContextMemoryService),
+          workspace: accessor.get(ISessionWorkspaceContext),
+          log: this.log,
+        }, context, policyName, policyReason));
+      } catch {
+        return undefined;
+      }
+      this.consecutiveDenials = verdict?.outcome === 'deny' ? this.consecutiveDenials + 1 : 0;
+      return verdict;
+    } finally {
+      unlock();
+    }
   }
 
   private tryApprovalService(): ISessionApprovalService | undefined {

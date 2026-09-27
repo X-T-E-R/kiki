@@ -38,10 +38,6 @@ import { MoonLoader } from '../components/chrome/moon-loader';
 import { buildGoalMarker } from '../components/messages/goal-markers';
 import { StatusMessageComponent } from '../components/messages/status-message';
 import {
-  SwarmModeMarkerComponent,
-  type SwarmModeMarkerState,
-} from '../components/messages/swarm-markers';
-import {
   OAUTH_LOGIN_REQUIRED_CODE,
   OAUTH_LOGIN_REQUIRED_STARTUP_NOTICE,
 } from '../constant/kimi-tui';
@@ -725,10 +721,6 @@ export class SessionEventHandler {
   }
 
   private handleStatusUpdate(event: AgentStatusUpdatedEvent): void {
-    const shouldRenderSwarmEnded =
-      event.swarmMode === false &&
-      this.host.state.appState.swarmMode &&
-      this.host.state.swarmModeEntry === 'task';
     const patch: Partial<AppState> = {};
     if (event.contextTokens !== undefined) patch.contextTokens = event.contextTokens;
     if (event.maxContextTokens !== undefined) patch.maxContextTokens = event.maxContextTokens;
@@ -745,26 +737,12 @@ export class SessionEventHandler {
       patch.contextUsage = max > 0 ? tokens / max : 0;
     }
     if (event.planMode !== undefined) patch.planMode = event.planMode;
-    if (event.swarmMode !== undefined) patch.swarmMode = event.swarmMode;
     if (event.permission !== undefined) {
       patch.permissionMode = event.permission;
     }
     if (event.model !== undefined) patch.model = event.model;
     if (event.thinkingEffort !== undefined) patch.thinkingEffort = event.thinkingEffort;
     if (Object.keys(patch).length > 0) this.host.setAppState(patch);
-    if (event.swarmMode === false) {
-      this.host.state.swarmModeEntry = undefined;
-      if (shouldRenderSwarmEnded) {
-        this.renderSwarmModeMarker('ended');
-      }
-    }
-  }
-
-  private renderSwarmModeMarker(state: SwarmModeMarkerState): void {
-    this.host.state.transcriptContainer.addChild(
-      new SwarmModeMarkerComponent(state),
-    );
-    this.host.state.ui.requestRender();
   }
 
   private handleGoalUpdated(event: GoalUpdatedEvent): void {

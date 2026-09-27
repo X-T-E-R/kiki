@@ -5,7 +5,7 @@ import type { Command } from 'commander';
 import { resolveKikiHome } from './home';
 import { ensureServer, type ServerConnection } from './serve';
 
-export type SeatMode = 'manual' | 'auto' | 'yolo';
+export type SeatMode = 'manual' | 'auto' | 'review' | 'yolo';
 
 export interface SeatConnection {
   readonly seatId: string;

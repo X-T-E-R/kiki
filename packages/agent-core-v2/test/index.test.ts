@@ -101,6 +101,7 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'runtime.set_binding',
   'turn.ended',
   'prompt.accepted',
+  'prompt.retry_committed',
   'prompt.enqueued',
   'prompt.replaced',
   'prompt.timing_changed',

@@ -856,10 +856,24 @@ export class TranscriptWireAdapter {
       const interactionId = stringOf(record['id']);
       const previous = interactionId === undefined ? undefined : this.#interactions.get(interactionId);
       if (interactionId === undefined || previous === undefined) return [];
+      const response = record['response'];
+      const reviewer = typeof response === 'object' && response !== null && 'reviewer' in response
+        ? response.reviewer
+        : undefined;
+      const validReviewer = typeof reviewer === 'object' && reviewer !== null &&
+        'backend' in reviewer && (reviewer.backend === 'model' || reviewer.backend === 'jev') &&
+        'reason' in reviewer && typeof reviewer.reason === 'string' &&
+        'confidence' in reviewer && typeof reviewer.confidence === 'number' &&
+        reviewer.confidence >= 0 && reviewer.confidence <= 1;
       const interaction: TranscriptInteraction = {
         ...previous,
-        state: projectInteractionEndState(previous.interactionKind, record['response']),
-        response: record['response'],
+        state: projectInteractionEndState(previous.interactionKind, response),
+        response,
+        ...(validReviewer ? { reviewer: {
+          backend: reviewer.backend as 'model' | 'jev',
+          reason: reviewer.reason as string,
+          confidence: reviewer.confidence as number,
+        } } : {}),
       };
       this.#interactions.set(interactionId, interaction);
       return [{ op: 'interaction.upsert', interaction }];

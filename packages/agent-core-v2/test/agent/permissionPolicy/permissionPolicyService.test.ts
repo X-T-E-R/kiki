@@ -135,17 +135,19 @@ describe('AgentPermissionPolicyService chain', () => {
     return svc.evaluate(policyContext(input));
   }
 
-  it('keeps auto-mode AskUserQuestion deny above default approval', async () => {
-    mode = 'auto';
-
-    await expect(evaluate({
-      toolName: 'AskUserQuestion',
-      args: { questions: [] },
-    })).resolves.toMatchObject({
-      policyName: 'auto-mode-ask-user-question-deny',
-      result: { kind: 'deny' },
-    });
-  });
+  it.each(['manual', 'auto', 'review', 'yolo'] as const)(
+    'allows AskUserQuestion in %s mode',
+    async (permissionMode) => {
+      mode = permissionMode;
+      await expect(evaluate({
+        toolName: 'AskUserQuestion',
+        args: { questions: [] },
+      })).resolves.toMatchObject({
+        policyName: permissionMode === 'manual' ? 'default-tool-approve' : `${permissionMode === 'review' ? 'auto' : permissionMode}-mode-approve`,
+        result: { kind: 'approve' },
+      });
+    },
+  );
 
   it.each([
     { decision: 'deny', policyName: 'user-configured-deny', resultKind: 'deny' },
@@ -292,12 +294,46 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  it('asks for external symlink reads rather than using the read allowlist', async () => {
-    await expect(evaluate({
-      toolName: 'Read', args: { path: '/workspace/alias.txt' },
-      accesses: ToolAccesses.readFile('/outside/notes.txt', true),
-    })).resolves.toMatchObject({
-      policyName: 'external-link-access-ask', result: { kind: 'ask' },
+  it.each(['manual', 'auto', 'yolo'] as const)(
+    'handles external symlink reads in %s mode',
+    async (permissionMode) => {
+      mode = permissionMode;
+      await expect(evaluate({
+        toolName: 'Read', args: { path: '/workspace/alias.txt' },
+        accesses: ToolAccesses.readFile('/outside/notes.txt', true),
+      })).resolves.toMatchObject({
+        policyName: permissionMode === 'yolo' ? 'yolo-mode-approve' : 'external-link-access-ask',
+        result: { kind: permissionMode === 'yolo' ? 'approve' : 'ask' },
+      });
+    },
+  );
+
+  it.each([
+    { path: '/workspace/.env', policyName: 'sensitive-file-access-ask', accesses: ToolAccesses.readFile('/workspace/.env') },
+    { path: '/workspace/alias.txt', policyName: 'external-link-access-ask', accesses: ToolAccesses.readFile('/outside/notes.txt', true) },
+  ])('asks for $policyName in auto unless explicitly denied', async ({ path, policyName, accesses }) => {
+    mode = 'auto';
+    const input = { toolName: 'Read', args: { path }, accesses };
+    await expect(evaluate(input)).resolves.toMatchObject({
+      policyName, result: { kind: 'ask' },
+    });
+    rules.push({ decision: 'deny', scope: 'user', pattern: 'Read' });
+    await expect(evaluate(input)).resolves.toMatchObject({
+      policyName: 'user-configured-deny', result: { kind: 'deny' },
+    });
+  });
+
+  it('keeps auto policy asks and ordinary approvals in review mode', async () => {
+    mode = 'review';
+    await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/.env' }, accesses: ToolAccesses.readFile('/workspace/.env') })).resolves.toMatchObject({
+      policyName: 'sensitive-file-access-ask', result: { kind: 'ask' },
+    });
+    await expect(evaluate({ toolName: 'Bash', args: { command: 'printf hi' } })).resolves.toMatchObject({
+      policyName: 'auto-mode-approve', result: { kind: 'approve' },
+    });
+    rules.push({ decision: 'deny', scope: 'user', pattern: 'Bash' });
+    await expect(evaluate({ toolName: 'Bash', args: { command: 'printf hi' } })).resolves.toMatchObject({
+      policyName: 'user-configured-deny', result: { kind: 'deny' },
     });
   });
 
@@ -607,14 +643,14 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
     });
   });
 
-  it('denies sensitive targets in auto mode with a recovery action', async () => {
+  it('asks before writing a sensitive target in auto mode', async () => {
     mode = 'auto';
     await expect(evaluate({
       toolName: 'Write', args: { path: '.env', content: 'x' },
       accesses: ToolAccesses.writeFile(join(workspaceDir, '.env')),
     })).resolves.toMatchObject({
       policyName: 'sensitive-file-access-ask',
-      result: { kind: 'deny', message: expect.stringContaining('switch to manual mode') },
+      result: { kind: 'ask' },
     });
   });
 

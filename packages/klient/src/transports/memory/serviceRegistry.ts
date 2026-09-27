@@ -55,7 +55,6 @@ import {
 import { IAgentTokenCountingService } from '@kiki/agent-core-v2/agent/tokenCounting/tokenCounting';
 import { IAgentActivityView } from '@kiki/agent-core-v2/agent/activityView/activityView';
 import { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
-import { IAgentSwarmService } from '@kiki/agent-core-v2/features/swarm/agent/swarm';
 import { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
 import { IAgentShellCommandService } from '@kiki/agent-core-v2/agent/shellCommand/shellCommand';
 import { IAgentTaskService } from '@kiki/agent-core-v2/agent/task/task';
@@ -127,7 +126,6 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   agentProfileService: IAgentProfileService,
   agentUsageService: IAgentUsageService,
   agentPlanService: IAgentPlanService,
-  agentSwarmService: IAgentSwarmService,
   agentTaskService: IAgentTaskService,
   agentMcpService: IAgentMcpService,
   agentFullCompactionService: IAgentFullCompactionService,

@@ -7,6 +7,8 @@ export const TOOL_GROUP_IDS = [
   'fsRead',
   'fsWrite',
   'goal',
+  'history',
+  'memory',
   'plan',
   'question',
   'shell',

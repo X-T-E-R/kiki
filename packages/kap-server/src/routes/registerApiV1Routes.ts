@@ -25,6 +25,7 @@ import { registerMessagesRoutes } from './messages';
 import type { IGuiStoreService } from '../services/guiStore/guiStore';
 import { registerDebugRoutes } from '../transport/registerDebugRoutes';
 import { registerMetaRoute } from './meta';
+import { registerMemoryRoutes } from './memory';
 import { registerModelCatalogRoutes } from './modelCatalog';
 import { registerNbSearchRoutes } from './nbSearch';
 import { registerOAuthRoutes } from './oauth';
@@ -195,6 +196,7 @@ export async function registerApiV1Routes(
         },
       );
       registerSearchRoutes(apiV1 as unknown as Parameters<typeof registerSearchRoutes>[0], core);
+      registerMemoryRoutes(apiV1 as unknown as Parameters<typeof registerMemoryRoutes>[0], core);
       registerCronRoutes(apiV1 as unknown as Parameters<typeof registerCronRoutes>[0], core);
       registerTasksRoutes(apiV1 as unknown as Parameters<typeof registerTasksRoutes>[0], core);
       registerApprovalsRoutes(

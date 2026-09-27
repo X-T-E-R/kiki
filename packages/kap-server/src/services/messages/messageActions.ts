@@ -10,7 +10,6 @@ import {
   IAgentPlanService,
   IAgentProfileService,
   IAgentPromptService,
-  IAgentSwarmService,
   IAgentToolPolicyService,
   IEventService,
   ISessionActivityView,
@@ -368,13 +367,6 @@ async function applyExecutionOverrides(
     if (active !== overrides.plan_mode) {
       if (overrides.plan_mode) await plan.enter();
       else plan.exit();
-    }
-  }
-  if (overrides.swarm_mode !== undefined) {
-    const swarm = agent.accessor.get(IAgentSwarmService);
-    if (swarm.isActive !== overrides.swarm_mode) {
-      if (overrides.swarm_mode) swarm.enter('manual');
-      else swarm.exit();
     }
   }
 }

@@ -8,6 +8,7 @@ import {
 } from '#/agent/tools/ask-user-question/ask-user-question';
 import { AskUserQuestionTool } from '#/agent/tools/ask-user-question/askUserQuestionTool';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import type { IConfigService } from '#/app/config/config';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type {
@@ -41,6 +42,7 @@ function input(
 
 function makeTool(
   options: {
+    readonly blocking?: boolean;
     readonly request?: (
       req: QuestionRequest,
       requestOptions?: {
@@ -72,7 +74,8 @@ function makeTool(
   );
   const tasks = { registerTask, getTask } as unknown as IAgentTaskService;
   const scopeContext = { agentId: 'main' } as unknown as IAgentScopeContext;
-  const tool = new AskUserQuestionTool(question, telemetry, tasks, scopeContext);
+  const config = { get: () => ({ askUserQuestion: options.blocking ? 'blocking' : 'background' }) } as unknown as IConfigService;
+  const tool = new AskUserQuestionTool(question, telemetry, tasks, scopeContext, config);
   return { tool, request, telemetryTrack, registerTask, getTask, lastRegisteredTask: () => lastTask };
 }
 
@@ -94,6 +97,21 @@ describe('AskUserQuestionTool', () => {
         }),
       ).success,
     ).toBe(false);
+  });
+
+  it('blocks a background request when configured as blocking', async () => {
+    const { tool, request, registerTask } = makeTool({ blocking: true });
+    expect(tool.description).not.toContain('background=true');
+    expect((tool.parameters['properties'] as Record<string, unknown>)['background']).toBeUndefined();
+    const result = await executeTool(tool, {
+      turnId: 0,
+      toolCallId: 'call_blocking_question',
+      args: { ...input(), background: true },
+      signal,
+    });
+    expect(result.isError).toBe(false);
+    expect(registerTask).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ detached: false }));
   });
 
   it('rejects empty question text and empty option labels at the schema layer', () => {

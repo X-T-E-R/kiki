@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { ILogService } from '#/_base/log/log';
 import { createServices } from '#/_base/di/test';
 import type { TestInstantiationService } from '#/_base/di/test';
 import { UserCancellationError } from '#/_base/utils/abort';
 import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IConfigService } from '#/app/config/config';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type {
   PermissionMode,
   PermissionPolicyResult,
@@ -122,6 +127,7 @@ describe('AgentToolApprovalService', () => {
           cwd: '/tmp/test-session',
         }));
         reg.defineInstance(ITelemetryService, recordingTelemetry(records));
+        reg.defineInstance(ILogService, { debug: () => {} } as unknown as ILogService);
         reg.defineInstance(IEventBus, eventBus);
         const dispatcher: IEventDispatcher = {
           _serviceBrand: undefined,
@@ -156,6 +162,22 @@ describe('AgentToolApprovalService', () => {
       listPending: () => [],
     });
     return requestSpy;
+  }
+
+  function useReviewer(outcome: () => 'allow' | 'deny' | 'unsure'): ReturnType<typeof vi.fn> {
+    mode = 'review';
+    ix.set(IConfigService, { get: () => ({ reviewer: {
+      backend: 'model', model: 'review-model', allowThreshold: 0.9, denyThreshold: 0.9,
+    } }) } as unknown as IConfigService);
+    ix.set(IAgentContextMemoryService, { get: () => [{ role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Please proceed' }] }] } as unknown as IAgentContextMemoryService);
+    ix.set(ISessionWorkspaceContext, { workDir: '/workspace' } as ISessionWorkspaceContext);
+    const request = vi.fn(async function* () {
+      yield { type: 'finish', message: { content: [{ type: 'text', text: JSON.stringify({
+        outcome: outcome(), confidence: 0.98,
+      }) }] } };
+    });
+    ix.set(IModelCatalog, { getRequester: () => ({ request }) } as unknown as IModelCatalog);
+    return request;
   }
 
   function subscribeApprovalEvents(): {
@@ -256,6 +278,91 @@ describe('AgentToolApprovalService', () => {
   });
 
   describe('requestToolApproval', () => {
+    it('records a reviewer approval with provenance without asking the user or writing a session rule', async () => {
+      const review = useReviewer(() => 'allow');
+      const broker = useBroker(async () => ({ decision: 'rejected' }));
+      const events = subscribeApprovalEvents();
+      const svc = make();
+      await expect(svc.requestToolApproval(makeContext('Bash', { command: 'printf hello' }), ask(), 'fallback-ask')).resolves.toBeUndefined();
+      expect(review).toHaveBeenCalledOnce();
+      expect(broker).not.toHaveBeenCalled();
+      expect(recorded[0]).toMatchObject({ sessionApprovalRule: undefined, result: {
+        decision: 'approved', feedback: 'Approved by reviewer: Reviewer classified the action',
+        reviewer: { backend: 'model', reason: 'Reviewer classified the action', confidence: 0.98 },
+      } });
+      expect(events.resolved).toHaveBeenCalledWith(expect.objectContaining({
+        reviewer: expect.objectContaining({ backend: 'model' }),
+      }));
+    });
+
+    it.each(['enqueue', 'decide'] as const)('asks the user when reviewer %s fails', async (failure) => {
+      useReviewer(() => 'allow');
+      const broker = useBroker(async () => ({ decision: 'rejected' }));
+      ix.set(ISessionApprovalService, {
+        _serviceBrand: undefined,
+        request: broker,
+        enqueue: (approval) => {
+          if (failure === 'enqueue') throw new Error('queue failed');
+          return { ...approval, id: approval.id! };
+        },
+        decide: () => { throw new Error('decision failed'); },
+        listPending: () => [],
+      });
+      const events = subscribeApprovalEvents();
+      const svc = make();
+      await expect(svc.requestToolApproval(makeContext('Bash', { command: 'printf hello' }), ask(), 'fallback-ask'))
+        .resolves.toMatchObject({ veto: { output: expect.stringContaining('user rejected') } });
+      expect(broker).toHaveBeenCalledOnce();
+      const userId = broker.mock.calls[0]![0].id;
+      expect(events.requested).toHaveBeenCalledWith(expect.objectContaining({ id: userId }));
+      expect(events.resolved).toHaveBeenCalledWith(expect.objectContaining({ id: userId, decision: 'rejected' }));
+      expect(recorded[0]?.result).toEqual({ decision: 'rejected' });
+    });
+
+    it('always sends an explicit user-configured ask to the user in review mode', async () => {
+      const review = useReviewer(() => 'allow');
+      const broker = useBroker(async () => ({ decision: 'rejected' }));
+      const svc = make();
+      await expect(svc.requestToolApproval(makeContext('Bash', { command: 'printf hello' }), ask(), 'user-configured-ask')).resolves.toMatchObject({
+        veto: { output: expect.stringContaining('user rejected') },
+      });
+      expect(review).not.toHaveBeenCalled();
+      expect(broker).toHaveBeenCalledOnce();
+      expect(recorded[0]?.result).toEqual({ decision: 'rejected' });
+    });
+
+    it('honors a reviewer denial even when an approval continuation would approve', async () => {
+      const review = useReviewer(() => 'deny');
+      const broker = useBroker(async () => ({ decision: 'approved' }));
+      const resolveApproval = vi.fn(() => ({ kind: 'approve' as const }));
+      const svc = make();
+      await expect(svc.requestToolApproval(
+        makeContext('Bash', { command: 'printf hello' }),
+        ask({ resolveApproval }),
+        'dangerous-bash',
+      )).resolves.toMatchObject({ veto: { output: expect.stringContaining('Denied by reviewer') } });
+      expect(review).toHaveBeenCalledOnce();
+      expect(broker).not.toHaveBeenCalled();
+      expect(resolveApproval).not.toHaveBeenCalled();
+    });
+
+    it('escalates after three consecutive reviewer denials in the same turn', async () => {
+      const review = useReviewer(() => 'deny');
+      const broker = useBroker(async () => ({ decision: 'approved' }));
+      const svc = make();
+      for (let i = 0; i < 3; i++) {
+        await expect(svc.requestToolApproval(makeContext('Bash', { command: 'printf hello' }), ask(), 'fallback-ask')).resolves.toMatchObject({
+          veto: { output: expect.stringContaining('Denied by reviewer: Reviewer classified the action') },
+        });
+      }
+      expect(broker).not.toHaveBeenCalled();
+      await expect(svc.requestToolApproval(makeContext('Bash', { command: 'printf hello' }), ask(), 'fallback-ask')).resolves.toBeUndefined();
+      expect(review).toHaveBeenCalledTimes(3);
+      expect(broker).toHaveBeenCalledOnce();
+      await svc.requestToolApproval({ ...makeContext('Bash', { command: 'printf hello' }), turnId: 2 }, ask(), 'fallback-ask');
+      expect(review).toHaveBeenCalledTimes(4);
+    });
+
     it('cancels when no approval broker is registered', async () => {
       const events = subscribeApprovalEvents();
       const svc = make();

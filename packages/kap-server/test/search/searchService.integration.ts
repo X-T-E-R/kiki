@@ -1337,6 +1337,28 @@ describe('GlobalSearchService', () => {
     expect(title.items[0]?.stepId).toBeUndefined();
   });
 
+  it('indexes tool results with their calling step and workspace across sessions', async () => {
+    const toolCall = rawRecord({ type: 'context.append_loop_event', time: T1 + 200,
+      event: { type: 'tool.call', stepUuid: 'u1', toolCallId: 'call-1', name: 'Read' } });
+    const toolResult = rawRecord({ type: 'context.append_loop_event', time: T1 + 300,
+      event: { type: 'tool.result', toolCallId: 'call-1', result: { output: 'unique-old-tool-result' } } });
+    await writeWire(home!, 'older', 'main', [userLine('start', T1), stepBeginLine('u1', 2, T1 + 100), toolCall,
+      rawRecord({ type: 'context.apply_compaction', time: T1 + 250 }), toolResult], 'ws-a');
+    await writeWire(home!, 'newer', 'main', [userLine('start', T1), stepBeginLine('u1', 1, T1 + 100), toolCall,
+      toolResult], 'ws-a');
+    await writeWire(home!, 'other', 'main', [userLine('start', T1), stepBeginLine('u1', 1, T1 + 100), toolCall,
+      toolResult], 'ws-b');
+    const service = track(makeService(home!, staticIndex([
+      summary('older', 'old', T1, 'ws-a'), summary('newer', 'new', T1, 'ws-a'),
+      summary('other', 'other', T1, 'ws-b'),
+    ])));
+    await service.reindex();
+    const page = await service.search({ query: 'unique-old-tool-result', role: 'tool', workspaceId: 'ws-a' });
+    expect(page.items.toSorted((a, b) => a.sessionId.localeCompare(b.sessionId))
+      .map((h) => [h.sessionId, h.turn, h.stepId]))
+      .toEqual([['newer', 0, 't0.1'], ['older', 0, 't0.2']]);
+  });
+
   it('omits step ids when no matching step.begin was seen', async () => {
     const s1 = summary('s1', 'orphans', T1);
     await writeWire(home!, 's1', 'main', [
@@ -2431,6 +2453,21 @@ describe('GlobalSearchService', () => {
       });
       expect(notLive.source).toBe('index');
       expect(notLive.items.length).toBe(1);
+    });
+
+    it('can read indexed old turns even when the live transcript retains no old turn', async () => {
+      const s1 = summary('s1', 'unrelated', T1);
+      await writeWire(home!, 's1', 'main', [userLine('precompaction needle', T1)]);
+      const service = track(makeService(home!, gettableIndex([s1])));
+      await service.reindex();
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', new TranscriptStore('s1')]])));
+
+      const page = await service.search({ query: 'precompaction', workspaceId: WS,
+        container: { sessionId: 's1' }, indexOnly: true });
+      expect(page.source).toBe('index');
+      expect(page.items.map((hit) => [hit.sessionId, hit.turn, hit.snippet])).toEqual([
+        ['s1', 0, expect.stringContaining('precompaction needle')],
+      ]);
     });
 
     it('serves terms queries from the live store and orders hits by tf score', async () => {

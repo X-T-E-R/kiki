@@ -9,6 +9,8 @@ import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentStateService } from '#/agent/state/agentState';
 import AUTO_MODE_ENTER_REMINDER from './permission-mode-auto-enter-reminder.md?raw';
 import AUTO_MODE_EXIT_REMINDER from './permission-mode-auto-exit-reminder.md?raw';
+import REVIEW_MODE_ENTER_REMINDER from './permission-mode-review-enter-reminder.md?raw';
+import REVIEW_MODE_EXIT_REMINDER from './permission-mode-review-exit-reminder.md?raw';
 
 const PERMISSION_MODE_INJECTION_VARIANT = 'permission_mode';
 
@@ -42,12 +44,15 @@ export class PermissionModeInjection extends Service {
     const currentMode = this.permissionMode.mode;
     const previousMode = this.lastMode;
     if (currentMode === previousMode) {
-      if (injectedPositions.length > 0 || currentMode !== 'auto') return undefined;
-      return AUTO_MODE_ENTER_REMINDER;
+      if (injectedPositions.length > 0) return undefined;
+      if (currentMode === 'auto') return AUTO_MODE_ENTER_REMINDER;
+      return currentMode === 'review' ? REVIEW_MODE_ENTER_REMINDER : undefined;
     }
     this.lastMode = currentMode;
     if (currentMode === 'auto') return AUTO_MODE_ENTER_REMINDER;
+    if (currentMode === 'review') return REVIEW_MODE_ENTER_REMINDER;
     if (previousMode === 'auto') return AUTO_MODE_EXIT_REMINDER;
+    if (previousMode === 'review') return REVIEW_MODE_EXIT_REMINDER;
     return undefined;
   }
 }

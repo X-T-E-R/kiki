@@ -10,7 +10,6 @@ import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting'
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -134,7 +133,6 @@ describe('Session legacy status (best-effort runtime state)', () => {
         [IAgentTokenCountingService, { get: () => ({ size: 25, measured: 20, estimated: 5 }), statusSize: () => 25 }],
         [IAgentPermissionModeService, { mode: 'manual' }],
         [IAgentPlanService, { status: () => Promise.resolve(null) }],
-        [IAgentSwarmService, { isActive: false }],
         [
           IAgentActivityView,
           { state: () => ({ lifecycle: 'ready', background: [] }) },
@@ -192,7 +190,6 @@ describe('Session legacy status (best-effort runtime state)', () => {
         [IAgentTokenCountingService, { get: () => ({ size: 0, measured: 0, estimated: 0 }), statusSize: () => 0 }],
         [IAgentPermissionModeService, { mode: 'manual' }],
         [IAgentPlanService, { status: () => Promise.resolve(null) }],
-        [IAgentSwarmService, { isActive: false }],
         [IModelService, { getDefaultModel: () => undefined }],
         [
           IAgentActivityView,
@@ -251,7 +248,6 @@ describe('Session legacy status (best-effort runtime state)', () => {
         [IAgentTokenCountingService, { get: () => ({ size: 0, measured: 0, estimated: 0 }), statusSize: () => 0 }],
         [IAgentPermissionModeService, { mode: 'manual' }],
         [IAgentPlanService, { status: () => Promise.resolve(null) }],
-        [IAgentSwarmService, { isActive: false }],
         [IModelService, { getDefaultModel: () => 'default-model' }],
         [
           IModelCatalog,
@@ -335,7 +331,6 @@ describe('Session legacy status (best-effort runtime state)', () => {
         [IAgentTokenCountingService, { get: () => ({ size: 120_000, measured: 110_000, estimated: 10_000 }), statusSize: () => 120_000 }],
         [IAgentPermissionModeService, { mode: 'manual' }],
         [IAgentPlanService, { status: () => Promise.resolve(null) }],
-        [IAgentSwarmService, { isActive: false }],
         [
           IAgentActivityView,
           { state: () => ({ lifecycle: 'ready', background: [] }) },

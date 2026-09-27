@@ -132,18 +132,24 @@ function advanceTurnCounter(
   }
 }
 
-const INITIAL_STEP_STATE: StepTrackerState = { byUuid: {}, begins: 0 };
+const INITIAL_STEP_STATE: StepTrackerState = { byUuid: {}, byToolCall: {}, begins: 0 };
 
 function initialStepState(): StepTrackerState {
   return INITIAL_STEP_STATE;
 }
 
 function advanceStepTracker(state: StepTrackerState, effect: StepEffect): StepTrackerState {
+  if (effect.kind === 'call') {
+    const ordinal = state.byUuid[effect.uuid];
+    return ordinal === undefined ? state : {
+      ...state, byToolCall: { ...state.byToolCall, [effect.toolCallId]: ordinal },
+    };
+  }
   if (effect.kind !== 'begin') return state;
   const begins = state.begins + 1;
   const ordinal = effect.ordinal ?? begins;
   if (state.byUuid[effect.uuid] === ordinal) return state;
-  return { byUuid: { ...state.byUuid, [effect.uuid]: ordinal }, begins };
+  return { ...state, byUuid: { ...state.byUuid, [effect.uuid]: ordinal }, begins };
 }
 
 /** Minimal logger surface the core needs (the worker forwards these over RPC). */
@@ -958,7 +964,7 @@ export class SearchIndexCore {
       turnState: turns,
       stepState: steps,
     });
-    const legacyMeta = known !== undefined && known.stepState === undefined;
+    const legacyMeta = known !== undefined && known.stepState?.byToolCall === undefined;
     const replacedFile = known?.ino !== undefined && known.ino !== st.ino;
     const rewrittenInPlace =
       known?.mtimeMs !== undefined && size === known.offset && st.mtimeMs > known.mtimeMs;
@@ -1109,7 +1115,8 @@ export class SearchIndexCore {
     const extracted = analysis.messages;
     for (let i = 0; i < extracted.length; i++) {
       const e = extracted[i]!;
-      const stepOrdinal = e.stepUuid !== undefined ? stepState.byUuid[e.stepUuid] : undefined;
+      const stepOrdinal = e.stepUuid !== undefined ? stepState.byUuid[e.stepUuid] :
+        e.toolCallId !== undefined ? stepState.byToolCall[e.toolCallId] : undefined;
       const doc: MessageDoc = {
         kind: 'message',
         sessionIdentity: summary.sessionIdentity,

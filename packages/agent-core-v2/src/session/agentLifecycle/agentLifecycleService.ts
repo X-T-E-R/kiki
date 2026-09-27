@@ -13,6 +13,7 @@ import {
 } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from '#/app/memory/configSection';
 import { IEventBus } from '#/app/event/eventBus';
 import { DEFAULT_PERMISSION_MODE_SECTION } from '#/agent/permissionMode/configSection';
 import { permissionModeConfiguredKey } from '#/agent/permissionMode/permissionModeOps';
@@ -454,6 +455,12 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           message: `Persisted profile "${opts.restoreBinding.profileName ?? opts.restoreBinding.routeId ?? ''}" is unavailable; restored with the default profile instead.`,
         }));
       }
+    } else if (
+      opts.restoreBinding !== undefined &&
+      handle.id === 'main' &&
+      memoryEnabled(this.config.get<MemoryConfig>(MEMORY_SECTION), this.ctx.workspaceId)
+    ) {
+      await profile.refreshMemorySnapshot();
     }
     const permissionMode = this.config.get<PermissionMode>(DEFAULT_PERMISSION_MODE_SECTION);
     const hasRestoredPermissionMode = handle.accessor

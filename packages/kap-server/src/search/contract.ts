@@ -15,10 +15,12 @@ export interface GlobalSearchQuery {
     readonly sessionId?: string;
     readonly agentId?: string;
   };
+  /** Use the persisted index rather than a live session's resident transcript. */
+  readonly indexOnly?: boolean;
   /** Restrict to one workspace. Omit to search across every workspace. */
   readonly workspaceId?: string;
   /** Restrict to one document role. */
-  readonly role?: 'user' | 'assistant' | 'title';
+  readonly role?: 'user' | 'assistant' | 'tool' | 'title';
   /** Epoch ms, inclusive bounds. */
   readonly startTime?: number;
   readonly endTime?: number;
@@ -57,7 +59,7 @@ export interface GlobalSearchHit {
   readonly sessionTitle: string;
   /** 'main' or a subagent id. */
   readonly agentId: string;
-  readonly role: 'user' | 'assistant' | 'title';
+  readonly role: 'user' | 'assistant' | 'tool' | 'title';
   /** ~80-char window around the first hit term, generated server-side. */
   readonly snippet: string;
   /** Epoch ms of the wire record (session `updatedAt` for title docs). */
@@ -73,11 +75,11 @@ export interface GlobalSearchHit {
   readonly turn?: number;
   /**
    * Transcript step id (`t<turn>.<step>`, e.g. `t3.2`) of the step that
-   * produced this assistant text — the same id space as the transcript model
+   * produced this assistant text or tool result — the same id space as the transcript model
    * (`packages/transcript` `model/ids.ts`), so a client can jump straight to
    * the step. The ordinal is the engine's live step numbering (the wire
    * record's `step` field); vacuous steps own no document, so ordinals may
-   * have gaps. Present only for assistant-role hits indexed after step
+   * have gaps. Present only for assistant/tool hits indexed after step
    * tracking existed; docs whose turns were later cut by an undo keep their
    * pre-undo id (no longer jumpable — same deviation as `turn`).
    */

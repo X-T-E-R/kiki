@@ -13,7 +13,6 @@ import type {
   PermissionApprovalResultRecord,
   PermissionMode,
   PromptOrigin,
-  SwarmModeTrigger,
   UserToolRegistration,
 } from '@kiki/agent-core-v2';
 import type { MCPToolDefinition } from '@kiki/agent-core-v2/mcpCore/types';
@@ -115,7 +114,7 @@ export interface AgentRecordEvents {
   };
 
   'swarm_mode.enter': {
-    trigger: SwarmModeTrigger;
+    trigger: 'manual' | 'task' | 'tool';
   };
   'swarm_mode.exit': {};
 

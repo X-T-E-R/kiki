@@ -83,7 +83,6 @@ export interface TUIState {
    */
   queuedMessageDispatchPending: boolean;
   tasksBrowser: TasksBrowserState | undefined;
-  swarmModeEntry: 'manual' | 'task' | undefined;
 }
 
 export function createTUIState(options: KimiTUIOptions): TUIState {
@@ -191,6 +190,5 @@ export function createTUIState(options: KimiTUIOptions): TUIState {
     queuedMessages: [],
     queuedMessageDispatchPending: false,
     tasksBrowser: undefined,
-    swarmModeEntry: undefined,
   };
 }

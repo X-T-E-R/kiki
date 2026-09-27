@@ -61,6 +61,7 @@ import {
 } from '#/agent/profile/delegationContext';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
 import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
 import {
@@ -267,6 +268,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IAgentIdentity private readonly identity: IAgentIdentity,
     @IAgentAgentsMdReminderService private readonly agentsMdReminder: IAgentAgentsMdReminderService,
     @IAgentScopeContext private readonly agentScope: IAgentScopeContext,
+    @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
   ) {
     super();
     this.states.contributeState(profileKey);
@@ -1127,6 +1129,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   async rebuildPromptContext(): Promise<void> {
     await this.systemPromptRefreshTail.catch(() => undefined);
+    this.memorySnapshot.invalidate();
     const current = this.profileState;
     if (current.profileName === undefined) return;
     const liveProfile = this.catalog.get(current.profileName);
@@ -1148,6 +1151,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       spawnPolicy: current.spawnPolicy,
       delegationPosition: this.delegationPosition,
     });
+  }
+
+  refreshMemorySnapshot(): Promise<void> {
+    this.memorySnapshot.invalidate();
+    return this.refreshSystemPrompt();
   }
 
   refreshSystemPrompt(): Promise<void> {
@@ -2237,6 +2245,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       timeZone,
       skills,
       pluginSections,
+      memory: await this.memorySnapshot.get(),
       skillActive: this.isToolActiveForProfile(profile, 'Skill'),
       productName: (await this.identity.resolved()).displayName,
       replyStyleGuide: this.bootstrap.args.replyStyleGuide,

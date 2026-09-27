@@ -241,6 +241,14 @@ export interface NoticeBlock {
 export interface ApprovalResolution {
   readonly decision: ApprovalDecision | 'expired' | 'resolved_elsewhere';
   readonly resolvedAt: string;
+  /** Set when an automatic reviewer (Approve-for-me mode) made the decision. */
+  readonly reviewer?: ApprovalReviewer;
+}
+
+export interface ApprovalReviewer {
+  readonly backend: 'model' | 'jev';
+  readonly reason: string;
+  readonly confidence: number;
 }
 
 export interface ApprovalBlock {

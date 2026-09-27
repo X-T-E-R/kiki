@@ -165,14 +165,14 @@ describe('ExitPlanMode option output', () => {
     expect(result.output).toContain('Exited plan mode');
   });
 
-  it('marks the direct-execution output as auto-approved, not user-reviewed, in auto mode', async () => {
+  it.each(['auto', 'review'] as const)('marks the direct-execution output as auto-approved, not user-reviewed, in %s mode', async (mode) => {
     const telemetry = recordingTelemetry();
 
     const result = await executeTool(
-      new ExitPlanModeTool(planService(), permissionMode('auto'), telemetry),
+      new ExitPlanModeTool(planService(), permissionMode(mode), telemetry),
       {
         turnId: 7,
-        toolCallId: 'call_exit_plan_auto',
+        toolCallId: `call_exit_plan_${mode}`,
         args: {},
         signal,
       },

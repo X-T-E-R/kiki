@@ -12,6 +12,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
+import { IAgentPlanService } from '#/features/plan/plan';
 import { IThreadCreateTool, ThreadCreateTool, ThreadCreateToolInputSchema } from '#/agent/tools/thread-communication/threadCreateTool';
 import {
   ListThreadsToolInputSchema,
@@ -20,6 +21,7 @@ import {
   SendMessageToThreadTool,
   WaitThreadsToolInputSchema,
 } from '#/agent/tools/thread-communication/threadCommunicationTools';
+import { CREATED_BY_AGENT_ID_KEY, CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import type { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
 import {
@@ -146,10 +148,19 @@ describe('thread communication tools', () => {
   });
 
   it('uses the ambient workspace and leaves the thread empty without a prompt', async () => {
-    const { tool, create, metadata, prompt, lifecycle } = createThreadFixture();
+    const { tool, create, metadata, prompt, lifecycle } = createThreadFixture({ custom: { retained: true } });
     const result = await executeThreadCreate(tool, {});
     expect(create).toHaveBeenCalledExactlyOnceWith({ workDir: '/ambient/workspace', mainAgentBinding: undefined });
     expect(metadata.setTitle).not.toHaveBeenCalled();
+    expect(metadata.update).toHaveBeenCalledExactlyOnceWith({
+      custom: {
+        retained: true,
+        [CREATED_BY_SESSION_ID_KEY]: 'ambient-a',
+        [CREATED_BY_AGENT_ID_KEY]: 'main',
+      },
+    }, { touchUpdatedAt: false });
+    expect((await metadata.read()).custom).not.toHaveProperty('parent_session_id');
+    expect((await metadata.read()).custom).not.toHaveProperty('child_session_kind');
     expect(lifecycle.create).not.toHaveBeenCalled();
     expect(prompt.enqueue).not.toHaveBeenCalled();
     expect(JSON.parse(result.output as string)).toMatchObject({
@@ -157,16 +168,54 @@ describe('thread communication tools', () => {
     });
   });
 
-  it('binds an enabled main profile to the new session without other agent_config fields', async () => {
+  it('binds an enabled main profile to the new session', async () => {
     const { tool, create, lifecycle } = createThreadFixture();
     const result = await executeThreadCreate(tool, { profile: 'main-alt' });
+    const binding = { profile: 'main-alt', model: undefined, thinking: undefined, strictThinking: false };
     expect(create).toHaveBeenCalledExactlyOnceWith({
-      workDir: '/ambient/workspace', mainAgentBinding: { profile: 'main-alt' },
+      workDir: '/ambient/workspace', mainAgentBinding: binding,
     });
-    expect(lifecycle.create).toHaveBeenCalledExactlyOnceWith({
-      agentId: 'main', binding: { profile: 'main-alt' },
-    });
+    expect(lifecycle.create).toHaveBeenCalledExactlyOnceWith({ agentId: 'main', binding });
     expect(JSON.parse(result.output as string)).toMatchObject({ profile: 'main-alt', prompt_started: false });
+  });
+
+  it('passes model and explicit effort to the main-agent binding before the first prompt', async () => {
+    const { tool, create, lifecycle, prompt } = createThreadFixture();
+    await executeThreadCreate(tool, { model_alias: 'configured-alias', effort: 'high', prompt: 'Start' });
+    const binding = { profile: 'agent', model: 'configured-alias', thinking: 'high', strictThinking: true };
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      workDir: '/ambient/workspace', mainAgentBinding: binding,
+    });
+    expect(lifecycle.create).toHaveBeenCalledWith({ agentId: 'main', binding });
+    expect(prompt.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('uses the profile/default effort when no effort is requested', async () => {
+    const { tool, create } = createThreadFixture();
+    await executeThreadCreate(tool, { model_alias: 'configured-alias' });
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      workDir: '/ambient/workspace',
+      mainAgentBinding: { profile: 'agent', model: 'configured-alias', thinking: undefined, strictThinking: false },
+    });
+  });
+
+  it('applies initial runtime controls before starting the first prompt', async () => {
+    const { tool, lifecycle, calls, plan, prompt } = createThreadFixture();
+    await executeThreadCreate(tool, {
+      permission_mode: 'review', plan_mode: true, prompt: 'Start',
+    });
+    expect(lifecycle.broadcastPermissionMode).toHaveBeenCalledExactlyOnceWith('review');
+    expect(plan.enter).toHaveBeenCalledOnce();
+    expect(calls).toEqual(['permission', 'plan', 'prompt']);
+    expect(prompt.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('keeps initial plan state when it already matches the requested state', async () => {
+    const { tool, plan, lifecycle } = createThreadFixture({ planActive: true });
+    await executeThreadCreate(tool, { plan_mode: true });
+    expect(plan.enter).not.toHaveBeenCalled();
+    expect(plan.exit).not.toHaveBeenCalled();
+    expect(lifecycle.create).toHaveBeenCalledExactlyOnceWith({ agentId: 'main' });
   });
 
   it.each([
@@ -174,8 +223,17 @@ describe('thread communication tools', () => {
     { profile: 'disabled', reason: 'unavailable or disabled' },
     { profile: 'worker', reason: 'not a main-agent profile' },
   ])('rejects an invalid main profile and removes the new empty session: %o', async ({ profile, reason }) => {
-    const { tool, remove, prompt } = createThreadFixture();
+    const { tool, remove, metadata, prompt } = createThreadFixture();
     await expect(executeThreadCreate(tool, { profile, prompt: 'Start work' })).rejects.toThrow(reason);
+    expect(remove).toHaveBeenCalledExactlyOnceWith('session-new');
+    expect(metadata.update).not.toHaveBeenCalled();
+    expect(prompt.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('deletes the new session when creator metadata cannot be persisted', async () => {
+    const { tool, metadata, remove, prompt } = createThreadFixture();
+    metadata.update.mockRejectedValueOnce(new Error('metadata write failed'));
+    await expect(executeThreadCreate(tool, { prompt: 'Start' })).rejects.toThrow('metadata write failed');
     expect(remove).toHaveBeenCalledExactlyOnceWith('session-new');
     expect(prompt.enqueue).not.toHaveBeenCalled();
   });
@@ -224,7 +282,8 @@ describe('thread communication tools', () => {
         },
       };
       const ix = disposables.add(new TestInstantiationService());
-      ix.stub(ISessionContext, { cwd: '/ambient/workspace' });
+      ix.stub(ISessionContext, { cwd: '/ambient/workspace', sessionId: 'ambient-a' });
+      ix.stub(IAgentScopeContext, { agentId: 'main' });
       ix.stub(ISessionManager, { create: async () => session, delete: async () => {} });
       ix.set(IThreadCreateTool, new SyncDescriptor(ThreadCreateTool));
 
@@ -261,34 +320,95 @@ describe('thread communication tools', () => {
     expect(create).toHaveBeenCalledExactlyOnceWith({ workDir: missing, mainAgentBinding: undefined });
   });
 
-  it('accepts only the four optional ThreadCreate inputs and discourages unsolicited creation', () => {
+  it('accepts only supported ThreadCreate inputs and rejects invalid runtime controls', () => {
     const { tool } = createThreadFixture();
     expect(ThreadCreateToolInputSchema.safeParse({}).success).toBe(true);
     expect(ThreadCreateToolInputSchema.safeParse({ title: '', cwd: '/example' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ prompt: '', agent_config: {} }).success).toBe(false);
-    expect(ThreadCreateToolInputSchema.safeParse({ profile: 'agent', prompt: 'Start' }).success).toBe(true);
+    expect(ThreadCreateToolInputSchema.safeParse({
+      profile: 'agent', model_alias: 'configured-alias', effort: 'high',
+      permission_mode: 'review', plan_mode: true, prompt: 'Start',
+    }).success).toBe(true);
+    expect(ThreadCreateToolInputSchema.safeParse({ model_alias: '   ' }).success).toBe(false);
+    expect(ThreadCreateToolInputSchema.safeParse({ effort: '   ' }).success).toBe(false);
+    expect(ThreadCreateToolInputSchema.safeParse({ permission_mode: 'unsafe' }).success).toBe(false);
+    expect(ThreadCreateToolInputSchema.safeParse({ plan_mode: 'true' }).success).toBe(false);
+    expect(ThreadCreateToolInputSchema.safeParse({ swarm_mode: true }).success).toBe(false);
+    expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>)).toEqual([
+      'title', 'cwd', 'profile', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt',
+    ]);
     expect(tool.description).toContain('Do not use this tool unless the user explicitly asks');
+  });
+
+  it('propagates binding validation errors from session creation without starting a prompt', async () => {
+    const { tool, create, prompt } = createThreadFixture();
+    create.mockRejectedValueOnce(new Error('Unknown model alias: unavailable'));
+    await expect(executeThreadCreate(tool, { model_alias: 'unavailable', prompt: 'Start' }))
+      .rejects.toThrow('Unknown model alias');
+    create.mockRejectedValueOnce(new Error('Unsupported thinking effort: extreme'));
+    await expect(executeThreadCreate(tool, { effort: 'extreme', prompt: 'Start' }))
+      .rejects.toThrow('Unsupported thinking effort');
+    expect(prompt.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('removes an empty session if an initial runtime control fails', async () => {
+    const { tool, plan, remove, prompt } = createThreadFixture();
+    plan.enter.mockRejectedValueOnce(new Error('plan unavailable'));
+    await expect(executeThreadCreate(tool, { plan_mode: true, prompt: 'Start' }))
+      .rejects.toThrow('plan unavailable');
+    expect(remove).toHaveBeenCalledExactlyOnceWith('session-new');
+    expect(prompt.enqueue).not.toHaveBeenCalled();
   });
 });
 
 const disposables = new DisposableStore();
 afterEach(() => disposables.clear());
 
-function createThreadFixture(options: { launched?: Promise<{ id: number }> } = {}) {
+function createThreadFixture(options: {
+  launched?: Promise<{ id: number }>;
+  planActive?: boolean;
+  custom?: Record<string, unknown>;
+} = {}) {
   const ix = disposables.add(new TestInstantiationService());
   let title: string | undefined;
+  let custom = options.custom ?? {};
+  const calls: string[] = [];
   const metadata = {
     setTitle: vi.fn(async (value: string) => { title = value; }),
-    read: vi.fn(async () => ({ title })),
+    read: vi.fn(async () => ({ title, custom })),
+    update: vi.fn(async (patch: { custom?: Record<string, unknown> }) => {
+      if (patch.custom !== undefined) custom = patch.custom;
+    }),
   };
   const prompt = {
-    enqueue: vi.fn(async () => ({
-      launched: options.launched ?? Promise.resolve({ id: 1 }),
-      completion: Promise.resolve({ state: 'completed' }),
-    })),
+    enqueue: vi.fn(async () => {
+      calls.push('prompt');
+      return {
+        launched: options.launched ?? Promise.resolve({ id: 1 }),
+        completion: Promise.resolve({ state: 'completed' }),
+      };
+    }),
   };
-  const agent = { id: 'main', accessor: { get: () => prompt } } as unknown as IAgentScopeHandle;
-  const lifecycle = { create: vi.fn<IAgentLifecycleService['create']>(async () => agent) };
+  const plan = {
+    status: vi.fn(async () => options.planActive ? { id: 'plan', content: '', path: '' } : null),
+    enter: vi.fn(async () => { calls.push('plan'); }),
+    exit: vi.fn(),
+  };
+  const lifecycle = {
+    create: vi.fn<IAgentLifecycleService['create']>(async () => agent),
+    broadcastPermissionMode: vi.fn(() => { calls.push('permission'); }),
+  };
+  const agent = {
+    id: 'main',
+    accessor: {
+      get(id: unknown) {
+        if (id === IAgentPromptService) return prompt;
+        if (id === IAgentLifecycleService) return lifecycle;
+        if (id === IAgentPlanService) return plan;
+        throw new Error(`Unexpected agent service: ${String(id)}`);
+      },
+    },
+  } as unknown as IAgentScopeHandle;
   const catalog = {
     ready: Promise.resolve(),
     getDefault: () => ({ name: 'agent', main: true }),
@@ -319,9 +439,10 @@ function createThreadFixture(options: { launched?: Promise<{ id: number }> } = {
   });
   const remove = vi.fn<ISessionManager['delete']>(async () => {});
   ix.stub(ISessionManager, { create, delete: remove });
-  ix.stub(ISessionContext, { cwd: '/ambient/workspace' });
+  ix.stub(ISessionContext, { cwd: '/ambient/workspace', sessionId: 'ambient-a' });
+  ix.stub(IAgentScopeContext, { agentId: 'main' });
   ix.set(IThreadCreateTool, new SyncDescriptor(ThreadCreateTool));
-  return { tool: ix.get(IThreadCreateTool), create, remove, metadata, lifecycle, prompt };
+  return { tool: ix.get(IThreadCreateTool), create, remove, metadata, lifecycle, plan, prompt, calls };
 }
 
 async function executeThreadCreate(tool: IThreadCreateTool, input: Parameters<IThreadCreateTool['resolveExecution']>[0]) {

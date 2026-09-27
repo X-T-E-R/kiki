@@ -19,7 +19,6 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService } from '#/agent/task/task';
-import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import { createHooks } from '#/hooks';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 
@@ -188,15 +187,7 @@ export function isReleasable(handle: IAgentScopeHandle): boolean {
     const prompts = handle.accessor.get(IAgentPromptService).list();
     if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0) return false;
     if (handle.accessor.get(IAgentTaskService).list(true).length > 0) return false;
-    return !isSwarmActive(handle);
-  } catch {
-    return false;
-  }
-}
-
-function isSwarmActive(handle: IAgentScopeHandle): boolean {
-  try {
-    return handle.accessor.get(IAgentSwarmService).isActive;
+    return true;
   } catch {
     return false;
   }

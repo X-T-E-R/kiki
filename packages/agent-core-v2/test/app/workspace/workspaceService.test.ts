@@ -22,7 +22,9 @@ import { WorkspaceService } from '#/app/workspace/workspaceService';
 import { IWorkspacePersistence, type PersistedWorkspaceEntry } from '#/app/workspace/workspacePersistence';
 import { ErrorCodes } from '#/errors';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
@@ -91,6 +93,7 @@ describe('WorkspaceService (file-backed)', () => {
       stubPair(IFlagService, stubFlag(false)),
       stubPair(ILogService, stubLog()),
       stubPair(IHostFileSystem, hostFs),
+      stubPair(IHostFsWatchService, new HostFsWatchService()),
     ]);
     currentHost = host;
     return host.app.accessor.get(IWorkspaceService);

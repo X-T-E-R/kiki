@@ -13,13 +13,13 @@ export interface MessageDoc {
   readonly workspaceId: string;
   readonly sessionTitle: string;
   readonly agentId: string;
-  readonly role: 'user' | 'assistant';
+  readonly role: 'user' | 'assistant' | 'tool';
   readonly text: string;
   readonly time: number;
   readonly turn?: number;
   /**
    * Transcript step id (`t<turn>.<step>`, engine live numbering from the wire
-   * record's `step` field) of the step that produced this assistant text.
+   * record's `step` field) of the step that produced this assistant text or tool result.
    * Absent for user docs and docs indexed before step tracking existed.
    */
   readonly stepId?: string;
@@ -55,6 +55,7 @@ export interface TurnCounterState {
 export interface StepTrackerState {
   /** Current turn's step uuid → ordinal (the wire `step` field, else the fallback counter). */
   readonly byUuid: Record<string, number>;
+  readonly byToolCall: Record<string, number>;
   /** `step.begin` count within the current turn — the fallback ordinal source. */
   readonly begins: number;
 }

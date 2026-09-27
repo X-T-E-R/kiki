@@ -35,7 +35,7 @@
  *   shapes are restored by the pure mapping layer in
  *   `src/v2/session-mapper.ts`. The resumed results carry the full v1
  *   per-agent snapshot: the live slices are read from the restored agent
- *   scope (profile / permission / swarm services + the klient agent facade),
+ *   scope (profile / permission services + the klient agent facade),
  *   while `replay` and `toolStore` are folded from each agent's `wire.jsonl`
  *   through the v1 engine's own restore pipeline
  *   (`src/v2/resume-replay.ts`) — `includeSubagents` and `replayTurnLimit`
@@ -101,10 +101,7 @@
  *   `ISessionQuestionService.answer|dismiss` / the kernel's `respond`.
  * - `exportSession` → `ISessionExportService` (app scope, the v2 port of v1's
  *   export) through {@link engineAccessor}; `listSkills` → the klient session
- *   skill catalog; `setSwarmMode` / `swarm` → the klient agent facade (the v2
- *   port of v1's `SwarmMode`), with `swarm()` recomposed over the facade
- *   toggle + `prompt` overrides.
- *   `createSessionWithKaos` / `resumeSessionWithKaos` deliberately keep the
+ *   skill catalog. `createSessionWithKaos` / `resumeSessionWithKaos` deliberately keep the
  *   base class's kaos-ignoring degradation (the v2 engine has no kaos
  *   injection point — see the session-lifecycle section header), and
  *   `toolCall` keeps the base class's "not supported" answer, which the
@@ -147,7 +144,6 @@ import {
   IAgentPermissionModeService,
   IAgentPermissionRulesService,
   IAgentProfileService,
-  IAgentSwarmService,
   IAgentToolPolicyService,
   IAgentToolRegistryService,
   IBootstrapService,
@@ -222,7 +218,6 @@ import {
   type SetSessionModelRpcResult,
   type SetSessionPermissionRpcInput,
   type SetSessionPlanModeRpcInput,
-  type SetSessionSwarmModeRpcInput,
   type SetSessionThinkingRpcInput,
   type UpdateSessionMetadataRpcInput,
 } from '#/rpc';
@@ -1041,7 +1036,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
   /**
    * The `ResumedSessionSummary` of a just-materialized session, including the
    * per-agent snapshot v1 serves: the live slices are read from the restored
-   * agent scope (profile / permission / swarm services and the klient agent
+   * agent scope (profile / permission services and the klient agent
    * facade for context / plan / usage / background tasks), while `replay` and
    * `toolStore` are folded from the agent's `wire.jsonl` by
    * {@link foldAgentWireReplay} (v2 has no replay builder of its own).
@@ -1140,7 +1135,6 @@ export class SDKRpcClient extends SDKRpcClientBase {
         rules: [...agent.accessor.get(IAgentPermissionRulesService).rules],
       } as ResumedAgentState['permission'],
       plan: plan as ResumedAgentState['plan'],
-      swarmMode: agent.accessor.get(IAgentSwarmService).isActive,
       usage: usage as ResumedAgentState['usage'],
       tools: tools as ResumedAgentState['tools'],
       toolStore: folded.toolStore,
@@ -1920,17 +1914,15 @@ export class SDKRpcClient extends SDKRpcClientBase {
   }
 
   /**
-   * The base class aggregates v1's per-agent `getConfig` / `getContext` /
-   * `getPermission` / `getPlan` / `getSwarmMode` / `getUsage` RPCs. The v2
-   * rebuild reads the same six slices: the profile's bound model alias and
-   * resolved thinking level + capabilities (v1's agent `getConfig` — its
-   * `provider?.model` fallback is unreachable without an alias), the
-   * facade's context/plan/usage, and the permission-mode and swarm services.
+   * The base class aggregates per-agent config, context, permission, plan,
+   * and usage reads. The v2 rebuild reads the profile's bound model alias,
+   * resolved thinking level and capabilities, plus the facade's context,
+   * plan, usage, and permission mode.
    */
   override async getStatus(input: SessionIdRpcInput): Promise<SessionStatus> {
     await this.agentScope(input.sessionId);
     const facade = this.klient.session(input.sessionId).agent(this.interactiveAgentId);
-    const [context, plan, usage, model, thinkingEffort, permission, swarmMode, capability] =
+    const [context, plan, usage, model, thinkingEffort, permission, capability] =
       await Promise.all([
         facade.getContext(),
         facade.getPlan(),
@@ -1938,7 +1930,6 @@ export class SDKRpcClient extends SDKRpcClientBase {
         facade.getModel(),
         facade.getThinking(),
         facade.getPermission(),
-        facade.getSwarmMode(),
         facade.getModelCapabilities(),
       ]);
     const maxContextTokens = capability.max_input_tokens ?? capability.max_context_tokens;
@@ -1953,7 +1944,6 @@ export class SDKRpcClient extends SDKRpcClientBase {
       thinkingEffort,
       permission,
       planMode: plan !== null,
-      swarmMode,
       contextTokens,
       maxContextTokens,
       contextUsage,
@@ -2206,31 +2196,6 @@ export class SDKRpcClient extends SDKRpcClientBase {
     const session = this.requireLiveSession(input.sessionId);
     await this.materializeMainAgent(session);
     return this.engineCall(() => this.klient.session(input.sessionId).btw.start());
-  }
-
-  /**
-   * Through the agent facade's swarm and context-injector capabilities. The v2
-   * service is the port of v1's `SwarmMode`:
-   * enter is idempotent and injects the byte-identical enter reminder for
-   * non-`tool` triggers, exit pops that reminder when it is the last message
-   * (appending the exit reminder otherwise), and `task` / `tool` triggers
-   * auto-exit on turn end. The base class's private enter/exit pair is
-   * replaced wholesale; `swarm()` below recomposes it over this override.
-   */
-  override async setSwarmMode(input: SetSessionSwarmModeRpcInput): Promise<void> {
-    const agent = await this.agentFacade(input.sessionId);
-    if (input.enabled) {
-      await this.engineCall(() => agent.enterSwarm(input.trigger));
-    } else {
-      await this.engineCall(() => agent.exitSwarm());
-    }
-    await this.engineCall(() => agent.reconcileContextWhenIdle('swarm_mode'));
-  }
-
-  /** v1's `swarm()` composition: enter with the one-shot `task` trigger, then prompt. */
-  override async swarm(input: SessionPromptRpcInput): Promise<void> {
-    await this.setSwarmMode({ sessionId: input.sessionId, enabled: true, trigger: 'task' });
-    return this.prompt(input);
   }
 
   // -----------------------------------------------------------------------

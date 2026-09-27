@@ -11,7 +11,7 @@ export const searchMessagesBodySchema = z.object({
     })
     .optional(),
   workspace_id: z.string().min(1).optional(),
-  role: z.enum(['user', 'assistant', 'title']).optional(),
+  role: z.enum(['user', 'assistant', 'tool', 'title']).optional(),
   start_time: z.number().int().nonnegative().optional(),
   end_time: z.number().int().nonnegative().optional(),
   sort: z.enum(['score', 'time_desc', 'time_asc']).optional(),
@@ -25,7 +25,7 @@ export const searchMessageHitSchema = z.object({
   workspace_id: z.string(),
   session_title: z.string(),
   agent_id: z.string(),
-  role: z.enum(['user', 'assistant', 'title']),
+  role: z.enum(['user', 'assistant', 'tool', 'title']),
   snippet: z.string(),
   time: z.number(),
   turn: z.number().int().nonnegative().optional(),

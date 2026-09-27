@@ -370,6 +370,34 @@ describe('server-v2 /api/sessions', () => {
     expect(Number.isNaN(Date.parse(body.data.created_at))).toBe(false);
   });
 
+  it('returns persisted thread creators in paged and unpaged session lists without attributing forks', async () => {
+    const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home as string } });
+    const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home as string } });
+    expect(parent.body.code).toBe(0);
+    expect(created.body.code).toBe(0);
+    const source = getLiveSessionById((server as RunningServer).core.accessor, created.body.data.id);
+    if (source === undefined) throw new Error('expected a live session');
+    await source.accessor.get(ISessionMetadata).update({
+      custom: { created_by_session_id: parent.body.data.id, created_by_agent_id: 'main' },
+    });
+
+    for (const path of ['/api/sessions', '/api/sessions?page_size=20']) {
+      const listed = await getJson<PageWire>(path);
+      expect(listed.body.code).toBe(0);
+      expect(listed.body.data.items.find((item) => item.id === created.body.data.id)?.metadata)
+        .toMatchObject({ created_by_session_id: parent.body.data.id, created_by_agent_id: 'main' });
+      expect(listed.body.data.items.find((item) => item.id === parent.body.data.id)?.metadata)
+        .not.toHaveProperty('created_by_session_id');
+    }
+    const fetched = await getJson<SessionWire>(`/api/sessions/${created.body.data.id}`);
+    expect(fetched.body.data.metadata['created_by_session_id']).toBe(parent.body.data.id);
+
+    const forked = await postJson<SessionWire>(`/api/sessions/${created.body.data.id}:fork`, {});
+    expect(forked.body.code).toBe(0);
+    expect(forked.body.data.metadata).not.toHaveProperty('created_by_session_id');
+    expect(forked.body.data.metadata).not.toHaveProperty('created_by_agent_id');
+  });
+
   it('allows the create profile/model/thinking capability combination', async () => {
     await (server as RunningServer).close();
     server = undefined;
@@ -427,7 +455,7 @@ describe('server-v2 /api/sessions', () => {
     expect(updatedStatus.body.data).toMatchObject({ model: 'stub', thinking_level: 'low' });
   });
 
-  it('applies the create agent_config modes instead of dropping them', async () => {
+  it('applies create controls but accepts and ignores retired swarm_mode', async () => {
     const created = await postJson<SessionWire>('/api/sessions', {
       metadata: { cwd: home as string },
       agent_config: { permission_mode: 'yolo', plan_mode: true, swarm_mode: true },
@@ -437,13 +465,10 @@ describe('server-v2 /api/sessions', () => {
     const status = await getJson<{
       permission: string;
       plan_mode: boolean;
-      swarm_mode: boolean;
+      swarm_mode?: boolean;
     }>(`/api/sessions/${created.body.data.id}/status`);
-    expect(status.body.data).toMatchObject({
-      permission: 'yolo',
-      plan_mode: true,
-      swarm_mode: true,
-    });
+    expect(status.body.data).toMatchObject({ permission: 'yolo', plan_mode: true });
+    expect(status.body.data.swarm_mode).toBeUndefined();
 
     const snapshot = await getJson<{ session: SessionWire }>(
       `/api/sessions/${created.body.data.id}/snapshot`,
@@ -451,8 +476,8 @@ describe('server-v2 /api/sessions', () => {
     expect(snapshot.body.data.session.agent_config).toMatchObject({
       permission_mode: 'yolo',
       plan_mode: true,
-      swarm_mode: true,
     });
+    expect(snapshot.body.data.session.agent_config).not.toHaveProperty('swarm_mode');
   });
 
   it.each([
@@ -1339,18 +1364,18 @@ describe('server-v2 /api/sessions', () => {
     expect(body.data.context_breakdown).toBeUndefined();
   });
 
-  it('reflects plan/swarm/permission agent_config in GET /status', async () => {
+  it('reflects plan/permission controls but ignores retired swarm_mode in GET /status', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd } });
     const id = created.body.data.id;
 
     const before = await getJson<{
       plan_mode: boolean;
-      swarm_mode: boolean;
+      swarm_mode?: boolean;
       permission: string;
     }>(`/api/sessions/${id}/status`);
     expect(before.body.data.plan_mode).toBe(false);
-    expect(before.body.data.swarm_mode).toBe(false);
+    expect(before.body.data.swarm_mode).toBeUndefined();
 
     await postJson(`/api/sessions/${id}/profile`, {
       agent_config: { plan_mode: true, swarm_mode: true, permission_mode: 'yolo' },
@@ -1358,11 +1383,11 @@ describe('server-v2 /api/sessions', () => {
 
     const after = await getJson<{
       plan_mode: boolean;
-      swarm_mode: boolean;
+      swarm_mode?: boolean;
       permission: string;
     }>(`/api/sessions/${id}/status`);
     expect(after.body.data.plan_mode).toBe(true);
-    expect(after.body.data.swarm_mode).toBe(true);
+    expect(after.body.data.swarm_mode).toBeUndefined();
     expect(after.body.data.permission).toBe('yolo');
   });
 

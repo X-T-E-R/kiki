@@ -252,8 +252,8 @@ describe('SessionInitService', () => {
 
     const error = await pending.catch((e) => e);
     expect(error).toBeInstanceOf(UserCancellationError);
-    expect(events).not.toContainEqual(
-      expect.objectContaining({ type: 'subagent.failed', subagentId: 'agent-0' }),
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'subagent.failed', subagentId: 'agent-0', error: 'terminated' }),
     );
   });
 

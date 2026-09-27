@@ -242,6 +242,16 @@ function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
       wire['providers'] = toProviderResponses(value);
     } else if (domain === REQUEST_IDENTITY_SECTION) {
       wire['request_identity'] = requestIdentityToWire(value as RequestIdentityPolicy);
+    } else if (domain === 'permission' && isPlainObject(value)) {
+      const publicValue = splitConfigCredentials({ [domain]: value }).config[domain];
+      if (isPlainObject(publicValue)) {
+        const reviewer = isPlainObject(publicValue['reviewer']) ? publicValue['reviewer'] : undefined;
+        const secret = isPlainObject(value['reviewer']) ? value['reviewer'] : undefined;
+        wire['permission'] = reviewer === undefined ? publicValue : {
+          ...publicValue,
+          reviewer: { ...reviewer, hasApiKey: typeof secret?.['apiKey'] === 'string' },
+        };
+      }
     } else {
       const publicValue = splitConfigCredentials({ [domain]: value }).config[domain];
       if (publicValue !== undefined) wire[camelToSnake(domain)] = publicValue;

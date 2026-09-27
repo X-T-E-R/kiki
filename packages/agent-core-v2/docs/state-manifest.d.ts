@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 106 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 105 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -136,7 +136,6 @@
 //     staleGuard                                      src/features/staleGuard/staleGuardOps.ts
 //     stepRetry.failedAttempts                        src/agent/stepRetry/stepRetryService.ts
 //     stepRetry.lastFailedDriverId                    src/agent/stepRetry/stepRetryService.ts
-//     swarm                                           src/features/swarm/swarmOps.ts
 //     task                                            src/agent/task/taskOps.ts
 //     task.activeTaskReminderPending                  src/agent/task/taskService.ts
 //     task.deliveredNotificationKeys                  src/agent/task/taskService.ts
@@ -1454,6 +1453,7 @@ export interface AgentStateSnapshot {
       readonly thinkingKeep?: string;
       readonly maxCompletionTokens?: number;
       readonly usedContextTokens?: number;
+      readonly usedContextTokensTrusted?: boolean;
       readonly maxContextTokens?: number;
       readonly onTraceId?: (traceId: string | null) => void;
       readonly requestIdentity?: /* RequestIdentityWireOptions — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
@@ -1638,10 +1638,10 @@ export interface AgentStateSnapshot {
   // src/agent/media/mediaToolsRegistrar.ts
   'media.registeredKey': string | undefined;
   // src/agent/permissionMode/injection/permissionModeInjection.ts
-  'permissionMode.lastMode': 'auto' | 'manual' | 'yolo' | undefined;
+  'permissionMode.lastMode': 'auto' | 'manual' | 'review' | 'yolo' | undefined;
   // src/agent/permissionMode/permissionModeOps.ts
   // replayable · durable — folds: PermissionSetMode
-  'permissionMode': /* PermissionMode — packages/agent-core-v2/src/agent/permissionPolicy/types.ts */ 'auto' | 'manual' | 'yolo';
+  'permissionMode': /* PermissionMode — packages/agent-core-v2/src/agent/permissionPolicy/types.ts */ 'auto' | 'manual' | 'review' | 'yolo';
   // replayable · durable — folds: PermissionSetMode
   'permissionMode.configured': boolean;
   // src/agent/permissionRules/permissionRulesOps.ts
@@ -1711,7 +1711,7 @@ export interface AgentStateSnapshot {
     readonly renderGeneration: number;
     readonly agentsMdPaths?: readonly string[];
     readonly disallowedTools?: readonly string[];
-    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
     readonly subagentPolicy?: 'strict' | 'advisory';
     readonly subagentDeclaration?: {
       readonly kind: 'inherit';
@@ -1935,7 +1935,7 @@ export interface AgentStateSnapshot {
         readonly main?: boolean;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
-        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
         readonly subagentPolicy?: 'strict' | 'advisory';
         readonly subagentDeclaration?: {
           readonly kind: 'inherit';
@@ -2086,7 +2086,7 @@ export interface AgentStateSnapshot {
       readonly tools?: readonly string[];
       readonly toolAllowPolicies?: readonly (readonly string[])[];
       readonly disallowedTools?: readonly string[];
-      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
       readonly subagentPolicy?: 'strict' | 'advisory';
       readonly subagentDeclaration?: {
         readonly kind: 'inherit';
@@ -2210,6 +2210,7 @@ export interface AgentStateSnapshot {
         readonly cwd?: string;
         readonly cwdListing?: string;
         readonly agentsMd?: string;
+        readonly memory?: string;
         readonly additionalDirsInfo?: string;
         readonly osKind?: string;
         readonly shellName?: string;
@@ -2229,6 +2230,7 @@ export interface AgentStateSnapshot {
         readonly cwd?: string;
         readonly cwdListing?: string;
         readonly agentsMd?: string;
+        readonly memory?: string;
         readonly additionalDirsInfo?: string;
         readonly osKind?: string;
         readonly shellName?: string;
@@ -2282,7 +2284,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -2431,7 +2433,7 @@ export interface AgentStateSnapshot {
           readonly activeToolNames?: readonly string[];
           readonly toolAllowPolicies?: readonly (readonly string[])[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -2696,7 +2698,7 @@ export interface AgentStateSnapshot {
             readonly main?: boolean;
             readonly tools?: readonly string[];
             readonly disallowedTools?: readonly string[];
-            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
             readonly subagentPolicy?: 'strict' | 'advisory';
             readonly subagentDeclaration?: {
               readonly kind: 'inherit';
@@ -2841,7 +2843,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'shell' | 'skill' | 'thread' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'task' | 'cron' | 'plan' | 'goal' | 'toolSelect' | 'board' | 'fsRead' | 'fsWrite' | 'history' | 'memory' | 'shell' | 'skill' | 'thread' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -3321,9 +3323,6 @@ export interface AgentStateSnapshot {
   // src/features/staleGuard/staleGuardOps.ts
   // replayable · durable — folds: StaleGuardRecorded, StaleGuardCleared
   'staleGuard': /* StaleGuardModelState — packages/agent-core-v2/src/features/staleGuard/staleGuardOps.ts */ Map<string, number>;
-  // src/features/swarm/swarmOps.ts
-  // replayable · durable — folds: SwarmModeEnter, SwarmModeExit
-  'swarm': 'task' | 'tool' | 'manual' | null;
   // src/session/cron/cronOps.ts
   // replayable · transient — folds: CronAdd, CronDelete, CronCursor
   'cron': /* CronModelState — packages/agent-core-v2/src/session/cron/cronOps.ts */ Map<string, /* CronTask — packages/agent-core-v2/src/app/cron/cronTask.ts */ {

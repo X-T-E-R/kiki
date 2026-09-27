@@ -750,7 +750,6 @@ export class DaemonTUI {
       agentProfile: view.profile ?? this.state.appState.agentProfile,
       permissionMode: view.permissionMode ?? this.state.appState.permissionMode,
       planMode: view.planMode,
-      swarmMode: view.swarmMode,
       thinkingEffort: view.thinkingEffort ?? this.state.appState.thinkingEffort,
       contextTokens: view.contextTokens ?? 0,
       maxContextTokens: view.maxContextTokens ?? 0,
@@ -900,7 +899,6 @@ export class DaemonTUI {
       thinking: profile === undefined ? this.state.appState.thinkingEffort : undefined,
       permissionMode: this.state.appState.permissionMode,
       planMode: this.state.appState.planMode,
-      swarmMode: this.state.appState.swarmMode,
     });
     if (prepared !== undefined) {
       this.handoffPreparedMedia(prepared, controller, {
@@ -1341,9 +1339,6 @@ export class DaemonTUI {
       case 'plan':
         await this.applyPlanMode(!this.state.appState.planMode);
         return;
-      case 'swarm':
-        await this.applySwarmMode(!this.state.appState.swarmMode);
-        return;
       case 'agents':
         await this.showAgentRoster();
         return;
@@ -1458,13 +1453,6 @@ export class DaemonTUI {
     this.setAppState({ planMode });
   }
 
-  private async applySwarmMode(swarmMode: boolean): Promise<void> {
-    const controller = await this.ensureSession();
-    const session = await this.client.setSwarmMode(controller.sessionId, swarmMode);
-    controller.handleSessionRecord(session);
-    this.setAppState({ swarmMode });
-  }
-
   private async applyTitle(title: string): Promise<void> {
     const controller = await this.ensureSession();
     const session = await this.client.setTitle(controller.sessionId, title);
@@ -1482,7 +1470,6 @@ export class DaemonTUI {
         `Thinking: ${state.thinkingEffort}`,
         `Permission: ${state.permissionMode}`,
         `Plan: ${state.planMode ? 'on' : 'off'}`,
-        `Swarm: ${state.swarmMode ? 'on' : 'off'}`,
       ].join('\n'),
     );
   }
@@ -1944,7 +1931,6 @@ export class DaemonTUI {
       model: session.agent_config.model,
       permissionMode: session.agent_config.permission_mode ?? this.state.appState.permissionMode,
       planMode: session.agent_config.plan_mode ?? this.state.appState.planMode,
-      swarmMode: session.agent_config.swarm_mode ?? this.state.appState.swarmMode,
     });
   }
 
@@ -2515,7 +2501,6 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       agentProfile: input.agentProfile,
       agentFiles: input.cliOptions.agentFiles,
       inputMode: 'prompt',
-      swarmMode: false,
       thinkingEffort: input.cliOptions.thinking ?? 'off',
       contextUsage: 0,
       contextTokens: 0,

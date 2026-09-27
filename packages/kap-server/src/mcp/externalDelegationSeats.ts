@@ -20,7 +20,7 @@ const seatSchema = z.object({
   sessionId: z.string().min(1),
   principal: z.string().min(1),
   workspace: z.string().min(1),
-  mode: z.enum(['manual', 'auto', 'yolo']),
+  mode: z.enum(['manual', 'auto', 'review', 'yolo']),
   model: z.string().min(1).optional(),
   thinking: z.string().min(1).optional(),
   createdAt: z.number().int().nonnegative(),

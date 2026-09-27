@@ -5,7 +5,11 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
-import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
+import {
+  CREATED_BY_AGENT_ID_KEY,
+  CREATED_BY_SESSION_ID_KEY,
+  ISessionIndexMirror,
+} from '#/app/sessionIndex/sessionIndex';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import {
@@ -77,6 +81,19 @@ describe('SessionMetadata', () => {
       custom: {},
     });
     expect((await meta.read()).createdAt).toBeGreaterThan(0);
+  });
+
+  it('persists creator metadata and mirrors it for session-list reads', async () => {
+    const meta = ix.get(ISessionMetadata);
+    const custom = {
+      [CREATED_BY_SESSION_ID_KEY]: 'source-session',
+      [CREATED_BY_AGENT_ID_KEY]: 'main',
+    };
+    await meta.update({ custom }, { touchUpdatedAt: false });
+    expect((await ix.get(IAtomicDocumentStore).get<{ custom: Record<string, unknown> }>(META_SCOPE, 'state.json'))?.custom)
+      .toEqual(custom);
+    expect(mirror.recorded).toEqual(expect.arrayContaining([expect.objectContaining({ custom })]));
+    expect((await createFreshMetadata(ix).read()).custom).toEqual(custom);
   });
 
   it('keeps the first live usage record incomplete without a known baseline', async () => {

@@ -25,6 +25,7 @@ export interface ApprovalResponse {
   readonly feedback?: string;
   readonly selectedLabel?: string;
   readonly selectedOptionId?: string;
+  readonly reviewer?: { readonly backend: 'model' | 'jev'; readonly reason: string; readonly confidence: number };
 }
 
 export interface ISessionApprovalService {

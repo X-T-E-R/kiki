@@ -17,6 +17,22 @@ const coldFacts: SessionFacts = {
   live: false,
 };
 
+describe('toWireSession creator metadata', () => {
+  it('projects persisted creator IDs into session.metadata for session lists', () => {
+    const wire = toWireSession({
+      ...fields,
+      custom: { created_by_session_id: 'source-session', created_by_agent_id: 'main' },
+    }, '/tmp/ws', coldFacts);
+    expect(wire.metadata).toEqual({
+      cwd: '/tmp/ws', created_by_session_id: 'source-session', created_by_agent_id: 'main',
+    });
+  });
+
+  it('does not invent creator or fork ancestry for ordinary sessions', () => {
+    expect(toWireSession(fields, '/tmp/ws', coldFacts).metadata).toEqual({ cwd: '/tmp/ws' });
+  });
+});
+
 describe('toWireSession last_turn_reason', () => {
   it('falls back to the persisted outcome for a cold session', () => {
     const wire = toWireSession({ ...fields, lastTurnReason: 'failed' }, '/tmp/ws', coldFacts);

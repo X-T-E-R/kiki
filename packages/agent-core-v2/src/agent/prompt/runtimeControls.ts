@@ -3,17 +3,14 @@ import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { Error2, ErrorCodes } from '#/errors';
 import { IAgentPlanService } from '#/features/plan/plan';
-import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import type { PromptExecutionBinding } from './prompt';
 
 export function readPromptRuntimeControlChanges(accessor: ServicesAccessor, binding: PromptExecutionBinding | undefined): () => Promise<boolean> {
   if (!hasPromptRuntimeControls(binding) || binding === undefined) return async () => false;
   const plan = binding.planMode === undefined ? undefined : accessor.get(IAgentPlanService);
-  const swarm = binding.swarmMode === undefined ? undefined : accessor.get(IAgentSwarmService);
   const goal = binding.goalObjective === undefined && binding.goalControl === undefined ? undefined : accessor.get(IAgentGoalService);
   return async () => {
     if (plan !== undefined && ((await plan.status()) !== null) !== binding.planMode) return true;
-    if (swarm !== undefined && swarm.isActive !== binding.swarmMode) return true;
     if (goal === undefined) return false;
     const current = goal.getGoal().goal;
     if (binding.goalObjective !== undefined && current?.objective !== binding.goalObjective.trim()) return true;
@@ -25,7 +22,7 @@ export function readPromptRuntimeControlChanges(accessor: ServicesAccessor, bind
 }
 
 export function hasPromptRuntimeControls(binding: PromptExecutionBinding | undefined): boolean {
-  return binding !== undefined && (binding.planMode !== undefined || binding.swarmMode !== undefined ||
+  return binding !== undefined && (binding.planMode !== undefined ||
     binding.goalObjective !== undefined || binding.goalFollowUpTiming !== undefined ||
     binding.goalInitialStatus !== undefined || binding.goalControl !== undefined);
 }
@@ -33,7 +30,7 @@ export function hasPromptRuntimeControls(binding: PromptExecutionBinding | undef
 export function validatePromptRuntimeControls(accessor: ServicesAccessor, binding: PromptExecutionBinding | undefined): void {
   if (!hasPromptRuntimeControls(binding) || binding === undefined) return;
   if (accessor.get(IAgentScopeContext).agentId !== 'main') {
-    throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompt plan, swarm and goal controls are only supported by the main agent');
+    throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompt plan and goal controls are only supported by the main agent');
   }
   if (
     binding.goalObjective === undefined &&
@@ -77,7 +74,6 @@ function assertPromptGoalIdentity(goal: IAgentGoalService, expectedId: string | 
 export function preparePromptRuntimeControls(accessor: ServicesAccessor, binding: PromptExecutionBinding | undefined, expectedGoalId?: string | null): () => Promise<void> {
   validatePromptRuntimeControls(accessor, binding);
   const plan = binding?.planMode === undefined ? undefined : accessor.get(IAgentPlanService);
-  const swarm = binding?.swarmMode === undefined ? undefined : accessor.get(IAgentSwarmService);
   const goal = binding?.goalObjective === undefined && binding?.goalControl === undefined
     ? undefined : accessor.get(IAgentGoalService);
   if (goal !== undefined) assertPromptGoalIdentity(goal, expectedGoalId);
@@ -88,10 +84,6 @@ export function preparePromptRuntimeControls(accessor: ServicesAccessor, binding
         if (binding?.planMode) await plan.enter();
         else plan.exit();
       }
-    }
-    if (swarm !== undefined && swarm.isActive !== binding?.swarmMode) {
-      if (binding?.swarmMode) swarm.enter('manual');
-      else swarm.exit();
     }
     if (goal === undefined) return;
     assertPromptGoalIdentity(goal, expectedGoalId);

@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (37 sections · 1 overlay(s))
+# Index (39 sections · 1 overlay(s))
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
 #   background                      src/agent/task/configSection.ts
@@ -23,8 +23,10 @@
 #   hooks                           src/features/externalHooks/configSection.ts
 #   identity                        src/app/agentIdentity/configSection.ts
 #   image                           src/agent/media/configSection.ts
+#   interaction                     src/agent/tools/ask-user-question/configSection.ts
 #   loopControl                     src/agent/loop/configSection.ts
 #   mcp                             src/app/mcpConfig/configSection.ts
+#   memory                          src/app/memory/configSection.ts
 #   mergeAllAvailableSkills         src/app/skillCatalog/configSection.ts
 #   models                          src/app/kosongConfig/configSection.ts
 #   nbSearch                        src/app/nbSearch/configSection.ts
@@ -158,7 +160,7 @@ manual_tick = false
 #   scope: core
 # ##########################################################################
 
-# default_permission_mode: "manual" | "auto" | "yolo"
+# default_permission_mode: "manual" | "auto" | "review" | "yolo"
 
 # ##########################################################################
 # defaultPlanMode (config.toml: default_plan_mode)
@@ -246,6 +248,15 @@ advertise_as_kimi_code = false
 # read_byte_budget: integer
 
 # ##########################################################################
+# interaction
+#   owner: src/agent/tools/ask-user-question/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[interaction]
+# ask_user_question: "background" | "blocking" (default: "background")
+
+# ##########################################################################
 # loopControl (config.toml: loop_control)
 #   owner: src/agent/loop/configSection.ts
 #   scope: core
@@ -278,6 +289,18 @@ compaction_soft_context_size = 0
 [mcp]
 # startup_timeout_ms: integer
 # tool_timeout_ms: integer
+
+# ##########################################################################
+# memory
+#   owner: src/app/memory/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[memory]
+enabled = false
+approval = "auto"
+budget = 2000
+workspaces = {  }
 
 # ##########################################################################
 # mergeAllAvailableSkills (config.toml: merge_all_available_skills)
@@ -325,6 +348,12 @@ merge_all_available_skills = true
   # max_completion_tokens: integer
   # service_tier: "auto" | "default" | "flex" | "priority"
   # request_params: record<string, string | number | boolean>
+  # parameters: object
+    # temperature: number | object
+    # top_p: number | object
+    # max_completion_tokens: integer
+    # thinking_effort: string
+    # service_tier: "auto" | "default" | "flex" | "priority" | object
   # images: object
     # accepted_types: "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/heic" | "image/heif" | "image/avif" | "image/tiff" | "image/x-icon"[]
     # convert_unsupported: "off" | "auto" | "png" | "jpeg"
@@ -411,6 +440,16 @@ reuse_local_config = true
   # reason: string
 # dangerous_bash: "on" | "off" | "default"
 
+# [permission.reviewer]
+  # backend: "model" | "jev" (default: "model")
+  # model: string
+  # jev_consent: boolean (default: false)
+  # api_key: string
+  # timeout_ms: integer
+  # allow_threshold: number (default: 0.9)
+  # deny_threshold: number (default: 0.9)
+  # categories: "policy_compliance" | "no_secret_egress" | "no_irreversible_damage" | "no_outward_effect" | "prompt_injection_absent"[] (default: ["policy_compliance","no_secret_egress","no_irreversible_damage","no_outward_effect","prompt_injection_absent"])
+
 # ##########################################################################
 # plan
 #   owner: src/features/plan/configSection.ts
@@ -466,6 +505,12 @@ enter_approval_timeout_ms = 60000
   # base_url: string
   # custom_headers: record<string, string>
   # default_model: string
+  # defaults: object
+    # temperature: number | object
+    # top_p: number | object
+    # max_completion_tokens: integer
+    # thinking_effort: string
+    # service_tier: "auto" | "default" | "flex" | "priority" | object
   # request_identity: object
     # preset: "codex_compatible" | "grok_build_compatible" | "kimi_code" | "none"
     # overrides: object

@@ -34,9 +34,35 @@ export const PermissionRuleSchema = z.object({
 
 export const DangerousBashGuardSchema = z.enum(['on', 'off', 'default']);
 
+export const ReviewerCategorySchema = z.enum([
+  'policy_compliance',
+  'no_secret_egress',
+  'no_irreversible_damage',
+  'no_outward_effect',
+  'prompt_injection_absent',
+]);
+
+export const PermissionReviewerConfigSchema = z.object({
+  backend: z.enum(['model', 'jev']).default('model'),
+  model: z.string().min(1).optional(),
+  jevConsent: z.boolean().default(false),
+  apiKey: z.string().min(1).optional(),
+  timeoutMs: z.number().int().min(100).max(30_000).optional(),
+  allowThreshold: z.number().min(0.5).max(1).default(0.9),
+  denyThreshold: z.number().min(0.5).max(1).default(0.9),
+  categories: z.array(ReviewerCategorySchema).min(1).default([
+    'policy_compliance',
+    'no_secret_egress',
+    'no_irreversible_damage',
+    'no_outward_effect',
+    'prompt_injection_absent',
+  ]),
+});
+
 export const PermissionConfigSchema = z.object({
   rules: z.array(PermissionRuleSchema).optional(),
   dangerousBash: DangerousBashGuardSchema.optional(),
+  reviewer: PermissionReviewerConfigSchema.optional(),
 });
 
 export type PermissionConfig = z.infer<typeof PermissionConfigSchema>;
@@ -73,6 +99,11 @@ export const permissionFromToml = (rawSnake: unknown): unknown => {
   const out: Record<string, unknown> = {};
   if (rules.length > 0) out['rules'] = rules;
   if (raw['dangerousBash'] !== undefined) out['dangerousBash'] = raw['dangerousBash'];
+  if (raw['reviewer'] !== undefined) {
+    out['reviewer'] = isPlainObject(raw['reviewer'])
+      ? transformPlainObject(raw['reviewer'])
+      : raw['reviewer'];
+  }
   return out;
 };
 
@@ -123,6 +154,13 @@ export const permissionToToml = (value: unknown, rawSnake: unknown): unknown => 
     delete out['rules'];
   }
   setDefined(out, 'dangerous_bash', value['dangerousBash']);
+  setDefined(
+    out,
+    'reviewer',
+    isPlainObject(value['reviewer'])
+      ? plainObjectToToml(value['reviewer'], out['reviewer'])
+      : value['reviewer'],
+  );
   return out;
 };
 

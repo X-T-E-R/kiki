@@ -866,7 +866,7 @@ function permissionConfig(
     );
   }
   const option = matches[0]!;
-  const value = mapping[mode];
+  const value = mapping[mode === 'review' ? 'manual' : mode];
   if (typeof value === 'boolean') {
     if (option.type !== 'boolean') {
       throw new Error2(

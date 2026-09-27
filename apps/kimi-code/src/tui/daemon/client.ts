@@ -151,7 +151,7 @@ export class DaemonClient implements SessionTransport {
     return this.updateSessionProfile(sessionId, { agent_config: { model } });
   }
 
-  setPermission(sessionId: string, mode: 'manual' | 'yolo' | 'auto'): Promise<Session> {
+  setPermission(sessionId: string, mode: 'manual' | 'auto' | 'review' | 'yolo'): Promise<Session> {
     return this.updateSessionProfile(sessionId, { agent_config: { permission_mode: mode } });
   }
 
@@ -165,10 +165,6 @@ export class DaemonClient implements SessionTransport {
 
   setPlanMode(sessionId: string, planMode: boolean): Promise<Session> {
     return this.updateSessionProfile(sessionId, { agent_config: { plan_mode: planMode } });
-  }
-
-  setSwarmMode(sessionId: string, swarmMode: boolean): Promise<Session> {
-    return this.updateSessionProfile(sessionId, { agent_config: { swarm_mode: swarmMode } });
   }
 
   setTitle(sessionId: string, title: string): Promise<Session> {

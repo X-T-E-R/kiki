@@ -8,7 +8,6 @@ import {
   IAgentTitlePromptSource,
   IAgentGoalService,
   IAgentLoopService,
-  IAgentSwarmService,
   IAgentContextMemoryService,
   IAgentExecutionService,
   IAgentLifecycleService,
@@ -339,12 +338,11 @@ describe('server-v2 /api prompts', () => {
     expect(main.accessor.get(IAgentProfileService).getModel()).toBe('stub');
   });
 
-  it.each([false, true])('applies prompt-bound plan and swarm controls with skills=%s', async (skills) => {
+  it.each([false, true])('applies prompt-bound plan controls with skills=%s while ignoring retired swarm mode', async (skills) => {
     const id = await createSession(home as string);
     await createHeldMainAgent(id);
     const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
     const plan = main.accessor.get(IAgentPlanService);
-    const swarm = main.accessor.get(IAgentSwarmService);
     const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'plan this work' }],
       skills: skills ? [{ name: 'kiki-ops' }] : undefined,
@@ -353,20 +351,17 @@ describe('server-v2 /api prompts', () => {
     expect(submitted.body.code, submitted.body.msg).toBe(0);
     expect(submitted.body.data.status).toBe('running');
     expect(await plan.status()).not.toBeNull();
-    expect(swarm.isActive).toBe(true);
     const prompt = main.accessor.get(IAgentPromptService);
     const queued = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'execute later' }], plan_mode: false, swarm_mode: false,
     });
     expect(queued.body.data.status).toBe('queued');
     expect(await plan.status()).not.toBeNull();
-    expect(swarm.isActive).toBe(true);
     const steer = await call('POST', `/api/sessions/${id}/prompts/${queued.body.data.prompt_id}:steer`);
     expect(steer.body.code).toBe(40001);
     prompt.abort(submitted.body.data.prompt_id);
     await vi.waitFor(async () => {
       expect(await plan.status()).toBeNull();
-      expect(swarm.isActive).toBe(false);
     });
   });
 
@@ -391,7 +386,6 @@ describe('server-v2 /api prompts', () => {
     expect(sentNow.body.code, sentNow.body.msg).toBe(0);
     expect(main.accessor.get(IAgentPromptService).list().pending).toHaveLength(0);
     expect((await main.accessor.get(IAgentPlanService).status()) !== null).toBe(enabled);
-    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(enabled);
     expect(goal.getGoal().goal?.status).toBe('paused');
   });
 
@@ -466,11 +460,10 @@ describe('server-v2 /api prompts', () => {
     expect(queued.body.data.status).toBe('queued');
     prompt.abort(queued.body.data.prompt_id);
     expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
-    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(false);
     expect(goal.getGoal().goal).toMatchObject({ objective: 'existing goal', status: 'paused' });
   });
 
-  it('rejects invalid goal controls before permission, plan and swarm side effects', async () => {
+  it('rejects invalid goal controls before permission and plan side effects', async () => {
     const id = await createSession(home as string);
     await createHeldMainAgent(id);
     const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
@@ -484,7 +477,6 @@ describe('server-v2 /api prompts', () => {
     }
     expect(main.accessor.get(IAgentPermissionModeService).mode).toBe(mode);
     expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
-    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(false);
     expect(main.accessor.get(IAgentGoalService).getGoal().goal).toBeNull();
   });
 
@@ -493,7 +485,7 @@ describe('server-v2 /api prompts', () => {
     await createMainAgent(id);
     const session = getLiveSessionById(server!.core.accessor, id)!;
     const child = await session.accessor.get(IAgentLifecycleService).fork('main');
-    for (const control of [{ plan_mode: true }, { swarm_mode: true }, { goal_objective: 'child goal' }, { goal_control: 'pause' }]) {
+    for (const control of [{ plan_mode: true }, { goal_objective: 'child goal' }, { goal_control: 'pause' }]) {
       const result = await call('POST', `/api/sessions/${id}/prompts`, {
         content: [{ type: 'text', text: 'not supported' }], agent_id: child.id, ...control,
       });
@@ -515,7 +507,6 @@ describe('server-v2 /api prompts', () => {
     expect(submitted.body.code, submitted.body.msg).toBe(0);
     expect(submitted.body.data.status).toBe('blocked');
     expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
-    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(false);
     expect(main.accessor.get(IAgentGoalService).getGoal().goal).toBeNull();
     hook.dispose();
   });
@@ -532,7 +523,6 @@ describe('server-v2 /api prompts', () => {
     });
     expect(submitted.body.code, submitted.body.msg).toBe(50001);
     expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
-    expect(main.accessor.get(IAgentSwarmService).isActive).toBe(false);
     expect(main.accessor.get(IAgentGoalService).getGoal().goal).toBeNull();
     bind.mockRestore();
   });

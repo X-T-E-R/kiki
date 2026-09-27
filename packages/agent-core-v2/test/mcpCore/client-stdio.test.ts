@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Error2 } from '#/errors';
 import { mergeStdioEnv, StdioMcpClient, type StdioMcpClientOptions } from '#/mcpCore/client-stdio';
@@ -304,6 +304,7 @@ describe('StdioMcpClient', () => {
 
   it('buffers an early close and replays it on listener registration', async () => {
     const banner = `kimi-test-early-${Date.now()}`;
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
     const client = createClient({
       transport: 'stdio',
       command: process.execPath,
@@ -332,6 +333,8 @@ describe('StdioMcpClient', () => {
         await new Promise((r) => setTimeout(r, 10));
       }
       expect(transportConfirmedDead).toBe(true);
+      const spawned = await spawn.mock.results[0]!.value;
+      await spawned.wait();
 
       let received: { stderr?: string } | undefined;
       let syncedOnRegister = false;
@@ -342,6 +345,7 @@ describe('StdioMcpClient', () => {
       expect(syncedOnRegister).toBe(true);
       expect(received?.stderr ?? '').toContain(banner);
     } finally {
+      spawn.mockRestore();
       await client.close();
     }
   }, 15000);

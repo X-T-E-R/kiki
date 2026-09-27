@@ -9,6 +9,9 @@ export const CHILD_SESSION_KIND_KEY = 'child_session_kind';
 
 export const CHILD_SESSION_KIND = 'child';
 
+export const CREATED_BY_SESSION_ID_KEY = 'created_by_session_id';
+export const CREATED_BY_AGENT_ID_KEY = 'created_by_agent_id';
+
 export interface SessionUsageSummary {
   readonly total: TokenUsage;
   readonly byModel?: Readonly<Record<string, TokenUsage>>;

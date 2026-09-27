@@ -1,8 +1,9 @@
 import { matchSingleMediaPathTag } from '@kiki/agent-core-v2/agent/media/mediaRef';
 
 export interface ExtractedWireMessage {
-  readonly role: 'user' | 'assistant';
+  readonly role: 'user' | 'assistant' | 'tool';
   readonly text: string;
+  readonly toolCallId?: string;
   /** Epoch ms; undefined when the record carries no usable time. */
   readonly time?: number;
   /**
@@ -31,6 +32,7 @@ export type TurnEffect =
  */
 export type StepEffect =
   | { readonly kind: 'begin'; readonly uuid: string; readonly ordinal?: number }
+  | { readonly kind: 'call'; readonly uuid: string; readonly toolCallId: string }
   | { readonly kind: 'none' };
 
 export interface WireLineAnalysis {
@@ -192,6 +194,8 @@ export function analyzeWireLine(line: string): WireLineAnalysis {
       uuid?: unknown;
       step?: unknown;
       stepUuid?: unknown;
+      toolCallId?: unknown;
+      result?: unknown;
     };
     const messages: ExtractedWireMessage[] = [];
     if (e.type === 'step.begin') {
@@ -225,6 +229,19 @@ export function analyzeWireLine(line: string): WireLineAnalysis {
       }
     } else if (e.type === 'tool.call') {
       turn = ENSURE;
+      if (stepUuid !== undefined && typeof e.toolCallId === 'string') {
+        return { messages, turn, step: { kind: 'call', uuid: stepUuid, toolCallId: e.toolCallId } };
+      }
+    } else if (e.type === 'tool.result' && typeof e.toolCallId === 'string') {
+      const result = e.result;
+      if (result !== null && typeof result === 'object') {
+        const output = (result as { output?: unknown }).output;
+        const text = (typeof output === 'string' ? output : textOfContent(output)).trim();
+        if (text.length > 0) {
+          messages.push({ role: 'tool', text, time, toolCallId: e.toolCallId });
+          turn = ENSURE;
+        }
+      }
     }
     return { messages, turn, step: STEP_NONE };
   }

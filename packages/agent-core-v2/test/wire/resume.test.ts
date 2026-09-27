@@ -422,6 +422,7 @@ describe('Agent resume', () => {
           tool[call_resume_skill]: text "skill loaded"
           user: text "<system-reminder>\\nresume skill body\\n</system-reminder>"
           user: text "Fresh prompt after deferred resume"
+          user: text <auto-mode-enter-reminder>
     `);
     await ctx.expectResumeMatches();
   });
@@ -594,15 +595,15 @@ describe('Agent resume', () => {
     try {
       const backgroundPersistence = createAgentTaskPersistence(homeDir);
       ctx = testAgent(homeDirServices(homeDir), { autoConfigure: false, persistence });
-      await backgroundPersistence.writeTask({
+      await backgroundPersistence.commitTerminalTask({
         taskId: 'agent-new00000',
         kind: 'agent',
         description: 'newly delivered',
         startedAt: 1_700_000_000,
         endedAt: 1_700_000_010,
+        detached: true,
         status: 'completed',
-      });
-      await backgroundPersistence.appendTaskOutput('agent-new00000', 'newly delivered summary');
+      }, 'newly delivered summary');
       const steer = vi.spyOn(ctx.get(IAgentPromptService), 'steer');
 
       await ctx.restorePersisted();

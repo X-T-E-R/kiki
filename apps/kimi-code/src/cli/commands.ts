@@ -43,7 +43,7 @@ export function createProgram(
     .option('-c, --continue', 'Continue the previous session for the working directory.', false)
     .addOption(new Option('-C').hideHelp().default(false))
     .option('-y, --yolo', 'Auto-approve regular tool calls; the agent may still ask questions.', false)
-    .option('--auto', 'Start in auto permission mode: fully autonomous, the agent will not ask questions.', false)
+    .option('--auto', 'Approve routine actions automatically; ask for protected access or user input.', false)
     .addOption(
       new Option(
         '-m, --model <model>',

@@ -203,6 +203,7 @@ describe('server-v2 /api skills', () => {
       const reached = new Promise<void>((resolve) => { entered = resolve; });
       const gate = new Promise<void>((resolve) => { resume = resolve; });
       Object.defineProperty(catalog, 'ready', {
+        // oxlint-disable-next-line unicorn/no-thenable -- the fake `ready` must be a thenable so the request suspends exactly inside `await catalog.ready`, where this test observes the held session pin
         value: { then: (finish: () => void) => { entered(); return gate.then(finish); } },
         configurable: true,
       });

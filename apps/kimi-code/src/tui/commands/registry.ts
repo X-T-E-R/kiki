@@ -21,11 +21,6 @@ const GOAL_NEXT_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
   { value: 'manage', description: 'Manage upcoming goals' },
 ];
 
-const SWARM_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
-  { value: 'on', description: 'Turn swarm mode on' },
-  { value: 'off', description: 'Turn swarm mode off' },
-];
-
 const ADD_DIR_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
   { value: 'list', description: 'Show configured additional workspace directories' },
 ];
@@ -42,11 +37,6 @@ export function goalArgumentCompletions(argumentPrefix: string): AutocompleteIte
     );
   }
   return completeLeadingArg(GOAL_ARG_COMPLETIONS, argumentPrefix);
-}
-
-/** Argument autocompletion for the `/swarm` command (subcommands). */
-export function swarmArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
-  return completeLeadingArg(SWARM_ARG_COMPLETIONS, argumentPrefix);
 }
 
 /** Argument autocompletion for the `/add-dir` command. */
@@ -143,7 +133,7 @@ export const BUILTIN_SLASH_COMMANDS = [
   {
     name: 'auto',
     aliases: [],
-    description: 'Toggle Auto mode: fully autonomous, agent decides everything without asking.',
+    description: 'Toggle Auto mode: approve routine actions; ask before protected access.',
     priority: 99,
     availability: 'always',
   },
@@ -167,15 +157,6 @@ export const BUILTIN_SLASH_COMMANDS = [
     description: 'Toggle plan mode',
     priority: 100,
     availability: (args) => (args.trim().toLowerCase() === 'clear' ? 'idle-only' : 'always'),
-  },
-  {
-    name: 'swarm',
-    aliases: [],
-    description: 'Toggle swarm mode or run one task in swarm mode',
-    priority: 100,
-    argumentHint: '[on|off] | <task>',
-    completeArgs: swarmArgumentCompletions,
-    availability: 'idle-only',
   },
   {
     name: 'model',

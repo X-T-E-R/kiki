@@ -8,6 +8,8 @@ export const RESEARCH_READONLY_TOOLS: readonly string[] = Object.freeze([
   'ReadMediaFile',
   'Glob',
   'Grep',
+  'HistorySearch',
+  'HistoryRead',
   'WebSearch',
   'FetchURL',
 ]);

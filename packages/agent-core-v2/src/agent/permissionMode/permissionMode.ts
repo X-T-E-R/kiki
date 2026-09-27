@@ -10,7 +10,8 @@ export interface PermissionModeChangedContext {
 const PERMISSION_MODE_RANK: Readonly<Record<PermissionMode, number>> = {
   manual: 0,
   auto: 1,
-  yolo: 2,
+  review: 2,
+  yolo: 3,
 };
 
 export function constrainPermissionMode(

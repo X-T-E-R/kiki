@@ -21,7 +21,7 @@ export interface PromptSubmitContext {
  * require their own turn. Prompts wait for active autonomous turns and take
  * priority over the next goal continuation. Loop admission remains reserved
  * throughout asynchronous execution preparation.
- * Plan, swarm and goal changes run after profile/media preparation and submit
+ * Plan and goal changes run after profile/media preparation and submit
  * hooks. A later launch failure reports a failed prompt without rolling back
  * successful domain operations or retrying those controls automatically.
  * Goal operations retain their admitted goal identity; replacing that goal,
@@ -39,7 +39,6 @@ export interface PromptExecutionBinding {
   readonly planGate?: PlanGate;
   /** Applied at prompt launch, after media intake and submit hooks; never while queued. */
   readonly planMode?: boolean;
-  readonly swarmMode?: boolean;
   readonly goalObjective?: string;
   readonly goalFollowUpTiming?: GoalFollowUpTiming;
   readonly goalInitialStatus?: 'active' | 'paused';

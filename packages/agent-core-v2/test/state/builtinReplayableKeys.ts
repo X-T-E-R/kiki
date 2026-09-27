@@ -27,7 +27,6 @@ import { usageKey } from '#/agent/usage/usageOps';
 import { panelAccountingKey } from '#/agent/usage/panelAccounting';
 import { userToolKey } from '#/agent/userTool/userToolOps';
 import { planKey } from '#/features/plan/planOps';
-import { swarmKey } from '#/features/swarm/swarmOps';
 import { cronKey } from '#/session/cron/cronOps';
 import { interactionKey } from '#/session/interaction/interactionOps';
 import { todoKey } from '#/session/todo/todoOps';
@@ -61,7 +60,6 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   panelAccountingKey,
   userToolKey,
   planKey,
-  swarmKey,
   cronKey,
   interactionKey,
   todoKey,

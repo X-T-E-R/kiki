@@ -56,7 +56,7 @@ type PermissionPolicyResult =
 |---|---|---|---|
 | 1 | 外部钩子否决 | `pre-tool-call-hook` | 用户 `PreToolUse` hook 是否返回 block |
 | 2 | 工具批量排他 | `agent-swarm-exclusive-deny`、`swarm-mode-agent-swarm-approve` | 同批工具结构（AgentSwarm 须单独）+ swarm 模式 |
-| 3 | 运行模式姿态 | `auto-mode-approve`、`yolo-mode-approve`、`auto-mode-ask-user-question-deny` | `permission.mode` |
+| 3 | 运行模式姿态 | `auto-mode-approve`、`yolo-mode-approve`（当前实现；Auto 不再禁止 `AskUserQuestion`） | `permission.mode` |
 | 4 | Plan 模式约束 | `plan-mode-guard-deny`、`plan-mode-tool-approve`、`exit-plan-mode-review-ask` | `planMode.isActive` + plan 文件路径 + review 状态 |
 | 5 | Goal 启动审批 | `goal-start-review-ask` | `tool === CreateGoal` 且非 auto |
 | 6 | 静态配置规则 | `user-configured-deny/ask/allow` | 用户/项目/turn 配置的 DSL 规则 |
@@ -317,7 +317,7 @@ type ToolResourceAccess =
 渐进式，避免一步到位：
 
 1. ~~**Domain 维度下沉**~~（已完成）。plan guard/review、goal-start review、swarm 批量排他、btw deny-all 已从链上移出，以 `onBeforeExecuteTool` veto 监听器挂在各自 domain（即时 `veto`/`allow`/`pass` 表态 + cold `waitUntil` factory 承载审批往返）；审批往返提取为共享的 `IAgentToolApprovalService`；`registerPolicy` 机制删除（btw 是唯一生产用例）。链上只剩 12 个危险度判定节点。
-2. **档位 × 路由拆分**。把「危险度档位」（只读/读写/yolo——`yolo-mode-approve` 的实质）与「交互路由」（`auto-mode-approve` / `auto-mode-ask-user-question-deny` 的实质：不经用户地路由 ask 与 review）拆开；路由层落在 `session/approval` broker 上，剩余 3 个 mode policy 在此步离开链。
+2. **档位 × 路由拆分**。把「危险度档位」（只读/读写/yolo——`yolo-mode-approve` 的实质）与「交互路由」（将审批送给已连接用户、无人连接时取消请求）拆开。当前 `auto-mode-approve` 仍自动批准普通操作，敏感访问会请求审批，`AskUserQuestion` 可用；将路由层落在 `session/approval` broker 后再评估剩余 mode policy 的位置。
 3. **注册表 + Composer（行为零变化）**。把 `PermissionPolicyService` 构造函数里硬编码的 `new`，改为从 `IPermissionPolicyRegistry` 读取并组装；mode 守门提升为 `modes` 元数据。获得多 agent/mode 可选链与外部注册入口。
 4. **第四步（按需）：扩展资源类型**。当非文件资源（网络/DB/shell）需要结构化维度时，扩展 `ToolResourceAccess` 联合。
 5. **第五步（按需）：匹配内核换 Casbin**。仅当外部规则真的需要 RBAC/ABAC 语义时，把数据路径的规则匹配内核换成 Casbin。不到此步不引。

@@ -53,7 +53,12 @@ describe('config.toml writeback preservation', () => {
     ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
     ix.set(IConfigService, new SyncDescriptor(ConfigService));
     const config = ix.get(IConfigService);
-    await config.ready;
+    try {
+      await config.ready;
+    } catch (error) {
+      disposables.dispose();
+      throw error;
+    }
     const readText = async (key = 'config.toml'): Promise<string> => {
       const bytes = await storage.read('', key);
       if (bytes === undefined) throw new Error(`${key} missing`);
@@ -199,13 +204,16 @@ describe('config.toml writeback preservation', () => {
     disposables.dispose();
   });
 
-  it('loads credentials with precedence, migrates old keys once, and keeps a byte-exact backup', async () => {
+  it('migrates a matching legacy key once without rewriting the existing credential', async () => {
     const seed = '# original config\n[providers.acme]\nbase_url = "https://example.test"\napi_key   = "legacy" # private\n[providers.acme.oauth]\nstorage = "file"\nkey = "account-ref"\n';
-    const credentials = '# existing secret\n[providers.acme]\napi_key = "new-key" # preserve\n';
+    const credentials = '# existing secret\n[providers.acme]\napi_key = "legacy" # preserve\n';
     const { config, disposables, storage, readText } = await setup(seed, {}, credentials);
 
-    expect(config.get<Record<string, { apiKey: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).toBe('new-key');
-    expect(await readText('config.toml.bak-' + new Date().toISOString().slice(0, 10))).toBe(seed);
+    expect(config.get<Record<string, { apiKey: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).toBe('legacy');
+    const backups = await storage.list('', 'config.toml.bak-');
+    expect(backups).toHaveLength(1);
+    expect(backups[0]).toMatch(/^config\.toml\.bak-\d{4}-\d{2}-\d{2}-[0-9a-f-]{36}$/);
+    expect(await readText(backups[0]!)).toBe(seed);
     const publicText = await readText();
     expect(publicText).toContain('# original config');
     expect(publicText).toContain('key = "account-ref"');
@@ -215,8 +223,20 @@ describe('config.toml writeback preservation', () => {
     const writeSpy = vi.spyOn(storage, 'write');
     await config.reload();
     expect(writeSpy).not.toHaveBeenCalled();
-    expect(await readText('config.toml.bak-' + new Date().toISOString().slice(0, 10))).toBe(seed);
+    expect(await storage.list('', 'config.toml.bak-')).toEqual(backups);
+    expect(await readText(backups[0]!)).toBe(seed);
     disposables.dispose();
+  });
+
+  it('keeps both original files and creates no backup when legacy and stored keys conflict', async () => {
+    const seed = '[providers.acme]\napi_key = "legacy"\n';
+    const credentials = '[providers.acme]\napi_key = "new-key"\n';
+    const storage = new InMemoryStorageService();
+
+    await expect(setup(seed, {}, credentials, storage)).rejects.toThrow('conflicting inline and stored secrets');
+    expect(new TextDecoder().decode((await storage.read('', 'config.toml'))!)).toBe(seed);
+    expect(new TextDecoder().decode((await storage.read('', 'credentials.toml'))!)).toBe(credentials);
+    expect(await storage.list('', 'config.toml.bak-')).toEqual([]);
   });
 
   it('routes provider, model, registry and header secrets separately while preserving both files', async () => {

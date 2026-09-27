@@ -364,19 +364,16 @@ describe('DaemonTUI commands', () => {
     expect(tui.state.appState.permissionMode).toBe('auto');
   });
 
-  it('applies plan, swarm, and title session actions through REST', async () => {
+  it('applies plan and title session actions through REST', async () => {
     const { tui, internal } = driver();
 
     await internal.handleSlash('/plan');
-    await internal.handleSlash('/swarm');
     await internal.handleSlash('/title Release session');
 
     expect(internal.client.setPlanMode).toHaveBeenCalledWith('session-1', true);
-    expect(internal.client.setSwarmMode).toHaveBeenCalledWith('session-1', true);
     expect(internal.client.setTitle).toHaveBeenCalledWith('session-1', 'Release session');
     expect(tui.state.appState).toMatchObject({
       planMode: true,
-      swarmMode: true,
       sessionTitle: 'Release session',
     });
   });
@@ -1255,7 +1252,6 @@ describe('DaemonTUI commands', () => {
       thinking: undefined,
       permissionMode: 'manual',
       planMode: false,
-      swarmMode: false,
     });
   });
 

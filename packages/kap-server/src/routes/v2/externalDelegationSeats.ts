@@ -34,7 +34,7 @@ interface RouteReply {
   send(payload: unknown): void;
 }
 
-const modeSchema = z.enum(['manual', 'auto', 'yolo']);
+const modeSchema = z.enum(['manual', 'auto', 'review', 'yolo']);
 const seatCreateSchema = z.object({
   workspace: z.string().min(1),
   principal: z.string().min(1),

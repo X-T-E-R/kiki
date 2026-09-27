@@ -12,6 +12,8 @@ export class AutoModeApprovePermissionPolicyService implements PermissionPolicy 
   ) {}
 
   evaluate(): PermissionPolicyResult | undefined {
-    return this.modeService.mode === 'auto' ? { kind: 'approve' } : undefined;
+    return this.modeService.mode === 'auto' || this.modeService.mode === 'review'
+      ? { kind: 'approve' }
+      : undefined;
   }
 }

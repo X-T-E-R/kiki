@@ -5,7 +5,6 @@ import {
   resolveSlashCommandAvailability,
   addDirArgumentCompletions,
   sortSlashCommands,
-  swarmArgumentCompletions,
   type KimiSlashCommand,
 } from '#/tui/commands/index';
 import { describe, expect, it } from 'vitest';
@@ -49,29 +48,8 @@ describe('built-in slash command registry', () => {
     expect(resolveSlashCommandAvailability(plan!, 'clear')).toBe('idle-only');
   });
 
-  it('keeps swarm mode changes and swarm tasks idle-only', () => {
-    const swarm = findBuiltInSlashCommand('swarm');
-    expect(swarm).toBeDefined();
-    expect((swarm as KimiSlashCommand).experimentalFlag).toBeUndefined();
-    expect(resolveSlashCommandAvailability(swarm!, 'on')).toBe('idle-only');
-    expect(resolveSlashCommandAvailability(swarm!, 'off')).toBe('idle-only');
-    expect(resolveSlashCommandAvailability(swarm!, 'Ship feature X')).toBe('idle-only');
-  });
-
-  it('offers swarm subcommand argument completions', () => {
-    const values = (prefix: string): string[] | null => {
-      const items = swarmArgumentCompletions(prefix);
-      return items === null ? null : items.map((item) => item.value);
-    };
-
-    expect(values('')).toEqual(['on', 'off']);
-    expect(values('O')).toEqual(['on', 'off']);
-    expect(swarmArgumentCompletions('of')).toEqual([
-      { value: 'off', label: 'off', description: 'Turn swarm mode off' },
-    ]);
-    expect(values('on')).toBeNull();
-    expect(values('off')).toBeNull();
-    expect(values('Ship feature X')).toBeNull();
+  it('does not expose the retired swarm command', () => {
+    expect(findBuiltInSlashCommand('swarm')).toBeUndefined();
   });
 
   it('offers add-dir list and directory argument completions', () => {

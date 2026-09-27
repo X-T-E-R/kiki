@@ -1256,6 +1256,19 @@ describe('TranscriptWireAdapter', () => {
     ).toEqual(['goal', 'goal', 'plan.enter', 'plan.revision', 'swarm.enter', 'swarm.exit', 'interruption']);
   });
 
+  it('projects reviewer provenance from an approval resolution', () => {
+    const transcript = replay([
+      { type: 'interaction.request', id: 'review-1', kind: 'approval', toolCallId: 'call-1', request: { toolName: 'Bash' } },
+      { type: 'interaction.resolved', id: 'review-1', response: {
+        decision: 'approved', feedback: 'Approved by reviewer: Matches request',
+        reviewer: { backend: 'model', reason: 'Matches request', confidence: 0.97 },
+      } },
+    ]);
+    expect(transcript.getInteraction('review-1')).toMatchObject({
+      state: 'approved', reviewer: { backend: 'model', reason: 'Matches request', confidence: 0.97 },
+    });
+  });
+
   it('resolves interaction outcomes and cancels pending interactions at cold replay completion', () => {
     const transcript = replay([
       {

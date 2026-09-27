@@ -23,7 +23,7 @@ export interface Interaction<TPayload = unknown> {
   readonly createdAt: number;
 }
 
-export type InteractionCancellationReason = 'turn_ended' | 'agent_closed';
+export type InteractionCancellationReason = 'turn_ended' | 'agent_closed' | 'no_consumer';
 
 export interface InteractionCancellation {
   readonly cancelled: true;
@@ -33,7 +33,7 @@ export interface InteractionCancellation {
 export function isInteractionCancellation(response: unknown): response is InteractionCancellation {
   if (typeof response !== 'object' || response === null) return false;
   const value = response as { readonly cancelled?: unknown; readonly reason?: unknown };
-  return value.cancelled === true && (value.reason === 'turn_ended' || value.reason === 'agent_closed');
+  return value.cancelled === true && (value.reason === 'turn_ended' || value.reason === 'agent_closed' || value.reason === 'no_consumer');
 }
 
 export interface InteractionResolution {

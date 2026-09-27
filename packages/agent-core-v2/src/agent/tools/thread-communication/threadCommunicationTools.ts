@@ -119,7 +119,7 @@ export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool 
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadList';
   readonly description =
-    'List enabled local threads. Results are newest first and can be continued with the returned cursor.';
+    'List unarchived Kiki sessions (threads) on this host, including this one, that allow thread communication, newest first, with the thread reference (host_id, workspace_id, session_id) the other thread tools need and each thread\'s state (cold, idle, running). Use it to find an existing session; to delegate new work, use AgentRun. `limit` is 1-100 (default 50). Pass `cursor` from the previous result to get the next page, with the same `workspace_id` filter; a cursor from a different filter is rejected.';
   readonly parameters = toInputJsonSchema(ListThreadsToolInputSchema);
 
   constructor(
@@ -150,7 +150,7 @@ export class ReadThreadTool extends ThreadToolBase implements IReadThreadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadRead';
   readonly description =
-    'Read completed main-agent turns from a local thread without resuming a cold thread.';
+    'Read the finished main-agent turns of a local thread without resuming it. Each turn has its input, output, and a `reason` of completed, cancelled, failed, or blocked; a turn still running is not included. Returns the newest `limit` turns (1-100, default 20) in chronological order. Pass the returned `cursor` with the same thread to page to older turns; a cursor from another thread is rejected.';
   readonly parameters = toInputJsonSchema(ReadThreadToolInputSchema);
 
   constructor(
@@ -184,7 +184,7 @@ export class SendMessageToThreadTool
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadSend';
   readonly description =
-    'Persist and queue a user-role peer message for another enabled local thread. Reuse the same idempotency key only for the same message.';
+    'Send a message to another local thread; it arrives there as a user message attributed to this thread. The message is stored durably, then delivered right away when possible: it starts a turn or joins the running one (`delivery: delivered`), otherwise waits in that thread\'s queue (`pending`); `undeliverable` means it was rejected. Sending can resume a cold thread and use model quota. You cannot send to your own thread. Reuse an `idempotency_key` only to retry the same content; a different message with a used key fails. Use ThreadWait to watch for the reply.';
   readonly parameters = toInputJsonSchema(SendMessageToThreadToolInputSchema);
 
   constructor(
@@ -216,7 +216,7 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadWait';
   readonly description =
-    'Wait for terminal, attention, lifecycle, or undeliverable-message activity from up to eight local threads.';
+    'Wait for new activity on 1-8 distinct local threads: a turn ending (terminal), the thread waiting on an approval or question (attention), a lifecycle change such as close or archive, or an undeliverable message. Returns as soon as any listed thread has activity after its cursor, or with `timedOut: true` after `timeout_ms` (0-60000, default 30000; 0 checks once). Without a cursor, only activity after the call starts counts. Pass each thread\'s returned `cursor` into the next call so nothing is missed or repeated; if a cursor has expired, retry without it. Use ThreadRead to read the turn content.';
   readonly parameters = toInputJsonSchema(WaitThreadsToolInputSchema);
 
   constructor(

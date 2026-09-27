@@ -30,7 +30,7 @@ import { ToolAccesses, type ExecutableToolResult } from '#/tool/toolContract';
 import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 
-import { createTestAgent } from '../../harness';
+import { createTestAgent, hostEnvironmentServices } from '../../harness';
 import { stubWireJournal } from '../../wire/stubs';
 
 const noopBlob: IAgentBlobService = {
@@ -485,7 +485,10 @@ describe('StaleGuardService in the agent test harness', () => {
     const dir = await mkdtemp(join(tmpdir(), 'file-freshness-e2e-'));
     const file = join(dir, 'a.txt');
     await writeFile(file, 'alpha beta', 'utf8');
-    const ctx = createTestAgent();
+    const ctx = createTestAgent(
+      { cwd: dir },
+      hostEnvironmentServices(dir, process.platform === 'win32' ? 'win32' : 'posix'),
+    );
     try {
       await ctx.rpc.setPermission({ mode: 'yolo' });
 

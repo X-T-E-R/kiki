@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  ISessionInteractionService,
   ISessionQuestionService,
   getLiveSessionById,
   type QuestionRequest,
@@ -119,6 +120,9 @@ describe('server-v2 /api/sessions/{sid}/questions', () => {
       metadata: { cwd: home as string },
     });
     expect(body.code).toBe(0);
+    const session = getLiveSessionById(server!.core.accessor, body.data.id);
+    expect(session).toBeDefined();
+    session!.accessor.get(ISessionInteractionService).acquireConsumer('question-route-test-client');
     return body.data.id;
   }
 

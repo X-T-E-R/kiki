@@ -13,7 +13,6 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
-import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import type { AgentRunHandle } from '#/session/subagent/subagent';
@@ -39,7 +38,6 @@ interface FakeAgent {
   activePrompt: unknown;
   pendingPrompts: unknown[];
   activeTasks: unknown[];
-  swarmActive: boolean;
 }
 
 function fakeAgent(id: string): FakeAgent {
@@ -53,7 +51,6 @@ function fakeAgent(id: string): FakeAgent {
     activePrompt: undefined,
     pendingPrompts: [],
     activeTasks: [],
-    swarmActive: false,
   };
   const run = vi.fn(async (): Promise<AgentRunHandle> => {
     const completion = new Promise<{ summary: string }>((resolve, reject) => {
@@ -84,7 +81,6 @@ function fakeAgent(id: string): FakeAgent {
     ],
     [IAgentPromptService, { list: () => ({ active: agent.activePrompt, pending: agent.pendingPrompts }) }],
     [IAgentTaskService, { list: () => agent.activeTasks }],
-    [IAgentSwarmService, { get isActive() { return agent.swarmActive; } }],
     [IAgentProfileService, { data: () => ({ profileName: undefined }) }],
   ]);
   const handle = {
@@ -256,7 +252,7 @@ describe('SessionSubagentService idle release', () => {
     expect(remove).toHaveBeenCalledWith('agent-1');
   });
 
-  it('skips release while the agent is busy, queued, has live tasks, or is in swarm mode', async () => {
+  it('skips release while the agent is busy, queued, or has live tasks', async () => {
     const child = fakeAgent('agent-1');
     agents.set('agent-1', child);
     const run = await startRun('agent-1');
@@ -277,8 +273,7 @@ describe('SessionSubagentService idle release', () => {
     child.hasPendingRequests = true;
     expect(isReleasable(child.handle)).toBe(false);
     child.hasPendingRequests = false;
-    child.swarmActive = true;
-    expect(isReleasable(child.handle)).toBe(false);
+    expect(isReleasable(child.handle)).toBe(true);
   });
 
   it('reads the grace period from the environment and falls back on invalid values', () => {

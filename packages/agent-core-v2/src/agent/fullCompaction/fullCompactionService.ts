@@ -593,7 +593,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const result = await this.compactionRound(active, data);
       if (this._compacting !== active) throw compactionCancelledReason(active);
       try {
-        await this.profile.refreshSystemPrompt();
+        await this.profile.refreshMemorySnapshot();
       } catch (error) {
         this.log.error('failed to refresh system prompt after compaction', { error });
       }

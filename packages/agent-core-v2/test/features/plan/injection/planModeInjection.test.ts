@@ -117,7 +117,12 @@ describe('PlanModeService dynamic injection content', () => {
     await injectDynamic(injector);
 
     expect(planReminderMessages(context)).toHaveLength(0);
-    expect(context.get()).toHaveLength(0);
+    expect(context.get()).toEqual([
+      expect.objectContaining({
+        origin: expect.objectContaining({ kind: 'injection', variant: 'permission_mode' }),
+        content: [expect.objectContaining({ text: expect.stringContaining('Auto permission mode is active') })],
+      }),
+    ]);
   });
 
   it('injects a reentry reminder when restored plan mode already has plan content', async () => {

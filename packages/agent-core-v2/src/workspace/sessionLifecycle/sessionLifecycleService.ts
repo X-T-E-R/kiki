@@ -24,6 +24,8 @@ import { IEventService } from '#/app/event/event';
 import {
   CHILD_SESSION_KIND,
   CHILD_SESSION_KIND_KEY,
+  CREATED_BY_AGENT_ID_KEY,
+  CREATED_BY_SESSION_ID_KEY,
   ISessionIndex,
   ISessionIndexMirror,
   PARENT_SESSION_ID_KEY,
@@ -1063,7 +1065,10 @@ function forkCustomMetadata(
   source: Record<string, unknown> | undefined,
   input: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
-  const merged = { ...withoutGoal(source), ...withoutGoal(input) };
+  const inherited = withoutGoal(source);
+  delete inherited[CREATED_BY_SESSION_ID_KEY];
+  delete inherited[CREATED_BY_AGENT_ID_KEY];
+  const merged = { ...inherited, ...withoutGoal(input) };
   return Object.keys(merged).length === 0 ? undefined : merged;
 }
 

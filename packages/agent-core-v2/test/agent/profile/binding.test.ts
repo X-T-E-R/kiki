@@ -774,6 +774,9 @@ describe('AgentProfileService.bind', () => {
 
   it('intersects a native explore binding with the persistent research ceiling after lease overlays and rebind', async () => {
     const { profile: svc } = buildContext();
+    const tools = ctx.get(IAgentToolRegistryService);
+    tools.register(new PolicyProbeTool('HistorySearch'));
+    tools.register(new PolicyProbeTool('HistoryRead'));
     await svc.bind({
       profile: 'explore', model: MOCK_MODEL, executionRestriction: 'research-readonly',
       lease: { name: 'explore', tools: null },

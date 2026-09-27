@@ -12,7 +12,6 @@ export type DaemonCommandName =
   | 'yolo'
   | 'auto'
   | 'plan'
-  | 'swarm'
   | 'agents'
   | 'agent-transcript'
   | 'effort'
@@ -97,7 +96,6 @@ const SUPPORTED_COMMANDS = [
   command('yolo', ['yes'], 'Toggle YOLO mode', 'none'),
   command('auto', [], 'Toggle Auto mode', 'none'),
   command('plan', [], 'Toggle plan mode', 'none'),
-  command('swarm', [], 'Toggle swarm mode', 'none'),
   command('agents', [], 'List agents in the current session', 'none'),
   command('agent-transcript', [], 'Show an agent transcript', 'optional-one', '[agent-id]'),
   command('effort', ['thinking'], 'Switch thinking effort', 'optional-one', '[effort]'),

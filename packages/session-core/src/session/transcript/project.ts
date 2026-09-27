@@ -31,6 +31,7 @@ import type {
 import { mediaFromContentParts, type MediaRef } from '../../composer/media';
 import type { I18nKey } from '../../i18n/locale';
 import { MAIN_AGENT_ID } from '../agentTree';
+import { describeError } from '../../util/errorText';
 import {
   classifyTranscriptText,
   originFromRecord,
@@ -430,6 +431,7 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
                 typeof interaction.response === 'object' && interaction.response !== null
                   ? recordString(interaction.response as Record<string, unknown>, 'resolvedAt', 'resolved_at') ?? createdAt
                   : createdAt,
+              ...(interaction.reviewer !== undefined ? { reviewer: interaction.reviewer } : {}),
             },
       originAgentId,
       originUnknown: originAgentId === undefined && agentId === MAIN_AGENT_ID,
@@ -576,6 +578,25 @@ function mapTaskState(state: string): SubagentBlock['status'] {
   if (state === 'completed') return 'completed';
   if (state === 'suspended') return 'suspended';
   return 'unknown';
+}
+
+/**
+ * Text of a structured command output ({ stdout, stderr, text }). A failed
+ * command leads with stderr (the failure); a successful one with stdout.
+ */
+function shellObjectOutput(output: unknown, failed: boolean): string | undefined {
+  if (typeof output !== 'object' || output === null) return undefined;
+  const record = output as Record<string, unknown>;
+  const pick = (key: string): string | undefined => {
+    const value = record[key];
+    return typeof value === 'string' && value !== '' ? value : undefined;
+  };
+  const order = failed ? ['stderr', 'stdout', 'text'] : ['stdout', 'stderr', 'text'];
+  for (const key of order) {
+    const value = pick(key);
+    if (value !== undefined) return value;
+  }
+  return failed ? describeError(output) : undefined;
 }
 
 function presentText(value: string | undefined): string | undefined {
@@ -2088,16 +2109,9 @@ export function agentTranscriptToBlocks(
               const frameOutput =
                 typeof frame.output === 'string'
                   ? frame.output
-                  : typeof frame.output === 'object' && frame.output !== null && 'stdout' in (frame.output as object)
-                    ? (() => {
-                      const stdout = (frame.output as { stdout?: unknown }).stdout;
-                      return typeof stdout === 'string'
-                        ? stdout
-                        : stdout === undefined
-                          ? ''
-                          : JSON.stringify(stdout) ?? Object.prototype.toString.call(stdout);
-                    })()
-                    : frame.error ?? '';
+                  : shellObjectOutput(frame.output, frame.state === 'error') ??
+                    describeError(frame.error) ??
+                    '';
               const output =
                 shellTask?.outputTail === '' || shellTask?.outputTail === undefined
                   ? frameOutput
@@ -2325,8 +2339,8 @@ function projectGoalSnapshot(goal: {
   };
 }
 
-function mapTranscriptPermission(permission: 'manual' | 'yolo' | 'auto' | undefined): PermissionMode | undefined {
-  if (permission === 'manual' || permission === 'yolo' || permission === 'auto') return permission;
+function mapTranscriptPermission(permission: 'manual' | 'auto' | 'review' | 'yolo' | undefined): PermissionMode | undefined {
+  if (permission === 'manual' || permission === 'auto' || permission === 'review' || permission === 'yolo') return permission;
   return undefined;
 }
 

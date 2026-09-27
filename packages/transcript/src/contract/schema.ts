@@ -190,6 +190,11 @@ export const interactionSchema = z.object({
   state: z.enum(['pending', 'approved', 'rejected', 'cancelled', 'answered', 'dismissed']),
   request: z.unknown().optional(),
   response: z.unknown().optional(),
+  reviewer: z.object({
+    backend: z.enum(['model', 'jev']),
+    reason: z.string(),
+    confidence: z.number().min(0).max(1),
+  }).optional(),
 });
 
 export const noticeFrameSchema = z.object({
@@ -402,7 +407,7 @@ export const agentStatusMetaSchema = z.object({
   contextTokens: z.number().optional(),
   maxContextTokens: z.number().optional(),
   contextUsage: z.number().optional(),
-  permission: z.enum(['manual', 'yolo', 'auto']).optional(),
+  permission: z.enum(['manual', 'auto', 'review', 'yolo']).optional(),
   phase: agentPhaseMetaSchema.optional(),
 });
 

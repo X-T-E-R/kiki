@@ -6,7 +6,6 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { type AgentGoalService } from '#/agent/goal/goalService';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import {
   InMemoryWireRecordPersistence,
   agentService,
@@ -15,7 +14,6 @@ import {
   wireRecordPersistenceServices,
   type TestAgentContext,
 } from '../../../harness';
-import { stubAgentSwarm } from '../stubs';
 
 type GoalServiceTestManager = IAgentGoalService & AgentGoalService;
 type InjectableContextInjector = IAgentContextInjectorService & {
@@ -64,7 +62,7 @@ describe('GoalInjection content', () => {
   let injector: InjectableContextInjector;
 
   beforeEach(() => {
-    ctx = createTestAgent(agentService(IAgentSwarmService, stubAgentSwarm()));
+    ctx = createTestAgent();
     goals = ctx.get(IAgentGoalService) as GoalServiceTestManager;
     context = ctx.get(IAgentContextMemoryService);
     injector = ctx.get(IAgentContextInjectorService) as InjectableContextInjector;
@@ -250,7 +248,6 @@ describe('GoalInjection integration', () => {
       persistence = new InMemoryWireRecordPersistence();
       ctx = createTestAgent(
         wireRecordPersistenceServices(persistence),
-        agentService(IAgentSwarmService, stubAgentSwarm()),
         permissionModeServices('manual'),
       );
       goals = ctx.get(IAgentGoalService) as GoalServiceTestManager;

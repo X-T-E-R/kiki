@@ -14,7 +14,6 @@ import {
   IAgentPermissionModeService,
   IAgentPlanService,
   IAgentProfileService,
-  IAgentSwarmService,
   IAgentUsageService,
   ISessionApprovalService,
   ISessionInteractionService,
@@ -75,7 +74,6 @@ describe('server-v2 snapshot route enrichment', () => {
         [IAgentProfileService, { getModel: () => 'provider/session-model' }],
         [IAgentPermissionModeService, { mode: 'yolo' }],
         [IAgentPlanService, { status: async () => ({ id: 'plan', content: '', path: '' }) }],
-        [IAgentSwarmService, { isActive: true }],
         [IAgentBlobService, { loadParts }],
       ]),
     };
@@ -267,8 +265,8 @@ describe('server-v2 snapshot route enrichment', () => {
       model: 'provider/session-model',
       permission_mode: 'yolo',
       plan_mode: true,
-      swarm_mode: true,
     });
+    expect(compact.session.agent_config.swarm_mode).toBeUndefined();
     expect(compact.context_tokens).toBe(12);
     expect(compact.max_context_tokens).toBe(128);
     expect(compact.pending_approvals).toEqual([
@@ -437,8 +435,8 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
       content: ['not-json', '{}'].join(String.fromCodePoint(10)) + String.fromCodePoint(10),
       count: undefined,
     },
-    { label: 'empty', content: '', count: 0 },
-  ] as const)('[STAT-R3] compact snapshot keeps $label child count semantics', async ({
+    { label: 'empty', content: '', count: undefined },
+  ] as const)('[STAT-R3] compact snapshot keeps an unproven $label child count unknown', async ({
     label,
     content,
     count,
@@ -1148,7 +1146,6 @@ describe('legacy snapshot message tail projection', () => {
         [IAgentProfileService, { getModel: () => 'provider/tail-model' }],
         [IAgentPermissionModeService, { mode: 'yolo' }],
         [IAgentPlanService, { status: async () => null }],
-        [IAgentSwarmService, { isActive: false }],
         [IAgentBlobService, { loadParts }],
       ]),
     };

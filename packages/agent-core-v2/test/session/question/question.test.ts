@@ -54,11 +54,21 @@ describe('ISessionQuestionService (Session scope facade over the interaction ker
     session = host.child(LifecycleScope.Session, 'session-a', [
       stubPair(IWorkspaceStateService, new WorkspaceStateService()),
     ]);
+    session.accessor.get(ISessionInteractionService).acquireConsumer('test-consumer');
   });
 
   afterEach(() => {
     disposables.dispose();
     host.dispose();
+  });
+
+  it('dismisses immediately when no interactive consumer is attached', async () => {
+    const interaction = session.accessor.get(ISessionInteractionService);
+    interaction.releaseConsumer('test-consumer');
+    const questions = session.accessor.get(ISessionQuestionService);
+
+    await expect(questions.request(makeRequest('q1'))).resolves.toBeNull();
+    expect(questions.listPending()).toEqual([]);
   });
 
   it('request parks until answer resolves it with the rich result', async () => {

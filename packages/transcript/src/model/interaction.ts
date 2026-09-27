@@ -62,4 +62,5 @@ export interface TranscriptInteraction {
   readonly request?: unknown;
   /** Open content: engine ApprovalResponse / QuestionResult payload. */
   readonly response?: unknown;
+  readonly reviewer?: { readonly backend: 'model' | 'jev'; readonly reason: string; readonly confidence: number };
 }

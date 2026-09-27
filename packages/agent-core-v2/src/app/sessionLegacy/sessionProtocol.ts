@@ -17,7 +17,7 @@ export type SessionWarningsResponse = z.infer<typeof sessionWarningsResponseSche
 export const promptThinkingSchema = z.string().min(1);
 export type PromptThinking = z.infer<typeof promptThinkingSchema>;
 
-export const promptPermissionModeSchema = z.enum(['manual', 'yolo', 'auto']);
+export const promptPermissionModeSchema = z.enum(['manual', 'auto', 'review', 'yolo']);
 export type PromptPermissionMode = z.infer<typeof promptPermissionModeSchema>;
 
 export const promptPlanGateSchema = z.enum(['free', 'gated']);
@@ -41,8 +41,8 @@ export const sessionAgentConfigSchema = z.object({
 });
 export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
 
-/** Strict: a key the server does not apply is a validation error, not a
- *  silent drop. See the protocol package for the rationale. */
+/** Strict except for the retired `swarm_mode` key, accepted and ignored for
+ *  old clients. Other unapplied keys are validation errors. */
 export const sessionAgentConfigPartialSchema = z.strictObject({
   model: z.string().optional(),
   profile: z.string().min(1).optional(),
@@ -92,7 +92,6 @@ export const sessionStatusResponseSchema = z.object({
   thinking_level: z.string(),
   permission: z.string(),
   plan_mode: z.boolean(),
-  swarm_mode: z.boolean(),
   context_tokens: z.number().int().nonnegative(),
   max_context_tokens: z.number().int().nonnegative().optional(),
   context_usage: z.number().min(0).max(1),

@@ -103,7 +103,7 @@ export type { ContentPart, Role, ThinkingEffort, ToolCall } from '@kiki/agent-co
 // from the v2 engine (v1 sessions report an empty command set).
 export type { AgentCommandInfo } from '@kiki/agent-core-v2/agent/command/agentCommand';
 
-export type PermissionMode = 'yolo' | 'manual' | 'auto';
+export type PermissionMode = 'manual' | 'auto' | 'review' | 'yolo';
 
 /**
  * Trust state of a workspace directory. Only meaningful on the agent-core-v2
@@ -349,7 +349,6 @@ export interface SessionStatus {
   readonly thinkingEffort: string;
   readonly permission: PermissionMode;
   readonly planMode: boolean;
-  readonly swarmMode?: boolean | undefined;
   readonly contextTokens: number;
   readonly maxContextTokens: number;
   readonly contextUsage: number;

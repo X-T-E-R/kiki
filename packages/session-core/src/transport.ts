@@ -101,7 +101,6 @@ export interface MessageRunOverrides {
   readonly permission_mode?: PermissionMode;
   readonly plan_gate?: PromptPlanGate;
   readonly plan_mode?: boolean;
-  readonly swarm_mode?: boolean;
 }
 
 export interface EditMessageRequest extends MessageRunOverrides {
@@ -311,6 +310,8 @@ export interface AgentTranscriptInteraction {
   readonly state: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'answered' | 'dismissed';
   readonly request?: unknown;
   readonly response?: unknown;
+  /** Automatic reviewer provenance (Approve-for-me mode), mirrors @kiki/transcript. */
+  readonly reviewer?: { readonly backend: 'model' | 'jev'; readonly reason: string; readonly confidence: number };
 }
 
 export interface AgentTranscriptAgent {
@@ -415,7 +416,7 @@ export interface AgentTranscriptMeta {
     readonly contextTokens?: number;
     readonly maxContextTokens?: number;
     readonly contextUsage?: number;
-    readonly permission?: 'manual' | 'yolo' | 'auto';
+    readonly permission?: 'manual' | 'auto' | 'review' | 'yolo';
     readonly phase?: { readonly kind: string; readonly [key: string]: unknown };
   };
 }

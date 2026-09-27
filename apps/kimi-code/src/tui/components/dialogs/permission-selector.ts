@@ -9,19 +9,24 @@ const PERMISSION_OPTIONS: readonly ChoiceOption[] = [
     description: 'Approve every action yourself.',
   },
   {
+    value: 'auto',
+    label: 'Auto',
+    description: 'Approves routine actions; asks before protected access and when input is needed.',
+  },
+  {
+    value: 'review',
+    label: 'Approve for me',
+    description: 'A reviewer checks protected actions first; uncertain decisions come to you.',
+  },
+  {
     value: 'yolo',
     label: 'YOLO',
     description: 'Auto-approve tool actions, but the agent may still ask questions.',
   },
-  {
-    value: 'auto',
-    label: 'Auto',
-    description: 'Fully autonomous — agent decides everything without asking.',
-  },
 ];
 
 function isPermissionModeChoice(value: string): value is PermissionMode {
-  return value === 'manual' || value === 'auto' || value === 'yolo';
+  return value === 'manual' || value === 'auto' || value === 'review' || value === 'yolo';
 }
 
 export interface PermissionSelectorOptions {

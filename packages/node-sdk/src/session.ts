@@ -1,4 +1,4 @@
-import type { AgentContextData, SwarmModeTrigger } from '@kiki/agent-core-v2';
+import type { AgentContextData } from '@kiki/agent-core-v2';
 
 import { ErrorCodes, KimiError, type KimiErrorCode } from '#/errors';
 import { type ApprovalHandler, type Event, type QuestionHandler } from '#/events';
@@ -193,14 +193,6 @@ export class Session {
     });
   }
 
-  async swarm(input: string | PromptInput): Promise<void> {
-    this.ensureOpen();
-    await this.rpc.swarm({
-      sessionId: this.id,
-      input: normalizePromptInput(input),
-    });
-  }
-
   async init(): Promise<void> {
     this.ensureOpen();
     await this.rpc.generateAgentsMd({ sessionId: this.id });
@@ -319,21 +311,6 @@ export class Session {
       );
     }
     await this.rpc.setPlanMode({ sessionId: this.id, enabled });
-  }
-
-  async setSwarmMode(enabled: boolean, trigger: SwarmModeTrigger): Promise<void> {
-    this.ensureOpen();
-    if (typeof enabled !== 'boolean') {
-      throw new KimiError(
-        ErrorCodes.REQUEST_INVALID,
-        'Session swarm mode must be a boolean',
-      );
-    }
-    if (enabled) {
-      await this.rpc.setSwarmMode({ sessionId: this.id, enabled: true, trigger });
-    } else {
-      await this.rpc.setSwarmMode({ sessionId: this.id, enabled: false });
-    }
   }
 
   async getPlan(): Promise<SessionPlan> {
@@ -821,7 +798,7 @@ function normalizeOptionalString(value: string | undefined): string | undefined 
 }
 
 function isPermissionMode(value: unknown): value is PermissionMode {
-  return value === 'yolo' || value === 'manual' || value === 'auto';
+  return value === 'manual' || value === 'auto' || value === 'review' || value === 'yolo';
 }
 
 function resumeStateFromSummary(

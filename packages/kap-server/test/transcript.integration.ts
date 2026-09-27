@@ -881,6 +881,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
       );
     await sub.accessor.get(IWireService).flush();
 
+    session!.accessor.get(ISessionInteractionService).acquireConsumer('transcript-question-test-client');
     const questions = session!.accessor.get(ISessionQuestionService);
     const pending = questions.request(
       {
@@ -984,6 +985,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
       }),
     );
 
+    session!.accessor.get(ISessionInteractionService).acquireConsumer('transcript-question-test-client');
     const questions = session!.accessor.get(ISessionQuestionService);
     const pending = questions.request(
       {

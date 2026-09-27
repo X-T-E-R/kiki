@@ -117,6 +117,42 @@ export const agentsConfigResponseSchema = z.object({
   notify_parent: z.boolean().optional(),
 });
 
+export const permissionReviewerResponseSchema = z.object({
+  backend: z.enum(['model', 'jev']),
+  model: z.string().optional(),
+  jevConsent: z.boolean(),
+  timeoutMs: z.number().int().optional(),
+  allowThreshold: z.number(),
+  denyThreshold: z.number(),
+  categories: z.array(z.string()),
+  hasApiKey: z.boolean(),
+});
+
+export const permissionConfigResponseSchema = z.object({
+  reviewer: permissionReviewerResponseSchema.optional(),
+}).passthrough();
+
+export const permissionConfigPatchSchema = z.object({
+  reviewer: z.object({
+    backend: z.enum(['model', 'jev']).optional(),
+    model: z.string().min(1).optional(),
+    jev_consent: z.boolean().optional(),
+    api_key: z.string().min(1).optional(),
+    timeout_ms: z.number().int().min(100).max(30_000).optional(),
+    allow_threshold: z.number().min(0.5).max(1).optional(),
+    deny_threshold: z.number().min(0.5).max(1).optional(),
+    categories: z.array(z.string()).min(1).optional(),
+  }).optional(),
+}).passthrough();
+
+export const interactionConfigResponseSchema = z.object({
+  askUserQuestion: z.enum(['background', 'blocking']),
+});
+
+export const interactionConfigPatchSchema = z.object({
+  ask_user_question: z.enum(['background', 'blocking']).optional(),
+}).strict();
+
 export const configResponseSchema = z.object({
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
@@ -128,7 +164,8 @@ export const configResponseSchema = z.object({
   yolo: z.boolean().optional(),
   default_permission_mode: z.string().optional(),
   default_plan_mode: z.boolean().optional(),
-  permission: z.unknown().optional(),
+  permission: permissionConfigResponseSchema.optional(),
+  interaction: interactionConfigResponseSchema.optional(),
   hooks: z.array(z.unknown()).optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),
@@ -173,7 +210,8 @@ export const patchConfigRequestSchema = z.object({
   yolo: z.boolean().optional(),
   default_permission_mode: z.string().optional(),
   default_plan_mode: z.boolean().optional(),
-  permission: z.unknown().optional(),
+  permission: permissionConfigPatchSchema.optional(),
+  interaction: interactionConfigPatchSchema.optional(),
   hooks: z.array(z.unknown()).optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),

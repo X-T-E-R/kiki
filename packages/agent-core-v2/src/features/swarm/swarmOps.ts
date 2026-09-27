@@ -2,13 +2,9 @@
 import { z } from 'zod';
 
 import { contextMemoryKey, popSwarmModeReminder } from '#/agent/contextMemory/contextOps';
-import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
-import { Event2 } from '#/app/event/event2';
-import { defineState } from '#/state/state';
+import { Event2, registerEvent2Class } from '#/app/event/event2';
 
-import type { SwarmModeTrigger } from './agent/swarm';
-
-const swarmModeEnterSchema = z.object({ trigger: z.custom<SwarmModeTrigger>() });
+const swarmModeEnterSchema = z.object({ trigger: z.enum(['manual', 'task', 'tool']) });
 
 export class SwarmModeEnter extends Event2<z.infer<typeof swarmModeEnterSchema>> {
   static override readonly type = 'swarm_mode.enter';
@@ -16,6 +12,7 @@ export class SwarmModeEnter extends Event2<z.infer<typeof swarmModeEnterSchema>>
   static override readonly schema = swarmModeEnterSchema;
 }
 export interface SwarmModeEnter extends z.infer<typeof swarmModeEnterSchema> {}
+registerEvent2Class(SwarmModeEnter);
 
 const swarmModeExitSchema = z.object({});
 
@@ -25,17 +22,6 @@ export class SwarmModeExit extends Event2<z.infer<typeof swarmModeExitSchema>> {
   static override readonly schema = swarmModeExitSchema;
 }
 export interface SwarmModeExit extends z.infer<typeof swarmModeExitSchema> {}
+registerEvent2Class(SwarmModeExit);
 
-export const swarmKey = defineState('swarm', (): SwarmModeTrigger | null => null).replayable({
-  schema: z.custom<SwarmModeTrigger | null>(),
-})
-  .on(SwarmModeEnter, (_s, e, ctx) => {
-    ctx.emit(new AgentStatusUpdated({ swarmMode: true }));
-    return e.trigger;
-  })
-  .on(SwarmModeExit, (_s, _e, ctx) => {
-    ctx.emit(new AgentStatusUpdated({ swarmMode: false }));
-    return null;
-  });
-
-contextMemoryKey.on(SwarmModeExit, (s) => popSwarmModeReminder(s));
+contextMemoryKey.on(SwarmModeExit, (state) => popSwarmModeReminder(state));

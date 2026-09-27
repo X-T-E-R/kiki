@@ -114,10 +114,15 @@ export class SessionInteractionService extends Service implements ISessionIntera
 
   releaseConsumer(id: string): void {
     if (!this.consumers.delete(id)) return;
-    for (const interaction of this.listPending('approval')) {
-      if (!this.hasConsumer(interaction.origin)) {
-        this.respond(interaction.id, { decision: 'cancelled' });
-      }
+    for (const interaction of this.listPending()) {
+      if (interaction.kind !== 'approval' && interaction.kind !== 'question') continue;
+      if (this.hasConsumer(interaction.origin)) continue;
+      this.respond(
+        interaction.id,
+        interaction.kind === 'approval'
+          ? { decision: 'cancelled' }
+          : { cancelled: true, reason: 'no_consumer' },
+      );
     }
   }
 

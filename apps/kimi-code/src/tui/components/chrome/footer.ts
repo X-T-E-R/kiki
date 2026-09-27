@@ -390,7 +390,6 @@ export class FooterComponent implements Component {
     if (state.permissionMode === 'auto') modes.push(chalk.hex(colors.warning).bold('auto'));
     if (state.permissionMode === 'yolo') modes.push(chalk.hex(colors.warning).bold('yolo'));
     if (state.planMode) modes.push(chalk.hex(colors.primary).bold('plan'));
-    if (state.swarmMode) modes.push(chalk.hex(colors.accent).bold('swarm'));
     if (modes.length > 0) slots['mode'] = [modes.join(' ')];
 
     const goalBadge = formatGoalBadge(state.goal, colors, this.goalWallClockMs(state.goal));

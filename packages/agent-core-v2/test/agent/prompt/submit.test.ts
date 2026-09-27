@@ -161,7 +161,7 @@ describe('prompt submit', () => {
     }, { before: 'context-injector' });
     await goal.resumeGoal({ continueIfPaused: true });
     const queued = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'GUI follow-up' }], toolCalls: [], origin: { kind: 'user' } },
-      execution: { planMode: false, swarmMode: false, goalObjective: 'finish the example', goalControl: 'pause' } });
+      execution: { planMode: false, goalObjective: 'finish the example', goalControl: 'pause' } });
     expect(queued.state).toBe('pending');
     release();
     expect((await queued.completion).state).toBe('completed');
@@ -185,7 +185,7 @@ describe('prompt submit', () => {
     }, { before: 'context-injector' });
     await goal.resumeGoal({ continueIfPaused: true });
     const queued = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'GUI send now' }], toolCalls: [], origin: { kind: 'user' } },
-      execution: { planMode: false, swarmMode: false, goalObjective: 'finish the example' } });
+      execution: { planMode: false, goalObjective: 'finish the example' } });
     const targetTurn = loop.status().activeTurnId;
     expect(queued.state).toBe('pending');
     await prompts.steer([queued.id]);

@@ -17,7 +17,6 @@ import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import {
   getLiveSessionById,
   resumeSessionById,
@@ -67,7 +66,6 @@ export class SessionLegacyService implements ISessionLegacyService {
     const tokenCounting = agent.accessor.get(IAgentTokenCountingService);
     const permission = agent.accessor.get(IAgentPermissionModeService);
     const plan = agent.accessor.get(IAgentPlanService);
-    const swarm = agent.accessor.get(IAgentSwarmService);
 
     const model = profile.getModel();
     const capabilities = profile.getModelCapabilities();
@@ -84,7 +82,6 @@ export class SessionLegacyService implements ISessionLegacyService {
       thinking_level: model === '' ? '' : profile.getEffectiveThinkingLevel(),
       permission: permission.mode,
       plan_mode: planData !== null,
-      swarm_mode: swarm.isActive,
       context_tokens: tokens,
       max_context_tokens: maxTokens > 0 ? maxTokens : undefined,
       context_usage: maxTokens > 0 ? Math.min(1, tokens / maxTokens) : 0,

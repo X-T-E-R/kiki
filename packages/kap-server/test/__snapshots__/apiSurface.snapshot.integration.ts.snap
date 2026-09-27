@@ -38,6 +38,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/memory/{scope}/{id}",
+    ],
+    [
+      "DELETE",
       "/api/models/{model_id}",
     ],
     [
@@ -207,6 +211,30 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/mcp/servers/{name}",
+    ],
+    [
+      "GET",
+      "/api/memory/{scope}",
+    ],
+    [
+      "GET",
+      "/api/memory/{scope}/{id}",
+    ],
+    [
+      "GET",
+      "/api/memory/{scope}/inbox",
+    ],
+    [
+      "GET",
+      "/api/memory/{scope}/journal",
+    ],
+    [
+      "GET",
+      "/api/memory/settings",
+    ],
+    [
+      "GET",
+      "/api/memory/workspaces/{workspace_id}/settings",
     ],
     [
       "GET",
@@ -414,6 +442,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PATCH",
+      "/api/memory/settings",
+    ],
+    [
+      "PATCH",
+      "/api/memory/workspaces/{workspace_id}/settings",
+    ],
+    [
+      "PATCH",
       "/api/models/{model_id}",
     ],
     [
@@ -423,6 +459,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PATCH",
       "/api/workspaces/{workspace_id}",
+    ],
+    [
+      "POST",
+      "/api/agent-profiles",
     ],
     [
       "POST",
@@ -531,6 +571,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/mcp/servers:test",
+    ],
+    [
+      "POST",
+      "/api/memory/{scope}/undo",
     ],
     [
       "POST",
@@ -759,6 +803,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/mcp/servers/{name}",
+    ],
+    [
+      "PUT",
+      "/api/memory/{scope}/{id}",
     ],
     [
       "PUT",

@@ -5,9 +5,15 @@ import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
+import { IAgentPlanService } from '#/features/plan/plan';
+import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { promptPermissionModeSchema } from '#/app/sessionLegacy/sessionProtocol';
+import { CREATED_BY_AGENT_ID_KEY, CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { Error2, ErrorCodes } from '#/errors';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
+import { normalizeSubagentBindingValue } from '#/session/subagent/configSection';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
@@ -20,6 +26,10 @@ export const ThreadCreateToolInputSchema = z.object({
   title: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
   profile: z.string().min(1).optional(),
+  model_alias: z.string().trim().min(1).optional(),
+  effort: z.string().trim().min(1).optional(),
+  permission_mode: promptPermissionModeSchema.optional(),
+  plan_mode: z.boolean().optional(),
   prompt: z.string().min(1).max(100_000).optional(),
 }).strict();
 
@@ -40,6 +50,7 @@ export class ThreadCreateTool implements IThreadCreateTool {
   constructor(
     @ISessionManager private readonly sessions: ISessionManager,
     @ISessionContext private readonly session: ISessionContext,
+    @IAgentScopeContext private readonly caller: IAgentScopeContext,
   ) {}
 
   resolveExecution(input: ThreadCreateToolInput): ToolExecution {
@@ -53,9 +64,18 @@ export class ThreadCreateTool implements IThreadCreateTool {
       approvalRule: this.name,
       description: 'Creating a new thread',
       execute: async () => {
+        const model = normalizeSubagentBindingValue(input.model_alias, 'model_alias');
+        const thinking = normalizeSubagentBindingValue(input.effort, 'effort');
         const handle = await this.sessions.create({
           workDir: input.cwd ?? this.session.cwd,
-          mainAgentBinding: input.profile === undefined ? undefined : { profile: input.profile },
+          mainAgentBinding: input.profile === undefined && model === undefined && thinking === undefined
+            ? undefined
+            : {
+                profile: input.profile ?? DEFAULT_AGENT_PROFILE_NAME,
+                model,
+                thinking,
+                strictThinking: thinking !== undefined,
+              },
         });
         let promptAccepted = false;
         try {
@@ -78,6 +98,27 @@ export class ThreadCreateTool implements IThreadCreateTool {
           const title = input.title ?? (firstLine ? Array.from(firstLine).slice(0, 80).join('') : undefined);
           const metadata = handle.accessor.get(ISessionMetadata);
           if (title !== undefined) await metadata.setTitle(title);
+          await metadata.update({
+            custom: {
+              ...(await metadata.read()).custom,
+              [CREATED_BY_SESSION_ID_KEY]: this.session.sessionId,
+              [CREATED_BY_AGENT_ID_KEY]: this.caller.agentId,
+            },
+          }, { touchUpdatedAt: false });
+          if (input.permission_mode !== undefined || input.plan_mode !== undefined) {
+            const main = await ensureMainAgent(handle);
+            if (input.permission_mode !== undefined) {
+              main.accessor.get(IAgentLifecycleService).broadcastPermissionMode(input.permission_mode);
+            }
+            if (input.plan_mode !== undefined) {
+              const plan = main.accessor.get(IAgentPlanService);
+              const active = (await plan.status()) !== null;
+              if (active !== input.plan_mode) {
+                if (input.plan_mode) await plan.enter();
+                else plan.exit();
+              }
+            }
+          }
           if (input.prompt !== undefined) {
             const main = await ensureMainAgent(handle);
             const submitted = await main.accessor.get(IAgentPromptService).enqueue({
@@ -106,7 +147,7 @@ export class ThreadCreateTool implements IThreadCreateTool {
               cwd: context.cwd,
               profile: profile.name,
               prompt_started: input.prompt !== undefined,
-              message: 'The new thread will appear in the session list on the left within a few seconds. Use ThreadSend and ThreadWait to continue the conversation.',
+              message: 'Thread created in the session list. It runs independently and does not report back here; to continue it, use ThreadList for its thread reference, then ThreadSend and ThreadWait (requires thread communication to be enabled).',
             }, null, 2),
           };
         } catch (error) {

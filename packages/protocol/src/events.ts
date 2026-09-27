@@ -46,7 +46,7 @@ export interface UsageStatus {
   readonly total?: TokenUsage;
 }
 
-export type PermissionMode = 'manual' | 'yolo' | 'auto';
+export type PermissionMode = 'manual' | 'auto' | 'review' | 'yolo';
 
 export type SkillSource = 'project' | 'user' | 'extra' | 'builtin';
 
@@ -1222,7 +1222,7 @@ export const usageStatusSchema = z.object({
   total: tokenUsageSchema.optional(),
 }) satisfies z.ZodType<UsageStatus>;
 
-export const permissionModeSchema = z.enum(['manual', 'yolo', 'auto']) satisfies z.ZodType<PermissionMode>;
+export const permissionModeSchema = z.enum(['manual', 'auto', 'review', 'yolo']) satisfies z.ZodType<PermissionMode>;
 
 export const skillSourceSchema = z.enum(['project', 'user', 'extra', 'builtin']) satisfies z.ZodType<SkillSource>;
 

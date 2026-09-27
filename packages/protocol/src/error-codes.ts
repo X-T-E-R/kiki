@@ -80,6 +80,7 @@ export const ErrorCode = {
   THREAD_NOT_FOUND: 40421,
   /** named agent profile does not exist in the requested editable scope */
   AGENT_PROFILE_NOT_FOUND: 40422,
+  MEMORY_NOT_FOUND: 40423,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -166,6 +167,8 @@ export const ErrorCode = {
   CONFIG_REVISION_CONFLICT: 40941,
   /** 本地 model 别名已存在（创建不会覆盖既有实体） */
   MODEL_ALREADY_EXISTS: 40942,
+  AGENT_PROFILE_ALREADY_EXISTS: 40943,
+  MEMORY_REVISION_CONFLICT: 40944,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -258,6 +261,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.RUNTIME_NOT_FOUND]: 'runtime.not_found',
   [ErrorCode.THREAD_NOT_FOUND]: 'thread.not_found',
   [ErrorCode.AGENT_PROFILE_NOT_FOUND]: 'agent_profile.not_found',
+  [ErrorCode.MEMORY_NOT_FOUND]: 'memory.not_found',
 
   [ErrorCode.SESSION_BUSY]: 'session.busy',
   [ErrorCode.APPROVAL_ALREADY_RESOLVED]: 'approval.already_resolved',
@@ -302,6 +306,8 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.MCP_OAUTH_FAILED]: 'mcp.oauth_failed',
   [ErrorCode.CONFIG_REVISION_CONFLICT]: 'model_catalog.revision_conflict',
   [ErrorCode.MODEL_ALREADY_EXISTS]: 'model.already_exists',
+  [ErrorCode.AGENT_PROFILE_ALREADY_EXISTS]: 'agent_profile.already_exists',
+  [ErrorCode.MEMORY_REVISION_CONFLICT]: 'memory.revision_conflict',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',

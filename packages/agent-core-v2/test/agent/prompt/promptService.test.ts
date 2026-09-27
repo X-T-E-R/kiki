@@ -18,7 +18,6 @@ import { IAgentPromptService, reservePrompt } from '#/agent/prompt/prompt';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
-import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import {
   AgentPromptService,
   PromptAborted,
@@ -212,7 +211,6 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     mode: 'manual' as 'manual' | 'auto' | 'yolo',
     setMode: vi.fn((mode: 'manual' | 'auto' | 'yolo') => { permissionMode.mode = mode; }),
   };
-  const swarm = { isActive: false, enter: vi.fn(), exit: vi.fn() };
   const goal = {
     getGoal: vi.fn<IAgentGoalService['getGoal']>().mockReturnValue({ goal: null }),
     createGoal: vi.fn<IAgentGoalService['createGoal']>(),
@@ -245,7 +243,6 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       reg.definePartialInstance(IAgentProfileService, profile);
       reg.definePartialInstance(IAgentPermissionModeService, permissionMode);
       reg.definePartialInstance(IAgentPlanService, plan);
-      reg.definePartialInstance(IAgentSwarmService, swarm);
       reg.definePartialInstance(IAgentGoalService, goal);
       reg.defineInstance(IWireService, stubWire());
       reg.defineInstance(IAgentBlobService, noopBlob);
@@ -271,7 +268,6 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     prompt: ix.get(IAgentPromptService),
     plan,
     permissionMode,
-    swarm,
     goal,
     profile,
     toolPolicy,
@@ -526,7 +522,7 @@ describe('AgentPromptService', () => {
   });
 
   it('applies runtime controls only after a prompt passes its submit hook', async () => {
-    const { prompt, plan, swarm, goal } = harness();
+    const { prompt, plan, goal } = harness();
     goal.createGoal.mockImplementation(async ({ objective }) => {
       const snapshot = {
         goalId: 'created-goal', objective, status: 'active' as const, turnsUsed: 0, tokensUsed: 0, wallClockMs: 0,
@@ -539,48 +535,44 @@ describe('AgentPromptService', () => {
     });
     prompt.hooks.onBeforeSubmitPrompt.register('observe-controls', async (_ctx, next) => {
       expect(plan.enter).not.toHaveBeenCalled();
-      expect(swarm.enter).not.toHaveBeenCalled();
       expect(goal.createGoal).not.toHaveBeenCalled();
       await next();
     });
     const handle = await prompt.enqueue({ message: message('start'), execution: {
-      planMode: true, swarmMode: true, goalObjective: 'finish the task', goalControl: 'resume',
+      planMode: true, goalObjective: 'finish the task', goalControl: 'resume',
     } });
     expect(handle.state).toBe('running');
     expect(plan.enter).toHaveBeenCalledOnce();
-    expect(swarm.enter).toHaveBeenCalledWith('manual');
     expect(goal.createGoal).toHaveBeenCalledWith({ objective: 'finish the task' });
     expect(goal.resumeGoal).toHaveBeenCalledWith({});
   });
 
   it('does not apply queued controls when aborted or rejected for steering', async () => {
-    const { prompt, plan, swarm, goal } = harness();
+    const { prompt, plan, goal } = harness();
     await prompt.enqueue({ message: message('active') });
     const queued = await prompt.enqueue({ message: message('later'), execution: {
-      planMode: true, swarmMode: true, goalObjective: 'later goal',
+      planMode: true, goalObjective: 'later goal',
     } });
     await expect(prompt.steer([queued.id])).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
     expect(queued.state).toBe('pending');
     prompt.abort(queued.id);
     expect((await queued.completion).state).toBe('cancelled');
     expect(plan.enter).not.toHaveBeenCalled();
-    expect(swarm.enter).not.toHaveBeenCalled();
     expect(goal.createGoal).not.toHaveBeenCalled();
   });
 
   it.each(['hook', 'profile'] as const)('leaves runtime controls untouched after %s failure', async (failure) => {
-    const { prompt, plan, swarm, goal, profile } = harness();
+    const { prompt, plan, goal, profile } = harness();
     if (failure === 'hook') {
       prompt.hooks.onBeforeSubmitPrompt.register('block', async (ctx, next) => { ctx.block = true; await next(); });
     }
     if (failure === 'profile') profile.bind.mockRejectedValueOnce(new Error('profile unavailable'));
     const input = message('start');
     const handle = await prompt.enqueue({ message: input, execution: {
-      profile: 'next', planMode: true, swarmMode: true, goalObjective: 'finish',
+      profile: 'next', planMode: true, goalObjective: 'finish',
     } });
     expect(handle.state).toBe(failure === 'hook' ? 'blocked' : 'failed');
     expect(plan.enter).not.toHaveBeenCalled();
-    expect(swarm.enter).not.toHaveBeenCalled();
     expect(goal.createGoal).not.toHaveBeenCalled();
   });
 
@@ -595,18 +587,15 @@ describe('AgentPromptService', () => {
     reservation.dispose();
   });
 
-  it.each([false, true])('steers GUI mode echoes without rebinding the active turn: %s', async (enabled) => {
-    const { prompt, plan, swarm } = harness();
+  it.each([false, true])('steers GUI plan echoes without rebinding the active turn: %s', async (enabled) => {
+    const { prompt, plan } = harness();
     plan.status.mockResolvedValue(enabled ? { id: 'plan', path: '/plan', content: '' } : null);
-    swarm.isActive = enabled;
     await prompt.enqueue({ message: message('active') });
-    const queued = await prompt.enqueue({ message: message('follow-up'), execution: { planMode: enabled, swarmMode: enabled } });
+    const queued = await prompt.enqueue({ message: message('follow-up'), execution: { planMode: enabled } });
     await expect(prompt.steer([queued.id])).resolves.toHaveLength(1);
     expect(queued.state).toBe('steered');
     expect(plan.enter).not.toHaveBeenCalled();
     expect(plan.exit).not.toHaveBeenCalled();
-    expect(swarm.enter).not.toHaveBeenCalled();
-    expect(swarm.exit).not.toHaveBeenCalled();
   });
 
   it('keeps queued permission and plan gate off the active turn, then applies them on launch', async () => {
@@ -663,16 +652,15 @@ describe('AgentPromptService', () => {
   });
 
   it('fails a queued prompt whose goal becomes invalid without applying other controls', async () => {
-    const { prompt, loop, plan, swarm, goal } = harness({ manualTurnResult: true });
+    const { prompt, loop, plan, goal } = harness({ manualTurnResult: true });
     await prompt.enqueue({ message: message('active') });
     const queued = await prompt.enqueue({ message: message('later'), execution: {
-      planMode: true, swarmMode: true, goalObjective: 'finish',
+      planMode: true, goalObjective: 'finish',
     } });
     goal.getGoal.mockImplementation(() => { throw new Error2(ErrorCodes.REQUEST_INVALID, 'goal unavailable'); });
     loop.settleActive();
     expect((await queued.completion).state).toBe('failed');
     expect(plan.enter).not.toHaveBeenCalled();
-    expect(swarm.enter).not.toHaveBeenCalled();
   });
 
   it('reports launch failure after controls without automatic replay or fake rollback', async () => {

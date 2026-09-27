@@ -2,6 +2,7 @@ export {
   createViewState,
   type ApprovalBlock,
   type ApprovalResolution,
+  type ApprovalReviewer,
   type AssistantBlock,
   type Block,
   type FloorEntry,

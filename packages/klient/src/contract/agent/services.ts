@@ -123,12 +123,6 @@ export const agentPluginContract = {
   refreshSessionStart: { input: z.tuple([]), output: noResult },
 } satisfies ServiceContract;
 
-export const agentSwarmContract = {
-  enter: { input: z.tuple([z.enum(['manual', 'task', 'tool'])]), output: noResult },
-  exit: { input: z.tuple([]), output: noResult },
-  isActive: { input: z.tuple([]), output: z.boolean() },
-} satisfies ServiceContract;
-
 export const agentLoopContract = {
   cancelFromUser: { input: z.tuple([z.number().optional()]), output: noResult },
   status: { input: z.tuple([]), output: agentLoopStatusSchema },

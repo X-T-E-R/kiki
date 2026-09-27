@@ -344,17 +344,18 @@ describe('assertSessionWritable', () => {
 
 
 describe('SessionController prompt runtime projection', () => {
-  it.each([true, false, undefined])('preserves GUI plan/swarm selections including false and omission: %s', async (enabled) => {
+  it.each([true, false, undefined])('preserves GUI plan selections and never sends retired swarm mode: %s', async (enabled) => {
     const { controller, client } = await openController();
     client.submitPrompt.mockResolvedValue({
       prompt_id: 'runtime-projection', user_message_id: 'runtime-message', status: 'queued',
       content: [{ type: 'text', text: 'follow-up' }], created_at: '2026-01-01T00:00:02.000Z',
     });
     await controller.sendPrompt({ text: 'follow-up', permissionMode: 'manual',
-      planMode: enabled, swarmMode: enabled, goalObjective: 'same objective' });
+      planMode: enabled, goalObjective: 'same objective' });
     expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({
-      plan_mode: enabled, swarm_mode: enabled, goal_objective: 'same objective',
+      plan_mode: enabled, goal_objective: 'same objective',
     }));
+    expect(client.submitPrompt.mock.lastCall?.[1]).not.toHaveProperty('swarm_mode');
     controller.close();
   });
 });
@@ -942,7 +943,6 @@ describe('SessionController message closure', () => {
       permission_mode: undefined,
       plan_gate: undefined,
       plan_mode: undefined,
-      swarm_mode: undefined,
     });
     // Proactive local resync — the repaint does not wait on the WS frame.
     await waitFor(() => calls() > before);
@@ -961,7 +961,6 @@ describe('SessionController message closure', () => {
       permission_mode: undefined,
       plan_gate: undefined,
       plan_mode: undefined,
-      swarm_mode: undefined,
     });
     await waitFor(() => calls() > before);
     controller.close();
@@ -998,7 +997,6 @@ describe('SessionController message closure', () => {
       permission_mode: undefined,
       plan_gate: undefined,
       plan_mode: undefined,
-      swarm_mode: undefined,
     });
     controller.close();
   });

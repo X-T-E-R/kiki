@@ -7,7 +7,6 @@ import {
   IAgentPermissionModeService,
   IAgentPlanService,
   IAgentProfileService,
-  IAgentSwarmService,
   ProfileError,
   type IAgentScopeHandle,
   type ISessionScopeHandle,
@@ -90,26 +89,17 @@ export async function applyAgentRuntimeControls(
       else plan.exit();
     }
   }
-  if (agentConfig.swarm_mode !== undefined) {
-    const swarm = agent.accessor.get(IAgentSwarmService);
-    if (swarm.isActive !== agentConfig.swarm_mode) {
-      if (agentConfig.swarm_mode) swarm.enter('manual');
-      else swarm.exit();
-    }
-  }
 }
 
-/** Live permission / plan / swarm flags from a materialized main agent. */
+/** Live permission / plan flags from a materialized main agent. */
 export async function readAgentRuntimeControls(agent: IAgentScopeHandle): Promise<{
   permission_mode?: PermissionMode;
   plan_mode?: boolean;
-  swarm_mode?: boolean;
 }> {
   try {
     return {
       permission_mode: agent.accessor.get(IAgentPermissionModeService).mode,
       plan_mode: (await agent.accessor.get(IAgentPlanService).status()) !== null,
-      swarm_mode: agent.accessor.get(IAgentSwarmService).isActive,
     };
   } catch {
     return {};

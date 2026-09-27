@@ -1289,7 +1289,6 @@ export class SessionController {
      * session pins the agent's gate; omit to keep the agent's current gate.
      */
     planGate?: PromptPlanGate;
-    swarmMode?: boolean;
     goalObjective?: string;
     goalControl?: 'pause' | 'resume' | 'cancel';
     /**
@@ -1309,7 +1308,6 @@ export class SessionController {
       permission_mode: input.permissionMode,
       plan_gate: input.planGate,
       plan_mode: input.planMode,
-      swarm_mode: input.swarmMode,
       goal_objective:
         input.goalObjective !== undefined && input.goalObjective.trim() !== ''
           ? input.goalObjective.trim()
@@ -1359,7 +1357,6 @@ export class SessionController {
       permissionMode?: PermissionMode;
       planMode?: boolean;
       planGate?: PromptPlanGate;
-      swarmMode?: boolean;
     },
   ): Promise<void> {
     assertSessionWritable(this.state);
@@ -1371,7 +1368,6 @@ export class SessionController {
       permission_mode: input.permissionMode,
       plan_gate: input.planGate,
       plan_mode: input.planMode === true ? true : undefined,
-      swarm_mode: input.swarmMode === true ? true : undefined,
     });
     // The server also emits event.session.history_rewritten; resyncing here
     // makes the local repaint independent of WS delivery.
@@ -1391,7 +1387,6 @@ export class SessionController {
       permissionMode?: PermissionMode;
       planMode?: boolean;
       planGate?: PromptPlanGate;
-      swarmMode?: boolean;
     } = {},
   ): Promise<void> {
     assertSessionWritable(this.state);
@@ -1402,7 +1397,6 @@ export class SessionController {
       permission_mode: input.permissionMode,
       plan_gate: input.planGate,
       plan_mode: input.planMode === true ? true : undefined,
-      swarm_mode: input.swarmMode === true ? true : undefined,
     });
     void this.resync({ rewrite: true });
   }

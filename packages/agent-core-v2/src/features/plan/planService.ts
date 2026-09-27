@@ -129,7 +129,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       if (
         plan === null &&
         this._planGate === 'gated' &&
-        this.modeService.mode !== 'auto'
+        this.modeService.mode !== 'auto' && this.modeService.mode !== 'review'
       ) {
         event.waitUntil(() => this.enterReview.requestApproval(event));
       }
@@ -140,7 +140,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       if (
         plan !== null &&
         this._planGate === 'gated' &&
-        this.modeService.mode !== 'auto'
+        this.modeService.mode !== 'auto' && this.modeService.mode !== 'review'
       ) {
         event.waitUntil(() => this.exitReview.requestApproval(event));
       }

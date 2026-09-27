@@ -43,7 +43,6 @@ export const promptExecutionBindingSchema = z.object({
   model: z.string().optional(),
   thinking: z.string().optional(),
   planMode: z.boolean().optional(),
-  swarmMode: z.boolean().optional(),
   goalObjective: z.string().optional(),
   goalFollowUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
   goalInitialStatus: z.enum(['active', 'paused']).optional(),
@@ -186,7 +185,7 @@ export const modelCapabilitySchema = z.object({
   dynamically_loaded_tools: z.boolean().optional(),
 });
 
-export const permissionModeSchema = z.enum(['manual', 'yolo', 'auto']);
+export const permissionModeSchema = z.enum(['manual', 'auto', 'review', 'yolo']);
 
 export const setPermissionPayloadSchema = z.object({
   mode: permissionModeSchema,

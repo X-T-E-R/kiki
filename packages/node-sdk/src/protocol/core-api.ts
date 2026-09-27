@@ -20,7 +20,6 @@ import type {
   PluginSummary,
   ReloadSummary,
   SessionMeta,
-  SwarmModeTrigger,
   ToolDisclosure,
   ToolInfo,
 } from '@kiki/agent-core-v2';
@@ -256,9 +255,6 @@ export interface SetModelResult {
 }
 export interface CancelPlanPayload {
   readonly id?: string;
-}
-export interface EnterSwarmPayload {
-  readonly trigger: SwarmModeTrigger;
 }
 export interface BeginCompactionPayload {
   readonly instruction?: string;
@@ -620,9 +616,6 @@ export interface AgentAPI {
   enterPlan: (payload: EmptyPayload) => void;
   cancelPlan: (payload: CancelPlanPayload) => void;
   clearPlan: (payload: EmptyPayload) => void;
-  enterSwarm: (payload: EnterSwarmPayload) => void;
-  exitSwarm: (payload: EmptyPayload) => void;
-  getSwarmMode: (payload: EmptyPayload) => boolean;
   beginCompaction: (payload: BeginCompactionPayload) => void;
   cancelCompaction: (payload: EmptyPayload) => void;
   registerTool: (payload: RegisterToolPayload) => void;

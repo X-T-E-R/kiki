@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -889,7 +890,7 @@ describe('server-v2 /api/debug deadline and scoped residency', () => {
       body: JSON.stringify({ metadata: { cwd: home } }),
     });
     const body = (await created.json()) as Envelope<{ id: string }>;
-    expect(body.code).toBe(0);
+    assert.equal(body.code, 0);
     sessionId = body.data.id;
     app = Fastify();
     app.addHook('onSend', async (_request: unknown, _reply: unknown, payload: unknown) => {

@@ -25,7 +25,6 @@ import type { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
 import type { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
 import type { IAgentShellCommandService } from '@kiki/agent-core-v2/agent/shellCommand/shellCommand';
 import type { IAgentSkillService } from '@kiki/agent-core-v2/agent/skill/skill';
-import type { IAgentSwarmService } from '@kiki/agent-core-v2/features/swarm/agent/swarm';
 import type { IAgentUsageService } from '@kiki/agent-core-v2/agent/usage/usage';
 import type { ContextMessage } from '@kiki/agent-core-v2/agent/contextMemory/types';
 import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
@@ -122,9 +121,6 @@ export interface AgentFacade {
   enterPlan(): Promise<void>;
   clearPlan(): Promise<void>;
   cancelPlan(input?: { id?: string }): Promise<void>;
-  enterSwarm(trigger: Parameters<IAgentSwarmService['enter']>[0]): Promise<void>;
-  exitSwarm(): Promise<void>;
-  getSwarmMode(): Promise<boolean>;
   reconcileContextWhenIdle(
     name: Parameters<IAgentContextInjectorService['reconcileWhenIdle']>[0],
   ): Promise<void>;
@@ -250,11 +246,6 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     clearPlan: () => call(scope, 'agentPlanService', 'clear', []) as Promise<void>,
     cancelPlan: (input) =>
       call(scope, 'agentPlanService', 'cancel', [input?.id]) as Promise<void>,
-    enterSwarm: (trigger) =>
-      call(scope, 'agentSwarmService', 'enter', [trigger]) as Promise<void>,
-    exitSwarm: () => call(scope, 'agentSwarmService', 'exit', []) as Promise<void>,
-    getSwarmMode: () =>
-      call(scope, 'agentSwarmService', 'isActive', []) as Promise<boolean>,
     reconcileContextWhenIdle: (name) =>
       call(scope, 'agentContextInjectorService', 'reconcileWhenIdle', [name]) as Promise<void>,
     getTasks: (input) =>

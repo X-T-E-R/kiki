@@ -6,7 +6,7 @@
  *              profile?: string,
  *              model?: string,
  *              thinking?: 'off'|'low'|'medium'|'high'|'xhigh'|'max',
- *              permission_mode?: 'manual'|'yolo'|'auto',
+ *              permission_mode?: 'manual'|'auto'|'review'|'yolo',
  *              plan_mode?: boolean,
  *              disabled_tools?: string[],
  *            }
@@ -44,7 +44,7 @@ import { isoDateTimeSchema } from '../time';
 export const promptThinkingSchema = z.string().min(1);
 export type PromptThinking = z.infer<typeof promptThinkingSchema>;
 
-export const promptPermissionModeSchema = z.enum(['manual', 'yolo', 'auto']);
+export const promptPermissionModeSchema = z.enum(['manual', 'auto', 'review', 'yolo']);
 export type PromptPermissionMode = z.infer<typeof promptPermissionModeSchema>;
 
 export const promptPlanGateSchema = z.enum(['free', 'gated']);
@@ -76,6 +76,7 @@ export const promptSubmissionSchema = z.object({
   permission_mode: promptPermissionModeSchema.optional(),
   plan_gate: promptPlanGateSchema.optional(),
   plan_mode: z.boolean().optional(),
+  /** @deprecated Accepted for older clients, ignored by the server. */
   swarm_mode: z.boolean().optional(),
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),

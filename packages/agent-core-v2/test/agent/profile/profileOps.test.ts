@@ -368,7 +368,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     svc.addActiveTool('Skill');
     expect(svc.data().executionRestriction).toBe('research-readonly');
     expect(svc.data().toolAllowPolicies).toContainEqual([
-      'Read', 'ReadMediaFile', 'Glob', 'Grep', 'WebSearch', 'FetchURL',
+      'Read', 'ReadMediaFile', 'Glob', 'Grep', 'HistorySearch', 'HistoryRead', 'WebSearch', 'FetchURL',
     ]);
     expect(() => svc.applyBindingSnapshot({
       executorId: 'external', thinkingLevel: 'off', systemPrompt: 'escape',
@@ -378,7 +378,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     await restoreTestEventDispatcher(replay.dispatcher, replay.log, testWireScope(SCOPE, 'research-replay'), await readRecords());
     expect(replay.svc.data().executionRestriction).toBe('research-readonly');
     expect(replay.svc.data().toolAllowPolicies).toContainEqual([
-      'Read', 'ReadMediaFile', 'Glob', 'Grep', 'WebSearch', 'FetchURL',
+      'Read', 'ReadMediaFile', 'Glob', 'Grep', 'HistorySearch', 'HistoryRead', 'WebSearch', 'FetchURL',
     ]);
     replay.svc.applyBindingSnapshot({ thinkingLevel: 'off', systemPrompt: 'after resume' });
     expect(replay.svc.data().executionRestriction).toBe('research-readonly');

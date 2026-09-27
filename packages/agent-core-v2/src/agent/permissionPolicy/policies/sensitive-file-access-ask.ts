@@ -16,14 +16,6 @@ export class SensitiveFileAccessAskPermissionPolicyService implements Permission
     const access = fileAccesses(context).find((fileAccess) => isSensitiveFile(fileAccess.path));
     if (access === undefined) return undefined;
     if (this.mode.mode === 'yolo') return { kind: 'approve' };
-    if (this.mode.mode === 'auto') {
-      const requested = (context.args as { path?: unknown }).path;
-      const rawPath = typeof requested === 'string' ? requested : access.path;
-      return {
-        kind: 'deny',
-        message: `[sensitive_target_approval] Path "${rawPath}" resolves to sensitive target "${access.path}". Auto mode cannot request approval; switch to manual mode to approve this access, or use YOLO mode to skip prompts.`,
-      };
-    }
     return { kind: 'ask' };
   }
 }

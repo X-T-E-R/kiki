@@ -25,9 +25,10 @@ const KIKI_OPS_TRIGGERS = [
   'subagents',
   'background tasks',
   'requirements board',
+  'approvals',
   'mcp',
+  'plugins',
   'themes',
-  'imports',
 ];
 const NEUTRAL_SKILLS = BUILTIN_SKILLS.map((s) => s.name).filter(
   (name) => !PRODUCT_SKILLS.includes(name),

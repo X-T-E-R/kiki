@@ -831,7 +831,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     });
     storage.readStream = ((scope: string, key: string, options?: unknown) => {
       const stream = originalReadStream(scope, key, options as never);
-      if (key !== AGENT_WIRE_RECORD_KEY) return stream;
+      if (key !== AGENT_WIRE_RECORD_KEY || !scope.split('/').includes(id)) return stream;
       entered?.();
       return (async function* (): AsyncIterableIterator<Uint8Array> {
         await releasePromise;

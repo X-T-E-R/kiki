@@ -31,7 +31,6 @@ import {
 } from '#/agent/loop/loop';
 import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode, PermissionPolicyResult } from '#/agent/permissionPolicy/types';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
@@ -72,14 +71,13 @@ import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionT
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { stubLoopWithHooks, type StubLoop } from '../loop/stubs';
 import { stubToolExecutorEvents, type ToolExecutorEventStubs } from '../toolExecutor/stubs';
-import { stubAgentSwarm } from './stubs';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
 function createTestAgent(
   ...inputs: readonly (TestAgentServiceOverride | TestAgentOptions)[]
 ): TestAgentContext {
-  return createHarnessTestAgent(agentService(IAgentSwarmService, stubAgentSwarm()), ...inputs);
+  return createHarnessTestAgent(...inputs);
 }
 
 const testAgent = createTestAgent;

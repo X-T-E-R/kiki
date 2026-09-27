@@ -487,7 +487,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             req.body.permission_mode === undefined &&
             req.body.plan_gate === undefined &&
             req.body.plan_mode === undefined &&
-            req.body.swarm_mode === undefined &&
             req.body.goal_objective === undefined &&
             req.body.goal_follow_up_timing === undefined &&
             req.body.goal_initial_status === undefined &&
@@ -500,7 +499,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
                 permissionMode: req.body.permission_mode,
                 planGate: req.body.plan_gate,
                 planMode: req.body.plan_mode,
-                swarmMode: req.body.swarm_mode,
                 goalObjective: req.body.goal_objective,
                 goalFollowUpTiming: req.body.goal_follow_up_timing,
                 goalInitialStatus: req.body.goal_initial_status,

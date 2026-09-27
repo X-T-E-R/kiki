@@ -1090,7 +1090,7 @@ export class AgentPromptService implements IAgentPromptService {
         if (!hasPromptRuntimeControls(item.execution)) continue;
         const changed = this.instantiation.invokeFunction((accessor) => readPromptRuntimeControlChanges(accessor, item.execution));
         if (await changed()) {
-          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with pending plan, swarm or goal changes must run as their own turn');
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with pending plan or goal changes must run as their own turn');
         }
       }
       const { message: rerouted, captions } = this.extractCompressionCaptions(mergeSteerMessages(selected));

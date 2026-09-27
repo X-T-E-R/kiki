@@ -63,7 +63,6 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { AgentExecutionService } from '#/agent/execution/executionService';
 import type { RunShellCommandInput, RunShellCommandResult } from '#/agent/shellCommand/shellCommand';
 import type { ProfileSetModelResult } from '#/agent/profile/profile';
-import type { SwarmModeTrigger } from '#/features/swarm/agent/swarm';
 import type { UserToolRegistration } from '#/agent/userTool/userTool';
 import type { ActivatePluginCommandPayload } from '#/agent/pluginCommand/pluginCommand';
 import { IAgentPluginCommandService } from '#/agent/pluginCommand/pluginCommand';
@@ -80,7 +79,6 @@ interface CancelPayload { readonly turnId?: number }
 interface CancelPlanPayload { readonly id?: string }
 interface CancelShellCommandPayload { readonly commandId: string }
 interface DetachTaskPayload { readonly taskId: string }
-interface EnterSwarmPayload { readonly trigger: SwarmModeTrigger }
 interface GetTaskOutputPayload { readonly taskId: string; readonly tail?: number }
 interface GetTasksPayload { readonly activeOnly?: boolean; readonly limit?: number }
 interface RunCommandPayload { readonly name: string; readonly args?: string }
@@ -159,8 +157,6 @@ import {
   IAgentShellCommandService,
   IAgentStepRetryService,
   IAgentLoopContinuationService,
-  IAgentSwarmService,
-  AgentSwarmService,
   IAgentTokenCountingService,
   IAppStateService,
   ITelemetryService,
@@ -367,9 +363,6 @@ interface AgentRpcPassthroughAPI {
   enterPlan: (payload: EmptyPayload) => Promisable<void>;
   cancelPlan: (payload: CancelPlanPayload) => void;
   clearPlan: (payload: EmptyPayload) => Promisable<void>;
-  enterSwarm: (payload: EnterSwarmPayload) => void;
-  exitSwarm: (payload: EmptyPayload) => void;
-  getSwarmMode: (payload: EmptyPayload) => boolean;
   startBtw: (payload: EmptyPayload) => Promisable<string>;
   beginCompaction: (payload: BeginCompactionPayload) => void;
   registerTool: (payload: RegisterToolPayload) => void;
@@ -1516,10 +1509,7 @@ export class AgentTestContext {
     this.get(IAgentLoopContinuationService);
     const tasks = this.get(IAgentTaskService);
     const permission = this.get(IAgentPermissionGate);
-    const swarm = this.get(IAgentSwarmService);
-
     context.get();
-    void swarm.isActive;
     tokenCounting.get();
     usage.status();
     tasks.list(false);
@@ -2209,9 +2199,6 @@ export class AgentTestContext {
       enterPlan: () => this.get(IAgentPlanService).enter(),
       cancelPlan: (payload) => this.get(IAgentPlanService).cancel(payload.id),
       clearPlan: () => this.get(IAgentPlanService).clear(),
-      enterSwarm: (payload) => this.get(IAgentSwarmService).enter(payload.trigger),
-      exitSwarm: () => this.get(IAgentSwarmService).exit(),
-      getSwarmMode: () => this.get(IAgentSwarmService).isActive,
       startBtw: () => this.get(ISessionBtwService).start(),
       beginCompaction: (payload) =>
         this.get(IAgentFullCompactionService).begin({

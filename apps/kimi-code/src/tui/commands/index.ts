@@ -23,7 +23,6 @@ export {
   showPermissionPicker,
   showSettingsSelector,
 } from './config';
-export { handleSwarmCommand } from './swarm';
 export { showMcpServers, showStatusReport, showUsage } from './info';
 export { handlePluginsCommand } from './plugins';
 export { handleReloadCommand, handleReloadTuiCommand } from './reload';

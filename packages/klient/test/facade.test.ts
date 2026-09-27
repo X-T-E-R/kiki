@@ -642,7 +642,6 @@ describe('agent domain routing', () => {
     });
     channel.results.set('agentProfileService.getAgentsMdWarning', 'warning');
     channel.results.set('agentPermissionModeService.mode', 'manual');
-    channel.results.set('agentSwarmService.isActive', true);
     channel.results.set('agentMcpService.list', []);
     channel.results.set('agentMcpService.initialLoadDurationMs', 3);
     channel.results.set('agentConversationUndoService.undo', 1);
@@ -663,10 +662,6 @@ describe('agent domain routing', () => {
     await agent.clearContext();
     await expect(agent.rebuildContext()).resolves.toMatchObject({ changed: true });
     await expect(agent.undo(1)).resolves.toBe(1);
-    await agent.enterSwarm('manual');
-    await agent.exitSwarm();
-    await expect(agent.getSwarmMode()).resolves.toBe(true);
-    await agent.reconcileContextWhenIdle('swarm_mode');
     await agent.stopTaskWithReason({ taskId: 'task-1' });
     await expect(agent.detachTask('task-1')).resolves.toBeUndefined();
     await agent.waitForMcpInitialLoad();
@@ -688,10 +683,6 @@ describe('agent domain routing', () => {
       { scope, service: 'agentContextMemoryService', method: 'clear', args: [] },
       { scope, service: 'agentContextRebuildService', method: 'rebuild', args: [] },
       { scope, service: 'agentConversationUndoService', method: 'undo', args: [1] },
-      { scope, service: 'agentSwarmService', method: 'enter', args: ['manual'] },
-      { scope, service: 'agentSwarmService', method: 'exit', args: [] },
-      { scope, service: 'agentSwarmService', method: 'isActive', args: [] },
-      { scope, service: 'agentContextInjectorService', method: 'reconcileWhenIdle', args: ['swarm_mode'] },
       { scope, service: 'agentTaskService', method: 'stop', args: ['task-1'] },
       { scope, service: 'agentTaskService', method: 'detach', args: ['task-1'] },
       { scope, service: 'agentMcpService', method: 'waitForInitialLoad', args: [] },
