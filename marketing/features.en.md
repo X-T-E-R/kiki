@@ -34,7 +34,7 @@ You can replace any named part of the built-in prompt, down to a single tool des
 
 Connect Kimi, Anthropic, OpenAI-compatible services such as DeepSeek or Qwen, the OpenAI Responses API, Gemini, or Vertex AI, and give each model a short alias so you can bind it to a role.
 
-*Screenshot coming (not yet in the reshoot plan).*
+*Screenshot coming: `a05-providers-models`.*
 
 [Providers and models →](https://x-t-e-r.github.io/kiki/en/configuration/providers)
 
@@ -50,7 +50,7 @@ Long commands and subagents can run in the background. When one finishes, its re
 
 ### Goals and the message queue
 
-Give the agent a goal with `/goal` and it keeps working toward it across turns. `/goal next` lines up the next goal, and messages you send while the agent is busy wait in a queue instead of cutting it off.
+Give the agent a goal with `/goal` and it keeps working toward it across turns. `/goal next` lines up the next goal, and messages you send while the agent is busy wait in a queue instead of cutting it off. Each queued message can go out when the agent is idle, after its subagents finish, or after its tasks finish.
 
 ![An active goal with queued messages.](shots/r02-goal-queue.en.light.png)
 
@@ -112,7 +112,7 @@ You choose how often the agent asks before acting. Manual asks for side effects,
 
 Connect MCP servers for external tools, save reusable workflows as skills that also work as slash commands, and install plugins that bundle skills, agents, and MCP servers together.
 
-*Screenshot coming (not yet in the reshoot plan).*
+*Screenshot coming: `a06-plugins-mcp-skills`.*
 
 [Plugins →](https://x-t-e-r.github.io/kiki/en/customization/plugins) · [MCP →](https://x-t-e-r.github.io/kiki/en/server/mcp) · [Skills →](https://x-t-e-r.github.io/kiki/en/customization/skills)
 
@@ -120,7 +120,7 @@ Connect MCP servers for external tools, save reusable workflows as skills that a
 
 Run your own scripts on lifecycle events: block a dangerous shell command, add context when a message is submitted, or get a notification when a task finishes.
 
-*Screenshot coming (not yet in the reshoot plan).*
+*Screenshot coming: `a07-hooks`.*
 
 [Hooks →](https://x-t-e-r.github.io/kiki/en/customization/hooks)
 
@@ -138,6 +138,6 @@ The desktop app, the terminal UI (`kiki`), and the browser UI (`kiki web`) share
 
 Run `kiki acp` to use Kiki as the agent inside Zed, JetBrains IDEs, or other Agent Client Protocol clients.
 
-*Screenshot coming (not yet in the reshoot plan).*
+*Screenshot coming: `a08-acp-editor`.*
 
 [Using Kiki in IDEs →](https://x-t-e-r.github.io/kiki/en/server/ide)

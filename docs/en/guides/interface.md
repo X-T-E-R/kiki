@@ -10,13 +10,15 @@ The conversation view shows the session timeline: assistant messages, tool calls
 
 The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. When it is empty, `↑` / `↓` browse the input history for the current working directory. Images and videos can be pasted from the clipboard, subject to the current model's multimodal capabilities — see [Interaction and input](/en/guides/interaction) for the full behavior, which the GUI input box shares.
 
+While the agent is busy, new messages join a queue above the input box instead of interrupting. Each queued message has its own send timing: **when idle** (as soon as the agent finishes its turn), **after subagents** (once the running subagents finish), or **after tasks** (once all background tasks finish). Change a message's timing, edit, reorder, or send it now from its row in the queue.
+
 After a restart, restored queued messages wait for confirmation. Choose **Send now** on one message to send just that message, or **Resume queue** to release the queue. **Later** only collapses the explanation: the resume button stays visible while messages are held, and newly submitted messages may continue to queue until you resume.
 
 In a subagent's input box, the stop button is disabled while its stop request is pending. If the request fails, an error notice explains why and the button becomes available to retry. Stopping one run does not clear unrelated messages waiting in that subagent's queue.
 
 ## Approvals
 
-Shell commands appear as approval requests in the timeline; each request names the operation before it runs, and you approve once or for the session. Read-only operations run automatically by default. File writes follow the workspace trust model: in a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval, while external writes require approval and sensitive-file access asks in manual mode, is refused in Auto, and skips prompts in YOLO unless explicitly denied. Tool calls interrupted by `Esc` stop before execution.
+Approvals appear in the timeline before a protected operation runs, with options to approve once or for the session. In the default Auto mode, routine tool calls run without asking; sensitive-file and external-link access still request approval. Manual mode asks before shell commands and workspace-external writes, while trusted-workspace `Write` / `Edit` calls run without per-file approval. YOLO mode skips sensitive-file prompts unless explicitly denied. Tool calls interrupted by `Esc` stop before execution.
 
 ## Right rail
 

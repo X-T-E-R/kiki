@@ -34,7 +34,7 @@
 
 Kimi、Anthropic、DeepSeek / Qwen 等 OpenAI 兼容服务、OpenAI Responses API、Gemini、Vertex AI 都能接。每个模型起个别名，就能绑给具体角色。
 
-*截图待补（重拍计划里还没有这一张）。*
+*截图待补：`a05-providers-models`。*
 
 [平台与模型 →](https://x-t-e-r.github.io/kiki/zh/configuration/providers)
 
@@ -50,7 +50,7 @@ Kimi、Anthropic、DeepSeek / Qwen 等 OpenAI 兼容服务、OpenAI Responses AP
 
 ### 目标与消息队列
 
-用 `/goal` 定一个目标，智能体会跨多轮一直推进；`/goal next` 可以提前排好下一个目标。它忙的时候你发的消息先进队列，不会打断它。
+用 `/goal` 定一个目标，智能体会跨多轮一直推进；`/goal next` 可以提前排好下一个目标。它忙的时候你发的消息先进队列，不会打断它；每条消息可以单独选什么时候发：空闲后、子智能体完成后，或任务完成后。
 
 ![进行中的目标和排队的消息。](shots/r02-goal-queue.zh.light.png)
 
@@ -112,7 +112,7 @@ Kimi、Anthropic、DeepSeek / Qwen 等 OpenAI 兼容服务、OpenAI Responses AP
 
 接 MCP 服务器调用外部工具；把常用流程写成 Skill，也能当斜杠命令用；插件可以把 Skill、智能体和 MCP 服务器打包成一个安装。
 
-*截图待补（重拍计划里还没有这一张）。*
+*截图待补：`a06-plugins-mcp-skills`。*
 
 [插件 →](https://x-t-e-r.github.io/kiki/zh/customization/plugins) · [MCP →](https://x-t-e-r.github.io/kiki/zh/server/mcp) · [Skills →](https://x-t-e-r.github.io/kiki/zh/customization/skills)
 
@@ -120,7 +120,7 @@ Kimi、Anthropic、DeepSeek / Qwen 等 OpenAI 兼容服务、OpenAI Responses AP
 
 在生命周期事件上跑你自己的脚本：拦下危险的 shell 命令、提交消息时补充上下文、任务跑完弹个通知。
 
-*截图待补（重拍计划里还没有这一张）。*
+*截图待补：`a07-hooks`。*
 
 [Hooks →](https://x-t-e-r.github.io/kiki/zh/customization/hooks)
 
@@ -138,6 +138,6 @@ Kimi、Anthropic、DeepSeek / Qwen 等 OpenAI 兼容服务、OpenAI Responses AP
 
 运行 `kiki acp`，就能在 Zed、JetBrains IDE 等 Agent Client Protocol 客户端里把 Kiki 当智能体用。
 
-*截图待补（重拍计划里还没有这一张）。*
+*截图待补：`a08-acp-editor`。*
 
 [在 IDE 中使用 →](https://x-t-e-r.github.io/kiki/zh/server/ide)

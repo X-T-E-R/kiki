@@ -1,48 +1,52 @@
 # Kiki
 
-**Agents as profiles. Fleets under your control.**
+**你的智能体，你说了算。**
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/zh/) <br>
-[文档](https://x-t-e-r.github.io/kiki/zh/) · [问题反馈](https://github.com/X-T-E-R/kiki/issues) · [English](README.md)
+[文档](https://x-t-e-r.github.io/kiki/zh/) · [功能一览](marketing/features.zh-CN.md) · [截图巡览](marketing/gallery.zh-CN.md) · [问题反馈](https://github.com/X-T-E-R/kiki/issues) · [English](README.md)
 
-Kiki 是一个本地 agent 工作台：每一个 agent——无论是主 agent 还是子代理——都是一份你拥有的 Markdown 文件。Kiki 让它们跑起来、编成队，并在整个过程中保持机队可见。它以三种形态提供——桌面应用、终端 CLI/TUI、浏览器 UI——共享同一个守护进程和同一份会话数据。Kimi 模型开箱即用，也可以配置其他兼容供应商。
+Kiki 是一个开源的 AI 智能体工作台，跑在你自己的机器上：桌面应用、终端界面、浏览器界面，背后是同一个本地守护进程。
 
-无云端中转，无 agent 锁定，无黑盒提示词。
+<!-- 主图：主会话调度多条线的真实录屏（见 marketing/launch/demo-storyboard.md）录好后替换。 -->
+![Kiki 工作台：主会话和它派出的子智能体、一个后台任务、进行中的目标，以及一条排队消息。](marketing/shots/h01-fleet-workbench.zh.light.png)
 
-**特色聚焦**：[nb-search —— 带真钥匙管理的联网能力](marketing/nb-search.zh-CN.md) · [任务看板 —— 看得见、指得着的工作](marketing/task-board.zh-CN.md) · [截图巡览](marketing/gallery.zh-CN.md)
+*示例场景由真实 Kiki 界面渲染，不代表模型性能实测；之后会换成真实录屏。*
 
-![Kiki 工作台：实时子代理派发树、后台任务、进行中的目标和排队消息，同屏可见。](marketing/shots/h01-fleet-workbench.zh.light.png)
+## 自由：每一层都归你
 
-*示例场景；由真实 Kiki 界面渲染，不代表模型性能实测。*
+- **模型。** 每个角色单独绑模型，不同厂商混着用：海外前沿模型做规划，DeepSeek、GLM 跑日常的活，审查再换一家。Kimi 开箱即用，Anthropic、OpenAI 兼容、Gemini、Vertex 等都能接。
+- **智能体。** 一个智能体就是一份你自己的 Markdown：frontmatter 写工具、模型和能派发谁，正文就是系统提示词。手里现成的 Claude Code、OpenCode agent 文件直接能用，改完约 200ms 生效。
+- **提示词。** 内置提示词的任意字段都能改，细到单个工具的描述；可以全局改，也可以按模型、按智能体单独改。`kiki prompt-fields list | show | explain` 能看到模型最终收到了什么、每一段来自哪一层。
+- **数据。** 会话都存在本地，不经过云端中转；项目以 MIT 许可证开源。
 
-Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，现已独立发展。
+![提示词字段覆写，实时预览模型会看到的内容。](marketing/shots/d02-prompt-fields.zh.light.png)
 
-## 为什么是 Kiki
+## 强大：扛得住长时间、多条线并行的活
 
-**拥有你的 agent。** 一个 Kiki agent 就是一份 Markdown 文件：frontmatter 声明它的工具、模型绑定与派发规则，正文*就是*它的系统提示词。profile 约 200ms 热更新，可以在设置界面或任何编辑器里修改，并且可移植——你现有的 Claude Code、OpenCode agent 文件可以直接加载。所有内置提示词都可覆写，精确到单个工具的描述：全局、按模型、按 profile 三层任选，配合 `kiki prompt-fields` 可以查证模型最终看到的每一段文字。
+- **主智能体同时推进好几条线。** 它会自己派子智能体、把耗时的活转到后台；后台跑完会自动通知它，不用它反复去查。
+- **它忙的时候你照样能说话。** 你发的消息先进队列，每条可以单独选什么时候发出：空闲后、子智能体完成后，或任务完成后；还能调顺序、改内容，或者直接插进当前这一轮。
+- **活不会随会话结束而丢。** 按工作区划分的需求看板，智能体自己能读能写；`/goal` 目标跨多轮持续推进；cron 定时往会话里投任务。
+- **一个守护进程，哪里都能接着干。** 桌面、终端、浏览器看的是同一批会话，Zed 和 JetBrains 可以通过 [ACP](https://agentclientprotocol.com/) 接入。
 
-![设置中的子代理 profile：来源路径、frontmatter 绑定和 Markdown 系统提示词原文，可就地编辑。](marketing/shots/r01-reviewer-profile.zh.light.png)
+![同一个会话里用了好几种模型：派发树中每个角色绑定不同的模型。](marketing/shots/r05-multi-model-fleet.zh.light.png)
 
-**指挥你的机队。** 把子代理派进隔离上下文，**每个角色绑定各自的模型**——让前沿模型去思考，让快模型去执行，审阅者和实现者的上下文天然隔离。耗时任务转后台；agent 忙碌时消息排队、逐条调整时机；`/goal` 锁定一个跨轮持续推进的目标；cron 按计划往会话里注入 prompt；任务看板按工作区跟踪进展。
+**[查看全部功能 →](marketing/features.zh-CN.md)**
 
-![一支机队，五种模型：Astra 思考、Fable 审阅、DeepSeek 执行、GLM 探查，Kimi K3 统筹。](marketing/shots/r05-multi-model-fleet.zh.light.png)
+## 一分钟上手
 
-**真正的 agent 工具链。** agent 操作的是和你同一套台面：`AgentRun` / `AgentSend` / `AgentList` 派发和联络子代理，`ThreadCreate` 直接开一条带独立工作区的全新会话线程，`CronCreate` 安排未来工作，`CreateGoal` 锁定长期目标，`TaskList` / `TaskOutput` / `TaskStop` 监督正在运行的一切。编排是 agent 自己动手做的事，不是要你接线的工程。
+```sh
+npm install -g kiki-agent   # 需要 Node.js 24.15.0+；也可以直接下载下方的桌面版
+cd your-project
+kiki                        # 终端界面；`kiki web` 打开浏览器界面，`kiki desktop` 打开桌面应用
+```
 
-![进行中的目标带暂停/取消控制，消息队列逐条调整发送时机。](marketing/shots/r02-goal-queue.zh.light.png)
+运行 `/login`，选择 Kimi Code OAuth 或 Kimi 开放平台 API 密钥（接入其他供应商见[平台与模型](https://x-t-e-r.github.io/kiki/zh/configuration/providers)）。然后试一句：
 
-**看见一切。** agent 面板实时展示派发树——谁在跑、谁完成了、带回了什么；会话时间线把工具步骤折叠成组，不占你的注意力。完成通知、提问、审批都是一等公民的界面，不是需要你去翻的日志。
+```
+帮我看一下这个项目的目录结构，简单介绍一下每个目录是做什么的
+```
 
-![打开任何一个派出的 agent，读它自己的会话记录：它收到了什么、做了什么、得出了什么结论。](marketing/shots/d01-agent-preview.zh.light.png)
-
-## 功能一览
-
-- **三种形态，一个工作台。** 桌面应用、终端 TUI 与浏览器 UI 共享同一个守护进程、会话与配置，随时切换；也可以通过 [ACP](https://agentclientprotocol.com/) 从 Zed、JetBrains 直接驱动会话。
-- **视频也能输入。** 把屏幕录像、演示视频拖进对话，让 agent 看那些难以用文字描述的东西。
-- **AI 原生 MCP 配置。** 用 `/kiki-ops` 以对话方式添加、编辑、认证 MCP 服务器，无需手改 JSON。
-- **插件生态。** 从市场或任意 GitHub 仓库安装 skill、MCP 服务器与数据源，每次安装都会明示信任级别。
-- **生命周期 hooks。** 在关键节点执行本地命令：拦截高风险工具调用、审计决策、触发桌面通知，或对接你自己的自动化脚本。
-- **供应商与模型管理。** 在设置界面配置供应商、模型与思考强度；凭证保存在可检查的本地文件中。
+新会话默认是「自动」模式：日常操作直接执行，碰到敏感文件或危险命令仍会先问你。用 `/permission` 切换模式。Windows 用户请先装好 Git for Windows（见下文）。
 
 ## 安装
 
@@ -58,88 +62,31 @@ Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，�
 
 独立 CLI 文件附带对应的 `.sha256` 校验文件。macOS 的 dmg 未签名、未公证：先校验下载，拖入「应用程序」，首次启动用 **按住 Control 键点按 → 打开**。dmg 不会更改 `PATH`，CLI 需单独添加。
 
-也可在 Node.js 24.15.0+ 环境用 `npm install -g kiki-cli` 安装 CLI/TUI 和桌面应用，或用 `npm install -g kiki-cli-lite` 只装 CLI/TUI。完整版安装时从 GitHub 下载对应桌面构建并校验 SHA-256，需要联网。运行 `kiki desktop` 可打开已安装的桌面应用；未安装时会提示获取方式。
+npm 安装：`kiki-agent` 包含 CLI/TUI，安装时会从 GitHub 下载对应的桌面构建并校验 SHA-256（需要联网）；`kiki-agent-lite` 只装 CLI/TUI。`kiki desktop` 可打开已安装的桌面应用，未安装时会提示获取方式。
 
 > 在 Windows 上，首次启动前请先安装 [Git for Windows](https://gitforwindows.org/)，因为 Kiki CLI 使用自带的 Git Bash 作为 shell 环境。如果 Git Bash 安装在自定义位置，请将 `KIKI_SHELL_PATH` 设置为 `bash.exe` 的绝对路径。
 
-新开终端运行 `kiki --version` 验证。校验命令、权限和更新通道见[安装](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)。
-
-## 快速上手
-
-进入项目目录并启动交互界面：
-
-```sh
-cd your-project
-kiki        # 终端界面
-kiki web    # 浏览器界面
-```
-
-首次启动后，运行 `/login`，选择 Kimi Code OAuth 或 Moonshot AI 开放平台的 API 密钥。登录后试试第一个任务：
-
-```
-帮我看一下这个项目的目录结构，简单介绍一下每个目录是做什么的
-```
-
-## 在编辑器中使用（ACP）
-
-Kiki 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，ACP 兼容的编辑器与 IDE（Zed、JetBrains 等）可以通过 stdio 驱动会话。只需登录一次，然后把编辑器指向 `kiki acp` 子命令，无需重复登录。
-
-以 Zed 为例，在 `~/.config/zed/settings.json` 中加入：
-
-```json
-{
-  "agent_servers": {
-    "Kiki": {
-      "type": "custom",
-      "command": "kiki",
-      "args": ["acp"],
-      "env": {}
-    }
-  }
-}
-```
-
-然后在 Zed 的 Agent 面板中新建对话。JetBrains 的配置与故障排查见 [ACP 指南](https://x-t-e-r.github.io/kiki/zh/server/acp)。
+新开终端运行 `kiki --version` 验证。校验命令和更新通道见[安装](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)；在 Zed / JetBrains 里使用见 [ACP 指南](https://x-t-e-r.github.io/kiki/zh/server/acp)。
 
 ## 文档
 
-- [安装](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)
-- [首次启动](https://x-t-e-r.github.io/kiki/zh/getting-started/first-launch)
-- [桌面应用](https://x-t-e-r.github.io/kiki/zh/getting-started/desktop-app)
-- [Agent Profiles](https://x-t-e-r.github.io/kiki/zh/customization/agent-profiles)
-- [提示词字段覆写](https://x-t-e-r.github.io/kiki/zh/customization/prompt-fields)
-- [交互与审批](https://x-t-e-r.github.io/kiki/zh/guides/interaction)
-- [配置](https://x-t-e-r.github.io/kiki/zh/configuration/config-files)
-- [命令参考](https://x-t-e-r.github.io/kiki/zh/reference/command)
+[首次启动](https://x-t-e-r.github.io/kiki/zh/getting-started/first-launch) · [桌面应用](https://x-t-e-r.github.io/kiki/zh/getting-started/desktop-app) · [Agent Profiles](https://x-t-e-r.github.io/kiki/zh/customization/agent-profiles) · [提示词字段覆写](https://x-t-e-r.github.io/kiki/zh/customization/prompt-fields) · [交互与审批](https://x-t-e-r.github.io/kiki/zh/guides/interaction) · [配置](https://x-t-e-r.github.io/kiki/zh/configuration/config-files) · [命令参考](https://x-t-e-r.github.io/kiki/zh/reference/command)
 
 ## 开发
 
 环境要求：Node.js ≥ 24.15.0，pnpm 10.33.0。
 
 ```sh
-git clone https://github.com/X-T-E-R/kiki.git
-cd kiki
-pnpm install
-```
-
-```sh
+git clone https://github.com/X-T-E-R/kiki.git && cd kiki && pnpm install
 pnpm dev:cli    # 以开发模式运行 CLI
-pnpm test       # 运行测试
-pnpm typecheck  # TypeScript 检查
-pnpm lint       # 运行 oxlint
-pnpm build      # 构建全部包
+pnpm test       # 测试  ·  pnpm typecheck  ·  pnpm lint  ·  pnpm build
 ```
 
-完整的贡献指南见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-## 社区
-
-- [问题反馈](https://github.com/X-T-E-R/kiki/issues)
-- 安全漏洞反馈请参见 [SECURITY.md](SECURITY.md)。
+完整贡献指南见 [CONTRIBUTING.md](CONTRIBUTING.md)。问题请提到 [Issues](https://github.com/X-T-E-R/kiki/issues)；安全漏洞请参见 [SECURITY.md](SECURITY.md)。
 
 ## 致谢
 
-Kiki 的 TUI 构建于 [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui) 之上，项目最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork。感谢两个项目的作者们做出的宝贵工作。
+Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，现已独立发展；TUI 构建于 [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui) 之上。感谢两个项目的作者们做出的宝贵工作。
 
 ## 许可证
 
