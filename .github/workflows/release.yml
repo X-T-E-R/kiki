@@ -1,4 +1,4 @@
-name: Release
+name: Kiki Branch Build
 
 on:
   push:
@@ -7,21 +7,17 @@ on:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
+permissions:
+  contents: read
+
 jobs:
-  release:
-    name: Release
+  build:
+    name: Build
     runs-on: ubuntu-latest
     if: github.repository_owner == 'X-T-E-R'
-    outputs:
-      packages_published: ${{ steps.changesets.outputs.published }}
-    permissions:
-      contents: write
-      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -44,26 +40,3 @@ jobs:
 
       - name: Build packages
         run: pnpm build
-
-      # Version PR aligns CLI and desktop authorities. Once merged, tag the
-      # versioned commit as kiki-v<version>; the tag pipeline publishes desktop,
-      # standalone CLI and npm packages together after asset validation.
-      - name: Create Release Pull Request
-        id: changesets
-        uses: changesets/action@v1
-        with:
-          version: pnpm run version:release
-          commit: "ci: release packages"
-          title: "ci: release packages"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  deploy-docs:
-    name: Deploy docs
-    needs: release
-    if: needs.release.outputs.packages_published == 'true'
-    uses: ./.github/workflows/docs-deploy.yml
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
