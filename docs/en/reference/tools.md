@@ -46,7 +46,15 @@ Use `offset` (default 0) and `head_limit` (default 100) to page through matching
 - `description`: background task description; required when `run_in_background=true`
 - `disable_timeout`: whether to remove the timeout limit for background tasks
 
+When a command is only a file read, search, or text-file write, `Bash` still runs it but may append a one-line hint pointing to `Read`, `Grep`/`Glob`, or `Write`/`Edit`. Each hint category appears at most three times per session. Set `bash_file_tool_hints = false` under [`[background]`](../configuration/config-files.md#background) to suppress these hints; execution and approval behavior are unchanged.
+
 Foreground mode blocks the current turn until the command completes or times out, and the TUI streams stdout and stderr into the running `Bash` tool card while the command is still active. By default, a foreground command that hits its timeout is not killed — it keeps running as a background task (bounded by the 600s default background timeout, i.e. a command auto-backgrounded on timeout gets a fresh 600-second budget); to restore kill-on-timeout, set [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) to `false` under `[background]`. The 600s background default is configurable via [`bash_task_timeout_s`](../configuration/config-files.md#background) (`0` = no timeout) and defaults to no timeout in print mode (`kiki -p`). Background mode returns a task ID immediately and automatically notifies the Agent when the task finishes. stdin is always closed — interactive commands receive EOF immediately. A two-phase termination strategy (SIGTERM → 5-second grace period → SIGKILL) ensures reliable process cleanup when a task is stopped or hits its background timeout. On Windows, Git Bash is used by default.
+
+## Dynamic tools
+
+MCP and plugin tools are announced by name and loaded only when needed using `SelectTools`. On Kimi providers their schemas travel in message-level tool declarations; on OpenAI chat, OpenAI Responses, and Anthropic providers they travel in system text, with a stable `CallTool` bridge in the top-level tool list. The model can also call an already-loaded tool directly by its real name. Approval, access checks, and the UI tool card use that real name. The `tool-select` flag is enabled by default for these providers when the model supports tool calling; `dynamically_loaded_tools` does not need to be declared. Turning the flag off restores inline tool availability.
+
+A server reconnect or plugin installation/removal changes the incremental announcement, not the top-level tool list. A profile-directory change is likewise announced on the next user turn only when an agent gains, loses, or changes a profile it can actually dispatch. Explicit user changes to tool-group, MCP-server, or memory settings are applied with the next user message and may change the top-level tool list.
 
 ## Web Tools
 
@@ -130,7 +138,7 @@ Both tools share the same execution model:
 | `EnterPlanMode` | Auto-allow | Enter Plan mode |
 | `ExitPlanMode` | Auto-allow (requires user to confirm the plan) | Exit Plan mode and submit the plan |
 
-Plan mode restricts `Write` and `Edit` to the current plan file. It also blocks `BoardWrite`, `TaskStop`, `CronCreate`, `CronDelete`, `AgentSend`, and resuming existing children with `AgentRun` (see [State Management](#state-management) for `BoardWrite`).
+Plan mode restricts `Write` and `Edit` to the current plan file. It also blocks `BoardWrite`, `TaskStop`, `Cron` actions `create` and `delete`, `AgentSend`, and resuming existing children with `AgentRun` (see [State Management](#state-management) for `BoardWrite`). `EnterPlanMode` is disclosed on demand; entering Plan mode makes `ExitPlanMode` available.
 
 New `AgentRun` calls can start research subagents using the native executor. These children can use only the built-in `Read`, `ReadMediaFile`, `Glob`, `Grep`, `WebSearch`, and `FetchURL` tools permitted by their profile and existing policies. They cannot run `Bash`, invoke MCP or user-defined tools, or delegate further work. External executors are not available for these calls. The research restriction survives Plan mode exit and session restoration; create a new child after leaving Plan mode when implementation needs write access.
 
@@ -222,17 +230,21 @@ Scheduled task tools allow the Agent to re-inject a prompt into the current sess
 
 | Tool | Default Approval | Description |
 | --- | --- | --- |
-| `CronCreate` | Requires approval | Schedule a prompt to fire at a future time |
-| `CronList` | Auto-allow | List scheduled tasks |
-| `CronDelete` | Requires approval | Cancel a scheduled task |
+| `Cron` (`action: "create"`) | Requires approval | Schedule a prompt to fire at a future time |
+| `Cron` (`action: "list"`) | Auto-allow | List scheduled tasks |
+| `Cron` (`action: "delete"`) | Requires approval | Cancel a scheduled task |
 
-**`CronCreate`** accepts `cron` (a standard 5-field cron expression in the user's local timezone: `minute hour day-of-month month day-of-week`), `prompt` (the text to inject when triggered; UTF-8 limit 8 KB), and optional `recurring` (defaults to `true`; pass `false` for a one-time reminder that auto-deletes after firing). On success, returns an 8-hex-digit `id`, a human-readable `humanSchedule` (e.g., `every 5 minutes`), and `nextFireAt` (the ISO timestamp of the next fire time).
+The single `Cron` tool selects an operation with `action`; the old names `CronCreate`, `CronList`, and `CronDelete` remain callable for existing profiles and approval rules but are not offered as separate tools to the model. For `action: "create"`, `Cron` accepts `cron` (a standard 5-field cron expression in the user's local timezone: `minute hour day-of-month month day-of-week`), `prompt` (the text to inject when triggered; UTF-8 limit 8 KB), and optional `recurring` (defaults to `true`; pass `false` for a one-time reminder that auto-deletes after firing). On success, returns an 8-hex-digit `id`, a human-readable `humanSchedule` (e.g., `every 5 minutes`), and `nextFireAt` (the ISO timestamp of the next fire time).
 
-To prevent all users from firing at the same time on the hour, the scheduler applies deterministic jitter: recurring tasks are shifted forward by `min(10% of the period, 15 minutes)`; one-time tasks that fall exactly on `:00` or `:30` are moved forward by up to 90 seconds. If the scheduler misses several fire times (e.g., because the laptop was sleeping), it fires only once on wake-up — the prompt is wrapped in a `<cron-fire>` envelope with a `coalescedCount`. Recurring tasks that have been alive for more than 7 days fire one final time with `stale="true"` and are then automatically deleted; call `CronCreate` again to keep them.
+To prevent all users from firing at the same time on the hour, the scheduler applies deterministic jitter: recurring tasks are shifted forward by `min(10% of the period, 15 minutes)`; one-time tasks that fall exactly on `:00` or `:30` are moved forward by up to 90 seconds. If the scheduler misses several fire times (e.g., because the laptop was sleeping), it fires only once on wake-up — the prompt is wrapped in a `<cron-fire>` envelope with a `coalescedCount`. Recurring tasks that have been alive for more than 7 days fire one final time with `stale="true"` and are then automatically deleted; call `Cron` with `action: "create"` again to keep them.
 
-**`CronList`** is a read-only tool that accepts no parameters. It returns one record per active task with fields: `id`, `cron`, `humanSchedule`, `nextFireAt`, `recurring`, `ageDays`, and `stale`. Records are separated by `---` and sorted by schedule time.
+**`Cron` with `action: "list"`** is read-only and needs no other parameters. It returns one record per active task with fields: `id`, `cron`, `humanSchedule`, `nextFireAt`, `recurring`, `ageDays`, and `stale`. Records are separated by `---` and sorted by schedule time.
 
-**`CronDelete`** accepts a single `id`. For recurring tasks, all future fires stop immediately; for one-time tasks, the pending fire is cancelled. One-time tasks that have already fired are auto-deleted, so calling `CronDelete` on an already-fired one-time task returns `No cron job with id ...`. Deletion is irreversible — use `CronCreate` again to restore. `CronDelete` is also blocked in Plan mode.
+**`Cron` with `action: "delete"`** accepts a single `id`. For recurring tasks, all future fires stop immediately; for one-time tasks, the pending fire is cancelled. One-time tasks that have already fired are auto-deleted, so deleting an already-fired one-time task returns `No cron job with id ...`. Deletion is irreversible — use `Cron` with `action: "create"` again to restore. This action is blocked in Plan mode.
+
+## Goal
+
+The main agent's `Goal` tool uses `action: "create"`, `"get"`, `"set_budget"`, or `"update"`; older `CreateGoal`, `GetGoal`, `SetGoalBudget`, and `UpdateGoal` names still work for existing profiles and approval rules but are no longer advertised separately. `create` needs a verifiable `objective` and an optional `completionCriterion`; `replace: true` abandons an existing goal only when requested. `get` reads its state. `set_budget` accepts a positive `value` and a unit (`turns`, `tokens`, `milliseconds`, `seconds`, `minutes`, or `hours`) when the user specifies a limit. `update` sets `active`, `complete`, or `blocked`; completion requires verifying the objective, and a nonterminal blocker must persist for three consecutive goal turns. For user controls and examples, see [Goals](../guides/goals.md).
 
 ## Next steps
 

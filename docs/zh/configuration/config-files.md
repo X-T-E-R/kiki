@@ -196,6 +196,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `service_tier` | `string` | 否 | 使用此模型的每个请求采用的服务档位：`auto`、`default`、`flex` 或 `priority`。优先于 profile、route 和单次请求的档位，对主 Agent 和子 Agent 均生效。只有 `openai_responses` 会编码此字段，其他协议忽略它；省略时保留 profile 或单次请求的档位 |
 | `request_params` | `table` | 否 | 合并进该模型每次请求的额外请求参数（如 `temperature`、`top_p`）；取值可为字符串、数字或布尔值。跨层时按键合并 |
 | `context_budget` | `integer` | 否 | 该模型有效上下文窗口的 token 上限；不会超过模型真实容量。跨层取最小值 |
+| `auto_compact` | `integer` | 否 | 该模型的自动压缩点，写绝对 token 数。profile 或会话层的值优先；不改变模型窗口上限。该字段也可写在本模型的 `overrides` 表中 |
 | `max_completion_tokens` | `integer` | 否 | 单次请求补全 token 的上限。跨层取最小值，且受模型输出上限约束 |
 | `off_effort` | `string` | 否 | 关闭 Thinking 时在线上传输的 effort 编码（如 xai grok 的 `none`）。仅对声明了该编码的模型（catalog 会导入）有意义：设置后选择 Off 会发送这个值而不是省略 effort 字段——对默认就会推理的模型，这是真正关闭推理的唯一方式 |
 | `protocol` | `string` | 否 | 传输层覆盖；目前仅支持 `anthropic`，将此模型的请求路由到 Anthropic Messages 传输层。不接受写入 `overrides` |
@@ -269,7 +270,7 @@ max_context_size = 131072
 display_name = "Kimi for Coding (custom)"
 ```
 
-`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
+`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget`、`auto_compact` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
 
 无需修改配置文件也可以临时切换模型——通过 `KIKI_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kiki-model)。
 
@@ -363,8 +364,13 @@ thinking effort 可以留空。使用 `model_alias: inherit` 时，它会跟随�
 | --- | --- | --- | --- |
 | `max_steps_per_turn` | `integer` | — | 单轮最大步数；不设或设为 `0` 则无上限 |
 | `max_attempts_per_step` | `integer` | `5` | 单步失败后的最大总尝试次数（含首次尝试） |
-| `reserved_context_size` | `integer` | — | 预留给模型输出的 token 数；上下文窗口剩余量低于此值时触发自动压缩 |
-| `compaction_max_attempts` | `integer` | `5` | 压缩失败后的最大总请求次数（含首次请求）；重试退避、上下文超限收缩、空响应或截断收缩等所有恢复路径共用同一份预算 |
+| `reserved_context_size` | `integer` | `50000` | 自动压缩点以上为模型输出预留的 token 数 |
+| `auto_compact` | `string` | — | 全局默认自动压缩点，按模型可用窗口写百分比，如 `"85%"`。全局不接受 token 数；模型、profile、会话用正整数 token |
+| `compaction_trigger_ratio` | `number` | `0.85` | 旧版触发比例，仅在各层都没有设置 `auto_compact` 时使用 |
+| `compaction_soft_context_size` | `integer` | `0` | 旧版绝对 token 上限，仅在各层都没有设置 `auto_compact` 时使用 |
+| `compaction_max_attempts` | `integer` | `3` | 压缩失败后的最大总请求次数（含首次请求）；所有恢复路径共用这份预算 |
+
+会话按模型保存的 token 覆写优先，其次为命中的 `model_profiles` 条目、profile 顶层、模型别名，最后才是全局百分比。没有任何新 `auto_compact` 时，沿用旧阈值：`min(0.85 × 可用窗口, 可用窗口 − 50000, 正值 compaction_soft_context_size)`；显式旧比例替换 0.85。保存全局新值时，会按当前模型把 token 数换算成百分比，并删除旧比例和绝对 token 上限键；换算后无法保证其他窗口大小不同的模型仍保持旧绝对上限。新阈值在下一个模型 step 前生效，不会立即压缩。用 `/autocompact` 查看当前会话的生效值。
 
 `max_steps_per_turn` 可被环境变量 `KIKI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。
 
@@ -424,6 +430,7 @@ retry = false
 | `keep_alive_on_exit` | `boolean` | `false` | 会话关闭时是否保留仍在运行的后台任务。默认情况下，Kiki 会在进程退出前请求停止所有后台任务；只有希望任务在会话结束后继续运行时才设为 `true`。在 print 模式（`kiki -p`）下，本字段仅作为 `print_background_mode` 未设置时的兼容回退：`true` 等价于 `print_background_mode = "drain"` |
 | `kill_grace_period_ms` | `integer` | `5000` | 会话关闭、手动停止或任务超时请求正常终止后，等待任务自行结束的宽限时间（毫秒）。超过该时间仍在运行时，Kiki 会尝试强制停止该任务 |
 | `bash_auto_background_on_timeout` | `boolean` | `true` | 前台 `Bash` 命令触及超时时间时，将其转为后台任务而不是直接终止：命令完成时 agent 会收到通知，转入后台的命令受 `bash_task_timeout_s` 默认后台超时约束。设为 `false` 则恢复超时即终止的行为 |
+| `bash_file_tool_hints` | `boolean` | `true` | `Bash` 命令只用于读、搜、写文本文件时，在结果末尾附一行专用工具提示。命令仍照常执行；设为 `false` 可关闭提示 |
 | `bash_task_timeout_s` | `integer` | `600` | 后台 `Bash` 任务在调用未传 `timeout` 时的默认超时（秒）；前台命令超时转后台后也按此值重新计时。`0` 表示无超时——任务一直运行到自行结束或被模型手动停止。显式传入的 `timeout` 不受影响。在 print 模式（`kiki -p`）下未显式设置时默认为 `0` |
 | `print_background_mode` | `"exit" \| "drain" \| "steer"` | `"steer"` | 仅 print 模式（`kiki -p`）生效，决定 main agent 的 turn 结束后如何处理未返回的后台任务：`"exit"` 立即退出；`"drain"` 退出前等待所有后台任务进入终态（结果不回馈给 main agent）；`"steer"` 不退出，让后台任务完成时像后台 subagent 一样以合成 user 消息 steer main agent 进入新 turn，直到某 turn 结束时无未决后台任务或触及上限。设置后优先级高于 `keep_alive_on_exit` 的 print 回退 |
 | `print_wait_ceiling_s` | `integer` | `2147483` | print 模式（`kiki -p`）下，`print_background_mode` 为 `"drain"` 或 `"steer"` 时，等待/steer 循环的墙钟上限（秒；默认约 24.8 天，近似不设限）。在非 print 模式或 `"exit"` 时无效 |

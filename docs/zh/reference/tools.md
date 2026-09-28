@@ -46,7 +46,15 @@
 - `description`：后台任务描述，`run_in_background=true` 时必填
 - `disable_timeout`：后台任务是否取消超时限制
 
+如果命令只是在读文件、搜索文件或写文本文件，`Bash` 仍照常执行，但结果末尾可能附一行提示，指向 `Read`、`Grep`/`Glob` 或 `Write`/`Edit`。每类提示在一个会话中最多出现三次；在 [`[background]`](../configuration/config-files.md#background) 下设置 `bash_file_tool_hints = false` 可关闭提示，不改变执行与审批行为。
+
 前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。Windows 平台默认使用 Git Bash。
+
+## 动态工具
+
+MCP 和插件工具先公告名称，需要时由 `SelectTools` 加载。Kimi provider 在消息内携带工具 schema；OpenAI chat、OpenAI Responses 和 Anthropic provider 在 system 文本中携带 schema，并在顶层工具列表常驻 `CallTool` 桥接工具。模型也可以直接用真实名称调用已加载工具。审批、访问检查和界面工具卡片都使用真实工具名。模型具备工具调用能力时，这些 provider 默认启用 `tool-select`；不要求声明 `dynamically_loaded_tools`。关闭该 flag 会恢复内联工具提供方式。
+
+MCP server 重连或插件装卸只改变增量公告，不改变顶层工具列表。profile 目录变化时，仅当当前 Agent 实际可派遣的 profile 新增、移除或发生变化，才会在下一条用户消息时公告。用户主动修改工具组、MCP server 或记忆配置，则从下一条用户消息开始应用，顶层工具列表可能变化。
 
 ## 网络类
 
@@ -130,7 +138,7 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 | `EnterPlanMode` | 自动放行 | 进入 Plan 模式 |
 | `ExitPlanMode` | 自动放行（需用户确认计划） | 退出 Plan 模式并提交计划 |
 
-Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite`、`TaskStop`、`CronCreate`、`CronDelete`、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截（`BoardWrite` 的细节见[状态管理](#状态管理)）。
+Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite`、`TaskStop`、`Cron` 的 `create` 和 `delete` 操作、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截（`BoardWrite` 的细节见[状态管理](#状态管理)）。`EnterPlanMode` 按需加载；进入 Plan 模式后会加载 `ExitPlanMode`。
 
 新的 `AgentRun` 调用可以使用原生执行器创建研究子 Agent。这些子 Agent 只能使用其 profile 和既有策略允许的内置 `Read`、`ReadMediaFile`、`Glob`、`Grep`、`WebSearch`、`FetchURL`，不能运行 `Bash`、调用 MCP 或用户自定义工具，也不能继续派遣任务。此类调用不支持外部执行器。退出 Plan 模式或恢复会话后，研究子 Agent 仍保留只读限制；需要写入权限来实施时，应在退出 Plan 模式后创建新的子 Agent。
 
@@ -222,17 +230,21 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
-| `CronCreate` | 需审批 | 安排一个在未来时刻触发的 prompt |
-| `CronList` | 自动放行 | 列出已安排的定时任务 |
-| `CronDelete` | 需审批 | 取消已安排的定时任务 |
+| `Cron`（`action: "create"`） | 需审批 | 安排一个在未来时刻触发的 prompt |
+| `Cron`（`action: "list"`） | 自动放行 | 列出已安排的定时任务 |
+| `Cron`（`action: "delete"`） | 需审批 | 取消已安排的定时任务 |
 
-**`CronCreate`** 接受 `cron`（用户本地时区下标准的 5 段 cron 表达式：`minute hour day-of-month month day-of-week`）、`prompt`（触发时要注入的文本，UTF-8 上限 8 KB）以及可选的 `recurring`（默认 `true`；传 `false` 表示一次性提醒，触发后自动删除）。成功时返回 8 位 16 进制 `id`、人类可读的 `humanSchedule`（如 `every 5 minutes`）和 `nextFireAt`（下次触发时间的 ISO 时间戳）。
+`Cron` 用 `action` 指定操作；旧名称 `CronCreate`、`CronList` 和 `CronDelete` 仍可被已有 profile 和审批规则引用，但不再作为单独的工具提供给模型。`action: "create"` 接受 `cron`（用户本地时区下标准的 5 段 cron 表达式：`minute hour day-of-month month day-of-week`）、`prompt`（触发时要注入的文本，UTF-8 上限 8 KB）以及可选的 `recurring`（默认 `true`；传 `false` 表示一次性提醒，触发后自动删除）。成功时返回 8 位 16 进制 `id`、人类可读的 `humanSchedule`（如 `every 5 minutes`）和 `nextFireAt`（下次触发时间的 ISO 时间戳）。
 
-为避免整批用户在整点同时触发，调度器会做确定性抖动：周期任务向后偏移 `min(周期的 10%, 15 分钟)`；一次性任务若恰好落在 `:00` 或 `:30` 则向前提前最多 90 秒。如果调度器错过了若干触发时刻（如笔记本合盖），唤醒后只会触发一次，prompt 会包裹在 `<cron-fire>` 信封里并附带 `coalescedCount`。周期任务存活超过 7 天后会以 `stale="true"` 做最后一次触发后自动删除；想继续保留时，再次调用 `CronCreate` 即可。
+为避免整批用户在整点同时触发，调度器会做确定性抖动：周期任务向后偏移 `min(周期的 10%, 15 分钟)`；一次性任务若恰好落在 `:00` 或 `:30` 则向前提前最多 90 秒。如果调度器错过了若干触发时刻（如笔记本合盖），唤醒后只会触发一次，prompt 会包裹在 `<cron-fire>` 信封里并附带 `coalescedCount`。周期任务存活超过 7 天后会以 `stale="true"` 做最后一次触发后自动删除；想继续保留时，再次调用 `Cron` 的 `action: "create"` 即可。
 
-**`CronList`** 是只读工具，不接受任何参数。为每个生效中的任务返回一条记录，字段包括 `id`、`cron`、`humanSchedule`、`nextFireAt`、`recurring`、`ageDays` 和 `stale`。记录用 `---` 分隔，按调度时间排列。
+**`Cron` 的 `action: "list"`** 是只读操作，除了 `action` 不需要其他参数。为每个生效中的任务返回一条记录，字段包括 `id`、`cron`、`humanSchedule`、`nextFireAt`、`recurring`、`ageDays` 和 `stale`。记录用 `---` 分隔，按调度时间排列。
 
-**`CronDelete`** 只接受一个 `id`。对周期任务，未来所有触发立即停止；对一次性任务，挂起的那次触发会被取消。已触发的一次性任务会自动删除，因此对已触发过的一次性任务调用 `CronDelete` 会返回 `No cron job with id ...`。删除不可撤销，需要还原时只能再次 `CronCreate`。`CronDelete` 在 Plan 模式下同样会被拦截。
+**`Cron` 的 `action: "delete"`** 接受一个 `id`。对周期任务，未来所有触发立即停止；对一次性任务，挂起的那次触发会被取消。已触发的一次性任务会自动删除，因此删除已触发过的一次性任务会返回 `No cron job with id ...`。删除不可撤销，需要还原时只能再次执行 `action: "create"`。Plan 模式下此操作会被拦截。
+
+## 目标
+
+主 Agent 的 `Goal` 工具通过 `action: "create"`、`"get"`、`"set_budget"` 或 `"update"` 指定操作；旧名称 `CreateGoal`、`GetGoal`、`SetGoalBudget` 和 `UpdateGoal` 仍可供已有 profile 和审批规则使用，但不再作为独立工具公告。`create` 需要可验证的 `objective`，可附 `completionCriterion`；`replace: true` 仅在用户要求替换时放弃现有目标。`get` 查询状态。用户给出明确上限时，`set_budget` 接受正数 `value` 和单位（`turns`、`tokens`、`milliseconds`、`seconds`、`minutes`、`hours`）。`update` 将状态设为 `active`、`complete` 或 `blocked`；完成前须核实目标，非终局阻碍须连续三个目标轮次阻止推进。用户侧操作和示例见[目标](../guides/goals.md)。
 
 ## 下一步
 
