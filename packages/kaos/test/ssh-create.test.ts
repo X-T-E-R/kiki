@@ -19,6 +19,13 @@ interface CreateHarnessOptions {
   sftpError?: Error;
 }
 
+function verifyKey(config: ConnectConfig, key: string): boolean {
+  const verifier = config.hostVerifier as ((rawKey: Buffer, done: (accepted: boolean) => void) => boolean | void) | undefined;
+  let accepted = false;
+  const result = verifier?.(Buffer.from(key), (value) => { accepted = value; });
+  return result ?? accepted;
+}
+
 function makeStats(isDirectory: boolean): SFTPStats {
   return {
     mode: isDirectory ? 0o040755 : 0o100644,
@@ -302,6 +309,39 @@ describe('SSHKaos.create()', () => {
     expect(cfg?.host).toBe('managed.example.com');
     expect(cfg?.username).toBe('managed');
     expect(cfg?.port).toBe(22); // default, not the 1234 from extraOptions
+  });
+
+  it('rejects host keys by default and never lets extraOptions override verification', async () => {
+    const { SSHKaos, state } = await loadSSHModule({
+      onConnect(client, config) {
+        if (!verifyKey(config, 'untrusted-key')) {
+          client.emit('error', new Error('Host key verification failed'));
+        } else {
+          client.emit('ready');
+        }
+      },
+    });
+    await expect(SSHKaos.create({
+      host: 'example.com',
+      username: 'tester',
+      extraOptions: { hostVerifier: () => true, hostHash: 'sha256' } as never,
+    })).rejects.toThrow('Host key verification failed');
+    expect(verifyKey(state.connectConfigs[0]!, 'untrusted-key')).toBe(false);
+    expect(state.connectConfigs[0]?.hostHash).toBeUndefined();
+  });
+
+  it('accepts only a pinned key and rejects a changed key', async () => {
+    const pinned = Buffer.from('pinned-key');
+    const verifier = (key: Buffer): boolean => key.equals(pinned);
+    const { SSHKaos, state } = await loadSSHModule({
+      onConnect(client, config) {
+        if (verifyKey(config, 'pinned-key')) client.emit('ready');
+        else client.emit('error', new Error('Host key verification failed'));
+      },
+    });
+    await SSHKaos.create({ host: 'example.com', username: 'tester', hostVerifier: verifier });
+    expect(verifyKey(state.connectConfigs[0]!, 'pinned-key')).toBe(true);
+    expect(verifyKey(state.connectConfigs[0]!, 'changed-key')).toBe(false);
   });
 
   it('forwards a password-only connection without building an authHandler', async () => {

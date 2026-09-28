@@ -45,12 +45,12 @@ const DEFAULT_SFTP_STATUS_CODE = {
  * Advanced ssh2 connect options that may be passed through `SSHKaosOptions.extraOptions`.
  *
  * Excludes fields that SSHKaos manages itself (`host`, `port`, `username`,
- * `password`, `privateKey`, `authHandler`, `hostVerifier`) — those are derived
- * from the top-level `SSHKaosOptions` fields and cannot be overridden here.
+ * `password`, `privateKey`, `authHandler`, `hostVerifier`, `hostHash`) — those
+ * are derived from top-level options or intentionally disabled.
  */
 export type SSHKaosExtraOptions = Omit<
   ConnectConfig,
-  'host' | 'port' | 'username' | 'password' | 'privateKey' | 'authHandler' | 'hostVerifier'
+  'host' | 'port' | 'username' | 'password' | 'privateKey' | 'authHandler' | 'hostVerifier' | 'hostHash'
 >;
 
 export interface SSHKaosOptions {
@@ -61,13 +61,15 @@ export interface SSHKaosOptions {
   keyPaths?: string[];
   keyContents?: string[];
   cwd?: string;
+  /** Verify the raw server key against an independently trusted record. Missing verifier rejects every connection. */
+  hostVerifier?: ConnectConfig['hostVerifier'];
   /**
    * Pass-through for advanced ssh2 `ConnectConfig` fields such as `algorithms`,
    * `keepaliveInterval`, `readyTimeout`, `debug`, `tryKeyboard`, `agent`, etc.
    *
    * Managed fields (`host`, `port`, `username`, `password`, `privateKey`,
-   * `authHandler`, `hostVerifier`) are excluded from this type and will take
-   * precedence over anything set here.
+   * `authHandler`, `hostVerifier`, `hostHash`) are excluded from this type;
+   * host key verification always receives raw key bytes.
    */
   extraOptions?: SSHKaosExtraOptions;
 }
@@ -485,6 +487,7 @@ export class SSHKaos implements Kaos {
     // below take precedence.
     const config: ConnectConfig = {
       ...options.extraOptions,
+      hostHash: undefined,
       host: options.host,
       port: options.port ?? 22,
       username: options.username,
@@ -515,8 +518,8 @@ export class SSHKaos implements Kaos {
       }
     }
 
-    // Disable host key verification (like asyncssh known_hosts=None)
-    config.hostVerifier = () => true;
+    // A missing trust source must not silently accept an unknown or changed server key.
+    config.hostVerifier = options.hostVerifier ?? (() => false);
 
     const client = await connectClient(config);
     try {
