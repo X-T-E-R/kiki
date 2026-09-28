@@ -190,16 +190,32 @@ async function shot(name) {
 
 const SESSION_ID = 'sess_sample_prepare_release';
 
+/**
+ * The session rail starts closed; its header toggle reports the state through
+ * `aria-expanded`. Waiting on the toggle (not the rail) keeps both helpers
+ * from racing the session view's first paint.
+ */
+async function railToggle() {
+  const toggle = page.locator('[data-rail-toggle]').first();
+  await toggle.waitFor({ timeout: 20_000 });
+  return toggle;
+}
+
+async function openRail() {
+  const toggle = await railToggle();
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  const rail = page.locator('[data-session-rail]');
+  await rail.waitFor({ timeout: 20_000 });
+  return rail;
+}
+
 /** Close the shared right rail when the shot is about the transcript itself. */
 async function closeRail() {
-  const rail = page.locator('[data-session-rail]');
-  // The rail opens by default at ≥1024px; wait for it to mount instead of
-  // racing the session view's first paint.
-  await rail.waitFor({ timeout: 20_000 });
-  const toggle = page.locator('[data-rail-toggle]').first();
-  await toggle.waitFor({ timeout: 15_000 });
-  await toggle.click();
-  await rail.waitFor({ state: 'detached', timeout: 15_000 });
+  const toggle = await railToggle();
+  if ((await toggle.getAttribute('aria-expanded')) === 'true') {
+    await toggle.click();
+    await page.locator('[data-session-rail]').waitFor({ state: 'detached', timeout: 15_000 });
+  }
   await page.waitForTimeout(300);
 }
 
@@ -233,8 +249,7 @@ async function prepare(page_, shotDef) {
 /** D01 — the completed Explorer opened as a panel tab next to the session. */
 async function shotD01() {
   await page.goto(deepLink(`/s/${SESSION_ID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  const rail = page.locator('[data-session-rail]');
-  await rail.waitFor({ timeout: 30_000 });
+  const rail = await openRail();
   await page.locator('[data-goal-card]').waitFor({ timeout: 20_000 });
   // The dispatch tree's node buttons carry `data-agent-id`; the transcript's
   // cards use `data-subagent-id`.
@@ -242,13 +257,28 @@ async function shotD01() {
   await node.waitFor({ timeout: 20_000 });
   await node.click();
   const panel = page.locator('[data-preview-tabpanel="panel:agent-explorer"]');
-  await panel.waitFor({ timeout: 20_000 });
+  // The first press pins the rail to the Explorer, and the owner badge that
+  // appears shifts the tree under the pointer before the click lands; press
+  // the (re-rendered) node again when no tab opened.
+  try {
+    await panel.waitFor({ timeout: 1_500 });
+  } catch {
+    await rail.locator('[data-agent-id="agent-explorer"]').first().click();
+    await panel.waitFor({ timeout: 20_000 });
+  }
   // Panel tab proving it is the real agent workspace: the effort chip in its
   // header and the subagent composer, both rendered by AgentWorkspace.
   await panel.locator('[data-agent-effort]').first().waitFor({ timeout: 20_000 });
   await panel.locator('[data-composer-variant="subagent"]').waitFor({ timeout: 20_000 });
-  // Its own transcript: the explorer's four tool steps folded into one group…
-  await panel.getByText(/Steps · 4|步骤 · 4/).first().waitFor({ timeout: 20_000 });
+  // Its own transcript: the explorer's four tool steps, each on its own row
+  // (read-run folding is opt-in and off by default)…
+  await page.waitForFunction(
+    () => document.querySelectorAll(
+      '[data-preview-tabpanel="panel:agent-explorer"] :is([data-tool-id], [data-shell])',
+    ).length >= 4,
+    undefined,
+    { timeout: 20_000 },
+  );
   // …and the result summary it returned, which is the point of the shot.
   const summary = locale === 'zh' ? '未发现版本漂移' : 'no version drift found';
   await panel.getByText(summary, { exact: false }).first().waitFor({ timeout: 20_000 });
@@ -314,14 +344,19 @@ async function shotD03() {
   await settle();
 }
 
-/** D04 — folded tool steps plus one expanded completion notification. */
+/** D04 — the settled tool steps plus one expanded completion notification. */
 async function shotD04() {
   await page.goto(deepLink(`/s/${SESSION_ID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await closeRail();
   const log = page.locator('[role="log"]');
   await log.waitFor({ timeout: 30_000 });
-  // Three consecutive tool calls fold into one Steps row.
-  await log.getByText(/Steps · 3|步骤 · 3/).first().waitFor({ timeout: 20_000 });
+  // The three tool calls stay in place as rows (folding is opt-in, and only
+  // runs of three or more pure reads would fold anyway).
+  await page.waitForFunction(
+    () => document.querySelectorAll('[role="log"] :is([data-tool-id], [data-shell])').length >= 3,
+    undefined,
+    { timeout: 20_000 },
+  );
   const notification = log.locator('[data-system="task"]').first();
   await notification.waitFor({ timeout: 20_000 });
   await notification.locator('button[aria-expanded]').first().click();
@@ -336,8 +371,7 @@ async function shotD04() {
 /** D05 — the scheduled-task panel opened from the rail. */
 async function shotD05() {
   await page.goto(deepLink(`/s/${SESSION_ID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  const rail = page.locator('[data-session-rail]');
-  await rail.waitFor({ timeout: 30_000 });
+  await openRail();
   const launcher = page.locator('[data-session-cron-panel]');
   await launcher.waitFor({ timeout: 20_000 });
   await launcher.click();
@@ -393,11 +427,12 @@ async function shotD07() {
   // one, the two fallbacks are ready. A saved override renders the availability
   // badge per step (it does not inline the issue list the way the inherited
   // list does), so the badge is the status evidence here.
-  const unavailable = locale === 'zh' ? '不可用' : 'UNAVAILABLE';
-  const ready = locale === 'zh' ? '就绪' : 'READY';
+  // Case-insensitive: the badges now render the catalog's sentence-case labels.
+  const unavailable = locale === 'zh' ? '不可用' : 'unavailable';
+  const ready = locale === 'zh' ? '就绪' : 'ready';
   const pattern = new RegExp([
     expected[0], unavailable, expected[1], ready, expected[2], ready,
-  ].join('[\\s\\S]*?'));
+  ].join('[\\s\\S]*?'), 'i');
   if (!pattern.test(cardText)) {
     throw new Error('per-step readiness badges missing from the fetch chain');
   }
@@ -440,8 +475,7 @@ async function shotD08() {
 /** Task-board close-up — one in_progress card opened in TaskDetailModal. */
 async function shotBoardDetail() {
   await page.goto(deepLink(`/s/${SESSION_ID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  const rail = page.locator('[data-session-rail]');
-  await rail.waitFor({ timeout: 30_000 });
+  await openRail();
   const launcher = page.locator('[data-session-task-board]');
   await launcher.waitFor({ timeout: 20_000 });
   await launcher.click();

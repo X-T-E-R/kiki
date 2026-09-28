@@ -242,12 +242,12 @@ export function buildD03(locale) {
 }
 
 // ---------------------------------------------------------------------------
-// D04 — folded tool steps + one expanded completion notification
+// D04 — settled tool steps + one expanded completion notification
 // ---------------------------------------------------------------------------
 
 /**
  * One settled session whose transcript shows both halves of "see everything":
- * three consecutive tool calls folded into a single Steps row, and the
+ * three settled tool calls on their own timeline rows, and the
  * background task's completion notification retained on the system lane. The
  * notification is the real `<notification … category="task">` envelope the
  * daemon injects, not a fictional inbox.
