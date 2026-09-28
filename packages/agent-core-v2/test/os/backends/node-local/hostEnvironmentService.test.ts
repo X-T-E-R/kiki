@@ -21,6 +21,10 @@ vi.mock('#/_base/execEnv/loginShellPath', () => ({
   applyLoginShellPathFromNode: () => Promise.resolve(),
 }));
 
+vi.mock('#/os/backends/node-local/kikiCliPath', () => ({
+  applyKikiCliShimFromNode: () => Promise.resolve(),
+}));
+
 describe('HostEnvironmentService', () => {
   it('rejects ready with the translated HostProcessError when the probe fails', async () => {
     const service = new HostEnvironmentService();

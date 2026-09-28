@@ -173,6 +173,8 @@ function Invoke-Promotion([string]$Root, [string]$Candidate) {
         }
     }
 
+    Publish-CliExecutable $rootPath $sidecarSource
+
     $current = Read-CurrentManifest $rootPath -AllowMissing
     if ($null -ne $current -and $current.releaseId -eq $releaseId) {
         Write-Output "Kiki release is already current: $releasePath"
@@ -196,6 +198,27 @@ function Invoke-Promotion([string]$Root, [string]$Candidate) {
 function Write-BuildInfo([string]$Path, [string]$GitSha) {
     $text = 'gitSha: {0}' -f $GitSha
     [IO.File]::WriteAllText($Path, $text, (New-Object Text.UTF8Encoding($false)))
+}
+
+function Publish-CliExecutable([string]$Root, [object]$Sidecar) {
+    # Mirror the NSIS installer, which copies kiki-server.exe to
+    # $INSTDIR\cli\kiki.exe. Placing the same layout at the runtime root makes
+    # the packaged CLI reachable from the promoted build. Adding that directory
+    # to the user PATH stays the installer's job; this only reports the hint.
+    $cliDirectory = Join-Path $Root 'cli'
+    $cliPath = Join-Path $cliDirectory 'kiki.exe'
+    [IO.Directory]::CreateDirectory($cliDirectory) | Out-Null
+    if (Test-Path -LiteralPath $cliPath -PathType Leaf) {
+        $existing = Get-ArtifactInfo $cliPath 'Published Kiki CLI'
+        if ($existing.Hash -eq $Sidecar.Hash -and $existing.Length -eq $Sidecar.Length) {
+            Write-Output "Kiki CLI already current: $cliPath"
+            return
+        }
+    }
+    Copy-Item -LiteralPath $Sidecar.Path -Destination $cliPath -Force
+    Assert-ArtifactMatches $Sidecar $cliPath 'Published Kiki CLI'
+    Write-Output "Published Kiki CLI: $cliPath"
+    Write-Output "Add '$cliDirectory' to PATH to run 'kiki' from any terminal (the Kiki installer does this automatically)."
 }
 
 function Invoke-Launch([string]$Root) {

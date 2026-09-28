@@ -63,7 +63,9 @@ try {
     [IO.File]::WriteAllText((Join-Path $candidateRoot 'kiki-server.exe'), 'sidecar-build-a')
 
     $common = @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-CandidateRoot', $candidateRoot)
-    Invoke-Controller $common | Out-Null
+    $initialOutput = Invoke-Controller $common
+    Assert-True ($initialOutput -match 'cli\\kiki\.exe') 'Promotion output did not report the published CLI path.'
+    Assert-True ($initialOutput -match 'PATH') 'Promotion output did not hint at adding the CLI directory to PATH.'
     $manifestPath = Join-Path $runtimeRoot 'current.json'
     Assert-True (Test-Path -LiteralPath $manifestPath -PathType Leaf) 'Initial promotion did not create current.json.'
     $firstManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -76,12 +78,16 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $firstRelease 'build-info.txt') -PathType Leaf) 'Initial promotion did not write build-info.txt.'
     $buildInfoText = [IO.File]::ReadAllText((Join-Path $firstRelease 'build-info.txt'))
     Assert-True ($buildInfoText -match 'gitSha: [0-9a-f]{40}|gitSha: unknown') 'build-info.txt does not carry a git sha.'
+    $cliPath = Join-Path $runtimeRoot 'cli\kiki.exe'
+    Assert-True (Test-Path -LiteralPath $cliPath -PathType Leaf) 'Initial promotion did not publish cli\kiki.exe.'
+    Assert-Equal 'sidecar-build-a' ([IO.File]::ReadAllText($cliPath)) 'Published CLI bytes differ from the promoted backend.'
 
     $manifestBytesBeforeRepeat = [IO.File]::ReadAllBytes($manifestPath)
     Invoke-Controller $common | Out-Null
     $releaseDirectories = @(Get-ChildItem -LiteralPath (Join-Path $runtimeRoot 'releases') -Directory | Where-Object { -not $_.Name.StartsWith('.pending-') })
     Assert-Equal 1 $releaseDirectories.Count 'Repeated promotion created a duplicate release.'
     Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]]$manifestBytesBeforeRepeat, [byte[]][IO.File]::ReadAllBytes($manifestPath))) 'Repeated promotion rewrote the current pointer.'
+    Assert-Equal 'sidecar-build-a' ([IO.File]::ReadAllText($cliPath)) 'Repeated promotion rewrote an unchanged cli\kiki.exe.'
 
     $manifestTextBeforeFailure = [IO.File]::ReadAllText($manifestPath)
     Remove-Item -LiteralPath (Join-Path $candidateRoot 'kiki-server.exe')
@@ -99,6 +105,7 @@ try {
     $verificationOutput = Invoke-Controller $common 1
     Assert-True ($verificationOutput -match 'failed copy verification') 'Corrupt release failure did not report copy verification.'
     Assert-Equal $manifestTextBeforeFailure ([IO.File]::ReadAllText($manifestPath)) 'Copy-verification failure changed current.json.'
+    Assert-Equal 'sidecar-build-a' ([IO.File]::ReadAllText($cliPath)) 'A failed promotion changed cli\kiki.exe.'
 
     Invoke-Controller @(
         '-Action', 'InstallShortcuts',
@@ -140,8 +147,9 @@ try {
     Invoke-Controller @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot) 0 $installedController | Out-Null
     $configuredManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     Assert-Equal $secondReleaseId ([string]$configuredManifest.releaseId) 'The installed controller did not promote from its configured candidate path.'
+    Assert-Equal 'sidecar-build-b' ([IO.File]::ReadAllText($cliPath)) 'Repromotion did not refresh cli\kiki.exe to the new backend.'
 
-    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, installed-controller, production-default, and shortcut cases.'
+    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, and shortcut cases.'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

@@ -7,6 +7,7 @@ import {
   ProbeShellNotFoundError,
 } from '#/_base/execEnv/environmentProbe';
 import { applyLoginShellPathFromNode } from '#/_base/execEnv/loginShellPath';
+import { applyKikiCliShimFromNode } from '#/os/backends/node-local/kikiCliPath';
 
 import {
   type HostEnvironmentInfo,
@@ -29,7 +30,7 @@ export class HostEnvironmentService implements IHostEnvironment {
       probeHostEnvironmentFromNode().then((info) => {
         this._info = info;
       }),
-      applyLoginShellPathFromNode(),
+      applyLoginShellPathFromNode().then(() => applyKikiCliShimFromNode()),
     ])
       .then(() => {})
       .catch((error: unknown) => {
