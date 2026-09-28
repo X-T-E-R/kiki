@@ -109,6 +109,10 @@ export const USER_INTERRUPTED_SUBAGENT_MESSAGE =
   'The subagent was stopped before it finished by user.';
 export const SUBAGENT_STOPPED_MESSAGE = 'The subagent was stopped before it finished.';
 
+export function mainProfileSubagentNotice(profileName: string): string {
+  return `main_profile_notice: "${profileName}" is a main-agent profile running as a subagent here. For long-running collaboration, a user-visible independent session, or back-and-forth messages, ThreadCreate gives a better experience.`;
+}
+
 export interface ISubagentTool extends AgentTool<SubagentToolInput> {
   readonly _serviceBrand: undefined;
   dispatchCatalog(): import('./subagentCapabilities').SubagentCapabilityCatalog;

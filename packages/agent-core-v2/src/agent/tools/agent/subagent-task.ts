@@ -20,6 +20,7 @@ export type SubagentHandle = {
   readonly profileName: string;
   readonly name?: string;
   readonly parentToolCallId?: string;
+  readonly mainProfile?: boolean;
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly thinkingEffortSource?: import('#/agent/profile/profile').ThinkingEffortSource;

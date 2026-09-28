@@ -125,6 +125,37 @@ describe('profile file runtime isolation', () => {
     });
   });
 
+  it('loads a main profile file as a role for explicit dispatch', async () => {
+    const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => '' });
+    const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
+    const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
+    Object.defineProperty(fake, 'fs', { value: {
+      realpath: async (path: string) => path,
+      readText: async () => '---\nname: solo\ndescription: Main role\nmain: true\nmodel_alias: model-a\n---\nMAIN ROLE',
+    } as unknown as IHostFileSystem });
+    const loaded = await loadDispatchProfileFile('main.md', fake, { workDir: '/workspace' }, catalog, {
+      thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
+      activeToolNames: ['Read'],
+    });
+    expect(loaded.profileName).toBe('solo');
+    expect(loaded.snapshot.publicProfiles.get('solo')).toMatchObject({ main: true, modelAlias: 'model-a' });
+    expect(loaded.snapshot.publicProfiles.get('solo')?.systemPrompt({})).toContain('MAIN ROLE');
+    expect(loaded.snapshot.publicProfiles.get('solo')?.toolAllowPolicies).toContainEqual(['Read']);
+  });
+
+  it('keeps the external executor guard for a main profile file', async () => {
+    const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => '' });
+    const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
+    const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
+    Object.defineProperty(fake, 'fs', { value: {
+      realpath: async (path: string) => path,
+      readText: async () => '---\nname: solo\ndescription: Main role\nmain: true\nexecutor: codex-app-server\n---\nMAIN ROLE',
+    } as unknown as IHostFileSystem });
+    await expect(loadDispatchProfileFile('main.md', fake, { workDir: '/workspace' }, catalog, {
+      thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
+    })).rejects.toThrow(/External executor "codex-app-server" is unsupported for main agent profile/);
+  });
+
   it('rejects a canonical root that escapes the isolated workspace before reading content', async () => {
     const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => '' });
     const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;

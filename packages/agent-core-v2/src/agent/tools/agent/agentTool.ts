@@ -53,6 +53,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
   ISessionDispatchService,
+  type DispatchChild,
   type DispatchRun,
 } from '#/session/dispatch/dispatch';
 import { emitAgentRunSpawned, mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
@@ -74,6 +75,7 @@ import {
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   ISubagentTool,
+  mainProfileSubagentNotice,
   RESUME_WITH_TYPE_UNAVAILABLE,
   RESUMED_LABEL,
   SUBAGENT_STOPPED_MESSAGE,
@@ -106,6 +108,7 @@ export class SubagentTool implements ISubagentTool {
 
   private readonly callerAgentId: string;
   private readonly canRunInBackground: () => boolean;
+  private readonly notifiedMainProfiles = new Set<string>();
   private catalogReady = false;
   private frozenDescription: string | undefined;
 
@@ -339,6 +342,23 @@ export class SubagentTool implements ISubagentTool {
     return subagentProfileName(matches[0]![1]);
   }
 
+  private dispatchedMainProfile(child: DispatchChild, fileProfile: AgentProfile | undefined): boolean {
+    if (child.effectiveProfile !== undefined) return child.effectiveProfile.main === true;
+    if (fileProfile !== undefined) return fileProfile.main === true;
+    return this.catalog.get(child.profileName)?.main === true;
+  }
+
+  private mainProfileNotice(handle: SubagentHandle): string | undefined {
+    if (handle.mainProfile !== true || this.notifiedMainProfiles.has(handle.profileName)) return undefined;
+    this.notifiedMainProfiles.add(handle.profileName);
+    return mainProfileSubagentNotice(handle.profileName);
+  }
+
+  private withMainProfileNotice(handle: SubagentHandle, output: string): string {
+    const notice = this.mainProfileNotice(handle);
+    return notice === undefined ? output : `${output}\n${notice}`;
+  }
+
   private async launch(
     args: SubagentToolInput,
     toolCallId: string,
@@ -366,6 +386,9 @@ export class SubagentTool implements ISubagentTool {
     const fileTarget = args.profile_file === undefined ? undefined
       : await loadDispatchProfileFile(args.profile_file, runtime, this.workspace, this.catalog,
           { ...caller, subagentPolicy: caller.subagentPolicy ?? caller.defaultPolicy }, snapshot);
+    const fileProfile = fileTarget === undefined
+      ? undefined
+      : fileTarget.snapshot.publicProfiles.get(fileTarget.profileName);
     const defaultTarget = resumeRef !== undefined && resumeRef.length > 0
       || fileTarget !== undefined
       || (args.profile?.length ?? 0) > 0
@@ -438,6 +461,7 @@ export class SubagentTool implements ISubagentTool {
       profileName: run.child.profileName,
       name: run.child.name,
       parentToolCallId: toolCallId,
+      mainProfile: this.dispatchedMainProfile(run.child, fileProfile),
       model: run.child.modelAlias,
       thinkingEffort: run.child.thinkingEffort,
       thinkingEffortSource: run.child.thinkingEffortSource,
@@ -569,14 +593,14 @@ export class SubagentTool implements ISubagentTool {
 
       if (runInBackground) {
         return {
-          output: formatBackgroundAgentResult(taskId, handle, runLabel),
+          output: this.withMainProfileNotice(handle, formatBackgroundAgentResult(taskId, handle, runLabel)),
         };
       }
 
       const release = await this.tasks.waitForForegroundRelease(taskId);
       if (release === 'detached' || release === 'timeout_detached') {
         return {
-          output: formatBackgroundAgentResult(taskId, handle, runLabel),
+          output: this.withMainProfileNotice(handle, formatBackgroundAgentResult(taskId, handle, runLabel)),
         };
       }
       return await this.formatForegroundResult(taskId, handle, timeoutMs);
@@ -596,7 +620,7 @@ export class SubagentTool implements ISubagentTool {
     const info = this.tasks.getTask(taskId);
     if (info?.status === 'completed') {
       return {
-        output: formatForegroundAgentSuccess(handle, await this.tasks.readOutput(taskId)),
+        output: this.withMainProfileNotice(handle, formatForegroundAgentSuccess(handle, await this.tasks.readOutput(taskId))),
       };
     }
     const timedOut = info?.status === 'timed_out';
@@ -604,7 +628,7 @@ export class SubagentTool implements ISubagentTool {
       ? `Agent timed out after ${formatSubagentTimeoutDescription(timeoutMs)}.`
       : formatSubagentStoppedMessage(info?.stopReason);
     return {
-      output: formatForegroundAgentFailure(handle, message, timedOut),
+      output: this.withMainProfileNotice(handle, formatForegroundAgentFailure(handle, message, timedOut)),
       isError: true,
     };
   }

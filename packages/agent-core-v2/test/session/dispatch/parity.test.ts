@@ -1594,6 +1594,82 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding!.resolvedProfile).toBe(parityProfile);
   });
 
+  function mainProfileLane(): { readonly lane: ParityLane; readonly main: AgentProfile } {
+    const main = normalizeAgentProfile({
+      name: 'solo', description: 'Solo main profile', main: true,
+      modelAlias: 'parity-model', thinkingEffort: 'high', systemPrompt: () => 'solo',
+    });
+    return { lane: createLane(disposables, 'internal', { profile: main }), main };
+  }
+
+  it('dispatches an explicitly named main profile as a subagent and hints ThreadCreate once', async () => {
+    const { lane } = mainProfileLane();
+    const first = await lane.runInternal({
+      prompt: 'work', description: 'Main profile child', profile: 'solo', background: true,
+    });
+    expect(first.isError).not.toBe(true);
+    const fields = fieldMap(outputText(first.output));
+    expect(fields['actual_profile']).toBe('solo');
+    expect(fields['selection_kind']).toBe('profile');
+    expect(fields['main_profile_notice']).toContain('ThreadCreate');
+    expect(lane.lifecycleCreate.mock.calls[0]![0]!.delegator).toEqual({ kind: 'agent', agentId: 'main' });
+    expect(lane.metadataAgents['agent_child_1']).toMatchObject({ type: 'sub', parentAgentId: 'main' });
+    await complete(lane, 0);
+
+    const second = await lane.runInternal({
+      prompt: 'more work', description: 'Main profile child again', profile: 'solo', background: true,
+    });
+    expect(second.isError).not.toBe(true);
+    expect(outputText(second.output)).not.toContain('main_profile_notice');
+  });
+
+  it('dispatches a main profile file as a subagent with the same notice', async () => {
+    const { lane } = mainProfileLane();
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    Object.defineProperty(runtime, 'fs', { value: {
+      realpath: async (path: string) => path,
+      readText: async () => '---\nname: solo\ndescription: Main role\nmain: true\nmodel_alias: parity-model\nthinking_effort: high\n---\nMAIN ROLE',
+    } });
+    const result = await lane.runInternal({
+      profile_file: 'main.md', prompt: 'work', description: 'Main file role', background: true,
+    });
+    expect(result.isError).not.toBe(true);
+    const fields = fieldMap(outputText(result.output));
+    expect(fields['actual_profile']).toBe('solo');
+    expect(fields['profile_source']).toBe('profile_file');
+    expect(fields['main_profile_notice']).toContain('ThreadCreate');
+  });
+
+  it('never advertises or implicitly selects a main profile', async () => {
+    const { lane } = mainProfileLane();
+    const tool = lane.ix.get(ISubagentTool);
+    expect(tool.description).not.toContain('solo');
+    expect(tool.description).not.toContain('Available profiles');
+    expect(tool.visibleProfileDescriptions().size).toBe(0);
+
+    const result = await lane.runInternal({
+      prompt: 'work', description: 'Omitted target', background: true, model_alias: 'parity-model', effort: 'high',
+    });
+    expect(result.isError).not.toBe(true);
+    expect(fieldMap(outputText(result.output))['actual_profile']).toBe('general');
+    expect(fieldMap(outputText(result.output))['main_profile_notice']).toBeUndefined();
+  });
+
+  it('keeps strict caller policy authoritative for an explicitly named main profile', async () => {
+    const { lane } = mainProfileLane();
+    Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), {
+      subagentPolicy: 'strict',
+      subagentDeclaration: { kind: 'set', names: ['explore'] },
+      subagents: ['explore'],
+    });
+    const blocked = await lane.runInternal({
+      prompt: 'work', description: 'Blocked main profile', profile: 'solo', background: true,
+    });
+    expect(blocked.isError).toBe(true);
+    expect(outputText(blocked.output)).toContain('strict subagent policy');
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+  });
+
   it('blocks concurrent creation before side effects, and releases only when execution settles', async () => {
     const lane = createLane(disposables, 'internal', { capacity: { maxDirectChildren: 1, maxTotalSubagents: 0 } });
     const dispatch = lane.ix.get(ISessionDispatchService);

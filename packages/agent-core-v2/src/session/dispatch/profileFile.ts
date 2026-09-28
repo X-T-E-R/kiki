@@ -116,7 +116,6 @@ export async function loadDispatchProfileFile(
     path: realpath, source: 'explicit', text: await guardedFs.readFile(realpath),
     definitionId: agentProfileDefinitionId(realpath), contributionRoot: runtime.path.dirname(realpath),
   });
-  if (definition.main === true) throw new Error2(ErrorCodes.REQUEST_INVALID, 'profile_file must define a subagent, not a main profile.');
   const graph = await resolveAgentSourceGraph(guardedFs, [definition]);
   const sources: FrozenProfileFileSources = {
     root: definition,
