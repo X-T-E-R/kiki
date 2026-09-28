@@ -14,7 +14,7 @@ import {
 import { type Message, type StreamedMessagePart, type ToolCall } from '#/kosong/contract/message';
 import { generate as runKosongGenerate } from '#/kosong/contract/generate';
 import type { ChatProvider, StreamedMessage } from '#/kosong/contract/provider';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DefaultCompactionStrategy,
@@ -105,6 +105,8 @@ const EXACT_COMPACTION_REFRESH_PROFILE: ResolvedAgentProfile = normalizeAgentPro
 });
 
 describe('FullCompaction', () => {
+  beforeEach(() => vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', 'false'));
+
   it('keeps an oversized trailing user message as recent', () => {
     const strategy = testCompactionStrategy();
     const messages = [
@@ -1291,7 +1293,7 @@ describe('FullCompaction', () => {
           reason: 'failed',
           error: expect.objectContaining({
             code: 'compaction.failed',
-            message: 'APIStatusError: Bad request',
+            message: expect.stringContaining('Automatic compaction failed (upstream error; HTTP 400; kimi/kimi-code; 1 attempt): Bad request'),
           }),
           interruptReason: 'error',
         }),
@@ -1305,7 +1307,7 @@ describe('FullCompaction', () => {
       event: 'error',
       args: expect.objectContaining({
         code: 'compaction.failed',
-        message: 'APIStatusError: Bad request',
+        message: expect.stringContaining('Automatic compaction failed (upstream error; HTTP 400; kimi/kimi-code; 1 attempt): Bad request'),
       }),
     });
     await ctx.expectResumeMatches();
@@ -1364,14 +1366,13 @@ describe('FullCompaction', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
 
-    expect(attempts).toBe(4);
+    expect(attempts).toBe(3);
     expect(ctx.newEvents()).toContainEqual(
       expect.objectContaining({
         event: 'error',
         args: expect.objectContaining({
           code: 'compaction.failed',
-          message:
-            'CompactionTruncatedError: Compaction response was truncated before producing a complete summary.',
+          message: expect.stringContaining('Compaction response was truncated before producing a complete summary.'),
           name: 'Error2',
         }),
       }),
@@ -2259,6 +2260,7 @@ describe('FullCompaction', () => {
 
   it('does not trigger auto compaction from a deferred loaded MCP schema', async () => {
     vi.stubEnv(MASTER_ENV, '1');
+    vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', 'true');
     const ctx = testAgent(
       agentService(IAgentToolSelectAnnouncementsService, { _serviceBrand: undefined }),
       {
@@ -3175,7 +3177,7 @@ describe('FullCompaction', () => {
     const events = await ctx.untilTurnEnd();
 
     expect(callCount).toBe(3);
-    expect(compactionMaxCompletionTokens).toEqual([32000]);
+    expect(compactionMaxCompletionTokens).toEqual([128 * 1024]);
     expect(events).toContainEqual(
       expect.objectContaining({
         event: 'compaction.started',

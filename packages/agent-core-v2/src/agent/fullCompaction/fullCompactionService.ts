@@ -854,7 +854,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         this.profile.getModelProviderType() ?? 'unknown-provider',
         this.profile.data().modelAlias ?? 'unknown-model',
         requestAttempts,
-      ), { cause: error });
+      ), { cause: error, details: isError2(error) ? error.details : undefined });
     }
   }
 
