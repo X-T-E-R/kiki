@@ -970,11 +970,12 @@ describe('BashTool', () => {
     expect(properties['timeout']?.default).toBe(60);
   });
 
-  it('renders the available commands section without a /tasks hint', () => {
+  it('briefly identifies shell-only work and dedicated file tools', () => {
     const { runner } = createTestRunner(processWithOutput());
     const tool = bashTool(runner);
 
-    expect(tool.description).toContain('Commands available');
+    expect(tool.description).toContain('pipes, package managers, git, builds and tests');
+    expect(tool.description).toContain('Use Read/Glob/Grep for files and Edit/Write');
     expect(tool.description).not.toContain('/tasks');
   });
 
@@ -988,8 +989,8 @@ describe('BashTool', () => {
       stubToolPolicy(() => false),
     );
 
-    expect(tool.description).toContain('Background execution is disabled for this agent.');
-    expect(tool.description).not.toContain('If `run_in_background=true`');
+    expect(tool.description).toContain('Background execution is disabled for this agent; omit run_in_background.');
+    expect(tool.description).not.toContain('Use `run_in_background=true`');
     expect(tool.description).not.toContain('TaskOutput');
     expect(tool.description).not.toContain('/tasks');
   });
@@ -1078,6 +1079,19 @@ describe('BashTool', () => {
       output: 'out\nwarn\n',
       isError: false,
     });
+  });
+
+  it('appends a Read hint after a file read but not when disabled in config', async () => {
+    const ctx = createTestCtx();
+    const enabled = bashTool(createTestRunner(processWithOutput({ stdout: 'contents\n' })).runner,
+      undefined, ctx);
+    const result = await executeTool(enabled, context({ command: 'cat README.md' }));
+    expect(result.output).toBe('contents\n\nHint: to read a file, use Read (supports line ranges) instead of Bash.');
+
+    const disabled = bashTool(createTestRunner(processWithOutput({ stdout: 'contents\n' })).runner,
+      undefined, ctx, undefined, undefined, stubConfig({ background: { bashFileToolHints: false } }));
+    const suppressed = await executeTool(disabled, context({ command: 'cat README.md' }));
+    expect(suppressed.output).toBe('contents\n');
   });
 
   it('returns both stdout and stderr when a command fails', async () => {
@@ -1463,17 +1477,16 @@ describe('BashTool', () => {
     expect(args[1]).toBe("cd '/workspace' && ls 2>nul");
   });
 
-  it('exposes a shell description that documents /bin/bash, TaskOutput/TaskStop, safety and efficiency sections, and background semantics', () => {
+  it('exposes concise shell safety and background guidance', () => {
     const { runner } = createTestRunner(processWithOutput());
     const tool = bashTool(runner);
 
     const description = tool.description;
     expect(description).toContain('`bash`');
-    expect(description).toContain('TaskOutput');
-    expect(description).toContain('TaskStop');
-    expect(description).toContain('**Guidelines for safety and security:**');
-    expect(description).toContain('**Guidelines for efficiency:**');
+    expect(description).toContain('fresh shell');
+    expect(description).toContain('completion is notified automatically');
     expect(description).toContain('run_in_background=true');
+    expect(description).toContain('Do not run interactive');
   });
 
   it('disables background execution when TaskList is inactive even if TaskOutput/TaskStop are active', async () => {

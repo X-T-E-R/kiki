@@ -27,6 +27,7 @@ import { renderPrompt } from '#/_base/utils/render-prompt';
 import { userCancellationReason } from '#/_base/utils/abort';
 import bashDescriptionTemplate from './bash.md?raw';
 import { ProcessTask } from './process-task';
+import { bashFileToolHint } from './bashFileToolHints';
 import {
   type BashInput,
   BashInputSchema,
@@ -68,26 +69,12 @@ function renderBashDescription(shellName: string): string {
 }
 
 function withoutBackgroundDescription(description: string): string {
-  return description
-    .replace(
-      /\r?\n\r?\nIf `run_in_background=true`,[\s\S]*?Use `TaskStop` only if the task must be cancelled\./,
-      '\n\nBackground execution is disabled for this agent. Do not set `run_in_background=true`.',
-    )
-    .replace(
-      ` For possibly long-running foreground commands, set the \`timeout\` argument in seconds. Foreground commands default to ${String(DEFAULT_TIMEOUT_S)}s and allow up to ${String(MAX_TIMEOUT_S)}s. When a foreground command hits its timeout it is moved to the background instead of being killed, and you will be automatically notified when it completes.`,
-      ` For possibly long-running commands, set the \`timeout\` argument in seconds. The default is ${String(DEFAULT_TIMEOUT_S)}s; foreground commands allow up to ${String(MAX_TIMEOUT_S)}s; a foreground command that hits its timeout is killed.`,
-    )
-    .replace(
-      /\r?\n- Prefer `run_in_background=true`[\s\S]*?conversation to continue before the command finishes\./,
-      '\n- Do not set `run_in_background=true`; background task management tools are not available.',
-    );
+  return `${withoutAutoBackgroundOnTimeout(description)
+    .replace(/Use `run_in_background=true`.*?`TaskStop`\. /, '')}\nBackground execution is disabled for this agent; omit run_in_background.`;
 }
 
 function withoutAutoBackgroundOnTimeout(description: string): string {
-  return description.replace(
-    ' When a foreground command hits its timeout it is moved to the background instead of being killed, and you will be automatically notified when it completes.',
-    ' A foreground command that hits its timeout is killed.',
-  );
+  return description.replace('may move to background on timeout', 'are killed on timeout');
 }
 
 export class BashTool implements IBashTool {
@@ -147,8 +134,14 @@ export class BashTool implements IBashTool {
       },
       approvalRule: literalRulePattern(this.name, args.command),
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, args.command),
-      execute: ({ signal, onUpdate, onForegroundTaskStart }) =>
-        this.execution(args, signal, onUpdate, onForegroundTaskStart),
+      execute: async ({ signal, onUpdate, onForegroundTaskStart }) => {
+        const result = await this.execution(args, signal, onUpdate, onForegroundTaskStart);
+        const enabled = resolveAgentTaskConfig(this.config)?.bashFileToolHints !== false;
+        const hint = bashFileToolHint(args.command, this.ctx, enabled);
+        return hint !== undefined && typeof result.output === 'string'
+          ? { ...result, output: `${result.output}\n${hint}` }
+          : result;
+      },
     };
   }
 
