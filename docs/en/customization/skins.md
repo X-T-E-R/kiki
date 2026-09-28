@@ -147,4 +147,4 @@ Skins are designed to never lock you out of your own interface:
 
 ## Distribution
 
-The skin format is deliberately shaped so a skin can ship inside a plugin as a declarative contribution: an enabled plugin's `x-kiki.themes` entries appear in the same picker, marked with the plugin that contributed them. Share a standalone skin as a `.json` file, or bundle it with a plugin.
+The skin format is deliberately shaped so a skin can ship inside a plugin as a declarative contribution: the server lists an enabled plugin's `x-kiki.themes` entries beside your own skin files, marked with the plugin that contributed them. Share a standalone skin as a `.json` file, or bundle it with a plugin.
