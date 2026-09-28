@@ -48,6 +48,12 @@ export interface PluginMarketplaceEntry {
   readonly version?: string;
   readonly description?: string;
   readonly homepage?: string;
+  /**
+   * Absolute `http(s)` URL of the plugin's icon, for a GUI browsing the
+   * catalog before anything is installed. A local catalog entry has no URL to
+   * offer, so the icon comes from the manifest once the plugin is installed.
+   */
+  readonly icon?: string;
   readonly keywords?: readonly string[];
   readonly relevance?: PluginRelevance;
   readonly builtIn?: boolean;
@@ -220,6 +226,7 @@ function parseMarketplaceEntry(
     version: stringField(value, 'version') ?? deriveVersionFromGithubSource(resolvedSource),
     description: stringField(value, 'description') ?? stringField(value, 'shortDescription'),
     homepage: stringField(value, 'homepage') ?? stringField(value, 'websiteURL'),
+    icon: absoluteHttpUrl(value['icon']),
     keywords: stringArrayField(value, 'keywords'),
     relevance: value['relevance'] === undefined ? undefined : pluginRelevanceSchema.parse(value['relevance']),
   };
@@ -236,6 +243,19 @@ function validateMarketplaceEntryType(value: Record<string, unknown>, id: string
   throw new Error(
     `Plugin marketplace entry ${id} "type" must be "plugin". Legacy aliases "managed" and "guide" are also accepted.`,
   );
+}
+
+function absoluteHttpUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const candidate = value.trim();
+  if (candidate.length === 0) return undefined;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return undefined;
+  }
+  return url.protocol === 'http:' || url.protocol === 'https:' ? candidate : undefined;
 }
 
 function parseMarketplaceTier(

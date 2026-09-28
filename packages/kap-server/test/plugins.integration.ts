@@ -41,6 +41,7 @@ const CATALOG = {
       id: 'relative-plugin',
       displayName: 'Relative',
       source: './plugins/relative.zip',
+      icon: './icon.svg',
     },
     {
       id: 'alias-plugin',
@@ -75,6 +76,7 @@ const CATALOG = {
       name: 'Meta Alias',
       shortDescription: 'Aliased metadata',
       websiteURL: 'https://example.test/meta',
+      icon: 'https://example.test/meta-icon.svg',
       keywords: ['web', 3, '  ', 'tools'],
       source: 'https://example.test/meta.zip',
     },
@@ -194,6 +196,27 @@ describe('server-v2 /api plugins', () => {
     expect(submitted.body.code, submitted.body.msg).toBe(40110);
     await call('POST', '/api/plugins/kiki-writing:remove');
     expect((await call<{ panels: unknown[] }>('GET', '/api/plugins/panels')).body.data.panels).toEqual([]);
+  });
+
+  it('returns the shipped manifest icon of an installed plugin in list and detail', async () => {
+    const plugins = ['kiki-office', 'kiki-writing'];
+    const expected: Record<string, string> = {};
+    for (const id of plugins) {
+      const source = join(import.meta.dirname, `../../../plugins/official/${id}`);
+      expected[id] = `data:image/svg+xml;base64,${(await readFile(join(source, 'icon.svg'))).toString('base64')}`;
+      expect((await install(source)).body.code, id).toBe(0);
+    }
+
+    const listed = await call<{ plugins: { id: string; icon?: string }[] }>('GET', '/api/plugins');
+    expect(listed.body.code).toBe(0);
+    for (const id of plugins) {
+      expect(listed.body.data.plugins.find((plugin) => plugin.id === id)?.icon, id).toBe(expected[id]);
+      const info = await call<{ icon?: string }>('GET', `/api/plugins/${id}`);
+      expect(info.body.data.icon, id).toBe(expected[id]);
+    }
+
+    const manifest = await call<{ manifest: { icon?: string } }>('GET', '/api/plugins/kiki-office');
+    expect(manifest.body.data.manifest.icon).toBe(expected['kiki-office']);
   });
 
   it('stores declared secrets in credentials without exposing them to settings reads', async () => {
@@ -420,6 +443,7 @@ describe('server-v2 /api plugins', () => {
         capabilityId?: string;
         description?: string;
         homepage?: string;
+        icon?: string;
         keywords?: string[];
         installed?: { version?: string };
       }[];
@@ -456,6 +480,8 @@ describe('server-v2 /api plugins', () => {
     expect(meta?.description).toBe('Aliased metadata');
     expect(meta?.homepage).toBe('https://example.test/meta');
     expect(meta?.keywords).toEqual(['web', 'tools']);
+    expect(meta?.icon).toBe('https://example.test/meta-icon.svg');
+    expect(relative?.icon).toBeUndefined();
 
     const source = await makePluginDir('demo-plugin', '1.0.0');
     await install(source);

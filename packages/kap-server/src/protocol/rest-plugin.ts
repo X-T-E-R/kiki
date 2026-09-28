@@ -18,6 +18,7 @@ export const pluginSummarySchema = z.object({
   id: z.string(),
   displayName: z.string(),
   version: z.string().optional(),
+  icon: z.string().optional(),
   enabled: z.boolean(),
   state: z.enum(['ok', 'error']),
   skillCount: z.number(),
@@ -54,6 +55,7 @@ export const pluginMarketplaceEntrySchema = z.object({
   displayName: z.string(),
   description: z.string().optional(),
   homepage: z.string().optional(),
+  icon: z.string().optional(),
   keywords: z.array(z.string()).optional(),
   relevance: z.object({
     cwd: z.array(z.string()).optional(), fileGlobs: z.array(z.string()).optional(),

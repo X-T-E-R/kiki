@@ -254,6 +254,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件。Manifest 可以放在以�
 | `name` | 必填，作为 plugin id。必须匹配 `[a-z0-9][a-z0-9_-]{0,63}` |
 | `version`、`description`、`keywords`、`author`、`homepage`、`license` | 展示元数据 |
 | `interface` | 在 `/plugins` 中展示的字段：`displayName`、`shortDescription`、`longDescription`、`developerName`、`websiteURL` |
+| `icon` | 插件包内 `.svg` 或 `.png` 文件的 `./` 路径（上限 64 KB）。`GET /api/plugins` 以惰性的 `data:` URI 返回，供 GUI 画在插件旁边 |
 | `skills` | 一个或多个 `./` 路径，必须位于 plugin 根目录内。省略时根目录的 `SKILL.md` 被当作单个 Skill root |
 | `agents` | 一个或多个 `./` 路径，必须位于 plugin 根目录内，指向含有 [Agent 文件](./agents.md#自定义-agent)的目录。省略时根下的 `agents/` 目录（若存在）被自动采用 |
 | `sessionStart.skill` | 在新会话或恢复会话开始时，把指定 plugin Skill 加载到 main agent |

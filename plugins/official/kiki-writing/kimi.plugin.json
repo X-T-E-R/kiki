@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "A focused writing panel and a declarative draft command.",
   "license": "MIT",
+  "icon": "./icon.svg",
   "x-kiki": {
     "engines": { "kiki": "^0.4.0" },
     "permissions": { "uiPanel": true },

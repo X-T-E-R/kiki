@@ -42,6 +42,12 @@ export interface PluginManifest {
   readonly author?: PluginAuthor;
   readonly homepage?: string;
   readonly license?: string;
+  /**
+   * The plugin's icon, inlined as a `data:` URI at parse time — the manifest
+   * declares a `./` path like `systemPromptPath` does, and consumers only ever
+   * need the bytes.
+   */
+  readonly icon?: string;
   readonly skills?: readonly string[];
   readonly rootSkillFallback?: boolean;
   readonly agents?: readonly string[];
@@ -148,6 +154,8 @@ export interface PluginSummary {
   readonly id: string;
   readonly displayName: string;
   readonly version?: string;
+  /** The manifest icon, inlined as a `data:` URI; absent when the plugin has none. */
+  readonly icon?: string;
   readonly enabled: boolean;
   readonly state: PluginState;
   readonly skillCount: number;

@@ -98,6 +98,7 @@ export interface HttpRestPluginMarketplaceEntry {
   readonly displayName: string;
   readonly description?: string;
   readonly homepage?: string;
+  readonly icon?: string;
   readonly keywords?: readonly string[];
   readonly relevance?: {
     readonly cwd?: readonly string[];

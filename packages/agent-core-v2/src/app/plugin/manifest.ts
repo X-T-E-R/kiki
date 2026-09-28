@@ -21,6 +21,13 @@ const KIMI_PLUGIN_DIR_PATH = '.kimi-plugin/plugin.json';
 
 export const PLUGIN_SYSTEM_PROMPT_MAX_BYTES = 32 * 1024;
 
+export const PLUGIN_ICON_MAX_BYTES = 64 * 1024;
+
+const PLUGIN_ICON_MIME_TYPES: Readonly<Record<string, string>> = {
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+};
+
 const UNSUPPORTED_RUNTIME_FIELDS = [
   'tools',
   'apps',
@@ -159,6 +166,7 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     hooks: readHooks(raw['hooks'], diagnostics),
     commands: await readCommands(pluginRoot, raw['commands'], diagnostics),
     interface: readInterface(raw['interface']),
+    icon: await readIcon(pluginRoot, raw['icon'], diagnostics),
     skillInstructions,
     systemPrompt,
     prerequisites,
@@ -352,6 +360,62 @@ async function readSystemPrompt(
   }
 
   return parts.length === 0 ? undefined : parts.join('\n\n');
+}
+
+async function readIcon(
+  pluginRoot: string,
+  raw: unknown,
+  diagnostics: PluginDiagnostic[],
+): Promise<string | undefined> {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string') {
+    diagnostics.push({ severity: 'warn', message: '"icon" must be a string' });
+    return undefined;
+  }
+  const value = raw.trim();
+  if (value.length === 0) {
+    diagnostics.push({ severity: 'warn', message: '"icon" must not be blank' });
+    return undefined;
+  }
+  const resolved = await resolvePluginPathField({
+    pluginRoot,
+    field: 'icon',
+    value,
+    diagnostics,
+  });
+  if (resolved === undefined) return undefined;
+  const mimeType = PLUGIN_ICON_MIME_TYPES[path.extname(resolved).toLowerCase()];
+  if (mimeType === undefined) {
+    diagnostics.push({
+      severity: 'warn',
+      message: `"icon" must be an .svg or .png file inside the plugin (${value})`,
+    });
+    return undefined;
+  }
+  const fileStat = await stat(resolved).catch(() => undefined);
+  if (fileStat === undefined || !fileStat.isFile()) {
+    diagnostics.push({ severity: 'warn', message: `"icon" is not a file (${value})` });
+    return undefined;
+  }
+  if (fileStat.size > PLUGIN_ICON_MAX_BYTES) {
+    diagnostics.push({
+      severity: 'warn',
+      message:
+        `"icon" is ${fileStat.size} bytes, exceeding the ` +
+        `${PLUGIN_ICON_MAX_BYTES / 1024} KB limit; the icon is ignored (${value})`,
+    });
+    return undefined;
+  }
+  try {
+    const bytes = await readFile(resolved);
+    return `data:${mimeType};base64,${bytes.toString('base64')}`;
+  } catch (error) {
+    diagnostics.push({
+      severity: 'warn',
+      message: `Failed to read "icon" (${value}): ${(error as Error).message}`,
+    });
+    return undefined;
+  }
 }
 
 async function readMcpServers(

@@ -156,6 +156,7 @@ export function registerPluginsRoutes(
           displayName: entry.displayName,
           description: entry.description,
           homepage: entry.homepage,
+          icon: entry.icon,
           keywords: entry.keywords === undefined ? undefined : [...entry.keywords],
           relevance: entry.relevance,
           version: entry.version,
@@ -190,7 +191,7 @@ export function registerPluginsRoutes(
         const dismissed = new Set((await core.accessor.get(IAtomicDocumentStore).get<readonly string[]>('plugin-relevance', 'dismissed')) ?? []);
         const entries = relevantPlugins(catalog.plugins, req.body, installed, dismissed).map((item) => ({
           id: item.id, tier: item.tier!, displayName: item.displayName, description: item.description,
-          homepage: item.homepage, keywords: item.keywords === undefined ? undefined : [...item.keywords],
+          homepage: item.homepage, icon: item.icon, keywords: item.keywords === undefined ? undefined : [...item.keywords],
           relevance: item.relevance, version: item.version, source: item.source,
         }));
         reply.send(okEnvelope({ entries }, req.id));

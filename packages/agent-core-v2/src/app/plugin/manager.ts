@@ -735,6 +735,7 @@ function recordToSummary(record: PluginRecord): PluginSummary {
     id: record.id,
     displayName: record.manifest?.interface?.displayName ?? record.id,
     version: record.manifest?.version,
+    icon: record.manifest?.icon,
     enabled: record.enabled,
     state: record.state,
     skillCount: record.skillCount,

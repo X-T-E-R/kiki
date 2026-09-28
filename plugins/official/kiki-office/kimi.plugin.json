@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Create, inspect, edit and preview Word, Excel and PowerPoint files locally with pinned OfficeCLI.",
   "license": "MIT",
+  "icon": "./icon.svg",
   "skills": "./skills/",
   "interface": {
     "displayName": "Kiki Office Suite",
