@@ -28,9 +28,10 @@ function key(): string {
   return generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
 }
 
-async function startServer(hostKey: string, port = 0): Promise<{ server: Server; port: number; connections: () => number; drop: () => void }> {
+async function startServer(hostKey: string, port = 0, holdExec = false): Promise<{ server: Server; port: number; connections: () => number; drop: () => void; finishExec: () => void }> {
   let count = 0;
   const clients: Array<{ end(): void }> = [];
+  const pendingExec: Array<{ exit(code: number): void; end(): void }> = [];
   const files = new Map<string, Buffer>();
   const server = new Server({ hostKeys: [hostKey] }, (client) => {
     count++;
@@ -46,8 +47,11 @@ async function startServer(hostKey: string, port = 0): Promise<{ server: Server;
         session.on('exec', (acceptExec) => {
           const channel = acceptExec();
           channel.write('hello from SSH\n');
-          channel.exit(0);
-          channel.end();
+          if (holdExec) pendingExec.push(channel);
+          else {
+            channel.exit(0);
+            channel.end();
+          }
         });
         session.on('sftp', (acceptSftp) => {
           const channel = acceptSftp();
@@ -101,7 +105,11 @@ async function startServer(hostKey: string, port = 0): Promise<{ server: Server;
   await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('SSH test server did not bind');
-  return { server, port: address.port, connections: () => count, drop: () => { for (const client of clients) client.end(); } };
+  return {
+    server, port: address.port, connections: () => count,
+    drop: () => { for (const client of clients) client.end(); },
+    finishExec: () => { for (const channel of pendingExec.splice(0)) { channel.exit(0); channel.end(); } },
+  };
 }
 
 function host(port: number, knownHostsFile: string, trustUnknown?: SshConnectionHost['trustUnknown']): SshConnectionHost {
@@ -143,6 +151,23 @@ describe('SSH connection manager with an actual ssh2 server', () => {
     expect(connections()).toBe(2);
     expect(prompts).toBe(1);
     expect(manager.status('dev')).toMatchObject({ state: 'ready', generation: 2 });
+  });
+
+  it('does not idle-close a transport with an active exec channel', async () => {
+    const { path } = await fixture();
+    const { port, finishExec } = await startServer(key(), 0, true);
+    const manager = new SshConnectionManager(async () => ({ ...host(port, path), autoTrustFirstKey: true }), 20);
+    managers.push(manager);
+    const connection = await manager.get('dev');
+    const process = await connection.withCwd('/home/tester').exec('sleep', '10');
+    expect(connection.activeProcesses).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    expect(manager.status('dev').state).toBe('ready');
+    finishExec();
+    expect(await process.wait()).toBe(0);
+    expect(connection.activeProcesses).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    expect(manager.status('dev').state).toBe('idle');
   });
 
   it('denies an unknown key and rejects a changed key even when autoTrustFirstKey is enabled', async () => {

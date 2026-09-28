@@ -441,6 +441,7 @@ export class SSHKaos implements Kaos {
   private _home: string;
   private _cwd: string;
   private readonly _envLayers: readonly Record<string, string>[];
+  private readonly _activity: { count: number };
   private _closed = false;
 
   // Stub: real wiring (probing the remote host via `uname` / `$SHELL` over the
@@ -457,13 +458,19 @@ export class SSHKaos implements Kaos {
     home: string,
     cwd: string,
     envLayers: readonly Record<string, string>[] = [],
+    activity = { count: 0 },
   ) {
     this._client = client;
     this._sftp = sftp;
     this._home = home;
     this._cwd = cwd;
     this._envLayers = envLayers;
+    this._activity = activity;
     this._client.once('close', () => { this._closed = true; });
+  }
+
+  get activeProcesses(): number {
+    return this._activity.count;
   }
 
   onDidDisconnect(listener: () => void): () => void {
@@ -472,11 +479,11 @@ export class SSHKaos implements Kaos {
   }
 
   withCwd(cwd: string): SSHKaos {
-    return new SSHKaos(this._client, this._sftp, this._home, cwd, this._envLayers);
+    return new SSHKaos(this._client, this._sftp, this._home, cwd, this._envLayers, this._activity);
   }
 
   withEnv(env: Record<string, string>): SSHKaos {
-    return new SSHKaos(this._client, this._sftp, this._home, this._cwd, [...this._envLayers, env]);
+    return new SSHKaos(this._client, this._sftp, this._home, this._cwd, [...this._envLayers, env], this._activity);
   }
 
   private _resolvePath(path: string): string {
@@ -941,7 +948,10 @@ export class SSHKaos implements Kaos {
   private async _execInternal(args: string[], env?: Record<string, string>): Promise<KaosProcess> {
     const command = SSHKaos._buildExecCommand(args, this._cwd, env);
     const channel = await clientExec(this._client, command);
-    return new SSHProcess(channel);
+    const process = new SSHProcess(channel);
+    this._activity.count += 1;
+    void process.wait().finally(() => { this._activity.count -= 1; });
+    return process;
   }
 
   // ── SSH lifecycle ──────────────────────────────────────────────────

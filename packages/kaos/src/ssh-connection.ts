@@ -221,7 +221,9 @@ export class SshConnectionManager {
 
   private async reapIdle(): Promise<void> {
     for (const [hostId, slot] of this.slots) {
-      if (slot.current && Date.now() - slot.lastUsed >= this.idleMs) await this.disconnect(hostId);
+      if (slot.current && slot.current.activeProcesses === 0 && Date.now() - slot.lastUsed >= this.idleMs) {
+        await this.disconnect(hostId);
+      }
     }
   }
 
