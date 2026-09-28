@@ -358,7 +358,7 @@ describe('AgentPluginService plugin-change reminder', () => {
     const messages = findPluginChangeMessages(ctx);
     expect(messages).toHaveLength(1);
     expect(messageText(messages[0]!)).toContain('Plugin "demo" was enabled.');
-    expect(messageText(messages[0]!)).toContain('run /new or /reload to apply the change');
+    expect(messageText(messages[0]!)).toContain('Plugin tools refresh in live sessions; prompt contributions may remain until /new or /reload.');
     mutateEmitter.dispose();
   });
 
