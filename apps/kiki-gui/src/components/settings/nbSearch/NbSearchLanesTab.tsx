@@ -135,13 +135,13 @@ export function NbSearchLanesTab({
                 </span>
               ) : null}
               {isPinned ? (
-                <span className="rounded bg-hairline/40 px-1.5 py-0.5 text-[9.5px] font-medium text-ink-soft">
+                <span className="rounded bg-hairline/40 px-1.5 py-0.5 text-[11px] font-medium text-ink-soft">
                   {t('st.nbSearch.lanes.pinnedBadge')}
                 </span>
               ) : null}
             </div>
 
-            <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-ink-faint">
+            <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[11px] text-ink-faint">
               <span>{formatNbSearchOutput(lane.output)}</span>
               <span>·</span>
               <span>
@@ -156,7 +156,7 @@ export function NbSearchLanesTab({
         </label>
 
         <div className="flex items-center gap-2 shrink-0 pt-0.5">
-          <span className="text-[10.5px] text-ink-faint">
+          <span className="text-[12px] text-ink-faint">
             {syncSupported
               ? t('st.nbSearch.lanes.syncSupported')
               : t('st.nbSearch.lanes.asyncOnly')}

@@ -218,7 +218,7 @@ export function NbSearchAdvancedTab({
 
           {testRun.status === 'ok' ? (
             <div className="space-y-2 mt-2">
-              <p className="font-mono text-[10.5px] text-ink-faint">
+              <p className="font-mono text-[11px] text-ink-faint">
                 {t('st.nbSearch.lastChecked', { revision: testRun.result.revision })}
               </p>
               <NbSearchReadinessRow

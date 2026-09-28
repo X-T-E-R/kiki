@@ -27,12 +27,12 @@ export function NbSearchIssues({ issues }: { issues: readonly string[] }) {
           return (
             <li key={code} className="text-[11px] leading-relaxed text-danger">
               {t(generalKey)}{' '}
-              <span className="font-mono text-[10px] text-danger/70">({code})</span>
+              <span className="font-mono text-[11px] text-danger/70">({code})</span>
             </li>
           );
         }
         return (
-          <li key={code} className="font-mono text-[10.5px] text-danger">
+          <li key={code} className="font-mono text-[11px] text-danger">
             {code}
           </li>
         );

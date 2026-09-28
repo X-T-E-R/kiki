@@ -67,7 +67,7 @@ export function ShippedProfileControls({
     <>
       <span
         data-shipped-status={entry.status}
-        className={`rounded-full border px-2 py-0.5 font-mono text-[9.5px] ${badgeTone}`}
+        className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${badgeTone}`}
       >
         {t('st.shipped.badge')} · {t(statusKey)}
       </span>

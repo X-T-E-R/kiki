@@ -9,6 +9,7 @@ import {
   type SettingsSearchEntry,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
+import { Icon } from '../icons';
 import { SECTIONS, type SectionId } from './sections';
 
 /**
@@ -81,7 +82,7 @@ export function SettingsSearch({
             >
               <span className="block truncate text-[13px] text-ink">{entry.title}</span>
               <span className="block truncate text-[12px] leading-4 text-ink-faint">
-                {entry.groupLabel !== '' ? <>{entry.groupLabel}<span aria-hidden> › </span></> : null}
+                {entry.groupLabel !== '' ? <>{entry.groupLabel}<Icon name="chevron" size={12} className="mx-0.5 inline-block align-[-2px]" /></> : null}
                 {entry.sectionLabel}
               </span>
             </button>

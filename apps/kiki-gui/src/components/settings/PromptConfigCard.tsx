@@ -152,10 +152,10 @@ export function PromptConfigCard() {
           <span>{t('st.prompt.expand')}</span>
           {ready ? (
             <span className="ml-auto flex flex-wrap gap-1.5">
-              <span className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] text-ink-faint">
+              <span className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[11px] text-ink-faint">
                 {tp('st.prompt.summaryVariables', draft.variables.length)}
               </span>
-              <span className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] text-ink-faint">
+              <span className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[11px] text-ink-faint">
                 {tp('st.prompt.summaryFields', draft.fields.length)}
               </span>
             </span>

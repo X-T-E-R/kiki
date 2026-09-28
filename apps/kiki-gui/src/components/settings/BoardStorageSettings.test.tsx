@@ -22,7 +22,12 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); cache.clear(); element.remove(); });
 async function settle() { for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); }
 async function render(node: React.ReactNode) { await act(async () => root.render(<QueryClientProvider client={cache}><I18nProvider>{node}</I18nProvider></QueryClientProvider>)); await settle(); }
-async function select(index: number, value: string) { await act(async () => { const input = element.querySelectorAll('select')[index]!; input.value = value; input.dispatchEvent(new Event('change', { bubbles: true })); }); await settle(); }
+async function select(id: string, label: string) {
+  await act(async () => { element.querySelector<HTMLButtonElement>(`#${id}`)!.click(); });
+  await settle();
+  await act(async () => { [...element.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((option) => option.textContent?.includes(label))!.click(); });
+  await settle();
+}
 async function click(text: string) { await act(async () => { [...element.querySelectorAll('button')].find((button) => button.textContent === text)!.click(); }); await settle(); }
 async function setInputValue(input: HTMLInputElement, value: string) { await act(async () => { const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!; setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); }); await settle(); }
 it('restores saved fixed mode, previews only on demand and saves auto without moving cards', async () => {
@@ -32,10 +37,10 @@ it('restores saved fixed mode, previews only on demand and saves auto without mo
   expect(element.querySelector('input')?.value).toBe('cards');
   expect(element.textContent).toContain('relative paths remain unresolved');
   expect(board.read).not.toHaveBeenCalled();
-  await select(1, 'ws-one'); await click('Preview location');
+  await select('board-storage-workspace', '/fixture/project'); await click('Preview location');
   expect(board.read).toHaveBeenCalledWith({ action: 'preview', workspaceId: 'ws-one', configuration: { mode: 'fixed', path: 'cards' } });
   expect(element.textContent).toContain('/fixture/project/cards/tasks');
-  await select(0, 'auto'); await click('Save defaults');
+  await select('board-storage-mode', 'Auto (default)'); await click('Save defaults');
   expect(client.patchConfig).toHaveBeenCalledWith({ task_board: { storage: { mode: 'auto' } } });
   expect(board.write).not.toHaveBeenCalled();
 });
@@ -70,7 +75,7 @@ it('mounts board controls without the duplicate Todo explanation', async () => {
 });
 it('surfaces preview failures without guessing a resolved path', async () => {
   board.read.mockResolvedValue({ ok: false, error: { code: 'BOARD_STORAGE_NOT_EMPTY', message: 'Unrecognized content' } });
-  await render(<BoardStorageSettings board={board} />); await select(1, 'ws-one'); await click('Preview location');
+  await render(<BoardStorageSettings board={board} />); await select('board-storage-workspace', '/fixture/project'); await click('Preview location');
   expect(element.querySelector('[role="alert"]')?.textContent).toContain('BOARD_STORAGE_NOT_EMPTY');
   expect(element.querySelector('[data-board-storage-preview]')).toBeNull();
 });

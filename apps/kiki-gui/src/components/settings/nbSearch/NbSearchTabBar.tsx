@@ -91,7 +91,7 @@ export function NbSearchTabBar({
             <span>{t(tabLabelKey(tab))}</span>
             {tab === 'providers' && attentionCount > 0 ? (
               <span
-                className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-card border border-amber-rule/60 px-1 text-[9px] font-bold text-amber-ink"
+                className="text-[11px] font-medium tabular-nums text-amber-ink"
                 title={tp('st.nbSearch.tabBar.attention', attentionCount)}
               >
                 {attentionCount}

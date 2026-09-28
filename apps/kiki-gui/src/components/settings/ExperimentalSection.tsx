@@ -164,7 +164,7 @@ export function ExperimentalSection({
                     <span className="text-[13px] font-medium text-ink">{featureLabel}</span>
                   ) : null}
                   <span
-                    className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10.5px] font-medium tracking-wide ${effectiveBadgeClass(effective)}`}
+                    className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium tracking-wide ${effectiveBadgeClass(effective)}`}
                   >
                     {t(
                       effective === undefined
@@ -176,7 +176,7 @@ export function ExperimentalSection({
                   </span>
                   {isMismatch ? (
                     <span
-                      className="inline-flex items-center rounded-full border border-amber-rule/60 bg-amber-card px-2 py-0.5 text-[10px] font-medium text-amber-ink"
+                      className="inline-flex items-center rounded-full border border-amber-rule/60 bg-amber-card px-2 py-0.5 text-[11px] font-medium text-amber-ink"
                       title={t('st.experimental.mismatch')}
                     >
                       {t('st.experimental.mismatchBadge')}
@@ -213,7 +213,7 @@ export function ExperimentalSection({
                   {t('st.experimental.rulesAndDetails')}
                 </summary>
                 <div className="mt-1.5 space-y-1 rounded-md border border-hairline/60 bg-paper/60 p-2.5 text-[11px] text-ink-soft leading-relaxed">
-                  <p className="font-mono text-[10.5px] text-ink-faint">{t('st.experimental.flagId', { id: row.id })}</p>
+                  <p className="font-mono text-[11px] text-ink-faint">{t('st.experimental.flagId', { id: row.id })}</p>
                   <p>{t('st.experimental.priority')}</p>
                   <p className="text-ink-faint">{t('st.experimental.priorityDetails')}</p>
                   {isMismatch ? (

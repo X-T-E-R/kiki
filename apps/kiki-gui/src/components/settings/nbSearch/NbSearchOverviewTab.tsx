@@ -220,7 +220,7 @@ export function NbSearchOverviewTab({
                     <span className="block font-medium text-ink-soft mb-1.5">
                       {t('st.nbSearch.source.activeLayers')}
                     </span>
-                    <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10.5px]">
+                    <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
                       {activeLayers.map((layer, index) => {
                         const labelKey =
                           layer === 'defaults'

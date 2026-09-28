@@ -107,7 +107,9 @@ describe('SettingsNav grouped tree', () => {
     await typeInto(input, 'appearance');
     const hits = [...container.querySelectorAll('[role="option"]')];
     expect(hits.length).toBeGreaterThan(0);
-    expect(hits[0]!.textContent).toBe('Theme & colorYour app › Appearance');
+    // The group › section separator is the drawn chevron, not a typed glyph.
+    expect(hits[0]!.textContent).toBe('Theme & colorYour appAppearance');
+    expect(hits[0]!.querySelector('[data-icon="chevron"]')).not.toBeNull();
   });
 
   it('finds cards by legacy synonym and reports the hit', async () => {

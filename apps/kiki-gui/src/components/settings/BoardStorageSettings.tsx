@@ -5,7 +5,9 @@ import { taskBoardStorageFromConfig, type TaskBoardStorage } from '@kiki/session
 import { useConnection } from '../../state/connection';
 import { useI18n } from '../../i18n';
 import { Hint, SavedTick } from '../controls';
+import { SearchableSelect } from '../SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { FORM_LABEL, FORM_SELECT_TRIGGER } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 import { useDirtyReporter } from '../dirtyGuard';
 
@@ -55,23 +57,50 @@ export function BoardStorageSettings({ board }: { board?: BoardClient }) {
       : t('st.boardStorage.modeFixedHint');
   return <div className="space-y-3" data-board-storage-settings>
     <Hint>{t('st.boardStorage.policy')}</Hint>
-    <label className="block text-xs">{t('st.boardStorage.mode')}
-      <select className={`${INPUT} mt-1`} value={storage.mode} disabled={saving || config.isPending || config.isError}
-        onChange={(event) => { setDirty(true); setStorage({ mode: event.target.value as TaskBoardStorage['mode'] }); }}>
-        <option value="auto">{t('st.boardStorage.auto')}</option><option value="global">{t('st.boardStorage.global')}</option><option value="fixed">{t('st.boardStorage.fixed')}</option>
-      </select>
+    <div data-board-storage-mode>
+      <span id="board-storage-mode-label" className={FORM_LABEL}>{t('st.boardStorage.mode')}</span>
+      <div className="mt-1">
+        <SearchableSelect
+          id="board-storage-mode"
+          ariaLabel={t('st.boardStorage.mode')}
+          value={storage.mode}
+          disabled={saving || config.isPending || config.isError}
+          hideFilter
+          onChange={(next) => { setDirty(true); setStorage({ mode: next as TaskBoardStorage['mode'] }); }}
+          options={[
+            { value: 'auto', label: t('st.boardStorage.auto') },
+            { value: 'global', label: t('st.boardStorage.global') },
+            { value: 'fixed', label: t('st.boardStorage.fixed') },
+          ]}
+          buttonClassName={FORM_SELECT_TRIGGER}
+        />
+      </div>
       <Hint>{modeHint}</Hint>
-    </label>
-    {storage.mode === 'fixed' ? <label className="block text-xs">{t('st.boardStorage.path')}
+    </div>
+    {storage.mode === 'fixed' ? <label className="block">
+      <span className={FORM_LABEL}>{t('st.boardStorage.path')}</span>
       <input className={`${INPUT} mt-1`} value={storage.path ?? ''} disabled={saving} onChange={(event) => { setDirty(true); setStorage({ mode: 'fixed', path: event.target.value }); }} />
       <Hint>{t('st.boardStorage.pathHint')}</Hint>
     </label> : null}
-    <label className="block text-xs">{t('st.boardStorage.workspace')}
-      <select className={`${INPUT} mt-1`} value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
-        <option value="">{t('st.boardStorage.selectWorkspace')}</option>
-        {workspaces.data?.items.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name ?? workspace.root}</option>)}
-      </select>
-    </label>
+    <div data-board-storage-workspace>
+      <span id="board-storage-workspace-label" className={FORM_LABEL}>{t('st.boardStorage.workspace')}</span>
+      <div className="mt-1">
+        {/* Workspace lists can run long, so this picker keeps its filter. */}
+        <SearchableSelect
+          id="board-storage-workspace"
+          ariaLabel={t('st.boardStorage.workspace')}
+          value={workspaceId}
+          onChange={setWorkspaceId}
+          triggerLabel={workspaceId === '' ? <span className="text-ink-faint">{t('st.boardStorage.selectWorkspace')}</span> : undefined}
+          options={(workspaces.data?.items ?? []).map((workspace) => ({
+            value: workspace.id,
+            label: workspace.name ?? workspace.root,
+            hint: workspace.name === undefined ? undefined : workspace.root,
+          }))}
+          buttonClassName={FORM_SELECT_TRIGGER}
+        />
+      </div>
+    </div>
     {!board ? <p role="status" className="text-xs text-ink-soft">{t('st.agentBoard.hint')}</p> : null}
     {workspaceId === '' ? <p role="status" className="text-xs text-ink-soft">{t('st.boardStorage.awaitWorkspace')}</p> : null}
     <div className="flex flex-wrap items-center gap-2">

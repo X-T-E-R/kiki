@@ -318,11 +318,11 @@ export function NamedAgentProfileRow({
           <SourceBadge source={profile.source} variant="muted" />
           <span
             data-subagent-policy={profile.subagent_policy ?? 'unknown'}
-            className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint"
+            className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[11px] text-ink-faint"
           >
             {subagentPolicyLabel}
           </span>
-          <span className="min-w-0 truncate text-[10.5px] text-ink-faint" title={overriddenBy.file}>
+          <span className="min-w-0 truncate text-[12px] text-ink-faint" title={overriddenBy.file}>
             {t('st.namedAgents.overriddenByFile', { file: overriddenBy.file })}
           </span>
         </div>
@@ -350,20 +350,20 @@ export function NamedAgentProfileRow({
           <p className="font-mono text-[12.5px] font-medium text-ink">
             {profile.name}
             {profile.disabled ? (
-              <span className="ml-2 rounded-full border border-hairline bg-panel px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-ink-faint">
+              <span className="ml-2 rounded-full border border-hairline bg-panel px-1.5 py-px align-middle text-[11px] font-medium text-ink-faint">
                 {t('st.namedAgents.disabledBadge')}
               </span>
             ) : null}
           </p>
           {profile.disabled && defaultMain ? (
-            <p className="mt-0.5 text-[10.5px] text-ink-faint">{t('st.namedAgents.disabledMainHint')}</p>
+            <p className="mt-0.5 text-[12px] text-ink-faint">{t('st.namedAgents.disabledMainHint')}</p>
           ) : null}
           {profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
           {overrideRelation?.kind === 'overrides_builtin' ? (
-            <p className="mt-0.5 text-[10.5px] text-ink-faint">{t('st.namedAgents.overridesBuiltin')}</p>
+            <p className="mt-0.5 text-[12px] text-ink-faint">{t('st.namedAgents.overridesBuiltin')}</p>
           ) : null}
           {overrideRelation?.kind === 'shadowed' ? (
-            <p className="mt-0.5 text-[10.5px] text-danger">{t('st.namedAgents.shadowedByBuiltin')}</p>
+            <p className="mt-0.5 text-[12px] text-danger">{t('st.namedAgents.shadowedByBuiltin')}</p>
           ) : null}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -384,7 +384,7 @@ export function NamedAgentProfileRow({
             />
             <span
               data-toggle-scope="server"
-              className={embedded ? 'sr-only' : 'shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint'}
+              className={embedded ? 'sr-only' : 'shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[11px] text-ink-faint'}
             >
               {t('st.namedAgents.namedToggleScope')}
             </span>
@@ -396,7 +396,7 @@ export function NamedAgentProfileRow({
           />}
           {embedded && profile.subagent_policy === undefined ? null : <span
             data-subagent-policy={profile.subagent_policy ?? 'unknown'}
-            className={embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint'}
+            className={embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 font-mono text-[11px] text-ink-faint'}
           >
             {subagentPolicyLabel}
           </span>}
@@ -429,7 +429,7 @@ export function NamedAgentProfileRow({
         </div>
       </div>
       {profile.source !== 'builtin' ? (
-        <p data-toggle-scope-hint className="mt-1 text-[10.5px] text-ink-faint">
+        <p data-toggle-scope-hint className="mt-1 text-[12px] text-ink-faint">
           {t('st.namedAgents.namedToggleHint')}
         </p>
       ) : null}
@@ -456,22 +456,22 @@ export function NamedAgentProfileRow({
             <SubagentLeaseList items={profile.subagents} variant="compact" />
           ) : null}
           <details className={`mt-2 ${embedded ? 'border-t border-hairline pt-2' : 'rounded-lg border border-hairline bg-panel px-2.5 py-1.5'}`} data-technical-details>
-            <summary className="cursor-pointer select-none text-[10.5px] font-medium text-ink-faint hover:text-ink-soft">
+            <summary className="cursor-pointer select-none text-[12px] font-medium text-ink-faint hover:text-ink-soft">
               {t('st.namedAgents.technicalDetails')}
             </summary>
-            <div className="mt-2 space-y-1 break-all font-mono text-[10px] text-ink-faint">
+            <div className="mt-2 space-y-1 break-all font-mono text-[11px] text-ink-faint">
             <p>{t('st.namedAgents.sourceFile')}: {profile.source_file ?? t('st.namedAgents.builtin')}</p>
             {workspaceChips.shown.length > 0 ? (
               <p className="flex flex-wrap items-center gap-1">
                 {workspaceChips.shown.map((id) => (
-                  <span key={id} title={id} className="max-w-40 truncate rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[9.5px] text-ink-faint">
+                  <span key={id} title={id} className="max-w-40 truncate rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[11px] text-ink-faint">
                     {id}
                   </span>
                 ))}
                 {workspaceChips.extra > 0 ? (
                   <span
                     title={workspaceIds.join(', ')}
-                    className="rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[9.5px] text-ink-faint"
+                    className="rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[11px] text-ink-faint"
                   >
                     +{workspaceChips.extra} {t('st.namedAgents.workspaces')}
                   </span>
@@ -480,7 +480,7 @@ export function NamedAgentProfileRow({
             ) : null}
             <DiskDefinitionSummary
               definition={profile}
-              className="space-y-1 break-all font-mono text-[10px] text-ink-faint"
+              className="space-y-1 break-all font-mono text-[11px] text-ink-faint"
               showDescription={false}
               showTools
               showModelProfiles

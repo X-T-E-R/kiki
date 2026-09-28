@@ -90,8 +90,8 @@ export function WorkspacesSection() {
                   </span>
                 ) : null}
               </div>
-              <p className="truncate font-mono text-[10.5px] text-ink-faint" title={workspace.root}>{workspace.root}</p>
-              <p className="mt-0.5 text-[10.5px] text-ink-faint">
+              <p className="truncate font-mono text-[11px] text-ink-faint" title={workspace.root}>{workspace.root}</p>
+              <p className="mt-0.5 text-[12px] text-ink-faint">
                 {tp('st.workspaces.sessionCount', workspace.session_count)}
                 {' · '}
                 {t('st.workspaces.lastOpened', { time: time.relativeTime(workspace.last_opened_at) })}

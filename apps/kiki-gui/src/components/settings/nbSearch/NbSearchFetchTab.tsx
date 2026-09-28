@@ -79,7 +79,7 @@ export function NbSearchFetchTab({
                   : t('st.nbSearch.chainCustom')}
               </span>
               <span
-                className={`rounded px-1.5 py-0.5 text-[9.5px] font-medium ${
+                className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
                   fetchChainInherited
                     ? 'bg-hairline/40 text-ink-soft'
                     : 'bg-ink/[0.05] text-ink-soft'
@@ -137,7 +137,7 @@ export function NbSearchFetchTab({
                         {pipelineId}
                       </span>
                       {pipeline !== undefined ? (
-                        <span className="text-[10.5px] text-ink-faint shrink-0">
+                        <span className="text-[12px] text-ink-faint shrink-0">
                           {tierLabel(latencyLabelKey(pipeline.latency), pipeline.latency)}
                           {' · '}
                           {tierLabel(costLabelKey(pipeline.cost), pipeline.cost)}

@@ -397,13 +397,13 @@ export function McpConfigManager({
                   </span>
                 )}
               </p>
-              <p className="truncate font-mono text-[10.5px] text-ink-faint" title={entry.origin}>
+              <p className="truncate font-mono text-[11px] text-ink-faint" title={entry.origin}>
                 {entry.plugin?.name ?? entry.origin} · {entry.config.transport}
               </p>
               {entry.plugin !== undefined ? (
                 <Link
                   to={{ pathname: '/settings/plugins', search: location.search }}
-                  className="mt-0.5 inline-block text-[10px] font-medium text-accent-ink hover:underline"
+                  className="mt-0.5 inline-block text-[12px] font-medium text-accent-ink hover:underline"
                 >
                   {t('st.plugins.manageLink')}
                 </Link>
@@ -461,9 +461,9 @@ export function McpConfigManager({
             <div key={credential.credentialId} className="flex min-w-0 flex-col items-stretch gap-3 rounded-lg border border-hairline bg-paper px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 flex-1">
                 <p className="text-[13px] font-medium text-ink">{credential.serverName}</p>
-                <p className="break-all font-mono text-[10.5px] text-ink-faint">{credential.displayUrl}</p>
+                <p className="break-all font-mono text-[11px] text-ink-faint">{credential.displayUrl}</p>
                 {revealed?.url !== null && revealed?.url !== undefined ? (
-                  <p className="break-all font-mono text-[10.5px] text-ink">{breakableOAuthUrl(revealed.url)}</p>
+                  <p className="break-all font-mono text-[11px] text-ink">{breakableOAuthUrl(revealed.url)}</p>
                 ) : null}
                 {revealed?.url === null ? <p role="status" className="text-[11px] text-ink-soft">{t('st.mcp.storedOAuthRevealing')}</p> : null}
                 {revealErrorId === credential.credentialId ? <p role="alert" className="text-[11px] text-danger">{t('st.mcp.storedOAuthRevealError')}</p> : null}

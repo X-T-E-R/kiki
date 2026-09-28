@@ -164,7 +164,7 @@ export function SubagentDefaultTargetCard() {
           <Hint>{t('st.subagentDefault.strictHint')}</Hint>
         ) : null}
         {current?.mode === 'profile' && profilesQuery.data !== undefined && selectedProfile === undefined ? (
-          <p data-subagent-default-status="unresolvable" className="text-[10.5px] text-danger">
+          <p data-subagent-default-status="unresolvable" className="text-[12px] text-danger">
             {t('st.subagentDefault.unresolvable', { name: current.name })}
           </p>
         ) : null}
@@ -172,11 +172,11 @@ export function SubagentDefaultTargetCard() {
           <div className="space-y-1.5" data-subagent-default-status="resolved">
             <div className="flex flex-wrap gap-1.5">
               {summaryChips.map((chip) => (
-                <span key={chip} className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint">{chip}</span>
+                <span key={chip} className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[11px] text-ink-faint">{chip}</span>
               ))}
             </div>
             {selectedProfile.disabled ? (
-              <p data-subagent-default-status="disabled" className="text-[10.5px] text-danger">
+              <p data-subagent-default-status="disabled" className="text-[12px] text-danger">
                 {t('st.subagentDefault.disabledTarget', { name: selectedProfile.name })}
               </p>
             ) : null}

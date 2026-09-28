@@ -127,18 +127,18 @@ function ProviderInstanceCard({
           <span className="font-mono text-[12.5px] font-semibold text-ink">{instance.id}</span>
           <AvailabilityBadge availability={instance.availability} />
           {!providerDraft.enabled ? (
-            <span className="rounded bg-hairline/40 px-1.5 py-0.5 text-[9.5px] font-medium text-ink-soft">
+            <span className="rounded bg-hairline/40 px-1.5 py-0.5 text-[11px] font-medium text-ink-soft">
               {t('st.nbSearch.providers.disabledBadge')}
             </span>
           ) : null}
           {attention ? (
-            <span className="rounded bg-amber-card border border-amber-rule/40 px-1.5 py-0.5 text-[9.5px] font-medium text-amber-ink">
+            <span className="rounded bg-amber-card border border-amber-rule/40 px-1.5 py-0.5 text-[11px] font-medium text-amber-ink">
               {t('st.nbSearch.providers.attentionBadge')}
             </span>
           ) : null}
         </div>
 
-        <span className="text-[10.5px]">
+        <span className="text-[12px]">
           <span className={credentialSummaryClass}>{t(credentialSummaryKey)}</span>
           <span className="text-ink-faint">{' · '}</span>
           <span className={endpointSummaryClass}>{t(endpointSummaryKey)}</span>
