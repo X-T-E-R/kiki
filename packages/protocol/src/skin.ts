@@ -32,6 +32,12 @@ export const SKIN_COLOR_TOKENS = [
   'accent',
   'accentDeep',
   'accentSoft',
+  /**
+   * The accent used as text — links, inline code emphasis. Optional: a skin
+   * that only moves `accent` keeps the derived fallback, so an existing skin
+   * file needs no change.
+   */
+  'accentInk',
   'onAccent',
   'amberInk',
   'amberCard',

@@ -186,9 +186,11 @@ export async function registerApiV1Routes(
         { hostIdentity: opts.hostIdentity },
       );
       registerSkillsRoutes(apiV1 as unknown as Parameters<typeof registerSkillsRoutes>[0], core);
-      registerSkinsRoutes(apiV1 as unknown as Parameters<typeof registerSkinsRoutes>[0], {
-        themesDir: opts.themesDir,
-      });
+      registerSkinsRoutes(
+        apiV1 as unknown as Parameters<typeof registerSkinsRoutes>[0],
+        core,
+        { themesDir: opts.themesDir },
+      );
       registerCapabilitiesRoutes(
         apiV1 as unknown as Parameters<typeof registerCapabilitiesRoutes>[0],
         core,

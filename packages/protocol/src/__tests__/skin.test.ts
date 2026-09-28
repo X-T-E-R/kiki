@@ -44,6 +44,33 @@ describe('parseSkinFile', () => {
     expect(result.warnings).toContain('variants.light.colors.mystery: unknown token');
   });
 
+  it('accepts the optional accentInk color slot', () => {
+    const result = parseSkinFile({
+      ...minimal,
+      variants: { light: { colors: { accent: '#3355ff', accentInk: '#1d3fd6' } } },
+    }, 'slate');
+    expect(result.warnings).toEqual([]);
+    expect(result.skin?.variants.light?.colors).toEqual({
+      accent: '#3355ff',
+      accentInk: '#1d3fd6',
+    });
+  });
+
+  it('keeps accentInk optional, so a skin that omits it is unchanged', () => {
+    const result = parseSkinFile(minimal, 'slate');
+    expect(result.warnings).toEqual([]);
+    expect(result.skin?.variants.light?.colors?.accentInk).toBeUndefined();
+  });
+
+  it('drops an invalid accentInk value like any other color', () => {
+    const result = parseSkinFile({
+      ...minimal,
+      variants: { light: { colors: { accentInk: 'currentColor', ink: '#111111' } } },
+    }, 'slate');
+    expect(result.skin?.variants.light?.colors).toEqual({ ink: '#111111' });
+    expect(result.warnings).toContain('variants.light.colors.accentInk: invalid value');
+  });
+
   it('refuses font values that could smuggle CSS', () => {
     for (const font of [
       "Inter; } body { display: none } '",

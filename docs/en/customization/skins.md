@@ -92,6 +92,7 @@ Every value is `#rgb` or `#rrggbb`.
 | `accent` | The one highlight color: primary buttons, links, focus rings, the streaming caret |
 | `accentDeep` | Accent hover/pressed |
 | `accentSoft` | Tinted accent washes — selected rows, search-hit flash |
+| `accentInk` | The accent used as **text** — links, inline emphasis. Leave it out and Kiki derives one from `accent` |
 | `onAccent` | Text **on** a filled accent surface. Set this, or a light accent gets unreadable white labels |
 | `amberInk`, `amberCard`, `amberRule` | The attention/caution role: pending approvals, stale markers |
 | `success` | Success states, added diff lines |
@@ -146,4 +147,4 @@ Skins are designed to never lock you out of your own interface:
 
 ## Distribution
 
-The skin format is deliberately shaped so a skin can later be shipped inside a plugin as a declarative contribution, with no change to the file. For now, share the `.json` file directly.
+The skin format is deliberately shaped so a skin can ship inside a plugin as a declarative contribution: an enabled plugin's `x-kiki.themes` entries appear in the same picker, marked with the plugin that contributed them. Share a standalone skin as a `.json` file, or bundle it with a plugin.
