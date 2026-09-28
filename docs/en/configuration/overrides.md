@@ -12,7 +12,7 @@ This distinction matters: many users run `export KIMI_API_KEY=xxx` in the shell 
 
 Environment variables fall into two categories by function and cannot be collapsed into a single linear priority order:
 
-1. **Locating the config files**: `KIKI_HOME` sets the data root directory, making the paths `$KIKI_HOME/config.toml` and its companion `$KIKI_HOME/credentials.toml`. This step runs before all other resolution and is not a fallback for individual parameters.
+1. **Locating the config files**: `KIKI_HOME` sets the data root directory, making the paths `$KIKI_HOME/config.toml` and its companion `$KIKI_HOME/credentials/credentials.toml`. This step runs before all other resolution and is not a fallback for individual parameters.
 2. **Runtime endpoints and diagnostics**: Variables like `KIKI_CODE_OAUTH_HOST`, `KIKI_CODE_BASE_URL`, and `KIKI_LOG_LEVEL` are read when the OAuth or logging subsystems initialize. For the full list, see [Environment variables](./env-vars.md).
 
 ## Priority for ordinary runtime parameters
@@ -34,7 +34,7 @@ The CLI reads user-level configuration from `KIKI_HOME` (default `~/.kiki`) and 
 
 Provider credentials (`api_key`, `base_url`) follow their own resolution rules, separate from the ordinary parameter priority chain.
 
-Provider API keys are stored in `credentials.toml`, the companion file in the same directory as `config.toml`. Kiki reads the two files as one document, and on a shared TOML path the value in `credentials.toml` wins; `config.toml` never holds a plaintext credential. See [Provider credentials](./config-files.md#provider-credentials) for the file, its permissions, and the first-load migration.
+Provider API keys are stored in `credentials/credentials.toml` under the data root. Kiki reads the two files as one document, and on a shared TOML path the value in `credentials.toml` wins; `config.toml` never holds a plaintext credential. See [Provider credentials](./config-files.md#provider-credentials) for the file, its permissions, and the first-load migration.
 
 For a single provider, credentials are resolved in this order:
 
@@ -111,7 +111,7 @@ KIKI_HOME="$PWD/.kiki-sandbox" kiki
 **One-off test key** — since provider credentials are read only from the config files, write a test key into `credentials.toml`:
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.kimi.env]
 KIMI_API_KEY = "sk-test"
 ```

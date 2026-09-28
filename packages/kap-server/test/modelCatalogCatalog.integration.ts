@@ -184,7 +184,7 @@ describe('server-v2 /api catalog browse + import endpoints', () => {
   }
 
   async function readCredentialsToml(): Promise<Record<string, unknown>> {
-    const text = await readFile(join(home as string, 'credentials.toml'), 'utf-8').catch(() => '');
+    const text = await readFile(join(home as string, 'credentials', 'credentials.toml'), 'utf-8').catch(() => '');
     return text.trim().length === 0 ? {} : (parseToml(text) as Record<string, unknown>);
   }
 

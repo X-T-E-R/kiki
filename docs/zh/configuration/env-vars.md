@@ -37,7 +37,7 @@ export KIKI_HOME="/path/to/custom/kiki"
 这样设计是为了让你保留熟悉的键名写法，同时把密钥挡在 `config.toml` 之外：密钥键放进配套的 `credentials.toml`，非密钥的 `*_BASE_URL` 键留在 `config.toml`。
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.kimi.env]
 KIMI_API_KEY = "sk-xxx"
 ```

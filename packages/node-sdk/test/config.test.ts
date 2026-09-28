@@ -832,7 +832,7 @@ describe('SDK provider credentials', () => {
   it('keeps provider secrets out of config.toml and loads them from credentials.toml', async () => {
     const dir = await makeTempDir();
     const configPath = join(dir, 'config.toml');
-    const credentialsPath = join(dir, 'credentials.toml');
+    const credentialsPath = join(dir, 'credentials', 'credentials.toml');
     await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
 
     const configText = await readFile(configPath, 'utf-8');
@@ -873,8 +873,9 @@ api_key = "sk-from-config"
 `,
       'utf-8',
     );
+    await mkdir(join(dir, 'credentials'));
     await writeFile(
-      join(dir, 'credentials.toml'),
+      join(dir, 'credentials', 'credentials.toml'),
       `
 [providers.alpha]
 api_key = "sk-from-credentials"
@@ -890,7 +891,7 @@ api_key = "sk-from-credentials"
   it('scaffolds credentials.toml with owner-only permissions', async () => {
     const dir = await makeTempDir();
     const configPath = join(dir, 'config.toml');
-    const credentialsPath = join(dir, 'credentials.toml');
+    const credentialsPath = join(dir, 'credentials', 'credentials.toml');
     await ensureConfigFile(configPath);
 
     expect(await readFile(credentialsPath, 'utf-8')).toContain('credentials.toml');
@@ -907,7 +908,7 @@ api_key = "sk-from-credentials"
     await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
 
     if (process.platform !== 'win32') {
-      expect((await stat(join(dir, 'credentials.toml'))).mode & 0o777).toBe(0o600);
+      expect((await stat(join(dir, 'credentials', 'credentials.toml'))).mode & 0o777).toBe(0o600);
     }
   });
 
@@ -923,13 +924,14 @@ base_url = "https://api.example.test/v1"
 `,
       'utf-8',
     );
-    await writeFile(join(dir, 'credentials.toml'), `[providers.alpha]\napi_key = "sk-runtime"\n`, 'utf-8');
+    await mkdir(join(dir, 'credentials'));
+    await writeFile(join(dir, 'credentials', 'credentials.toml'), `[providers.alpha]\napi_key = "sk-runtime"\n`, 'utf-8');
 
     const loaded = loadRuntimeConfigSafe(configPath, {});
     expect(loaded.config.providers['alpha']?.apiKey).toBe('sk-runtime');
     expect(loaded.fileError).toBeUndefined();
 
-    await writeFile(join(dir, 'credentials.toml'), 'not = valid = toml', 'utf-8');
+    await writeFile(join(dir, 'credentials', 'credentials.toml'), 'not = valid = toml', 'utf-8');
     const degraded = loadRuntimeConfigSafe(configPath, {});
     expect(degraded.fileError?.code).toBe(ErrorCodes.CONFIG_INVALID);
     expect(degraded.config.providers['alpha']?.baseUrl).toBe('https://api.example.test/v1');
@@ -940,7 +942,7 @@ base_url = "https://api.example.test/v1"
   it('drops a secret from credentials.toml when the written config no longer has it', async () => {
     const dir = await makeTempDir();
     const configPath = join(dir, 'config.toml');
-    const credentialsPath = join(dir, 'credentials.toml');
+    const credentialsPath = join(dir, 'credentials', 'credentials.toml');
     await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
     expect(await readFile(credentialsPath, 'utf-8')).toContain('sk-alpha-secret');
 
@@ -983,7 +985,7 @@ effort = "max"
     expect(configText).toContain('effort = "high"');
     expect(configText).not.toContain('api_key');
     expect(configText).not.toContain('sk-migrate-secret');
-    expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toContain('sk-migrate-secret');
+    expect(await readFile(join(homeDir, 'credentials', 'credentials.toml'), 'utf-8')).toContain('sk-migrate-secret');
 
     const reloaded = readConfigFile(configPath);
     expect(reloaded.thinking?.effort).toBe('high');
@@ -994,7 +996,7 @@ effort = "max"
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
     await ensureConfigFile(configPath);
-    const scaffold = await readFile(join(homeDir, 'credentials.toml'), 'utf-8');
+    const scaffold = await readFile(join(homeDir, 'credentials', 'credentials.toml'), 'utf-8');
     await writeFile(
       configPath,
       `
@@ -1011,7 +1013,7 @@ effort = "max"
     await migrateThinkingEffortMaxToHigh(configPath, homeDir);
 
     expect(await readFile(configPath, 'utf-8')).toContain('effort = "high"');
-    expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toBe(scaffold);
+    expect(await readFile(join(homeDir, 'credentials', 'credentials.toml'), 'utf-8')).toBe(scaffold);
   });
 
   it('keeps a credential already in credentials.toml when config.toml carries none', async () => {
@@ -1034,10 +1036,12 @@ effort = "max"
       `[providers.alpha]\napi_key = "sk-existing-cred"\n`,
       'utf-8',
     );
+    expect(readConfigFile(configPath).providers['alpha']?.apiKey).toBe('sk-existing-cred');
 
     await migrateThinkingEffortMaxToHigh(configPath, homeDir);
 
-    expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toContain('sk-existing-cred');
+    expect(await readFile(join(homeDir, 'credentials', 'credentials.toml'), 'utf-8')).toContain('sk-existing-cred');
+    await expect(stat(join(homeDir, 'credentials.toml'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readFile(configPath, 'utf-8')).not.toContain('api_key');
     const reloaded = readConfigFile(configPath);
     expect(reloaded.thinking?.effort).toBe('high');
@@ -1061,16 +1065,47 @@ effort = "max"
   it('does not overwrite a conflicting stored key during legacy credential migration', async () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
-    const credentialsPath = join(homeDir, 'credentials.toml');
+    const credentialsPath = join(homeDir, 'credentials', 'credentials.toml');
     const configText = '[providers.alpha]\ntype = "openai"\napi_key = "sk-inline"\n[thinking]\neffort = "max"\n';
     const credentialsText = '[providers.alpha]\napi_key = "sk-stored"\n';
     await writeFile(configPath, configText, 'utf-8');
+    await mkdir(join(homeDir, 'credentials'));
     await writeFile(credentialsPath, credentialsText, 'utf-8');
 
     await expect(migrateThinkingEffortMaxToHigh(configPath, homeDir)).rejects.toThrow('conflicting inline and stored secrets');
     expect(await readFile(configPath, 'utf-8')).toBe(configText);
     expect(await readFile(credentialsPath, 'utf-8')).toBe(credentialsText);
     await expect(stat(join(homeDir, 'migrations-effort.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('moves the old credentials file on startup without changing its bytes and remains idempotent', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    const legacyPath = join(homeDir, 'credentials.toml');
+    const text = '# keep comment and line endings\r\n[providers.alpha]\r\napi_key = "secret"\r\n';
+    await writeFile(configPath, '[providers.alpha]\ntype = "openai"\n');
+    await writeFile(legacyPath, text);
+    expect(loadRuntimeConfigSafe(configPath, {}).config.providers['alpha']?.apiKey).toBe('secret');
+    await ensureConfigFile(configPath);
+    expect(await readFile(join(homeDir, 'credentials', 'credentials.toml'), 'utf-8')).toBe(text);
+    await expect(stat(legacyPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await ensureConfigFile(configPath);
+    expect(await readFile(join(homeDir, 'credentials', 'credentials.toml'), 'utf-8')).toBe(text);
+  });
+
+  it('does not choose between divergent old and new credential files', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    const oldPath = join(homeDir, 'credentials.toml');
+    const newPath = join(homeDir, 'credentials', 'credentials.toml');
+    await mkdir(join(homeDir, 'credentials'));
+    await writeFile(oldPath, '[providers.alpha]\napi_key = "old"\n');
+    await writeFile(newPath, '[providers.alpha]\napi_key = "new"\n');
+    expect(loadRuntimeConfigSafe(configPath, {}).fileError?.code).toBe(ErrorCodes.CONFIG_INVALID);
+    expect(() => readConfigFile(configPath)).toThrow('differ');
+    await expect(ensureConfigFile(configPath)).rejects.toThrow('differ');
+    expect(await readFile(oldPath, 'utf-8')).toContain('"old"');
+    expect(await readFile(newPath, 'utf-8')).toContain('"new"');
   });
 });
 
@@ -1089,7 +1124,7 @@ describe('writeConfigFile — mode durability', () => {
 
     if (process.platform !== 'win32') {
       expect((await stat(configPath)).mode & 0o777).toBe(0o600);
-      expect((await stat(join(dir, 'credentials.toml'))).mode & 0o777).toBe(0o600);
+      expect((await stat(join(dir, 'credentials', 'credentials.toml'))).mode & 0o777).toBe(0o600);
     }
   });
 
@@ -1099,12 +1134,12 @@ describe('writeConfigFile — mode durability', () => {
     await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
     if (process.platform !== 'win32') {
       const { chmod } = await import('node:fs/promises');
-      await chmod(join(dir, 'credentials.toml'), 0o644);
+      await chmod(join(dir, 'credentials', 'credentials.toml'), 0o644);
     }
     await writeConfigFile(configPath, parseConfigString(CREDENTIALS_TOML, configPath));
 
     if (process.platform !== 'win32') {
-      expect((await stat(join(dir, 'credentials.toml'))).mode & 0o777).toBe(0o600);
+      expect((await stat(join(dir, 'credentials', 'credentials.toml'))).mode & 0o777).toBe(0o600);
     }
   });
 });

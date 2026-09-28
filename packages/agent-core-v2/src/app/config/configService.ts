@@ -41,7 +41,7 @@ import {
 } from './configWriteValidation';
 import { getConfigOverlayContributions } from './configOverlayContributions';
 import { collectRemovedSectionDiagnostics } from './deprecations';
-import { CREDENTIALS_KEY, migrateConfigCredentials, migrateThinkingEffortMaxToHigh } from './migrations';
+import { CREDENTIALS_KEY, LEGACY_CREDENTIALS_KEY, migrateConfigCredentials, migrateCredentialsDirectory, migrateThinkingEffortMaxToHigh } from './migrations';
 import { applyModelGenerationMigration as applyGeneration, isModelGenerationBackupKey, listModelGenerationBackups, modelGenerationRevision, prepareModelGenerationMigration as prepareGeneration, previewModelGenerationMigration as previewGeneration, restoreModelGenerationMigration as restoreGeneration } from './modelGenerationMigration';
 import {
   applySectionToToml,
@@ -324,12 +324,13 @@ export class ConfigService extends Disposable implements IConfigService {
     const { homeDir } = this.bootstrap;
     this.ready = (async () => {
       if (!this.bootstrap.configReadOnly) {
+        await migrateCredentialsDirectory(this.documentStore);
         await migrateConfigCredentials(this.documentStore, configKey, this.log);
         await migrateThinkingEffortMaxToHigh(this.documentStore, configKey, homeDir);
       }
       await this.load('load');
     })();
-    for (const key of [this.configKey, CREDENTIALS_KEY]) {
+    for (const key of [this.configKey, CREDENTIALS_KEY, LEGACY_CREDENTIALS_KEY]) {
       this._register(this.documentStore.watch(CONFIG_SCOPE, key)(() => {
         void this.reload();
       }));
@@ -613,12 +614,17 @@ export class ConfigService extends Disposable implements IConfigService {
     let failed = false;
     try {
       if (source === 'reload' && !skipCredentialMigration && !this.bootstrap.configReadOnly) {
+        await migrateCredentialsDirectory(this.documentStore);
         await migrateConfigCredentials(this.documentStore, this.configKey, this.log);
       }
       const readOptions = this.bootstrap.configReadOnly ? { recoverMissing: false } : undefined;
       const configSnapshot = await readConfigDocumentSnapshot(this.documentStore, this.configKey, readOptions);
       const credentialSnapshot = await readConfigDocumentSnapshot(this.documentStore, CREDENTIALS_KEY, readOptions);
-      fileData = mergeConfigCredentials(configSnapshot.data, credentialSnapshot.data);
+      const legacySnapshot = await readConfigDocumentSnapshot(this.documentStore, LEGACY_CREDENTIALS_KEY, { recoverMissing: false });
+      if (legacySnapshot.text !== undefined && credentialSnapshot.text !== undefined && legacySnapshot.text !== credentialSnapshot.text) {
+        throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Old and new credentials.toml differ; inspect both files before loading.');
+      }
+      fileData = mergeConfigCredentials(configSnapshot.data, credentialSnapshot.text === undefined ? legacySnapshot.data : credentialSnapshot.data);
     } catch (error) {
       failed = true;
       const message =
@@ -922,6 +928,7 @@ export class ConfigService extends Disposable implements IConfigService {
     let configText: string | undefined;
     let credentialsText: string | undefined;
     try {
+      if (!this.bootstrap.configReadOnly) await migrateCredentialsDirectory(store);
       const configSnapshot = await readConfigDocumentSnapshot(store, this.configKey);
       const credentialsSnapshot = await readConfigDocumentSnapshot(store, CREDENTIALS_KEY);
       config = configSnapshot.data;

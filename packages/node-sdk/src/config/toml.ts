@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, dirname } from 'pathe';
+import { basename, dirname, join } from 'pathe';
 import { readConfigDocumentSnapshot, writeConfigDocument } from '@kiki/agent-core-v2/app/config/configDocument';
+import { CREDENTIALS_KEY, migrateCredentialsDirectory } from '@kiki/agent-core-v2/app/config/migrations';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 import { TomlAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
 
@@ -52,22 +53,17 @@ const DEFAULT_CONFIG_FILE_TEXT = `# ~/.kiki/config.toml
 # Login will populate managed Kimi provider and model entries.
 `;
 
-const DEFAULT_CREDENTIALS_FILE_TEXT = `# ~/.kiki/credentials.toml
+const DEFAULT_CREDENTIALS_FILE_TEXT = `# ~/.kiki/credentials/credentials.toml
 # Provider credentials for Kiki, keyed by provider name.
 # Kept out of config.toml; a value here overrides config.toml.
 `;
 
-/**
- * Create `config.toml` and its companion `credentials.toml` when missing.
- * Requests owner-only mode (`0600`) on POSIX; Windows access follows the
- * existing directory ACL. The credentials file is scaffolded empty so the
- * write path never has to create it with the process umask.
- */
+/** Create config.toml and its restricted credentials document when missing. */
 export async function ensureConfigFile(filePath: string): Promise<void> {
   await withConfigWrite(filePath, async (store, key) => {
     if (await store.getText('', key, { recoverMissing: false }) === undefined) await store.setText('', key, DEFAULT_CONFIG_FILE_TEXT);
-    if (await store.getText('', 'credentials.toml', { recoverMissing: false }) === undefined) {
-      await store.setText('', 'credentials.toml', DEFAULT_CREDENTIALS_FILE_TEXT);
+    if (await store.getText('', CREDENTIALS_KEY, { recoverMissing: false }) === undefined) {
+      await store.setText('', CREDENTIALS_KEY, DEFAULT_CREDENTIALS_FILE_TEXT);
     }
   });
 }
@@ -85,9 +81,28 @@ export function readConfigFile(filePath: string): KimiConfig {
   return parseConfigData(merged, filePath);
 }
 
+function credentialsTextFor(filePath: string): { path: string; text: string | undefined } {
+  const current = credentialsPathFor(filePath);
+  const legacy = join(dirname(filePath), 'credentials.toml');
+  const read = (path: string): string | undefined => {
+    try {
+      return existsSync(path) ? readFileSync(path, 'utf-8') : undefined;
+    } catch (error) {
+      throw new KimiError(ErrorCodes.CONFIG_INVALID, `Failed to read ${path}: ${describeUnknownError(error)}`, { cause: error });
+    }
+  };
+  const currentText = read(current);
+  const legacyText = read(legacy);
+  if (currentText !== undefined && legacyText !== undefined && currentText !== legacyText) {
+    throw new KimiError(ErrorCodes.CONFIG_INVALID, 'Old and new credentials.toml differ; inspect both files before continuing.');
+  }
+  return currentText === undefined ? { path: legacy, text: legacyText } : { path: current, text: currentText };
+}
+
 function readMergedConfigData(filePath: string): Record<string, unknown> | undefined {
   const configData = readTomlData(filePath);
-  const credentialsData = readTomlData(credentialsPathFor(filePath));
+  const { path, text } = credentialsTextFor(filePath);
+  const credentialsData = text === undefined ? undefined : readTomlData(path);
   if (configData === undefined && credentialsData === undefined) return undefined;
   return mergeConfigCredentials(configData ?? {}, credentialsData ?? {});
 }
@@ -198,17 +213,13 @@ export function loadRuntimeConfigSafe(
     fileWarnings.push(`Failed to read ${filePath}: ${describeUnknownError(error)}.`);
   }
 
-  const credentialsPath = credentialsPathFor(filePath);
+  let credentialsPath = credentialsPathFor(filePath);
   let credentialsText: string | undefined;
   try {
-    credentialsText = existsSync(credentialsPath) ? readFileSync(credentialsPath, 'utf-8') : undefined;
+    ({ path: credentialsPath, text: credentialsText } = credentialsTextFor(filePath));
   } catch (error) {
-    fileError ??= new KimiError(
-      ErrorCodes.CONFIG_INVALID,
-      `Failed to read ${credentialsPath}: ${describeUnknownError(error)}`,
-      { cause: error },
-    );
-    fileWarnings.push(`Failed to read ${credentialsPath}: ${describeUnknownError(error)}.`);
+    fileError ??= error instanceof KimiError ? error : new KimiError(ErrorCodes.CONFIG_INVALID, describeUnknownError(error), { cause: error });
+    fileWarnings.push(fileError.message);
   }
 
   let data: Record<string, unknown> | undefined;
@@ -533,7 +544,7 @@ export interface ConfigWriteSnapshot {
 
 export function readConfigWriteSnapshot(filePath: string): ConfigWriteSnapshot {
   const read = (name: string) => existsSync(name) ? readFileSync(name, 'utf-8') : undefined;
-  return { configText: read(filePath), credentialsText: read(credentialsPathFor(filePath)) };
+  return { configText: read(filePath), credentialsText: credentialsTextFor(filePath).text };
 }
 
 export async function writeConfigFile(filePath: string, config: KimiConfig, expected?: ConfigWriteSnapshot): Promise<void> {
@@ -541,7 +552,7 @@ export async function writeConfigFile(filePath: string, config: KimiConfig, expe
   const separated = splitConfigCredentials(configToTomlData(validated));
   await withConfigWrite(filePath, async (store, key) => {
     const before = await readConfigDocumentSnapshot(store, key, { recoverMissing: false });
-    const credentials = await readConfigDocumentSnapshot(store, 'credentials.toml', { recoverMissing: false });
+    const credentials = await readConfigDocumentSnapshot(store, CREDENTIALS_KEY, { recoverMissing: false });
     if (expected !== undefined && (before.text !== expected.configText || credentials.text !== expected.credentialsText)) {
       throw new KimiError(ErrorCodes.CONFIG_INVALID, 'Configuration changed during login; retry without overwriting other changes.');
     }
@@ -561,12 +572,12 @@ export async function writeConfigFile(filePath: string, config: KimiConfig, expe
         else nextCredentials[domain] = separated.credentials[domain];
       }
     }
-    const writtenCredentials = await writeConfigDocument(store, 'credentials.toml', credentials.data, credentials.text, nextCredentials);
+    const writtenCredentials = await writeConfigDocument(store, CREDENTIALS_KEY, credentials.data, credentials.text, nextCredentials);
     try {
       await writeConfigDocument(store, key, before.data, before.text, nextConfig);
     } catch (error) {
       if (writtenCredentials !== undefined && await store.getText('', key, { recoverMissing: false }) === before.text) {
-        await store.compareAndSetText('', 'credentials.toml', writtenCredentials, credentials.text);
+        await store.compareAndSetText('', CREDENTIALS_KEY, writtenCredentials, credentials.text);
       }
       throw error;
     }
@@ -579,6 +590,7 @@ export async function withConfigWrite<T>(
 ): Promise<T> {
   const storage = new FileStorageService(dirname(filePath), 0o700, 0o600, false);
   const store = new TomlAtomicDocumentStore(storage);
+  await migrateCredentialsDirectory(store);
   return operation(store, basename(filePath));
 }
 

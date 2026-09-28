@@ -69,7 +69,7 @@ base_url = "https://api.moonshot.ai/v1"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.kimi]
 api_key = "sk-xxxxx"
 ```
@@ -96,7 +96,7 @@ max_context_size = 200000
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.anthropic]
 api_key = "sk-ant-xxxxx"
 ```
@@ -117,7 +117,7 @@ base_url = "https://api.openai.com/v1"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.openai]
 api_key = "sk-xxxxx"
 ```
@@ -136,7 +136,7 @@ base_url = "https://api.openai.com/v1"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.openai_responses]
 api_key = "sk-xxxxx"
 ```
@@ -153,7 +153,7 @@ type = "google-genai"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.gemini]
 api_key = "xxxxx"
 ```
@@ -169,7 +169,7 @@ base_url = "https://your-gateway.example"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.gemini]
 api_key = "xxxxx"
 ```
@@ -200,7 +200,7 @@ To route Vertex requests through a custom (e.g. proxied) endpoint, set `base_url
 
 ## OAuth and credential injection
 
-In the GUI **Connections** tab, **Sign in with an account** offers Kimi Code, GitHub Copilot, and ChatGPT (Codex). Choose the account, open the verification URL, enter its device code, and wait for the connected status. An account needs access to the corresponding subscription or service; available models depend on that account. Sign out from the same row to remove its managed connection and models. These are sign-in methods, not new protocol `type` values: Kimi Code and Copilot use `openai`-compatible requests; ChatGPT Codex uses `openai_responses` against the Codex endpoint. OAuth tokens live under `credentials/` (see [Data locations](./data-locations.md)), separate from API keys in `credentials.toml`. The CLI `/login` and `/logout` commands continue to manage Kimi Code only.
+In the GUI **Connections** tab, **Sign in with an account** offers Kimi Code, GitHub Copilot, and ChatGPT (Codex). Choose the account, open the verification URL, enter its device code, and wait for the connected status. An account needs access to the corresponding subscription or service; available models depend on that account. Sign out from the same row to remove its managed connection and models. These are sign-in methods, not new protocol `type` values: Kimi Code and Copilot use `openai`-compatible requests; ChatGPT Codex uses `openai_responses` against the Codex endpoint. OAuth tokens live in JSON files under `credentials/` (see [Data locations](./data-locations.md)); API keys live in `credentials/credentials.toml`. The CLI `/login` and `/logout` commands continue to manage Kimi Code only.
 
 ## Next steps
 

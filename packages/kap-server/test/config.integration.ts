@@ -77,7 +77,7 @@ describe('server-v2 /api/config', () => {
   }
 
   async function readCredentialsFile(): Promise<string> {
-    return readFile(join(home as string, 'credentials.toml'), 'utf-8').catch(() => '');
+    return readFile(join(home as string, 'credentials', 'credentials.toml'), 'utf-8').catch(() => '');
   }
 
   it('round trips prompt variable names, merges references, validates saves and removes replaced entries', async () => {

@@ -35,7 +35,7 @@ import {
 } from '#/app/config/config';
 import { ConfigRegistry, ConfigService } from '#/app/config/configService';
 import { applyModelGenerationMigration, prepareModelGenerationMigration, previewModelGenerationMigration, restoreModelGenerationMigration } from '#/app/config/modelGenerationMigration';
-import { migrateConfigCredentials, migrateThinkingEffortMaxToHigh } from '#/app/config/migrations';
+import { migrateConfigCredentials, migrateCredentialsDirectory, migrateThinkingEffortMaxToHigh } from '#/app/config/migrations';
 import { ConfigSectionContribution } from '#/app/config/configSectionContributions';
 import { ConfigWriteValidatorContribution } from '#/app/config/configWriteValidation';
 import { CRON_SECTION, DEFAULT_CRON_CONFIG, type CronConfig } from '#/app/cron/configSection';
@@ -1517,7 +1517,7 @@ describe('entry-keyed section salvage', () => {
     ).rejects.toThrow();
 
     expect(await readText()).toBe('[providers.acme]\ntype = "openai"\n');
-    const bytes = await storage.read('', 'credentials.toml');
+    const bytes = await storage.read('', 'credentials/credentials.toml');
     expect(new TextDecoder().decode(bytes)).toContain('api_key = "sk-acme"');
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
       acme: { type: 'openai', apiKey: 'sk-acme' },
@@ -2904,7 +2904,7 @@ describe('ConfigService replaceSections', () => {
       [THINKING_SECTION]: undefined,
     });
 
-    expect(casSpy.mock.calls.map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials.toml']);
+    expect(casSpy.mock.calls.map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials/credentials.toml']);
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
       acme: { type: 'openai', apiKey: 'sk-acme-2' },
     });
@@ -2928,7 +2928,7 @@ describe('ConfigService replaceSections', () => {
       [PROVIDERS_SECTION]: { acme: { type: 'openai', apiKey: 'sk-acme-2' } },
     });
 
-    expect(casSpy.mock.calls.map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials.toml']);
+    expect(casSpy.mock.calls.map((call) => call[1]).toSorted()).toEqual(['config.toml', 'credentials/credentials.toml']);
     expect(config.get(DEFAULT_MODEL_SECTION)).toBeUndefined();
     expect(config.inspect(DEFAULT_MODEL_SECTION).userValue).toBeUndefined();
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
@@ -2945,14 +2945,14 @@ describe('ConfigService replaceSections', () => {
   it('rolls back the credential write when the config CAS rejects a concurrent change', async () => {
     const { config, disposables, store } = await createSectionsConfig();
     try {
-      const credentialBefore = await store.getText('', 'credentials.toml');
+      const credentialBefore = await store.getText('', 'credentials/credentials.toml');
       const configBefore = await store.getText('', 'config.toml');
       const compare = store.compareAndSetText.bind(store);
       vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) =>
         key === 'config.toml' ? false : compare(scope, key, expected, next));
       await expect(config.replaceSections({ [PROVIDERS_SECTION]: { acme: { type: 'openai', apiKey: 'sk-next', baseUrl: 'https://example.test/v1' } } }))
         .rejects.toThrow('Configuration changed while writing');
-      expect(await store.getText('', 'credentials.toml')).toBe(credentialBefore);
+      expect(await store.getText('', 'credentials/credentials.toml')).toBe(credentialBefore);
       expect(await store.getText('', 'config.toml')).toBe(configBefore);
       expect(config.inspect(PROVIDERS_SECTION).userValue).toMatchObject({ acme: { apiKey: 'sk-acme' } });
     } finally { disposables.dispose(); }
@@ -2966,7 +2966,7 @@ describe('ConfigService replaceSections', () => {
     const secondStore = other.get(IAtomicTomlDocumentStore);
     try {
       const before = await secondStore.getText('', 'config.toml');
-      const credentialBefore = await secondStore.getText('', 'credentials.toml');
+      const credentialBefore = await secondStore.getText('', 'credentials/credentials.toml');
       const external = before!.replace('type = "openai"', 'type = "openai"\nbase_url = "https://other.example.test/v1"');
       const compare = store.compareAndSetText.bind(store);
       let interleaved = false;
@@ -2982,7 +2982,7 @@ describe('ConfigService replaceSections', () => {
         .rejects.toThrow('Configuration changed while writing');
       expect(interleaved).toBe(true);
       expect(await secondStore.getText('', 'config.toml')).toBe(external);
-      expect(await secondStore.getText('', 'credentials.toml')).toBe(credentialBefore);
+      expect(await secondStore.getText('', 'credentials/credentials.toml')).toBe(credentialBefore);
       const restarted = disposables.add(new TestInstantiationService());
       restarted.stub(ILogService, stubLog());
       restarted.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg-replace-sections'));
@@ -3017,7 +3017,7 @@ describe('ConfigService replaceSections', () => {
           await secondStore.setText(scope, key, external);
           return false;
         }
-        if (key === 'credentials.toml' && next !== undefined && next.includes('sk-acme') && !replacedCredentials) {
+        if (key === 'credentials/credentials.toml' && next !== undefined && next.includes('sk-acme') && !replacedCredentials) {
           replacedCredentials = true;
           await secondStore.setText(scope, key, '[providers.acme]\napi_key = "sk-third"\n');
         }
@@ -3027,7 +3027,7 @@ describe('ConfigService replaceSections', () => {
         .rejects.toThrow('rollback could not be completed');
       expect(replacedConfig && replacedCredentials).toBe(true);
       expect(await secondStore.getText('', 'config.toml')).toBe(external);
-      expect(await secondStore.getText('', 'credentials.toml')).toContain('sk-third');
+      expect(await secondStore.getText('', 'credentials/credentials.toml')).toContain('sk-third');
       const restarted = disposables.add(new TestInstantiationService());
       restarted.stub(ILogService, stubLog());
       restarted.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg-replace-sections'));
@@ -3063,7 +3063,7 @@ describe('ConfigService replaceSections', () => {
       expect(changed).toMatchObject({ apiKey: 'sk-acme', baseUrl: 'https://other.example.test/v1' });
       expect(resolveModelAuthMaterial({ modelId: 'acme/m2', model: { provider: 'acme', model: 'm2' }, provider: changed, providerName: 'acme' }))
         .toMatchObject({ apiKey: 'sk-acme' });
-      expect(await store.getText('', 'credentials.toml')).toContain('sk-acme');
+      expect(await store.getText('', 'credentials/credentials.toml')).toContain('sk-acme');
     } finally { disposables.dispose(); }
   });
 
@@ -3075,8 +3075,8 @@ describe('ConfigService replaceSections', () => {
         if (event.domain === PROVIDERS_SECTION) published.push((event.value as Record<string, ProviderConfig>)['acme']!);
       });
       try {
-        const before = await store.getText('', 'credentials.toml');
-        await store.setText('', 'credentials.toml', before!.replace('sk-acme', 'sk-rotated'));
+        const before = await store.getText('', 'credentials/credentials.toml');
+        await store.setText('', 'credentials/credentials.toml', before!.replace('sk-acme', 'sk-rotated'));
         await config.reload();
         const provider = published.at(-1)!;
         expect(provider.apiKey).toBe('sk-rotated');
@@ -3098,14 +3098,14 @@ describe('ConfigService replaceSections', () => {
       expect(resolveModelAuthMaterial({ modelId: 'acme/m1', model: { provider: 'acme', model: 'm1' }, provider, providerName: 'acme' }))
         .toMatchObject({ apiKey: 'sk-in-env' });
       expect(await store.getText('', 'config.toml')).not.toContain('sk-in-env');
-      expect(await store.getText('', 'credentials.toml')).toContain('sk-in-env');
+      expect(await store.getText('', 'credentials/credentials.toml')).toContain('sk-in-env');
     } finally { disposables.dispose(); }
   });
 
   it('restores both files when the config write reports failure after publishing bytes', async () => {
     const { config, disposables, store, storage } = await createSectionsConfig();
     try {
-      const credentialBefore = await store.getText('', 'credentials.toml');
+      const credentialBefore = await store.getText('', 'credentials/credentials.toml');
       const configBefore = await store.getText('', 'config.toml');
       const originalWrite = storage.write.bind(storage);
       let fail = true;
@@ -3119,7 +3119,7 @@ describe('ConfigService replaceSections', () => {
       await expect(config.replaceSections({ [PROVIDERS_SECTION]: { acme: {
         type: 'openai', apiKey: 'sk-next', baseUrl: 'https://example.test/v1',
       } } })).rejects.toThrow('injected after publish');
-      expect(await store.getText('', 'credentials.toml')).toBe(credentialBefore);
+      expect(await store.getText('', 'credentials/credentials.toml')).toBe(credentialBefore);
       expect(await store.getText('', 'config.toml')).toBe(configBefore);
       expect(config.inspect(PROVIDERS_SECTION).userValue).toMatchObject({ acme: { apiKey: 'sk-acme' } });
     } finally { disposables.dispose(); }
@@ -3133,13 +3133,13 @@ describe('ConfigService replaceSections', () => {
     const secondStore = other.get(IAtomicTomlDocumentStore);
     try {
       await config.reload();
-      const original = await store.getText('', 'credentials.toml');
+      const original = await store.getText('', 'credentials/credentials.toml');
       expect(original).toContain('sk-acme');
       const external = original!.replace('sk-acme', 'sk-external');
       const readText = store.getText.bind(store);
       let interleaved = false;
       vi.spyOn(store, 'getText').mockImplementation(async (scope, key) => {
-        if (key === 'credentials.toml' && !interleaved) {
+        if (key === 'credentials/credentials.toml' && !interleaved) {
           interleaved = true;
           await secondStore.setText(scope, key, external);
         }
@@ -3147,7 +3147,7 @@ describe('ConfigService replaceSections', () => {
       });
       await config.set(PROVIDERS_SECTION, { other: { type: 'openai', apiKey: 'sk-other' } });
       expect(interleaved).toBe(true);
-      const current = await secondStore.getText('', 'credentials.toml');
+      const current = await secondStore.getText('', 'credentials/credentials.toml');
       expect(current).toContain('sk-external');
       expect(current).toContain('sk-other');
       expect(current).not.toContain('sk-acme');
@@ -3312,7 +3312,7 @@ describe('ConfigService persistence guards', () => {
     await expectPersistBlocked(config.set(THINKING_SECTION, { enabled: true }));
     expect(await stored(storage)).toBe('= broken =');
 
-    await storage.delete('', 'credentials.toml');
+    await storage.delete('', 'credentials/credentials.toml');
     await overwrite(storage, '[providers.beta]\ntype = "openai"\napi_key = "sk-beta"\n');
     await config.reload();
 
@@ -3334,7 +3334,7 @@ describe('ConfigService persistence guards', () => {
       storage,
       'default_model = "acme/m1"\n\n[providers.acme]\ntype = "openai"\n\n[providers.beta]\ntype = "openai"\n',
     );
-    await storage.write('', 'credentials.toml', new TextEncoder().encode(
+    await storage.write('', 'credentials/credentials.toml', new TextEncoder().encode(
       '[providers.acme]\napi_key = "sk-acme-2"\n\n[providers.beta]\napi_key = "sk-beta"\n',
     ));
 
@@ -3346,7 +3346,7 @@ describe('ConfigService persistence guards', () => {
     expect(doc).not.toContain('sk-acme-2');
     expect(doc).toContain('[providers.beta]');
     expect(doc).toContain('[thinking]');
-    const secrets = new TextDecoder().decode(await storage.read('', 'credentials.toml'));
+    const secrets = new TextDecoder().decode(await storage.read('', 'credentials/credentials.toml'));
     expect(secrets).toContain('sk-acme-2');
     expect(secrets).toContain('sk-beta');
     expect(config.get<Record<string, unknown>>(PROVIDERS_SECTION)).toEqual({
@@ -3366,7 +3366,7 @@ describe('ConfigService persistence guards', () => {
     );
 
     await storage.delete('', 'config.toml');
-    await storage.delete('', 'credentials.toml');
+    await storage.delete('', 'credentials/credentials.toml');
     await config.set(THINKING_SECTION, { enabled: true });
 
     const doc = await stored(storage);
@@ -3435,6 +3435,62 @@ describe('ConfigService persistence guards', () => {
   });
 });
 
+describe('credential directory migration', () => {
+  const oldKey = 'credentials.toml';
+  const newKey = 'credentials/credentials.toml';
+  const text = '# preserve formatting\r\n[providers.acme]\r\napi_key = "secret"\r\n';
+
+  function stores() {
+    const storage = new InMemoryStorageService();
+    const first = new TestInstantiationService();
+    const second = new TestInstantiationService();
+    for (const ix of [first, second]) {
+      ix.stub(IFileSystemStorageService, storage);
+      ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    }
+    return { first, second, store: first.get(IAtomicTomlDocumentStore), other: second.get(IAtomicTomlDocumentStore) };
+  }
+
+  it('moves bytes exactly and resumes when the destination was already published', async () => {
+    const { first, second, store, other } = stores();
+    try {
+      await store.setText('', oldKey, text);
+      await other.setText('', newKey, text);
+      await migrateCredentialsDirectory(store);
+      expect(await other.getText('', oldKey)).toBeUndefined();
+      expect(await other.getText('', newKey)).toBe(text);
+      await migrateCredentialsDirectory(store);
+      expect(await other.getText('', newKey)).toBe(text);
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('rejects divergent destinations without changing either file', async () => {
+    const { first, second, store, other } = stores();
+    try {
+      await store.setText('', oldKey, text);
+      await other.setText('', newKey, '[providers.acme]\napi_key = "other"\n');
+      await expect(migrateCredentialsDirectory(store)).rejects.toThrow('differ');
+      expect(await other.getText('', oldKey)).toBe(text);
+      expect(await other.getText('', newKey)).toContain('"other"');
+    } finally { first.dispose(); second.dispose(); }
+  });
+
+  it('preserves a concurrent edit of the old file for manual recovery', async () => {
+    const { first, second, store, other } = stores();
+    try {
+      await store.setText('', oldKey, text);
+      const compare = store.compareAndSetText.bind(store);
+      vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, before, next) => {
+        if (key === oldKey) await other.setText('', oldKey, 'updated');
+        return compare(scope, key, before, next);
+      });
+      await expect(migrateCredentialsDirectory(store)).rejects.toThrow('changed during migration');
+      expect(await other.getText('', oldKey)).toBe('updated');
+      expect(await other.getText('', newKey)).toBe(text);
+    } finally { first.dispose(); second.dispose(); }
+  });
+});
+
 describe('legacy credential migration failure recovery', () => {
   const legacy = '[providers.acme]\ntype = "openai"\napi_key = "sk-legacy"\n';
 
@@ -3455,7 +3511,7 @@ describe('legacy credential migration failure recovery', () => {
     const { first, second, store, other } = await fixture();
     try {
       await migrateConfigCredentials(store, 'fixture.toml', stubLog());
-      expect(await other.getText('', 'credentials.toml')).toContain('sk-legacy');
+      expect(await other.getText('', 'credentials/credentials.toml')).toContain('sk-legacy');
       expect(await other.getText('', 'fixture.toml')).not.toContain('sk-legacy');
       const backups = await other.list('', 'fixture.toml.bak-');
       expect(backups).toHaveLength(1);
@@ -3469,9 +3525,9 @@ describe('legacy credential migration failure recovery', () => {
     const { first, second, store, other } = await fixture();
     try {
       const moved = '[providers.acme]\napi_key = "sk-legacy"\n';
-      await other.setText('', 'credentials.toml', moved);
+      await other.setText('', 'credentials/credentials.toml', moved);
       await migrateConfigCredentials(store, 'fixture.toml', stubLog());
-      expect(await other.getText('', 'credentials.toml')).toBe(moved);
+      expect(await other.getText('', 'credentials/credentials.toml')).toBe(moved);
       expect(await other.getText('', 'fixture.toml')).not.toContain('sk-legacy');
     } finally { first.dispose(); second.dispose(); }
   });
@@ -3490,7 +3546,7 @@ describe('legacy credential migration failure recovery', () => {
       });
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('Configuration changed');
       expect(await other.getText('', 'fixture.toml')).toBe(external);
-      expect(await other.getText('', 'credentials.toml')).toBeUndefined();
+      expect(await other.getText('', 'credentials/credentials.toml')).toBeUndefined();
       const backups = await other.list('', 'fixture.toml.bak-');
       expect(backups).toHaveLength(1);
       expect(await other.getText('', backups[0]!)).toBe(legacy);
@@ -3514,10 +3570,10 @@ describe('legacy credential migration failure recovery', () => {
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('Configuration changed');
       expect(interleaved).toBe(true);
       expect(await other.getText('', 'fixture.toml')).toBe(rotated);
-      expect(await other.getText('', 'credentials.toml')).toBeUndefined();
+      expect(await other.getText('', 'credentials/credentials.toml')).toBeUndefined();
       await migrateConfigCredentials(store, 'fixture.toml', stubLog());
-      expect(await other.getText('', 'credentials.toml')).toContain('sk-rotated');
-      expect(await other.getText('', 'credentials.toml')).not.toContain('sk-legacy');
+      expect(await other.getText('', 'credentials/credentials.toml')).toContain('sk-rotated');
+      expect(await other.getText('', 'credentials/credentials.toml')).not.toContain('sk-legacy');
       expect(await other.getText('', 'fixture.toml')).not.toContain('sk-rotated');
     } finally { first.dispose(); second.dispose(); }
   });
@@ -3536,7 +3592,7 @@ describe('legacy credential migration failure recovery', () => {
           await other.setText(scope, key, rotated);
           return false;
         }
-        if (key === 'credentials.toml' && next === undefined && !interleavedRollback) {
+        if (key === 'credentials/credentials.toml' && next === undefined && !interleavedRollback) {
           interleavedRollback = true;
           await other.setText(scope, key, externalCredentials);
         }
@@ -3545,21 +3601,21 @@ describe('legacy credential migration failure recovery', () => {
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('rollback could not complete');
       expect(interleavedRollback).toBe(true);
       expect(await other.getText('', 'fixture.toml')).toBe(rotated);
-      expect(await other.getText('', 'credentials.toml')).toBe(externalCredentials);
+      expect(await other.getText('', 'credentials/credentials.toml')).toBe(externalCredentials);
       const backups = await other.list('', 'fixture.toml.bak-');
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('conflicting');
       expect(await other.list('', 'fixture.toml.bak-')).toEqual(backups);
       expect(await other.getText('', 'fixture.toml')).toBe(rotated);
-      expect(await other.getText('', 'credentials.toml')).toBe(externalCredentials);
+      expect(await other.getText('', 'credentials/credentials.toml')).toBe(externalCredentials);
     } finally { first.dispose(); second.dispose(); }
   });
 
   it('merges credentials at distinct secret paths without treating them as conflicts', async () => {
     const { first, second, store, other } = await fixture();
     try {
-      await other.setText('', 'credentials.toml', '[providers.other]\napi_key = "sk-other"\n');
+      await other.setText('', 'credentials/credentials.toml', '[providers.other]\napi_key = "sk-other"\n');
       await migrateConfigCredentials(store, 'fixture.toml', stubLog());
-      const migrated = await other.getText('', 'credentials.toml');
+      const migrated = await other.getText('', 'credentials/credentials.toml');
       expect(migrated).toContain('sk-other');
       expect(migrated).toContain('sk-legacy');
       expect(await other.getText('', 'fixture.toml')).not.toContain('sk-legacy');
@@ -3580,7 +3636,7 @@ describe('legacy credential migration failure recovery', () => {
       });
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('credentials retained');
       expect(await other.getText('', 'fixture.toml')).toBe(external);
-      expect(await other.getText('', 'credentials.toml')).toContain('sk-legacy');
+      expect(await other.getText('', 'credentials/credentials.toml')).toContain('sk-legacy');
     } finally { first.dispose(); second.dispose(); }
   });
 
@@ -3591,7 +3647,7 @@ describe('legacy credential migration failure recovery', () => {
       const compare = store.compareAndSetText.bind(store);
       let interleaved = false;
       vi.spyOn(store, 'compareAndSetText').mockImplementation(async (scope, key, expected, next) => {
-        if (key === 'credentials.toml' && !interleaved) {
+        if (key === 'credentials/credentials.toml' && !interleaved) {
           interleaved = true;
           await other.setText(scope, key, external);
         }
@@ -3600,7 +3656,7 @@ describe('legacy credential migration failure recovery', () => {
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('Configuration changed');
       expect(interleaved).toBe(true);
       expect(await other.getText('', 'fixture.toml')).toBe(legacy);
-      expect(await other.getText('', 'credentials.toml')).toBe(external);
+      expect(await other.getText('', 'credentials/credentials.toml')).toBe(external);
     } finally { first.dispose(); second.dispose(); }
   });
 
@@ -3618,7 +3674,7 @@ describe('legacy credential migration failure recovery', () => {
       };
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('config failed after publish');
       expect(await other.getText('', 'fixture.toml')).toBe(legacy);
-      expect(await other.getText('', 'credentials.toml')).toBeUndefined();
+      expect(await other.getText('', 'credentials/credentials.toml')).toBeUndefined();
     } finally { first.dispose(); second.dispose(); }
   });
 
@@ -3629,14 +3685,14 @@ describe('legacy credential migration failure recovery', () => {
       let fail = true;
       storage.write = async (scope, key, bytes, options) => {
         await write(scope, key, bytes, options);
-        if (key === 'credentials.toml' && fail) {
+        if (key === 'credentials/credentials.toml' && fail) {
           fail = false;
           throw new Error('credentials failed after publish');
         }
       };
       await expect(migrateConfigCredentials(store, 'fixture.toml', stubLog())).rejects.toThrow('credentials failed after publish');
       expect(await other.getText('', 'fixture.toml')).toBe(legacy);
-      expect(await other.getText('', 'credentials.toml')).toBeUndefined();
+      expect(await other.getText('', 'credentials/credentials.toml')).toBeUndefined();
     } finally { first.dispose(); second.dispose(); }
   });
 });

@@ -1,6 +1,6 @@
 /**
- * Provider credentials are persisted beside `config.toml` in a companion
- * `credentials.toml` so the main file never carries a secret. This module owns
+ * Provider credentials are persisted under `credentials/credentials.toml`
+ * beside `config.toml` so the main file never carries a secret. This module owns
  * the split/merge rules; the read path in `toml.ts` overlays the credentials
  * document on the config document and the write path peels secrets back out.
  *
@@ -11,7 +11,7 @@
  */
 import { dirname, join } from 'pathe';
 
-export const CREDENTIALS_FILE_NAME = 'credentials.toml';
+export const CREDENTIALS_RELATIVE_PATH = 'credentials/credentials.toml';
 
 /**
  * Reserved key names whose values are secrets. The comparison strips `_`/`-`
@@ -38,9 +38,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** The credentials file that belongs to `config.toml`, in the same directory. */
+/** The credentials file under the data root that contains `config.toml`. */
 export function credentialsPathFor(configPath: string): string {
-  return join(dirname(configPath), CREDENTIALS_FILE_NAME);
+  return join(dirname(configPath), CREDENTIALS_RELATIVE_PATH);
 }
 
 interface SplitValue {

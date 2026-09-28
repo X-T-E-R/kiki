@@ -32,7 +32,7 @@ Docs matching this version live in `<KIKI_HOME>/docs/{en,zh}/` (`KIKI_HOME`, els
 - **GUI Settings** (`/settings/<id>`): General (language, theme, composer) · Models & providers (Connections / Available models / Defaults — default permission mode and Reviewer are under Defaults) · Agents · Subagent rules · Agent communication · Plan & tasks · Skills · MCP · Plugins · Tools & automations (tool policy, hooks) · Search & retrieval · Workspaces · Connection · Advanced · About & updates.
 - **Elsewhere in the GUI:** Task board (`/board`), Scheduled tasks (`/cron`), Dispatch capabilities (right rail); per-session model, permission mode, and plan mode in the composer.
 - **TUI:** `/login`, `/provider`, `/model`, `/permission`, `/plan`, `/goal`, `/mcp`, `/plugins`, `/theme`, `/settings`. **CLI:** `kiki doctor`, `kiki provider`, `kiki export`.
-- **Files in `<KIKI_HOME>`:** `config.toml`, `credentials.toml` (secrets), `tui.toml` (terminal only), `mcp.json`. Project MCP: repo-root `.mcp.json`, then `.kiki/mcp.json`; later wins by server name.
+- **Files in `<KIKI_HOME>`:** `config.toml`, `credentials/credentials.toml` (secrets), `tui.toml` (terminal only), `mcp.json`. Project MCP: repo-root `.mcp.json`, then `.kiki/mcp.json`; later wins by server name.
 
 ## Topic notes
 
@@ -63,7 +63,7 @@ Prefer the GUI page or a dedicated command. For a direct edit:
 1. Resolve the real path and read the file; on a parse error, stop instead of overwriting.
 2. Confirm key, type, and section in `configuration/config-files.md`; keep unrelated entries and comments.
 3. Back up with a timestamp, write, re-read. Never overwrite a user file without permission.
-4. Apply: `/reload` in the TUI for `config.toml` (the server also watches `config.toml` and `credentials.toml`; confirm the effect), `/reload-tui` for `tui.toml`. Profile, skill, and MCP changes may need a new session or **Rebuild context**.
+4. Apply: `/reload` in the TUI for `config.toml` (the server also watches `config.toml` and `credentials/credentials.toml`; confirm the effect), `/reload-tui` for `tui.toml`. Profile, skill, and MCP changes may need a new session or **Rebuild context**.
 
 For a deprecation warning, rename exactly the named key and keep its value; env-var warnings are fixed where the variable is set.
 

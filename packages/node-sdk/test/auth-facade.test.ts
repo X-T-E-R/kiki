@@ -953,6 +953,6 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
     next.providers['managed:kimi-code'] = { type: 'kimi', baseUrl: 'https://api.example.test/v1' };
     await writeConfigFile(path, next, { ...snapshot, loaded });
     expect(readConfigFile(path).providers['acme']?.apiKey).toBe('sk-other');
-    expect(await readFile(join(homeDir, 'credentials.toml'), 'utf-8')).toContain('sk-other');
+    expect(await readFile(join(homeDir, 'credentials', 'credentials.toml'), 'utf-8')).toContain('sk-other');
   });
 });

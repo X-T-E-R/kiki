@@ -2,7 +2,7 @@
 
 Kiki writes all long-term preferences — which model to use, which API key to fill in, how many steps an Agent can run per turn — into TOML (a plain-text configuration format with a clear structure) files. Change them once and they take effect on every startup. Ordinary agent and runtime settings live in `config.toml`; provider credentials live in a separate `credentials.toml`; terminal-UI and client preferences (theme, editor, notifications, auto-update) live in a companion `tui.toml`.
 
-Default location: `~/.kiki/config.toml`, created automatically on first run. Provider credentials live beside it in `~/.kiki/credentials.toml`; see [Provider credentials](#provider-credentials).
+Default location: `~/.kiki/config.toml`, created automatically on first run. Provider credentials live in `~/.kiki/credentials/credentials.toml`; see [Provider credentials](#provider-credentials).
 
 ## Config file location
 
@@ -14,7 +14,7 @@ export KIKI_HOME=/path/to/kiki-home
 
 The config file path then becomes `$KIKI_HOME/config.toml`. Regardless of where the directory lives, the file name is always `config.toml`.
 
-`credentials.toml` follows the same rule: it always sits in the same directory as `config.toml`, so its path becomes `$KIKI_HOME/credentials.toml` when you override the data directory. Its file name is always `credentials.toml`.
+Provider credentials live at `$KIKI_HOME/credentials/credentials.toml` when you override the data directory. The `credentials/` directory also holds OAuth and MCP credentials.
 
 ::: tip
 TOML field names always use snake_case, for example `default_model` and `max_context_size`. If a key contains `.`, you must quote it — for example `[models."gpt-4.1"]` — otherwise TOML treats `.` as a nested table separator.
@@ -92,10 +92,10 @@ timeout = 5
 
 ## Provider credentials
 
-Provider credentials — the API keys Kiki uses to call each provider — are stored in `~/.kiki/credentials.toml`, a companion file in the same directory as `config.toml` (`$KIKI_HOME/credentials.toml` when you override the data directory). Ordinary configuration stays in `config.toml`; credential values keep the TOML paths they had there, so a provider's `api_key` simply moves out of its `[providers."<name>"]` table in `config.toml` and into the same table here.
+Provider credentials — the API keys Kiki uses to call each provider — are stored in `~/.kiki/credentials/credentials.toml` (`$KIKI_HOME/credentials/credentials.toml` when you override the data directory). Ordinary configuration stays in `config.toml`; credential values keep the TOML paths they had there, so a provider's `api_key` simply moves out of its `[providers."<name>"]` table in `config.toml` and into the same table here.
 
 ```toml
-# ~/.kiki/credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers."managed:kimi-code"]
 api_key = "YOUR_API_KEY"
 ```
@@ -106,7 +106,7 @@ The field-level priority between `api_key` and the `[providers.<name>.env]` fall
 
 ### Migrating existing keys
 
-If an older `config.toml` still holds provider credentials, the first load after upgrading moves them into `credentials.toml` and rewrites `config.toml` without them. The previous `config.toml` is kept as a unique backup named `config.toml.bak-<YYYY-MM-DD>-<uuid>` so you can review or restore it. The backup still contains the original plaintext keys; remove it after checking the migration if you no longer need it. Repeated loads after a successful migration do not create another backup or change already-moved credentials. If the same key path exists in both files with different values, migration stops for manual review rather than choosing one; a failed or interrupted migration may leave a backup for inspection.
+If an older root-level `credentials.toml` exists, startup moves its contents unchanged to `credentials/credentials.toml`; reads also support the old location until the move succeeds. If both locations contain different bytes, Kiki stops rather than choosing one: inspect both files before retrying. If an older `config.toml` still holds provider credentials, startup moves them into `credentials/credentials.toml` and rewrites `config.toml` without them. The previous `config.toml` is kept as a unique backup named `config.toml.bak-<YYYY-MM-DD>-<uuid>` so you can review or restore it. The backup still contains the original plaintext keys; remove it after checking the migration if you no longer need it. Repeated loads after a successful migration do not create another backup or change already-moved credentials. If the same key path exists in both files with different values, migration stops for manual review rather than choosing one; a failed or interrupted migration may leave a backup for inspection.
 
 ### File permissions
 
@@ -735,7 +735,7 @@ model = "jev-latest"
 ```
 
 ```toml
-# ~/.kiki/credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [permission.reviewer]
 api_key = "YOUR_TYPESAFE_API_KEY"
 ```

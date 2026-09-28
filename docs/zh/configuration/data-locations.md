@@ -34,7 +34,6 @@ export KIKI_HOME="$HOME/.config/kiki"
 ```text
 $KIKI_HOME  （默认 ~/.kiki）
 ├── config.toml             # 用户配置
-├── credentials.toml        # 供应商凭证（仅属主可读写，0600）
 ├── tui.toml                # 终端界面偏好
 ├── AGENTS.md               # 全局 Kiki 专属 Agent 指令（可选）
 ├── mcp.json                # 用户级 MCP server 声明（可选）
@@ -48,7 +47,8 @@ $KIKI_HOME  （默认 ~/.kiki）
 ├── workspaces.json          # 已注册工作区的名称与根目录
 ├── workspaces/              # 自动创建的工作区目录
 │   └── <date>-<id>/
-├── credentials/            # OAuth 凭据（目录 0700，文件 0600；与 credentials.toml 不同）
+├── credentials/            # 凭据目录（目录 0700，文件 0600）
+│   ├── credentials.toml     # 供应商 API 密钥
 │   ├── <name>.json
 │   └── mcp/
 │       └── <key>-<suffix>.json
@@ -65,10 +65,10 @@ $KIKI_HOME  （默认 ~/.kiki）
 
 ## 各类文件说明
 
-数据根下的顶层文件各有用途，大部分由 CLI 自动管理：
+数据根下的文件各有用途，大部分由 CLI 自动管理：
 
-- **`config.toml`**：主运行时配置，存放供应商、模型、循环控制等用户级设置。它不会保存明文凭证——供应商 API 密钥放在配套的 `credentials.toml` 里。详见[配置文件](./config-files.md)。
-- **`credentials.toml`**：`config.toml` 的配套文件，存放供应商凭证，例如各供应商的 `api_key`。同一条 TOML 路径上这里的值覆盖 `config.toml`；旧版 `config.toml` 里遗留的凭证会在首次加载时迁入该文件，原文件保留为 `config.toml.bak-<date>`。在平台支持的前提下，Kiki 以仅属主可读写的权限（`0o600`）写入该文件。详见[供应商凭证](./config-files.md#供应商凭证)。
+- **`config.toml`**：主运行时配置，存放供应商、模型、循环控制等用户级设置。供应商 API 密钥放在 `credentials/credentials.toml`。详见[配置文件](./config-files.md)。
+- **`credentials/credentials.toml`**：存放供应商凭证，例如各供应商的 `api_key`。同一条 TOML 路径上这里的值覆盖 `config.toml`；旧版 `config.toml` 里遗留的凭证会在首次加载时迁入该文件，原文件保留为 `config.toml.bak-<date>`。旧版根目录 `credentials.toml` 会原样迁入该目录；如果两处文件内容不同，迁移会停止，等待核对。在平台支持的前提下，Kiki 以仅属主可读写的权限（`0o600`）写入该文件。详见[供应商凭证](./config-files.md#供应商凭证)。
 - **`tui.toml`**：终端界面客户端偏好，例如主题、编辑器、通知和状态栏。
 - **`AGENTS.md`**：用户级 Agent 指令。该文件会随 `KIKI_HOME` 移动，并与工作区根目录指令合并；工作区的 `.kiki/AGENTS.md` 可以覆盖它。
 - **`mcp.json`**：用户级 MCP server 声明，启动时与项目内的 `.kiki/mcp.json` 合并加载。详见 [MCP](../server/mcp.md)。
@@ -76,7 +76,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 - **`cognition/`**：`[models."<alias>".cognition]` 引用的提示词文件，路径相对于数据根目录。详见[模型认知](./config-files.md#模型认知)。
 - **`hooks/`**：`[[hooks]]` command 路径引用的脚本文件（如 `node ~/.kiki/hooks/check-bash.mjs`）。详见 [Hooks](../customization/hooks.md)。
 - **`plugins/installed.json`**：记录已安装的 plugin、每个 plugin 的启用状态，以及通过 `/plugins` 或 `/plugins mcp disable|enable` 修改的 MCP server 能力状态。本地路径和 zip URL 安装的文件会复制到 `plugins/managed/<id>/`。详见 [Plugins](../customization/plugins.md)。
-- **`credentials/`**：OAuth 凭据目录——与上面的 `credentials.toml` 文件不同——权限 `0o700`（目录）/ `0o600`（文件），仅当前用户可读写。托管供应商的 OAuth 登录态存为 `credentials/<name>.json`，MCP server 凭据存在 `credentials/mcp/` 子目录下。凭据写入使用原子流程（tmp → fsync → rename）防止写损。
+- **`credentials/`**：权限受限的凭据目录，请求权限为目录 `0o700`、文件 `0o600`。托管供应商的 OAuth 登录态存为 `credentials/<name>.json`，MCP server 凭据存在 `credentials/mcp/` 子目录下。OAuth 凭据写入使用原子流程（tmp → fsync → rename）防止写损。
 - **`workspaces.json` 与 `workspaces/`**：分别记录已注册工作区，以及新会话未指定工作区时 Kiki 创建的项目目录。每个自动创建的会话使用独立目录；这里是工作文件，与 `sessions/` 下的会话历史不同。
 
 ## 会话数据
@@ -118,7 +118,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 | 需求 | 操作 |
 | --- | --- |
 | 重置配置 | 删除 `~/.kiki/config.toml` |
-| 重置供应商凭证 | 删除 `~/.kiki/credentials.toml` |
+| 重置供应商凭证 | 删除 `~/.kiki/credentials/credentials.toml`（若旧文件仍存在，也删除 `~/.kiki/credentials.toml`，以免下次启动重新迁入） |
 | 重置终端界面偏好 | 删除 `~/.kiki/tui.toml` |
 | 清理所有会话 | 删除 `~/.kiki/sessions/` 和 `session_index.jsonl` |
 | 清理诊断日志 | 删除 `~/.kiki/logs/` |

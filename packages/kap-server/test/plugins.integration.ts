@@ -219,7 +219,7 @@ describe('server-v2 /api plugins', () => {
     );
     expect(fetched.body.data).toMatchObject({ values: { label: 'visible' }, secretsConfigured: ['apiKey'] });
     expect(await readFile(join(home!, 'config.toml'), 'utf8')).not.toContain('test-secret-value');
-    expect(await readFile(join(home!, 'credentials.toml'), 'utf8')).toContain('test-secret-value');
+    expect(await readFile(join(home!, 'credentials', 'credentials.toml'), 'utf8')).toContain('test-secret-value');
     expect((await call('POST', '/api/plugins/settings-fixture:remove', { deleteData: true })).body.code).toBe(0);
   });
 

@@ -37,7 +37,7 @@ The key names below are not read directly from the shell — they are key names 
 This design lets you keep familiar key name conventions while keeping secrets out of `config.toml`: the secret keys go to the companion `credentials.toml`, and the non-secret `*_BASE_URL` keys stay in `config.toml`.
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.kimi.env]
 KIMI_API_KEY = "sk-xxx"
 ```

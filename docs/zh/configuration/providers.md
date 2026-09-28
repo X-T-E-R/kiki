@@ -69,7 +69,7 @@ base_url = "https://api.moonshot.ai/v1"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.kimi]
 api_key = "sk-xxxxx"
 ```
@@ -96,7 +96,7 @@ max_context_size = 200000
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.anthropic]
 api_key = "sk-ant-xxxxx"
 ```
@@ -117,7 +117,7 @@ base_url = "https://api.openai.com/v1"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.openai]
 api_key = "sk-xxxxx"
 ```
@@ -136,7 +136,7 @@ base_url = "https://api.openai.com/v1"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.openai_responses]
 api_key = "sk-xxxxx"
 ```
@@ -153,7 +153,7 @@ type = "google-genai"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.gemini]
 api_key = "xxxxx"
 ```
@@ -169,7 +169,7 @@ base_url = "https://your-gateway.example"
 ```
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.gemini]
 api_key = "xxxxx"
 ```
@@ -200,7 +200,7 @@ kiki
 
 ## OAuth 与凭证注入
 
-GUI 的 **连接服务 → 用账号登录** 提供 Kimi Code、GitHub Copilot、ChatGPT（Codex）三种选项。选择账号后打开验证地址、输入设备码，等待页面显示「已连接」。对应账号须有相关订阅或服务权限；可用模型取决于账号。退出登录会移除该账号的托管连接与模型。这些是登录方式，并非新的 `type` 协议值：Kimi Code 与 Copilot 使用 OpenAI 兼容请求，ChatGPT Codex 使用指向 Codex 端点的 `openai_responses`。OAuth 凭据存放在 `credentials/`（见[数据路径](./data-locations.md)），与 `credentials.toml` 中的 API 密钥分开。CLI 的 `/login`、`/logout` 目前仍只管理 Kimi Code。
+GUI 的 **连接服务 → 用账号登录** 提供 Kimi Code、GitHub Copilot、ChatGPT（Codex）三种选项。选择账号后打开验证地址、输入设备码，等待页面显示「已连接」。对应账号须有相关订阅或服务权限；可用模型取决于账号。退出登录会移除该账号的托管连接与模型。这些是登录方式，并非新的 `type` 协议值：Kimi Code 与 Copilot 使用 OpenAI 兼容请求，ChatGPT Codex 使用指向 Codex 端点的 `openai_responses`。OAuth 凭据存放在 `credentials/` 的 JSON 文件中（见[数据路径](./data-locations.md)）；API 密钥存放在 `credentials/credentials.toml`。CLI 的 `/login`、`/logout` 目前仍只管理 Kimi Code。
 
 ## 下一步
 

@@ -14,7 +14,24 @@ import { replaceThinkingEffortMax } from './tomlWriteback';
 const MIGRATIONS_FILE = 'migrations-effort.json';
 const THINKING_EFFORT_MAX_TO_HIGH = 'thinking-effort-max-to-high';
 const CONFIG_SCOPE = '';
-export const CREDENTIALS_KEY = 'credentials.toml';
+export const CREDENTIALS_KEY = 'credentials/credentials.toml';
+export const LEGACY_CREDENTIALS_KEY = 'credentials.toml';
+
+/** Move the byte-exact legacy document; neither a conflicting destination nor a concurrent edit is overwritten. */
+export async function migrateCredentialsDirectory(store: IAtomicTomlDocumentStore): Promise<void> {
+  const oldText = await store.getText(CONFIG_SCOPE, LEGACY_CREDENTIALS_KEY, { recoverMissing: false });
+  if (oldText === undefined) return;
+  const newText = await store.getText(CONFIG_SCOPE, CREDENTIALS_KEY, { recoverMissing: false });
+  if (newText !== undefined && newText !== oldText) {
+    throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Old and new credentials.toml differ; resolve them before retrying migration. Neither file was changed.');
+  }
+  if (newText === undefined && !await store.compareAndSetText(CONFIG_SCOPE, CREDENTIALS_KEY, undefined, oldText)) {
+    throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Credentials destination changed during migration; inspect both files before retrying.');
+  }
+  if (!await store.compareAndSetText(CONFIG_SCOPE, LEGACY_CREDENTIALS_KEY, oldText, undefined)) {
+    throw new Error2(ErrorCodes.CONFIG_PERSIST_BLOCKED, 'Legacy credentials changed during migration; inspect both files before retrying.');
+  }
+}
 
 function hasConflictingCredentialValues(inline: unknown, stored: unknown): boolean {
   if (Array.isArray(inline) && Array.isArray(stored)) {

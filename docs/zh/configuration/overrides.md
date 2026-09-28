@@ -12,7 +12,7 @@ Kiki 有三个地方可以影响运行参数：配置文件、命令行选项、
 
 环境变量按作用分两类，不能合并成一条线性优先级：
 
-1. **定位配置文件**：`KIKI_HOME` 决定数据根目录，配置文件路径因此变为 `$KIKI_HOME/config.toml`，其配套的凭证文件为 `$KIKI_HOME/credentials.toml`。这一步先于其他所有解析，不是普通参数的后备来源。
+1. **定位配置文件**：`KIKI_HOME` 决定数据根目录，配置文件路径因此变为 `$KIKI_HOME/config.toml`，其配套的凭证文件为 `$KIKI_HOME/credentials/credentials.toml`。这一步先于其他所有解析，不是普通参数的后备来源。
 2. **运行端点与诊断**：`KIKI_CODE_OAUTH_HOST`、`KIKI_CODE_BASE_URL`、`KIKI_LOG_LEVEL` 等在 OAuth 或日志子系统初始化时读取。完整列表见[环境变量](./env-vars.md)。
 
 ## 普通运行参数的优先级
@@ -34,7 +34,7 @@ CLI 从 `KIKI_HOME`（默认 `~/.kiki`）读取用户级配置，并从 `<项目
 
 供应商凭证（`api_key`、`base_url`）有独立的解析规则，不走普通参数的优先级链。
 
-供应商的 API 密钥存放在 `credentials.toml`，它与 `config.toml` 位于同一目录。Kiki 把两个文件当作一份文档读取，同一条 TOML 路径上 `credentials.toml` 的值优先；`config.toml` 不会保存明文凭证。文件位置、权限以及首次加载迁移见[供应商凭证](./config-files.md#供应商凭证)。
+供应商的 API 密钥存放在数据根目录下的 `credentials/credentials.toml`。Kiki 把两个文件当作一份文档读取，同一条 TOML 路径上 `credentials.toml` 的值优先；`config.toml` 不会保存明文凭证。文件位置、权限以及首次加载迁移见[供应商凭证](./config-files.md#供应商凭证)。
 
 对单个供应商，凭证按以下顺序解析：
 
@@ -111,7 +111,7 @@ KIKI_HOME="$PWD/.kiki-sandbox" kiki
 **一次性使用测试密钥**——由于供应商凭证只从配置文件读，把测试密钥写进 `credentials.toml`：
 
 ```toml
-# credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers.kimi.env]
 KIMI_API_KEY = "sk-test"
 ```

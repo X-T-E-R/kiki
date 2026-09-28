@@ -2,7 +2,7 @@
 
 Kiki 把所有长期偏好写进 `~/.kiki/` 下的 TOML（一种结构清晰的纯文本配置格式）文件——比如使用哪个模型、填哪个 API 密钥、Agent 每轮最多跑几步。改一次，每次启动都生效。Agent 与运行时设置放在 `config.toml`，供应商凭证放在独立的 `credentials.toml`，终端界面与客户端偏好（主题、编辑器、通知、自动更新）放在配套的 `tui.toml`。
 
-默认位置：`~/.kiki/config.toml`，首次运行时自动创建。供应商凭证放在同目录的 `~/.kiki/credentials.toml`，详见 [供应商凭证](#供应商凭证)。
+默认位置：`~/.kiki/config.toml`，首次运行时自动创建。供应商凭证放在 `~/.kiki/credentials/credentials.toml`，详见 [供应商凭证](#供应商凭证)。
 
 ## 配置文件位置
 
@@ -14,7 +14,7 @@ export KIKI_HOME=/path/to/kiki-home
 
 此时配置文件路径变为 `$KIKI_HOME/config.toml`。无论目录在哪里，文件名固定是 `config.toml`。
 
-`credentials.toml` 遵循同样的规则：始终与 `config.toml` 位于同一目录，覆盖数据目录后路径变为 `$KIKI_HOME/credentials.toml`。文件名固定是 `credentials.toml`。
+覆盖数据目录后，供应商凭证路径为 `$KIKI_HOME/credentials/credentials.toml`。`credentials/` 目录还存放 OAuth 与 MCP 凭据。
 
 ::: tip
 TOML 字段名一律用下划线（snake_case），如 `default_model`、`max_context_size`。字段名里若含 `.`，需用引号包住，例如 `[models."gpt-4.1"]`——否则 TOML 会把 `.` 解释为嵌套表分隔符。
@@ -92,10 +92,10 @@ timeout = 5
 
 ## 供应商凭证
 
-供应商凭证——Kiki 调用各供应商时使用的 API 密钥——存放在 `~/.kiki/credentials.toml`，它与 `config.toml` 位于同一目录（覆盖数据目录时为 `$KIKI_HOME/credentials.toml`）。普通配置仍留在 `config.toml`；凭证值保持原来的 TOML 路径，供应商的 `api_key` 只是从 `config.toml` 的 `[providers."<name>"]` 表移到这里的同名表下。
+供应商凭证——Kiki 调用各供应商时使用的 API 密钥——存放在 `~/.kiki/credentials/credentials.toml`（覆盖数据目录时为 `$KIKI_HOME/credentials/credentials.toml`）。普通配置仍留在 `config.toml`；凭证值保持原来的 TOML 路径，供应商的 `api_key` 只是从 `config.toml` 的 `[providers."<name>"]` 表移到这里的同名表下。
 
 ```toml
-# ~/.kiki/credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [providers."managed:kimi-code"]
 api_key = "YOUR_API_KEY"
 ```
@@ -106,7 +106,7 @@ api_key = "YOUR_API_KEY"
 
 ### 迁移已有密钥
 
-如果旧版 `config.toml` 里仍留有供应商凭证，升级后的首次加载会把它们迁入 `credentials.toml`，并重写 `config.toml`（不再包含这些凭证）。原 `config.toml` 会以唯一的 `config.toml.bak-<YYYY-MM-DD>-<uuid>` 名称保留为备份，便于查看或恢复。备份仍含原来的明文密钥；确认迁移成功后，若不再需要备份，请将其删除。成功迁移后重复加载不会另建备份，也不会改动已迁出的凭证。如果两个文件的同一密钥路径有不同的值，迁移会停止并要求人工核对，不会擅自选择其一；失败或中断的迁移也可能留下需检查的备份。
+如果根目录还留有旧版 `credentials.toml`，启动时会把其内容原样迁入 `credentials/credentials.toml`；迁移成功前仍可从旧位置读取。如果新旧两处内容不同，Kiki 会停止而不擅自选择，请核对两份文件后重试。如果旧版 `config.toml` 里仍留有供应商凭证，启动时会把它们迁入 `credentials/credentials.toml`，并重写 `config.toml`（不再包含这些凭证）。原 `config.toml` 会以唯一的 `config.toml.bak-<YYYY-MM-DD>-<uuid>` 名称保留为备份，便于查看或恢复。备份仍含原来的明文密钥；确认迁移成功后，若不再需要备份，请将其删除。成功迁移后重复加载不会另建备份，也不会改动已迁出的凭证。如果两个文件的同一密钥路径有不同的值，迁移会停止并要求人工核对，不会擅自选择其一；失败或中断的迁移也可能留下需检查的备份。
 
 ### 文件权限
 
@@ -724,7 +724,7 @@ model = "jev-latest"
 ```
 
 ```toml
-# ~/.kiki/credentials.toml
+# ~/.kiki/credentials/credentials.toml
 [permission.reviewer]
 api_key = "YOUR_TYPESAFE_API_KEY"
 ```

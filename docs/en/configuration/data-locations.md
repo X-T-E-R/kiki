@@ -34,7 +34,6 @@ Once set, **all** Kiki data — config, provider credentials, sessions, logs, OA
 ```text
 $KIKI_HOME  (default: ~/.kiki)
 ├── config.toml             # User configuration
-├── credentials.toml        # Provider credentials (owner-only, 0600)
 ├── tui.toml                # Terminal UI preferences
 ├── AGENTS.md               # Global Kiki-specific agent instructions (optional)
 ├── mcp.json                # User-level MCP server declarations (optional)
@@ -48,7 +47,8 @@ $KIKI_HOME  (default: ~/.kiki)
 ├── workspaces.json          # Registered workspace names and roots
 ├── workspaces/              # Automatically created workspace directories
 │   └── <date>-<id>/
-├── credentials/            # OAuth credentials (dir 0700, files 0600; separate from credentials.toml)
+├── credentials/            # Restricted credentials (dir 0700, files 0600)
+│   ├── credentials.toml     # Provider API keys
 │   ├── <name>.json
 │   └── mcp/
 │       └── <key>-<suffix>.json
@@ -65,10 +65,10 @@ $KIKI_HOME  (default: ~/.kiki)
 
 ## File descriptions
 
-Each top-level file under the data root serves a specific purpose; most are managed automatically by the CLI:
+Each file under the data root serves a specific purpose; most are managed automatically by the CLI:
 
-- **`config.toml`**: the main runtime configuration file, storing user-level settings such as providers, models, and loop control. It never carries a plaintext credential — provider API keys live in the companion `credentials.toml`. See [Configuration files](./config-files.md).
-- **`credentials.toml`**: the companion to `config.toml`, holding provider credentials such as each provider's `api_key`. On a shared TOML path a value here overrides `config.toml`, and credentials left in an older `config.toml` are migrated into this file on first load, with the previous file kept as `config.toml.bak-<date>`. Kiki writes it owner-only (`0o600`) where the platform supports it. See [Provider credentials](./config-files.md#provider-credentials).
+- **`config.toml`**: the main runtime configuration file, storing user-level settings such as providers, models, and loop control. Provider API keys live in `credentials/credentials.toml`. See [Configuration files](./config-files.md).
+- **`credentials/credentials.toml`**: holds provider credentials such as each provider's `api_key`. On a shared TOML path a value here overrides `config.toml`, and credentials left in an older `config.toml` are migrated here on first load, with the previous file kept as `config.toml.bak-<date>`. An older root-level `credentials.toml` is moved here without changing its contents; a mismatch between the two files stops migration for inspection. Kiki requests owner-only permissions (`0o600`) where supported. See [Provider credentials](./config-files.md#provider-credentials).
 - **`tui.toml`**: terminal UI client preferences such as theme, editor, notifications, and status line.
 - **`AGENTS.md`**: user-level agent instructions. This file moves with `KIKI_HOME` and is combined with workspace-root instructions unless `.kiki/AGENTS.md` overrides it.
 - **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kiki/mcp.json` on startup. See [MCP](../server/mcp.md).
@@ -76,7 +76,7 @@ Each top-level file under the data root serves a specific purpose; most are mana
 - **`cognition/`**: prompt files referenced by `[models."<alias>".cognition]`; paths are relative to the data root. See [Model cognition](./config-files.md#model-cognition).
 - **`hooks/`**: script files referenced by `[[hooks]]` command paths (for example `node ~/.kiki/hooks/check-bash.mjs`). See [Hooks](../customization/hooks.md).
 - **`plugins/installed.json`**: records installed plugins, each plugin's enabled state, and MCP server capability state changes made via `/plugins` or `/plugins mcp disable|enable`. Files installed from local paths or zip URLs are copied to `plugins/managed/<id>/`. See [Plugins](../customization/plugins.md).
-- **`credentials/`**: OAuth credential directory — distinct from the `credentials.toml` file above — with permissions `0o700` (directory) / `0o600` (files), readable and writable only by the current user. OAuth logins for managed providers are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. Credentials are written using an atomic flow (tmp → fsync → rename) to prevent corruption.
+- **`credentials/`**: restricted credential directory, with requested permissions `0o700` (directory) / `0o600` (files). OAuth logins for managed providers are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. OAuth credentials are written using an atomic flow (tmp → fsync → rename) to prevent corruption.
 - **`workspaces.json` and `workspaces/`**: the registered workspace catalog and the project directories Kiki creates when a new session has no selected workspace. Each automatically created session receives a distinct directory; these are working files, separate from the session history under `sessions/`.
 
 ## Session data
@@ -118,7 +118,7 @@ Deleting the data root directory (`~/.kiki/` or the path set by `KIKI_HOME`) rem
 | Goal | Action |
 | --- | --- |
 | Reset configuration | Delete `~/.kiki/config.toml` |
-| Reset provider credentials | Delete `~/.kiki/credentials.toml` |
+| Reset provider credentials | Delete `~/.kiki/credentials/credentials.toml` (also remove the old `~/.kiki/credentials.toml` if still present, or it will be migrated again on startup) |
 | Reset terminal UI preferences | Delete `~/.kiki/tui.toml` |
 | Clear all sessions | Delete `~/.kiki/sessions/` and `session_index.jsonl` |
 | Clear diagnostic logs | Delete `~/.kiki/logs/` |
