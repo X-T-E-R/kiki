@@ -28,6 +28,18 @@ import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import { selectProofOutput } from './visual-proof-options.mjs';
+import { assertTimelineIntegrity, drainTimeline, installTimelineMonitor } from './timeline-integrity.mjs';
+
+/**
+ * Scenarios whose walk exercises the transcript list (streaming, folding,
+ * expansion, subagent tabs/routes, jumps). Every one ends with the timeline
+ * integrity gate: no rows overlapping at rest and no overlap visible for more
+ * than a few frames at any point of the walk.
+ */
+const TIMELINE_GATED = new Set([
+  'long-transcript', 'subagents', 'subagents-burst', 'subagent-approval',
+  'goal-swarm', 'tool-pipeline', 'rewrite-flow', 'error-abort',
+]);
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -55,6 +67,15 @@ async function freePort() {
 
 /** UI language for the run; the app defaults to English when unset. */
 const LOCALE = process.env.KIKI_PROOF_LOCALE === 'zh' ? 'zh' : 'en';
+
+/**
+ * Optional whole-run theme (KIKI_PROOF_THEME=dark|light). Unset keeps the
+ * stored/app default, so existing runs are unchanged. Seeded only when the
+ * stored settings carry no theme, so walkers that flip the theme still win.
+ */
+const THEME = process.env.KIKI_PROOF_THEME === 'dark' || process.env.KIKI_PROOF_THEME === 'light'
+  ? process.env.KIKI_PROOF_THEME
+  : null;
 
 /**
  * UI-chrome strings the walkers key on, per locale. Values must match
@@ -90,17 +111,19 @@ const STRINGS = {
     themeDark: 'Dark',
     themeLight: 'Light',
     switcherSettingsGroup: 'Settings',
-    savedTick: '✓ Saved',
+    savedTick: 'Saved',
     planModeToggle: 'Default to entering plan mode',
-    permissionModeAuto: 'auto',
+    permissionModeAuto: 'Auto',
     onboardingTitle: 'Welcome to Kiki',
     onboardingNext: 'Next',
     onboardingBack: 'Back',
     onboardingSaveNext: 'Save & continue',
-    onboardingFinish: 'Start chatting',
+    onboardingFinish: 'Start',
+    onboardingSkipForNow: 'Skip for now',
     onboardingSkip: 'Set up later',
     onboardingReady: 'A model provider is connected',
     onboardingRecommended: 'Recommended',
+    onboardingReenter: 'Replay setup wizard',
     onboardingTest: 'Test connection',
     onboardingTestedOk: 'Connection works',
     fetchModelsButton: 'Test connection & pull models',
@@ -114,8 +137,8 @@ const STRINGS = {
     dangerTitle: 'Danger zone',
     disabledMainHint: 'Still available for main sessions',
     technicalDetails: 'Technical details',
-    overriddenNote: 'Built-in profile overridden by',
-    overridesBuiltinNote: 'overrides the built-in profile',
+    overriddenNote: 'Built-in agent overridden by',
+    overridesBuiltinNote: 'overrides the built-in agent',
     shadowedNote: 'Not in effect',
     dirtyDiscard: 'Discard and leave',
     modelProfileLabel: 'model profile',
@@ -125,10 +148,10 @@ const STRINGS = {
     shippedBadgeModified: 'Built-in · modified',
     shippedBadgeRemoved: 'Built-in · removed',
     shippedRestore: 'Restore original',
-    shippedRestoreTitle: 'Restore the original of built-in profile',
-    shippedRestored: 'Original restored and agent profiles reloaded.',
-    subagentDefaultLabel: 'Default profile for AgentRun',
-    subagentDefaultStrict: 'Require an explicit profile',
+    shippedRestoreTitle: 'Restore the original of built-in agent',
+    shippedRestored: 'Original restored and agents reloaded.',
+    subagentDefaultLabel: 'Default agent for AgentRun',
+    subagentDefaultStrict: 'Require an explicit agent',
     subagentDefaultStrictHint: 'fail with an error instead of falling back',
     planGateTimeoutInvalid: 'Timeout must be at least 5 seconds.',
     nbSearchSave: 'Save search & retrieval',
@@ -164,11 +187,16 @@ const STRINGS = {
     save: 'Save',
     onePromptQueued: '1 prompt queued',
     queueBarPattern: /prompts? queued/,
-    promptAborted: 'Prompt aborted',
+    // A user stop renders as ONE tail line ("Stopped by you · Resume").
+    promptAborted: 'Stopped by you',
     archiveDownloaded: 'Session archive downloaded.',
     undoTitle: 'Undo the last turn?',
     undoTurn: 'Undo turn',
     lastTurnRemoved: 'Last turn removed.',
+    memorySaved: 'Saved.',
+    memoryDelete: 'Delete',
+    // A memory delete is undoable; the confirmation may never imply otherwise.
+    memoryBannedInDelete: ['permanent', 'cannot be undone', 'forever'],
     compactionRequested: 'Compaction requested',
     forkSession: 'Fork session',
     exportArchive: 'Export archive',
@@ -197,7 +225,7 @@ const STRINGS = {
     steps3: 'Steps · 3',
     filesHeader: 'Files — mentioned as @path',
     notActivatable: 'not activatable',
-    shortcuts: 'Shortcuts',
+    shortcuts: 'Actions',
     sendAnyway: 'Send anyway',
     swarmTitlePrefix: 'Swarm mode',
     goalActive: 'goal · active',
@@ -288,17 +316,19 @@ const STRINGS = {
     themeDark: '暗色',
     themeLight: '亮色',
     switcherSettingsGroup: '设置',
-    savedTick: '✓ 已保存',
+    savedTick: '已保存',
     planModeToggle: '默认进入计划模式',
     permissionModeAuto: '自动',
     onboardingTitle: '欢迎使用 Kiki',
     onboardingNext: '下一步',
     onboardingBack: '上一步',
     onboardingSaveNext: '保存并继续',
-    onboardingFinish: '开始对话',
+    onboardingFinish: '开始',
+    onboardingSkipForNow: '暂时跳过',
     onboardingSkip: '稍后配置',
     onboardingReady: '已连接模型供应商',
     onboardingRecommended: '推荐',
+    onboardingReenter: '重新进入引导',
     onboardingTest: '测试连接',
     onboardingTestedOk: '连接成功',
     fetchModelsButton: '测试连接并拉取模型',
@@ -312,22 +342,22 @@ const STRINGS = {
     dangerTitle: '危险操作',
     disabledMainHint: '仍可用于主会话',
     technicalDetails: '技术细节',
-    overriddenNote: '内置档已被',
-    overridesBuiltinNote: '已覆盖同名的内置档',
+    overriddenNote: '内置智能体已被',
+    overridesBuiltinNote: '已覆盖同名的内置智能体',
     shadowedNote: '未生效',
     dirtyDiscard: '丢弃并离开',
-    modelProfileLabel: '模型档',
+    modelProfileLabel: '模型设置',
     promptModeLabel: '提示词模式',
     delegationNoticeLabel: '委派通知',
     scopedBadgeLabel: '专用',
     shippedBadgeModified: '内置 · 已修改',
     shippedBadgeRemoved: '内置 · 已移除',
     shippedRestore: '恢复原版',
-    shippedRestoreTitle: '恢复内置 profile',
-    shippedRestored: '已恢复原版并重新加载 agent profile。',
-    subagentDefaultLabel: 'AgentRun 的默认 profile',
+    shippedRestoreTitle: '恢复内置智能体',
+    shippedRestored: '已恢复原版并重新加载智能体。',
+    subagentDefaultLabel: 'AgentRun 的默认子智能体',
     subagentDefaultStrict: '要求显式指定',
-    subagentDefaultStrictHint: '未指定 profile 的派发将报错',
+    subagentDefaultStrictHint: '未指定子智能体的派发将报错',
     planGateTimeoutInvalid: '超时时间最短为 5 秒。',
     nbSearchSave: '保存搜索与抓取',
     nbSearchSaved: '搜索与抓取配置已保存',
@@ -362,11 +392,14 @@ const STRINGS = {
     save: '保存',
     onePromptQueued: '1 条消息已排队',
     queueBarPattern: /条消息已排队/,
-    promptAborted: '消息已中止',
+    promptAborted: '已由你停止',
     archiveDownloaded: '会话归档已下载。',
     undoTitle: '撤销最后一轮？',
     undoTurn: '撤销本轮',
     lastTurnRemoved: '已移除最后一轮。',
+    memorySaved: '已保存。',
+    memoryDelete: '删除',
+    memoryBannedInDelete: ['永久', '不可恢复', '无法撤销'],
     compactionRequested: '已请求压缩',
     forkSession: '复刻会话',
     exportArchive: '导出归档',
@@ -382,7 +415,7 @@ const STRINGS = {
     usageDeletedExcluded: '不含已删除会话',
     usageFiveHourRhythm: '5h 节奏',
     usageDrilldown: '该时间桶内的会话',
-    usageSubagentPattern: /子代理/,
+    usageSubagentPattern: /子智能体/,
     contextMenuCut: '剪切',
     contextMenuCopy: '复制',
     pasteAsPlainText: '粘贴为纯文本',
@@ -395,7 +428,7 @@ const STRINGS = {
     steps3: '步骤 · 3',
     filesHeader: '文件 — 在消息中以 @路径 引用',
     notActivatable: '不可激活',
-    shortcuts: '快捷指令',
+    shortcuts: '操作',
     sendAnyway: '仍要发送',
     swarmTitlePrefix: '集群模式',
     goalActive: '目标 · 进行中',
@@ -604,8 +637,40 @@ function throwOnPageErrors(context) {
 }
 
 const shot = async (name) => {
+  // Settle finite animations (entrance fades, chevron turns) before capture:
+  // a frame taken mid-entrance shows rows at partial opacity and chevrons
+  // half-rotated, which reads as a design defect that is not there. Looping
+  // signatures (spinners, breathing dots) are infinite and are left running.
+  const inFlight = await page.evaluate(async () => {
+    const finite = () => document.getAnimations().filter((animation) => {
+      const iterations = animation.effect?.getComputedTiming().iterations;
+      return animation.playState === 'running' && iterations !== Infinity;
+    });
+    const count = finite().length;
+    await Promise.all(finite().map((animation) => animation.finished.catch(() => undefined)));
+    return count;
+  }).catch(() => 0);
   await page.screenshot({ path: join(SHOTS, `${name}.png`) });
-  console.log(`[shot] ${name}.png`);
+  console.log(`[shot] ${name}.png${inFlight > 0 ? ` (settled ${inFlight} animations)` : ''}`);
+  // KIKI_PROOF_PROBE="sel1|sel2": log the effective opacity (the product of
+  // every ancestor's) and text colour of each match — a diagnostic for "is
+  // this faint by design or caught mid-transition".
+  if (process.env.KIKI_PROOF_PROBE !== undefined) {
+    const report = await page.evaluate((selectors) => selectors.map((selector) => {
+      const element = document.querySelector(selector);
+      if (element === null) return { selector, found: false };
+      let opacity = 1;
+      const chain = [];
+      for (let node = element; node !== null && node instanceof Element; node = node.parentElement) {
+        const own = Number(getComputedStyle(node).opacity);
+        if (own < 1) chain.push(`${node.tagName.toLowerCase()}.${String(node.className).slice(0, 40)}=${own}`);
+        opacity *= own;
+      }
+      const style = getComputedStyle(element);
+      return { selector, opacity: Number(opacity.toFixed(3)), color: style.color, background: style.backgroundColor, chain };
+    }), process.env.KIKI_PROOF_PROBE.split('|'));
+    console.log(`[probe] ${name} ${JSON.stringify(report)}`);
+  }
 };
 
 async function selectSession(titleFragment) {
@@ -613,6 +678,14 @@ async function selectSession(titleFragment) {
   await row.waitFor({ timeout: 10_000 });
   await row.click();
   await page.waitForTimeout(800);
+}
+
+/** The inspector is closed by default; open it from the header toggle. */
+async function openInspector() {
+  const rail = page.locator('[data-session-rail]');
+  if (await rail.count() > 0) return;
+  await page.locator('[data-rail-toggle]').first().click();
+  await rail.waitFor({ timeout: 10_000 });
 }
 
 async function resizeViewport(width) {
@@ -641,19 +714,46 @@ async function closeModePanel() {
   await page.waitForTimeout(200);
 }
 
-/** Plan, swarm and the goal objective live behind their own [plan ▾]. */
+/** Mode (Normal / Plan / Goal, plan gate nested under Plan) lives under ＋ → Mode. */
 async function openPlanPanel() {
-  const trigger = page.locator('[data-plan-select] > button');
+  if ((await page.locator('[data-run-mode-panel]').count()) > 0) return;
+  const trigger = page.locator('[data-add-menu-trigger]');
   if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click();
+  await page.locator('[data-add-menu-mode]').click();
   await page.waitForSelector('[data-plan-select] [data-mode-switch="plan"]', { timeout: 5000 });
 }
 
 async function closePlanPanel() {
-  const trigger = page.locator('[data-plan-select] > button');
+  const trigger = page.locator('[data-add-menu-trigger]');
   if ((await trigger.getAttribute('aria-expanded')) === 'true') {
     await page.keyboard.press('Escape');
   }
   await page.waitForTimeout(200);
+}
+
+/** Arms goal mode through the Mode panel (the Goal row keeps data-goal-mode-toggle). */
+async function armGoalMode() {
+  await openPlanPanel();
+  await page.click('[data-goal-mode-toggle]');
+  await closePlanPanel();
+}
+
+/**
+ * The "Needs you" tray owns pending approvals/questions: its current item must
+ * be fully inside the viewport (no scrolling to find the decision), and the
+ * transcript must carry one-line records instead of full cards.
+ */
+async function assertTrayVisible(label) {
+  const tray = page.locator('[data-needs-you-tray]');
+  await tray.waitFor({ timeout: 10_000 });
+  const box = await page.locator('[data-needs-you-tray] [data-tray-current]').boundingBox();
+  const viewport = page.viewportSize();
+  if (box === null || viewport === null || box.y < 0 || box.y + Math.min(box.height, 120) > viewport.height) {
+    throw new Error(`${label}: tray item not visible without scrolling (${JSON.stringify(box)})`);
+  }
+  const records = await page.locator('[role="log"] [data-interaction-record]').count();
+  console.log(`[check] ${label}: tray visible at y=${Math.round(box.y)}, timeline records=${records}`);
+  if (records === 0) throw new Error(`${label}: timeline must keep a one-line record per pending item`);
 }
 
 async function approveViaKeyboard() {
@@ -721,9 +821,16 @@ async function scenarioRewriteFlow() {
   await page.waitForTimeout(400);
   const rail = page.locator('[data-floor-nav]');
   await rail.waitFor({ timeout: 5_000 });
+  // The rail whispers while the log scrolls and reaches full contrast only
+  // under the pointer (FloorNavRail): check both steps.
   const railOpacity = await rail.evaluate((el) => getComputedStyle(el).opacity);
   console.log(`[check] floor rail opacity while scrolling=${railOpacity}`);
-  if (Number(railOpacity) < 0.9) throw new Error('floor rail did not reveal on scroll');
+  if (Number(railOpacity) < 0.5) throw new Error('floor rail did not reveal on scroll');
+  await rail.hover();
+  await page.waitForTimeout(300);
+  const hoverOpacity = await rail.evaluate((el) => getComputedStyle(el).opacity);
+  console.log(`[check] floor rail opacity under pointer=${hoverOpacity}`);
+  if (Number(hoverOpacity) < 0.9) throw new Error('floor rail did not reach full contrast under the pointer');
   const tickCount = await rail.locator('[data-floor-tick]').count();
   console.log(`[check] floor ticks=${tickCount}`);
   if (tickCount !== 3) throw new Error(`expected 3 floor ticks, got ${tickCount}`);
@@ -831,24 +938,21 @@ async function scenarioSubagents() {
   await selectSession('Fixture: subagents');
   await sendPrompt('Delegate the fixture work.');
   for (const agentId of ['agent-research', 'agent-review']) {
-    await page.locator(`[data-subagent-id="${agentId}"], [data-history-run-member-ids~="subagent-${agentId}"]`).first().waitFor({ timeout: 20_000 });
+    await page.locator(`[data-subagent-id="${agentId}"]`).first().waitFor({ timeout: 20_000 });
   }
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 });
-  // Completed cards may be folded into a history run. Expand the containing
-  // run before asserting the card or opening its agent page.
+  // Settled cards stay in place on the timeline: no history run to open, so
+  // each card must still be mounted once the turn has settled.
+  if (await page.locator('[data-history-run]').count() !== 0) {
+    throw new Error('settled subagent cards were folded behind a history run');
+  }
   for (const agentId of ['agent-research', 'agent-review']) {
-    const card = page.locator(`[data-subagent-id="${agentId}"]`);
-    if (await card.count() === 0) {
-      const run = page.locator(`[data-history-run-member-ids~="subagent-${agentId}"]`).first();
-      await run.waitFor({ timeout: 10_000 });
-      const toggle = run.locator('button[aria-expanded="false"]');
-      if (await toggle.count() > 0) await toggle.click();
-    }
-    await card.waitFor({ timeout: 10_000 });
+    await page.locator(`[data-subagent-id="${agentId}"]`).waitFor({ timeout: 10_000 });
   }
   const bubbleCount = await page.locator('[data-subagent-id]').count();
   const inlineToolCount = await page.locator('[role="log"] [data-block-id^="tool-"], [role="log"] [data-block-id^="group-"]').count();
-  const railText = await page.locator('.app-rail').innerText();
+  await openInspector();
+  const railText = await page.locator('[data-session-rail]').innerText();
   console.log(`[check] subagent bubbles=${bubbleCount} inlineTools=${inlineToolCount}`);
   if (bubbleCount !== 2) {
     throw new Error(`expected 2 subagent bubbles after history expansion, got ${bubbleCount}/${inlineToolCount}`);
@@ -868,22 +972,24 @@ async function scenarioSubagents() {
     }
   };
   const launcher = page.locator('[data-session-task-board]');
-  await ensureRailOpen();
-  await launcher.click();
-  await page.getByRole('dialog').waitFor({ timeout: 10_000 });
-  await page.keyboard.press('Escape');
-  await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
-  // With the rail closed there must be no board entry anywhere: the floating
-  // fallback leaked onto /new, settings, and closed-rail sessions.
+  // The inspector's board link opens the /board page pre-filtered to this
+  // session's workspace; Back returns to the session.
+  const openBoardFromRail = async () => {
+    await ensureRailOpen();
+    await launcher.click();
+    await page.waitForSelector('[data-task-board-page]', { timeout: 10_000 });
+    if (!/\/board\?workspace=/.test(page.url())) throw new Error(`board link lost the workspace scope: ${page.url()}`);
+    await page.goBack();
+    await page.waitForSelector('[data-rail-toggle]', { timeout: 10_000 });
+  };
+  await openBoardFromRail();
+  // With the rail closed there must be no rail board entry anywhere (the
+  // sidebar nav row is the global entry).
   await ensureRailOpen();
   await railToggle.click();
   if (await rail.count() !== 0) throw new Error('rail did not close');
   if (await launcher.count() !== 0) throw new Error('board launcher leaked outside the rail');
-  await ensureRailOpen();
-  await launcher.click();
-  await page.getByRole('dialog').waitFor({ timeout: 10_000 });
-  await page.keyboard.press('Escape');
-  await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
+  await openBoardFromRail();
   await ensureRailOpen();
   await page.locator('[data-subagent-id="agent-research"]').click();
   // Subagent panels open as preview-workspace tabs by default — no route change.
@@ -901,6 +1007,7 @@ async function scenarioSubagents() {
     await page.locator('[data-agent-rail-toggle]').click();
     await rail.waitFor({ timeout: 5_000 });
   }
+  await launcher.scrollIntoViewIfNeeded();
   const launcherBox = await launcher.boundingBox();
   const railBox = await rail.boundingBox();
   if (launcherBox === null || railBox === null
@@ -913,13 +1020,18 @@ async function scenarioSubagents() {
   await page.waitForTimeout(100);
   await shot('subagents-relief-narrow');
   await launcher.click();
-  await page.getByRole('dialog').waitFor({ timeout: 10_000 });
-  console.log('[check] narrow rail board launcher opened the board dialog');
-  await page.keyboard.press('Escape');
-  await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 5_000 });
-  await page.keyboard.press('Escape');
-  await page.locator('[data-session-rail]').waitFor({ state: 'detached', timeout: 5_000 });
+  await page.waitForSelector('[data-task-board-page]', { timeout: 10_000 });
+  console.log('[check] narrow rail board link opened the /board page');
+  await page.waitForTimeout(400);
+  await shot('board-page-narrow');
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(300);
+  await shot('board-page');
+  // The Scheduled tasks nav row opens /cron with the same workspace scope.
+  await page.locator('aside [data-nav-cron]').click();
+  await page.waitForSelector('[data-cron-page]', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('cron-page');
 }
 
 async function scenarioGoalSwarm() {
@@ -932,24 +1044,31 @@ async function scenarioGoalSwarm() {
   if (initialGoalCardText === null || !initialGoalCardText.includes('Prepare the release evidence bundle')) {
     throw new Error(`goal card must be visible on load, got "${initialGoalCardText}"`);
   }
+  await openInspector();
   const railText = await page.locator('[data-session-rail]').innerText();
   if (railText.includes('Prepare the release evidence bundle')) {
     throw new Error('right rail still renders the goal objective as resident prose');
   }
-  // Swarm and the goal controls: swarm is toggled in the [plan ▾] panel,
-  // while the objective is set via the composer's armed goal mode.
+  // Mode menu: exactly Normal / Plan / Goal — parallel subagents is gone.
   await openPlanPanel();
-  await page.click(`[data-mode-switch="swarm"][title^="${S.swarmTitlePrefix}"]`);
-  await closePlanPanel();
+  const modeRows = await page.locator('[data-run-mode-panel] [data-mode-switch]').evaluateAll(
+    (rows) => rows.map((row) => row.getAttribute('data-mode-switch')),
+  );
+  if (JSON.stringify(modeRows) !== JSON.stringify(['normal', 'plan', 'goal'])) {
+    throw new Error(`Mode menu must offer normal/plan/goal only, saw ${JSON.stringify(modeRows)}`);
+  }
   await page.click('[data-goal-mode-toggle]');
+  await closePlanPanel();
+  const modeChip = await page.locator('[data-run-mode-chip]').getAttribute('data-run-mode-chip');
+  if (modeChip !== 'goal') throw new Error(`goal mode must show the mode chip, saw ${modeChip}`);
   await page.locator('[data-goal-armed]').waitFor({ timeout: 5000 });
   await sendPrompt('Ship the fixture release');
   await waitForText('Swarm mode is on and the goal state is live.');
   const inspected = await control({ action: 'session', session_id: 'session_fixture_goal_swarm' });
   const submission = inspected.data?.last_prompt_submission;
   console.log(`[check] goal/swarm submission ${JSON.stringify(submission)}`);
-  if (submission?.swarm_mode !== true || submission?.goal_objective !== 'Ship the fixture release') {
-    throw new Error('PromptSubmission did not carry swarm_mode + goal_objective');
+  if (submission?.goal_objective !== 'Ship the fixture release' || submission?.swarm_mode !== undefined) {
+    throw new Error('PromptSubmission must carry goal_objective and no retired swarm_mode');
   }
   // The card tracks the goal as it evolves — the updated objective and the
   // follow-up timing stay visible without reopening anything.
@@ -1009,8 +1128,8 @@ async function scenarioGoalQueue() {
     { timeout: 5000 },
   );
   await shot('goal-queue-retimed');
-  // Arm goal mode from the composer toolbar; the chip explains the next send.
-  await page.click('[data-goal-mode-toggle]');
+  // Arm goal mode from ＋ → Mode; the chip explains the next send.
+  await armGoalMode();
   await page.locator('[data-goal-armed]').waitFor({ timeout: 5000 });
   await page.waitForTimeout(400); // let the chip's enter animation settle
   await shot('goal-queue-goal-armed');
@@ -1029,61 +1148,94 @@ async function scenarioGoalQueue() {
 
 async function scenarioToolPipeline() {
   await selectSession('Fixture: tool pipeline');
-  await waitForText(S.steps3);
+  // Default: nothing folds. The journaled Read → Edit → Write chain stays in
+  // place, one quiet line per action that names its file.
+  await page.locator('[role="log"] [data-tool-id]').nth(2).waitFor({ timeout: 10_000 });
+  if (await page.locator('[role="log"] [data-read-run]').count() !== 0) {
+    throw new Error('settled actions were folded although fold-steps is off by default');
+  }
   await shot('tool-pipeline-grouped');
-  // Expand the group, then the Edit card inside it (DiffCard with 2 hunks).
-  // NB: target the card by its summary text — the group row itself contains
-  // the tool names, so a bare hasText:'Edit' matches the row and re-toggles.
-  await page.click(`text=${S.steps3}`);
-  await page.waitForTimeout(400);
   // The journaled Edit block has no display payload; its summary is the path —
   // same as Read's, so take the SECOND card carrying it (Read is first).
   await page.locator('button', { hasText: 'C:/fixture/workshop/plan.ts' }).nth(1).click();
   await page.waitForTimeout(400);
   await shot('tool-pipeline-expanded');
-  // Live sequence 1: three consecutive tools fold into a group as they run.
   await sendPrompt('Run the tool sequences.');
-  await page.waitForFunction(
-    async () => {
-      const groups = document.querySelectorAll('[role="log"] [data-block-id^="group-"]');
-      return groups.length >= 2;
-    },
-    { timeout: 20_000 },
-  );
   // Pending approval remains a visible boundary; its resolution moves to history.
   await waitForText(S.approvalNeeded);
-  const pendingKinds = await displayNodeKinds();
-  if (!pendingKinds.includes('approval') || pendingKinds.filter((kind) => kind === 'group').length !== 2) {
-    throw new Error(`pending approval must split the tool pipeline: ${pendingKinds.join(', ')}`);
-  }
   await approveViaKeyboard();
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(600);
-  const kinds = await displayNodeKinds();
-  const groups = page.locator('[role="log"] [data-block-id^="group-"]');
-  const approvalIndex = kinds.indexOf('approval');
-  if (await groups.count() !== 2 || approvalIndex < 0 || !kinds.includes('tool')) {
-    throw new Error(`resolved approval must preserve grouped tools and a single-tool boundary: ${kinds.join(', ')}`);
-  }
   if (await page.locator('[role="log"] [data-approval-id]').count() !== 0) {
     throw new Error('resolved approval retained active decision controls');
   }
-  const liveGroup = groups.last();
-  const summary = await liveGroup.locator('button').first().textContent();
-  if (!/·\s*4(?!\d)/.test(summary ?? '')) throw new Error(`four tools before the approval must remain grouped: ${summary}`);
-  await liveGroup.locator('button').first().click();
-  if (await liveGroup.locator('button').count() < 5) throw new Error('completed tool cards were lost from the expanded group');
+  if (await page.locator('[role="log"] [data-read-run]').count() !== 0) {
+    throw new Error('live actions were folded although fold-steps is off by default');
+  }
   const history = page.locator('[role="log"] [data-history-line]');
   await history.getByText(S.approved, { exact: true }).waitFor();
   if ((await history.boundingBox())?.height > 40) throw new Error('resolved approval must stay a compact timeline row');
-  console.log('[check] four grouped tools, the fifth tool after the boundary, and compact approval resolution verified');
+  // One verb per row: the label names the action, so the detail never
+  // repeats it ("Read read C:/…").
+  const doubled = await page.locator('[role="log"] [data-tool] [data-activity-toggle]').evaluateAll((rows) =>
+    rows.map((row) => row.textContent ?? '').filter((text) => /^(Read|Edit|Write|Glob)\s*(read|edit|write|list)\b/i.test(text.trim())));
+  if (doubled.length > 0) throw new Error(`tool rows repeat their verb: ${doubled.slice(0, 2).join(' | ')}`);
+  console.log('[check] default timeline keeps every action in place; approval resolution is one compact row');
   await shot('tool-pipeline-live');
+  // Keyboard focus lands visibly on a timeline row.
+  await page.locator('[role="log"] [data-tool] [data-activity-toggle]').last().focus();
+  await page.waitForTimeout(200);
+  await shot('tool-pipeline-focus');
+  // Opt-in fold: only the ≥3 pure-read stretch collapses, and its line names
+  // the objects it looked at. Expanded members keep their wash inside the spine.
+  await page.evaluate(() => {
+    const settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
+    localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, foldSteps: true }));
+    window.dispatchEvent(new StorageEvent('storage', { key: 'kiki.settings', storageArea: localStorage }));
+  });
+  const run = page.locator('[role="log"] [data-read-run]').first();
+  await run.waitFor({ timeout: 10_000 });
+  const runText = (await run.textContent()) ?? '';
+  if (!runText.includes('notes.md') || !runText.includes('version')) {
+    throw new Error(`folded read run must name its objects: ${runText}`);
+  }
+  if (await page.locator('[role="log"] [data-read-run]').count() !== 1) {
+    throw new Error('only the pure-read stretch may fold');
+  }
+  await run.locator('[data-activity-toggle]').first().click();
+  await page.waitForTimeout(300);
+  const spine = await run.evaluate((node) => {
+    const rail = node.querySelector('.border-l');
+    const member = rail?.querySelector('[data-activity-toggle]');
+    if (!rail || !member) return undefined;
+    return { rail: rail.getBoundingClientRect().left, wash: member.getBoundingClientRect().left };
+  });
+  if (spine === undefined || spine.wash < spine.rail) {
+    throw new Error(`nested hover wash crosses the spine: ${JSON.stringify(spine)}`);
+  }
+  await run.locator('.border-l [data-activity-toggle]').first().hover();
+  await page.waitForTimeout(200);
+  await shot('tool-pipeline-folded');
+  await page.evaluate(() => {
+    const settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
+    localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, foldSteps: false }));
+    window.dispatchEvent(new StorageEvent('storage', { key: 'kiki.settings', storageArea: localStorage }));
+  });
+  await page.locator('[role="log"] [data-read-run]').waitFor({ state: 'detached', timeout: 5_000 });
+  // Narrow window: rows truncate inside the column, nothing overflows.
+  await resizeViewport(390);
+  await page.waitForTimeout(400);
+  const overflow = await page.locator('[role="log"]').evaluate((log) => log.scrollWidth - log.clientWidth);
+  if (overflow > 1) throw new Error(`timeline overflows the 390 viewport by ${overflow}px`);
+  await shot('tool-pipeline-390');
+  await resizeViewport(1440);
 }
 
 async function scenarioQuestionCard() {
   await selectSession('Fixture: question card');
   await sendPrompt('Ask me the fixture questions.');
   await waitForText(S.kikiAsks);
+  await assertTrayVisible('question-card');
   await page.waitForTimeout(400);
   await shot('question-card');
   // single select "Both" + two multi options, then submit
@@ -1098,6 +1250,7 @@ async function scenarioQuestionCard() {
 
 async function scenarioBusyRail() {
   await selectSession('Fixture: busy rail');
+  await openInspector();
   await waitForText('fixture build (vite)');
   await page.waitForTimeout(500);
   await shot('busy-rail');
@@ -1112,6 +1265,16 @@ async function scenarioLongTranscript() {
   await page.mouse.wheel(0, -6000);
   await page.waitForTimeout(600);
   await shot('long-transcript-scrolled'); // jump pill visible
+  // Floor jumps land far from any measured row: every row the jump reaches
+  // must be positioned from its real height (the timeline gate below fails
+  // on rows painted over their neighbours).
+  for (const tick of [0, 12, 30]) {
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(250);
+    await page.evaluate((index) => { document.querySelectorAll('[data-floor-tick]')[index]?.click(); }, tick);
+    await page.waitForTimeout(1200);
+    await assertTimelineIntegrity(page, `long-transcript floor jump ${tick}`);
+  }
   // Paginate to the very top: two pages (14 older messages) + cap.
   for (let i = 0; i < 4; i += 1) {
     await page.mouse.wheel(0, -20000);
@@ -1129,7 +1292,8 @@ async function scenarioErrorAbort() {
   // stream then starts — abort it mid-flight.
   await waitForText('recovering slowly', 20_000);
   await page.waitForTimeout(500);
-  await page.locator('[data-composer-toolbar] button:has-text("■")').click();
+  // The stop control is a drawn icon; address it by its accessible name.
+  await page.locator('[data-composer-toolbar] button[aria-label="Abort the running prompt"], [data-composer-toolbar] button[aria-label="中止正在运行的消息"]').first().click();
   await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('error-abort');
@@ -1137,14 +1301,23 @@ async function scenarioErrorAbort() {
 
 async function scenarioApprovalsGallery() {
   await selectSession('Fixture: approvals gallery');
-  await page.waitForSelector('text=ProbeTool', { timeout: 10_000 });
+  await page.waitForSelector('[data-needs-you-tray]', { timeout: 10_000 });
+  await assertTrayVisible('approvals-gallery');
   await page.waitForTimeout(400);
   await shot('approvals-gallery');
-  // Resolve the raw-JSON fallback card (last card) to show the outcome line.
-  const approve = page.locator(`button:has-text("${S.approve}")`).nth(4);
-  await approve.click();
+  // Pick the raw-JSON fallback (the ProbeTool row) from the collapsed rows,
+  // then approve it in the tray to show its outcome line in the timeline.
+  const probeRow = page.locator('[data-tray-item]', { hasText: 'ProbeTool' });
+  if ((await probeRow.count()) > 0) await probeRow.first().click();
+  await page.locator('[data-tray-current] [data-approval-id]').waitFor({ timeout: 5000 });
+  await page.locator(`[data-tray-current] button:has-text("${S.approve}")`).first().click();
   await page.waitForTimeout(600);
   await shot('approvals-gallery-resolved');
+  // Narrow width: the tray still sits above the composer, inside the viewport.
+  await resizeViewport(390);
+  await assertTrayVisible('approvals-gallery-mobile');
+  await shot('approvals-gallery-tray-mobile');
+  await resizeViewport(1440);
 }
 
 async function scenarioExternalHarness() {
@@ -1265,6 +1438,115 @@ async function scenarioDraftFlow() {
  * active phase with its 36px fade mask, and hero/active geometry at tablet
  * and mobile widths. Restores the desktop viewport for later scenarios.
  */
+/**
+ * composer-modes — the composer's own walker, run in light and dark at 1440
+ * and 390: the ＋ menu, the Mode menu (exactly Normal / Plan / Goal, plan
+ * gate nested under Plan), the mode chip with ✕, the permission menu, and
+ * the "Needs you" tray above the composer. Then the /new hero and the
+ * onboarding wizard's permissions step in dark.
+ */
+async function scenarioComposerModes() {
+  const modeShots = async (suffix) => {
+    await page.waitForSelector('[data-needs-you-tray]', { timeout: 10_000 });
+    await page.waitForTimeout(400);
+    await shot(`composer-tray-${suffix}`);
+    await page.locator('[data-add-menu-trigger]').click();
+    await page.waitForSelector('[data-add-menu-mode]', { timeout: 5000 });
+    await page.waitForTimeout(250);
+    await shot(`composer-add-menu-${suffix}`);
+    await page.locator('[data-add-menu-mode]').click();
+    await page.waitForSelector('[data-run-mode-panel]', { timeout: 5000 });
+    const rows = await page.locator('[data-run-mode-panel] [data-mode-switch]').evaluateAll(
+      (els) => els.map((el) => el.getAttribute('data-mode-switch')),
+    );
+    if (JSON.stringify(rows) !== JSON.stringify(['normal', 'plan', 'goal'])) {
+      throw new Error(`Mode menu must offer normal/plan/goal, saw ${JSON.stringify(rows)}`);
+    }
+    await page.click('[data-run-mode-panel] [data-mode-switch="plan"]');
+    await page.waitForSelector('[data-run-mode-panel] [data-mode-switch="planGate"]', { timeout: 5000 });
+    await page.waitForTimeout(250);
+    await shot(`composer-mode-plan-${suffix}`);
+    await page.keyboard.press('Escape');
+    const chip = page.locator('[data-run-mode-chip="plan"]');
+    await chip.waitFor({ timeout: 5000 });
+    await page.waitForTimeout(250);
+    await shot(`composer-mode-chip-${suffix}`);
+    await page.locator('[data-mode-select] > button').click();
+    await page.waitForSelector('[data-mode-select] [role="option"]', { timeout: 5000 });
+    await page.waitForTimeout(250);
+    await shot(`composer-permission-menu-${suffix}`);
+    await page.keyboard.press('Escape');
+    // ✕ returns to Normal and the chip leaves the status line.
+    await chip.locator('button').last().click();
+    await chip.waitFor({ state: 'detached', timeout: 5000 });
+    // Ctrl+Shift+M opens the Mode menu straight from the input.
+    await page.locator('textarea').first().focus();
+    await page.keyboard.press('Control+Shift+M');
+    await page.waitForSelector('[data-run-mode-panel]', { timeout: 5000 });
+    await page.click('[data-goal-mode-toggle]');
+    await page.keyboard.press('Escape');
+    await page.locator('[data-run-mode-chip="goal"]').waitFor({ timeout: 5000 });
+    await page.waitForTimeout(250);
+    await shot(`composer-mode-goal-${suffix}`);
+    await page.locator('[data-run-mode-chip="goal"] button').last().click();
+    // Send-ready: the filled accent Send carries its glyph in the on-accent ink.
+    await page.locator('textarea').first().fill('Summarize the pending approvals');
+    await page.waitForTimeout(200);
+    await shot(`composer-send-ready-${suffix}`);
+    await page.locator('textarea').first().fill('');
+  };
+  // Select once at desktop width: the theme reload keeps the session route,
+  // and at 390 the sidebar is off-canvas.
+  await selectSession('Fixture: approvals gallery');
+  for (const theme of ['light', 'dark']) {
+    await resizeViewport(1440);
+    await setProofTheme(theme);
+    await resizeViewport(1440);
+    await modeShots(`${theme}-1440`);
+    await resizeViewport(390);
+    await modeShots(`${theme}-390`);
+    const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    if (overflows) throw new Error(`composer overflows the 390 viewport (${theme})`);
+  }
+  // /new hero with the Goal objective field (dark), both widths.
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
+  for (const width of [1440, 390]) {
+    await resizeViewport(width);
+    await page.locator('[data-add-menu-trigger]').click();
+    await page.locator('[data-add-menu-mode]').click();
+    await page.click('[data-goal-mode-toggle]');
+    await page.waitForSelector('[data-goal-open]', { timeout: 5000 });
+    await page.waitForTimeout(250);
+    await shot(`composer-new-goal-dark-${width}`);
+    await page.keyboard.press('Escape');
+    await page.locator('[data-run-mode-chip="goal"] button').last().click();
+    await page.waitForTimeout(200);
+    await shot(`composer-hero-dark-${width}`);
+  }
+  // Onboarding (dark): replayed from Settings › About; Auto is preselected.
+  await resizeViewport(1440);
+  await page.evaluate(() => { try { localStorage.removeItem('kiki.onboarding'); } catch { /* ignore */ } });
+  await page.goto(`${WEB_URL}/settings/about?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+  const replay = page.getByRole('button', { name: S.onboardingReenter, exact: true });
+  await replay.waitFor({ timeout: 15_000 });
+  await replay.click();
+  const wizard = page.locator('[role="dialog"]');
+  await wizard.waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(450);
+  await shot('composer-onboarding-welcome-dark-1440');
+  for (let step = 0; step < 3; step += 1) {
+    await wizard.locator('button[data-autofocus]').last().click();
+    await page.waitForTimeout(350);
+  }
+  await wizard.locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
+  await shot('composer-onboarding-permissions-dark-1440');
+  await resizeViewport(390);
+  await shot('composer-onboarding-permissions-dark-390');
+  await page.keyboard.press('Escape');
+  await setProofTheme('light');
+}
+
 async function scenarioHeroShell() {
   const deepLink = (path) =>
     `${WEB_URL}${path}?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
@@ -1281,8 +1563,9 @@ async function scenarioHeroShell() {
   await page.waitForSelector('#composer-agent-profile-select', { timeout: 10_000 });
   const profileTrigger = page.locator('#composer-agent-profile-select');
   const profileTriggerText = await profileTrigger.textContent();
-  if (profileTriggerText === null || !profileTriggerText.includes('agent') || /main|主档/.test(profileTriggerText)) {
-    throw new Error(`agent picker trigger must show the plain profile name, got "${profileTriggerText}"`);
+  // The default `agent` profile displays as the product name ("Kiki").
+  if (profileTriggerText === null || !profileTriggerText.includes('Kiki') || /main|主档/.test(profileTriggerText)) {
+    throw new Error(`agent picker trigger must show the display name, got "${profileTriggerText}"`);
   }
   await profileTrigger.click();
   const profileOptions = await page
@@ -1290,7 +1573,7 @@ async function scenarioHeroShell() {
     .allTextContents();
   const reviewerIndex = profileOptions.findIndex((text) => text.includes('reviewer'));
   const grokIndex = profileOptions.findIndex((text) => text.includes('grok-only'));
-  const agentIndex = profileOptions.findIndex((text) => text.includes('agent'));
+  const agentIndex = profileOptions.findIndex((text) => text.includes('Kiki'));
   if (
     profileOptions.length !== 2
     || agentIndex === -1
@@ -1639,22 +1922,14 @@ async function scenarioSettingsSearch() {
   await page.waitForTimeout(400);
   await shot('settings-search-focused');
 
-  // Density: the General content region must fit below the fixed scope header
-  // at 1280×800 — the header is an intentional settings-redesign element, so
-  // the content density budget is measured net of its height. When the batch
-  // 2/3 split lands, General shrinks again and this can return to a plain
-  // zero-overflow assertion.
+  // Settings may scroll vertically as panels grow; horizontal overflow must
+  // never hide actions or search targets at this viewport.
   const overflow = await page.evaluate(() => {
     const pane = document.querySelector('[data-settings-scroll]');
-    if (pane === null) return null;
-    const header = document.querySelector('[data-settings-scope-header]');
-    const headerHeight = header === null ? 0 : header.getBoundingClientRect().height;
-    return pane.scrollHeight - pane.clientHeight - Math.round(headerHeight);
+    return pane === null ? null : pane.scrollWidth - pane.clientWidth;
   });
   if (overflow === null) throw new Error('settings scroll pane not found');
-  if (overflow > 0) {
-    throw new Error(`General section still scrolls at 1280×800 (${overflow}px overflow beyond the scope header)`);
-  }
+  if (overflow > 1) throw new Error(`Settings content overflows horizontally by ${overflow}px`);
 
   // Type → hit list → Enter lands on the card and flashes it.
   await page.keyboard.type(S.searchQuery);
@@ -1666,7 +1941,7 @@ async function scenarioSettingsSearch() {
   await shot('settings-search-landed');
 
   // Dark theme: the flat rows carry their grouping through the dark tokens too.
-  await page.locator('#st-card-appearance').getByRole('button', { name: S.themeDark, exact: true }).click();
+  await page.locator('#st-card-appearance [data-theme-choice="dark"]').click();
   await page.waitForFunction(
     () => document.documentElement.dataset['theme'] === 'dark',
     { timeout: 5000 },
@@ -1701,7 +1976,7 @@ async function scenarioSettingsSearch() {
   await shot('settings-search-switcher-landed');
 
   // Restore the light palette and the desktop viewport for later scenarios.
-  await page.locator('#st-card-appearance').getByRole('button', { name: S.themeLight, exact: true }).click();
+  await page.locator('#st-card-appearance [data-theme-choice="light"]').click();
   await page.waitForFunction(
     () => document.documentElement.dataset['theme'] === 'light',
     { timeout: 5000 },
@@ -1710,7 +1985,7 @@ async function scenarioSettingsSearch() {
 }
 
 async function scenarioSettingsWrite() {
-  const generalUrl = `${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const generalUrl = `${WEB_URL}/settings/ai?tab=defaults&server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
   const tasksUrl = `${WEB_URL}/settings/tasks?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
   await page.goto(generalUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#st-card-permission-defaults', { timeout: 10_000 });
@@ -1771,7 +2046,7 @@ async function scenarioSettingsWrite() {
   await page.waitForFunction(({ auto }) => {
     const group = document.querySelector('#st-card-permission-defaults [role="group"][aria-labelledby="default-permission-mode-label"]');
     const button = [...(group?.querySelectorAll('button') ?? [])].find((node) => node.textContent?.trim() === auto);
-    return button?.classList.contains('bg-accent-soft');
+    return button?.getAttribute('aria-pressed') === 'true';
   }, { auto: S.permissionModeAuto }, { timeout: 10_000 });
   await shot('settings-write-reloaded');
 }
@@ -1805,9 +2080,8 @@ async function scenarioConnectionToken() {
 
 async function scenarioSettingsInvalid() {
   // Client-side validation with no server round-trip: the plan-enter approval
-  // timeout floor (5s) rejects an under-floor draft with an inline alert and
-  // reverts the field to the server-known value. (The pool-model governance
-  // editor this scenario originally exercised was removed in 2ffdfd8e5.)
+  // timeout floor (5s) rejects an under-floor draft on Save, retains it for
+  // correction, and Discard restores the server-known value.
   await page.goto(`${WEB_URL}/settings/tasks?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
@@ -1820,14 +2094,17 @@ async function scenarioSettingsInvalid() {
   }
   const timeout = page.locator('#plan-gate-timeout');
   await timeout.fill('2');
-  await timeout.press('Enter');
+  await page.locator('#st-card-defaults').getByRole('button', { name: S.save, exact: true }).click();
   await page.waitForSelector('[role="alert"]', { timeout: 5000 });
   await waitForText(S.planGateTimeoutInvalid);
-  const reverted = await timeout.inputValue();
-  if (reverted !== '60') {
-    throw new Error(`invalid timeout draft did not revert to the server value, saw "${reverted}"`);
+  if (await timeout.inputValue() !== '2') {
+    throw new Error('invalid timeout draft must remain editable after a failed Save');
   }
   await shot('settings-invalid-inline-error');
+  await page.locator('#st-card-defaults').getByRole('button', { name: 'Discard changes' }).click();
+  if (await timeout.inputValue() !== '60') {
+    throw new Error('Discard must restore the server-known timeout');
+  }
 }
 
 async function scenarioSettingsBrowserEditable() {
@@ -1836,10 +2113,12 @@ async function scenarioSettingsBrowserEditable() {
   });
   const mainAgents = page.locator('#st-card-main-agents');
   await mainAgents.waitFor({ state: 'visible', timeout: 10_000 });
-  const enabledSwitch = mainAgents.locator('[data-agent-profile="agent"] [role="switch"]');
-  await enabledSwitch.waitFor({ state: 'visible', timeout: 10_000 });
-  if (await enabledSwitch.isDisabled()) {
-    throw new Error('browser agent settings remained disabled after the server response');
+  await mainAgents.locator('[data-agent-list-item="reviewer"]').click();
+  await mainAgents.getByRole('tab', { name: 'Instructions' }).click();
+  const editor = mainAgents.locator('[data-agent-detail="reviewer"] textarea');
+  await editor.waitFor({ state: 'visible', timeout: 10_000 });
+  if (await editor.isDisabled()) {
+    throw new Error('browser agent editor remained disabled after the server response');
   }
   await mainAgents.scrollIntoViewIfNeeded();
   await page.waitForTimeout(300);
@@ -1847,7 +2126,7 @@ async function scenarioSettingsBrowserEditable() {
 }
 
 async function scenarioSettingsCommunication() {
-  await page.goto(`${WEB_URL}/settings/communication?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   const card = page.locator('#st-card-append-timing');
@@ -1911,200 +2190,95 @@ async function scenarioWorkspaces() {
 }
 
 async function scenarioSettingsAgents() {
-  // Batch 3 split this walk across two leaves (redesign §10.3): the
-  // main-agent card stays on /settings/agents while the subagent profiles,
-  // delegation governance and the subagent timeout moved to
-  // /settings/subagents. Phase A covers the main card; phase B the sub card.
-  // The merged view (the fixture workspaces share one `reviewer` profile)
-  // plus the disable channel — every profile source now disables by name
-  // through disabled_named_profiles, surviving a reload through the fixture
-  // config echo. Same-name pairs
-  // prove the override rules: user `explore.md` (override: true) shadows the
-  // built-in explore, user `scout.md` (no flag) loses to the built-in scout.
   await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('#st-card-main-agents', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-main-agents [data-agent-profile="agent"]', { timeout: 10_000 });
-  if ((await page.locator('#st-card-subagent-profiles').count()) !== 0) {
-    throw new Error('subagent profiles must live on the subagents leaf after the batch-3 split');
+  await page.waitForSelector('#st-card-main-agents [data-agent-list-item="agent"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-agent-detail="agent"]', { timeout: 10_000 });
+  if (!(await page.locator('[data-agent-detail="agent"] h3').textContent())?.includes('Kiki')) {
+    throw new Error('the default agent must display as Kiki in the unified list');
   }
-  // The builtin main profile falls back to the most recent workspace for its
-  // new-session deep link.
-  const mainHref = await page.locator('[data-agent-profile="agent"] [data-new-session-href]').first().getAttribute('data-new-session-href');
-  if (mainHref !== '/new?workspace=wd_fixture_000000000000&agent=agent') {
-    throw new Error(`main-agent new-session href mismatch: ${mainHref}`);
+  if (await page.locator('#st-card-subagent-profiles').count()) {
+    throw new Error('a separate subagent list must not render on the Agents leaf');
   }
-  await page.waitForTimeout(300);
   await shot('settings-agents-main');
 
-  // Disabled split semantics on the MAIN profile: turning a main agent off
-  // only stops subagent calls — the new-session button stays, and the row
-  // explains why it is still usable.
-  const mainRow = page.locator('[data-agent-profile="agent"]');
-  await mainRow.locator('[role="switch"]').click();
-  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
-  if (await mainRow.locator('[data-new-session-href]').isDisabled()) {
-    throw new Error('disabled main profile must keep its new-session button');
+  const list = page.locator('#st-card-main-agents');
+  await list.getByRole('button', { name: 'Subagent', exact: true }).click();
+  await page.waitForSelector('[data-agent-list-item="reviewer"]', { timeout: 5000 });
+  if (await list.locator('[data-agent-list-item="agent"]').count()) {
+    throw new Error('the Subagent filter must hide main agents');
   }
-  await mainRow.getByText(S.disabledMainHint, { exact: false }).waitFor({ timeout: 5000 });
-  await mainRow.scrollIntoViewIfNeeded();
-  await page.waitForTimeout(200);
-  await shot('settings-agents-main-disabled');
-  // Re-enable the main profile so the reload assertions below stay canonical.
-  await mainRow.locator('[role="switch"]').click();
-  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
+  await list.locator('[data-agent-list-item="reviewer"]').click();
+  await list.getByRole('tab', { name: 'Instructions' }).click();
+  await shot('settings-agents-instructions');
+  const prompt = list.locator('[data-agent-detail="reviewer"] textarea');
+  const savedPrompt = await prompt.inputValue();
+  await prompt.fill(`${savedPrompt}\nVisual proof unsaved draft`);
+  await list.getByRole('button', { name: 'Main', exact: true }).click();
+  await page.waitForSelector(`text=${S.dirtyDiscard}`, { timeout: 5000 });
+  await shot('settings-agents-dirty-guard');
+  await page.click(`text=${S.dirtyDiscard}`);
+  await list.locator('[data-agent-list-item="agent"]').waitFor({ timeout: 5000 });
+  await shot('settings-agents-filtered');
 
-  // Phase B: subagent profiles on their own leaf, next to the governance
-  // card and the relocated subagent timeout.
-  await page.locator('nav [data-settings-nav-leaf="subagents"]').click();
-  await page.waitForSelector('#st-card-subagent-profiles', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-subagents', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-subagent-timeout', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-subagent-profiles [data-agent-profile="reviewer"]', { timeout: 10_000 });
-  const reviewerRows = await page.locator('[data-agent-profile="reviewer"]').count();
-  if (reviewerRows !== 1) {
-    throw new Error(`merged view must render reviewer once, got ${reviewerRows} rows`);
-  }
-  // Same-name override rendering: the built-in explore collapses to a muted
-  // "overridden by" line with NO switch (only the file profile is live), the
-  // overriding user file explains itself, and the flag-less user scout file
-  // carries a not-in-effect warning while the built-in scout stays canonical.
-  const builtinExplore = page.locator('[data-agent-profile="explore"][data-agent-source="builtin"]');
-  await builtinExplore.waitFor({ timeout: 5000 });
-  if ((await builtinExplore.getAttribute('data-override-state')) !== 'overridden') {
-    throw new Error('built-in explore must render in the overridden state');
-  }
-  await builtinExplore.getByText(S.overriddenNote, { exact: false }).waitFor({ timeout: 5000 });
-  await builtinExplore.getByText('explore.md', { exact: false }).waitFor({ timeout: 5000 });
-  const exploreSwitches = await page.locator('[data-agent-profile="explore"] [role="switch"]').count();
-  if (exploreSwitches !== 1) {
-    throw new Error(`only the overriding file row may carry a switch, got ${exploreSwitches}`);
-  }
-  const userExplore = page.locator('[data-agent-profile="explore"][data-agent-source="user"]');
-  if ((await userExplore.getAttribute('data-override-state')) !== 'overrides') {
-    throw new Error('the overriding user explore file must render in the overrides state');
-  }
-  await userExplore.getByText(S.overridesBuiltinNote, { exact: false }).waitFor({ timeout: 5000 });
-  const userScout = page.locator('[data-agent-profile="scout"][data-agent-source="user"]');
-  if ((await userScout.getAttribute('data-override-state')) !== 'shadowed') {
-    throw new Error('the flag-less user scout file must render in the shadowed state');
-  }
-  await userScout.getByText(S.shadowedNote, { exact: false }).waitFor({ timeout: 5000 });
-  // A shadowed file profile must not offer a new session — the session would
-  // silently run the same-named built-in instead — and the disabled button
-  // carries the reason as its tooltip.
-  const shadowedNewSession = userScout.locator('[data-new-session-href]');
-  if (!(await shadowedNewSession.isDisabled())) {
-    throw new Error('a shadowed file profile must lose its new-session button');
-  }
-  const shadowedNewSessionTitle = await shadowedNewSession.getAttribute('title');
-  if (shadowedNewSessionTitle === null || !shadowedNewSessionTitle.includes(S.shadowedNote)) {
-    throw new Error(`shadowed new-session tooltip mismatch: ${shadowedNewSessionTitle}`);
-  }
-  const shadowedIsDanger = await page.evaluate(() => {
-    const row = document.querySelector('[data-agent-profile="scout"][data-agent-source="user"]');
-    const node = Array.from(row?.querySelectorAll('p') ?? [])
-      .find((p) => p.textContent?.includes('override: true'));
-    return node?.className.includes('text-danger') === true;
-  });
-  if (!shadowedIsDanger) {
-    throw new Error('the not-in-effect warning must render in danger ink');
-  }
-  await page.waitForSelector('[data-agent-profile="scout"][data-agent-source="builtin"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
-  await userExplore.scrollIntoViewIfNeeded();
-  await page.waitForTimeout(200);
-  await shot('settings-agents-override');
-  // Workspace chips live inside the per-row technical-details disclosure now.
-  await page.locator('[data-agent-profile="reviewer"] [data-technical-details] summary').click();
-  // Three workspace ids collapse into two chips + an overflow pill.
-  await page.waitForSelector('[data-agent-profile="reviewer"] >> text=+1', { timeout: 5000 });
-  // The file-backed reviewer pins its own workspace on the new-session link.
-  const reviewerHref = await page.locator('[data-agent-profile="reviewer"] [data-new-session-href]').first().getAttribute('data-new-session-href');
-  if (reviewerHref !== '/new?workspace=wd_fixture_000000000000&agent=reviewer') {
-    throw new Error(`reviewer new-session href mismatch: ${reviewerHref}`);
-  }
-  // Read-only projection fields render in the technical-details disclosure
-  // (frontend fixture row), including the structured lease's nested
-  // constraint fields.
-  await page.locator('[data-agent-profile="frontend"] [data-technical-details] summary').click();
-  await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.modelProfileLabel}`, { timeout: 5000 });
-  await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.promptModeLabel}`, { timeout: 5000 });
-  await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.delegationNoticeLabel}`, { timeout: 5000 });
-  // Dedicated (scoped) source leases carry the Scoped badge, the relative
-  // source path, and — when unavailable — the diagnostic in danger ink.
-  await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.scopedBadgeLabel}`, { timeout: 5000 });
-  await page.waitForSelector('[data-agent-profile="frontend"] >> text=./_private/research/writer.md', { timeout: 5000 });
-  await page.waitForSelector('[data-agent-profile="frontend"] >> text=source file missing', { timeout: 5000 });
-  const diagnosticIsDanger = await page.evaluate(() => {
-    const row = document.querySelector('[data-agent-profile="frontend"]');
-    // The diagnostic renders as its own inline span inside the lease row —
-    // assert the leaf carrying the text, not the row's neutral wrapper.
-    const node = Array.from(row?.querySelectorAll('span') ?? [])
-      .find((el) => el.textContent?.trim().startsWith('source file missing'));
-    return node?.className.includes('text-danger') === true;
-  });
-  if (!diagnosticIsDanger) {
-    throw new Error('unavailable scoped lease diagnostic must render in danger ink');
-  }
-  await page.locator('[data-agent-profile="frontend"]').scrollIntoViewIfNeeded();
-  await page.waitForTimeout(200);
-  await shot('settings-agents-lease-detail');
-  await shot('settings-agents-merged');
-
-  const reviewerSwitch = () => page.locator('[data-agent-profile="reviewer"] [role="switch"]');
-  const scoutSwitch = () => page.locator('[data-agent-profile="scout"][data-agent-source="builtin"] [role="switch"]');
-  await reviewerSwitch().click();
-  await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
-  await scoutSwitch().click();
-  await page.waitForSelector('[data-agent-profile="scout"][data-agent-source="builtin"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
-  // Disabling is name-global: the same-named file profile is disabled too, so
-  // its new-session button stays off. The shadow warning still clears — with
-  // no enabled built-in winner there is nothing left to shadow the file.
-  await page.waitForFunction(
-    (warning) => !document
-      .querySelector('[data-agent-profile="scout"][data-agent-source="user"]')
-      ?.textContent?.includes(warning),
-    S.shadowedNote,
-    { timeout: 5000 },
-  );
-  if (!(await userScout.locator('[data-new-session-href]').isDisabled())) {
-    throw new Error('a name-global disable must keep the same-named file profile\'s new-session button off');
-  }
-  // A disabled SUBAGENT profile loses its new-session button (the mirror of
-  // the main-profile rule proven on the agents leaf above).
-  const reviewerNewSession = page.locator('[data-agent-profile="reviewer"] [data-new-session-href]');
-  if (!(await reviewerNewSession.isDisabled())) {
-    throw new Error('disabled subagent profile must lose its new-session button');
-  }
-  // Let the switch's color transition settle before the shot.
-  await page.waitForTimeout(300);
-  await shot('settings-agents-disabled');
-
-  await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 10_000 });
-  await page.waitForSelector('[data-agent-profile="scout"][data-agent-source="builtin"] [role="switch"][aria-checked="false"]', { timeout: 10_000 });
-  // Re-enable so the merged row returns to full opacity for the next run.
-  await reviewerSwitch().click();
-  await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
-  // The switch clicks above scrolled the page; reset every scroller so this
-  // shot frames the top of the leaf regardless of how tall it has grown.
-  await page.evaluate(() => {
-    window.scrollTo(0, 0);
-    for (const node of document.querySelectorAll('*')) {
-      if (node.scrollTop > 0) node.scrollTop = 0;
+  await list.getByRole('button', { name: 'New agent' }).click();
+  await page.waitForSelector('[data-agent-create]', { timeout: 5000 });
+  for (const template of ['Implementer', 'Reviewer', 'Duplicate current']) {
+    if (!(await list.getByRole('button', { name: template, exact: true }).isVisible())) {
+      throw new Error(`missing agent creation template: ${template}`);
     }
+  }
+  await list.locator('[data-agent-create] input:not([type])').fill('visual-proof-helper');
+  await list.locator('[data-agent-create] textarea').first().fill('Visual proof agent');
+  await list.locator('[data-agent-create] textarea').last().fill('Help the user.');
+  await page.waitForTimeout(300); // let the Save button's colour transition settle
+  await shot('settings-agents-new');
+  await list.getByRole('button', { name: 'Discard changes' }).click();
+  await list.getByRole('button', { name: 'All', exact: true }).click();
+  await list.locator('[data-agent-list-item="reviewer"]').click();
+  await list.getByRole('tab', { name: 'Advanced' }).click();
+  await page.waitForSelector('[data-agent-profile="reviewer"]', { timeout: 5000 });
+  await shot('settings-agents-advanced');
+  await resizeViewport(390);
+  const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  if (overflows) throw new Error('unified agents settings overflow the mobile viewport');
+  await shot('settings-agents-mobile');
+  await resizeViewport(1440);
+
+  await page.locator('nav [data-settings-nav-leaf="subagents"]').click();
+  await page.waitForSelector('#st-card-subagents', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-subagent-limits', { timeout: 10_000 });
+  if (await page.locator('#st-card-subagent-profiles').count()) {
+    throw new Error('Subagent rules must contain governance but not a second agent list');
+  }
+  await shot('settings-agents-subagent-rules');
+
+  await page.goto(`${WEB_URL}/settings/ai?tab=defaults&server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
   });
-  await page.waitForTimeout(200);
-  await shot('settings-agents-disabled-reloaded');
+  await page.waitForSelector('#st-card-reviewer', { timeout: 10_000 });
+  await page.locator('#st-card-reviewer').scrollIntoViewIfNeeded();
+  await shot('settings-reviewer-model');
+  await page.locator('#st-card-reviewer [data-reviewer-backend-choice="jev"]').click();
+  await shot('settings-reviewer-jev-consent');
+  await page.locator('#st-card-reviewer input[type="checkbox"]').first().check();
+  await shot('settings-reviewer-jev-ready');
+  await page.locator('#st-card-reviewer').getByRole('button', { name: 'Discard changes' }).click();
+  await resizeViewport(390);
+  await page.locator('#st-card-reviewer').scrollIntoViewIfNeeded();
+  const reviewerOverflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  if (reviewerOverflows) throw new Error('reviewer settings overflow the mobile viewport');
+  await shot('settings-reviewer-mobile');
+  await resizeViewport(1440);
 }
 
 /**
  * Shipped (built-in) profile management + the default subagent target
- * (settings-shipped scenario): the Subagents leaf opens with the server-wide
- * default-target card, the managed `general` copy shows its modification
- * badge and a restore-original action behind a double confirmation, and a
- * removed managed copy stays restorable from its tombstone row. The fixture
+ * (settings-shipped scenario): the Subagent rules leaf holds the server-wide
+ * default target; the unified Agents list shows the managed `general` copy's
+ * modification badge and double-confirmed restore, plus the removed `plan`
+ * copy's restorable tombstone. The fixture
  * flips restored entries back to clean and echoes config patches.
  */
 async function scenarioSettingsShipped() {
@@ -2132,35 +2306,36 @@ async function scenarioSettingsShipped() {
   if (mobileOverflows) throw new Error('subagent default profile setting overflows the mobile viewport');
   await shot('settings-subagents-default-profile-mobile');
   await resizeViewport(1440);
-  // Managed-copy status: `general` was edited on disk (custom → restore
-  // offered), `plan` was removed (tombstone row).
-  const generalRow = page.locator('#st-card-subagent-profiles [data-agent-profile="general"]');
-  await generalRow.waitFor({ timeout: 10_000 });
-  await generalRow.locator('[data-shipped-status="custom"]').waitFor({ timeout: 5000 });
-  await generalRow.getByText(S.shippedBadgeModified, { exact: true }).waitFor({ timeout: 5000 });
-  const tombstone = page.locator('[data-shipped-removed="plan"]');
+  // Managed copies now live in the same Agents list as main agents. The
+  // governance leaf retains only the server-wide default target and limits.
+  await page.locator('nav [data-settings-nav-leaf="agents"]').click();
+  await page.waitForSelector('#st-card-main-agents [data-agent-list-item="general"]', { timeout: 10_000 });
+  const tombstone = page.locator('#st-card-main-agents [data-shipped-removed="plan"]');
   await tombstone.waitFor({ timeout: 5000 });
   await tombstone.getByText(S.shippedBadgeRemoved, { exact: true }).waitFor({ timeout: 5000 });
-  await generalRow.scrollIntoViewIfNeeded();
-  await page.waitForTimeout(200);
+  await page.locator('[data-agent-list-item="general"]').click();
+  await page.locator('#st-card-main-agents').getByRole('tab', { name: 'Advanced' }).click();
+  const generalRow = page.locator('#st-card-main-agents [data-agent-profile="general"]');
+  await generalRow.locator('[data-shipped-status="custom"]').waitFor({ timeout: 5000 });
+  await generalRow.getByText(S.shippedBadgeModified, { exact: true }).waitFor({ timeout: 5000 });
   await shot('settings-subagents-shipped');
 
-  // Restore is double-confirmed and names the profile; Esc cancels safely…
+  // Restore is double-confirmed and names the agent; Esc cancels safely.
   await generalRow.locator('[data-shipped-restore="general"]').click();
   const dialog = page.locator('[role="alertdialog"]');
   await dialog.waitFor({ timeout: 5000 });
   await dialog.getByText(S.shippedRestoreTitle, { exact: false }).waitFor({ timeout: 5000 });
-  await page.waitForTimeout(150);
   await shot('settings-subagents-restore-confirm');
   await page.keyboard.press('Escape');
   await page.waitForSelector('[role="alertdialog"]', { state: 'detached', timeout: 5000 });
   await generalRow.locator('[data-shipped-status="custom"]').waitFor({ timeout: 5000 });
-  // …and confirming flips the copy back to the bundled original.
   await generalRow.locator('[data-shipped-restore="general"]').click();
   await dialog.locator('button', { hasText: S.shippedRestore }).click();
-  await page.waitForSelector('#st-card-subagent-profiles [data-agent-profile="general"] [data-shipped-status="clean"]', { timeout: 5000 });
+  await generalRow.locator('[data-shipped-status="clean"]').waitFor({ timeout: 5000 });
   await page.getByText(S.shippedRestored, { exact: false }).waitFor({ timeout: 5000 });
 
+  await page.locator('nav [data-settings-nav-leaf="subagents"]').click();
+  await page.waitForSelector('#st-card-subagent-default-target', { timeout: 5000 });
   // The default target saves on selection: strict mode stores the empty
   // string and explains itself inline.
   await page.locator('#st-card-subagent-default-target').evaluate((element) => {
@@ -2327,6 +2502,23 @@ async function pickViewOption(selector) {
   await page.click(`[data-view-menu] ${selector}`);
 }
 
+/** Open the sidebar Filter menu (if closed) and click an option inside it. */
+async function pickFilterOption(selector) {
+  if ((await page.locator('[data-filter-menu]').count()) === 0) {
+    await page.click('[data-filter-menu-toggle]');
+    await page.waitForSelector('[data-filter-menu]', { timeout: 5000 });
+  }
+  await page.click(`[data-filter-menu] ${selector}`);
+}
+
+async function closeFilterMenu() {
+  if ((await page.locator('[data-filter-menu]').count()) > 0) {
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('[data-filter-menu]', { state: 'detached', timeout: 5000 });
+    await page.waitForTimeout(150);
+  }
+}
+
 /** The panel overlays the list's top rows, so screenshots close it first. */
 async function closeViewMenu() {
   if ((await page.locator('[data-view-menu]').count()) > 0) {
@@ -2451,8 +2643,8 @@ async function scenarioSidebarOrganize() {
 
   // Workspace filtering narrows the sidebar to workspace B's row only, and
   // leaves a revocable chip on the list's upper edge.
-  await pickViewOption('[data-workspace-filter="wd_fixture_000000000001"]');
-  await closeViewMenu();
+  await pickFilterOption('[data-workspace-filter="wd_fixture_000000000001"]');
+  await closeFilterMenu();
   await page.waitForFunction(
     () => {
       const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
@@ -2461,11 +2653,11 @@ async function scenarioSidebarOrganize() {
     undefined,
     { timeout: 5000 },
   );
-  await page.waitForSelector('[data-sidebar-filter-chip="workspace"]', { timeout: 5000 });
+  await page.waitForSelector('[data-sidebar-filter-chip="ws"]', { timeout: 5000 });
   await shot('sidebar-workspace-filter');
 
   // The chip's × is the shortest way back to every workspace.
-  await page.click('[data-sidebar-filter-clear="workspace"]');
+  await page.click('[data-sidebar-filter-clear="ws"]');
   await page.waitForFunction(
     () => {
       const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
@@ -2475,6 +2667,32 @@ async function scenarioSidebarOrganize() {
     { timeout: 5000 },
   );
   await shot('sidebar-pinned-group');
+
+  // Group by None: one flat list, no group headings.
+  await pickViewOption('[data-group-by="none"]');
+  await closeViewMenu();
+  await page.waitForFunction(
+    () => document.querySelectorAll('aside [data-session-group]').length <= 1,
+    undefined,
+    { timeout: 5000 },
+  );
+  await shot('sidebar-group-none');
+  await pickViewOption('[data-group-by="time"]');
+  await closeViewMenu();
+
+  // Status + archived filters compose into persisted chips that stay visible.
+  await pickFilterOption('[data-status-filter="idle"]');
+  await pickFilterOption('[data-archived-filter="include"]');
+  await closeFilterMenu();
+  await page.waitForSelector('[data-sidebar-filter-chip="status"]', { timeout: 5000 });
+  await page.waitForSelector('[data-sidebar-filter-chip="archived"]', { timeout: 5000 });
+  const storedFilters = await page.evaluate(() => JSON.parse(localStorage.getItem('kiki.layout') ?? '{}')?.filters);
+  if (storedFilters?.status?.[0] !== 'idle' || storedFilters?.archived !== 'include') {
+    throw new Error(`filters were not persisted: ${JSON.stringify(storedFilters)}`);
+  }
+  await shot('sidebar-filter-chips');
+  await page.click('[data-sidebar-filters-clear-all]');
+  await page.waitForSelector('[data-sidebar-filter-chip]', { state: 'detached', timeout: 5000 });
 }
 
 async function scenarioResponsive() {
@@ -2884,7 +3102,9 @@ async function scenarioSubagentsBurst() {
     `${WEB_URL}/s/session_fixture_subagents_burst/agent/agent-hidden?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`,
     { waitUntil: 'domcontentloaded' },
   );
-  await page.waitForSelector(`text=${S.subagentTranscript}`, { timeout: 15_000 });
+  // The subagent note is a header tooltip now; wait on the workspace itself.
+  await page.waitForSelector('[data-agent-workspace-target="agent-hidden"] [data-transcript-scroll]', { timeout: 15_000 });
+  await page.waitForSelector('[data-composer-variant="subagent"]', { timeout: 15_000 });
   await control({ action: 'burst', session_id: 'session_fixture_subagents_burst', count: 500 });
   await page.waitForSelector('[data-block-id="tool-burst-call"]', { timeout: 15_000 });
   await page.waitForTimeout(400);
@@ -2965,21 +3185,20 @@ async function scenarioTaskNotifiedMidturn() {
   if (bubbleText.includes('Background process completed') || bubbleText.includes('<notification')) {
     throw new Error('task notification leaked into the user bubble');
   }
-  // Both notification shapes are retained inside one initially folded history run.
-  const history = page.locator('[role="log"] [data-history-run]');
-  if (await history.count() !== 1 || await history.locator('button').first().getAttribute('aria-expanded') !== 'false') {
-    throw new Error('consecutive task notifications must start in one folded history run');
+  // Both notification shapes stay inline as their own rows (no history run),
+  // each with its body collapsed until opened.
+  if (await page.locator('[role="log"] [data-history-run]').count() !== 0) {
+    throw new Error('task notifications were folded behind a history run');
+  }
+  const systemRows = page.locator('[role="log"] [data-system="task"]');
+  if ((await systemRows.count()) !== 2) {
+    throw new Error(`expected 2 retained task notifications, saw ${await systemRows.count()}`);
   }
   if ((await page.locator('text=pnpm test — 42 passed').count()) !== 0) {
     throw new Error('collapsed notification body rendered before expansion');
   }
   await shot('task-notified-collapsed');
-  await history.locator('button').first().click();
-  const systemRows = history.locator('[data-history-run-members] > div');
-  if ((await systemRows.count()) !== 2) {
-    throw new Error(`expected 2 retained task notifications, saw ${await systemRows.count()}`);
-  }
-  await systemRows.first().locator('button').first().click();
+  await systemRows.first().locator('[data-activity-toggle]').first().click();
   await waitForText('pnpm test — 42 passed');
   await page.waitForTimeout(300);
   await shot('task-notified-expanded');
@@ -3073,13 +3292,8 @@ async function scenarioSubagentApproval() {
   await card.waitFor({ state: 'detached', timeout: 10_000 });
   await waitForText('The gated cleanup finished.');
   const revealResolvedApproval = async () => {
+    // Resolved approvals render in place — nothing to unfold first.
     const line = page.locator('[data-history-line]', { hasText: S.approved }).first();
-    if (await line.count() === 0) {
-      const run = page.locator('[data-history-run-member-ids~="approval-approval_fixture_child"]').first();
-      await run.waitFor({ timeout: 10_000 });
-      const toggle = run.locator('button[aria-expanded="false"]');
-      if (await toggle.count() > 0) await toggle.click();
-    }
     await line.waitFor({ timeout: 10_000 });
     return line;
   };
@@ -3093,6 +3307,7 @@ async function scenarioSubagentApproval() {
   if (await childCard.count() > 0) {
     await childCard.click();
   } else {
+    await openInspector();
     await childRail.waitFor({ timeout: 10_000 });
     await childRail.click();
   }
@@ -3399,7 +3614,7 @@ async function scenarioSlashCommands() {
     await openPlanPanel();
     const pressed = await page
       .locator('[data-mode-switch="plan"]')
-      .getAttribute('aria-pressed');
+      .getAttribute('aria-checked');
     await closePlanPanel();
     return pressed;
   };
@@ -3700,11 +3915,15 @@ async function scenarioSearch() {
   await page.waitForSelector('text=rotate the persimmon cache', { timeout: 5000 });
   await page.waitForTimeout(300);
   await shot('search-results');
-  const groupCount = await page
-    .locator('[data-search-results] p')
-    .filter({ hasText: /Fixture: search/ })
-    .count();
-  if (groupCount !== 2) throw new Error(`expected 2 session groups, saw ${groupCount}`);
+  // Messages group: every content hit names its session; both fixture
+  // sessions with persimmon hits appear.
+  const hitSessions = await page.evaluate(() =>
+    [...new Set(Array.from(document.querySelectorAll('[data-search-messages] [data-search-result]'))
+      .map((row) => row.textContent ?? '')
+      .flatMap((text) => (text.match(/Fixture: search \w+/) ?? [])))]);
+  if (hitSessions.length !== 2) throw new Error(`expected hits from 2 sessions, saw ${JSON.stringify(hitSessions)}`);
+  // Highlighted terms render as <mark>.
+  if ((await page.locator('[data-search-messages] mark').count()) === 0) throw new Error('content hits carry no highlight');
 
   // Pagination: the fixture ents the first page to 2 hits, so a "load more"
   // button must appear and advance to the remaining hits on request.
@@ -3731,10 +3950,37 @@ async function scenarioSearch() {
   await page.waitForSelector('text=Rotate the persimmon cache', { timeout: 10_000 });
   await shot('search-opened');
   // Empty state.
+  // Local layer: a title match is instant (no network) and keyboard-driven.
+  await page.fill('[data-search-box]', 'gamma');
+  await page.waitForSelector('[data-search-result^="s:"]', { timeout: 2000 });
+  await shot('search-local');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('Enter');
+  await page.waitForURL(/\/s\/session_fixture_search_c/, { timeout: 5000 });
+
+  // Workspace filter scopes the content layer: exactly one workspace sends
+  // workspace_id on the /search body, and the chip stays visible.
+  await pickFilterOption('[data-workspace-filter="wd_fixture_000000000000"]');
+  await closeFilterMenu();
+  await page.fill('[data-search-box]', 'persimmon');
+  await page.waitForSelector('[data-search-messages] [data-search-result]', { timeout: 5000 });
+  await page.waitForSelector('[data-sidebar-filter-chip="ws"]', { timeout: 2000 });
+  await page.waitForSelector('[data-search-scope]', { timeout: 2000 });
+  const scoped = await control({ action: 'state' });
+  if (scoped.data?.last_search?.workspace_id !== 'wd_fixture_000000000000') {
+    throw new Error(`scoped search did not send workspace_id: ${JSON.stringify(scoped.data?.last_search)}`);
+  }
+  await shot('search-scoped');
+  await page.click('[data-sidebar-filter-clear="ws"]');
+
+  // Empty state; Esc clears the query.
   await page.fill('[data-search-box]', 'zzzznothing');
-  await page.waitForSelector(`text=${S.noMatches}`, { timeout: 5000 });
+  await page.waitForSelector('text=Nothing matches', { timeout: 5000 });
   await shot('search-empty');
-  await page.fill('[data-search-box]', '');
+  await page.focus('[data-search-box]');
+  await page.keyboard.press('Escape');
+  if ((await page.inputValue('[data-search-box]')) !== '') throw new Error('Esc did not clear the search');
 }
 
 /**
@@ -3824,7 +4070,144 @@ async function scenarioUsageDashboard() {
   });
   if (bleeders.length > 0) throw new Error(`390px axis groups bleed off-edge: ${bleeders.join(',')}`);
   await shot('usage-mobile-390');
+
+  // 6. Workspace breakdown over a week (names resolve from the registry), the
+  //    cache-hit trend metric, and the 820px + dark-theme passes.
   await resizeViewport(1440);
+  await page.goto(usageUrl('range=last_7_days&dimension=project&view=breakdown'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-usage-breakdown-row="wd_docs_site_000000000000"]', { timeout: 15_000 });
+  const projectText = await page.locator('[data-usage-breakdown-row="wd_docs_site_000000000000"]').innerText();
+  if (!projectText.includes('docs-site')) throw new Error(`workspace breakdown shows no workspace name: ${projectText}`);
+  await page.waitForTimeout(300);
+  await shot('usage-breakdown-workspace');
+  await page.goto(usageUrl('range=last_7_days'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
+  await page.locator('[data-trend-metric="cache"]').click();
+  await page.waitForTimeout(300);
+  await shot('usage-week-cache');
+  await page.locator('[data-trend-metric="cost"]').click();
+  await page.locator('[data-usage-trend] [data-bucket]').nth(3).click();
+  await page.waitForSelector('[data-usage-drilldown]', { timeout: 5000 });
+  await page.waitForTimeout(300);
+  await shot('usage-week-drilldown');
+  await resizeViewport(820);
+  await page.evaluate(() => { window.scrollTo(0, 0); });
+  await page.waitForTimeout(300);
+  const overflow820 = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  if (overflow820 > 1) throw new Error(`820px usage layout overflows by ${overflow820}px`);
+  await shot('usage-week-820');
+  await setProofTheme('dark');
+  await shot('usage-week-820-dark');
+  await resizeViewport(1440);
+  await shot('usage-week-dark');
+  await setProofTheme('light');
+}
+
+/** Flip the stored theme preference and wait for `<html data-theme>`. */
+async function setProofTheme(theme) {
+  await page.evaluate((next) => {
+    const raw = localStorage.getItem('kiki.settings');
+    const settings = raw === null ? {} : JSON.parse(raw);
+    localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, theme: next }));
+  }, theme);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction((next) => document.documentElement.dataset['theme'] === next, theme, { timeout: 10_000 });
+  await page.waitForTimeout(900);
+}
+
+/**
+ * /board and /cron across both scopes: all workspaces (every row tagged)
+ * and one workspace (filtered, scope control shows it), at 1440 and 820 in
+ * both themes. Switching the scope must land in the URL.
+ */
+async function scenarioWorkspaceTools() {
+  const pageUrl = (path) => `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+
+  await page.goto(pageUrl('/cron'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-cron-section="active"] [data-cron-task]', { timeout: 15_000 });
+  const allRows = await page.locator('[data-cron-task]').count();
+  if (allRows !== 5) throw new Error(`cron all-scope expected 5 rows, got ${allRows}`);
+  if (await page.locator('[data-scope-option="all"][aria-pressed="true"]').count() !== 1) throw new Error('cron all-scope not pressed');
+  await page.waitForTimeout(300);
+  await shot('cron-all');
+  await page.locator('[data-scope-option="wd_docs_site_000000000000"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-cron-task]').length === 2, null, { timeout: 5000 });
+  if (!page.url().includes('workspace=wd_docs_site_000000000000')) throw new Error(`cron scope not in URL: ${page.url()}`);
+  await page.waitForTimeout(300);
+  await shot('cron-workspace');
+  await resizeViewport(820);
+  await shot('cron-workspace-820');
+  await setProofTheme('dark');
+  await shot('cron-workspace-820-dark');
+  await resizeViewport(1440);
+  await page.locator('[data-scope-option="all"]').click();
+  await page.waitForTimeout(300);
+  await shot('cron-all-dark');
+  await setProofTheme('light');
+
+  await page.goto(pageUrl('/board'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-board-task-card]', { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  const allCards = await page.locator('[data-board-task-card]').count();
+  if (allCards !== 8) throw new Error(`board all-scope expected 8 cards, got ${allCards}`);
+  await shot('board-all');
+  await page.locator('[data-scope-option="wd_fixture_000000000000"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-board-task-card]').length === 5, null, { timeout: 10_000 });
+  if (!page.url().includes('workspace=wd_fixture_000000000000')) throw new Error(`board scope not in URL: ${page.url()}`);
+  await page.waitForTimeout(300);
+  await shot('board-workspace');
+  await resizeViewport(820);
+  await shot('board-workspace-820');
+  await setProofTheme('dark');
+  await page.waitForSelector('[data-board-task-card]', { timeout: 15_000 });
+  await page.waitForTimeout(400);
+  await shot('board-workspace-820-dark');
+  await resizeViewport(1440);
+  await shot('board-workspace-dark');
+  // Workspace tags are an all-workspaces affordance only.
+  if (await page.locator('[data-board-card-workspace]').count() !== 0) throw new Error('board workspace scope still tags cards with their workspace');
+  await page.locator('[data-scope-option="all"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-board-task-card]').length === 8, null, { timeout: 10_000 });
+  if (await page.locator('[data-board-card-workspace]').count() !== 8) throw new Error('board all-scope cards are missing their workspace tag');
+  await page.waitForTimeout(300);
+  await shot('board-all-dark');
+
+  // Card detail: markdown description, linked session, status transitions.
+  const openDetail = async () => {
+    await page.locator('[data-board-task-card*="board_tools_flaky"]').click();
+    await page.waitForSelector('[data-task-detail-description] ul', { timeout: 10_000 });
+    await page.waitForTimeout(300);
+  };
+  await openDetail();
+  await shot('board-detail-dark');
+  await page.keyboard.press('Escape');
+  await setProofTheme('light');
+  await page.waitForSelector('[data-board-task-card]', { timeout: 15_000 });
+  await openDetail();
+  if (await page.locator('[data-task-detail-move="in_progress"][aria-pressed="true"]').count() !== 1) throw new Error('board detail does not mark the current status');
+  if (await page.locator('[data-task-detail-open-session]').count() !== 1) throw new Error('board detail lost its linked session');
+  await shot('board-detail');
+  await resizeViewport(390);
+  await page.waitForTimeout(300);
+  await shot('board-detail-390');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  await shot('board-all-390');
+  await resizeViewport(820);
+  await shot('board-all-820');
+  await resizeViewport(1440);
+
+  // Status transition from the detail footer lands the card in the next lane.
+  await openDetail();
+  await page.locator('[data-task-detail-next="done"]').click();
+  await page.waitForSelector('[data-board-column="done"] [data-board-task-card*="board_tools_flaky"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-task-detail-move="done"][aria-pressed="true"]', { timeout: 5000 });
+  await page.waitForTimeout(300);
+  await shot('board-detail-moved');
+  // A linked session opens straight from the detail.
+  await page.locator('[data-task-detail-open-session]').first().click();
+  await page.waitForFunction(() => !location.pathname.startsWith('/board'), null, { timeout: 10_000 });
+  console.log('[check] board detail session link left the board');
 }
 
 /**
@@ -3847,8 +4230,8 @@ async function scenarioContextRing() {
     return arc === null ? null : getComputedStyle(arc).stroke;
   });
   console.log(`[check] warn arc stroke: ${warnArc}`);
-  // c92a2a (--color-danger) / e8b04b (--color-amber-rule) / e8590c (--color-accent)
-  const AMBER = 'rgb(232, 176, 75)';
+  // d9a441 (--color-amber-rule in the warm-editorial tokens)
+  const AMBER = 'rgb(217, 164, 65)';
   if (warnArc !== AMBER) throw new Error(`expected amber warn arc, saw ${warnArc}`);
   await shot('context-ring-warn');
 
@@ -3895,10 +4278,285 @@ async function scenarioContextRing() {
     return arc === null ? null : getComputedStyle(arc).stroke;
   });
   console.log(`[check] danger arc stroke: ${dangerArc}`);
-  const RED = 'rgb(201, 42, 42)'; // --color-danger
+  const RED = 'rgb(180, 35, 24)'; // --color-danger #b42318
   if (dangerArc !== RED) throw new Error(`expected red danger arc, saw ${dangerArc}`);
   await shot('context-ring-danger');
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+}
+
+/**
+ * /memory, all three states. Off → the turn-on guide (nav entry present, one
+ * switch, no console). On → the entry console: global list, type filter,
+ * search, the detail editor with its history and Undo, the per-workspace
+ * switch, and a save that survives a reload. Review → the Inbox tab, which
+ * only exists at `approval: 'review'`. Both themes; 1440 and 390.
+ */
+async function scenarioMemoryOff() {
+  const memoryUrl = `${WEB_URL}/memory?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  // The nav entry is permanent — prove it is there while memory is off.
+  if (await page.locator('[data-nav-memory]').count() !== 1) throw new Error('memory nav entry missing while memory is off');
+  await page.locator('[data-nav-memory]').click();
+  await page.waitForSelector('[data-memory-intro]', { timeout: 15_000 });
+  if (await page.locator('[data-memory-console]').count() !== 0) throw new Error('memory console rendered while memory is off');
+  await page.waitForTimeout(300);
+  await shot('memory-off');
+  await resizeViewport(390);
+  await shot('memory-off-390');
+  await setProofTheme('dark');
+  await page.goto(memoryUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-memory-intro]', { timeout: 15_000 });
+  await shot('memory-off-390-dark');
+  await resizeViewport(1440);
+  await shot('memory-off-dark');
+  await setProofTheme('light');
+
+  // Turning it on from the guide swaps in the console, no reload.
+  await page.goto(memoryUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-memory-enable]', { timeout: 15_000 });
+  await page.locator('[data-memory-enable]').click();
+  await page.waitForSelector('[data-memory-console]', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('memory-turned-on');
+}
+
+async function scenarioMemory() {
+  const memoryUrl = `${WEB_URL}/memory?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  await page.goto(memoryUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-memory-list] [data-memory-row]', { timeout: 15_000 });
+  const globalRows = await page.locator('[data-memory-row]').count();
+  if (globalRows !== 3) throw new Error(`memory global scope expected 3 active rows, got ${globalRows}`);
+  // Inbox only exists under approval=review.
+  if (await page.locator('[data-memory-tab="inbox"]').count() !== 0) throw new Error('inbox tab present with approval=auto');
+  await page.waitForTimeout(300);
+  await shot('memory-global');
+
+  // Archived entries are opt-in.
+  await page.locator('[data-memory-console] [role="switch"]').first().click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-memory-row]').length === 4, null, { timeout: 5000 });
+  await shot('memory-global-archived');
+  await page.locator('[data-memory-console] [role="switch"]').first().click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-memory-row]').length === 3, null, { timeout: 5000 });
+
+  // Type filter, then search.
+  await page.locator('[data-memory-type-filter="feedback"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-memory-row]').length === 1, null, { timeout: 5000 });
+  await shot('memory-filter-feedback');
+  await page.locator('[data-memory-type-filter="all"]').click();
+  await page.fill('[data-memory-search]', 'analyses');
+  await page.waitForFunction(() => document.querySelectorAll('[data-memory-row]').length === 1, null, { timeout: 8000 });
+  await shot('memory-search');
+  await page.fill('[data-memory-search]', '');
+  await page.waitForFunction(() => document.querySelectorAll('[data-memory-row]').length === 3, null, { timeout: 8000 });
+
+  // Detail: editor + journal history with Undo.
+  await page.locator('[data-memory-row="m_20260926_d4e5f6"]').click();
+  await page.waitForSelector('[data-memory-detail="m_20260926_d4e5f6"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-memory-history]', { timeout: 10_000 });
+  if (await page.locator('[data-memory-undo]').count() === 0) throw new Error('memory history offers no undo');
+  await page.waitForTimeout(300);
+  await shot('memory-detail');
+
+  // A real save round-trips through PUT with expected_revision.
+  await page.fill('[data-memory-body]', 'Finishing a task does not mean writing a summary file. Only create documents that were asked for.');
+  await page.locator('[data-memory-save]').click();
+  await page.waitForSelector(`text=${S.memorySaved}`, { timeout: 8000 });
+  await shot('memory-saved');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-memory-row]', { timeout: 15_000 });
+  await page.locator('[data-memory-row="m_20260926_d4e5f6"]').click();
+  const savedBody = await page.locator('[data-memory-body]').inputValue();
+  if (!savedBody.startsWith('Finishing a task does not mean writing a summary file')) {
+    throw new Error(`memory edit did not persist: ${savedBody}`);
+  }
+
+  // Workspace scope: its own switch, and its own entries.
+  await page.locator('[data-scope-option="wd_fixture_000000000000"]').click();
+  await page.waitForSelector('[data-memory-workspace-switch]', { timeout: 10_000 });
+  await page.waitForFunction(() => document.querySelectorAll('[data-memory-row]').length === 3, null, { timeout: 10_000 });
+  if (!page.url().includes('workspace=wd_fixture_000000000000')) throw new Error(`memory scope not in URL: ${page.url()}`);
+  await page.waitForTimeout(300);
+  await shot('memory-workspace');
+  await page.locator('[data-memory-ws-option="false"]').click();
+  await page.waitForSelector('[data-memory-scope-off]', { timeout: 8000 });
+  await shot('memory-workspace-off');
+  await page.locator('[data-memory-ws-option="null"]').click();
+  await page.waitForSelector('[data-memory-scope-off]', { state: 'detached', timeout: 8000 });
+
+  await resizeViewport(390);
+  await page.waitForTimeout(300);
+  await shot('memory-workspace-390');
+  await setProofTheme('dark');
+  await page.waitForSelector('[data-memory-row]', { timeout: 15_000 });
+  await page.waitForTimeout(400);
+  await shot('memory-workspace-390-dark');
+  await resizeViewport(1440);
+  await shot('memory-workspace-dark');
+  await setProofTheme('light');
+
+  // The delete confirmation must not claim anything is permanent.
+  await page.waitForSelector('[data-memory-row]', { timeout: 15_000 });
+  await page.locator('[data-memory-row="m_20260925_555666"]').click();
+  await page.waitForSelector('[data-memory-delete]', { timeout: 10_000 });
+  await page.locator('[data-memory-delete]').click();
+  await page.waitForTimeout(400);
+  const confirmText = await page.locator('[role="alertdialog"]').first().innerText();
+  for (const banned of S.memoryBannedInDelete) {
+    if (confirmText.toLowerCase().includes(banned.toLowerCase())) {
+      throw new Error(`delete confirmation claims permanence: ${confirmText}`);
+    }
+  }
+  await shot('memory-delete-confirm');
+  await page.locator(`[role="alertdialog"] button:has-text("${S.memoryDelete}")`).last().click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-memory-row]').length === 2, null, { timeout: 8000 });
+  await shot('memory-deleted');
+
+  // Timeline: the quiet memory rows, with View / Undo on the write.
+  await selectSession('Fixture: memory');
+  await page.waitForSelector('[data-memory-tool="MemoryWrite"]', { timeout: 15_000 });
+  const memoryTools = await page.locator('[data-memory-tool]').count();
+  if (memoryTools !== 3) throw new Error(`expected 3 memory tool rows, got ${memoryTools}`);
+  if (await page.locator('[data-memory-tool-view]').count() !== 1) throw new Error('memory write row has no View action');
+  if (await page.locator('[data-memory-tool-undo]').count() !== 1) throw new Error('memory write row has no Undo action');
+  await page.waitForTimeout(300);
+  await shot('memory-timeline');
+  await page.locator('[data-memory-tool="MemoryWrite"] [data-memory-tool-toggle]').click();
+  await page.waitForTimeout(250);
+  await shot('memory-timeline-expanded');
+  await setProofTheme('dark');
+  await page.waitForSelector('[data-memory-tool="MemoryWrite"]', { timeout: 15_000 });
+  await page.waitForTimeout(400);
+  await shot('memory-timeline-dark');
+  await setProofTheme('light');
+}
+
+async function scenarioMemoryReview() {
+  // The tab selection is component state, so every reload (theme switch) needs
+  // the tab re-opened before the inbox rows can be asserted again.
+  const openInbox = async () => {
+    await page.waitForSelector('[data-memory-tab="inbox"]', { timeout: 15_000 });
+    await page.locator('[data-memory-tab="inbox"]').click();
+    await page.waitForSelector('[data-memory-inbox-row]', { timeout: 10_000 });
+  };
+  await page.goto(`${WEB_URL}/memory?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+  await openInbox();
+  const pending = await page.locator('[data-memory-inbox-row]').count();
+  if (pending !== 2) throw new Error(`memory inbox expected 2 pending entries, got ${pending}`);
+  await page.waitForTimeout(300);
+  await shot('memory-inbox');
+  await resizeViewport(390);
+  await shot('memory-inbox-390');
+  await setProofTheme('dark');
+  await openInbox();
+  await page.waitForTimeout(300);
+  await shot('memory-inbox-390-dark');
+  await resizeViewport(1440);
+  await shot('memory-inbox-dark');
+  await setProofTheme('light');
+  // Keep promotes one entry out of the inbox.
+  await openInbox();
+  await page.locator('[data-memory-inbox-row="m_20260928_pend01"] [data-memory-inbox-keep]').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-memory-inbox-row]').length === 1, null, { timeout: 8000 });
+  await shot('memory-inbox-kept');
+}
+
+/**
+ * Thread relations in the sidebar: sessions a session started (ThreadCreate)
+ * and branches forked off it sit directly under their creator as single
+ * indented rows (no spine, no fold bar; only the branch carries a glyph); a
+ * relation whose creator is not loaded stays top-level and names it. Checked in
+ * the time view and the workspace view, because the nesting rules differ there.
+ */
+async function scenarioThreadRelations() {
+  await page.waitForSelector('[data-session-row]', { timeout: 15_000 });
+  const spine = '[data-session-threads="session_fixture_release"]';
+  await page.waitForSelector(spine, { timeout: 10_000 });
+  const nested = await page.locator(`${spine} [data-session-row]`).count();
+  if (nested !== 2) throw new Error(`expected 2 threads under the release session, got ${nested}`);
+  // The fork nests under its own parent, with the branch glyph.
+  await page.waitForSelector('[data-session-threads="session_fixture_spike"] [data-session-relation="branch"]', { timeout: 10_000 });
+  // ThreadCreate children carry no glyph, and nothing folds.
+  if (await page.locator(`${spine} [data-session-relation]`).count() !== 0) {
+    throw new Error('a ThreadCreate child carries a relation glyph');
+  }
+  if (await page.locator('[data-session-threads-toggle]').count() !== 0) {
+    throw new Error('the thread fold bar is back');
+  }
+  // The orphan keeps its row and names the creator it could not nest under.
+  await page.waitForSelector('[data-session-relation-note="thread"]', { timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('thread-relations-time');
+  await page.hover('[data-session-row="session_fixture_changelog_thread"]');
+  await page.waitForTimeout(250);
+  await shot('thread-relations-hover');
+  await page.mouse.move(900, 450);
+  await setProofTheme('dark');
+  await page.waitForSelector('[data-session-row]', { timeout: 15_000 });
+  await page.waitForTimeout(400);
+  await shot('thread-relations-time-dark');
+  await setProofTheme('light');
+
+  // Workspace view: nesting stays inside a bucket, so the docs-site thread
+  // becomes a top-level row in its own workspace group and says where it came from.
+  await pickViewOption('[data-group-by="workspace"]');
+  await closeViewMenu();
+  await page.waitForSelector('[data-session-group]', { timeout: 10_000 });
+  await page.waitForSelector('[data-session-row="session_fixture_docs_thread"]', { timeout: 10_000 });
+  const docsNested = await page.locator(`${spine} [data-session-row="session_fixture_docs_thread"]`).count();
+  if (docsNested !== 0) throw new Error('cross-workspace thread nested inside another workspace group');
+  await page.waitForTimeout(300);
+  await shot('thread-relations-workspace');
+  await setProofTheme('dark');
+  await page.waitForSelector('[data-session-row]', { timeout: 15_000 });
+  await page.waitForTimeout(400);
+  await shot('thread-relations-workspace-dark');
+  await setProofTheme('light');
+  await pickViewOption('[data-group-by="time"]');
+  await closeViewMenu();
+
+  // 390: the sidebar is a drawer here, so open it — the indent and the time
+  // must still fit without clipping a title.
+  await resizeViewport(390);
+  await page.click(`button[aria-label="${S.openMenuAria}"]`);
+  await page.waitForTimeout(400);
+  await shot('thread-relations-390');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await resizeViewport(1440);
+}
+
+/**
+ * Activity inbox: the bell in the sidebar header is the one place that counts
+ * what needs you; /activity lists blocked sessions first, then finished-unread
+ * ones. The sidebar rows show the four row states (waiting, still working,
+ * unread, caught up with no dot). The caught-up row needs a seen-mark, so it
+ * is seeded before the reload.
+ */
+async function scenarioActivityInbox() {
+  await page.evaluate(() => {
+    localStorage.setItem('kiki.sessionSeen.v1', JSON.stringify({ session_fixture_act_read: 7 }));
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-session-row="session_fixture_act_read"]', { timeout: 15_000 });
+  await page.waitForSelector('[data-activity-badge]', { timeout: 10_000 });
+  if (await page.locator('[data-session-row="session_fixture_act_read"] [data-life]').count() !== 0) {
+    throw new Error('a caught-up row still draws a status dot');
+  }
+  await page.waitForTimeout(300);
+  await shot('activity-sidebar');
+  await page.locator('[data-nav-activity]').click();
+  await page.waitForSelector('[data-activity-page]', { timeout: 10_000 });
+  await page.waitForSelector('[data-activity-group="needs-you"] [data-activity-item]', { timeout: 10_000 });
+  await page.waitForSelector('[data-activity-group="unread"] [data-activity-item]', { timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('activity-page');
+  await setProofTheme('dark');
+  await page.waitForSelector('[data-activity-page]', { timeout: 15_000 });
+  await shot('activity-page-dark');
+  await setProofTheme('light');
+  await resizeViewport(390);
+  await page.waitForTimeout(400);
+  await shot('activity-page-390');
+  await resizeViewport(1440);
 }
 
 async function scenarioSessionActions() {
@@ -3955,7 +4613,7 @@ async function scenarioI18n() {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
-  await page.selectOption('#language-select', other);
+  await page.locator(`[data-locale-choice="${other}"]`).click();
   // Instant switch: the same page re-renders in the other locale, no reload.
   await page.waitForSelector(`text=${otherDefaults}`, { timeout: 5000 });
   const htmlLang = await page.evaluate(() => document.documentElement.lang);
@@ -3968,7 +4626,7 @@ async function scenarioI18n() {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector(`text=${otherDefaults}`, { timeout: 10_000 });
   // Back to the run locale.
-  await page.selectOption('#language-select', LOCALE);
+  await page.locator(`[data-locale-choice="${LOCALE}"]`).click();
   await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 5000 });
   await shot(`i18n-restored-${LOCALE}`);
 }
@@ -4055,7 +4713,7 @@ async function scenarioCapabilities() {
  * first-run — the onboarding wizard walk on a freshly installed kiki: the
  * auto-popup opens on boot, "Save & continue" persists the API-key form
  * before advancing, the permissions step preselects auto, finish lands on
- * /new with the `/kiki-ops …` draft prefill, and a reload proves the run is
+ * /new with an empty composer and starter chips, and a reload proves the run is
  * marked completed (no second popup) with the provider still saved.
  */
 async function scenarioFirstRun() {
@@ -4082,12 +4740,25 @@ async function scenarioFirstRun() {
   await shot('onboarding-1-welcome');
 
   await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-provider-template="kimi"]').waitFor({ timeout: 5000 });
+  await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
+  await wizard().locator('[data-provider-template="moonshot"]').waitFor({ timeout: 5000 });
+  await shot('onboarding-2-model-light');
   await shot('onboarding-2-model');
+  await wizardButton(S.onboardingBack).click();
+  await wizardButton(LOCALE === 'zh' ? '暗色' : 'Dark').click();
+  await wizardButton(S.onboardingNext).click();
+  await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
+  await wizard().locator('[data-provider-template="moonshot"]').waitFor({ timeout: 5000 });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await shot('onboarding-2-model-dark');
+  await wizardButton(S.onboardingBack).click();
+  await wizardButton(LOCALE === 'zh' ? '亮色' : 'Light').click();
+  await wizardButton(S.onboardingNext).click();
+  await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
 
-  // API-key lane: template → key → server probe → pick a suggested model,
+  // API-key lane: search result → key → server probe → pick a suggested model,
   // then "Save & continue" persists.
-  await wizard().locator('[data-provider-template="kimi"]').click();
+  await wizard().locator('[data-provider-template="moonshot"]').click();
   await wizard().locator('input[type="password"]').fill('sk-proof-key');
   await wizardButton(S.onboardingTest).click();
   const chip = wizard().locator('[data-model-suggestion="kimi-for-coding"]');
@@ -4110,29 +4781,40 @@ async function scenarioFirstRun() {
   await page.waitForTimeout(250);
 
   await wizardButton(S.onboardingSaveNext).click();
-  await waitForText(S.onboardingRecommended);
+  await wizard().locator('[data-workspace-choice]').first().waitFor({ timeout: 5000 });
   // Saved + advanced: going Back shows the persisted connection read-out.
   await wizardButton(S.onboardingBack).click();
   await waitForText(S.onboardingReady);
   await shot('onboarding-3-model-saved');
   await wizardButton(S.onboardingNext).click();
+  // Workspace step (new): let Kiki create one.
+  await wizard().locator('[data-workspace-choice="auto"]').click();
+  await shot('onboarding-4-workspace');
+  await wizardButton(S.onboardingNext).click();
   await waitForText(S.onboardingRecommended);
-  // Fresh runs preselect auto.
-  const checked = await wizard().locator('[role="radio"][aria-checked="true"]').textContent();
-  if (!checked?.includes(S.permissionModeAuto)) {
-    throw new Error(`permissions step must preselect auto, saw "${checked}"`);
-  }
-  await shot('onboarding-4-permissions');
+  // Fresh runs preselect auto, and every wire mode is offered.
+  const checked = await wizard().locator('[data-permission-choice][aria-checked="true"]').getAttribute('data-permission-choice');
+  if (checked !== 'auto') throw new Error(`permissions step must preselect auto, saw "${checked}"`);
+  const offered = await wizard().locator('[data-permission-choice]').count();
+  console.log(`[check] onboarding offers ${offered} permission modes`);
+  await shot('onboarding-5-permissions');
 
   await wizardButton(S.onboardingFinish).click();
   await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 15_000 });
   await page.waitForSelector('textarea', { timeout: 15_000 });
   await page.waitForTimeout(600);
+  // Finish lands on the /new hero with an EMPTY composer and starter chips.
+  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
   const draft = await page.locator('textarea').first().inputValue();
-  if (!draft.includes('/kiki-ops')) {
-    throw new Error(`finish must prefill the /new composer draft, saw "${draft.slice(0, 80)}"`);
-  }
-  await shot('onboarding-5-finished');
+  if (draft !== '') throw new Error(`finish must not prefill the composer, saw "${draft.slice(0, 80)}"`);
+  const starters = await page.locator('[data-hero-starter]').count();
+  if (starters !== 4) throw new Error(`hero must offer 4 starter chips, saw ${starters}`);
+  await page.locator('[data-hero-starter]').first().click();
+  const filled = await page.locator('textarea').first().inputValue();
+  if (filled === '') throw new Error('a starter chip must fill the draft');
+  if (page.url().includes('/s/')) throw new Error('a starter chip must not send');
+  await shot('onboarding-6-finished');
+  await page.fill('textarea', '');
 
   // The saved provider seeds the server's default model; the composer must not
   // greet the first session with a stale "model unavailable" diagnostic.
@@ -4158,6 +4840,244 @@ async function scenarioFirstRun() {
   }
   const diagnosticsAfter = await page.locator('[data-selection-diagnostic]').allTextContents();
   console.log(`[first-run] diagnostics after reload=${JSON.stringify(diagnosticsAfter)}`);
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * skins — native reskinning.
+ *
+ * Walks every skin (built-in and from the fixture themes directory) across
+ * light and dark, on the four surfaces a palette actually has to survive:
+ * the conversation, the new-session page, settings, and usage. Then the
+ * adjustment controls (live preview) and the export field.
+ *
+ * Skins are applied by writing localStorage and reloading rather than by
+ * clicking through settings for each one: the point of these shots is the
+ * palette on four different routes, and thirty-two navigations through a
+ * picker would be the slowest possible way to get them.
+ */
+async function scenarioSkins() {
+  const link = (path) =>
+    `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const SESSION = '/s/session_fixture_skins';
+
+  const applySkin = async (source, id, theme) => {
+    await page.evaluate(([src, skinId, mode]) => {
+      localStorage.setItem('kiki.skin', JSON.stringify({ selection: { source: src, id: skinId }, tweaks: {} }));
+      const settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
+      settings.theme = mode;
+      localStorage.setItem('kiki.settings', JSON.stringify(settings));
+    }, [source, id, theme]);
+  };
+
+  // Land on settings once so the skin catalog query runs and the user skins
+  // are in the store before anything is selected.
+  await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-skin-settings]', { timeout: 15_000 });
+  await page.waitForSelector('[data-skin-choice="ocean"]', { timeout: 15_000 });
+  await page.waitForSelector('[data-skin-choice="midnight"]', { timeout: 10_000 });
+
+  // The two invalid files must be reported as skipped, not silently dropped:
+  // a TUI theme in the same directory and a skin carrying raw CSS.
+  const skipped = await page.locator('[data-skin-settings] details summary').first().textContent();
+  if (!/2/.test(skipped ?? '')) {
+    throw new Error(`expected 2 skipped skin files, summary read: ${skipped}`);
+  }
+  await page.locator('[data-skin-settings] details summary').first().click();
+  await page.locator('#st-card-skin-files').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(250);
+  await shot('skins-picker');
+
+  const directory = await page.locator('[data-skin-directory]').textContent();
+  console.log(`[skins] themes directory reported: ${directory}`);
+
+  // Every skin on every surface it has to hold up on.
+  const SURFACES = [
+    ['session', SESSION],
+    ['new', '/new'],
+    ['settings', '/settings/appearance'],
+    ['usage', '/usage'],
+  ];
+  const SKINS = [
+    ['builtin', 'paper', ['light', 'dark']],
+    ['builtin', 'slate', ['light', 'dark']],
+    ['builtin', 'contrast', ['light', 'dark']],
+    ['builtin', 'nocturne', ['dark']],
+    ['user', 'ocean', ['light', 'dark']],
+    ['user', 'midnight', ['dark']],
+  ];
+
+  for (const [source, id, themes] of SKINS) {
+    for (const theme of themes) {
+      await applySkin(source, id, theme);
+      for (const [label, path] of SURFACES) {
+        await page.goto(link(path), { waitUntil: 'domcontentloaded' });
+        // Each route has its own landmark; waiting on the skin attribute alone
+        // would screenshot a half-painted page.
+        if (label === 'usage') {
+          await page.waitForSelector('[data-usage-trend]', { timeout: 20_000 });
+        } else if (label === 'settings') {
+          await page.waitForSelector('[data-skin-settings]', { timeout: 20_000 });
+        } else {
+          await page.waitForSelector('textarea', { timeout: 20_000 });
+        }
+        const applied = await page.evaluate(() => ({
+          skin: document.documentElement.dataset.skin ?? null,
+          theme: document.documentElement.dataset.theme ?? null,
+          paper: getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim(),
+        }));
+        if (applied.skin !== id) {
+          throw new Error(`expected data-skin=${id} on ${label}, got ${applied.skin}`);
+        }
+        if (applied.theme !== theme) {
+          throw new Error(`expected data-theme=${theme} on ${label}, got ${applied.theme}`);
+        }
+        await page.waitForTimeout(350);
+        await shot(`skin-${id}-${theme}-${label}`);
+      }
+      console.log(`[skins] ${id}/${theme}: 4 surfaces captured`);
+    }
+  }
+
+  // Adjustments apply at once (the page has no draft): the accent repaints
+  // the whole app and lands in storage in the same step.
+  await applySkin('builtin', 'slate', 'light');
+  await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-skin-settings]', { timeout: 15_000 });
+
+  const accentBefore = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim());
+  // `fill` sets the value and fires the React-visible input event; a
+  // hand-dispatched event on a native color picker does not reach React.
+  await page.locator('#skin-accent').fill('#7c3aed');
+  await page.locator('#skin-radius').fill('2');
+  await page.locator('[aria-labelledby="skin-density-label"] button', { hasText: /Compact|紧凑/ }).click();
+  await page.waitForTimeout(400);
+  const accentAfter = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim());
+  if (accentAfter === accentBefore) {
+    throw new Error(`accent tweak did not apply (still ${accentBefore})`);
+  }
+  console.log(`[skins] accent applied ${accentBefore} -> ${accentAfter}`);
+  const stored = await page.evaluate(() => localStorage.getItem('kiki.skin'));
+  if (!/7c3aed/i.test(stored ?? '')) {
+    throw new Error(`the accent tweak did not persist: ${stored}`);
+  }
+  await shot('skins-tweaks-saved');
+
+  // The tweak survives a reload and still shows on a real page.
+  await page.goto(link(SESSION), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('textarea', { timeout: 20_000 });
+  await page.waitForTimeout(400);
+  await shot('skins-tweaks-session');
+
+  // Export: fill a name and confirm the affirmation. The download itself is a
+  // host concern; what matters here is that the control completes.
+  await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-skin-settings]', { timeout: 15_000 });
+  await page.locator('#skin-export-name').fill('My Slate');
+  await page.locator('#st-card-skin-files').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await shot('skins-export');
+
+  // Leave the run on the default skin so later scenarios are not reskinned.
+  await page.evaluate(() => { localStorage.removeItem('kiki.skin'); });
+}
+
+/**
+ * settings-appearance — the Appearance leaf and the settings shell around it.
+ *
+ * Captures the page in light, dark and a non-default skin at desktop and
+ * phone widths, a second leaf (General) for the shared shell, and asserts the
+ * contract the page promises: the old `#st-card-appearance` anchor lands on
+ * the new page, motion/prose choices reach <html>, and the nav selection is a
+ * raised sheet rather than an accent fill.
+ */
+async function scenarioSettingsAppearance() {
+  const link = (path) =>
+    `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  const setLook = async (skin, theme) => {
+    await page.evaluate(([skinId, mode]) => {
+      localStorage.setItem('kiki.skin', JSON.stringify({ selection: { source: 'builtin', id: skinId }, tweaks: {} }));
+      const settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
+      settings.theme = mode;
+      localStorage.setItem('kiki.settings', JSON.stringify(settings));
+    }, [skin, theme]);
+  };
+
+  // The retired General anchor redirects to the new leaf.
+  await page.goto(`${link('/settings/general')}#st-card-appearance`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-appearance-page]', { timeout: 15_000 });
+  if (!page.url().includes('/settings/appearance')) {
+    throw new Error(`#st-card-appearance did not land on /settings/appearance: ${page.url()}`);
+  }
+
+  const shots = [
+    ['paper', 'light'],
+    ['paper', 'dark'],
+    ['slate', 'light'],
+  ];
+  for (const [skin, theme] of shots) {
+    await setLook(skin, theme);
+    for (const [width, height, label] of [[1440, 1000, 'desktop'], [390, 844, 'mobile']]) {
+      await page.setViewportSize({ width, height });
+      await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-appearance-preview]', { timeout: 15_000 });
+      await page.waitForTimeout(350);
+      await shot(`appearance-${skin}-${theme}-${label}`);
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+
+  // Controls reach <html> immediately and "Restore defaults" appears.
+  await setLook('paper', 'light');
+  await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-appearance-preview]', { timeout: 15_000 });
+  await page.locator('[data-prose-choice="sans"]').click();
+  await page.locator('[data-motion-choice="reduce"]').click();
+  const attrs = await page.evaluate(() => ({
+    motion: document.documentElement.dataset.kikiMotion,
+    prose: document.documentElement.dataset.kikiProse,
+  }));
+  if (attrs.motion !== 'reduce' || attrs.prose !== 'sans') {
+    throw new Error(`appearance attributes not applied: ${JSON.stringify(attrs)}`);
+  }
+  await page.waitForSelector('[data-appearance-restore]', { timeout: 3000 });
+  await page.locator('#st-card-appearance-type').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(250);
+  await shot('appearance-changed-type');
+  await page.locator('[data-appearance-restore]').click();
+  await page.waitForTimeout(250);
+  await page.evaluate(() => { document.querySelector('[data-settings-scroll]')?.scrollTo(0, 0); });
+  await page.waitForTimeout(200);
+  await shot('appearance-restored-undo');
+
+  // The nav selection is a raised sheet in every leaf, never an accent fill.
+  const navActive = await page.locator('nav [aria-current="page"]').first().getAttribute('class');
+  if (/accent/.test(navActive ?? '')) throw new Error(`nav selection uses accent: ${navActive}`);
+
+  // Shared shell on a draft-bearing leaf, clean and dirty.
+  for (const [path, label] of [['/settings/general', 'general'], ['/settings/tasks', 'tasks'], ['/settings/ai?tab=providers', 'providers']]) {
+    await page.goto(link(path), { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('[data-settings-intro]', { timeout: 15_000 });
+    await page.waitForTimeout(500);
+    await shot(`settings-shell-${label}`);
+  }
+  await setLook('paper', 'dark');
+  await page.goto(link('/settings/tasks'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-settings-intro]', { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  await shot('settings-shell-tasks-dark');
+
+  await page.evaluate(() => {
+    localStorage.removeItem('kiki.skin');
+    const settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
+    delete settings.theme;
+    delete settings.motion;
+    delete settings.proseFont;
+    localStorage.setItem('kiki.settings', JSON.stringify(settings));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -4193,6 +5113,7 @@ const SCENARIOS = [
   ['first-run', scenarioFirstRun],
   ['draft-flow', scenarioDraftFlow],
   ['hero-shell', scenarioHeroShell],
+  ['composer-modes', scenarioComposerModes],
   ['settings', scenarioSettings],
   ['settings-search', scenarioSettingsSearch],
   ['settings-write', scenarioSettingsWrite],
@@ -4210,10 +5131,18 @@ const SCENARIOS = [
   ['preview-workbench', scenarioPreviewWorkbench],
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
+  ['memory-off', scenarioMemoryOff],
+  ['memory', scenarioMemory],
+  ['memory-review', scenarioMemoryReview],
+  ['thread-relations', scenarioThreadRelations],
+  ['activity-inbox', scenarioActivityInbox],
   ['context-ring', scenarioContextRing],
   ['usage-dashboard', scenarioUsageDashboard],
+  ['workspace-tools', scenarioWorkspaceTools],
   ['terminal', scenarioTerminal],
   ['capabilities', scenarioCapabilities],
+  ['skins', scenarioSkins],
+  ['settings-appearance', scenarioSettingsAppearance],
   ['i18n', scenarioI18n],
   ['rewrite-flow', scenarioRewriteFlow],
   // responsive stays last: it shrinks the viewport to 320px and nothing
@@ -4328,6 +5257,20 @@ async function main() {
           // storage unavailable — the app falls back to the navigator default
         }
       }, LOCALE);
+      if (THEME !== null) {
+        await next.addInitScript((theme) => {
+          try {
+            const raw = localStorage.getItem('kiki.settings');
+            const settings = raw === null ? {} : JSON.parse(raw);
+            if (settings.theme === undefined) {
+              localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, theme }));
+            }
+          } catch {
+            // storage unavailable — the app falls back to its default theme
+          }
+        }, THEME);
+      }
+      await installTimelineMonitor(next);
       return next;
     };
     page = await bootPage();
@@ -4370,7 +5313,15 @@ async function main() {
         // mounted SessionView 404s and toasts "This session no longer exists".
         await page.evaluate(() => {
           try { localStorage.removeItem('kiki.lastSessionId'); } catch { /* ignore */ }
+          // Sidebar filters persist; a scenario must never inherit another's.
+          try {
+            const layout = JSON.parse(localStorage.getItem('kiki.layout') ?? '{}');
+            delete layout.filters;
+            localStorage.setItem('kiki.layout', JSON.stringify(layout));
+          } catch { /* ignore */ }
         });
+        // A failed scenario may leave a narrow viewport behind.
+        await page.setViewportSize({ width: 1440, height: 900 });
         await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
           waitUntil: 'domcontentloaded',
           timeout: 30_000,
@@ -4379,7 +5330,12 @@ async function main() {
         await page.reload({ waitUntil: 'domcontentloaded' });
         await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
         await page.waitForTimeout(900); // let the first sessions poll land
+        await drainTimeline(page); // count only this scenario's frames
         await run();
+        if (TIMELINE_GATED.has(name)) {
+          const integrity = await assertTimelineIntegrity(page, `scenario ${name}`);
+          console.log(`[check] timeline integrity: ${integrity.frames} frames, ${JSON.stringify(integrity.totals)}`);
+        }
       } catch (error) {
         failure = error;
       }

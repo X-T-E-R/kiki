@@ -24,7 +24,7 @@ export default {
   sessions: [sessionRecord(SID, { title: 'Fixture: error + abort' })],
   snapshots: { [SID]: { messages: [] } },
   onPrompt: [
-    turnStart(1),
+    turnStart(1, 'Run the failing then slow fixture.'),
     workChanged(true),
     { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 1 } } },
     {

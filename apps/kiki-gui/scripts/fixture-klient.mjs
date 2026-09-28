@@ -356,8 +356,17 @@ export class FixtureKlient {
           : providerItems().filter((entry) => entry.id === options.providerId).map((entry) => entry.id);
         return { changed: [], unchanged: selected, failed: [] };
       }
-      case 'oauthService.getFlow':
-        return structuredClone(server.oauthOverride ?? server.scenario?.data.oauth ?? null);
+      case 'oauthService.listMethods':
+        return [
+          { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: false },
+          { id: 'github-copilot', label: 'GitHub Copilot', provider: 'managed:github-copilot', protocol: 'openai', signed_in: false },
+          { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses', signed_in: false },
+        ];
+      case 'oauthService.getFlow': {
+        const [requested] = args;
+        const current = server.oauthOverride ?? server.scenario?.data.oauth ?? null;
+        return requested !== undefined && current?.provider !== requested ? null : structuredClone(current);
+      }
       case 'oauthService.startLogin': {
         const [provider] = args;
         const started = structuredClone(server.scenario?.data.oauthStart ?? {
@@ -365,7 +374,7 @@ export class FixtureKlient {
           provider: provider ?? 'fixture',
           status: 'authenticated',
         });
-        if (provider !== undefined) started.provider = provider;
+        if (provider !== undefined) started.provider = provider.startsWith('managed:') ? provider : `managed:${provider}`;
         server.oauthOverride = started;
         return started;
       }
@@ -594,13 +603,21 @@ export class FixtureKlient {
             executionIds: [],
           };
           board.cards.push(entry);
-          return ok(structuredClone(entry));
+          board.detail ??= {};
+          board.detail[entry.id] = { description: input.description ?? '', prd: '' };
+          return ok({ ...structuredClone(entry), description: input.description ?? '', prd: '' });
         }
         if (input.action === 'update') {
           const entry = (board.cards ?? []).find((row) => row.id === input.id);
           if (entry === undefined) return { ok: false, error: { code: 'BOARD_CARD_NOT_FOUND', message: `no card ${input.id}` } };
-          Object.assign(entry, { ...input.patch, revision: input.expectedRevision + 1, updatedAt: now() });
-          return ok(structuredClone(entry));
+          const { description, ...summaryPatch } = input.patch;
+          Object.assign(entry, { ...summaryPatch, revision: input.expectedRevision + 1, updatedAt: now() });
+          // Writes answer with a full BoardCard (summary + detail), like `show`.
+          board.detail ??= {};
+          const detail = board.detail[input.id] ?? { description: '', prd: '' };
+          if (description !== undefined) board.detail[input.id] = { ...detail, description };
+          const current = board.detail[input.id] ?? detail;
+          return ok({ ...structuredClone(entry), description: current.description ?? '', prd: current.prd ?? '', handoff: current.handoff });
         }
         return { ok: false, error: { code: 'BOARD_UNSUPPORTED', message: `unsupported write action ${input.action}` } };
       }

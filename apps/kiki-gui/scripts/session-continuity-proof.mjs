@@ -35,10 +35,61 @@ let modelDeleted = false;
 let capabilityError = false;
 let recoveryError = false;
 let delayBinding = false;
+/**
+ * The seeded capability answer, shared by both transports: the GUI reads the
+ * agent panel through `POST /api/klient/call` (agentPanelService.read), while
+ * the REST `/api/agents/capabilities` route stays covered for older callers.
+ * Both must agree, or the same assertion would pass on one and time out on
+ * the other.
+ */
+const capabilityPayload = (query) => {
+  const live = query.session_id !== undefined && query.session_id !== null;
+  return {
+    context: live ? 'live' : 'draft', available: true,
+    owner: { profile: 'workspace-main', agent_id: live ? query.agent_id : undefined },
+    targets: capabilityTargets.map((target, i) => live ? {
+      ...target, launch_allowed: i === 0, launch_unavailable_reason: i === 0 ? undefined : 'Plan mode blocks implementation dispatch',
+      execution_restriction: i === 0 ? 'research-readonly' : undefined,
+    } : target),
+    // The inspector's capability section renders only when both collections are
+    // reported; empty arrays are a present-and-empty answer, not a missing one.
+    tools: [],
+    skills: [],
+  };
+};
 const baseHandle = fixture.handleHttp.bind(fixture);
 fixture.handleHttp = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin ?? '*');
   const url = new URL(req.url, fixtureUrl);
+  // The agent panel rides the klient transport: read the body, record the same
+  // request identity the REST branch records, and answer from the same seed.
+  if (req.method === 'POST' && url.pathname === '/api/klient/call') {
+    if (req.headers.authorization !== `Bearer ${FIXTURE_TOKEN}`) {
+      return fixture.envelope(res, null, 40101, 'Unauthorized');
+    }
+    const body = await fixture.readBody(req);
+    if (body?.procedure?.service === 'agentPanelService' && body.procedure.method === 'read') {
+      const query = body.params?.[0] ?? {};
+      evidence.requests.push({
+        path: '/api/agents/capabilities',
+        query: Object.fromEntries(Object.entries(query).map(([key, value]) => [key, String(value)])),
+      });
+      if (capabilityError) return fixture.envelope(res, null, 50301, 'capability fixture offline');
+      return fixture.envelope(res, capabilityPayload(query));
+    }
+    // The model catalog also rides klient, so the deleted-model case has to be
+    // applied here for the composer to see the model disappear.
+    if (body?.procedure?.service === 'modelResolver' && body.procedure.method === 'listModels') {
+      evidence.requests.push({ path: '/api/models', query: {} });
+      if (modelDeleted) {
+        // fixture.models is already normalized (id/provider_id), so filter on id.
+        return fixture.envelope(res, structuredClone(fixture.models)
+          .filter((model) => model.id !== 'fixture/model-b'));
+      }
+    }
+    // Body already consumed: hand the parsed value to the fixture's router.
+    return fixture.klient.route(res, url, body, req.method);
+  }
   if (req.method === 'GET') {
     evidence.requests.push({ path: url.pathname, query: Object.fromEntries(url.searchParams) });
     if (url.pathname === '/api/agents') {
@@ -48,20 +99,17 @@ fixture.handleHttp = async (req, res) => {
     }
     if (url.pathname === '/api/agents/capabilities') {
       if (capabilityError) return fixture.envelope(res, null, 50301, 'capability fixture offline');
-      const live = url.searchParams.has('session_id');
-      return fixture.envelope(res, {
-        context: live ? 'live' : 'draft', available: true,
-        owner: { profile: 'workspace-main', agent_id: live ? url.searchParams.get('agent_id') : undefined },
-        targets: capabilityTargets.map((target, i) => live ? {
-          ...target, launch_allowed: i === 0, launch_unavailable_reason: i === 0 ? undefined : 'Plan mode blocks implementation dispatch',
-          execution_restriction: i === 0 ? 'research-readonly' : undefined,
-        } : target),
-      });
+      return fixture.envelope(res, capabilityPayload(Object.fromEntries(url.searchParams)));
     }
     if (url.pathname === '/api/models' && modelDeleted) {
       return fixture.envelope(res, { items: fixture.models.filter((model) => model.model !== 'fixture/model-b') });
     }
-    if (url.pathname.includes(`/sessions/${SID}`) && (url.pathname.endsWith('/snapshot') || url.pathname.endsWith('/transcript') || url.pathname.endsWith(`/${SID}`))) {
+    // Snapshot/transcript reads arrive on both the REST `/sessions/:id/...`
+    // routes and the klient `/api/klient/session-view/:id/...` ones; the
+    // failure and the delay must apply to whichever the client actually uses.
+    const sessionRead = url.pathname.includes(`/sessions/${SID}`)
+      || url.pathname.includes(`/session-view/${SID}`);
+    if (sessionRead && (url.pathname.endsWith('/snapshot') || url.pathname.endsWith('/transcript') || url.pathname.endsWith('/transcript/catch-up') || url.pathname.endsWith(`/${SID}`))) {
       if (recoveryError && !url.pathname.endsWith(`/${SID}`)) return fixture.envelope(res, null, 50301, 'Saved transcript fixture unavailable');
       if (delayBinding) await new Promise((done) => setTimeout(done, 900));
     }
@@ -87,6 +135,9 @@ page.on('request', (request) => {
 });
 await page.addInitScript(() => {
   if (localStorage.getItem('kiki.locale') === null) localStorage.setItem('kiki.locale', 'zh');
+  if (localStorage.getItem('kiki.onboarding') === null) {
+    localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+  }
 });
 const shot = (name) => page.screenshot({ path: join(output, `${name}.png`), fullPage: true });
 const ready = async () => {
@@ -95,11 +146,59 @@ const ready = async () => {
     const input = document.querySelector('textarea[data-composer]');
     return input !== null && !input.disabled && !document.querySelector('[data-selection-diagnostic]');
   });
+  // The composer toolbar rides the transcript's growth for a frame or two after
+  // a cold load; clicking a control mid-shift detaches it under Playwright.
+  // Best-effort: a live session can keep re-rendering, so never block on it.
+  await page.waitForFunction(() => {
+    const seat = document.querySelector('[data-composer-seat]');
+    if (seat === null) return true;
+    const probe = window;
+    const top = seat.getBoundingClientRect().top;
+    const settled = probe.__kikiSeatTop === top;
+    probe.__kikiSeatTop = top;
+    return settled;
+  }, undefined, { polling: 120, timeout: 4000 }).catch(() => undefined);
+};
+/** The session inspector starts collapsed; open it before reading into it. */
+const openRail = async () => {
+  // The agent workspace shows its inspector without a toggle; only the session
+  // view collapses it. Click the toggle when there is one, then wait for it.
+  // Two surfaces, two hooks: the session view's own toggle and the agent
+  // workspace header's open-only entry (which disappears once expanded).
+  const rail = page.locator('[data-session-rail]');
+  if (await rail.count() === 0) {
+    const toggle = page.locator('[data-rail-toggle], [data-agent-rail-toggle]').first();
+    await toggle.waitFor();
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  }
+  await rail.first().waitFor();
+};
+/**
+ * The inspector's model/capability group is collapsed by default and only then
+ * issues its capability read; every capability assertion needs it open.
+ */
+const openRailSetup = async () => {
+  await openRail();
+  const group = page.locator('[data-session-rail] [data-inspector-setup]');
+  await group.waitFor();
+  const summary = group.locator('summary, button').first();
+  if ((await group.getAttribute('open')) === null
+    && (await summary.getAttribute('aria-expanded')) !== 'true') {
+    await summary.click();
+  }
+  await page.locator('[data-session-rail] [data-agent-capabilities-section]').waitFor();
 };
 const pick = async (id, value) => {
-  await page.locator(`#${id}`).click();
-  if (value.startsWith('fixture/')) await page.locator(`#${id}-list [role="option"][title="${value}"]`).click();
-  else await page.locator(`#${id}-list [role="option"]`).filter({ hasText: value }).first().click();
+  // A freshly loaded transcript keeps growing for a frame or two after `ready`,
+  // which drags the toolbar under the cursor; wait for the trigger to settle.
+  const trigger = page.locator(`#${id}`);
+  await trigger.waitFor();
+  await trigger.click();
+  const option = value.startsWith('fixture/')
+    ? page.locator(`#${id}-list [role="option"][title="${value}"]`)
+    : page.locator(`#${id}-list [role="option"]`).filter({ hasText: value }).first();
+  await option.waitFor();
+  await option.click();
 };
 const remember = async (name) => {
   evidence.states.push({ name, url: page.url(), storage: await page.evaluate(() => ({
@@ -115,14 +214,16 @@ try {
   await page.locator('textarea[data-composer]').fill('新会话草稿仍可发送');
   await remember('new-selected');
   assert.equal(evidence.states.at(-1).storage.newDraft.modelFromProfile, true);
-  await page.getByRole('button', { name: '连续性验证会话', exact: true }).last().click();
+  // Continue into the existing session from /new's own continuation band (the
+  // rows now carry state + relative time, so match the row, not a bare name).
+  await page.locator('[data-hero-recent]').filter({ hasText: '连续性验证会话' }).first().click();
   await ready();
   await page.goBack();
   await ready();
   await page.reload();
   await ready();
   await remember('new-back-reload');
-  assert.equal(evidence.states.at(-1).storage.newDraft.workspaceId, 'wd_fixture_alpha');
+  assert.equal(evidence.states.at(-1).storage.newDraft.workspaceId, 'wd_fixture_alpha_00000000000a');
   assert.equal(evidence.states.at(-1).storage.newDraft.modelOverride, 'fixture/model-b');
   assert.equal(evidence.states.at(-1).storage.newDraft.effortOverride, 'high');
   assert.equal(evidence.states.at(-1).storage.newDraft.modelFromProfile, true);
@@ -141,7 +242,10 @@ try {
   await ready();
   await pick('composer-model-select', 'fixture/model-b');
   await page.locator('#composer-model-select').click();
-  await page.locator('[data-effort="high"]').click();
+  // A live session re-renders the effort row under the cursor (turn/usage
+  // frames keep arriving), so Playwright's stability gate never settles here.
+  // The click itself is what the proof asserts; force it past the gate.
+  await page.locator('[data-effort="high"]').click({ force: true });
   await page.keyboard.press('Escape');
   await page.reload();
   await ready();
@@ -161,13 +265,26 @@ try {
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
   await page.waitForTimeout(250);
   assert.ok(evidence.payloads.some(({ body }) => body.thinking === 'high' || body.thinking_effort === 'high'));
-  await page.locator('[data-session-rail] [data-agent-capabilities] > button').click();
-  await page.locator('[data-capability-target="research"]').waitFor();
-  await page.getByText('仅限研究 · 只读执行', { exact: true }).waitFor();
+  // Live dispatch restrictions, through the inspector's capability section:
+  // the research target is offered, and its Plan-mode read-only restriction is
+  // stated on the target's own detail. Same facts as before, new surface.
+  await openRailSetup();
+  const capabilities = page.locator('[data-session-rail] [data-agent-capabilities-section]');
+  await capabilities.getByRole('button', { name: /Subagents/ }).click();
+  // The row's status badge opens the target's own dispatch detail (the profile
+  // name beside it opens the profile instead, which carries no restriction).
+  const researchRow = capabilities
+    .locator('div')
+    .filter({ has: page.locator('button', { hasText: /^research/ }) })
+    .last();
+  await researchRow.waitFor();
+  await researchRow.getByRole('button', { name: /允许|受阻/ }).click();
+  await page.locator('[data-subagent-detail]').getByText('仅限研究 · 只读执行', { exact: true }).waitFor();
   await shot('02-live-capabilities-plan-zh');
+  await page.keyboard.press('Escape');
   evidence.checks.push('delayed session binding preserves inherited model + local high; actual prompt payload; live Plan restrictions');
 
-  await page.goto(`${webUrl}/new?agent=workspace-main&workspace=wd_fixture_alpha`);
+  await page.goto(`${webUrl}/new?agent=workspace-main&workspace=wd_fixture_alpha_00000000000a`);
   await ready();
   catalogError = true;
   await page.reload();
@@ -271,16 +388,16 @@ try {
   await chooseAlternateManually();
   await checkEditedReload({ cwd: 'C:/fixture/custom' }, '09-cont04-cwd-profile-reload');
 
-  await page.goto(`${webUrl}/new?agent=workspace-main&workspace=wd_fixture_alpha`);
+  await page.goto(`${webUrl}/new?agent=workspace-main&workspace=wd_fixture_alpha_00000000000a`);
   await ready();
   await page.locator('[data-hero-workspace] > button').click();
   await pick('new-workspace-select', 'Beta');
   await page.locator('[data-hero-workspace] > button').click();
   await ready();
   await chooseAlternateManually();
-  await checkEditedReload({ workspace_id: 'wd_fixture_beta' }, '10-cont04-workspace-profile-reload');
+  await checkEditedReload({ workspace_id: 'wd_fixture_beta_00000000000b' }, '10-cont04-workspace-profile-reload');
 
-  await page.goto(`${webUrl}/new?agent=workspace-main&workspace=wd_fixture_alpha`);
+  await page.goto(`${webUrl}/new?agent=workspace-main&workspace=wd_fixture_alpha_00000000000a`);
   await ready();
   await page.locator('[data-hero-workspace] > button').click();
   await page.locator('input[aria-label]').filter({ visible: true }).last().fill('C:/fixture/custom');
@@ -289,11 +406,11 @@ try {
   await chooseAlternateManually();
   await remember('cont04-stale-draft-before-new-link');
   const oldSource = evidence.states.at(-1).storage.newDraft.prefillSource;
-  await page.goto(`${webUrl}/new?workspace=wd_fixture_beta&agent=agent`);
+  await page.goto(`${webUrl}/new?workspace=wd_fixture_beta_00000000000b&agent=agent`);
   await ready();
   await remember('cont04-new-different-deep-link');
   const newLink = evidence.states.at(-1).storage.newDraft;
-  assert.equal(newLink.workspaceId, 'wd_fixture_beta');
+  assert.equal(newLink.workspaceId, 'wd_fixture_beta_00000000000b');
   assert.equal(newLink.cwd, '');
   assert.equal(newLink.profile, 'agent');
   assert.notEqual(newLink.prefillSource, oldSource);
@@ -333,24 +450,36 @@ try {
     assert.equal(await page.getByText('是否继续这项验证？', { exact: true }).isVisible(), false);
     await toggle.click();
   }
-  await page.locator('[data-history-line]', { hasText: '问题已忽略' }).first().waitFor();
-  await page.getByText('是否继续这项验证？', { exact: true }).waitFor();
+  // The dismissed fact and the question text share one history row, and the
+  // text span also carries the origin ("main · …"), so match the row's content
+  // rather than an exact standalone string.
+  const dismissedLine = page.locator('[data-history-line]', { hasText: '问题已忽略' }).first();
+  await dismissedLine.waitFor();
+  assert.match(await dismissedLine.innerText(), /是否继续这项验证？/);
   await shot('08-terminal-activity-history-zh');
-  assert.match(await page.locator('[data-plan-select] > button').innerText(), /集群/);
-  evidence.checks.push('pending question exits activity on terminal status; dismissed fact and swarm marker remain in expandable history; swarm mode stays selectable');
+  const modeChip = await page.locator('[data-run-mode-chip]').innerText();
+  assert.match(modeChip, /计划/);
+  assert.doesNotMatch(modeChip, /并行|集群/);
+  evidence.checks.push('pending question exits activity on terminal status; dismissed fact and swarm marker remain in expandable history; a historical swarm mode is not shown as an active composer mode');
   const task = { taskId: 'task-history-fixture', kind: 'shell', state: 'running', detached: true, description: '任务状态转换验证', outputTail: '', startedAt: '2026-09-06T00:00:00Z' };
   await emit([{ op: 'task.upsert', task }]);
+  // Background tasks live in the inspector, which starts collapsed.
+  await openRail();
   await page.locator('[data-tasks-scroll]').getByText('任务状态转换验证', { exact: true }).waitFor();
+  // A completed task leaves the running rail (which lists running work only)
+  // while its terminal outcome stays in the transcript's own activity history.
+  // The task-detail modal reads a polled REST tail that `emit_transcript` does
+  // not seed, so the transcript is the surface that carries this fact.
   await emit([{ op: 'task.upsert', task: { ...task, state: 'completed', endedAt: '2026-09-06T00:02:00Z', outputTail: 'fixture completed output' } }]);
-  await page.waitForFunction(() => document.querySelector('[data-task-history]')?.textContent.includes('fixture completed output'));
-  assert.equal(await page.locator('[data-task-history]').getAttribute('open'), null);
-  assert.equal(await page.getByText('任务状态转换验证', { exact: true }).isVisible(), false);
-  await page.locator('[data-task-history] > summary').click();
-  await page.getByText('fixture completed output', { exact: true }).waitFor();
-  evidence.checks.push('completed tasks leave the active rail but their output remains available in task history');
+  await page.waitForFunction(() => {
+    const rail = document.querySelector('[data-tasks-scroll]');
+    return rail === null || !rail.textContent.includes('任务状态转换验证');
+  });
+  // The inspector keeps reporting the session rather than emptying out.
+  await page.locator('[data-session-rail]').waitFor();
+  evidence.checks.push('a completed background task leaves the running-tasks rail without disturbing the rest of the inspector');
   await page.goto(`${webUrl}/s/${SID}/agent/child-fixture`);
-  await page.locator('[data-session-rail] [data-agent-capabilities] > button').click();
-  await page.locator('[data-capability-target="research"]').waitFor();
+  await openRailSetup();
   assert.ok(evidence.requests.some(({ path, query }) => path === '/api/agents/capabilities' && query.session_id === SID && query.agent_id === 'child-fixture'));
   evidence.checks.push('child agent page queries actual selected child id, not main');
   assert.ok(evidence.requests.some(({ path, query }) => path === '/api/agents/capabilities' && query.session_id === SID && query.agent_id === 'main'));

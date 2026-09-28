@@ -93,7 +93,7 @@ export default {
     },
   },
   onPrompt: [
-    { frame: { type: 'turn.started', payload: { turnId: 1, origin: { kind: 'user' } } } },
+    { frame: { type: 'turn.started', payload: { turnId: 1, origin: { kind: 'user' }, prompt: 'Delegate the fixture work.' } } },
     workChanged(true),
     {
       frame: {

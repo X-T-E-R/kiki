@@ -16,16 +16,16 @@ export const capabilityTargets = [
 export default {
   config: { default_model: 'fixture/model-a', default_permission_mode: 'manual', providers: {} },
   models: [
-    { model: 'fixture/model-a', provider: 'fixture', support_efforts: ['low'], default_effort: 'low' },
-    { model: 'fixture/model-b', provider: 'fixture', support_efforts: ['low', 'high'], default_effort: 'low' },
+    { model: 'fixture/model-a', provider: 'fixture', max_context_size: 131072, support_efforts: ['low'], default_effort: 'low' },
+    { model: 'fixture/model-b', provider: 'fixture', max_context_size: 131072, support_efforts: ['low', 'high'], default_effort: 'low' },
   ],
   workspaces: [
-    { id: 'wd_fixture_alpha', name: 'Alpha', root: 'C:/fixture/alpha', pinned: true, last_opened_at: '2026-09-06T00:00:00Z', session_count: 1 },
-    { id: 'wd_fixture_beta', name: 'Beta', root: 'C:/fixture/beta', pinned: false, last_opened_at: '2026-09-05T00:00:00Z', session_count: 0 },
+    { id: 'wd_fixture_alpha_00000000000a', name: 'Alpha', root: 'C:/fixture/alpha', pinned: true, last_opened_at: '2026-09-06T00:00:00Z', session_count: 1 },
+    { id: 'wd_fixture_beta_00000000000b', name: 'Beta', root: 'C:/fixture/beta', pinned: false, last_opened_at: '2026-09-05T00:00:00Z', session_count: 0 },
   ],
   agentProfiles: profiles,
   sessions: [sessionRecord(SID, {
-    title: '连续性验证会话', workspace_id: 'wd_fixture_alpha', metadata: { cwd: 'C:/fixture/alpha' },
+    title: '连续性验证会话', workspace_id: 'wd_fixture_alpha_00000000000a', metadata: { cwd: 'C:/fixture/alpha' },
     agent_config: { profile: 'workspace-main', model: 'fixture/model-b', thinking: 'high', plan_mode: true, swarm_mode: true },
   })],
   snapshots: { [SID]: { messages: [userMsg(SID, '保留此历史记录'), assistantMsg(SID, ['历史记录保持不变。'])] } },

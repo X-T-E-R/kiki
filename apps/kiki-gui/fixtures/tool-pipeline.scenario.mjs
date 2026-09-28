@@ -1,9 +1,11 @@
 /**
  * tool-pipeline — snapshot carries a completed Read → Edit (diff card) →
  * Write-create chain as journaled messages; on prompt, two live sequences:
- *   1) three consecutive tool calls (Read + Edit + Bash) → one "Steps · 3" group;
+ *   1) Read → Edit → then a pure-read stretch (Glob, Read, Grep, Read): every
+ *      action stays in place by default; with the opt-in fold, only the
+ *      ≥3-read stretch collapses into one line that names its objects;
  *   2) a tool/approval/tool boundary (Glob → approval → Bash) where the
- *      pending approval separates the tools; resolving archives it and allows regrouping.
+ *      pending approval separates the tools.
  * The Edit uses real old/new strings with >6 unchanged lines between two
  * changes so the DiffCard shows two hunks and a "… unchanged lines" separator.
  */
@@ -30,6 +32,8 @@ const LIVE_READ = fid('call');
 const LIVE_EDIT = fid('call');
 const LIVE_BASH = fid('call');
 const LIVE_VERIFY = fid('call');
+const LIVE_GREP = fid('call');
+const LIVE_NOTES = fid('call');
 const BOUND_GLOB = fid('call');
 const BOUND_BASH = fid('call');
 
@@ -77,7 +81,7 @@ export default {
   sessions: [sessionRecord(SID, { title: 'Fixture: tool pipeline' })],
   snapshots: { [SID]: { messages } },
   onPrompt: [
-    turnStart(1),
+    turnStart(1, 'Run the tool sequences.'),
     workChanged(true),
     { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 1 } } },
     // Sequence 1: four consecutive non-shell tools with no non-tool block between them.
@@ -133,6 +137,34 @@ export default {
     },
     { delay: 250 },
     { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_VERIFY, output: { kind: 'file_content', path: FILE, content: EDIT_AFTER } } } },
+    { delay: 150 },
+    // A pure-read stretch (Glob → Read → Read, plus a search): the only kind
+    // of run the opt-in fold collapses, and it must still name its objects.
+    {
+      frame: {
+        type: 'tool.call.started',
+        payload: {
+          turnId: 1, toolCallId: LIVE_GREP, name: 'Grep',
+          args: { pattern: 'version' },
+          display: { kind: 'search', query: 'version', scope: 'C:/fixture/workshop' },
+        },
+      },
+    },
+    { delay: 150 },
+    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_GREP, output: 'plan.ts:3:  version: 2,' } } },
+    { delay: 150 },
+    {
+      frame: {
+        type: 'tool.call.started',
+        payload: {
+          turnId: 1, toolCallId: LIVE_NOTES, name: 'Read',
+          args: { file_path: 'C:/fixture/workshop/notes.md' },
+          display: { kind: 'file_io', operation: 'read', path: 'C:/fixture/workshop/notes.md' },
+        },
+      },
+    },
+    { delay: 150 },
+    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_NOTES, output: { kind: 'file_content', path: 'C:/fixture/workshop/notes.md', content: WRITE_CONTENT } } } },
     { delay: 200 },
     { frame: { type: 'assistant.delta', offset: 0, payload: { turnId: 1, delta: 'Preparing the gated boundary.' } } },
     { delay: 200 },
@@ -168,10 +200,10 @@ export default {
     { delay: 200 },
     { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 1 } } },
     { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 2 } } },
-    ...streamSteps('assistant.delta', 1, 'Both sequences completed: four tools folded and the approval boundary split the final tool.', { per: 24 }),
+    ...streamSteps('assistant.delta', 1, 'Both sequences completed: every action stayed in place and the approval boundary split the final tool.', { per: 24 }),
     { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 2 } } },
     turnEnd(1),
-    commitAssistant('$SID', 'Both sequences completed: four tools folded and the approval boundary split the final tool.'),
+    commitAssistant('$SID', 'Both sequences completed: every action stayed in place and the approval boundary split the final tool.'),
     { frame: { type: 'prompt.completed', payload: { promptId: '$PROMPT', finishedAt: new Date().toISOString(), reason: 'completed' } } },
     workChanged(false),
   ],

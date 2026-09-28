@@ -53,6 +53,11 @@
  * / `transcript.ops` per agent and serves `subscribe_v2` / `unsubscribe_v2`
  * plus `GET .../transcript/ops` catch-up. Legacy `subscribe` is unchanged.
  *
+ * Memory: `/memory/*` is served from scenario state (`memory`, `memoryEntries`,
+ * `memoryJournal`). Writes mutate that state and append journal records, so the
+ * page's save / delete / undo / inbox and the 40944 revision conflict are all
+ * exercisable; `approval: 'review'` makes new entries land in the inbox.
+ *
  * Terminals: `/sessions/{id}/terminals*` REST plus the `terminal_*` WS control
  * frames are served by FakeTerminal, a line-oriented echo shell (`echo`, `pwd`,
  * `clear`, `exit [n]`) with PTY-style echo, a 2000-frame replay buffer, and
@@ -532,6 +537,18 @@ class FixtureServer {
     this.mcpManaged = structuredClone(data.mcpManagedServers ?? []);
     this.plugins = structuredClone(data.plugins ?? []);
     this.usageV2 = data.usageV2 ?? null;
+    // Memory (`/api/memory/*`): `memory` seeds the settings section and the
+    // per-scope entry stores; `memoryJournal` seeds undoable operations. Writes
+    // mutate this state and append journal records, so the page's save / delete
+    // / undo / inbox paths are all exercisable against the real wire shapes.
+    this.memory = structuredClone(data.memory ?? { enabled: false, approval: 'auto', budget: 2_000, workspaces: {} });
+    this.memoryEntries = new Map(
+      Object.entries(structuredClone(data.memoryEntries ?? {})).map(([scope, entries]) => [scope, entries]),
+    );
+    this.memoryJournal = new Map(
+      Object.entries(structuredClone(data.memoryJournal ?? {})).map(([scope, records]) => [scope, records]),
+    );
+    this.memoryOpCounter = 0;
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
       this.sessions.set(session.id, new FixtureSession(bound, bind(data.snapshots?.[session.id] ?? {}, session.id)));
@@ -548,6 +565,193 @@ class FixtureServer {
     this.wsInbound = [];
     this.wsOutbound = [];
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
+  }
+
+  /** Scope key for the memory stores: `global` or `workspace:<wd>`. */
+  memoryScopeKey(scope, workspaceId) {
+    return scope === 'global' ? 'global' : `workspace:${workspaceId ?? ''}`;
+  }
+
+  memoryList(key) {
+    if (!this.memoryEntries.has(key)) this.memoryEntries.set(key, []);
+    return this.memoryEntries.get(key);
+  }
+
+  memoryLog(key, record) {
+    if (!this.memoryJournal.has(key)) this.memoryJournal.set(key, []);
+    this.memoryJournal.get(key).push(record);
+  }
+
+  /** Deterministic revision so `expected_revision` round-trips like the store. */
+  memoryRevision(entry) {
+    return fixtureHash({ title: entry.title, body: entry.body, type: entry.type, status: entry.status, pinned: entry.pinned });
+  }
+
+  /**
+   * `/api/memory/*` — settings, per-workspace switch, entry CRUD, journal,
+   * inbox and undo. Returns true when the path was handled.
+   */
+  routeMemory(res, path, query, body, method) {
+    if (!path.startsWith('/memory')) return false;
+    const settings = () => ({ ...this.memory, effective_enabled: this.memory.enabled === true });
+
+    if (path === '/memory/settings') {
+      if (method === 'PATCH') {
+        for (const field of ['enabled', 'approval', 'budget']) {
+          if (body?.[field] !== undefined) this.memory[field] = body[field];
+        }
+      }
+      this.envelope(res, settings());
+      return true;
+    }
+    const wsMatch = /^\/memory\/workspaces\/([^/]+)\/settings$/.exec(path);
+    if (wsMatch !== null) {
+      const workspaceId = wsMatch[1];
+      const known = (this.workspaces.length > 0 ? this.workspaces : this.scenario?.data.workspaces ?? [])
+        .some((workspace) => workspace.id === workspaceId);
+      if (!known) {
+        this.envelope(res, null, 40410, 'workspace.not_found');
+        return true;
+      }
+      if (method === 'PATCH') {
+        this.memory.workspaces ??= {};
+        if (body?.enabled === null) delete this.memory.workspaces[workspaceId];
+        else this.memory.workspaces[workspaceId] = body?.enabled === true;
+      }
+      const override = this.memory.workspaces?.[workspaceId];
+      this.envelope(res, {
+        workspace_id: workspaceId,
+        enabled: override === undefined ? null : override,
+        effective_enabled: this.memory.enabled === true && override !== false,
+      });
+      return true;
+    }
+
+    const scopeMatch = /^\/memory\/(global|workspace)(?:\/(.+))?$/.exec(path);
+    if (scopeMatch === null) return false;
+    const key = this.memoryScopeKey(scopeMatch[1], query.get('workspace_id') ?? undefined);
+    const tail = scopeMatch[2];
+    const entries = this.memoryList(key);
+    const withRevision = (entry) => ({ ...structuredClone(entry), revision: this.memoryRevision(entry) });
+
+    if (tail === undefined && method === 'GET') {
+      const search = (query.get('query') ?? '').trim().toLowerCase();
+      const type = query.get('type');
+      const includeInactive = query.get('include_inactive') === 'true';
+      const items = entries
+        .filter((entry) => includeInactive || entry.status === 'active' || entry.status === 'pending')
+        .filter((entry) => type === null || entry.type === type)
+        .filter((entry) => search === '' || `${entry.title} ${entry.body}`.toLowerCase().includes(search))
+        .toSorted((a, b) => Number(b.pinned) - Number(a.pinned) || b.updated.localeCompare(a.updated))
+        .map(withRevision);
+      this.envelope(res, { items });
+      return true;
+    }
+    if (tail === 'inbox' && method === 'GET') {
+      this.envelope(res, entries.filter((entry) => entry.status === 'pending').map(withRevision));
+      return true;
+    }
+    if (tail === 'journal' && method === 'GET') {
+      const id = query.get('id');
+      const records = (this.memoryJournal.get(key) ?? []).filter((record) => id === null || record.id === id);
+      this.envelope(res, structuredClone(records));
+      return true;
+    }
+    if (tail === 'undo' && method === 'POST') {
+      const records = (this.memoryJournal.get(key) ?? []).filter((record) => record.operationId === body?.operation_id);
+      if (records.length === 0) {
+        this.envelope(res, null, 40423, 'memory.not_found');
+        return true;
+      }
+      let restored = null;
+      for (const record of [...records].reverse()) {
+        const index = entries.findIndex((entry) => entry.id === record.id);
+        if (record.before === null) {
+          if (index >= 0) entries.splice(index, 1);
+        } else {
+          const before = JSON.parse(record.before);
+          if (index >= 0) entries[index] = before;
+          else entries.push(before);
+          restored ??= before;
+        }
+      }
+      this.memoryLog(key, { operationId: `op_undo_${++this.memoryOpCounter}`, action: 'undo', id: records[0].id, at: now(), writer: 'user', before: null, beforeRevision: null, afterRevision: null });
+      this.envelope(res, { entry: restored === null ? null : withRevision(restored) });
+      return true;
+    }
+
+    const id = tail;
+    const index = entries.findIndex((entry) => entry.id === id);
+    if (method === 'GET') {
+      if (index < 0) {
+        this.envelope(res, null, 40423, 'memory.not_found');
+        return true;
+      }
+      this.envelope(res, withRevision(entries[index]));
+      return true;
+    }
+    if (method === 'PUT') {
+      const operationId = `op_fixture_${++this.memoryOpCounter}`;
+      if (id === 'new') {
+        const entry = {
+          id: `m_20260928_${String(this.memoryOpCounter).padStart(6, '0')}`,
+          type: body?.type ?? 'project',
+          title: body?.title ?? '',
+          body: body?.body ?? '',
+          status: this.memory.approval === 'review' ? 'pending' : 'active',
+          pinned: body?.pinned === true,
+          created: now(),
+          updated: now(),
+          source: { writer: 'user' },
+          reason: body?.reason ?? '',
+        };
+        entries.push(entry);
+        this.memoryLog(key, { operationId, action: 'create', id: entry.id, at: now(), writer: 'user', before: null, beforeRevision: null, afterRevision: this.memoryRevision(entry) });
+        this.envelope(res, { entry: withRevision(entry), operationId });
+        return true;
+      }
+      if (index < 0) {
+        this.envelope(res, null, 40423, 'memory.not_found');
+        return true;
+      }
+      const current = entries[index];
+      if (body?.expected_revision !== undefined && body.expected_revision !== this.memoryRevision(current)) {
+        this.envelope(res, null, 40944, 'memory.revision_conflict');
+        return true;
+      }
+      const before = JSON.stringify(current);
+      const next = {
+        ...current,
+        type: body?.type ?? current.type,
+        title: body?.title ?? current.title,
+        body: body?.body ?? current.body,
+        status: body?.action === 'archive' ? 'archived' : 'active',
+        pinned: body?.pinned ?? current.pinned,
+        reason: body?.reason ?? current.reason,
+        updated: now(),
+      };
+      entries[index] = next;
+      this.memoryLog(key, { operationId, action: body?.action ?? 'update', id: next.id, at: now(), writer: 'user', before, beforeRevision: this.memoryRevision(current), afterRevision: this.memoryRevision(next) });
+      this.envelope(res, { entry: withRevision(next), operationId });
+      return true;
+    }
+    if (method === 'DELETE') {
+      if (index < 0) {
+        this.envelope(res, null, 40423, 'memory.not_found');
+        return true;
+      }
+      const current = entries[index];
+      if (query.get('expected_revision') !== this.memoryRevision(current)) {
+        this.envelope(res, null, 40944, 'memory.revision_conflict');
+        return true;
+      }
+      const operationId = `op_fixture_${++this.memoryOpCounter}`;
+      this.memoryLog(key, { operationId, action: 'delete', id: current.id, at: now(), writer: 'user', before: JSON.stringify(current), beforeRevision: this.memoryRevision(current), afterRevision: null });
+      entries.splice(index, 1);
+      this.envelope(res, { operation_id: operationId });
+      return true;
+    }
+    return false;
   }
 
   // /agents helpers: disabled synthesis and effective winner selection mirror
@@ -1426,6 +1630,8 @@ class FixtureServer {
         return this.envelope(res, { deleted: true });
       }
     }
+    const memoryHandled = this.routeMemory(res, path, query, body, method);
+    if (memoryHandled) return undefined;
     if ((path === '/nb-search/credentials/read' || path === '/nb-search/credentials/write') && method === 'POST') {
       const target = fixtureSearchCredentialBinding(this.config, body?.instance_id);
       if (target === null) return this.envelope(res, null, 40001, 'Unknown nb-search credential slot.');
@@ -1533,6 +1739,51 @@ class FixtureServer {
       if (entry === undefined) return this.envelope(res, null, 40001, `fixture: no shipped agent profile ${id}`);
       entry.status = 'clean';
       return this.envelope(res, entry);
+    }
+    if (path === '/agent-profiles' && method === 'POST') {
+      const input = body ?? {};
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.name ?? '') || !['user', 'project'].includes(input.scope)) {
+        return this.envelope(res, null, 40001, 'fixture: invalid agent profile name or scope');
+      }
+      const source = input.scope === 'project' ? 'workspace' : 'user';
+      if (this.agentProfiles.some((profile) => profile.name === input.name
+        && (profile.source === 'builtin' || (profile.source === source
+          && (source === 'user' || profile.workspace_id === input.workspace_id))))) {
+        return this.envelope(res, null, 40943, `fixture: agent profile ${input.name} already exists`);
+      }
+      const duplicateName = typeof input.template === 'string' && input.template.startsWith('duplicate:')
+        ? input.template.slice('duplicate:'.length) : undefined;
+      const template = duplicateName === undefined ? undefined
+        : this.agentProfiles.find((profile) => profile.name === duplicateName);
+      if (duplicateName !== undefined && template === undefined) {
+        return this.envelope(res, null, 40001, `fixture: no agent profile ${duplicateName}`);
+      }
+      if ((input.template === undefined || input.template === 'blank') && (!input.description || !String(input.prompt ?? '').trim())) {
+        return this.envelope(res, null, 40001, 'fixture: description and prompt required');
+      }
+      const defaults = input.template === 'implementer'
+        ? { description: 'Engineering owner', prompt: 'Own and verify the engineering objective.', pinned_model_alias: 'inherit' }
+        : input.template === 'reviewer'
+          ? { description: 'Independent reviewer', prompt: 'Review the candidate and report findings.', pinned_model_alias: 'inherit' }
+          : {};
+      const created = {
+        ...defaults, ...template,
+        name: input.name,
+        source,
+        workspace_id: input.workspace_id,
+        source_file: `${source === 'user' ? '/fixture/home/agents' : '/fixture/project/.kiki/agents'}/${input.name}.md`,
+        description: input.description ?? template?.description ?? defaults.description,
+        when_to_use: input.when_to_use ?? template?.when_to_use,
+        pinned_model_alias: input.pinned_model_alias ?? template?.pinned_model_alias ?? defaults.pinned_model_alias,
+        thinking_effort: input.thinking_effort ?? template?.thinking_effort,
+        tools: input.tools ?? template?.tools,
+        prompt: input.prompt ?? template?.prompt ?? defaults.prompt,
+        main: input.main ?? template?.main ?? false,
+        disabled: false,
+        routes: [],
+      };
+      this.agentProfiles.push(created);
+      return this.envelope(res, created);
     }
     const agentMatch = /^\/agents\/([^/]+)$/.exec(path);
     if (agentMatch !== null && method === 'PATCH') {
@@ -1682,6 +1933,46 @@ class FixtureServer {
       return this.envelope(res, {
         tools: this.scenario?.data.tools ?? [],
       });
+    }
+    // GUI skin files (`<KIKI_HOME>/themes/`). The fixture holds the raw file
+    // contents and applies the same accept/skip rule the real server does:
+    // `kind: 'kiki-skin'` and no unknown top-level keys.
+    if (path === '/skins' && method === 'GET') {
+      const files = this.scenario?.data.skinFiles ?? {};
+      const items = [];
+      const skipped = [];
+      for (const [id, file] of Object.entries(files)) {
+        if (file?.kind !== 'kiki-skin') {
+          skipped.push({ file: `${id}.json`, reason: 'not a kiki-skin file (missing kind)' });
+          continue;
+        }
+        const allowed = new Set(['$schema', 'kind', 'version', 'id', 'name', 'description', 'author', 'variants']);
+        const extra = Object.keys(file).filter((key) => !allowed.has(key));
+        if (extra.length > 0) {
+          skipped.push({ file: `${id}.json`, reason: `unrecognized key: ${extra[0]}` });
+          continue;
+        }
+        items.push({
+          id: file.id ?? id,
+          name: file.name,
+          ...(file.description !== undefined ? { description: file.description } : {}),
+          ...(file.author !== undefined ? { author: file.author } : {}),
+          variants: ['light', 'dark'].filter((variant) => file.variants?.[variant] !== undefined),
+        });
+      }
+      return this.envelope(res, {
+        items,
+        directory: this.scenario?.data.skinsDirectory ?? '/home/fixture/.kiki/themes',
+        skipped,
+      });
+    }
+    const skinMatch = /^\/skins\/([a-z0-9-]+)$/.exec(path);
+    if (skinMatch !== null && method === 'GET') {
+      const file = this.scenario?.data.skinFiles?.[skinMatch[1]];
+      if (file === undefined || file.kind !== 'kiki-skin') {
+        return this.envelope(res, null, 40409, 'skin not found');
+      }
+      return this.envelope(res, { skin: file, warnings: [] });
     }
     if (path === '/mcp/runtime/servers' && method === 'GET') {
       return this.envelope(res, {
