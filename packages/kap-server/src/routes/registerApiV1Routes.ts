@@ -42,6 +42,7 @@ import { registerShippedAgentProfilesRoute } from './shippedAgentProfiles';
 import { registerShutdownRoutes } from './shutdown';
 import { registerSnapshotRoutes } from './snapshot';
 import { registerSkillsRoutes } from './skills';
+import { registerSkinsRoutes } from './skins';
 import { registerTasksRoutes } from './tasks';
 import { registerTerminalsRoutes } from './terminals';
 import { registerToolsRoutes } from './tools';
@@ -78,6 +79,8 @@ export interface RegisterApiV1RoutesOptions {
   readonly enableShutdown?: boolean;
   readonly enableTerminals?: boolean;
   readonly guiStore: IGuiStoreService;
+  /** Directory holding user theme/skin files; `<homeDir>/themes` in production. */
+  readonly themesDir: string;
   readonly onShutdown: () => void;
   readonly shutdownSignal?: AbortSignal;
   readonly connectionRegistry: IConnectionRegistry;
@@ -183,6 +186,9 @@ export async function registerApiV1Routes(
         { hostIdentity: opts.hostIdentity },
       );
       registerSkillsRoutes(apiV1 as unknown as Parameters<typeof registerSkillsRoutes>[0], core);
+      registerSkinsRoutes(apiV1 as unknown as Parameters<typeof registerSkinsRoutes>[0], {
+        themesDir: opts.themesDir,
+      });
       registerCapabilitiesRoutes(
         apiV1 as unknown as Parameters<typeof registerCapabilitiesRoutes>[0],
         core,

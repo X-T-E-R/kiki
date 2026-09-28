@@ -195,6 +195,17 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
     },
 
+    skins: {
+      // `allowMissingRoute`: a server older than the skin surface answers 404,
+      // and an outdated server must not make the appearance page look broken.
+      list: () => transport.json<import('@kiki/protocol').ListSkinsResponse>('/skins', {
+        allowMissingRoute: true,
+      }),
+      get: (skinId: string) => transport.json<import('@kiki/protocol').GetSkinResponse>(
+        `/skins/${encodeURIComponent(skinId)}`,
+      ),
+    },
+
     workspaces: {
       list: () => transport.json('/workspaces'),
       rename: (workspaceId: string, name: string) => transport.json(

@@ -215,6 +215,12 @@ export interface HttpRestFacade {
     readBuiltinContent(name: string): Promise<import('@kiki/protocol').BuiltinSkillContentResponse>;
   };
 
+  /** GUI skin files in the server's Kiki themes directory. Read-only by design. */
+  readonly skins: {
+    list(): Promise<import('@kiki/protocol').ListSkinsResponse>;
+    get(skinId: string): Promise<import('@kiki/protocol').GetSkinResponse>;
+  };
+
   readonly workspaces: {
     list(): Promise<import('@kiki/protocol').ListWorkspacesResponse>;
     rename(workspaceId: string, name: string): Promise<import('@kiki/protocol').Workspace>;

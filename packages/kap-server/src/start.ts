@@ -642,6 +642,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableShutdown,
     enableTerminals,
     guiStore,
+    themesDir: join(homeDir, 'themes'),
     pluginBridgeServerToken: () => authTokenService.getToken(),
     pluginMarketplaceUrl: () =>
       resolvePluginMarketplaceSource({
