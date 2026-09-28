@@ -102,6 +102,13 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/sessions/${encodeURIComponent(sessionId)}:compact`,
         { method: 'POST', body },
       ),
+      getAutoCompact: (sessionId: string, agentId: string) => transport.json(
+        `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/auto-compact`,
+      ),
+      setAutoCompact: (sessionId: string, agentId: string, input: import('@kiki/protocol').AutoCompactWrite) => transport.json(
+        `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/auto-compact`,
+        { method: 'PATCH', body: input },
+      ),
       undo: (sessionId: string, body = {}) => transport.json(
         `/sessions/${encodeURIComponent(sessionId)}:undo`,
         { method: 'POST', body },
@@ -347,19 +354,47 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     plugins: {
       marketplace: () => transport.json('/plugins/marketplace'),
-      install: (source: string) => transport.json('/plugins', {
+      preview: (input) => transport.json('/plugins:preview', {
         method: 'POST',
-        body: { source },
+        body: input,
+        timeoutMs: 0,
+      }),
+      install: (input) => transport.json('/plugins', {
+        method: 'POST',
+        body: typeof input === 'string' ? { source: input } : input,
         timeoutMs: 0,
       }),
       info: (id: string) => transport.json('/plugins/' + encodeURIComponent(id)),
+      settings: (id: string) => transport.json(`/plugins/${encodeURIComponent(id)}/settings`),
+      setSettings: (id: string, input) => transport.json(`/plugins/${encodeURIComponent(id)}/settings`, { method: 'POST', body: input }),
       setEnabled: (id: string, enabled: boolean) => transport.json(
         `/plugins/${encodeURIComponent(id)}:${enabled ? 'enable' : 'disable'}`,
         { method: 'POST', body: {} },
       ),
-      remove: (id: string) => transport.json(
+      remove: (id: string, options) => transport.json(
         `/plugins/${encodeURIComponent(id)}:remove`,
+        { method: 'POST', body: options ?? {} },
+      ),
+      rollback: (id: string) => transport.json(
+        `/plugins/${encodeURIComponent(id)}:rollback`,
         { method: 'POST', body: {} },
+      ),
+      installPrerequisite: (id: string, input) => transport.json(
+        `/plugins/${encodeURIComponent(id)}:install-prerequisite`,
+        { method: 'POST', body: input, timeoutMs: 0 },
+      ),
+      panels: () => transport.json('/plugins/panels'),
+      panelDocument: (id: string, panelId: string) => transport.json(
+        `/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panelId)}/document`,
+      ),
+      panelBridge: (id: string, panelId: string, input) => transport.json(
+        `/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panelId)}/bridge`,
+        { method: 'POST', body: input },
+      ),
+      commands: () => transport.json('/plugins/commands'),
+      recommend: (input) => transport.json('/plugins/recommendations/match', { method: 'POST', body: input }),
+      dismissRecommendation: (id: string) => transport.json(
+        `/plugins/${encodeURIComponent(id)}:dismiss-recommendation`, { method: 'POST', body: {} },
       ),
     },
 

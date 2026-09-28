@@ -99,6 +99,12 @@ export interface HttpRestPluginMarketplaceEntry {
   readonly description?: string;
   readonly homepage?: string;
   readonly keywords?: readonly string[];
+  readonly relevance?: {
+    readonly cwd?: readonly string[];
+    readonly fileGlobs?: readonly string[];
+    readonly commands?: readonly string[];
+    readonly dependencies?: readonly string[];
+  };
   readonly version?: string;
   readonly source: string;
   readonly installed?: { readonly version?: string; readonly enabled: boolean };
@@ -174,6 +180,8 @@ export interface HttpRestFacade {
     list(query?: HttpRestListSessionsQuery): Promise<PageResponse<Session>>;
     create(body: SessionCreate): Promise<Session>;
     compact(sessionId: string, body?: { readonly instruction?: string }): Promise<import('@kiki/protocol').CompactSessionResponse>;
+    getAutoCompact(sessionId: string, agentId: string): Promise<import('@kiki/protocol').AutoCompactStatus>;
+    setAutoCompact(sessionId: string, agentId: string, input: import('@kiki/protocol').AutoCompactWrite): Promise<import('@kiki/protocol').AutoCompactWriteResult>;
     undo(sessionId: string, body?: { readonly count?: number; readonly page_size?: number }): Promise<import('@kiki/protocol').UndoSessionResponse>;
     updateProfile(sessionId: string, body: UpdateSessionProfileRequest): Promise<Session>;
     archive(sessionId: string): Promise<ArchiveSessionResponse>;
@@ -302,10 +310,21 @@ export interface HttpRestFacade {
 
   readonly plugins: {
     marketplace(): Promise<HttpRestPluginMarketplaceResponse>;
-    install(source: string): Promise<PluginSummary>;
+    preview(input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan>;
+    install(input: string | import('@kiki/protocol').PluginInstallRequest): Promise<PluginSummary>;
     info(id: string): Promise<PluginInfo>;
+    settings(id: string): Promise<import('@kiki/protocol').PluginSettingsResponse>;
+    setSettings(id: string, input: import('@kiki/protocol').PluginSettingsPatch): Promise<import('@kiki/protocol').PluginSettingsResponse>;
     setEnabled(id: string, enabled: boolean): Promise<{ readonly ok: true }>;
-    remove(id: string): Promise<{ readonly ok: true }>;
+    remove(id: string, options?: { readonly deleteData?: boolean }): Promise<{ readonly ok: true }>;
+    rollback(id: string): Promise<{ readonly ok: true }>;
+    installPrerequisite(id: string, input: import('@kiki/protocol').PluginPrerequisiteInstall): Promise<{ readonly ok: true }>;
+    panels(): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }>;
+    panelDocument(id: string, panelId: string): Promise<import('@kiki/protocol').PluginPanelDocument>;
+    panelBridge(id: string, panelId: string, input: import('@kiki/protocol').PluginPanelBridgeRequest): Promise<import('@kiki/protocol').PluginPanelBridgeResponse>;
+    commands(): Promise<{ readonly commands: readonly { readonly pluginId: string; readonly name: string; readonly description: string; readonly prompt: string }[] }>;
+    recommend(input: { readonly cwd?: string; readonly files?: readonly string[]; readonly commands?: readonly string[]; readonly dependencies?: readonly string[] }): Promise<{ readonly entries: readonly HttpRestPluginMarketplaceEntry[] }>;
+    dismissRecommendation(id: string): Promise<{ readonly ok: true }>;
   };
 
   readonly auth: {

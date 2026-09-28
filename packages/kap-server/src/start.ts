@@ -642,6 +642,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableShutdown,
     enableTerminals,
     guiStore,
+    pluginBridgeServerToken: () => authTokenService.getToken(),
     pluginMarketplaceUrl: () =>
       resolvePluginMarketplaceSource({
         optionUrl: opts.pluginMarketplaceUrl,

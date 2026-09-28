@@ -48,3 +48,5 @@ export * from './rest/connection';
 export * from './rest/guiStore';
 export * from './rest/thread';
 export * from './rest/usage';
+export * from './rest/autoCompact';
+export * from './rest/plugin';

@@ -11,6 +11,7 @@ import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBro
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import type { LeaseRegistry } from '../services/leaseRegistry';
 import { registerAgentProfilesRoute } from './agentProfiles';
+import { registerAutoCompactRoutes } from './autoCompact';
 import { registerLeaseRoutes } from './leases';
 import { registerApprovalsRoutes } from './approvals';
 import { registerAuthRoute } from './auth';
@@ -90,6 +91,7 @@ export interface RegisterApiV1RoutesOptions {
    * empty) and the route reports `{ configured: false }` without fetching.
    */
   readonly pluginMarketplaceUrl: () => string | undefined;
+  readonly pluginBridgeServerToken: () => string;
   /**
    * Surface `dangerous_bypass_auth` in the `/meta` payload. Set by `start.ts`
    * from the `disableAuth` server option (the `--dangerous-bypass-auth` CLI
@@ -173,6 +175,7 @@ export async function registerApiV1Routes(
         opts.onWorkspaceServed,
         opts.leaseRegistry,
       );
+      registerAutoCompactRoutes(apiV1 as unknown as Parameters<typeof registerAutoCompactRoutes>[0], core);
       registerRuntimeRoutes(apiV1 as unknown as Parameters<typeof registerRuntimeRoutes>[0], core);
       registerSessionExportRoute(
         apiV1 as unknown as Parameters<typeof registerSessionExportRoute>[0],
@@ -186,6 +189,7 @@ export async function registerApiV1Routes(
       );
       registerPluginsRoutes(apiV1 as unknown as Parameters<typeof registerPluginsRoutes>[0], core, {
         marketplaceUrl: opts.pluginMarketplaceUrl,
+        serverToken: opts.pluginBridgeServerToken,
       });
       registerMessagesRoutes(
         apiV1 as unknown as Parameters<typeof registerMessagesRoutes>[0],
