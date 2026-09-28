@@ -132,6 +132,18 @@ describe('permissionRules/matchPermissionRule', () => {
     expect(matches(rule('Bad(unclosed'), 'Bad', noArgs)).toBe(false);
   });
 
+  it('keeps legacy Cron and Goal approval rules scoped to their original actions', () => {
+    const create = { approvalRule: 'CronCreate({"cron":"0 9 * * *"})' };
+    expect(matches(rule('CronCreate'), 'Cron', create)).toBe(true);
+    expect(matches(rule('CronDelete'), 'Cron', create)).toBe(false);
+    expect(matches(rule(create.approvalRule), 'Cron', create)).toBe(true);
+    expect(matches(rule('CreateGoal'), 'Goal', { approvalRule: 'CreateGoal' })).toBe(true);
+    expect(matches(rule('UpdateGoal'), 'Goal', { approvalRule: 'CreateGoal' })).toBe(false);
+    expect(matches(rule('Goal(create)'), 'Goal', {
+      approvalRule: 'CreateGoal', matchesRule: (value) => value === 'create',
+    })).toBe(true);
+  });
+
   it('does not match rule arguments without an execution matcher', () => {
     expect(matches(rule('Custom("query":"a.b")'), 'Custom', noArgs)).toBe(false);
     expect(matches(rule('Bash("command":"git status")'), 'Bash', noArgs)).toBe(false);

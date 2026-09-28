@@ -7,6 +7,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import type { Event2, Event2Class } from '#/app/event/event2';
 import { IFlagService } from '#/app/flag/flag';
 import type { ModelCapability } from '#/kosong/contract/capability';
+import { IModelCatalog } from '#/kosong/model/catalog';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
@@ -28,7 +29,7 @@ import {
 } from '#/agent/loop/loop';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import type { StepRequest } from '#/agent/loop/stepRequest';
-import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
 import { IConfigService } from '#/app/config/config';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
@@ -48,13 +49,14 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { DYNAMIC_TOOL_SCHEMA_VARIANT, LOADABLE_TOOLS_VARIANT } from '#/agent/toolSelect/dynamicTools';
 import { TOOL_SELECT_FLAG_ID } from '#/agent/toolSelect/flag';
-import { IAgentToolSelectService, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
+import { IAgentToolSelectService, CALL_TOOL_NAME, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 import { IAgentToolSelectAnnouncementsService } from '#/agent/toolSelect/toolSelectAnnouncements';
 import { AgentToolSelectAnnouncementsService } from '#/agent/toolSelect/toolSelectAnnouncementsService';
 import { IAgentToolSelectSchemasService } from '#/agent/toolSelect/toolSelectSchemas';
 import { AgentToolSelectSchemasService } from '#/agent/toolSelect/toolSelectSchemasService';
 import { AgentToolSelectService } from '#/agent/toolSelect/toolSelectService';
 import { SelectToolsTool } from '#/agent/tools/select-tools/selectToolsTool';
+import { CallTool } from '#/agent/tools/select-tools/callTool';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IWireService } from '#/wire/wire';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -82,6 +84,7 @@ let capabilities: ModelCapability;
 let flagEnabled: boolean;
 let activeToolNames: ReadonlySet<string> | undefined;
 let disclosureToolActive: boolean;
+let providerType: string;
 
 beforeEach(() => {
   disposables = new DisposableStore();
@@ -89,6 +92,7 @@ beforeEach(() => {
   flagEnabled = false;
   activeToolNames = undefined;
   disclosureToolActive = true;
+  providerType = 'openai';
 });
 
 afterEach(() => disposables.dispose());
@@ -105,6 +109,15 @@ function makeCapabilities(overrides: {
     tool_use: overrides.tool_use ?? false,
     max_context_tokens: 128_000,
     dynamically_loaded_tools: overrides.dynamically_loaded_tools,
+  };
+}
+
+function modelContext(): ProfileModelContext {
+  return {
+    modelAlias: 'fixture', modelCapabilities: capabilities, thinkingLevel: 'off',
+    maxOutputSize: undefined, alwaysThinking: undefined, reservedContextSize: undefined,
+    compactionTriggerRatio: undefined, compactionMaxAttempts: undefined,
+    compactionSoftContextSize: undefined,
   };
 }
 
@@ -328,6 +341,10 @@ function registerSharedServices(
   reg.defineInstance(IAgentContextMemoryService, contextMemory);
   reg.definePartialInstance(IAgentProfileService, {
     getModelCapabilities: () => capabilities,
+    resolveModelContext: modelContext,
+  });
+  reg.definePartialInstance(IModelCatalog, {
+    getRequester: () => ({ model: { protocol: 'openai', providerType } }) as ReturnType<IModelCatalog['getRequester']>,
   });
   reg.definePartialInstance(IAgentToolPolicyService, {
     isToolActive: (name: string) => activeToolNames === undefined || activeToolNames.has(name),
@@ -504,17 +521,17 @@ async function execute(
 }
 
 describe('AgentToolSelectService gate', () => {
-  it('opens only when dynamically_loaded_tools capability, tool_use capability and flag are all on', () => {
+  it('opens when tool_use and the flag are on for an OpenAI model', () => {
     flagEnabled = true;
     const { sut } = createHarness();
     expect(sut.enabled()).toBe(true);
   });
 
-  it('stays closed without the dynamically_loaded_tools capability', () => {
+  it('opens without dynamically_loaded_tools when the provider supports message schemas', () => {
     flagEnabled = true;
     capabilities = makeCapabilities({ tool_use: true, dynamically_loaded_tools: false });
     const { sut } = createHarness();
-    expect(sut.enabled()).toBe(false);
+    expect(sut.enabled()).toBe(true);
   });
 
   it('stays closed without tool_use capability', () => {
@@ -651,6 +668,15 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(afterLoad.find((entry) => entry.name === USER_INLINE)?.deferred).toBeUndefined();
   });
 
+  it('keeps a stable CallTool on OpenAI but not Kimi', () => {
+    flagEnabled = true;
+    const h = createHarness();
+    disposables.add(h.registry.register(h.ix.createInstance(CallTool), { source: 'builtin' }));
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).toContain(CALL_TOOL_NAME);
+    providerType = 'kimi';
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain(CALL_TOOL_NAME);
+  });
+
   it('keeps SelectTools visible when the profile omits it while hiding inactive tools', () => {
     const h = createHarness();
     registerBuiltin(h, new EchoTool());
@@ -707,6 +733,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     const h = createHarness((reg) => {
       reg.definePartialInstance(IAgentProfileService, {
         getModelCapabilities: () => capabilities,
+        resolveModelContext: modelContext,
         data: () => ({ modelCapabilities: capabilities, thinkingLevel: 'off', systemPrompt: '' }),
       });
       reg.definePartialInstance(IConfigService, {
@@ -736,13 +763,13 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
   });
 
-  it('shapeHistory removes a deferred user schema after unregister', () => {
+  it('preserves an announced schema after unregister without exposing the tool', () => {
     const h = createHarness();
     const registration = registerUser(h, new EchoTool(USER_DEFERRED), 'deferred');
     h.contextMemory.history.push(schemaMessage(USER_DEFERRED));
     registration.dispose();
 
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
+    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
     expect(h.sut.load([USER_DEFERRED])).toEqual({
       toLoad: [],
       alreadyAvailable: [],
@@ -753,13 +780,13 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     ]);
   });
 
-  it('shapeHistory removes a deferred schema after re-registering the user tool inline', () => {
+  it('preserves a deferred schema after re-registering the user tool inline', () => {
     const h = createHarness();
     registerUser(h, new EchoTool(USER_DEFERRED), 'deferred');
     h.contextMemory.history.push(schemaMessage(USER_DEFERRED));
     registerUser(h, new EchoTool(USER_DEFERRED));
 
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
+    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
     const inline = h.sut
       .shapeTools(h.registry.list())
       .find((entry) => entry.name === USER_DEFERRED);
@@ -1053,6 +1080,74 @@ describe('AgentToolSelectService executor interception', () => {
     const afterLoad = await execute(h, toolCall('call-2', USER_DEFERRED));
     expect(afterLoad[0]!.result.output).toBe('echo ok');
     expect(dashboard.calls).toBe(1);
+  });
+
+  it('routes CallTool to the loaded real tool for approval and execution', async () => {
+    const h = createExecutorHarness();
+    const alpha = new StubMcpTool(MCP_ALPHA);
+    registerMcp(h, alpha);
+    disposables.add(h.registry.register(h.ix.createInstance(CallTool), { source: 'builtin' }));
+    const wrapper = toolCall('call-1', CALL_TOOL_NAME, { name: MCP_ALPHA, arguments: {} });
+    expect(h.sut.resolveBridgeCall(wrapper)).toBe(wrapper);
+    h.contextMemory.history.push(schemaMessage(MCP_ALPHA));
+    const routed = h.sut.resolveBridgeCall(wrapper);
+    expect(routed).toMatchObject({ id: 'call-1', name: MCP_ALPHA, arguments: '{}' });
+    const result = await execute(h, routed);
+    expect(result[0]).toMatchObject({ toolName: MCP_ALPHA, result: { output: 'mcp ok', approvalRule: MCP_ALPHA } });
+    expect(alpha.calls).toBe(1);
+    expect(h.sut.resolveBridgeCall(toolCall('call-2', CALL_TOOL_NAME, { name: MCP_GONE, arguments: {} })).name).toBe(CALL_TOOL_NAME);
+  });
+
+  it('keeps plugin tools off tools[] and reuses history after unload/reload', () => {
+    const h = createHarness();
+    const tool = new EchoTool('plugin__example__read');
+    const plugin = h.registry.register(tool, { source: 'plugin', disclosure: 'deferred' });
+    disposables.add(plugin);
+    const wire = () => JSON.stringify(h.sut.shapeTools(h.registry.list())
+      .filter((entry) => entry.deferred !== true));
+    const initial = wire();
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain(tool.name);
+    h.contextMemory.history.push(schemaMessage(tool.name));
+    expect(h.sut.shapeTools(h.registry.list()).find((entry) => entry.name === tool.name)?.deferred).toBe(true);
+    plugin.dispose();
+    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain(tool.name);
+    disposables.add(h.registry.register(new EchoTool(tool.name), { source: 'plugin', disclosure: 'deferred' }));
+    expect(h.sut.load([tool.name]).alreadyAvailable).toEqual([tool.name]);
+    expect(h.sut.drainPendingToolSchemas()).toBeUndefined();
+    expect(wire()).toBe(initial);
+  });
+
+  it('announces a changed schema only after the tool is loaded, without changing tools[]', () => {
+    const h = createHarness();
+    const old = registerMcp(h, new StubMcpTool(MCP_ALPHA));
+    h.contextMemory.landAnnouncement(`<tools_added>\n${MCP_ALPHA}\n</tools_added>`);
+    h.contextMemory.history.push(schemaMessage(MCP_ALPHA));
+    const wire = () => JSON.stringify(h.sut.shapeTools(h.registry.list())
+      .filter((entry) => entry.deferred !== true));
+    const initial = wire();
+    old.dispose();
+    registerMcp(h, new StubMcpTool(MCP_ALPHA, 'updated', REQUIRED_PAYLOAD_PARAMETERS));
+    expect(h.sut.loadableToolsAnnouncement()).toContain(`<tools_added>\n${MCP_ALPHA}\n</tools_added>`);
+    expect(h.sut.drainPendingToolSchemas()?.[0]?.parameters).toEqual(REQUIRED_PAYLOAD_PARAMETERS);
+    expect(wire()).toBe(initial);
+  });
+
+  it('keeps exact top-level tool bytes and history after an identical MCP reconnect', () => {
+    const h = createHarness();
+    disposables.add(h.registry.register(h.ix.createInstance(CallTool), { source: 'builtin' }));
+    const tool = new StubMcpTool(MCP_ALPHA);
+    const first = registerMcp(h, tool);
+    h.contextMemory.landAnnouncement(`<tools_added>\n${MCP_ALPHA}\n</tools_added>`);
+    h.contextMemory.history.push({ ...schemaMessage(MCP_ALPHA),
+      tools: [{ name: tool.name, description: tool.description, parameters: tool.parameters }] });
+    const initial = JSON.stringify(h.sut.shapeTools(h.registry.list()));
+    first.dispose();
+    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    disposables.add(h.registry.register(new StubMcpTool(MCP_ALPHA), { source: 'mcp' }));
+    expect(JSON.stringify(h.sut.shapeTools(h.registry.list()))).toBe(initial);
+    expect(h.sut.loadableToolsAnnouncement()).toBeUndefined();
+    expect(h.sut.drainPendingToolSchemas()).toBeUndefined();
   });
 });
 

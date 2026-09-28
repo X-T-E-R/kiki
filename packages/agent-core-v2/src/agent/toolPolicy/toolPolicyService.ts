@@ -7,7 +7,7 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IConfigService } from '#/app/config/config';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
-import { SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
+import { CALL_TOOL_NAME, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 import type { ToolSource } from '#/tool/toolContract';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { SUBAGENT_SECTION, type SubagentConfig } from '#/session/subagent/configSection';
@@ -31,7 +31,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     this._register(
       toolExecutor.registerToolCallGuard(({ name, source }) => {
         const active =
-          name === SELECT_TOOLS_TOOL_NAME
+          name === SELECT_TOOLS_TOOL_NAME || name === CALL_TOOL_NAME
             ? this.isToolActiveForDisclosure(name, source)
             : this.isToolActive(name, source);
         return active
@@ -58,7 +58,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   }
 
   isToolActiveForDisclosure(name: string, source: ToolSource = 'builtin'): boolean {
-    if (name !== SELECT_TOOLS_TOOL_NAME) return this.isToolActive(name, source);
+    if (name !== SELECT_TOOLS_TOOL_NAME && name !== CALL_TOOL_NAME) return this.isToolActive(name, source);
     const profile = this.profile.data();
     return this.evaluate(
       {

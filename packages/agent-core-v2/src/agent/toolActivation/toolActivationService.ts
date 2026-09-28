@@ -9,6 +9,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
+import { CALL_TOOL_NAME, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolContribution } from '#/agent/toolRegistry/toolContribution';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
@@ -87,7 +88,10 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
         if (this.toolRegistry.resolve(options.name) !== undefined) continue;
         if (!this.runtimeAllows(record)) continue;
         if (!isToolActive(workspaceVeto, options.name, source)) continue;
-        if (!isToolActive(policy, options.name, source)) continue;
+        const disclosureControl = options.name === SELECT_TOOLS_TOOL_NAME || options.name === CALL_TOOL_NAME;
+        if (!isToolActive(disclosureControl
+          ? { disallowedTools: policy.disallowedTools, disabledToolGroups: policy.disabledToolGroups }
+          : policy, options.name, source)) continue;
         if (options.when !== undefined && !options.when(accessor)) continue;
         const tool = accessor.get(id);
         const registration = this.toolRegistry.register(tool, {

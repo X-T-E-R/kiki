@@ -181,6 +181,12 @@ export interface PlanEnterResolvedEvent {
   outcome: 'approved' | 'auto_approved';
 }
 
+export interface ToolCacheBreakpointEvent {
+  reason: 'mcp_toolset_changed' | 'tool_configuration_changed' | 'tool_definition_changed';
+  before_hash: string;
+  after_hash: string;
+}
+
 export interface CompactionFinishedEvent {
   turn_id?: number;
   source: 'manual' | 'auto';
@@ -516,6 +522,15 @@ export const telemetryEventDefinitions = {
       error_type: 'Error category when the call failed',
       trace_id:
         'Trace id of the LLM request that produced this tool call; absent for non-Kimi protocols',
+    },
+  }),
+  tool_cache_breakpoint: defineAgentTelemetryEvent<ToolCacheBreakpointEvent>({
+    owner: 'kimi-code',
+    comment: 'The provider-visible tool definition changes between requests.',
+    properties: {
+      reason: 'Classified change in names or definitions; MCP reconnects with identical definitions are not breakpoints',
+      before_hash: 'SHA-256 of the previous provider-visible tool definitions',
+      after_hash: 'SHA-256 of the current provider-visible tool definitions',
     },
   }),
   api_error: defineAgentTelemetryEvent<ApiErrorEvent>({

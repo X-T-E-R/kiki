@@ -14,6 +14,7 @@ import { PlanModeInjection } from '#/features/plan/injection/planModeInjection';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
+import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type { BeforeToolExecuteEvent } from '#/agent/toolExecutor/toolHooks';
@@ -69,6 +70,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     @IAgentScopeContext private readonly agentCtx: IAgentScopeContext,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentToolApprovalService private readonly toolApproval: IAgentToolApprovalService,
+    @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
     @IAgentPermissionModeService private readonly modeService: IAgentPermissionModeService,
     @ITelemetryService telemetry: ITelemetryService,
     @IAgentStateService private readonly agentState: IAgentStateService,
@@ -92,6 +94,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     this._register(
       this.dispatcher.hooks.onDidRestore.register('plan', async (_ctx, next) => {
         this.restoreTelemetryMode();
+        if (this.isActive && this.toolSelect.enabled()) this.toolSelect.load(['ExitPlanMode']);
         await next();
       }),
     );
@@ -196,7 +199,8 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       return;
     }
 
-    if (toolName === 'CronCreate' || toolName === 'CronDelete') {
+    if (toolName === 'CronCreate' || toolName === 'CronDelete' ||
+      (toolName === 'Cron' && (event.args as { action?: unknown }).action !== 'list')) {
       event.veto(
         denyToolExecution(
           this.toolApproval.formatDenyMessage(
@@ -246,6 +250,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       await this.dispatcher.dispatch(new PlanModeEnter({ id }));
       this.telemetryContext.set({ mode: 'plan' });
       enterRecorded = true;
+      if (this.toolSelect.enabled()) this.toolSelect.load(['ExitPlanMode']);
       if (createFile) {
         await this.writeEmptyPlanFile(planFilePath);
       }

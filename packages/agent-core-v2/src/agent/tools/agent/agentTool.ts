@@ -1,4 +1,3 @@
-import { type CollectionView } from '#/_base/di/collection';
 import type { Runtime } from '#/runtime/runtime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { resolvePathAccessPath } from '#/tool/path-access';
@@ -26,11 +25,7 @@ import {
   type ExecutableToolResult,
   type ToolExecution,
 } from '#/tool/toolContract';
-import {
-  AgentToolContribution,
-  registerAgentToolService,
-} from '#/agent/toolRegistry/toolContribution';
-import { IAgentToolRegistryService, type ToolReference } from '#/agent/toolRegistry/toolRegistry';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import type {
   AgentProfile,
   AgentProfileRouteCatalogEntry,
@@ -88,8 +83,8 @@ import {
 } from './agent';
 import { SubagentTask, type SubagentHandle } from './subagent-task';
 import {
-  buildProfileDescriptions,
-  buildRouteDescriptions,
+  compactProfileDescriptions,
+  compactRouteDescriptions,
 } from './subagentDescription';
 
 import AGENT_BACKGROUND_DISABLED_DESCRIPTION from './agent-background-disabled.md?raw';
@@ -100,7 +95,7 @@ const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (sch
   addSubagentBindingSchemaConstraints(schema);
 });
 const PARENT_NOTIFY_DESCRIPTION =
-  'Subagents can use `AgentNotify` when their saved binding permits it, but only if the parent must change its actions before the final result arrives; do not send startup confirmations, routine progress, completion notices, or final-result copies.';
+  'Subagents may use AgentNotify only when the parent must change course before their final result; routine progress belongs in the final receipt.';
 export { buildProfileDescriptions } from './subagentDescription';
 
 export class SubagentTool implements ISubagentTool {
@@ -112,9 +107,7 @@ export class SubagentTool implements ISubagentTool {
   private readonly callerAgentId: string;
   private readonly canRunInBackground: () => boolean;
   private catalogReady = false;
-  private frozenCatalogProfiles: readonly AgentProfile[] | undefined;
-  private frozenCatalogRoutes: readonly AgentProfileRouteCatalogEntry[] | undefined;
-  private frozenCatalogSnapshot: AgentProfileCatalogSnapshot | undefined;
+  private frozenDescription: string | undefined;
 
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
@@ -125,13 +118,11 @@ export class SubagentTool implements ISubagentTool {
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
-    @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ILogService private readonly log: ILogService,
     @IConfigService private readonly config: IConfigService,
     @IModelService private readonly models: IModelService,
-    @AgentToolContribution private readonly contributions: CollectionView<AgentToolContribution>,
   ) {
     this.callerAgentId = scopeContext.agentId;
     this.canRunInBackground = () =>
@@ -144,6 +135,11 @@ export class SubagentTool implements ISubagentTool {
   }
 
   get description(): string {
+    if (!this.catalogReady) return this.buildDescription();
+    return this.frozenDescription ??= this.buildDescription();
+  }
+
+  private buildDescription(): string {
     const backgroundDescription = this.canRunInBackground()
       ? AGENT_BACKGROUND_DESCRIPTION
       : AGENT_BACKGROUND_DISABLED_DESCRIPTION;
@@ -156,62 +152,21 @@ export class SubagentTool implements ISubagentTool {
       ? AGENT_DESCRIPTION_BASE
       : AGENT_DESCRIPTION_BASE.replace(`\n\n${PARENT_NOTIFY_DESCRIPTION}`, '');
     let description = `${agentDescription}\n\nSubagent timeout: ${timeoutDescription}.\n\n${backgroundDescription}`;
-    const own = withDispatchPolicyDefaults(this.config, this.profile.data(),
-      this.callerAgentId === 'main' ? 'main' : 'sub');
-    const snapshot =
-      own.profileDefinitionId === undefined ? undefined : this.catalogSnapshot();
-    const targets = projectSubagentModelCatalog(
-      this.catalog,
-      own,
-      {
-        profiles: this.catalogProfiles(),
-        routes: this.catalogRoutes(),
-        snapshot,
-      },
-      this.models,
-      this.config,
-    );
-    const typeLines = buildProfileDescriptions(
-      targets.profiles,
-      this.knownToolReferences(),
-      (profile, name, source) =>
-        this.toolPolicy.isToolActiveForProfile(profile, name, source),
-      undefined,
-      (alias: string) => this.isRecommendedModelAliasAvailable(alias),
-    );
+    const { caller: own } = this.dispatchCatalog();
+    const targets = this.projectedTargets();
     const preferred = targets.profiles.filter((profile) =>
       evaluateSubagentDispatchDecision(this.catalog, own, profile.name).recommendationStatus === 'preferred');
-    if (preferred.length > 0) {
-      description += `\n\nPreferred agent profiles: ${preferred.map((profile) => profile.name).join(', ')}. Choose these when the task fits; other listed profiles are allowed but not recommended.`;
-    }
+    const ordered = [...preferred, ...targets.profiles.filter((profile) => !preferred.includes(profile))];
+    const typeLines = compactProfileDescriptions(ordered);
     if (typeLines) {
-      description += `\n\nAvailable agent profiles (pass via profile):\n${typeLines}`;
+      description += `\n\nAvailable profiles (pass via profile; preferred first):\n${typeLines}`;
+      if (ordered.length > 8) description += `\n${ordered.length - 8} more profiles omitted; use an exact profile name supplied by the user.`;
     }
-    const routeLines = buildRouteDescriptions(targets.routes);
-    if (routeLines) {
-      description += `\n\nAvailable agent routes (pass via route):\n${routeLines}`;
-    }
-    const modelLines = buildSubagentModelDescriptions(targets.aliases);
-    if (modelLines !== undefined) {
-      description += `\n\n${modelLines}`;
-    }
+    const routeLines = compactRouteDescriptions(targets.routes);
+    if (routeLines) description += `\n\nAvailable routes (pass via route):\n${routeLines}`;
+    const modelLines = buildSubagentModelDescriptions(targets.aliases.slice(0, 4));
+    if (modelLines !== undefined) description += `\n\n${modelLines}`;
     return description;
-  }
-
-  private isRecommendedModelAliasAvailable(alias: string): boolean {
-    try {
-      if (this.models.resolveId(alias) !== undefined) return true;
-    } catch (error) {
-      this.log.debug('Omitting unresolved recommended model alias from Agent tool description', {
-        alias,
-        error,
-      });
-      return false;
-    }
-    this.log.debug('Omitting unavailable recommended model alias from Agent tool description', {
-      alias,
-    });
-    return false;
   }
 
   dispatchCatalog(): import('./subagentCapabilities').SubagentCapabilityCatalog {
@@ -226,22 +181,34 @@ export class SubagentTool implements ISubagentTool {
     };
   }
 
+  visibleProfileDescriptions(): ReadonlyMap<string, { readonly line: string; readonly signature: string }> {
+    return new Map(this.projectedTargets().profiles.map((profile) => [
+      profile.name,
+      { line: compactProfileDescriptions([profile]), signature: JSON.stringify(profile) },
+    ]));
+  }
+
+  private projectedTargets(): ReturnType<typeof projectSubagentModelCatalog> {
+    const { caller, profiles, routes, snapshot } = this.dispatchCatalog();
+    return projectSubagentModelCatalog(
+      this.catalog,
+      caller,
+      { profiles, routes, snapshot },
+      this.models,
+      this.config,
+    );
+  }
+
   private catalogProfiles(): readonly AgentProfile[] {
-    if (this.frozenCatalogProfiles !== undefined) return this.frozenCatalogProfiles;
-    const profiles = this.catalog.list().filter((profile) => profile.main !== true);
-    if (this.catalogReady) this.frozenCatalogProfiles = profiles;
-    return profiles;
+    return this.catalog.list().filter((profile) => profile.main !== true);
   }
 
   private catalogRoutes(): readonly AgentProfileRouteCatalogEntry[] {
-    if (this.frozenCatalogRoutes !== undefined) return this.frozenCatalogRoutes;
-    const routes = this.catalog.listRoutes?.() ?? [];
-    if (this.catalogReady) this.frozenCatalogRoutes = routes;
-    return routes;
+    return this.catalog.listRoutes?.() ?? [];
   }
 
   private catalogSnapshot(): AgentProfileCatalogSnapshot {
-    const snapshot = this.frozenCatalogSnapshot ?? this.catalog.snapshot?.() ?? {
+    const snapshot = this.catalog.snapshot?.() ?? {
       publicProfiles: new Map(this.catalog.list().map((profile) => [profile.name, profile])),
       defaultProfile: this.catalog.getDefault(),
       routes: new Map(),
@@ -250,22 +217,7 @@ export class SubagentTool implements ISubagentTool {
       dependencyIndex: new Map(),
       diagnostics: [],
     };
-    if (this.catalogReady) this.frozenCatalogSnapshot = snapshot;
     return inheritProfileFileSources(this.profile.data(), this.catalog, snapshot) ?? snapshot;
-  }
-
-  private knownToolReferences(): ToolReference[] {
-    const refs = new Map<string, ToolReference>();
-    for (const contribution of this.contributions.items) {
-      refs.set(contribution.options.name, {
-        name: contribution.options.name,
-        source: contribution.options.source ?? 'builtin',
-      });
-    }
-    for (const ref of this.toolRegistry.listReferences()) {
-      if (!refs.has(ref.name)) refs.set(ref.name, ref);
-    }
-    return [...refs.values()];
   }
 
   async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {

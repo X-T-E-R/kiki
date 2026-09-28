@@ -5,6 +5,9 @@ import { defineState } from '#/state/state';
 import { IEventBus } from '#/app/event/eventBus';
 import { IFlagService } from '#/app/flag/flag';
 import type { Tool } from '#/kosong/contract/tool';
+import type { ToolCall } from '#/kosong/contract/message';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { isOAuthCatalogVendor } from '#/kosong/provider/providerDefinition';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -12,6 +15,7 @@ import { CompactionCompleted } from '#/agent/fullCompaction/compactionOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { isLegacyToolName } from '#/agent/toolPolicy/toolAliases';
 import { isMcpToolName, type ToolInfo } from '#/tool/toolContract';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -25,6 +29,7 @@ import {
 import { TOOL_SELECT_FLAG_ID } from './flag';
 import {
   IAgentToolSelectService,
+  CALL_TOOL_NAME,
   SELECT_TOOLS_TOOL_NAME,
   type LoadToolsResult,
   type ShapedToolEntry,
@@ -45,6 +50,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IFlagService private readonly flags: IFlagService,
+    @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IEventBus eventBus: IEventBus,
     @IAgentStateService private readonly states: IAgentStateService,
   ) {
@@ -82,12 +88,13 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   }
 
   enabled(): boolean {
-    const capabilities = this.profile.getModelCapabilities();
-    return (
-      capabilities.dynamically_loaded_tools === true &&
-      capabilities.tool_use &&
-      this.flags.enabled(TOOL_SELECT_FLAG_ID)
-    );
+    if (!this.flags.enabled(TOOL_SELECT_FLAG_ID) || !this.profile.getModelCapabilities().tool_use) return false;
+    try {
+      const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias).model;
+      return model.protocol === 'openai' || model.protocol === 'openai_responses' || model.protocol === 'anthropic';
+    } catch {
+      return false;
+    }
   }
 
   shapeTools(entries: readonly ToolInfo[]): readonly ShapedToolEntry[] {
@@ -95,10 +102,12 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     const activeEntries = this.activeEntries(entries, disclosure);
     if (!disclosure) return activeEntries;
     const loaded = this.loadedToolNames();
+    const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias).model;
+    const kimiProvider = model.providerType === 'kimi' || isOAuthCatalogVendor(model.providerType);
     const shaped: ShapedToolEntry[] = [];
     for (const entry of activeEntries) {
-      if (entry.name === SELECT_TOOLS_TOOL_NAME) {
-        shaped.push(entry);
+      if (entry.name === SELECT_TOOLS_TOOL_NAME || entry.name === CALL_TOOL_NAME) {
+        if (entry.name !== CALL_TOOL_NAME || !kimiProvider) shaped.push(entry);
         continue;
       }
       if (!this.isDynamicallyLoadable(entry)) {
@@ -112,8 +121,31 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   }
 
   shapeHistory(messages: readonly ContextMessage[]): readonly ContextMessage[] {
-    if (this.enabled()) return this.shapeActiveHistory(messages);
-    return stripDynamicToolContext(messages);
+    if (!this.enabled()) return stripDynamicToolContext(messages);
+    let shaped: ContextMessage[] | undefined;
+    for (let i = 0; i < messages.length; i += 1) {
+      const message = messages[i]!;
+      const tools = message.tools;
+      if (tools === undefined || !tools.some((tool) => this.isHistoricallyDisabled(tool.name))) {
+        if (shaped !== undefined) shaped.push(message);
+        continue;
+      }
+      const kept = tools.filter((tool) => !this.isHistoricallyDisabled(tool.name));
+      if (shaped === undefined) shaped = messages.slice(0, i);
+      if (kept.length > 0) shaped.push({ ...message, tools: kept });
+      else if (message.content.length > 0 || message.toolCalls.length > 0) {
+        const { tools: _tools, ...rest } = message;
+        void _tools;
+        shaped.push(rest);
+      }
+    }
+    return shaped ?? messages;
+  }
+
+  private isHistoricallyDisabled(name: string): boolean {
+    const info = this.toolRegistry.list().find((entry) => entry.name === name);
+    if (info !== undefined) return !this.toolPolicy.isToolActive(name, info.source);
+    return isMcpToolName(name) && !this.toolPolicy.isToolActive(name, 'mcp');
   }
 
   load(names: readonly string[]): LoadToolsResult {
@@ -137,6 +169,21 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     return { toLoad, alreadyAvailable, unknown };
   }
 
+  resolveBridgeCall(call: ToolCall): ToolCall {
+    if (call.name !== CALL_TOOL_NAME || !this.enabled() || call.arguments === null) return call;
+    let input: unknown;
+    try {
+      input = JSON.parse(call.arguments);
+    } catch {
+      return call;
+    }
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) return call;
+    const { name, arguments: args } = input as { name?: unknown; arguments?: unknown };
+    if (typeof name !== 'string' || args === null || typeof args !== 'object' || Array.isArray(args) ||
+      !this.activeLoadedToolNames().has(name) || this.toolRegistry.resolve(name) === undefined) return call;
+    return { ...call, name, arguments: JSON.stringify(args) };
+  }
+
   drainPendingToolSchemas(): readonly Tool[] | undefined {
     if (!this.enabled() || this.pendingLoaded.size === 0) return undefined;
     const names = [...this.pendingLoaded].toSorted((a, b) => a.localeCompare(b));
@@ -156,6 +203,21 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     const loadableSet = new Set(loadable);
     const announced = foldAnnouncedToolNames(this.context.get());
     const added = loadable.filter((name) => !announced.has(name));
+    const latestSchemas = new Map<string, Tool>();
+    for (const message of this.context.get()) {
+      for (const tool of message.tools ?? []) latestSchemas.set(tool.name, tool);
+    }
+    for (const name of loadable) {
+      if (this.pendingLoaded.has(name) || !announced.has(name) || added.includes(name)) continue;
+      const info = this.toolRegistry.list().find((entry) => entry.name === name);
+      if (info?.source !== 'mcp' && info?.source !== 'plugin') continue;
+      const previous = latestSchemas.get(name);
+      const current = this.schemaOf(name);
+      if (previous === undefined || current === undefined ||
+        JSON.stringify(previous) === JSON.stringify(current)) continue;
+      this.pendingLoaded.add(name);
+      added.push(name);
+    }
     const removed = [...announced]
       .filter((name) => !loadableSet.has(name))
       .toSorted((a, b) => a.localeCompare(b));
@@ -237,44 +299,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   }
 
   private isDynamicallyLoadable(info: ToolInfo): boolean {
-    return info.source === 'mcp' || info.disclosure === 'deferred';
-  }
-
-  private shapeActiveHistory(messages: readonly ContextMessage[]): readonly ContextMessage[] {
-    let shaped: ContextMessage[] | undefined;
-    for (let i = 0; i < messages.length; i += 1) {
-      const message = messages[i]!;
-      const next = this.shapeActiveMessage(message);
-      if (next === message) {
-        if (shaped !== undefined) shaped.push(message);
-        continue;
-      }
-      if (shaped === undefined) shaped = messages.slice(0, i);
-      if (next !== undefined) shaped.push(next);
-    }
-    return shaped ?? messages;
-  }
-
-  private shapeActiveMessage(message: ContextMessage): ContextMessage | undefined {
-    const tools = message.tools;
-    if (tools === undefined || tools.length === 0) return message;
-
-    let kept: Tool[] | undefined;
-    for (let i = 0; i < tools.length; i += 1) {
-      const tool = tools[i]!;
-      if (this.isLoadedToolActive(tool.name)) {
-        if (kept !== undefined) kept.push(tool);
-        continue;
-      }
-      if (kept === undefined) kept = tools.slice(0, i);
-    }
-    if (kept === undefined) return message;
-    if (kept.length > 0) return { ...message, tools: kept };
-
-    const { tools: _tools, ...rest } = message;
-    void _tools;
-    if (rest.content.length === 0 && rest.toolCalls.length === 0) return undefined;
-    return rest;
+    return info.source === 'mcp' || info.source === 'plugin' || info.disclosure === 'deferred';
   }
 
   private schemaOf(name: string): Tool | undefined {
@@ -294,9 +319,10 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
       const active =
         this.toolPolicy.isToolActive(entry.name, entry.source) ||
         (disclosure &&
-          entry.name === SELECT_TOOLS_TOOL_NAME &&
+          (entry.name === SELECT_TOOLS_TOOL_NAME || entry.name === CALL_TOOL_NAME) &&
           this.toolPolicy.isToolActiveForDisclosure(entry.name, entry.source));
-      const keep = active && (disclosure || entry.name !== SELECT_TOOLS_TOOL_NAME);
+      const keep = active && !isLegacyToolName(entry.name) &&
+        (disclosure || (entry.name !== SELECT_TOOLS_TOOL_NAME && entry.name !== CALL_TOOL_NAME));
       if (keep) {
         if (filtered !== undefined) filtered.push(entry);
         continue;

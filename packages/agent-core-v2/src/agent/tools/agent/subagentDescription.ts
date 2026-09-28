@@ -1,6 +1,22 @@
-import type { AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
 
 export { buildProfileDescriptions } from '#/session/dispatch/profileCatalogProjection';
+
+export function compactProfileDescriptions(profiles: readonly AgentProfile[], limit = 8): string {
+  return profiles.slice(0, limit).map((profile) =>
+    `- ${profile.name}: ${firstSentence(profile.whenToUse ?? profile.description ?? 'Use when this profile fits the task.')}`,
+  ).join('\n');
+}
+
+export function compactRouteDescriptions(routes: readonly AgentProfileRouteCatalogEntry[], limit = 4): string {
+  return routes.slice(0, limit).map((route) =>
+    `- ${route.id}: ${firstSentence(route.whenToUse ?? route.description ?? `Use the ${route.profile} route.`)}`,
+  ).join('\n');
+}
+
+function firstSentence(text: string): string {
+  return text.replaceAll(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/)[0]!.slice(0, 180);
+}
 
 export function buildRouteDescriptions(
   routes: readonly (AgentProfileRouteCatalogEntry & { readonly allowedModels?: readonly string[] })[],

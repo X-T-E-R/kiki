@@ -1,13 +1,1 @@
-Stop a running background task.
-
-Only use this when a task must genuinely be cancelled — for a task that is
-finishing normally, wait for its completion notification or inspect it with
-`TaskOutput` instead of stopping it.
-
-Guidelines:
-- This is a general-purpose stop capability for any background task. It is not
-  a bash-specific kill.
-- Stopping a task is destructive: it may leave partial side effects behind.
-  Use it with care.
-- If the task has already finished, this tool simply returns its current
-  status.
+Stop a running background task only when it genuinely must be cancelled. Prefer TaskOutput for a normally finishing task; stopping can leave partial side effects. Calling on an already finished task only returns its current status. This does not stop arbitrary processes: use it only for tasks started by this agent.

@@ -66,7 +66,7 @@ import type {
   ProviderConfig,
   ProvidersSection,
 } from '#/kosong/provider/provider';
-import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
+import { getProviderDefinition, isOAuthCatalogVendor } from '#/kosong/provider/providerDefinition';
 import {
   REQUEST_IDENTITY_RESERVED_HEADERS,
   resolveRequestIdentityLayers,
@@ -114,6 +114,7 @@ import {
   ToolCallIdNormalizer,
   type ToolCallIdResponseNormalizer,
 } from './toolCallIdNormalizer';
+import { projectDynamicToolSchemas } from './dynamicToolProjection';
 import {
   LlmRequest,
   llmRequestTraceKey,
@@ -213,6 +214,8 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   declare readonly _serviceBrand: undefined;
 
   private readonly toolCallIdNormalizer = new ToolCallIdNormalizer();
+  private readonly frozenTurnTools = new Map<number, readonly Tool[]>();
+  private previousToolset: { hash: string; tools: readonly LlmRequestToolSchema[] } | undefined;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -420,10 +423,14 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       const input = {
         systemPrompt: request.systemPrompt,
         tools: request.tools,
-        messages: await this.mediaResolver.resolve(
-          this.projector.project(shaped, policy),
-          request.requester,
-          signal,
+        messages: projectDynamicToolSchemas(
+          await this.mediaResolver.resolve(
+            this.projector.project(shaped, policy),
+            request.requester,
+            signal,
+          ),
+          request.model.protocol,
+          request.model.providerType === 'kimi' || isOAuthCatalogVendor(request.model.providerType),
         ),
       };
       this.warnAboutAnthropicThinkingEffort(request);
@@ -490,8 +497,9 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         }
 
         const finalizedCalls = toolCallIds.remapFinalizedCalls(message.toolCalls);
-        if (finalizedCalls !== message.toolCalls) {
-          message = { ...message, toolCalls: finalizedCalls };
+        const routedCalls = finalizedCalls.map((call) => this.toolSelect.resolveBridgeCall(call));
+        if (finalizedCalls !== message.toolCalls || routedCalls.some((call, index) => call !== finalizedCalls[index])) {
+          message = { ...message, toolCalls: routedCalls };
         }
         for (const { raw, assigned } of toolCallIds.remapped) {
           this.log.warn('Rewrote a duplicate provider tool call id into an agent-unique one.', {
@@ -866,14 +874,33 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
             promptVariables,
           )
         : resolvedSystemPrompt),
-      tools: (overrides.tools ?? this.defaultTools()).map((tool) => ({
-        ...tool,
-        description: applyToolPromptFields(tool.name, tool.description, promptFields, promptVariables),
-      })),
+      tools: this.toolsForRequest(overrides, promptFields, promptVariables),
       messages: [...messages],
       source: overrides.source,
       logFields: logFieldsForSource(overrides.source),
     };
+  }
+
+  private toolsForRequest(
+    overrides: AgentLLMRequestOverrides,
+    promptFields: ResolvedPromptFieldOverrides,
+    promptVariables: ReturnType<typeof customPromptVariables>,
+  ): readonly Tool[] {
+    const turnId = overrides.source?.type === 'turn' && overrides.tools === undefined
+      ? overrides.source.turnId : undefined;
+    if (turnId !== undefined) {
+      const frozen = this.frozenTurnTools.get(turnId);
+      if (frozen !== undefined) return frozen;
+      for (const id of this.frozenTurnTools.keys()) {
+        if (id < turnId) this.frozenTurnTools.delete(id);
+      }
+    }
+    const tools = (overrides.tools ?? this.defaultTools()).map((tool) => ({
+      ...tool,
+      description: applyToolPromptFields(tool.name, tool.description, promptFields, promptVariables),
+    }));
+    if (turnId !== undefined) this.frozenTurnTools.set(turnId, tools);
+    return tools;
   }
 
   private resolveTurnConfig(source: AgentLLMRequestSource | undefined): TurnRequestConfig | undefined {
@@ -959,6 +986,21 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const wireTools = providerVisibleTools(input.tools);
     const tools = toolSignature(wireTools);
     const toolsHash = fingerprint(JSON.stringify(tools));
+    const previous = this.previousToolset;
+    if (previous !== undefined && previous.hash !== toolsHash) {
+      const beforeNames = new Set(previous.tools.map((tool) => tool.name));
+      const afterNames = new Set(tools.map((tool) => tool.name));
+      const changedNames = [...beforeNames].filter((name) => !afterNames.has(name))
+        .concat([...afterNames].filter((name) => !beforeNames.has(name)));
+      this.telemetry.track2('tool_cache_breakpoint', {
+        reason: changedNames.length === 0 ? 'tool_definition_changed'
+          : changedNames.every((name) => name.startsWith('mcp__'))
+            ? 'mcp_toolset_changed' : 'tool_configuration_changed',
+        before_hash: previous.hash,
+        after_hash: toolsHash,
+      });
+    }
+    this.previousToolset = { hash: toolsHash, tools };
     if (!this.states.get(llmRequestTraceKey).seenToolsHashes.includes(toolsHash)) {
       void this.dispatcher.dispatch(new LlmToolsSnapshot({ hash: toolsHash, tools }));
     }

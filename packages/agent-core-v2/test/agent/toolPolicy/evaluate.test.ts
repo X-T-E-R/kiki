@@ -125,6 +125,24 @@ describe('isToolActiveComposed workspace veto', () => {
   });
 });
 
+describe('merged-tool legacy names', () => {
+  it('preserves old allowlists and action-specific denials', () => {
+    expect(isToolActive({ tools: ['CronCreate'] }, 'Cron')).toBe(true);
+    expect(isToolActive({ tools: ['CronCreate'] }, 'CronCreate')).toBe(true);
+    expect(isToolActive({ tools: ['CronCreate'] }, 'CronDelete')).toBe(false);
+    expect(isToolActive({ tools: ['Cron'] }, 'CronDelete')).toBe(true);
+    expect(isToolActive({ tools: ['Cron'], disallowedTools: ['CronDelete'] }, 'CronDelete')).toBe(false);
+    expect(isToolActive({ tools: ['Cron'], disallowedTools: ['CronDelete'] }, 'Cron')).toBe(true);
+    expect(isToolActive({ tools: ['CreateGoal'] }, 'Goal')).toBe(true);
+    expect(isToolActive({ tools: ['Goal'], disallowedTools: ['SetGoalBudget'] }, 'SetGoalBudget')).toBe(false);
+  });
+
+  it('preserves old names across composed profile and workspace policy', () => {
+    expect(isToolActiveComposed({ profile: { tools: ['CronCreate'] } }, 'Cron')).toBe(true);
+    expect(isToolActiveComposed({ profile: { tools: ['Cron'] }, workspaceDisabledTools: ['CronDelete'] }, 'CronDelete')).toBe(false);
+  });
+});
+
 describe('disabled tool groups', () => {
   it('denies every builtin tool that belongs to a disabled group', () => {
     const policy = { disabledToolGroups: ['fsRead' as const] };

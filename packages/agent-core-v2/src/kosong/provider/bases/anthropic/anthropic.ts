@@ -872,7 +872,7 @@ export class AnthropicChatProvider implements ChatProvider {
     history: Message[],
     options?: GenerateOptions,
   ): Promise<StreamedMessage> {
-    const system: TextBlockParam[] | undefined = systemPrompt
+    const system: TextBlockParam[] = systemPrompt
       ? [
           {
             type: 'text',
@@ -880,11 +880,21 @@ export class AnthropicChatProvider implements ChatProvider {
             cache_control: CACHE_CONTROL,
           } as TextBlockParam,
         ]
-      : undefined;
+      : [];
+    const ordinaryHistory: Message[] = [];
+    for (const message of history) {
+      if (message.role !== 'system' || message.content.length !== 1 ||
+        message.content[0]?.type !== 'text' ||
+        !message.content[0].text.startsWith('<dynamic_tool_schemas>')) {
+        ordinaryHistory.push(message);
+        continue;
+      }
+      system.push({ type: 'text', text: message.content[0].text });
+    }
 
     const messages = mergeConsecutiveUserMessages(
       normalizeToolCallIdsForProvider(
-        history.filter((msg) => !isToolDeclarationOnlyMessage(msg)),
+        ordinaryHistory.filter((msg) => !isToolDeclarationOnlyMessage(msg)),
         ANTHROPIC_TOOL_CALL_ID_POLICY,
       )
         .map((msg) => convertMessage(msg, this._model, this._acceptedImageMimes))
@@ -1006,7 +1016,7 @@ export class AnthropicChatProvider implements ChatProvider {
       ...requestKwargs,
     };
 
-    if (system !== undefined) {
+    if (system.length > 0) {
       createParams['system'] = system;
     }
 

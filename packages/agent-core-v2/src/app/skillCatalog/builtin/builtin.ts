@@ -3,11 +3,13 @@ import type { SkillDefinition } from '#/app/skillCatalog/types';
 
 import { KIKI_OPS_SKILL } from './kiki-ops';
 import { KIKI_PROFILE_SKILL } from './kiki-profile';
+import { TOOL_WORKFLOWS_SKILL } from './tool-workflows';
 import { getBuiltinSkillContributions } from './registry';
 
 export const BUILTIN_SKILLS: readonly SkillDefinition[] = [
   KIKI_OPS_SKILL,
   KIKI_PROFILE_SKILL,
+  TOOL_WORKFLOWS_SKILL,
 ];
 
 export function visibleBuiltinSkills(
@@ -24,4 +26,4 @@ export function visibleBuiltinSkills(
   );
 }
 
-export { KIKI_OPS_SKILL, KIKI_PROFILE_SKILL };
+export { KIKI_OPS_SKILL, KIKI_PROFILE_SKILL, TOOL_WORKFLOWS_SKILL };

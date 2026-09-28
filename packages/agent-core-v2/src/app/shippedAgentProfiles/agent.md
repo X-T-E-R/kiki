@@ -20,9 +20,7 @@ tools:
   - ThreadSend
   - ThreadWait
   - TaskWait
-  - CronCreate
-  - CronList
-  - CronDelete
+  - Cron
   - ReadMediaFile
   - TodoList
   - Skill
@@ -34,10 +32,7 @@ tools:
   - AskUserQuestion
   - EnterPlanMode
   - ExitPlanMode
-  - CreateGoal
-  - GetGoal
-  - SetGoalBudget
-  - UpdateGoal
+  - Goal
   - mcp__*
 subagents: "*"
 ---

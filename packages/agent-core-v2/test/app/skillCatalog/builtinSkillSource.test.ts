@@ -12,7 +12,7 @@ import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import { stubFlag } from '../flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
 
-const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile'];
+const PRODUCT_SKILLS = ['kiki-ops', 'kiki-profile', 'tool-workflows'];
 const KIKI_OPS_TRIGGERS = [
   'first-run',
   'provider',
@@ -48,7 +48,7 @@ async function loadNames(configured?: boolean): Promise<readonly string[]> {
 }
 
 describe('BuiltinSkillSource product-skill switch', () => {
-  it('ships exactly the two product-facing builtin skills', () => {
+  it('ships exactly the product-facing builtin skills', () => {
     expect(BUILTIN_SKILLS.map((skill) => skill.name)).toEqual(PRODUCT_SKILLS);
     expect(BUILTIN_SKILLS.every((skill) => skill.productSpecific === true)).toBe(true);
     expect(NEUTRAL_SKILLS).toEqual([]);
@@ -73,6 +73,15 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(profile?.description.toLowerCase()).toContain('create, modify, or repair');
     expect(profile?.description.toLowerCase()).toContain('do not use merely to select');
     expect(profile?.content).toContain('by default the body is the complete system prompt');
+  });
+
+  it('provides detailed built-in tool workflows on demand without triggering for ordinary calls', () => {
+    const workflows = BUILTIN_SKILLS.find((skill) => skill.name === 'tool-workflows');
+    expect(workflows?.description).toContain('when a tool\'s compact description is insufficient');
+    expect(workflows?.description).toContain('Do not invoke for a routine single tool call');
+    expect(workflows?.content).toContain('## File inspection and editing');
+    expect(workflows?.content).toContain('## Shell and background work');
+    expect(workflows?.content).toContain('## Plan, goal, and schedule');
   });
 
   it('embeds both complete example files for installed skill invocation', () => {

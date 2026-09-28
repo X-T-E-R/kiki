@@ -1,17 +1,1 @@
-Read a text file from the local filesystem.
-
-If the user provides a concrete file path to a text file, call Read directly. Missing or invalid paths return errors you can handle. Do not use Read for directories.
-
-When you need several files, prefer to read them in parallel: emit multiple `Read` calls in a single response instead of reading one file per turn.
-
-- Relative paths resolve against the working directory; a path outside the working directory must be absolute.
-- Returns up to ${MAX_LINES} lines or ${MAX_BYTES_KB} KB per call, whichever comes first; lines longer than ${MAX_LINE_LENGTH} chars are truncated mid-line (recover the elided content with Bash, e.g. `cut` or `sed`).
-- Page larger files with `line_offset` (1-based start line) and `n_lines`. Omit `n_lines` to read up to the ${MAX_LINES}-line cap.
-- Sensitive files (`.env` files, credential stores, SSH private keys, and similar secrets) require approval in manual and auto modes; YOLO mode permits them unless explicitly denied. Without an attached approval consumer, the request is cancelled rather than executed. Resolve linked files to their actual targets before seeking permission. Templates and public keys are exempt: `.env.example` / `.env.sample` / `.env.template` and public SSH keys such as `id_rsa.pub` read normally.
-- UTF-8 text files are read directly. UTF-16 LE/BE text files (with or without a BOM) are detected automatically and transcoded to UTF-8 for display; the status block notes the detected encoding, and Edit/Write on such a file still expect UTF-8 — convert its encoding first (e.g. with `iconv`). Other encodings (e.g. GBK), binary files, and files containing NUL bytes are refused.
-- Negative line_offset reads from the end of the file (for example, -100 reads the last 100 lines); the absolute value cannot exceed ${MAX_LINES}.
-- Output format: `<line-number>\t<content>` per line.
-- A `<system>...</system>` status block is appended after the file content; it summarizes how much was read (line and byte counts, truncation, line-ending notes) and is not part of the file itself.
-- Pure CRLF files are displayed with LF line endings; `Edit` matches this output and preserves CRLF when writing back.
-- Mixed or lone carriage-return line endings are shown as `\r` and require exact `Edit.old_string` escapes.
-- After a successful `Edit`/`Write`, do not re-read solely to prove the write landed. When the task depends on an exact file, API, or output shape, inspect the final external contract before finishing.
+Read a UTF-8 or UTF-16 text file at a known path. Use Read rather than Bash to inspect a concrete file; directories belong to Glob or `ls`. Relative paths use the working directory. Large files are paged with `line_offset` and `n_lines`; each call returns at most ${MAX_LINES} lines or ${MAX_BYTES_KB} KB, and lines longer than ${MAX_LINE_LENGTH} characters are truncated. Sensitive files require approval. Read the target before editing it.

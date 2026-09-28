@@ -1,1 +1,1 @@
-Background agent execution is disabled for this agent. Do not set `background=true` — any call that sets it is rejected before the subagent launches. Run every subagent in the foreground and wait for its result.
+Background child execution is unavailable. Omit `background` and wait for the foreground result; a `background=true` call is rejected before launch.

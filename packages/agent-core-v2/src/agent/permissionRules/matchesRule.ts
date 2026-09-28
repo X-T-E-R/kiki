@@ -2,6 +2,7 @@ import picomatch from 'picomatch';
 
 import { Error2, ErrorCodes } from '#/errors';
 import type { RunnableToolExecution } from '#/tool/toolContract';
+import { canonicalToolName } from '#/agent/toolPolicy/toolAliases';
 import type { PermissionRule } from './permissionRules';
 
 export interface ParsedPattern {
@@ -13,6 +14,7 @@ export type ParsedPermissionPattern = ParsedPattern;
 
 export interface PermissionRuleMatchExecution {
   readonly matchesRule?: RunnableToolExecution['matchesRule'];
+  readonly approvalRule?: RunnableToolExecution['approvalRule'];
 }
 
 export type PermissionRuleMatchStrategy = 'tool_name_only' | 'matches_rule';
@@ -69,7 +71,10 @@ export function matchPermissionRule({
     return undefined;
   }
 
-  if (parsed.toolName !== '*' && !picomatch.isMatch(toolName, parsed.toolName)) {
+  const approvalName = execution.approvalRule?.split('(', 1)[0];
+  const matchesLegacyAction = approvalName !== undefined &&
+    canonicalToolName(approvalName) === toolName && picomatch.isMatch(approvalName, parsed.toolName);
+  if (parsed.toolName !== '*' && !picomatch.isMatch(toolName, parsed.toolName) && !matchesLegacyAction) {
     return undefined;
   }
 
@@ -77,7 +82,7 @@ export function matchPermissionRule({
     return { rule, strategy: 'tool_name_only', hasRuleArgs: false };
   }
 
-  return execution.matchesRule?.(parsed.argPattern) === true
+  return execution.matchesRule?.(parsed.argPattern) === true || execution.approvalRule === rule.pattern
     ? { rule, strategy: 'matches_rule', hasRuleArgs: true }
     : undefined;
 }

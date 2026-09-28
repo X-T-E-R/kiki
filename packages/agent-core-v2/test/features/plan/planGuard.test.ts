@@ -22,6 +22,7 @@ import { AgentPlanService } from '#/features/plan/planService';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
+import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type {
   BeforeExecuteDecision,
@@ -153,10 +154,14 @@ describe('AgentPlanService plan-guard listener', () => {
   let agentId: string;
   let files: Map<string, string>;
   let planReaders: Map<string, () => boolean>;
+  let dynamicToolsEnabled: boolean;
+  let loadedTools: string[];
 
   beforeEach(() => {
     disposables = new DisposableStore();
     planReaders = new Map();
+    dynamicToolsEnabled = false;
+    loadedTools = [];
     records = [];
     requests = [];
     approvalResponse = { decision: 'approved' };
@@ -219,6 +224,13 @@ describe('AgentPlanService plan-guard listener', () => {
         });
         reg.defineInstance(IAgentToolExecutorService, executorEvents.executor);
         reg.defineInstance(IAgentToolApprovalService, toolApproval);
+        reg.definePartialInstance(IAgentToolSelectService, {
+          enabled: () => dynamicToolsEnabled,
+          load: (names) => {
+            loadedTools.push(...names);
+            return { toLoad: [...names], alreadyAvailable: [], unknown: [] };
+          },
+        });
         reg.defineInstance(IAgentPermissionModeService, stubPermissionModeService(() => mode));
         reg.definePartialInstance(ISessionApprovalService, {
           decide: () => {},
@@ -247,6 +259,17 @@ describe('AgentPlanService plan-guard listener', () => {
     await svc.enter(PLAN_ID);
     return svc;
   }
+
+  it('loads ExitPlanMode on plan entry when dynamic tools are enabled', async () => {
+    dynamicToolsEnabled = true;
+    await enterPlan();
+    expect(loadedTools).toEqual(['ExitPlanMode']);
+  });
+
+  it('does not request a dynamic ExitPlanMode schema when disclosure is disabled', async () => {
+    await enterPlan();
+    expect(loadedTools).toEqual([]);
+  });
 
   async function run(
     ctx: ResolvedToolExecutionHookContext,

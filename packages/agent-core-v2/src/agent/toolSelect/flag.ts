@@ -7,9 +7,9 @@ export const toolSelectFlag: FlagDefinitionInput = {
   id: TOOL_SELECT_FLAG_ID,
   title: 'Tool select (progressive tool disclosure)',
   description:
-    'Keep MCP tool schemas out of the immutable top-level tools[]; the model loads them on demand via the SelectTools tool. Only takes effect on models whose capability catalog declares dynamically loaded tools.',
+    'Keep MCP and plugin tool schemas out of top-level tools[]; SelectTools loads them into messages. Enabled by default for Kimi, OpenAI chat/responses, and Anthropic protocols when tool use is available.',
   env: TOOL_SELECT_FLAG_ENV,
-  default: false,
+  default: true,
   surface: 'core',
 };
 

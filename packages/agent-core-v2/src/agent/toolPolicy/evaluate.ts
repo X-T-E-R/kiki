@@ -4,6 +4,7 @@ import { isSubagentToolAllowed, type SubagentToolPolicy } from '@kiki/agent-prof
 import { isMcpToolName, type ToolSource } from '#/tool/toolContract';
 import { allowsResearchTool, type ExecutionRestriction } from '#/agent/profile/executionRestriction';
 import { toolGroupForName } from '#/agent/toolRegistry/toolGroups';
+import { canonicalToolName, legacyToolNames } from './toolAliases';
 import type { ToolGroupId } from '@kiki/agent-profiles/toolGroups';
 
 export interface ToolActivationPolicy {
@@ -28,14 +29,21 @@ export function isToolActive(
   for (const allowPolicy of allowPolicies) {
     const allowed =
       source !== 'mcp'
-        ? allowPolicy.includes(name)
+        ? allowPolicy.includes(name) ||
+          (canonicalToolName(name) !== undefined && allowPolicy.includes(canonicalToolName(name)!)) ||
+          legacyToolNames(name).some((legacy) => allowPolicy.includes(legacy))
         : allowPolicy
             .filter((pattern) => isMcpToolName(pattern))
             .some((pattern) => picomatch.isMatch(name, pattern));
     if (!allowed) return false;
   }
   if (policy.disallowedTools !== undefined) {
-    if (source !== 'mcp' ? policy.disallowedTools.includes(name) : isDeniedByMcpGlob(policy.disallowedTools, name)) {
+    if (source !== 'mcp'
+      ? policy.disallowedTools.includes(name) ||
+        (canonicalToolName(name) !== undefined && policy.disallowedTools.includes(canonicalToolName(name)!)) ||
+        (legacyToolNames(name).length > 0 &&
+          legacyToolNames(name).every((legacy) => policy.disallowedTools!.includes(legacy)))
+      : isDeniedByMcpGlob(policy.disallowedTools, name)) {
       return false;
     }
   }
@@ -44,7 +52,8 @@ export function isToolActive(
     if (
       group !== undefined &&
       policy.disabledToolGroups.includes(group) &&
-      !(source !== 'mcp' && policy.tools !== undefined && policy.tools.includes(name))
+      !(source !== 'mcp' && policy.tools !== undefined &&
+        (policy.tools.includes(name) || legacyToolNames(name).some((legacy) => policy.tools!.includes(legacy))))
     ) {
       return false;
     }

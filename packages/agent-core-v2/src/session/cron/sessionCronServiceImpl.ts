@@ -35,6 +35,7 @@ import { BugIndicatingError } from '#/errors';
 import { ICronCreateTool } from '#/agent/tools/cron/cron-create/cron-create';
 import { ICronListTool } from '#/agent/tools/cron/cron-list/cron-list';
 import { ICronDeleteTool } from '#/agent/tools/cron/cron-delete/cron-delete';
+import { ICronTool } from '#/agent/tools/cron/cronTool';
 
 import { CronAdd, CronDelete, CronCursor, CronFired, cronKey } from './cronOps';
 import { ISessionCronService, type CronLoadOptions } from './sessionCronService';
@@ -158,6 +159,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   private registerCronTools(handle: IAgentScopeHandle): void {
     const registry = handle.accessor.get(IAgentToolRegistryService);
     const tools = [
+      handle.accessor.get(ICronTool),
       handle.accessor.get(ICronCreateTool),
       handle.accessor.get(ICronListTool),
       handle.accessor.get(ICronDeleteTool),
