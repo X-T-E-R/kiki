@@ -21,6 +21,11 @@ tools:
   - ThreadWait
   - TaskWait
   - Cron
+  - MemoryRead
+  - MemorySearch
+  - MemoryWrite
+  - HistorySearch
+  - HistoryRead
   - ReadMediaFile
   - TodoList
   - Skill
