@@ -505,6 +505,7 @@ describe('server-v2 /api model/provider catalog', () => {
       resolveTokenProvider: () => undefined,
       getCachedAccessToken: async () => undefined,
       getRegion: () => 'mainland-cn',
+      listMethods: async () => [],
     };
   }
 

@@ -960,6 +960,7 @@ describe('server-v2 /api/sessions', () => {
       resolveTokenProvider: () => ({ getAccessToken: async () => 'test-token' }),
       getCachedAccessToken: async () => 'test-token',
       getRegion: () => 'mainland-cn',
+      listMethods: async () => [],
     };
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,

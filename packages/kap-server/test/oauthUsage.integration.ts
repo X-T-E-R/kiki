@@ -66,6 +66,7 @@ describe('server-v2 GET /api/oauth/usage', () => {
       resolveTokenProvider: () => undefined,
       getCachedAccessToken: async () => undefined,
       getRegion: () => 'mainland-cn',
+      listMethods: async () => [],
     };
   }
 
@@ -197,6 +198,7 @@ describe('server-v2 GET /api/oauth/userinfo', () => {
       resolveTokenProvider: () => undefined,
       getCachedAccessToken: async () => undefined,
       getRegion: () => 'mainland-cn',
+      listMethods: async () => [],
     };
   }
 

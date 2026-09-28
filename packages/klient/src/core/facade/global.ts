@@ -126,6 +126,7 @@ export type OAuthFlowStart = Awaited<ReturnType<IOAuthService['startLogin']>>;
 export type OAuthFlowSnapshot = NonNullable<Awaited<ReturnType<IOAuthService['getFlow']>>>;
 export type OAuthLoginCancelResponse = Awaited<ReturnType<IOAuthService['cancelLogin']>>;
 export type OAuthLogoutResponse = Awaited<ReturnType<IOAuthService['logout']>>;
+export type OAuthMethodStatus = Awaited<ReturnType<IOAuthService['listMethods']>>[number];
 
 export type ModelCatalogItem = Awaited<ReturnType<IModelCatalog['listModels']>>[number];
 export type ProviderCatalogItem = Awaited<
@@ -267,6 +268,8 @@ export interface GlobalAuthFacade {
   flow(provider?: string): Promise<OAuthFlowSnapshot | undefined>;
   cancelLogin(provider?: string): Promise<OAuthLoginCancelResponse>;
   logout(provider?: string): Promise<OAuthLogoutResponse>;
+  /** Account sign-in methods (Kimi Code is one of them) and whether each is signed in. */
+  methods(): Promise<readonly OAuthMethodStatus[]>;
 }
 
 export interface GlobalFlagsFacade {
@@ -644,6 +647,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         call('oauthService', 'cancelLogin', [provider]) as Promise<OAuthLoginCancelResponse>,
       logout: (provider) =>
         call('oauthService', 'logout', [provider]) as Promise<OAuthLogoutResponse>,
+      methods: () => call('oauthService', 'listMethods', []) as Promise<readonly OAuthMethodStatus[]>,
     },
 
     flags: {

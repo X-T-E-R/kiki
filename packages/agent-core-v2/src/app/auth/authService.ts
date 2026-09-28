@@ -9,6 +9,12 @@ import {
   kimiRegionLoginHosts,
   OAuthError,
   applyManagedKimiCodeConfig,
+  applyOAuthMethodConfig,
+  clearOAuthMethodConfig,
+  isDeviceOAuthMethod,
+  OAUTH_METHODS,
+  OAuthDeviceMethods,
+  oauthMethodFor,
   clearManagedKimiCodeConfig,
   fetchManagedKimiCodeModels,
   resolveKimiCodeLoginAuth,
@@ -72,6 +78,7 @@ import {
   IOAuthService,
   IOAuthToolkit,
   type OAuthLoginOptions,
+  type OAuthMethodStatus,
 } from './auth';
 
 const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
@@ -113,10 +120,33 @@ export class OAuthService extends Disposable implements IOAuthService {
     }));
   }
 
+  async listMethods(): Promise<readonly OAuthMethodStatus[]> {
+    const statuses: OAuthMethodStatus[] = [];
+    for (const method of OAUTH_METHODS) {
+      let signedIn = false;
+      try {
+        signedIn = this.providerService.get(method.providerName)?.oauth !== undefined
+          && nonEmpty(await this.getCachedAccessToken(method.providerName)) !== undefined;
+      } catch {
+        signedIn = false;
+      }
+      statuses.push({
+        id: method.id,
+        label: method.label,
+        provider: method.providerName,
+        protocol: method.protocol,
+        signed_in: signedIn,
+      });
+    }
+    return statuses;
+  }
+
   async startLogin(
-    provider = KIMI_CODE_PROVIDER_NAME,
+    requested = KIMI_CODE_PROVIDER_NAME,
     options: OAuthLoginOptions = {},
   ): Promise<OAuthFlowStart> {
+    const provider = oauthMethodFor(requested)?.providerName ?? requested;
+    if (isDeviceOAuthMethod(provider)) return this.startDeviceMethodLogin(provider);
     this.log.info('oauth startLogin: enter', { provider });
     const loginAuth = this.resolveLoginAuth(provider, options.region);
     this.log.info('oauth startLogin: resolved login auth', {
@@ -212,14 +242,14 @@ export class OAuthService extends Disposable implements IOAuthService {
     return this.toFlowStart(state, device);
   }
 
-  getFlow(provider = KIMI_CODE_PROVIDER_NAME): OAuthFlowSnapshot | undefined {
-    const state = this.flows.get(provider);
+  getFlow(requested = KIMI_CODE_PROVIDER_NAME): OAuthFlowSnapshot | undefined {
+    const state = this.flows.get(providerKeyFor(requested));
     if (state === undefined || state.device === undefined) return undefined;
     return this.toSnapshot(state, state.device);
   }
 
-  cancelLogin(provider = KIMI_CODE_PROVIDER_NAME): Promise<OAuthLoginCancelResponse> {
-    const state = this.flows.get(provider);
+  cancelLogin(requested = KIMI_CODE_PROVIDER_NAME): Promise<OAuthLoginCancelResponse> {
+    const state = this.flows.get(providerKeyFor(requested));
     if (state === undefined || state.status !== 'pending') {
       return Promise.resolve({ cancelled: false, status: state?.status ?? 'cancelled' });
     }
@@ -228,7 +258,14 @@ export class OAuthService extends Disposable implements IOAuthService {
     return Promise.resolve({ cancelled: true, status: 'cancelled' });
   }
 
-  async logout(provider = KIMI_CODE_PROVIDER_NAME): Promise<OAuthLogoutResponse> {
+  async logout(requested = KIMI_CODE_PROVIDER_NAME): Promise<OAuthLogoutResponse> {
+    const provider = providerKeyFor(requested);
+    if (isDeviceOAuthMethod(provider)) {
+      await this.deviceMethods().logout(provider);
+      this.abortExisting(provider);
+      await this.deprovisionDeviceMethod(provider);
+      return { logged_out: true, provider };
+    }
     const oauthRef =
       provider === KIMI_CODE_PROVIDER_NAME
         ? this.resolveRuntimeOAuthRef(provider)
@@ -256,11 +293,109 @@ export class OAuthService extends Disposable implements IOAuthService {
   }
 
   resolveTokenProvider(provider: string, oauthRef?: OAuthRef): BearerTokenProvider | undefined {
+    if (isDeviceOAuthMethod(provider)) return this.deviceMethods().tokenProvider(provider);
     return this.toolkit.tokenProvider(provider, this.resolveRuntimeOAuthRef(provider, oauthRef));
   }
 
   getCachedAccessToken(provider: string, oauthRef?: OAuthRef): Promise<string | undefined> {
+    if (isDeviceOAuthMethod(provider)) return this.deviceMethods().getCachedAccessToken(provider);
     return this.toolkit.getCachedAccessToken(provider, this.resolveRuntimeOAuthRef(provider, oauthRef));
+  }
+
+  private deviceMethods(): OAuthDeviceMethods {
+    if (this.toolkit.deviceMethods === undefined) {
+      throw new Error2(ErrorCodes.AUTH_TOKEN_MISSING, 'Account sign-in methods are not available in this host.');
+    }
+    return this.toolkit.deviceMethods;
+  }
+
+  private startDeviceMethodLogin(provider: string): Promise<OAuthFlowStart> {
+    this.abortExisting(provider);
+    const state: FlowState = {
+      flowId: `oauth_${randomUUID()}`,
+      provider,
+      controller: new AbortController(),
+      oauthRef: undefined,
+      loginBaseUrl: undefined,
+      device: undefined,
+      status: 'pending',
+      tokenGranted: false,
+      expiresAt: Date.now() + DEFAULT_DEVICE_EXPIRES_IN_SEC * 1000,
+      gcTimer: undefined,
+      errorMessage: undefined,
+      resolvedAt: undefined,
+    };
+    this.flows.set(provider, state);
+    return new Promise<OAuthFlowStart>((resolve, reject) => {
+      let settled = false;
+      const login = this.deviceMethods().login(provider, {
+        signal: state.controller.signal,
+        onDeviceCode: (device) => {
+          state.device = device;
+          if (device.expiresIn !== null) state.expiresAt = Date.now() + device.expiresIn * 1000;
+          settled = true;
+          resolve(this.toFlowStart(state, device));
+        },
+      });
+      login.then(
+        async (accessToken) => {
+          if (state.status !== 'pending') return;
+          state.tokenGranted = true;
+          try {
+            await this.provisionDeviceMethod(provider, accessToken);
+            if (state.status === 'pending') this.setTerminal(state, 'authenticated');
+          } catch (error) {
+            this.log.warn('oauth device method provisioning failed', {
+              provider,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            this.handleFailure(state, error);
+            if (!settled) {
+              settled = true;
+              reject(error);
+            }
+            return;
+          }
+          if (!settled) {
+            settled = true;
+            resolve({ flow_id: state.flowId, provider, status: 'authenticated' });
+          }
+        },
+        (error: unknown) => {
+          this.handleFailure(state, error);
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
+        },
+      );
+    });
+  }
+
+  private async provisionDeviceMethod(provider: string, accessToken: string): Promise<RefreshOAuthProviderModelsResponse['changed'][number]> {
+    const method = this.deviceMethods().method(provider);
+    const models = await method.listModels(accessToken);
+    await this.config.reload();
+    const next = structuredClone(this.readUserConfigShape());
+    const applied = applyOAuthMethodConfig(next, method, {
+      baseUrl: method.baseUrlFor(accessToken),
+      headers: method.requestHeaders(accessToken),
+      models,
+    });
+    await this.config.replace(PROVIDERS_SECTION, next.providers);
+    await this.config.replace(MODELS_SECTION, next.models ?? {});
+    await this.config.replace(DEFAULT_MODEL_SECTION, next.defaultModel);
+    return { provider_id: provider, provider_name: method.label, added: applied.added, removed: applied.removed };
+  }
+
+  private async deprovisionDeviceMethod(provider: string): Promise<void> {
+    const method = oauthMethodFor(provider);
+    if (method === undefined) return;
+    const next = structuredClone(this.readUserConfigShape());
+    const cleanup = clearOAuthMethodConfig(next, method);
+    if (cleanup.removedProvider) await this.config.replace(PROVIDERS_SECTION, next.providers);
+    if (cleanup.removedModels.length > 0) await this.config.replace(MODELS_SECTION, next.models ?? {});
+    if (cleanup.defaultModelCleared) await this.config.replace(DEFAULT_MODEL_SECTION, undefined);
   }
 
   getManagedUsage(provider = KIMI_CODE_PROVIDER_NAME): Promise<AuthManagedUsageResult> {
@@ -288,12 +423,47 @@ export class OAuthService extends Disposable implements IOAuthService {
   }
 
   refreshOAuthProviderModels(): Promise<RefreshOAuthProviderModelsResponse> {
-    const run = this.refreshChain.then(() => this.doRefreshOAuthProviderModels());
+    const run = this.refreshChain.then(async () => {
+      const kimi = await this.doRefreshOAuthProviderModels();
+      const devices = await this.refreshDeviceMethodModels();
+      const result = {
+        changed: [...kimi.changed, ...devices.changed],
+        unchanged: [...kimi.unchanged, ...devices.unchanged],
+        failed: [...kimi.failed, ...devices.failed],
+      };
+      if (devices.changed.length > 0) {
+        this.events.publish(new ModelCatalogChanged({ payload: result }));
+      }
+      return result;
+    });
     this.refreshChain = run.then(
       () => undefined,
       () => undefined,
     );
     return run;
+  }
+
+  private async refreshDeviceMethodModels(): Promise<RefreshOAuthProviderModelsResponse> {
+    const changed: RefreshOAuthProviderModelsResponse['changed'] = [];
+    const unchanged: string[] = [];
+    const failed: RefreshOAuthProviderModelsResponse['failed'] = [];
+    if (this.toolkit.deviceMethods === undefined) return { changed, unchanged, failed };
+    for (const method of OAUTH_METHODS) {
+      if (!isDeviceOAuthMethod(method.providerName)) continue;
+      if (this.providerService.get(method.providerName)?.oauth === undefined) continue;
+      try {
+        const token = await this.deviceMethods().tokenProvider(method.providerName).getAccessToken();
+        const change = await this.provisionDeviceMethod(method.providerName, token);
+        if (change.added === 0 && change.removed === 0) unchanged.push(method.providerName);
+        else changed.push(change);
+      } catch (error) {
+        failed.push({
+          provider: method.providerName,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { changed, unchanged, failed };
   }
 
   private async doRefreshOAuthProviderModels(): Promise<RefreshOAuthProviderModelsResponse> {
@@ -682,6 +852,10 @@ export class AuthSummaryService implements IAuthSummaryService {
   }
 }
 
+function providerKeyFor(requested: string): string {
+  return oauthMethodFor(requested)?.providerName ?? requested;
+}
+
 function classifyFailure(err: unknown): OAuthFlowStatus {
   if (err instanceof DeviceCodeTimeoutError) return 'expired';
   if (err instanceof OAuthError) {
@@ -873,11 +1047,16 @@ function managedModel(
 
 class OAuthToolkitService extends KimiOAuthToolkit implements IOAuthToolkit {
   declare readonly _serviceBrand: undefined;
+  readonly deviceMethods: OAuthDeviceMethods;
   constructor(@IBootstrapService bootstrap: IBootstrapService) {
     super({
       homeDir: bootstrap.modelAccountHomeDir,
       credentialsDir: `${bootstrap.modelAccountHomeDir}/credentials`,
       identity: bootstrap.clientIdentity,
+    });
+    this.deviceMethods = new OAuthDeviceMethods({
+      homeDir: bootstrap.modelAccountHomeDir,
+      credentialsDir: `${bootstrap.modelAccountHomeDir}/credentials`,
     });
   }
 }

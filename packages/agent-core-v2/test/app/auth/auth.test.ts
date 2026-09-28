@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import {
   resolveKimiCodeOAuthKey,
   resolveKimiCodeRuntimeAuth,
+  GITHUB_COPILOT_METHOD,
+  OAuthAccessDeniedError,
 } from '@kiki/oauth';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -918,6 +920,99 @@ describe('OAuthService', () => {
 
     expect(maxInFlight).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  describe('device sign-in methods', () => {
+    const copilotToken = 'tid=1;proxy-ep=proxy.individual.githubcopilot.com';
+    let loginImpl: (options: { onDeviceCode?: (device: typeof deviceAuth) => void }) => Promise<string>;
+    let cached: string | undefined;
+    let deviceMethods: {
+      method: ReturnType<typeof vi.fn>;
+      login: ReturnType<typeof vi.fn>;
+      logout: ReturnType<typeof vi.fn>;
+      getCachedAccessToken: ReturnType<typeof vi.fn>;
+      tokenProvider: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(() => {
+      cached = undefined;
+      loginImpl = async (options) => {
+        options.onDeviceCode?.(deviceAuth);
+        await flush();
+        cached = copilotToken;
+        return copilotToken;
+      };
+      deviceMethods = {
+        method: vi.fn(() => ({
+          ...GITHUB_COPILOT_METHOD,
+          baseUrlFor: () => 'https://api.individual.githubcopilot.com',
+          requestHeaders: () => ({ 'Copilot-Integration-Id': 'vscode-chat' }),
+          listModels: async () => [
+            { id: 'gpt-4.1', displayName: 'GPT-4.1', contextLength: 128000, capabilities: ['tool_use'] },
+          ],
+        })),
+        login: vi.fn((_provider: string, options: { onDeviceCode?: (device: typeof deviceAuth) => void }) => loginImpl(options)),
+        logout: vi.fn(async () => { cached = undefined; }),
+        getCachedAccessToken: vi.fn(async () => cached),
+        tokenProvider: vi.fn(() => ({ getAccessToken: async () => copilotToken })),
+      };
+      (toolkit as unknown as { deviceMethods: unknown }).deviceMethods = deviceMethods;
+    });
+
+    it('lists Kimi Code alongside the other sign-in methods', async () => {
+      const svc = createService();
+      const methods = await svc.listMethods();
+      expect(methods.map((method) => method.id)).toEqual(['kimi-code', 'github-copilot', 'openai-codex']);
+      expect(methods.find((method) => method.id === 'github-copilot')).toMatchObject({
+        provider: 'managed:github-copilot',
+        protocol: 'openai',
+        signed_in: false,
+      });
+    });
+
+    it('signs in by method id, then provisions the provider and its models', async () => {
+      const svc = createService();
+      const start = await svc.startLogin('github-copilot');
+      expect(start).toMatchObject({ provider: 'managed:github-copilot', status: 'pending', user_code: deviceAuth.userCode });
+      expect(toolkit.login).not.toHaveBeenCalled();
+
+      await vi.waitFor(() => expect(svc.getFlow('github-copilot')?.status).toBe('authenticated'));
+      expect(providers['managed:github-copilot']).toMatchObject({
+        type: 'openai',
+        baseUrl: 'https://api.individual.githubcopilot.com',
+        oauth: { storage: 'file', key: 'oauth/github-copilot' },
+        customHeaders: { 'Copilot-Integration-Id': 'vscode-chat' },
+      });
+      expect(models['github-copilot/gpt-4.1']).toMatchObject({ provider: 'managed:github-copilot', model: 'gpt-4.1' });
+      expect(defaultModel).toBe('github-copilot/gpt-4.1');
+      expect(await svc.resolveTokenProvider('managed:github-copilot')?.getAccessToken()).toBe(copilotToken);
+    });
+
+    it('marks the flow denied when the device method rejects', async () => {
+      loginImpl = async (options) => {
+        options.onDeviceCode?.(deviceAuth);
+        await flush();
+        throw new OAuthAccessDeniedError('denied by user');
+      };
+      const svc = createService();
+      await svc.startLogin('managed:github-copilot');
+      await vi.waitFor(() => expect(svc.getFlow('github-copilot')?.status).toBe('denied'));
+      expect(providers['managed:github-copilot']).toBeUndefined();
+    });
+
+    it('logout clears the method provider, its aliases, and a default that pointed at them', async () => {
+      const svc = createService();
+      await svc.startLogin('github-copilot');
+      await vi.waitFor(() => expect(svc.getFlow('github-copilot')?.status).toBe('authenticated'));
+
+      const result = await svc.logout('github-copilot');
+      expect(result).toEqual({ logged_out: true, provider: 'managed:github-copilot' });
+      expect(deviceMethods.logout).toHaveBeenCalledWith('managed:github-copilot');
+      expect(providers['managed:github-copilot']).toBeUndefined();
+      expect(models['github-copilot/gpt-4.1']).toBeUndefined();
+      expect(defaultModel).toBeUndefined();
+      expect(toolkit.logout).not.toHaveBeenCalled();
+    });
   });
 });
 

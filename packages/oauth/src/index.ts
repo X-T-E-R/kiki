@@ -210,3 +210,45 @@ export type {
 
 export type { OAuthTokenTransactionOptions } from './oauth-token-transaction';
 export { OAuthTokenTransaction } from './oauth-token-transaction';
+
+export type {
+  OAuthDeviceMethod,
+  OAuthMethodDescriptor,
+  OAuthMethodId,
+  OAuthMethodModel,
+  OAuthMethodProtocol,
+} from './oauth-method-types';
+export { decodeJwtPayload } from './oauth-method-types';
+export {
+  createOAuthDeviceMethod,
+  isDeviceOAuthMethod,
+  KIMI_CODE_METHOD,
+  OAUTH_METHODS,
+  OAuthDeviceMethods,
+  oauthMethodById,
+  oauthMethodFor,
+} from './oauth-device-methods';
+export type { OAuthDeviceMethodsOptions } from './oauth-device-methods';
+export {
+  createGitHubCopilotMethod,
+  GITHUB_COPILOT_HEADERS,
+  GITHUB_COPILOT_METHOD,
+  githubCopilotBaseUrlFromToken,
+  parseGitHubCopilotModels,
+} from './github-copilot';
+export {
+  createOpenAICodexMethod,
+  OPENAI_CODEX_METHOD,
+  OPENAI_CODEX_MODELS,
+  openaiCodexAccountId,
+} from './openai-codex';
+export {
+  applyOAuthMethodConfig,
+  clearOAuthMethodConfig,
+  oauthMethodModelAlias,
+} from './oauth-method-config';
+export type {
+  ApplyOAuthMethodConfigOptions,
+  ApplyOAuthMethodConfigResult,
+  ClearOAuthMethodConfigResult,
+} from './oauth-method-config';

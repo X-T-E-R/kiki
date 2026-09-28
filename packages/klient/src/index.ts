@@ -64,6 +64,7 @@ export type {
   OAuthFlowStart,
   OAuthLoginCancelResponse,
   OAuthLogoutResponse,
+  OAuthMethodStatus,
   ProviderCatalogItem,
   RefreshProviderModelsOptions,
   RefreshProviderModelsResponse,

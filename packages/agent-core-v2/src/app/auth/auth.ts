@@ -7,6 +7,7 @@ import type {
   KimiOAuthLogoutResult,
   KimiOAuthTokenRef,
   KimiRegion,
+  OAuthDeviceMethods,
 } from '@kiki/oauth';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Error2 } from '#/_base/errors/errors';
@@ -45,6 +46,15 @@ export interface IOAuthService {
   resolveTokenProvider(provider: string, oauthRef?: OAuthRef): BearerTokenProvider | undefined;
   getCachedAccessToken(provider: string, oauthRef?: OAuthRef): Promise<string | undefined>;
   getRegion(): KimiRegion;
+  listMethods(): Promise<readonly OAuthMethodStatus[]>;
+}
+
+export interface OAuthMethodStatus {
+  readonly id: string;
+  readonly label: string;
+  readonly provider: string;
+  readonly protocol: string;
+  readonly signed_in: boolean;
 }
 
 export const IOAuthService: ServiceIdentifier<IOAuthService> =
@@ -68,6 +78,7 @@ export interface IOAuthToolkit {
     providerName?: string,
     options?: { readonly oauthRef?: KimiOAuthTokenRef; readonly baseUrl?: string },
   ): Promise<AuthManagedUserInfoResult>;
+  readonly deviceMethods?: OAuthDeviceMethods;
 }
 
 export const IOAuthToolkit: ServiceIdentifier<IOAuthToolkit> =

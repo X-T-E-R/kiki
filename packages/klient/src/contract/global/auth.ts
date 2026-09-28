@@ -84,7 +84,16 @@ export const oAuthLoginOptionsSchema = z.object({
   region: z.enum(['mainland-cn', 'global']).optional(),
 });
 
+export const oAuthMethodStatusSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  provider: z.string(),
+  protocol: z.string(),
+  signed_in: z.boolean(),
+});
+
 export const authContract = {
+  listMethods: { input: z.tuple([]), output: z.array(oAuthMethodStatusSchema) },
   startLogin: {
     input: z.tuple([z.string().optional(), oAuthLoginOptionsSchema.optional()]),
     output: oAuthFlowStartSchema,

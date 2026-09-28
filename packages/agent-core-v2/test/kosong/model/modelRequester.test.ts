@@ -225,6 +225,33 @@ describe('ModelRequesterImpl request execution', () => {
     });
   });
 
+  it('shapes ChatGPT Codex Responses requests without carrying public API output limits', async () => {
+    const payloads: Record<string, unknown>[] = [];
+    const provider = new OpenAIResponsesChatProvider({
+      apiKey: '', model: 'gpt-5.5', baseUrl: 'https://chatgpt.com/backend-api/codex',
+      clientFactory: () => ({ responses: { create: async (params: unknown) => {
+        payloads.push(params as Record<string, unknown>);
+        return { async *[Symbol.asyncIterator]() {
+          yield { type: 'response.output_text.delta', delta: 'ok' };
+          yield { type: 'response.completed', response: { id: 'response-1', status: 'completed', output: [] } };
+        } };
+      } } }) as unknown as OpenAI,
+    });
+    const requester = new ModelRequesterImpl(modelWith(staticAuth('test-token')), registryReturning(provider));
+    await collect(requester.request(INPUT, undefined, { maxCompletionTokens: 512 }));
+    expect(payloads[0]).toMatchObject({
+      model: 'gpt-5.5', instructions: 'sys', text: { verbosity: 'low' },
+      include: ['reasoning.encrypted_content'], tool_choice: 'auto', parallel_tool_calls: true,
+      store: false, stream: true,
+    });
+    expect(payloads[0]).not.toHaveProperty('max_output_tokens');
+    expect(payloads[0]).not.toHaveProperty('tools');
+    await collect(requester.request({ ...INPUT, tools: [{ name: 'probe', description: 'Probe', parameters: {} }] }));
+    expect(payloads[1]?.['tools']).toEqual([{
+      type: 'function', name: 'probe', description: 'Probe', parameters: {}, strict: false,
+    }]);
+  });
+
   it('passes configured static keys through the normal auth path', async () => {
     const provider = new FakeChatProvider();
     const requester = new ModelRequesterImpl(modelWith(staticAuth('sk-old')), registryReturning(provider));

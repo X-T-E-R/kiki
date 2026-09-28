@@ -1,4 +1,4 @@
-import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHeaders, sanitizeProviderError } from '@kiki/oauth';
+import { assertProviderCredential, assertProviderHeaders, openaiCodexAccountId, parseKimiCodeCustomHeaders, sanitizeProviderError } from '@kiki/oauth';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -592,7 +592,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           const apiKey = await tokens.getAccessToken(providerKey, oauthRef, {
             force: options?.force === true,
           });
-          return { apiKey };
+          const accountId = providerKey === 'managed:openai-codex' ? openaiCodexAccountId(apiKey) : undefined;
+          return { apiKey, headers: accountId === undefined ? undefined : { 'chatgpt-account-id': accountId } };
         },
       };
     }

@@ -753,6 +753,32 @@ describe('Model assembly (pure data)', () => {
       host.dispose();
     }
   });
+
+  it('derives the Codex account header anew when its OAuth token rotates', async () => {
+    const jwt = (accountId: string) => `header.${Buffer.from(JSON.stringify({
+      'https://api.openai.com/auth': { chatgpt_account_id: accountId },
+    })).toString('base64url')}.signature`;
+    const tokens = stubTokenProvider([jwt('account-one'), jwt('account-two')]);
+    const { host, catalog } = createHost({
+      providers: { 'managed:openai-codex': {
+        type: 'openai_responses', oauth: { storage: 'file', key: 'oauth/openai-codex' },
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+      } },
+      models: { codex: { provider: 'managed:openai-codex', model: 'gpt-5.5', maxContextSize: 272000 } },
+    }, stubModelOAuthTokens(tokens));
+    try {
+      const auth = catalog.get('codex').authProvider;
+      await expect(auth.getAuth()).resolves.toEqual({
+        apiKey: jwt('account-one'), headers: { 'chatgpt-account-id': 'account-one' },
+      });
+      await expect(auth.getAuth({ force: true })).resolves.toEqual({
+        apiKey: jwt('account-two'), headers: { 'chatgpt-account-id': 'account-two' },
+      });
+      expect(tokens.calls).toEqual([{}, { force: true }]);
+    } finally {
+      host.dispose();
+    }
+  });
 });
 
 describe('ModelCatalog caching and config-event invalidation', () => {

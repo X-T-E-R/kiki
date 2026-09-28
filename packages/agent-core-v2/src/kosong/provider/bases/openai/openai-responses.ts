@@ -1173,6 +1173,15 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
         createParams['client_metadata'] = options.requestIdentity.responsesClientMetadata;
       }
       applyMissingProperties(createParams, options?.requestParams);
+      if (this._baseUrl === 'https://chatgpt.com/backend-api/codex') {
+        createParams['instructions'] ??= 'You are a helpful assistant.';
+        createParams['text'] ??= { verbosity: 'low' };
+        createParams['include'] ??= ['reasoning.encrypted_content'];
+        createParams['tool_choice'] ??= 'auto';
+        createParams['parallel_tool_calls'] ??= true;
+        if (tools.length === 0) delete createParams['tools'];
+        delete createParams['max_output_tokens'];
+      }
       if (options?.requestIdentity?.suppressIdentity === true) {
         delete createParams['prompt_cache_key'];
         delete createParams['client_metadata'];
