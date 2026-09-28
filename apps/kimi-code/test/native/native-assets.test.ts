@@ -24,6 +24,7 @@ import {
   getMinidbTextBuildWorkerFile,
   getNativeCacheBase,
   getNativePackageRoot,
+  getPluginHostRunnerFile,
   NATIVE_ASSET_MANIFEST_VERSION,
   type NativeAssetManifest,
   type NativeAssetSource,
@@ -256,6 +257,33 @@ describe('native assets', () => {
         configured: true,
         entry: { kind: 'packaged', path: first },
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('extracts the plugin host runner from the checked native asset manifest', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-plugin-runner-'));
+    try {
+      const runner = 'export const runner = true;\n';
+      const base = fakeManifest({});
+      const assetKey = 'native/test-target/runtime/plugin-host-runner';
+      const manifest: NativeAssetManifest = {
+        ...base.manifest,
+        runtimeFiles: [{ key: 'plugin-host-runner', assetKey,
+          relativePath: 'runtime/plugin/hostRunner.mjs', sha256: sha256(runner), mode: 0o644 }],
+      };
+      const source: NativeAssetSource = {
+        getAssetKeys: () => [...base.source.getAssetKeys(), assetKey],
+        getRawAsset: (key) => key === assetKey ? Buffer.from(runner) : base.source.getRawAsset(key),
+      };
+      const options = { cacheBase: dir, manifest, source, version: 'test' };
+      const file = getPluginHostRunnerFile(options);
+      expect(file).toBe(join(dir, 'native', 'test', 'test-target', sha256(JSON.stringify(manifest)), 'runtime', 'plugin', 'hostRunner.mjs'));
+      expect(readFileSync(file!, 'utf8')).toBe(runner);
+      writeFileSync(file!, 'corrupt');
+      expect(getPluginHostRunnerFile(options)).toBe(file);
+      expect(readFileSync(file!, 'utf8')).toBe(runner);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

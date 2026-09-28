@@ -27,7 +27,7 @@ import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { getVersion } from './cli/version';
 import { PROCESS_NAME } from './constant/app';
-import { cleanupStaleNativeCacheForCurrent } from './native/native-assets';
+import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
@@ -85,6 +85,8 @@ function bootstrap(): void {
   // invalid proxy URL is reported and ignored rather than aborting startup.
   installGlobalProxyDispatcher(process.env);
   installNativeModuleHook();
+  const pluginHostRunner = getPluginHostRunnerFile();
+  if (pluginHostRunner !== null) process.env['KIKI_PLUGIN_HOST_RUNNER'] = pluginHostRunner;
   // Best-effort SEA worker installation. Diagnostics are trace-only and avoid
   // exposing the user's cache path; failure keeps MiniDb's bounded inline mode.
   const workerInstall = installMinidbTextBuildWorker();

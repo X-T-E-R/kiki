@@ -119,8 +119,10 @@ export class PluginHost {
   private async start(): Promise<void> {
     if (this.ready !== undefined) return this.ready;
     this.ready = new Promise<void>((resolve, reject) => {
-      const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), 'hostRunner.mjs');
       const native = !path.basename(process.execPath).toLowerCase().startsWith('node');
+      const runner = native && process.versions['electron'] === undefined
+        ? process.env['KIKI_PLUGIN_HOST_RUNNER'] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'hostRunner.mjs')
+        : path.join(path.dirname(fileURLToPath(import.meta.url)), 'hostRunner.mjs');
       const args = native && process.versions['electron'] === undefined
         ? ['__plugin_run_node', runner, this.entry]
         : [runner, this.entry];
@@ -133,6 +135,7 @@ export class PluginHost {
           TEMP: process.env['TEMP'],
           TMP: process.env['TMP'],
           ELECTRON_RUN_AS_NODE: process.versions['electron'] === undefined ? undefined : '1',
+          KIKI_CACHE_DIR: process.env['KIKI_CACHE_DIR'],
           KIKI_PLUGIN_ROOT: path.dirname(this.entry),
         },
         stdio: ['pipe', 'pipe', 'pipe'],

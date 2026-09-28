@@ -23,6 +23,7 @@ export function register(api) {
   }, async (args, ctx) => {
     ctx.progress({ kind: 'progress', percent: 50, text: 'Halfway' });
     if (args.crash) process.exit(7);
+    if (args.cacheDir) return { output: process.env.KIKI_CACHE_DIR ?? '' };
     if (args.context) return { output: JSON.stringify({ workspaceRoot: ctx.workspaceRoot, approvedPaths: ctx.approvedPaths, imageIn: ctx.imageIn, settings: ctx.settings }) };
     if (args.image) return { output: [{ type: 'text', text: 'preview' }, { type: 'image_url', imageUrl: { url: 'data:image/png;base64,aGVsbG8=' } }] };
     if (args.invalidImage) return { output: [{ type: 'image_url', imageUrl: { url: 'https://example.com/image.png' } }] };

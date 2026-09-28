@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { PluginHost } from '#/app/plugin/host';
 import { parseManifest } from '#/app/plugin/manifest';
@@ -27,6 +27,15 @@ describe('plugin host lifecycle', () => {
     } finally { host.stop(); }
     expect(host.running).toBe(false);
     await expect(host.execute('fixture_echo', {}, new AbortController().signal)).rejects.toThrow('unloaded');
+  });
+
+  it('passes a custom native cache path to its isolated child', async () => {
+    vi.stubEnv('KIKI_CACHE_DIR', 'test-plugin-cache');
+    const host = await readyHost();
+    try {
+      await expect(host.execute('fixture_echo', { cacheDir: true }, new AbortController().signal))
+        .resolves.toEqual({ output: 'test-plugin-cache' });
+    } finally { host.stop(); vi.unstubAllEnvs(); }
   });
 
   it('isolates a crashing child and lets another plugin keep running', async () => {

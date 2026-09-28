@@ -13,6 +13,12 @@ export const KAP_SEARCH_WORKER_ASSET = Object.freeze({
   mode: 0o644,
 });
 
+export const PLUGIN_HOST_RUNNER_ASSET = Object.freeze({
+  key: 'plugin-host-runner',
+  relativePath: 'runtime/plugin/hostRunner.mjs',
+  mode: 0o644,
+});
+
 export const KAP_MODEL_PRICES_ASSET = Object.freeze({
   key: 'kap-model-prices',
   relativePath: 'runtime/kap-server/model_prices_and_context_window.json',

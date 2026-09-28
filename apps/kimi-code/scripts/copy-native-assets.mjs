@@ -35,4 +35,9 @@ for (const platform of PLATFORMS) {
   await cp(srcPrebuilds, dstPrebuilds, { recursive: true });
 }
 
-console.log(`Copied pi-tui native prebuilds to ${target}`);
+await cp(
+  resolve(repoRoot, 'packages/agent-core-v2/src/app/plugin/hostRunner.mjs'),
+  resolve(appRoot, 'dist/hostRunner.mjs'),
+);
+
+console.log(`Copied pi-tui native prebuilds to ${target} and plugin host runner to dist`);

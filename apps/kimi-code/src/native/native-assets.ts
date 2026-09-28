@@ -19,6 +19,7 @@ import {
   KAP_MODEL_PRICES_ASSET,
   KAP_SEARCH_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
+  PLUGIN_HOST_RUNNER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION as MANIFEST_VERSION,
   buildManifestKey,
 } from '../../scripts/native/manifest.mjs';
@@ -420,6 +421,10 @@ export function getMinidbTextBuildWorkerFile(
 
 export function getKapSearchWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(KAP_SEARCH_WORKER_ASSET.key, options);
+}
+
+export function getPluginHostRunnerFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile(PLUGIN_HOST_RUNNER_ASSET.key, options);
 }
 
 export function getKapModelPricesFile(options: NativeAssetOptions = {}): string | null {
