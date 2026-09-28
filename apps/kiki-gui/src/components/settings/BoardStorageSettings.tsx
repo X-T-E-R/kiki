@@ -7,6 +7,7 @@ import { useI18n } from '../../i18n';
 import { Hint, SavedTick } from '../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { useSavedTick } from './useSavedTick';
+import { useDirtyReporter } from '../dirtyGuard';
 
 export function BoardStorageSettings({ board }: { board?: BoardClient }) {
   const { client } = useConnection();
@@ -17,6 +18,7 @@ export function BoardStorageSettings({ board }: { board?: BoardClient }) {
   const [workspaceId, setWorkspaceId] = useState('');
   const [storage, setStorage] = useState<TaskBoardStorage>({ mode: 'auto' });
   const [dirty, setDirty] = useState(false);
+  useDirtyReporter('board-storage', dirty);
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [saved, ping] = useSavedTick();
@@ -75,6 +77,7 @@ export function BoardStorageSettings({ board }: { board?: BoardClient }) {
     <div className="flex flex-wrap items-center gap-2">
       <button type="button" className={SECONDARY_BUTTON} disabled={!board || !workspaceId || preview.isFetching || (storage.mode === 'fixed' && !storage.path?.trim())} onClick={() => { void preview.refetch(); }}>{t('st.boardStorage.preview')}</button>
       <button type="button" className={PRIMARY_BUTTON} disabled={saving || config.isPending || config.isError || !dirty || (storage.mode === 'fixed' && !storage.path?.trim())} onClick={() => { void save(); }}>{t('st.boardStorage.save')}</button>
+      <button type="button" className={SECONDARY_BUTTON} disabled={saving || !dirty} onClick={() => { if (config.data !== undefined) setStorage(taskBoardStorageFromConfig(config.data)); setDirty(false); setError(undefined); }}>{t('st.advanced.discard')}</button>
       {dirty ? <span role="status" className="text-xs text-ink-soft">{t('st.tools.unsaved')}</span> : null}
       <SavedTick show={saved} />
     </div>

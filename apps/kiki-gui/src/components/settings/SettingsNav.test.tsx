@@ -63,36 +63,25 @@ async function click(element: Element): Promise<void> {
 const noop = () => {};
 
 describe('SettingsNav grouped tree', () => {
-  it('renders non-clickable group headers and keeps About as an ungrouped leaf', async () => {
+  it('renders four non-clickable groups and keeps every leaf reachable', async () => {
     const container = await render(
       <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
     );
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['app', 'ai', 'agents', 'extensions', 'system', 'advanced']);
-    for (const group of groups) {
-      const header = group.querySelector('p');
-      expect(header).not.toBeNull();
-      expect(group.querySelector(':scope > button')).toBeNull();
-    }
-    const aiGroup = groups[1]!;
-    expect(aiGroup.querySelector('p')!.textContent).toBe('AI configuration');
-    // Batch 2 merged the two AI leaves into the single "Models & providers"
-    // entry; its tabs live inside the page, not in the nav tree.
-    const leaves = [...aiGroup.querySelectorAll('button')].map((button) => button.textContent);
-    expect(leaves).toEqual(['Models & providers']);
-    const extensionsGroup = groups[3]!;
-    expect([...extensionsGroup.querySelectorAll('button')].map((button) => button.textContent))
-      .toEqual(['Skills', 'MCP', 'Plugins', 'Tools & automations', 'Plan & tasks', 'Search & retrieval']);
-    const advancedGroup = groups[5]!;
-    expect([...advancedGroup.querySelectorAll('button')].map((button) => button.textContent))
-      .toEqual(['Advanced']);
-    expect(container.querySelector('[data-settings-nav-leaf="experimental"]')).toBeNull();
-    // About & updates sits outside every group as a clickable top-level leaf.
-    const aboutLeaf = container.querySelector('[data-settings-nav-ungrouped="about"]');
-    expect(aboutLeaf).not.toBeNull();
-    expect(aboutLeaf!.closest('[data-settings-nav-group]')).toBeNull();
-    expect(aboutLeaf!.querySelector('button')!.textContent).toBe('About & updates');
+      .toEqual(['app', 'models-agents', 'tools-integrations', 'system-data']);
+    expect([...groups[0]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf')))
+      .toEqual(['general', 'appearance', 'connection']);
+    expect(groups.map((group) => group.querySelector('p')?.textContent))
+      .toEqual(['Your app', 'Models & agents', 'Tools & integrations', 'System & data']);
+    for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
+    expect([...groups[1]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf')))
+      .toEqual(['ai', 'agents', 'subagents', 'communication', 'tasks']);
+    expect([...groups[2]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf')))
+      .toEqual(['skills', 'mcp', 'plugins', 'automation', 'search']);
+    expect([...groups[3]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf')))
+      .toEqual(['workspaces', 'advanced', 'about']);
+    expect(container.querySelector('[data-settings-nav-ungrouped]')).toBeNull();
   });
 
   it('highlights only the active leaf and navigates on click', async () => {
@@ -100,8 +89,11 @@ describe('SettingsNav grouped tree', () => {
     const container = await render(
       <SettingsNav active="skills" searchFocusToken={null} onNavigate={(id) => { visited.push(id); }} onSearchHit={noop} />,
     );
-    const active = [...container.querySelectorAll('button')].filter((button) => button.className.includes('text-accent'));
+    const active = [...container.querySelectorAll('[aria-current="page"]')];
     expect(active.map((button) => button.textContent)).toEqual(['Skills']);
+    // Selection is a raised sheet, never an accent fill.
+    expect(active[0]!.className).toContain('shadow-[var(--kiki-sheet-shadow)]');
+    expect(container.querySelector('nav')!.innerHTML).not.toContain('accent');
     const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models & providers')!;
     await click(models);
     expect(visited).toEqual(['ai']);
@@ -115,7 +107,7 @@ describe('SettingsNav grouped tree', () => {
     await typeInto(input, 'appearance');
     const hits = [...container.querySelectorAll('[role="option"]')];
     expect(hits.length).toBeGreaterThan(0);
-    expect(hits[0]!.textContent).toBe('Application›General›Appearance');
+    expect(hits[0]!.textContent).toBe('Theme & colorYour app › Appearance');
   });
 
   it('finds cards by legacy synonym and reports the hit', async () => {

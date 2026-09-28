@@ -1,4 +1,5 @@
 import { INPUT } from '../ui';
+import { FORM_LABEL } from './SettingsPrimitives';
 
 /** Numeric text field shared by the engine-config cards split off the runtime leaf. */
 export function NumberField({ label, value, onChange, placeholder }: {
@@ -8,10 +9,10 @@ export function NumberField({ label, value, onChange, placeholder }: {
   placeholder?: string;
 }) {
   return (
-    <label className="text-[11px] font-medium text-ink-soft">
+    <label className={FORM_LABEL}>
       {label}
       <input
-        className={`${INPUT} mt-1 font-mono`}
+        className={`${INPUT} mt-1 font-mono font-normal`}
         inputMode="numeric"
         value={value}
         placeholder={placeholder}
@@ -27,7 +28,7 @@ export function Group({ title, hint, children }: { title: string; hint?: string;
     <section className="space-y-3 border-t border-hairline pt-3 first:border-t-0 first:pt-0">
       <div>
         <h3 className="text-[12px] font-semibold text-ink">{title}</h3>
-        {hint !== undefined ? <p className="mt-0.5 text-[11px] leading-relaxed text-ink-faint">{hint}</p> : null}
+        {hint !== undefined ? <p className="mt-0.5 text-[12px] leading-snug text-ink-faint">{hint}</p> : null}
       </div>
       {children}
     </section>

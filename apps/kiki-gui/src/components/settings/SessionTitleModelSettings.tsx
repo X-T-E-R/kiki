@@ -15,6 +15,7 @@ export interface SessionTitleModelControlsProps {
   registerExtraSaver?: (saver: {
     getPatch: () => KikiConfigPatch | null;
     onSaved: (echoed: KikiConfigResponse) => void;
+    onDiscard: () => void;
   }) => void;
 }
 
@@ -73,6 +74,12 @@ export function SessionTitleModelControls({
           }
           savingRevisionRef.current = revisionRef.current;
           return sessionTitleModelPatch(currentDraft);
+        },
+        onDiscard: () => {
+          revisionRef.current += 1;
+          savingRevisionRef.current = null;
+          draftRef.current = baselineRef.current;
+          setDraft(baselineRef.current);
         },
         onSaved: (echoed) => {
           const nextModel = echoed.session_title?.model ?? '';

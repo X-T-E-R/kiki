@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-
 import type { PermissionMode } from '@kiki/protocol';
 
 import { clearStoredDrafts } from '@kiki/session-core/composer';
@@ -14,28 +13,32 @@ import {
   settingsSnapshot,
   subscribeSettings,
   type SendShortcut,
-  type ThemePreference,
 } from '@kiki/session-core/settings';
 import type { KikiConfigPatch, KikiConfigResponse } from '@kiki/session-core/transport';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
-import { SMALL_INPUT } from '../ui';
-import { SectionCard } from './SectionCard';
+import { ScopeTag, SectionCard } from './SectionCard';
+import { SettingField } from './fields';
+import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { DefaultAppendTimingCard } from './CommunicationSection';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SessionTitleModelFields } from './SessionTitleModelSettings';
 import { mergeConfigEcho } from './configEcho';
 import { useSavedTick } from './useSavedTick';
 
-export function GeneralSection() {
+export function GeneralSection({ area = 'app' }: { area?: 'app' | 'models' }) {
   const host = useHost();
   const { client } = useConnection();
   const { t, locale, setLocale } = useI18n();
   const queryClient = useQueryClient();
   const [settings, setSettings] = useState(readSettings);
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('manual');
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('auto');
+  const [questionBehavior, setQuestionBehavior] = useState<'background' | 'blocking'>('background');
+  const [questionSaving, setQuestionSaving] = useState(false);
+  const [questionFeedback, setQuestionFeedback] = useState<Feedback>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
@@ -53,6 +56,7 @@ export function GeneralSection() {
   const [titleModelSaver, setTitleModelSaver] = useState<{
     getPatch: () => KikiConfigPatch | null;
     onSaved: (echoed: KikiConfigResponse) => void;
+    onDiscard: () => void;
   } | null>(null);
 
   const configQuery = useQuery({
@@ -64,10 +68,15 @@ export function GeneralSection() {
   const syncFromConfig = useCallback((config: KikiConfigResponse | undefined) => {
     if (config === undefined) return;
     const mode = config.default_permission_mode;
-    if (mode === 'manual' || mode === 'auto' || mode === 'yolo') setPermissionMode(mode);
+    if (mode === 'manual' || mode === 'auto' || mode === 'review' || mode === 'yolo') setPermissionMode(mode);
   }, []);
 
-  useEffect(() => { syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig]);
+  useEffect(() => {
+    syncFromConfig(configQuery.data);
+    if (configQuery.data !== undefined && !questionSaving) {
+      setQuestionBehavior(configQuery.data.interaction?.askUserQuestion ?? 'background');
+    }
+  }, [configQuery.data, syncFromConfig, questionSaving]);
 
   useEffect(() => {
     if (host.kind !== 'tauri') return;
@@ -94,7 +103,7 @@ export function GeneralSection() {
       queryClient.setQueryData(['config'], merged);
       syncFromConfig(merged);
       const echoedMode = merged.default_permission_mode;
-      if (echoedMode === 'manual' || echoedMode === 'auto' || echoedMode === 'yolo') {
+      if (echoedMode === 'manual' || echoedMode === 'auto' || echoedMode === 'review' || echoedMode === 'yolo') {
         writeSettings({ defaultPermissionMode: echoedMode });
       }
       ping();
@@ -106,6 +115,22 @@ export function GeneralSection() {
     }
   };
 
+  const applyQuestionBehavior = async (choice: 'background' | 'blocking') => {
+    const previous = questionBehavior;
+    setQuestionBehavior(choice);
+    setQuestionSaving(true);
+    setQuestionFeedback(null);
+    try {
+      const echoed = await client.patchConfig({ interaction: { ask_user_question: choice } });
+      const merged = mergeConfigEcho(queryClient.getQueryData<KikiConfigResponse>(['config']) ?? configQuery.data, echoed);
+      queryClient.setQueryData(['config'], merged);
+      setQuestionBehavior(merged.interaction?.askUserQuestion ?? choice);
+    } catch (error) {
+      setQuestionBehavior(previous);
+      setQuestionFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally { setQuestionSaving(false); }
+  };
+
   const updateLocal = (patch: Partial<typeof settings>) => {
     const next = { ...settings, ...patch };
     setSettings(next);
@@ -114,104 +139,66 @@ export function GeneralSection() {
 
   return (
     <div className="space-y-3">
+      {area === 'app' ? <>
       <SectionCard id="st-card-language" title={t('st.language.title')}>
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <Hint>{t('st.language.hint')}</Hint>
-          <select
-            id="language-select"
-            aria-label={t('st.language.title')}
-            className={SMALL_INPUT}
+        <SettingField label={t('st.language.title')} labelId="language-label" help={t('st.language.hint')}>
+          <SettingsSegmented<Locale>
+            ariaLabelledBy="language-label"
+            dataAttr="data-locale-choice"
             value={locale}
-            onChange={(event) => { setLocale(event.target.value as Locale); }}
-          >
-            <option value="en">English</option>
-            <option value="zh">中文</option>
-          </select>
-        </div>
+            onChange={setLocale}
+            choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
+          />
+        </SettingField>
       </SectionCard>
 
-      <SectionCard id="st-card-appearance" title={t('st.appearance.title')}>
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <span id="theme-label" className="text-[12.5px] font-medium text-ink">
-              {t('st.appearance.theme')}
-            </span>
-            <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="theme-label">
-              {(['light', 'dark', 'system'] as ThemePreference[]).map((choice) => (
-                <button
-                  key={choice}
-                  type="button"
-                  data-theme-choice={choice}
-                  aria-pressed={settings.theme === choice}
-                  onClick={() => { updateLocal({ theme: choice }); }}
-                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
-                    settings.theme === choice
-                      ? 'border-accent bg-accent-soft text-accent'
-                      : 'border-hairline text-ink-soft hover:border-hairline-strong'
-                  }`}
-                >
-                  {t(`st.appearance.theme.${choice}`)}
-                </button>
-              ))}
-            </div>
-          </div>
-          <Hint>{t('st.appearance.themeHint')}</Hint>
-        </div>
-      </SectionCard>
+      </> : null}
 
-      <SectionCard id="st-card-permission-defaults" title={t('st.defaults.title')}>
+      {area === 'models' ? <SectionCard id="st-card-permission-defaults" title={t('st.defaults.title')}>
         <div className="space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <span id="default-permission-mode-label" className="text-[12.5px] font-medium text-ink">{t('st.defaults.permissionMode')}</span>
-            <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="default-permission-mode-label">
-              {(['manual', 'auto', 'yolo'] as PermissionMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  disabled={saving}
-                  onClick={() => void applyPermissionMode(mode)}
-                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors disabled:opacity-50 ${
-                    permissionMode === mode
-                      ? 'border-accent bg-accent-soft text-accent'
-                      : 'border-hairline text-ink-soft hover:border-hairline-strong'
-                  }`}
-                >
-                  {t(`composer.mode.${mode}`)}
-                </button>
-              ))}
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span id="default-permission-mode-label" className="text-[13px] font-medium text-ink">{t('st.defaults.permissionMode')}</span>
               <SavedTick show={tick} />
             </div>
+            <SettingsSegmented<PermissionMode>
+              ariaLabelledBy="default-permission-mode-label"
+              value={permissionMode}
+              disabled={saving}
+              onChange={(mode) => void applyPermissionMode(mode)}
+              choices={(['manual', 'auto', 'review', 'yolo'] as PermissionMode[]).map((mode) => ({
+                value: mode, label: t(`st.defaults.permission.${mode}`), caution: mode === 'yolo',
+              }))}
+            />
           </div>
-          <p className={`text-[11px] leading-relaxed ${permissionMode === 'yolo' ? 'text-amber-ink' : 'text-ink-faint'}`}>
-            {t(`composer.mode.${permissionMode}Hint`)}
+          <p className={`max-w-[62ch] text-[12px] leading-snug ${permissionMode === 'yolo' ? 'text-amber-ink' : 'text-ink-soft'}`}>
+            {t(`st.defaults.permission.${permissionMode}Hint`)}
           </p>
           <Hint>{t('st.defaults.hint')}</Hint>
           <FeedbackLine feedback={feedback} />
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         </div>
-      </SectionCard>
+      </SectionCard> : null}
 
+      {area === 'app' ? <>
       <SectionCard id="st-card-composer" title={t('st.composer.title')}>
-        <div className="space-y-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <label htmlFor="send-shortcut-select" className="text-[12.5px] font-medium text-ink">{t('st.composer.sendShortcut')}</label>
-            <select
+        <div className="space-y-1.5">
+          <SettingField label={t('st.composer.sendShortcut')} labelId="send-shortcut-label">
+            <SettingsSelect<SendShortcut>
               id="send-shortcut-select"
-              className={SMALL_INPUT}
+              ariaLabel={t('st.composer.sendShortcut')}
               value={settings.sendShortcut}
-              onChange={(event) => { updateLocal({ sendShortcut: event.target.value as SendShortcut }); }}
-            >
-              <option value="enter">{t('st.composer.shortcutEnter')}</option>
-              <option value="cmd-enter">{t('st.composer.shortcutCmdEnter')}</option>
-            </select>
-          </div>
-          {/* Both preference switches share one row: at desktop widths the
-              row costs nothing over the single-toggle layout (the General
-              density budget at 1280×800 is measured, so a standalone card
-              for the fold-steps switch overflows the screen); at narrow
-              widths the second toggle wraps below. */}
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              onChange={(value) => { updateLocal({ sendShortcut: value }); }}
+              choices={[
+                { value: 'enter', label: t('st.composer.shortcutEnter') },
+                { value: 'cmd-enter', label: t('st.composer.shortcutCmdEnter') },
+              ]}
+            />
+          </SettingField>
+          {/* Each switch keeps its own help line directly under its label. */}
+          <div data-settings-field className="space-y-0.5 py-1">
             <Toggle
+              layout="row"
               label={t('st.composer.persistDrafts')}
               checked={settings.draftPersistence}
               onChange={(checked) => {
@@ -219,15 +206,39 @@ export function GeneralSection() {
                 if (!checked) clearStoredDrafts();
               }}
             />
+            <Hint>{t('st.composer.persistDraftsHint')}</Hint>
+          </div>
+          <div data-settings-field className="py-1">
             <Toggle
+              layout="row"
               label={t('st.transcript.foldSteps')}
               checked={foldSteps}
               onChange={(checked) => { writeSettings({ foldSteps: checked }); }}
             />
           </div>
-          <Hint>{t('st.composer.persistDraftsHint')}</Hint>
+          <div data-question-behavior>
+            <SettingField
+              label={t('st.composer.questions')}
+              labelId="question-behavior-label"
+              help={<ScopeTag scope="server" />}
+            >
+              <SettingsSegmented<'background' | 'blocking'>
+                ariaLabel={t('st.composer.questions')}
+                value={questionBehavior}
+                disabled={questionSaving}
+                onChange={(choice) => void applyQuestionBehavior(choice)}
+                choices={[
+                  { value: 'background', label: t('st.composer.questionsDontBlock') },
+                  { value: 'blocking', label: t('st.composer.questionsBlock') },
+                ]}
+              />
+            </SettingField>
+            <FeedbackLine feedback={questionFeedback} />
+          </div>
         </div>
       </SectionCard>
+
+      <DefaultAppendTimingCard />
 
       <ExperimentalSection
         featureIds={['auto_session_title']}
@@ -236,6 +247,7 @@ export function GeneralSection() {
         extraDirty={titleModelDirty}
         onSaveExtra={titleModelSaver?.getPatch}
         onSavedExtra={titleModelSaver?.onSaved}
+        onDiscardExtra={titleModelSaver?.onDiscard}
       >
         {({ saving: sectionSaving }) => (
           <SessionTitleModelFields
@@ -250,6 +262,7 @@ export function GeneralSection() {
         {isDesktop ? (
         <fieldset className="space-y-4">
           <Toggle
+            layout="row"
             label={t('st.desktop.notifications')}
             checked={desktopPrefs.notifications}
             disabled={!isDesktop}
@@ -267,8 +280,8 @@ export function GeneralSection() {
             ] as const).map((option) => (
               <label
                 key={option.titleKey}
-                className={`cursor-pointer rounded-xl border p-3 ${
-                  desktopPrefs.closeToTray === option.closeToTray ? 'border-accent bg-accent-soft' : 'border-hairline bg-paper'
+                className={`cursor-pointer rounded-[10px] border p-3 transition-colors ${
+                  desktopPrefs.closeToTray === option.closeToTray ? 'border-hairline-strong bg-panel' : 'border-hairline hover:border-hairline-strong'
                 }`}
               >
                 <span className="flex items-start gap-2">
@@ -295,7 +308,7 @@ export function GeneralSection() {
         </fieldset>
         ) : null}
       </SectionCard>
-
+      </> : null}
     </div>
   );
 }

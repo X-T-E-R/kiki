@@ -15,9 +15,10 @@ import {
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT, DANGER_GHOST_BUTTON } from '../ui';
+import { INPUT, SECONDARY_BUTTON, SMALL_INPUT, DANGER_GHOST_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { ExperimentalSection } from './ExperimentalSection';
+import { SettingsDraftFooter } from './SettingsPrimitives';
 
 /**
  * Tool policy (redesign §8.3): per-tool enabled/disabled/inherited, split out
@@ -120,10 +121,9 @@ function ToolPolicyCard() {
             {!toolNames.some((name) => name.toLowerCase().includes(search.toLowerCase())) && !toolsQuery.isLoading ? <Hint>{t('st.tools.noMatches')}</Hint> : null}
             {toolsQuery.isLoading ? <Hint>{t('st.tools.loading')}</Hint> : null}
             {toolsQuery.isError ? <InlineError error={toolsQuery.error} /> : null}
-            <div className="flex flex-wrap items-center gap-3">
-              <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || emptyAllowlist} onClick={() => void save()}>{saving ? t('common.saving') : t('st.tools.savePolicy')}</button>
-              {dirty ? <span role="status" className="text-[12px] text-ink-soft">{t('st.tools.unsaved')}</span> : null}
-            </div>
+            <SettingsDraftFooter id="tool-policy" dirty={dirty} saving={saving} saveDisabled={emptyAllowlist} saveLabel={t('st.tools.savePolicy')}
+              onSave={() => void save()}
+              onDiscard={() => { if (configQuery.data !== undefined) { const next = toolPolicyDraftFromConfig(configQuery.data); setDraft(next); setMode(next.toolsEnabled.length > 0 ? 'allowlist' : 'profile'); } setDirty(false); setFeedback(null); }} />
             <FeedbackLine feedback={feedback} />
           </fieldset>
         )}
@@ -199,7 +199,7 @@ function HooksCard() {
         {configQuery.isLoading ? <Hint>{t('st.runtime.loading')}</Hint> : null}
         <fieldset disabled={saving || configQuery.data === undefined} className="min-w-0 space-y-3">
           <div className="flex justify-end">
-            <button type="button" className="text-[12px] font-medium text-accent hover:underline" onClick={switchEditor}>{t(advanced ? 'st.hooks.form' : 'st.hooks.advanced')}</button>
+            <button type="button" className="text-[12px] font-medium text-accent-ink hover:underline" onClick={switchEditor}>{t(advanced ? 'st.hooks.form' : 'st.hooks.advanced')}</button>
           </div>
           {advanced ? (
             <textarea className={`${INPUT} min-h-48 font-mono`} value={draft} onChange={(event) => { setDraft(event.target.value); setDirty(true); setFeedback(null); }} aria-label={t('st.hooks.aria')} />
@@ -232,10 +232,8 @@ function HooksCard() {
               <button type="button" className={SECONDARY_BUTTON} onClick={() => edit([...rules, { event: 'PreToolUse', command: '' }])}>{t('st.hooks.add')}</button>
             </>
           )}
-          <div className="flex flex-wrap items-center gap-3">
-            <button type="button" className={PRIMARY_BUTTON} disabled={!dirty} onClick={() => void save()}>{saving ? t('common.saving') : t('st.hooks.save')}</button>
-            {dirty ? <span role="status" className="text-[12px] text-ink-soft">{t('st.tools.unsaved')}</span> : null}
-          </div>
+          <SettingsDraftFooter id="hooks" dirty={dirty} saving={saving} saveLabel={t('st.hooks.save')} onSave={() => void save()}
+            onDiscard={() => { const json = JSON.stringify(configQuery.data?.hooks ?? [], null, 2); setDraft(json); try { setRules(parseHooksJson(json)); } catch { setAdvanced(true); } setDirty(false); setFeedback(null); }} />
         </fieldset>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />

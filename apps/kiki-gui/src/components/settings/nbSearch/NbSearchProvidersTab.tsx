@@ -12,7 +12,7 @@ function AvailabilityBadge({ availability }: { availability: 'ready' | 'unavaila
   const { t } = useI18n();
   return (
     <span
-      className={`rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide shrink-0 ${
+      className={`rounded-full border px-1.5 py-px text-[11px] font-medium shrink-0 ${
         availability === 'ready'
           ? 'border-success/40 bg-success/10 text-success'
           : 'border-danger/40 bg-danger/5 text-danger'

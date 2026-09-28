@@ -658,7 +658,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     expect(searchPanel.textContent).toContain('github.repositories');
 
     // Pinning a lane
-    const pinButtons = [...searchPanel.querySelectorAll('button')].filter((b) => b.textContent === '☆');
+    const pinButtons = [...searchPanel.querySelectorAll('button')].filter((b) => b.getAttribute('aria-pressed') === 'false' && b.querySelector('[data-icon="pin"]') !== null);
     expect(pinButtons.length).toBeGreaterThan(0);
     await click(pinButtons[0]!);
     expect(searchPanel.textContent).toContain('Pinned');

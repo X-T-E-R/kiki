@@ -19,7 +19,7 @@ import { SectionCard } from './SectionCard';
 import { useSavedTick } from './useSavedTick';
 
 const BADGE_CLASS =
-  'shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px text-[9px] font-medium tracking-wide text-ink-faint uppercase';
+  'shrink-0 rounded-[4px] bg-hairline/60 px-1.5 py-px text-[11px] text-ink-faint';
 
 type AddTab = 'path' | 'zip' | 'marketplace';
 
@@ -187,7 +187,7 @@ function PluginRow({
           <span className="shrink-0 font-mono text-[10px] text-ink-faint">v{plugin.version}</span>
         ) : null}
         {broken ? (
-          <span className="shrink-0 rounded-full border border-danger/40 bg-danger/10 px-1.5 py-px text-[9px] font-medium tracking-wide text-danger uppercase">
+          <span className="shrink-0 rounded-[4px] bg-danger/10 px-1.5 py-px text-[11px] font-medium text-danger">
             {t('st.plugins.error')}
           </span>
         ) : null}
@@ -486,7 +486,7 @@ function MarketplaceTab() {
                   ) : null}
                   <span className={BADGE_CLASS}>{entry.tier}</span>
                   {entry.updateAvailable === true ? (
-                    <span className="shrink-0 rounded-full border border-accent/40 bg-accent/10 px-1.5 py-px text-[9px] font-medium tracking-wide text-accent uppercase">
+                    <span className="shrink-0 text-[11px] font-medium text-accent-ink">
                       {t('st.plugins.updateAvailable')}
                     </span>
                   ) : null}
@@ -609,7 +609,7 @@ function AddPluginCard() {
                 onClick={() => { setTab(candidate); }}
                 className={`-mb-px border-b-2 px-3 py-1.5 text-[12.5px] transition-colors ${
                   active
-                    ? 'border-accent font-medium text-ink'
+                    ? 'border-ink font-medium text-ink'
                     : 'border-transparent text-ink-soft hover:text-ink'
                 }`}
               >
@@ -697,7 +697,7 @@ function WebBridgeReadiness() {
                 ? t('st.plugins.runtimeIdentityUnverified') : capability.install.note}
             </p> : null}
             {capability.plan?.browserExtensionUrl === 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc' ? (
-              <a className="inline-block text-[11px] font-medium text-accent hover:underline"
+              <a className="inline-block text-[11px] font-medium text-accent-ink hover:underline"
                 href={capability.plan.browserExtensionUrl} target="_blank" rel="noopener noreferrer"
                 data-webbridge-extension>
                 {t('st.plugins.browserExtension')}

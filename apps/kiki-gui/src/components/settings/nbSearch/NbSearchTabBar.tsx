@@ -84,7 +84,7 @@ export function NbSearchTabBar({
             onKeyDown={(event) => { handleKeyDown(event, index); }}
             className={`relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-t-md ${
               active
-                ? 'border-accent font-semibold text-ink'
+                ? 'border-ink font-medium text-ink'
                 : 'border-transparent text-ink-soft hover:border-hairline hover:text-ink'
             }`}
           >

@@ -23,7 +23,7 @@ export function NbSearchStateBadge({ state }: { state: ReadinessState }) {
           : 'st.nbSearch.stateUnavailable';
   return (
     <span
-      className={`rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide ${STATE_BADGE[state]}`}
+      className={`rounded-full border px-1.5 py-px text-[11px] font-medium ${STATE_BADGE[state]}`}
     >
       {t(labelKey)}
     </span>

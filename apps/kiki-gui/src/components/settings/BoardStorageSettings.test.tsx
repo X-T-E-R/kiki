@@ -59,15 +59,14 @@ it('keeps save disabled until the draft is dirty and confirms with the saved tic
   await click('Save defaults');
   expect(client.patchConfig).toHaveBeenCalledWith({ task_board: { storage: { mode: 'fixed', path: 'cards-v2' } } });
   expect(saveButton().disabled).toBe(true);
-  expect(element.textContent).toContain('✓ Saved');
+  expect(element.textContent).toContain('Saved');
 });
-it('mounts Todo and board controls only on the dedicated tasks page', async () => {
+it('mounts board controls without the duplicate Todo explanation', async () => {
   await render(<TasksSection />);
-  expect(element.querySelector('#st-card-agent-todo')).not.toBeNull();
+  expect(element.querySelector('#st-card-agent-todo')).toBeNull();
   expect(element.querySelector('#st-card-agent-board')).not.toBeNull();
   expect(element.querySelector('[data-board-storage-settings]')).not.toBeNull();
   expect(element.querySelector('#st-card-task-board')).not.toBeNull();
-  expect(element.querySelector('#st-card-agent-todo input')).toBeNull();
 });
 it('surfaces preview failures without guessing a resolved path', async () => {
   board.read.mockResolvedValue({ ok: false, error: { code: 'BOARD_STORAGE_NOT_EMPTY', message: 'Unrecognized content' } });

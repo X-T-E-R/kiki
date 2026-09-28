@@ -147,7 +147,7 @@ describe('agent runtime identity settings', () => {
     expect(checkbox.checked).toBe(false);
   });
 
-  it.each(['Extra agent directories', 'Disabled built-in profiles'])('keeps %s nodes, focus and caret across typing, paste and preceding-row removal', async (label) => {
+  it.each(['Extra agent directories', 'Disabled built-in agents'])('keeps %s nodes, focus and caret across typing, paste and preceding-row removal', async (label) => {
     client.getConfig.mockResolvedValue({ extra_agent_dirs: ['first', 'second'], disabled_named_profiles: ['first', 'second'] });
     await act(async () => root.render(
       <QueryClientProvider client={queries}><I18nProvider><AgentRuntimeCard /></I18nProvider></QueryClientProvider>,
@@ -188,7 +188,7 @@ describe('agent runtime identity settings', () => {
     const checkbox = container.querySelector<HTMLInputElement>('[data-agent-profile="agent"] input[type="checkbox"]')!;
     expect(checkbox.checked).toBe(true);
     const card = container.querySelector('#st-card-agent-runtime')!;
-    const listEditor = [...card.querySelectorAll('.space-y-2')].find((block) => /Disabled built-in profiles/.test(block.textContent ?? ''))!;
+    const listEditor = [...card.querySelectorAll('.space-y-2')].find((block) => /Disabled built-in agents/.test(block.textContent ?? ''))!;
     await act(async () => { listEditor.querySelector<HTMLButtonElement>('button')!.click(); });
     await setInputValue(listEditor.querySelector<HTMLInputElement>('input')!, 'agent');
     await act(async () => [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click());
@@ -201,10 +201,9 @@ describe('agent runtime identity settings', () => {
 });
 
 describe('default main profile settings', () => {
-  it('keeps Todo as explanatory content without a toggle or configuration writes', async () => {
+  it('shows the board controls without a duplicate Todo explanation', async () => {
     await act(async () => root.render(<I18nProvider><AgentTaskSettings boardContent={<p>Real board owner slot</p>} /></I18nProvider>));
-    expect(container.querySelector('#st-card-agent-todo')).not.toBeNull();
-    expect(container.querySelector('#st-card-agent-todo input')).toBeNull();
+    expect(container.querySelector('#st-card-agent-todo')).toBeNull();
     expect(container.querySelector('[data-board-settings-slot]')?.textContent).toContain('Real board owner slot');
     expect(client.patchConfig).not.toHaveBeenCalled();
     expect(client.getConfig).not.toHaveBeenCalled();
@@ -257,7 +256,7 @@ describe('default main profile settings', () => {
     expect(row.textContent).toContain('Context budget: 4096');
     expect(row.textContent).toContain('Max completion tokens: 512');
     expect(row.textContent).toContain('request params: {"temperature":0.2,"stream":true}');
-    expect(row.textContent).toContain('model profile: fixture/model-b');
+    expect(row.textContent).toContain('model settings: fixture/model-b');
     expect(row.textContent).toContain('Context budget: 2048');
     expect(row.textContent).toContain('Max completion tokens: 256');
     expect(row.textContent).toContain('Service tier: default');
@@ -284,7 +283,7 @@ describe('default main profile settings', () => {
     await act(async () => { edit.click(); });
     // The editor is a dialog portaled to document.body, outside the row.
     const dialog = document.body.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain('Edit profile: agent');
+    expect(dialog.textContent).toContain('Edit agent: agent');
     const effort = dialog.querySelector<HTMLSelectElement>('[data-agent-thinking-effort]')!;
     expect(effort.value).toBe('medium');
     await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'fixture/model-b');
@@ -338,20 +337,20 @@ describe('default main profile settings', () => {
     const dialog = document.body.querySelector('[role="dialog"]')!;
     expect(dialog.className).toContain('max-w-[640px]');
     const guardId = 'agent-profile-editor:user:agent';
-    expect(dirtyReporter).toHaveBeenLastCalledWith(guardId, false);
+    expect(dirtyReporter).toHaveBeenCalledWith(guardId, false);
     const description = dialog.querySelector<HTMLTextAreaElement>('textarea')!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
       setter.call(description, 'Unsaved tweak');
       description.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    expect(dirtyReporter).toHaveBeenLastCalledWith(guardId, true);
+    expect(dirtyReporter).toHaveBeenCalledWith(guardId, true);
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
       setter.call(description, 'Custom default');
       description.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    expect(dirtyReporter).toHaveBeenLastCalledWith(guardId, false);
+    expect(dirtyReporter).toHaveBeenCalledWith(guardId, false);
   });
 
   it('saves the profile through the pop-up editor and closes it with a saved affirmation', async () => {
@@ -384,7 +383,7 @@ describe('default main profile settings', () => {
     }));
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Updated default');
-    expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Agent profile saved and reloaded.');
+    expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Agent saved and reloaded.');
   });
 
   it('keeps the dialog open with the error when the profile save fails', async () => {
@@ -454,7 +453,7 @@ describe('default main profile settings', () => {
     const row = container.querySelector('[data-agent-profile="ws-helper"]')!;
     // The scope is spelled out next to the switch, not only in its tooltip.
     expect(row.querySelector('[data-toggle-scope="server"]')?.textContent).toBe(
-      'Server-wide · affects every profile with this name',
+      'Server-wide · affects every agent with this name',
     );
     expect(row.querySelector('[data-toggle-scope-hint]')?.textContent).toContain('everywhere');
     await act(async () => row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
@@ -498,7 +497,7 @@ describe('default main profile settings', () => {
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ source_file: '/fixture/SYSTEM.md', workspace_id: 'ws-one', raw_text: rawText }));
     expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Context budget: 2048');
     expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Max completion tokens: 256');
-    expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('model profile: fixture/model-b');
+    expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('model settings: fixture/model-b');
     expect(queries.getQueryState(['agentProfiles', 'cwd', '/fixture', 'effective'])?.isInvalidated).toBe(true);
     expect(queries.getQueryState(['agentCapabilities', { workspace_id: 'ws-one', profile: 'agent' }])?.isInvalidated).toBe(true);
   });
@@ -707,7 +706,7 @@ describe('shipped (built-in) profile management', () => {
     const restore = row.querySelector<HTMLButtonElement>('[data-shipped-restore="agent"]')!;
     await act(async () => { restore.click(); });
     const dialog = document.body.querySelector('[role="alertdialog"]')!;
-    expect(dialog.textContent).toContain('Restore the original of built-in profile "agent"?');
+    expect(dialog.textContent).toContain('Restore the original of built-in agent "agent"?');
     // The row's copy pins fixture/model-a, so the warning spells the pin out.
     expect(dialog.textContent).toContain('pins model fixture/model-a');
     expect(dialog.textContent).toContain('backed up automatically');
@@ -717,7 +716,7 @@ describe('shipped (built-in) profile management', () => {
     await settle();
     expect(client.restoreShippedAgentProfile).toHaveBeenCalledWith('agent');
     expect(client.listShippedAgentProfiles.mock.calls.length).toBeGreaterThan(callsBefore);
-    expect(row.textContent).toContain('Original restored and agent profiles reloaded.');
+    expect(row.textContent).toContain('Original restored and agents reloaded.');
   });
 
   it('shows an unmodified built-in copy without a restore action', async () => {
@@ -789,7 +788,7 @@ describe('shipped (built-in) profile management', () => {
     await act(async () => { confirm.click(); });
     await settle();
     expect(client.restoreShippedAgentProfile).toHaveBeenCalledWith('agent');
-    expect(container.querySelector('#st-card-main-agents')?.textContent).toContain('Original restored and agent profiles reloaded.');
+    expect(container.querySelector('#st-card-main-agents')?.textContent).toContain('Original restored and agents reloaded.');
   });
 });
 
@@ -800,11 +799,12 @@ describe('dispatch policy defaults card', () => {
     ));
     await settle();
   }
-  async function setSelect(select: HTMLSelectElement, value: string) {
+  // Policies are segmented choices: the pressed button carries the value.
+  const policyValue = (scope: ParentNode, name: string) =>
+    scope.querySelector(`[data-dispatch-policy="${name}"] button[aria-pressed="true"]`)?.getAttribute('data-policy-choice');
+  async function setPolicy(scope: ParentNode, name: string, value: string) {
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
-      setter.call(select, value);
-      select.dispatchEvent(new Event('change', { bubbles: true }));
+      scope.querySelector<HTMLButtonElement>(`[data-dispatch-policy="${name}"] [data-policy-choice="${value}"]`)!.click();
     });
   }
 
@@ -812,8 +812,8 @@ describe('dispatch policy defaults card', () => {
     client.getConfig.mockResolvedValue({});
     await renderPolicies();
     const card = container.querySelector('#st-card-subagent-dispatch-policies')!;
-    expect(card.querySelector<HTMLSelectElement>('select[name="mainDispatchPolicy"]')!.value).toBe('advisory');
-    expect(card.querySelector<HTMLSelectElement>('select[name="subagentDispatchPolicy"]')!.value).toBe('strict');
+    expect(policyValue(card, 'mainDispatchPolicy')).toBe('advisory');
+    expect(policyValue(card, 'subagentDispatchPolicy')).toBe('strict');
     expect(client.patchConfig).not.toHaveBeenCalled();
   });
 
@@ -831,15 +831,14 @@ describe('dispatch policy defaults card', () => {
     });
     await renderPolicies();
     const card = container.querySelector('#st-card-subagent-dispatch-policies')!;
-    const mainSelect = card.querySelector<HTMLSelectElement>('select[name="mainDispatchPolicy"]')!;
-    expect(mainSelect.value).toBe('strict');
-    await setSelect(mainSelect, 'advisory');
+    expect(policyValue(card, 'mainDispatchPolicy')).toBe('strict');
+    await setPolicy(card, 'mainDispatchPolicy', 'advisory');
     await settle();
     expect(client.patchConfig).toHaveBeenCalledWith({
       subagent: { main_dispatch_policy: 'advisory', subagent_dispatch_policy: undefined },
     });
     expect(card.textContent).toContain('Dispatch policy defaults saved and echoed by the server.');
-    expect(card.querySelector<HTMLSelectElement>('select[name="subagentDispatchPolicy"]')!.value).toBe('strict');
+    expect(policyValue(card, 'subagentDispatchPolicy')).toBe('strict');
   });
 
   it('refreshes an already open capability badge when the dispatch default changes', async () => {
@@ -867,8 +866,7 @@ describe('dispatch policy defaults card', () => {
     expect(badge()?.getAttribute('data-recommendation-status')).toBe('allowed_nonpreferred');
     expect(client.getAgentCapabilities).toHaveBeenCalledTimes(1);
 
-    const mainSelect = container.querySelector<HTMLSelectElement>('select[name="mainDispatchPolicy"]')!;
-    await setSelect(mainSelect, 'strict');
+    await setPolicy(container, 'mainDispatchPolicy', 'strict');
     await settle();
     expect(client.patchConfig).toHaveBeenCalledWith({
       subagent: { main_dispatch_policy: 'strict', subagent_dispatch_policy: undefined },

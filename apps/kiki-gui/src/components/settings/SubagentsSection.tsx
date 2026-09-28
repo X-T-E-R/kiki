@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
@@ -12,16 +11,13 @@ import {
   type SubagentDefaultTarget,
   type SubagentPanelOpenMode,
 } from '@kiki/session-core/settings';
-import { subagentLimitsFromConfig } from '@kiki/session-core/settings/agentCapabilitiesSettings';
 import { useI18n } from '../../i18n';
 import { loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { MsUnitInput } from '../ProviderFields';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
-import { SECONDARY_BUTTON } from '../ui';
-import { NamedAgentProfilesCard, SubagentGovernanceCard } from './AgentsSection';
+import { SubagentGovernanceCard } from './AgentsSection';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
 import { SubagentToolDefaultsCard } from './SubagentToolDefaultsCard';
@@ -223,10 +219,10 @@ function SubagentOpenModeCard() {
                 data-open-mode-choice={mode}
                 aria-pressed={currentMode === mode}
                 onClick={() => { updateMode(mode); }}
-                className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
+                className={`h-8 rounded-md px-3 text-[13px] transition-colors ${
                   currentMode === mode
-                    ? 'border-accent bg-accent-soft text-accent'
-                    : 'border-hairline text-ink-soft hover:border-hairline-strong'
+                    ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                    : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
                 }`}
               >
                 {t(`st.subagentOpenMode.${mode}`)}
@@ -240,76 +236,19 @@ function SubagentOpenModeCard() {
   );
 }
 
-/**
- * Subagent timeout — the read-only half of `[subagent].timeout_ms`. The
- * execution-limits card owns the only editor for that field (it also owns the
- * in-flight caps), so this card shows the effective server value and jumps
- * there instead of writing the same key a second time. The server resolves the
- * timeout from live config when a subagent is dispatched, so a saved value
- * applies to later dispatches and never retimes a running one — the same
- * sentence the limits card shows, instead of the old "needs a restart" claim.
- */
-function SubagentTimeoutCard() {
-  const { client } = useConnection();
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  const configQuery = useQuery({
-    queryKey: ['config'],
-    queryFn: () => client.getConfig(),
-    staleTime: 60_000,
-  });
-  const timeoutMs = configQuery.data === undefined
-    ? undefined
-    : subagentLimitsFromConfig(configQuery.data).timeoutMs;
-
-  return (
-    <SectionCard id="st-card-subagent-timeout" title={t('st.subagentTimeout.title')}>
-      <div className="space-y-3">
-        {timeoutMs === undefined ? null : (
-          <MsUnitInput
-            value={timeoutMs}
-            onChange={() => undefined}
-            disabled
-            ariaLabel={t('st.sidecar.subagentTimeout')}
-          />
-        )}
-        <Hint>{t('st.subagentTimeout.readOnly')}</Hint>
-        <Hint>{t('st.subagentTimeout.effective')}</Hint>
-        <Hint>{t('st.subagentTimeout.envBound')}</Hint>
-        <button
-          type="button"
-          data-subagent-timeout-edit
-          className={SECONDARY_BUTTON}
-          onClick={() => { void navigate('/settings/subagents#st-card-subagent-limits'); }}
-        >
-          {`${t('st.subagentLimits.title')} →`}
-        </button>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-      </div>
-    </SectionCard>
-  );
-}
-
-/**
- * Subagents leaf (redesign §10.3): the default dispatch target, the profile
- * list (the `sub` bucket of the named-agent pipeline), delegation governance,
- * and the runtime timeout — everything subagent-shaped that used to be spread
- * across Agents and the sidecar card.
- */
+/** Subagent defaults and governance; agent definitions live in the unified Agents list. */
 export function SubagentsSection() {
   return (
     <div className="space-y-4">
       <SubagentToolDefaultsCard />
       <SubagentDefaultTargetCard />
       <SubagentOpenModeCard />
-      <NamedAgentProfilesCard bucket="sub" />
       <SubagentGovernanceCard />
       <ExperimentalSection
         featureIds={['subagent_release_idle']}
         cardId="st-card-subagent-release-idle"
         titleKey="st.experimental.subagentIdle"
       />
-      <SubagentTimeoutCard />
     </div>
   );
 }

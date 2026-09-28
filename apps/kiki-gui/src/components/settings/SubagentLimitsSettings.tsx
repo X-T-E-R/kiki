@@ -4,9 +4,10 @@ import { subagentLimitsFromConfig } from '@kiki/session-core/settings/agentCapab
 import { useConnection } from '../../state/connection';
 import { useI18n } from '../../i18n';
 import { SavedTick } from '../controls';
-import { INPUT, PRIMARY_BUTTON } from '../ui';
+import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { useSavedTick } from './useSavedTick';
+import { useDirtyReporter } from '../dirtyGuard';
 
 export function SubagentLimitsSettings() {
   const { client } = useConnection();
@@ -17,6 +18,7 @@ export function SubagentLimitsSettings() {
   const [direct, setDirect] = useState('16');
   const [total, setTotal] = useState('0');
   const [dirty, setDirty] = useState(false);
+  useDirtyReporter('subagent-limits', dirty);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [tick, ping] = useSavedTick();
@@ -50,6 +52,7 @@ export function SubagentLimitsSettings() {
       </div>
       <div className="flex items-center gap-2">
         <button type="button" className={PRIMARY_BUTTON} disabled={saving || config.isPending || config.isError || !dirty} onClick={() => { void save(); }}>{t('st.boardStorage.save')}</button>
+        <button type="button" className={SECONDARY_BUTTON} disabled={saving || !dirty} onClick={() => { if (config.data !== undefined) { const value = subagentLimitsFromConfig(config.data); setHours(String(value.timeoutMs / 3_600_000)); setDirect(String(value.maxDirectChildren)); setTotal(String(value.maxTotalSubagents)); } setDirty(false); setError(undefined); }}>{t('st.advanced.discard')}</button>
         <SavedTick show={tick} />
       </div>
     </fieldset>

@@ -17,6 +17,7 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingsSelect } from './SettingsPrimitives';
 import { useDirtyReporter } from '../dirtyGuard';
 
 /** Edits server board opt-ins independently of the subagent profile and run settings. */
@@ -94,7 +95,7 @@ export function SubagentToolDefaultsCard() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-[12px]">
               <thead>
-                <tr className="text-[10.5px] uppercase tracking-wide text-ink-faint">
+                <tr className="text-[12px] text-ink-faint">
                   <th className="py-1.5 pr-3 font-medium">{t('st.subagentTools.colTool')}</th>
                   <th className="py-1.5 pr-3 font-medium">{t('st.subagentTools.colDefault')}</th>
                   <th className="py-1.5 pr-3 font-medium">{t('st.subagentTools.colServer')}</th>
@@ -158,15 +159,13 @@ export function SubagentToolDefaultsCard() {
           </div>
         </fieldset>
         <fieldset disabled={saving || profilesQuery.isPending} className="min-w-0 space-y-2">
-          <label className="grid max-w-sm gap-1 text-[12px] text-ink">
+          <div className="grid max-w-sm justify-items-start gap-1.5 text-[13px] font-medium text-ink" data-subagent-tools-profile-select>
             {t('st.subagentTools.profileLabel')}
-            <select className="w-full rounded-md border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink focus:border-accent"
-              data-subagent-tools-profile-select value={profileName} aria-label={t('st.subagentTools.profileLabel')}
-              onChange={(event) => setProfileName(event.target.value)}>
-              <option value="">{t('st.subagentTools.profileNone')}</option>
-              {profiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
-            </select>
-          </label>
+            <SettingsSelect id="subagent-tools-profile" ariaLabel={t('st.subagentTools.profileLabel')} value={profileName}
+              onChange={setProfileName} className="font-normal"
+              choices={[{ value: '', label: t('st.subagentTools.profileNone') },
+                ...profiles.map((profile) => ({ value: profile.name, label: profile.name }))]} />
+          </div>
           {selectedProfile !== undefined ? (
             <div className="space-y-1" data-subagent-tools-profile-status="resolved">
               <p className="text-[11px] text-ink-soft">{t('st.subagentTools.profileSource', { source: selectedProfile.source })}</p>

@@ -41,9 +41,12 @@ import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../contr
 import { useGuardedNavigate } from '../dirtyGuard';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
+import { AdvancedDetails, SettingField } from './fields';
 import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { ExperimentalSection } from './ExperimentalSection';
+import { MemorySettingsCard } from './MemorySettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
@@ -90,33 +93,34 @@ export function SubagentDispatchPoliciesCard() {
     labelKey: I18nKey,
     value: SubagentDispatchPolicy,
   ) => (
-    <label className="block max-w-sm text-[11px] font-medium text-ink-soft">
-      {t(labelKey)}
-      <select
-        className={`${SMALL_INPUT} mt-1`}
-        name={name}
-        value={value}
-        aria-label={t(labelKey)}
-        onChange={(event) => {
-          const policy = event.target.value as SubagentDispatchPolicy;
-          void apply({ ...draft, [name]: policy });
-        }}
-      >
-        {(['advisory', 'strict'] as SubagentDispatchPolicy[]).map((policy) => (
-          <option key={policy} value={policy}>{t(`agentPanel.subagentPolicy.${policy}` as I18nKey)}</option>
-        ))}
-      </select>
-    </label>
+    <div data-dispatch-policy={name}>
+      <SettingField label={t(labelKey)} labelId={`${name}-label`}>
+        <span title={t('st.settings.configKey', { key: name === 'mainDispatchPolicy' ? '[subagent].main_dispatch_policy' : '[subagent].subagent_dispatch_policy' })}>
+          <SettingsSegmented<SubagentDispatchPolicy>
+            ariaLabelledBy={`${name}-label`}
+            dataAttr="data-policy-choice"
+            value={value}
+            disabled={saving || configQuery.isPending}
+            onChange={(policy) => void apply({ ...draft, [name]: policy })}
+            choices={(['advisory', 'strict'] as SubagentDispatchPolicy[]).map((policy) => ({
+              value: policy, label: t(`agentPanel.subagentPolicy.${policy}` as I18nKey),
+            }))}
+          />
+        </span>
+      </SettingField>
+    </div>
   );
 
   return (
     <SectionCard id="st-card-subagent-dispatch-policies" title={t('st.dispatchPolicies.title')}>
-      <div className="space-y-3">
-        <Hint>{t('st.dispatchPolicies.hint')}</Hint>
-        <fieldset disabled={saving || configQuery.isPending} className="space-y-3 disabled:opacity-60">
-          {select('mainDispatchPolicy', 'st.dispatchPolicies.mainLabel', draft.mainDispatchPolicy)}
-          {select('subagentDispatchPolicy', 'st.dispatchPolicies.subLabel', draft.subagentDispatchPolicy)}
-        </fieldset>
+      <div className="space-y-2">
+        <Hint>{t('st.dispatchPolicies.hintShort')}</Hint>
+        {select('mainDispatchPolicy', 'st.dispatchPolicies.mainLabel', draft.mainDispatchPolicy)}
+        {select('subagentDispatchPolicy', 'st.dispatchPolicies.subLabel', draft.subagentDispatchPolicy)}
+        <AdvancedDetails summary={t('st.namedAgents.technicalDetails')}>
+          <p>{t('st.dispatchPolicies.hint')}</p>
+          <p className="font-mono text-[11px] text-ink-faint">[subagent].main_dispatch_policy · [subagent].subagent_dispatch_policy</p>
+        </AdvancedDetails>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -176,14 +180,16 @@ function SubagentModelGovernanceCard() {
             />
           </label>
         </fieldset>
-        <button type="button" className={PRIMARY_BUTTON} disabled={configQuery.isLoading || saving || !dirty} onClick={() => void save()}>{saving ? t('common.saving') : t('st.subagents.save')}</button>
+        <SettingsDraftFooter id="subagent-model-governance" dirty={dirty} saving={saving || configQuery.isLoading}
+          saveLabel={t('st.subagents.save')} onSave={() => void save()}
+          onDiscard={() => { setDraft(savedDraft); setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
     </SectionCard>
   );
 }
-function NamedAgentProfileRow({
+export function NamedAgentProfileRow({
   profile,
   workspaceFallbackId,
   overrideRelation,
@@ -193,6 +199,8 @@ function NamedAgentProfileRow({
   effective,
   shippedEntry,
   onShippedChanged,
+  onRawDirtyChange,
+  showEditor = true,
 }: {
   effective: boolean;
   profile: NamedAgentProfile;
@@ -203,6 +211,8 @@ function NamedAgentProfileRow({
   toggleSaving: boolean;
   shippedEntry?: ShippedAgentProfile;
   onShippedChanged?: () => void;
+  onRawDirtyChange?: (dirty: boolean) => void;
+  showEditor?: boolean;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -320,16 +330,19 @@ function NamedAgentProfileRow({
     );
   }
 
+  // Embedded in the unified detail pane (showEditor=false) the row drops its
+  // own frame: the pane is already the surface, so a card here nests cards.
+  const embedded = !showEditor;
   return (
     <div
       data-agent-profile={profile.name}
       data-agent-source={profile.source}
       data-override-state={overrideState}
       data-default-agent={defaultMain ? 'true' : undefined}
-      className={`rounded-lg border bg-paper px-3 py-2 transition-opacity ${defaultMain ? 'border-accent/50 ring-1 ring-accent/10' : 'border-hairline'} ${profile.disabled && !defaultMain ? 'opacity-60' : ''}`}
+      className={`${embedded ? '' : `rounded-lg border bg-paper px-3 py-2 ${defaultMain ? 'border-hairline-strong' : 'border-hairline'}`} transition-opacity ${profile.disabled && !defaultMain ? 'opacity-60' : ''}`}
     >
-      {defaultMain ? <div className="mb-3 border-b border-accent/20 pb-2">
-        <p className="text-[12px] font-semibold text-accent">{t('st.mainAgents.defaultTitle')}</p>
+      {defaultMain ? <div className="mb-3 border-b border-hairline pb-2">
+        <p className="text-[12px] font-medium text-ink">{t('st.mainAgents.defaultTitle')}</p>
         <Hint>{t('st.mainAgents.defaultHint')}</Hint>
       </div> : null}
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -371,22 +384,22 @@ function NamedAgentProfileRow({
             />
             <span
               data-toggle-scope="server"
-              className="shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint"
+              className={embedded ? 'sr-only' : 'shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint'}
             >
               {t('st.namedAgents.namedToggleScope')}
             </span>
           </div>
-          <SourceBadge
+          {embedded ? null : <SourceBadge
             source={profile.source}
             variant="muted"
             suffix={writable ? undefined : ` · ${t('st.namedAgents.readOnly')}`}
-          />
-          <span
+          />}
+          {embedded && profile.subagent_policy === undefined ? null : <span
             data-subagent-policy={profile.subagent_policy ?? 'unknown'}
-            className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint"
+            className={embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint'}
           >
             {subagentPolicyLabel}
-          </span>
+          </span>}
           {shippedEntry !== undefined ? (
             <ShippedProfileControls
               entry={shippedEntry}
@@ -408,7 +421,7 @@ function NamedAgentProfileRow({
           >
             {t('st.namedAgents.newSession')}
           </button>
-          {writable ? (
+          {writable && showEditor ? (
             <button type="button" className={SECONDARY_BUTTON} onClick={() => { setFeedback(null); setEditorOpen(true); }}>
               {t('st.namedAgents.edit')}
             </button>
@@ -442,7 +455,7 @@ function NamedAgentProfileRow({
           {profile.subagents !== undefined && profile.subagents.length > 0 ? (
             <SubagentLeaseList items={profile.subagents} variant="compact" />
           ) : null}
-          <details className="mt-2 rounded-lg border border-hairline bg-panel px-2.5 py-1.5" data-technical-details>
+          <details className={`mt-2 ${embedded ? 'border-t border-hairline pt-2' : 'rounded-lg border border-hairline bg-panel px-2.5 py-1.5'}`} data-technical-details>
             <summary className="cursor-pointer select-none text-[10.5px] font-medium text-ink-faint hover:text-ink-soft">
               {t('st.namedAgents.technicalDetails')}
             </summary>
@@ -496,6 +509,7 @@ function NamedAgentProfileRow({
         editable
         writable={writable}
         onSave={saveRaw}
+        onDirtyChange={onRawDirtyChange}
       />
       {effective && profile.main === true && workspaceFallbackId !== undefined ? (
         <div className="mt-3 border-t border-hairline pt-2">
@@ -508,9 +522,8 @@ function NamedAgentProfileRow({
 }
 
 /**
- * One named-profile card per bucket (redesign §10.3): `main` stays on the
- * Agents leaf, `sub` moves to the Subagents leaf. Both buckets share the
- * query/merge/override pipeline — only the wrapping card and row set differ.
+ * Legacy bucket card retained for focused profile-editor tests. The Settings
+ * route uses UnifiedAgentManager for both main and subagent definitions.
  */
 export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   const { client } = useConnection();
@@ -723,9 +736,9 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
 export function AgentsSection() {
   return (
     <div className="space-y-4">
-      <NamedAgentProfilesCard bucket="main" />
       <SubagentDispatchPoliciesCard />
       <AgentRuntimeCard />
+      <MemorySettingsCard />
       <PromptConfigCard />
       <ExperimentalSection
         featureIds={['agent-profile-routes']}

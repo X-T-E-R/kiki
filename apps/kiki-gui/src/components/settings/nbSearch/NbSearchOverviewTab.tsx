@@ -7,6 +7,7 @@ import { fetchUrlState, webSearchState } from './types';
 import { NbSearchIssues } from './NbSearchIssues';
 import { NbSearchReadinessRow } from './NbSearchReadinessRow';
 import { SECONDARY_BUTTON } from '../../ui';
+import { Icon } from '../../icons';
 
 const LOCAL_CONFIG_BADGE: Record<string, string> = {
   present: 'border-success/40 bg-success/10 text-success',
@@ -176,7 +177,7 @@ export function NbSearchOverviewTab({
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-ink-soft">{t('st.nbSearch.source.localConfigStatus')}</span>
                 <span
-                  className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide border ${
+                  className={`inline-block rounded px-1.5 py-px text-[11px] font-medium border ${
                     LOCAL_CONFIG_BADGE[localConfigStatus] ?? 'border-hairline bg-paper text-ink-faint'
                   }`}
                 >
@@ -187,7 +188,7 @@ export function NbSearchOverviewTab({
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-ink-soft">{t('st.nbSearch.source.credentialsStatus')}</span>
                   <span
-                    className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide border ${
+                    className={`inline-block rounded px-1.5 py-px text-[11px] font-medium border ${
                       LOCAL_CONFIG_BADGE[localCredentialsStatus] ?? 'border-hairline bg-paper text-ink-faint'
                     }`}
                   >
@@ -231,7 +232,7 @@ export function NbSearchOverviewTab({
                                 : 'st.nbSearch.source.layerKiki';
                         return (
                           <div key={layer} className="flex items-center gap-1.5">
-                            {index > 0 ? <span className="text-ink-faint">→</span> : null}
+                            {index > 0 ? <Icon name="arrowRight" size={12} className="text-ink-faint" /> : null}
                             <span className="rounded bg-paper border border-hairline px-2 py-1 text-ink">
                               {index + 1}. {t(labelKey)}
                             </span>

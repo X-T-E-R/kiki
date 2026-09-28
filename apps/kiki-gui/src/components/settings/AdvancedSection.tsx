@@ -6,11 +6,13 @@ import { parseAdvancedServerConfig } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { INPUT } from '../ui';
+import { SettingsDraftFooter } from './SettingsPrimitives';
 import type { KikiConfigResponse } from '../../lib/client';
 import { ResourceLimitsCard } from './EngineLimitSettings';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
+import { CronRuntimeCard } from './TaskRuntimeSettings';
 
 /**
  * Raw JSON domains (redesign §8.3 / §10.3): permission, loop_control, and
@@ -76,14 +78,11 @@ export function AdvancedSection() {
         <div className="space-y-3">
           <Hint>{t('st.advanced.hint')}</Hint>
           <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => { setAdvanced(event.target.value); setDirty(true); setFeedback(null); }} aria-label={t('st.advanced.aria')} />
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>{saving ? t('common.saving') : t('st.advanced.save')}</button>
-            <button type="button" className={SECONDARY_BUTTON} disabled={saving || !dirty} onClick={discard}>{t('st.advanced.discard')}</button>
-            {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
-          </div>
+          <SettingsDraftFooter id="advanced-json" dirty={dirty} saving={saving} saveLabel={t('st.advanced.save')} onSave={() => void save()} onDiscard={discard} />
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
+      <CronRuntimeCard />
       <ResourceLimitsCard />
       <ExperimentalSection
         featureIds={['search_worker', 'persistence_minidb_readmodel']}

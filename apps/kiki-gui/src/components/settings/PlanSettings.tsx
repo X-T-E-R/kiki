@@ -9,6 +9,8 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { useDirtyReporter } from '../dirtyGuard';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { mergeConfigEcho } from './configEcho';
 import { useSavedTick } from './useSavedTick';
 
@@ -19,6 +21,7 @@ export function PlanSettings() {
   const [defaultPlanMode, setDefaultPlanMode] = useState(false);
   const [planGate, setPlanGate] = useState<'free' | 'gated'>('free');
   const [planGateTimeoutS, setPlanGateTimeoutS] = useState('60');
+  const [timeoutTouched, setTimeoutTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [saved, ping] = useSavedTick();
@@ -35,7 +38,10 @@ export function PlanSettings() {
     setPlanGateTimeoutS(String((config.plan?.enterApprovalTimeoutMs ?? 60_000) / 1000));
   }, []);
 
-  useEffect(() => { syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig]);
+  const timeoutBaseline = String((configQuery.data?.plan?.enterApprovalTimeoutMs ?? 60_000) / 1000);
+  const timeoutDirty = timeoutTouched && planGateTimeoutS !== timeoutBaseline;
+  useDirtyReporter('plan-gate-timeout', timeoutDirty);
+  useEffect(() => { if (!timeoutTouched) syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig, timeoutTouched]);
 
   const saveEcho = (echoed: KikiConfigResponse): KikiConfigResponse => {
     const merged = mergeConfigEcho(
@@ -43,7 +49,9 @@ export function PlanSettings() {
       echoed,
     );
     queryClient.setQueryData(['config'], merged);
-    syncFromConfig(merged);
+    setDefaultPlanMode(merged.default_plan_mode === true);
+    setPlanGate(merged.plan?.gate === 'gated' ? 'gated' : 'free');
+    if (!timeoutTouched) setPlanGateTimeoutS(String((merged.plan?.enterApprovalTimeoutMs ?? 60_000) / 1000));
     return merged;
   };
 
@@ -84,19 +92,19 @@ export function PlanSettings() {
     const ms = Math.round(Number(planGateTimeoutS) * 1000);
     if (!Number.isFinite(ms) || ms < 5000) {
       setFeedback({ tone: 'error', text: t('st.defaults.planGateTimeoutInvalid') });
-      syncFromConfig(configQuery.data);
       return;
     }
-    if (configQuery.data?.plan?.enterApprovalTimeoutMs === ms) return;
+    if (!timeoutDirty) return;
     setSaving(true);
     setFeedback(null);
     try {
       const echoed = await client.patchConfig({ plan: { enter_approval_timeout_ms: ms } });
       saveEcho(echoed);
+      setTimeoutTouched(false);
+      setPlanGateTimeoutS(String((echoed.plan?.enterApprovalTimeoutMs ?? ms) / 1000));
       ping();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
-      syncFromConfig(configQuery.data);
     } finally {
       setSaving(false);
     }
@@ -136,17 +144,17 @@ export function PlanSettings() {
                 disabled={saving || planGate !== 'gated'}
                 className={`${SMALL_INPUT} py-1`}
                 value={planGateTimeoutS}
-                onChange={(event) => { setPlanGateTimeoutS(event.target.value); }}
-                onBlur={() => void commitPlanGateTimeout()}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') event.currentTarget.blur();
-                }}
+                onChange={(event) => { setPlanGateTimeoutS(event.target.value); setTimeoutTouched(true); }}
               />
             </label>
             <Hint>{t('st.defaults.planGateTimeoutHint')}</Hint>
           </div>
         </fieldset>
-        <SavedTick show={saved} />
+        {(planGate === 'gated' || timeoutDirty) ? <div className="flex gap-2 border-t border-hairline pt-3">
+          <button type="button" className={PRIMARY_BUTTON} disabled={!timeoutDirty || saving} onClick={() => void commitPlanGateTimeout()}>{t('common.save')}</button>
+          <button type="button" className={SECONDARY_BUTTON} disabled={!timeoutDirty || saving} onClick={() => { setPlanGateTimeoutS(timeoutBaseline); setTimeoutTouched(false); setFeedback(null); }}>{t('st.advanced.discard')}</button>
+        </div> : null}
+        <SavedTick show={saved && !timeoutDirty && feedback?.tone !== 'error'} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>

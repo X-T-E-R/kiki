@@ -43,7 +43,7 @@ export function ShippedProfileControls({
     ? 'border-hairline bg-panel text-ink-faint'
     : entry.status === 'clean'
       ? 'border-hairline text-ink-faint'
-      : 'border-accent/40 bg-accent-soft text-accent';
+      : 'border-hairline text-accent-ink';
 
   const restore = async () => {
     setBusy(true);

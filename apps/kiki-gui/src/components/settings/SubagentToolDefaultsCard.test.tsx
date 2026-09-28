@@ -60,11 +60,11 @@ const checkbox = (name: string) =>
   row(name).querySelector<HTMLInputElement>(`input[data-server-allow="${name}"]`)!;
 
 async function selectProfile(name: string) {
-  const select = container.querySelector<HTMLSelectElement>('[data-subagent-tools-profile-select]')!;
-  await act(async () => {
-    select.value = name;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  // The preview picker is a SearchableSelect: open it, then pick the row.
+  await act(async () => { container.querySelector<HTMLButtonElement>('#subagent-tools-profile')!.click(); });
+  const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    .find((row) => (name === '' ? row.id.endsWith('-option-0') : row.getAttribute('title') === name))!;
+  await act(async () => { option.click(); });
   await settle();
 }
 
@@ -82,7 +82,7 @@ describe('default subagent tool access card', () => {
     }
     expect(row('__default_allowed__').textContent).toContain('Allowed by default');
     expect(row('__main_only__').textContent).toContain('Main agent only');
-    expect(container.textContent).toContain('Cannot be opened to subagents through server or profile opt-ins.');
+    expect(container.textContent).toContain('Cannot be opened to subagents through server or agent opt-ins.');
     expect(container.textContent).toContain('not a promise that a call succeeds now');
   });
 
@@ -111,16 +111,16 @@ describe('default subagent tool access card', () => {
 
   it('previews exact profile entries and blocks board tools omitted by its allowlist', async () => {
     await render();
-    expect(container.textContent).not.toContain('Profile preview');
+    expect(container.textContent).not.toContain('Agent preview');
     await selectProfile('explore');
-    expect(row('BoardRead').textContent).toContain('Explicit profile opt-in');
+    expect(row('BoardRead').textContent).toContain('Explicit agent opt-in');
     expect(row('BoardRead').textContent).toContain('Configuration allows');
-    expect(row('BoardWrite').textContent).toContain('Blocked by profile tool list');
+    expect(row('BoardWrite').textContent).toContain('Blocked by agent tool list');
     await act(async () => { checkbox('BoardWrite').click(); });
     expect(row('BoardWrite').textContent).toContain('Configuration blocks');
-    expect(container.textContent).toContain('Profile disallowedTools: Bash');
+    expect(container.textContent).toContain('Agent disallowedTools: Bash');
     await selectProfile('');
-    expect(container.textContent).not.toContain('Profile preview');
+    expect(container.textContent).not.toContain('Agent preview');
   });
 
   it('keeps explicit profile denies above profile and server opt-ins', async () => {
@@ -131,7 +131,7 @@ describe('default subagent tool access card', () => {
     await render();
     await selectProfile('general');
     expect(row('BoardRead').textContent).toContain('Configuration blocks');
-    expect(row('BoardRead').textContent).toContain('Blocked by profile tool list');
+    expect(row('BoardRead').textContent).toContain('Blocked by agent tool list');
     expect(row('BoardWrite').textContent).toContain('Configuration allows');
   });
 
@@ -140,7 +140,7 @@ describe('default subagent tool access card', () => {
     await render();
     await selectProfile('general');
     expect(row('BoardRead').textContent).toContain('Configuration blocks');
-    expect(row('BoardRead').textContent).toContain('No explicit profile opt-in');
+    expect(row('BoardRead').textContent).toContain('No explicit agent opt-in');
     await act(async () => { checkbox('BoardRead').click(); });
     expect(row('BoardRead').textContent).toContain('Configuration allows');
   });

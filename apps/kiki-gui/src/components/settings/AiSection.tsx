@@ -11,6 +11,8 @@ import { useI18n } from '../../i18n';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DefaultsTab, ModelsTab } from './ModelsSection';
 import { ConnectionsTab } from './ProvidersSection';
+import { GeneralSection } from './GeneralSection';
+import { ReviewerSettings } from './ReviewerSettings';
 
 /**
  * The merged "Models & providers" entry (settings redesign batch 2, §3.3 /
@@ -51,7 +53,7 @@ export function AiSection() {
               onClick={() => { selectTab(candidate); }}
               className={`-mb-px border-b-2 px-3 py-1.5 text-[12.5px] transition-colors ${
                 active
-                  ? 'border-accent font-medium text-ink'
+                  ? 'border-ink font-medium text-ink'
                   : 'border-transparent text-ink-soft hover:text-ink'
               }`}
             >
@@ -60,7 +62,7 @@ export function AiSection() {
           );
         })}
       </div>
-      {tab === 'providers' ? <ConnectionsTab /> : tab === 'defaults' ? <DefaultsTab /> : <ModelsTab />}
+      {tab === 'providers' ? <ConnectionsTab /> : tab === 'defaults' ? <><DefaultsTab /><GeneralSection area="models" /><ReviewerSettings /></> : <ModelsTab />}
     </div>
   );
 }

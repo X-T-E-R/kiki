@@ -83,7 +83,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderSection(section: 'general' | 'plan' = 'plan'): Promise<HTMLDivElement> {
+async function renderSection(section: 'general' | 'models' | 'plan' = 'plan'): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -94,7 +94,7 @@ async function renderSection(section: 'general' | 'plan' = 'plan'): Promise<HTML
     root.render(
       <QueryClientProvider client={client}>
         <I18nProvider>
-          {section === 'plan' ? <PlanSettings /> : <GeneralSection />}
+          {section === 'plan' ? <PlanSettings /> : <GeneralSection area={section === 'models' ? 'models' : 'app'} />}
         </I18nProvider>
       </QueryClientProvider>,
     );
@@ -148,18 +148,13 @@ describe('PlanSettings plan gate defaults', () => {
     expect(patchConfig).toHaveBeenCalledWith({ plan: { gate: 'free' } });
   });
 
-  it('writes enter_approval_timeout_ms in milliseconds on blur', async () => {
+  it('saves the timeout on explicit Save, not on blur', async () => {
     const container = await renderSection('plan');
     const input = container.querySelector<HTMLInputElement>('#plan-gate-timeout')!;
     await setInputValue(input, '30');
-    await act(async () => {
-      input.dispatchEvent(new FocusEvent('blur', { bubbles: false }));
-      // React onBlur listens via focusout.
-      input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-    });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    expect(patchConfig).not.toHaveBeenCalled();
+    const save = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
+    await click(save);
     expect(patchConfig).toHaveBeenCalledWith({ plan: { enter_approval_timeout_ms: 30_000 } });
   });
 
@@ -167,15 +162,11 @@ describe('PlanSettings plan gate defaults', () => {
     const container = await renderSection('plan');
     const input = container.querySelector<HTMLInputElement>('#plan-gate-timeout')!;
     await setInputValue(input, '3');
-    await act(async () => {
-      input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-    });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    const save = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
+    await click(save);
     expect(patchConfig).not.toHaveBeenCalled();
     expect(container.textContent).toContain('at least 5 seconds');
-    expect(input.value).toBe('15');
+    expect(input.value).toBe('3');
   });
 
   it('merges a partial plan echo without dropping other config fields', async () => {
@@ -203,11 +194,32 @@ describe('PlanSettings plan gate defaults', () => {
     expect(container.textContent).toContain('fixture offline');
   });
 
-  it('keeps permission defaults on General without mounting plan controls', async () => {
+  it('places permission defaults with models while keeping device preferences in Your app', async () => {
+    const app = await renderSection('general');
+    expect(app.querySelector('#st-card-permission-defaults')).toBeNull();
+    expect(app.querySelector('#st-card-language')).not.toBeNull();
+    const models = await renderSection('models');
+    expect(models.querySelector('#st-card-permission-defaults')).not.toBeNull();
+    expect(models.querySelector('#st-card-language')).toBeNull();
+    expect(models.querySelector('#plan-gate-timeout')).toBeNull();
+  });
+
+  it('offers four permission defaults, saving review immediately', async () => {
+    const container = await renderSection('models');
+    const card = container.querySelector('#st-card-permission-defaults')!;
+    const choices = [...card.querySelectorAll<HTMLButtonElement>('button')];
+    expect(choices.map((choice) => choice.textContent)).toEqual(['Ask every time', 'Auto', 'Approve for me', 'Full access']);
+    await click(choices[2]!);
+    expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'review' });
+    expect(card.textContent).toContain('reviewer checks sensitive actions');
+  });
+
+  it('saves the server-side question blocking choice immediately in Composer & session', async () => {
     const container = await renderSection('general');
-    expect(container.querySelector('#st-card-permission-defaults')).not.toBeNull();
-    expect(container.querySelector('#plan-gate-timeout')).toBeNull();
-    expect(container.textContent).toContain('Default permission mode');
+    const card = container.querySelector('#st-card-composer')!;
+    expect(card.querySelector('[data-question-behavior]')?.textContent).toContain('Don’t block');
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Block')!);
+    expect(patchConfig).toHaveBeenCalledWith({ interaction: { ask_user_question: 'blocking' } });
   });
 
   it('renders single flag card with unified save and model searchable select for auto_session_title', async () => {

@@ -26,11 +26,11 @@ export function NbSearchActionBar({
               className="flex items-center gap-1.5 rounded-full bg-amber-card border border-amber-rule/60 px-2.5 py-0.5 text-[11px] font-medium text-amber-ink"
               data-dirty-indicator
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-ink animate-pulse" />
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-ink animate-pulse motion-reduce:animate-none" />
               {t('st.tools.unsaved')}
             </span>
           ) : (
-            <span className="text-[11.5px] text-ink-faint">
+            <span className="text-[12px] text-ink-faint">
               {t('st.nbSearch.action.barHint')}
             </span>
           )}

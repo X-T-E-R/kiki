@@ -8,12 +8,13 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { costLabelKey, latencyLabelKey, loadPinnedLanes, savePinnedLanes } from './types';
 import { NbSearchIssues } from './NbSearchIssues';
 import { INPUT } from '../../ui';
+import { Icon } from '../../icons';
 
 function AvailabilityBadge({ availability }: { availability: 'ready' | 'unavailable' }) {
   const { t } = useI18n();
   return (
     <span
-      className={`rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide ${
+      className={`rounded-full border px-1.5 py-px text-[11px] font-medium ${
         availability === 'ready'
           ? 'border-success/40 bg-success/10 text-success'
           : 'border-danger/40 bg-danger/5 text-danger'
@@ -109,7 +110,7 @@ export function NbSearchLanesTab({
         key={lane.id}
         className={`flex items-start gap-3 rounded-lg border p-3 transition-colors ${
           isSelected
-            ? 'border-accent bg-accent-soft/20 shadow-xs'
+            ? 'border-transparent bg-panel shadow-[var(--kiki-sheet-shadow)]'
             : 'border-hairline bg-paper hover:border-hairline-strong'
         }`}
       >
@@ -129,7 +130,7 @@ export function NbSearchLanesTab({
               <span className="font-mono text-[12.5px] font-semibold text-ink">{lane.id}</span>
               <AvailabilityBadge availability={lane.availability} />
               {isSelected ? (
-                <span className="rounded bg-accent/15 border border-accent/30 px-1.5 py-0.5 text-[9.5px] font-semibold text-accent uppercase">
+                <span className="text-[11px] font-medium text-ink-soft">
                   {t('st.nbSearch.lanes.currentDefaultBadge')}
                 </span>
               ) : null}
@@ -165,10 +166,12 @@ export function NbSearchLanesTab({
             onClick={(event) => {
               togglePin(lane.id, event);
             }}
-            className="text-ink-faint hover:text-ink text-[14px] px-1 py-0.5 rounded transition-colors"
+            aria-pressed={isPinned}
+            aria-label={isPinned ? t('st.nbSearch.lanes.unpinLane') : t('st.nbSearch.lanes.pinLane')}
+            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${isPinned ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'}`}
             title={isPinned ? t('st.nbSearch.lanes.unpinLane') : t('st.nbSearch.lanes.pinLane')}
           >
-            {isPinned ? '★' : '☆'}
+            <Icon name="pin" size={14} />
           </button>
         </div>
       </div>
@@ -198,7 +201,7 @@ export function NbSearchLanesTab({
           <label
             className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
               defaultSearchLane === ''
-                ? 'border-accent bg-accent-soft/20 shadow-xs'
+                ? 'border-transparent bg-panel shadow-[var(--kiki-sheet-shadow)]'
                 : 'border-hairline bg-paper hover:border-hairline-strong'
             }`}
           >
@@ -224,7 +227,7 @@ export function NbSearchLanesTab({
           {/* Group 1: Pinned & Default */}
           {pinnedAndDefault.length > 0 ? (
             <div className="space-y-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint px-1">
+              <span className="text-[12.5px] font-medium text-ink-soft px-1">
                 {t('st.nbSearch.lanes.pinnedOrCurrent')}
               </span>
               <div className="space-y-2">{pinnedAndDefault.map(renderLaneItem)}</div>
@@ -234,7 +237,7 @@ export function NbSearchLanesTab({
           {/* Group 2: Available Sync Lanes */}
           {syncLanes.length > 0 ? (
             <div className="space-y-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint px-1">
+              <span className="text-[12.5px] font-medium text-ink-soft px-1">
                 {t('st.nbSearch.lanes.syncLanes')}
               </span>
               <div className="space-y-2">{syncLanes.map(renderLaneItem)}</div>
@@ -244,7 +247,7 @@ export function NbSearchLanesTab({
           {/* Group 3: Other Lanes */}
           {otherLanes.length > 0 ? (
             <div className="space-y-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint px-1">
+              <span className="text-[12.5px] font-medium text-ink-soft px-1">
                 {t('st.nbSearch.lanes.otherLanes')}
               </span>
               <div className="space-y-2">{otherLanes.map(renderLaneItem)}</div>

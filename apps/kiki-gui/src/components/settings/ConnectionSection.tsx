@@ -18,6 +18,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { useDirtyReporter } from '../dirtyGuard';
 
 export function ConnectionSection() {
   const host = useHost();
@@ -48,6 +49,8 @@ export function ConnectionSection() {
   const draftsDirty =
     urlDraft.trim() !== config.url.trim() || tokenDraft.trim() !== config.token.trim();
   const requestTimeoutDirty = requestTimeoutDraft !== String(savedRequestTimeoutSeconds);
+  useDirtyReporter('connection-endpoint', draftsDirty);
+  useDirtyReporter('connection-timeout', requestTimeoutDirty);
 
   const saveRequestTimeout = () => {
     const seconds = Number(requestTimeoutDraft);
@@ -85,8 +88,8 @@ export function ConnectionSection() {
       <SectionCard id="st-card-conn-server" title={t('st.conn.connectedTitle')}>
         <div className="space-y-4">
           {isSsh ? (
-            <div className="rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 text-[12px] text-ink">
-              <p className="font-semibold">{t('connect.remoteScope')} · {sshLabel}</p>
+            <div className="rounded-lg bg-ink/[0.04] px-3 py-2 text-[12px] text-ink">
+              <p className="font-medium">{t('connect.remoteScope')} · {sshLabel}</p>
               <p className="mt-1 text-ink-soft">{t('connect.sshRemoteSettings')}</p>
               <button type="button" onClick={activateLocal} className={`${SECONDARY_BUTTON} mt-2`}>
                 {t('connect.switchLocal')}
@@ -164,6 +167,7 @@ export function ConnectionSection() {
             </div>
             <div className="flex items-center gap-3">
               <button type="submit" className={PRIMARY_BUTTON} disabled={!draftsDirty}>{t('st.conn.apply')}</button>
+              <button type="button" className={SECONDARY_BUTTON} disabled={!draftsDirty} onClick={() => { setUrlDraft(config.url); setTokenDraft(config.token); }}>{t('st.advanced.discard')}</button>
               <span className="text-[11px] leading-snug text-ink-faint">{t('st.conn.applyHint')}</span>
             </div>
           </form> : null}
@@ -200,6 +204,7 @@ export function ConnectionSection() {
             <button type="submit" className={PRIMARY_BUTTON} disabled={!requestTimeoutDirty}>
               {t('common.save')}
             </button>
+            <button type="button" className={SECONDARY_BUTTON} disabled={!requestTimeoutDirty} onClick={() => { setRequestTimeoutDraft(String(savedRequestTimeoutSeconds)); setRequestTimeoutFeedback(null); }}>{t('st.advanced.discard')}</button>
           </div>
           <Hint>{t('st.conn.timeoutHint', { minimum: MIN_REQUEST_TIMEOUT_SECONDS, maximum: MAX_REQUEST_TIMEOUT_SECONDS })}</Hint>
           <FeedbackLine feedback={requestTimeoutFeedback} />

@@ -10,8 +10,8 @@ import {
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { PRIMARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingsDraftFooter } from './SettingsPrimitives';
 import { NumberField } from './runtimeControls';
 
 type ResourceLimitDraft = Pick<RuntimeConfigDraft, 'workspaceIdleTtlMs' | 'imageMaxEdgePx' | 'imageReadByteBudget'>;
@@ -98,12 +98,8 @@ export function ResourceLimitsCard() {
                 and patches never carry the mcp domain. */}
           </div>
         </fieldset>
-        <div className="flex flex-wrap items-center gap-3 border-t border-hairline pt-3">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-            {saving ? t('common.saving') : t('common.save')}
-          </button>
-          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
-        </div>
+        <SettingsDraftFooter id="resource-limits" dirty={dirty} saving={saving} onSave={() => void save()}
+          onDiscard={() => { if (configQuery.data !== undefined) { const value = runtimeConfigDraftFromConfig(configQuery.data); setDraft({ workspaceIdleTtlMs: value.workspaceIdleTtlMs, imageMaxEdgePx: value.imageMaxEdgePx, imageReadByteBudget: value.imageReadByteBudget }); } setDirty(false); setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>

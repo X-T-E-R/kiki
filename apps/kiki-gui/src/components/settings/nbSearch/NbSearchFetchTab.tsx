@@ -7,12 +7,13 @@ import { useI18n } from '../../../i18n';
 import { costLabelKey, latencyLabelKey } from './types';
 import { NbSearchIssues } from './NbSearchIssues';
 import { SECONDARY_BUTTON, SMALL_INPUT } from '../../ui';
+import { Icon } from '../../icons';
 
 function AvailabilityBadge({ availability }: { availability: 'ready' | 'unavailable' }) {
   const { t } = useI18n();
   return (
     <span
-      className={`rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide shrink-0 ${
+      className={`rounded-full border px-1.5 py-px text-[11px] font-medium shrink-0 ${
         availability === 'ready'
           ? 'border-success/40 bg-success/10 text-success'
           : 'border-danger/40 bg-danger/5 text-danger'
@@ -36,7 +37,7 @@ function StepNumber({ n }: { n: number }) {
 function FallbackArrow({ label }: { label: string }) {
   return (
     <div className="flex items-center justify-center -my-1">
-      <span className="text-ink-faint text-[10px] select-none">↓ {label}</span>
+      <span className="flex select-none items-center gap-1 text-[12px] text-ink-faint"><Icon name="arrowDown" size={12} />{label}</span>
     </div>
   );
 }
@@ -81,7 +82,7 @@ export function NbSearchFetchTab({
                 className={`rounded px-1.5 py-0.5 text-[9.5px] font-medium ${
                   fetchChainInherited
                     ? 'bg-hairline/40 text-ink-soft'
-                    : 'bg-accent/15 text-accent border border-accent/30'
+                    : 'bg-ink/[0.05] text-ink-soft'
                 }`}
               >
                 {fetchChainInherited
@@ -195,7 +196,7 @@ export function NbSearchFetchTab({
                           onChangeChain(next);
                         }}
                       >
-                        ↑
+                        <Icon name="arrowDown" size={12} className="rotate-180" />
                       </button>
                       <button
                         type="button"
@@ -208,7 +209,7 @@ export function NbSearchFetchTab({
                           onChangeChain(next);
                         }}
                       >
-                        ↓
+                        <Icon name="arrowDown" size={12} />
                       </button>
                       <button
                         type="button"
@@ -218,7 +219,7 @@ export function NbSearchFetchTab({
                           onChangeChain(fetchChain.filter((_, candidate) => candidate !== index));
                         }}
                       >
-                        ×
+                        <Icon name="close" size={12} />
                       </button>
                     </div>
                   </div>

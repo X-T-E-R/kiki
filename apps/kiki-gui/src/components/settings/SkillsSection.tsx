@@ -24,8 +24,9 @@ import { SkillCard } from '../capabilities/rows';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { MediaPreviewProvider } from '../mediaPreview';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingsDraftFooter } from './SettingsPrimitives';
 import { SettingsWorkspaceScopeContext } from './workspaceScope';
 
 /** Groups collapsed on first paint: builtin is long and rarely the answer. */
@@ -164,10 +165,8 @@ function SkillsDefaultsCard() {
           <textarea id="settings-extra-skill-dirs" className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
           <Hint>{t('st.caps.extraDirsHint')}</Hint>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
-          {dirty ? <span role="status" className="text-[12px] text-ink-soft">{t('st.tools.unsaved')}</span> : null}
-        </div>
+        <SettingsDraftFooter id="skill-defaults" dirty={dirty} saving={saving} saveLabel={t('st.caps.save')} onSave={() => void save()}
+          onDiscard={() => { if (baseline !== null) { setMergeSkills(baseline.merge); setBuiltinProductSkills(baseline.builtin); setExtraDirs(baseline.dirs); } setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -281,7 +280,7 @@ function SkillCatalogCard({
                       {t('st.skills.emptyPlugin')}{' '}
                       <Link
                         to={{ pathname: '/settings/plugins', search: location.search }}
-                        className="font-medium text-accent hover:underline"
+                        className="font-medium text-accent-ink hover:underline"
                       >
                         {t('st.plugins.manageLink')}
                       </Link>

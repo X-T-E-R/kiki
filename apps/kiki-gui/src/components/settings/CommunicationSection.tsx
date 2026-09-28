@@ -17,8 +17,10 @@ import {
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
-import { PRIMARY_BUTTON, SMALL_INPUT } from '../ui';
+import { SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField } from './fields';
+import { SettingsSegmented } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 const APPEND_TIMINGS: readonly DefaultAppendTiming[] = ['agent_idle', 'subagents_done', 'tasks_done'];
@@ -40,17 +42,15 @@ export function ThreadCommunicationCard() {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<boolean | null>(null);
-  const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
-    if (configQuery.data !== undefined && !dirty) {
-      const projected = runtimeConfigDraftFromConfig(configQuery.data);
-      setDraft(projected.threadCommunicationEnabled);
+    if (configQuery.data !== undefined && !saving) {
+      setDraft(runtimeConfigDraftFromConfig(configQuery.data).threadCommunicationEnabled);
     }
-  }, [configQuery.data, dirty]);
+  }, [configQuery.data, saving]);
 
   if (draft === null) {
     return (
@@ -60,17 +60,17 @@ export function ThreadCommunicationCard() {
     );
   }
 
-  const save = async () => {
+  const apply = async (checked: boolean) => {
+    setDraft(checked);
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await client.patchConfig(threadCommunicationPatch(draft));
+      const echoed = await client.patchConfig(threadCommunicationPatch(checked));
       queryClient.setQueryData(['config'], echoed);
-      const projected = runtimeConfigDraftFromConfig(echoed);
-      setDraft(projected.threadCommunicationEnabled);
-      setDirty(false);
+      setDraft(runtimeConfigDraftFromConfig(echoed).threadCommunicationEnabled);
       setFeedback({ tone: 'success', text: t('st.communication.threadSaved') });
     } catch (error) {
+      setDraft(configQuery.data === undefined ? draft : runtimeConfigDraftFromConfig(configQuery.data).threadCommunicationEnabled);
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setSaving(false);
@@ -85,19 +85,9 @@ export function ThreadCommunicationCard() {
           <Toggle
             label={t('st.communication.threadCommunication')}
             checked={draft}
-            onChange={(checked) => {
-              setDraft(checked);
-              setDirty(true);
-              setFeedback(null);
-            }}
+            onChange={(checked) => { void apply(checked); }}
           />
         </fieldset>
-        <div className="flex flex-wrap items-center gap-3 border-t border-hairline pt-3">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-            {saving ? t('common.saving') : t('common.save')}
-          </button>
-          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
-        </div>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -110,17 +100,15 @@ export function NotifyParentCard() {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<boolean | null>(null);
-  const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
-    if (configQuery.data !== undefined && !dirty) {
-      const projected = runtimeConfigDraftFromConfig(configQuery.data);
-      setDraft(projected.agentsNotifyParent);
+    if (configQuery.data !== undefined && !saving) {
+      setDraft(runtimeConfigDraftFromConfig(configQuery.data).agentsNotifyParent);
     }
-  }, [configQuery.data, dirty]);
+  }, [configQuery.data, saving]);
 
   if (draft === null) {
     return (
@@ -130,17 +118,17 @@ export function NotifyParentCard() {
     );
   }
 
-  const save = async () => {
+  const apply = async (checked: boolean) => {
+    setDraft(checked);
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await client.patchConfig(agentNotifyParentPatch(draft));
+      const echoed = await client.patchConfig(agentNotifyParentPatch(checked));
       queryClient.setQueryData(['config'], echoed);
-      const projected = runtimeConfigDraftFromConfig(echoed);
-      setDraft(projected.agentsNotifyParent);
-      setDirty(false);
+      setDraft(runtimeConfigDraftFromConfig(echoed).agentsNotifyParent);
       setFeedback({ tone: 'success', text: t('st.communication.notifyParentSaved') });
     } catch (error) {
+      setDraft(configQuery.data === undefined ? draft : runtimeConfigDraftFromConfig(configQuery.data).agentsNotifyParent);
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setSaving(false);
@@ -155,19 +143,9 @@ export function NotifyParentCard() {
           <Toggle
             label={t('st.communication.notifyParent')}
             checked={draft}
-            onChange={(checked) => {
-              setDraft(checked);
-              setDirty(true);
-              setFeedback(null);
-            }}
+            onChange={(checked) => { void apply(checked); }}
           />
         </fieldset>
-        <div className="flex flex-wrap items-center gap-3 border-t border-hairline pt-3">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-            {saving ? t('common.saving') : t('common.save')}
-          </button>
-          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
-        </div>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -180,17 +158,15 @@ export function TokenCountingCard() {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<TokenCountingStrategy | null>(null);
-  const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
-    if (configQuery.data !== undefined && !dirty) {
-      const projected = runtimeConfigDraftFromConfig(configQuery.data);
-      setDraft(projected.tokenCountingStrategy);
+    if (configQuery.data !== undefined && !saving) {
+      setDraft(runtimeConfigDraftFromConfig(configQuery.data).tokenCountingStrategy);
     }
-  }, [configQuery.data, dirty]);
+  }, [configQuery.data, saving]);
 
   if (draft === null) {
     return (
@@ -200,17 +176,17 @@ export function TokenCountingCard() {
     );
   }
 
-  const save = async () => {
+  const apply = async (choice: TokenCountingStrategy) => {
+    setDraft(choice);
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await client.patchConfig(tokenCountingPatch(draft));
+      const echoed = await client.patchConfig(tokenCountingPatch(choice));
       queryClient.setQueryData(['config'], echoed);
-      const projected = runtimeConfigDraftFromConfig(echoed);
-      setDraft(projected.tokenCountingStrategy);
-      setDirty(false);
+      setDraft(runtimeConfigDraftFromConfig(echoed).tokenCountingStrategy);
       setFeedback({ tone: 'success', text: t('st.communication.tokenCountingSaved') });
     } catch (error) {
+      setDraft(configQuery.data === undefined ? draft : runtimeConfigDraftFromConfig(configQuery.data).tokenCountingStrategy);
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setSaving(false);
@@ -227,11 +203,7 @@ export function TokenCountingCard() {
             <select
               className={`${SMALL_INPUT} mt-1 block`}
               value={draft}
-              onChange={(event) => {
-                setDraft(event.target.value as TokenCountingStrategy);
-                setDirty(true);
-                setFeedback(null);
-              }}
+              onChange={(event) => { void apply(event.target.value as TokenCountingStrategy); }}
             >
               <option value="measured+estimated">measured+estimated</option>
               <option value="measured">measured</option>
@@ -239,12 +211,7 @@ export function TokenCountingCard() {
             </select>
           </label>
         </fieldset>
-        <div className="flex flex-wrap items-center gap-3 border-t border-hairline pt-3">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-            {saving ? t('common.saving') : t('common.save')}
-          </button>
-          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
-        </div>
+
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -261,40 +228,24 @@ export function DefaultAppendTimingCard() {
   const { t } = useI18n();
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const [tick, ping] = useSavedTick();
+  const current = settings.defaultAppendTiming;
 
   return (
     <SectionCard id="st-card-append-timing" title={t('st.communication.appendTimingTitle')}>
-      <div className="space-y-4">
-        <Hint>{t('st.communication.appendTimingHint')}</Hint>
-        <div>
-          <span id="default-append-timing-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
-            {t('st.communication.appendTiming')}
-          </span>
-          <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="default-append-timing-label">
-            {APPEND_TIMINGS.map((timing) => (
-              <button
-                key={timing}
-                type="button"
-                data-append-timing={timing}
-                aria-pressed={settings.defaultAppendTiming === timing}
-                title={t(APPEND_TIMING_HINT_KEY[timing])}
-                onClick={() => {
-                  writeSettings({ defaultAppendTiming: timing });
-                  ping();
-                }}
-                className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
-                  settings.defaultAppendTiming === timing
-                    ? 'border-accent bg-accent-soft text-accent'
-                    : 'border-hairline text-ink-soft hover:border-hairline-strong'
-                }`}
-              >
-                {t(APPEND_TIMING_LABEL_KEY[timing])}
-              </button>
-            ))}
-            <SavedTick show={tick} />
-          </div>
-        </div>
-      </div>
+      <SettingField
+        label={t('st.communication.appendTiming')}
+        labelId="default-append-timing-label"
+        help={<>{t('st.communication.appendTimingHint')} {t(APPEND_TIMING_HINT_KEY[current])}</>}
+      >
+        <SettingsSegmented<DefaultAppendTiming>
+          ariaLabelledBy="default-append-timing-label"
+          dataAttr="data-append-timing"
+          value={current}
+          onChange={(timing) => { writeSettings({ defaultAppendTiming: timing }); ping(); }}
+          choices={APPEND_TIMINGS.map((timing) => ({ value: timing, label: t(APPEND_TIMING_LABEL_KEY[timing]) }))}
+        />
+        <SavedTick show={tick} />
+      </SettingField>
     </SectionCard>
   );
 }
@@ -305,7 +256,6 @@ export function CommunicationSection() {
       <ThreadCommunicationCard />
       <NotifyParentCard />
       <TokenCountingCard />
-      <DefaultAppendTimingCard />
     </>
   );
 }

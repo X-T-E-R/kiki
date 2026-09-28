@@ -11,6 +11,7 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { Icon } from '../icons';
 
 type PromptRow = { id: string; name: string; value: string };
 type PromptFileRow = { id: string; value: string };
@@ -174,7 +175,7 @@ export function PromptConfigCard() {
                     aria-label={t('st.prompt.filePath')}
                     onChange={(event) => { update({ ...draft, files: draft.files.map((item, rowIndex) => rowIndex === index ? { ...item, value: event.target.value } : item) }); }}
                   />
-                  <button type="button" className={SECONDARY_BUTTON} aria-label={t('st.prompt.removeFile', { name: row.value || String(index + 1) })} onClick={() => { update({ ...draft, files: draft.files.filter((_, rowIndex) => rowIndex !== index) }); }}>×</button>
+                  <button type="button" className={SECONDARY_BUTTON} aria-label={t('st.prompt.removeFile', { name: row.value || String(index + 1) })} onClick={() => { update({ ...draft, files: draft.files.filter((_, rowIndex) => rowIndex !== index) }); }}><Icon name="close" size={14} /></button>
                   {errors.files[index] !== undefined ? <p className="sm:col-span-2 text-[11px] text-danger" role="alert">{errors.files[index]}</p> : null}
                 </div>
               ))}
@@ -188,7 +189,7 @@ export function PromptConfigCard() {
                 <div key={row.id} data-prompt-variable-row={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_auto]">
                   <input className={INPUT} value={row.name} placeholder={t('st.prompt.variableNamePlaceholder')} aria-label={t('st.prompt.variableName')} data-prompt-variable-name onChange={(event) => { update({ ...draft, variables: draft.variables.map((item, rowIndex) => rowIndex === index ? { ...item, name: event.target.value } : item) }); }} />
                   <textarea className={`${INPUT} min-h-16`} value={row.value} placeholder={t('st.prompt.variableValuePlaceholder')} aria-label={t('st.prompt.variableValue')} onChange={(event) => { update({ ...draft, variables: draft.variables.map((item, rowIndex) => rowIndex === index ? { ...item, value: event.target.value } : item) }); }} />
-                  <button type="button" className={SECONDARY_BUTTON} aria-label={t('st.prompt.removeVariable', { name: row.name || String(index + 1) })} onClick={() => { update({ ...draft, variables: draft.variables.filter((_, rowIndex) => rowIndex !== index) }); }}>×</button>
+                  <button type="button" className={SECONDARY_BUTTON} aria-label={t('st.prompt.removeVariable', { name: row.name || String(index + 1) })} onClick={() => { update({ ...draft, variables: draft.variables.filter((_, rowIndex) => rowIndex !== index) }); }}><Icon name="close" size={14} /></button>
                   {errors.variables[index] !== undefined ? <p className="sm:col-span-3 text-[11px] text-danger" role="alert">{errors.variables[index]}</p> : null}
                 </div>
               ))}
@@ -202,7 +203,7 @@ export function PromptConfigCard() {
                 <div key={row.id} data-prompt-field-row={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_auto]">
                   <input className={INPUT} value={row.name} placeholder={t('st.prompt.fieldNamePlaceholder')} aria-label={t('st.prompt.fieldName')} onChange={(event) => { update({ ...draft, fields: draft.fields.map((item, rowIndex) => rowIndex === index ? { ...item, name: event.target.value } : item) }); }} />
                   <textarea className={`${INPUT} min-h-16`} value={row.value} placeholder={t('st.prompt.fieldValuePlaceholder')} aria-label={t('st.prompt.fieldValue')} onChange={(event) => { update({ ...draft, fields: draft.fields.map((item, rowIndex) => rowIndex === index ? { ...item, value: event.target.value } : item) }); }} />
-                  <button type="button" className={SECONDARY_BUTTON} aria-label={t('st.prompt.removeField', { name: row.name || String(index + 1) })} onClick={() => { update({ ...draft, fields: draft.fields.filter((_, rowIndex) => rowIndex !== index) }); }}>×</button>
+                  <button type="button" className={SECONDARY_BUTTON} aria-label={t('st.prompt.removeField', { name: row.name || String(index + 1) })} onClick={() => { update({ ...draft, fields: draft.fields.filter((_, rowIndex) => rowIndex !== index) }); }}><Icon name="close" size={14} /></button>
                   {errors.fields[index] !== undefined ? <p className="sm:col-span-3 text-[11px] text-danger" role="alert">{errors.fields[index]}</p> : null}
                 </div>
               ))}
@@ -225,6 +226,9 @@ export function PromptConfigCard() {
 
           <div className="flex flex-wrap items-center gap-3">
             <button type="button" className={PRIMARY_BUTTON} disabled={!ready || saving || !dirty || hasPromptErrors(errors)} onClick={() => void save()}>{saving ? t('common.saving') : t('st.prompt.save')}</button>
+            <button type="button" className={SECONDARY_BUTTON} disabled={!dirty || saving} onClick={() => {
+              setDraft(promptDraftFromConfig(configQuery.data?.prompt)); setDirty(false); setFeedback(null);
+            }}>{t('st.advanced.discard')}</button>
             {dirty ? <span className="text-[12px] text-ink-soft">{t('st.tools.unsaved')}</span> : null}
           </div>
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}

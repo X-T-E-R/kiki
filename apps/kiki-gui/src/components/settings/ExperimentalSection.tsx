@@ -7,8 +7,10 @@ import type { KikiConfigPatch, KikiConfigResponse } from '@kiki/session-core/tra
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { PRIMARY_BUTTON, SMALL_INPUT } from '../ui';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { useDirtyReporter } from '../dirtyGuard';
 import { SectionCard } from './SectionCard';
+import { SettingsSelect } from './SettingsPrimitives';
 
 const TOOL_FLAGS = new Set(['tool-select', 'task_wait']);
 const FLAG_COPY = {
@@ -55,6 +57,8 @@ export interface ExperimentalSectionProps {
   onSaveExtra?: () => KikiConfigPatch | null | Promise<KikiConfigPatch | null>;
   /** Called after successful save with the server's echoed config. */
   onSavedExtra?: (echoed: KikiConfigResponse) => void;
+  /** Reset extra controls to their saved baseline alongside experimental flags. */
+  onDiscardExtra?: () => void;
 }
 
 export function ExperimentalSection({
@@ -69,6 +73,7 @@ export function ExperimentalSection({
   extraDirty = false,
   onSaveExtra,
   onSavedExtra,
+  onDiscardExtra,
 }: ExperimentalSectionProps) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -96,10 +101,10 @@ export function ExperimentalSection({
     });
   const queryPending = metaQuery.isLoading || configQuery.isLoading;
   const queryError = metaQuery.isError || configQuery.isError;
-  if (featureIds !== undefined && !includeUnknown && !queryPending && !queryError && rows.length === 0) return null;
-
   const hasFlagChanges = Object.keys(changes).length > 0;
   const dirty = hasFlagChanges || extraDirty;
+  useDirtyReporter(`experimental:${cardId ?? featureIds?.join('-') ?? (toolsOnly ? 'tools' : 'general')}`, dirty);
+  if (featureIds !== undefined && !includeUnknown && !queryPending && !queryError && rows.length === 0) return null;
 
   const save = async () => {
     setSaving(true);
@@ -180,26 +185,26 @@ export function ExperimentalSection({
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <label htmlFor={`experimental-flag-${row.id}`} className="text-[12px] text-ink-soft shrink-0">
+                  <span className="shrink-0 text-[12.5px] text-ink-soft">
                     {t('st.experimental.configChoice')}
-                  </label>
-                  <select
+                  </span>
+                  <SettingsSelect
                     id={`experimental-flag-${row.id}`}
-                    className={SMALL_INPUT}
-                    aria-label={t('st.experimental.overrideLabel', { feature: featureLabel })}
+                    ariaLabel={t('st.experimental.overrideLabel', { feature: featureLabel })}
                     value={row.override === undefined ? 'inherit' : String(row.override)}
-                    onChange={(event) => {
+                    choices={[
+                      { value: 'inherit', label: t('st.experimental.inherited') },
+                      { value: 'true', label: t('st.experimental.configOn') },
+                      { value: 'false', label: t('st.experimental.configOff') },
+                    ]}
+                    onChange={(value) => {
                       setChanges((current) => ({
                         ...current,
-                        [row.id]: event.target.value === 'inherit' ? null : event.target.value === 'true',
+                        [row.id]: value === 'inherit' ? null : value === 'true',
                       }));
                       setFeedback(null);
                     }}
-                  >
-                    <option value="inherit">{t('st.experimental.inherited')}</option>
-                    <option value="true">{t('st.experimental.configOn')}</option>
-                    <option value="false">{t('st.experimental.configOff')}</option>
-                  </select>
+                  />
                 </div>
               </div>
 
@@ -226,7 +231,7 @@ export function ExperimentalSection({
         {typeof children === 'function' ? children({ saving }) : children}
       </fieldset>
 
-      <div className="flex flex-wrap items-center gap-3 pt-1">
+      <div className="mt-1 flex flex-wrap items-center gap-2 border-t border-hairline pt-3">
         <button
           type="button"
           className={PRIMARY_BUTTON}
@@ -235,7 +240,11 @@ export function ExperimentalSection({
         >
           {saving ? t('common.saving') : t('common.save')}
         </button>
-        {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
+        {(!extraDirty || onDiscardExtra !== undefined) ? <button type="button" className={SECONDARY_BUTTON}
+          disabled={saving || !dirty} onClick={() => { setChanges({}); onDiscardExtra?.(); setFeedback(null); }}>
+          {t('st.advanced.discard')}
+        </button> : null}
+        {dirty ? <span role="status" className="text-[12px] text-ink-faint">{t('st.tools.unsaved')}</span> : null}
       </div>
 
       {metaQuery.isError ? <InlineError error={metaQuery.error} /> : null}

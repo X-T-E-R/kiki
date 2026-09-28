@@ -66,10 +66,10 @@ export function SettingsSearch({
             setQuery('');
           }
         }}
-        className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+        className="h-8 w-full rounded-md bg-ink/[0.04] px-2.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
       />
       {searching ? (
-        <div className="mt-1 space-y-0.5" role="listbox" aria-label={t('st.search.aria')}>
+        <div className="mt-2 flex flex-col gap-0.5" role="listbox" aria-label={t('st.search.aria')}>
           {results.map((entry) => (
             <button
               key={entry.cardId}
@@ -77,21 +77,17 @@ export function SettingsSearch({
               role="option"
               aria-selected="false"
               onClick={() => { onSearchHit(entry); setQuery(''); }}
-              className="w-full truncate rounded-lg px-2 py-1.5 text-left text-[12px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
+              className="w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-ink/[0.04]"
             >
-              {entry.groupLabel !== '' ? (
-                <>
-                  <span className="text-ink-faint">{entry.groupLabel}</span>
-                  <span className="mx-1 text-ink-faint">›</span>
-                </>
-              ) : null}
-              <span className="text-ink-faint">{entry.sectionLabel}</span>
-              <span className="mx-1 text-ink-faint">›</span>
-              <span className="text-ink">{entry.title}</span>
+              <span className="block truncate text-[13px] text-ink">{entry.title}</span>
+              <span className="block truncate text-[12px] leading-4 text-ink-faint">
+                {entry.groupLabel !== '' ? <>{entry.groupLabel}<span aria-hidden> › </span></> : null}
+                {entry.sectionLabel}
+              </span>
             </button>
           ))}
           {results.length === 0 ? (
-            <p className="px-2 py-1.5 text-[11.5px] text-ink-faint">{t('st.search.empty', { query: query.trim() })}</p>
+            <p className="px-2 py-1.5 text-[12px] text-ink-faint">{t('st.search.empty', { query: query.trim() })}</p>
           ) : null}
         </div>
       ) : (idle ?? null)}
@@ -101,8 +97,7 @@ export function SettingsSearch({
 
 /**
  * The settings navigation tree: non-clickable group headers with clickable
- * leaf sections, plus top-level leaves (About & updates) that belong to no
- * group. Shared by the desktop rail and the mobile drawer so both breakpoints
+ * leaf sections. Shared by the desktop rail and the mobile drawer so both breakpoints
  * present the same hierarchy.
  */
 export function SettingsNavTree({
@@ -126,8 +121,13 @@ export function SettingsNavTree({
         key={id}
         type="button"
         data-settings-nav-leaf={id}
+        aria-current={active === id ? 'page' : undefined}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
-        className={`rounded-lg px-2 py-2 text-left text-[13px] transition-colors ${active === id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}
+        className={`flex h-8 items-center rounded-md px-2 text-left text-[13px] transition-colors ${
+          active === id
+            ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+            : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+        }`}
       >
         {t(labelKey)}
       </button>
@@ -143,7 +143,7 @@ export function SettingsNavTree({
   ];
 
   return (
-    <div className="mt-2 flex flex-col gap-3" data-settings-nav-tree>
+    <div className="mt-4 flex flex-col gap-4" data-settings-nav-tree>
       {SETTINGS_NAV_TREE.map((node) => {
         if (node.kind === 'leaf') {
           return <div key={`leaf-${node.section}`} data-settings-nav-ungrouped={node.section}>{leafButton(node.section)}</div>;
@@ -151,15 +151,15 @@ export function SettingsNavTree({
         if (node.sections.length === 0) return null;
         return (
           <div key={node.id} data-settings-nav-group={node.id}>
-            <p className="px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-wide text-ink-faint">
+            <p className="flex h-7 items-center px-2 text-[12px] font-medium text-ink-soft">
               {t(node.labelKey)}
             </p>
-            <div className="flex flex-col">
+            <div className="flex flex-col gap-0.5">
               {node.sections.map((id) => (
                 <div key={id} className="flex flex-col">
                   {leafButton(id)}
                   {id === 'search' && active === 'search' ? (
-                    <div className="ml-3 my-0.5 flex flex-col gap-0.5 border-l border-hairline pl-2" data-settings-nav-subtabs="search">
+                    <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="search">
                       {nbSearchSubtabs.map((sub) => (
                         <button
                           key={sub.tab}
@@ -169,7 +169,7 @@ export function SettingsNavTree({
                             onNavigate(`search?tab=${sub.tab}` as unknown as SectionId);
                             onAfterNavigate?.();
                           }}
-                          className="rounded px-2 py-1 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
+                          className="flex h-7 items-center rounded-md pl-5 pr-2 text-left text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
                         >
                           {t(sub.labelKey)}
                         </button>
@@ -197,12 +197,12 @@ export function SettingsNav({
   onNavigate: (section: SectionId) => void;
   onSearchHit: (entry: SettingsSearchEntry) => void;
 }) {
+  const { t } = useI18n();
   return (
-    <nav className="flex h-full w-full flex-col overflow-y-auto overscroll-y-contain border-r border-hairline bg-panel p-2 lg:w-[232px]">
+    <nav aria-label={t('st.nav.browse')} className="flex h-full w-full flex-col overflow-y-auto overscroll-y-contain px-3 pb-4 pt-3 lg:w-[232px]">
       <SettingsSearch
         focusToken={searchFocusToken}
         onSearchHit={onSearchHit}
-        className="px-1"
         idle={<SettingsNavTree active={active} onNavigate={onNavigate} />}
       />
     </nav>

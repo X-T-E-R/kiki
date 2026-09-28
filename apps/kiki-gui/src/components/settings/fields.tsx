@@ -32,12 +32,12 @@ export function SettingsGroup({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2" data-settings-group>
+    <div className="space-y-2 border-t border-hairline pt-5 first:border-t-0 first:pt-0" data-settings-group>
       <div>
-        <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-faint">{title}</p>
+        <p className="text-[13px] font-medium text-ink">{title}</p>
         {help !== undefined ? <Hint>{help}</Hint> : null}
       </div>
-      <div className="space-y-3">{children}</div>
+      <div className="space-y-2">{children}</div>
     </div>
   );
 }
@@ -51,6 +51,7 @@ export function SettingsGroup({
 export function SettingField({
   label,
   htmlFor,
+  labelId,
   help,
   layout = 'row',
   children,
@@ -58,30 +59,33 @@ export function SettingField({
   label: string;
   /** Set when the control is a real form element, so the label activates it. */
   htmlFor?: string;
+  /** Id on the label text, for `aria-labelledby` on grouped controls. */
+  labelId?: string;
   /** Plain language: what changing this does, and what the default is. */
-  help?: string;
+  help?: React.ReactNode;
   layout?: 'row' | 'stack';
   children: React.ReactNode;
 }) {
-  const labelClass = 'text-[12.5px] font-medium text-ink';
+  // T3/400: a field label is a row, not a heading. 500 is reserved for the
+  // sub-block titles above (SettingsGroup) so the two never read alike.
+  const labelClass = 'text-[13px] text-ink';
   const labelNode = htmlFor === undefined
-    ? <span className={labelClass}>{label}</span>
-    : <label htmlFor={htmlFor} className={labelClass}>{label}</label>;
+    ? <span id={labelId} className={labelClass}>{label}</span>
+    : <label id={labelId} htmlFor={htmlFor} className={labelClass}>{label}</label>;
+  const helpNode = help !== undefined && help !== null ? <Hint>{help}</Hint> : null;
 
-  return (
-    <div className="space-y-1" data-settings-field>
-      {layout === 'row' ? (
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
-          {labelNode}
-          <div className="flex flex-wrap items-center gap-2">{children}</div>
-        </div>
-      ) : (
-        <>
-          {labelNode}
-          <div className="space-y-1">{children}</div>
-        </>
-      )}
-      {help !== undefined ? <Hint>{help}</Hint> : null}
+  // Row: label and its help on the left, control on the right edge. Below
+  // `sm` the control drops under the text so nothing is squeezed.
+  return layout === 'row' ? (
+    <div className="flex flex-col gap-2 py-1 sm:flex-row sm:items-start sm:justify-between sm:gap-6" data-settings-field>
+      <div className="min-w-0 space-y-0.5 sm:pt-1.5 sm:leading-5">{labelNode}{helpNode}</div>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">{children}</div>
+    </div>
+  ) : (
+    <div className="space-y-1.5 py-1" data-settings-field>
+      {labelNode}
+      <div className="space-y-1">{children}</div>
+      {helpNode}
     </div>
   );
 }
@@ -134,7 +138,7 @@ export function AdvancedDetails({
  */
 export function CardActions({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pt-0.5" data-settings-actions>
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-2 pt-3" data-settings-actions>
       {children}
     </div>
   );

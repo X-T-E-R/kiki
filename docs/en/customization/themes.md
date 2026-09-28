@@ -2,6 +2,12 @@
 
 Kiki can use a built-in color scheme or a custom JSON theme file. Custom files live in the themes directory and appear in `/theme` alongside the built-in choices.
 
+::: tip Terminal themes and GUI skins
+This page describes **terminal (TUI) themes**. The GUI has its own file format, called a **skin**, which covers colors, fonts and shape rather than only terminal colors — see [GUI Skins](./skins.md).
+
+Both live in the **same directory** (`~/.kiki/themes/`) and are told apart by content: a file with `"kind": "kiki-skin"` is a GUI skin, anything else is a TUI theme. Each loader ignores the other's files, so you can keep both side by side. A TUI theme does not restyle the GUI, and a skin does not restyle the terminal.
+:::
+
 ## Built-in color tokens
 
 Custom themes can override the tokens below. The `dark` and `light` columns show the built-in values; `auto` resolves to one of those palettes at startup, and falls back to `dark` when terminal background detection is unavailable.

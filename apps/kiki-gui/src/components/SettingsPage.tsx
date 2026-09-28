@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
-import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   SETTINGS_SECTION_META,
   resolveSettingsRoute,
@@ -12,6 +11,8 @@ import { useI18n } from '../i18n';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
 import { AdvancedSection } from './settings/AdvancedSection';
+import { AppearanceSection } from './settings/AppearanceSection';
+import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
 import { AutomationSection } from './settings/AutomationSection';
@@ -22,10 +23,11 @@ import { McpSection } from './settings/McpSection';
 import { NbSearchSection } from './settings/NbSearchSection';
 import { PluginsSection } from './settings/PluginsSection';
 import { SECTIONS, type SectionId } from './settings/sections';
-import { SettingsFlashContext } from './settings/SectionCard';
+import { ScopeTag, SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
 import { SkillsSection } from './settings/SkillsSection';
 import { SubagentsSection } from './settings/SubagentsSection';
+import { UnifiedAgentManager } from './settings/UnifiedAgentManager';
 import { TasksSection } from './settings/TasksSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
 import { SettingsWorkspaceScopeContext } from './settings/workspaceScope';
@@ -33,24 +35,20 @@ import { WorkspacesSection } from './settings/WorkspacesSection';
 
 export { mcpConfigFromDraft, parseNamedAgentTools } from '@kiki/session-core/settings';
 
-/** Compact page signpost: purpose stays visible, scopes stay auditable. */
-function ScopeHeader({ section, workspaceName }: { section: SectionId; workspaceName: string | null }) {
+/**
+ * One line on what the leaf is for and its default write target. The leaf's
+ * name lives in the page header (T2), so the content pane opens with prose,
+ * and the T1 section titles below are its only headings.
+ */
+function SectionIntro({ section }: { section: SectionId }) {
   const { t } = useI18n();
   const meta = SETTINGS_SECTION_META[section];
   if (meta === undefined) return null;
-  const scopes = meta.scopes.map((scope) =>
-    scope === 'workspace' && workspaceName !== null
-      ? `${t('st.scope.workspace')} · ${workspaceName}`
-      : t(`st.scope.${scope}` as I18nKey),
-  ).join(' · ');
-  return (
-    <header data-settings-scope-header={meta.scopes.join('+')} className="flex flex-wrap items-center gap-x-2 gap-y-1 py-2">
-      <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-ink-soft">{t(meta.purposeKey)}</p>
-      <span className="shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-ink-faint" title={t('st.scope.label')}>
-        {scopes}
-      </span>
-    </header>
-  );
+  const scope = meta.scopes[0];
+  return <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 pb-6">
+    <p data-settings-intro className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t(meta.purposeKey)}</p>
+    {scope !== undefined ? <ScopeTag scope={scope} page /> : null}
+  </div>;
 }
 
 /**
@@ -79,16 +77,16 @@ function MobileSettingsDrawer({
         onClick={onClose}
         className="absolute inset-0 bg-shell/20"
       />
-      <div className="absolute inset-y-0 left-0 flex w-[260px] flex-col overflow-y-auto overscroll-y-contain border-r border-hairline bg-panel p-3">
-        <div className="flex items-center justify-between px-1 pb-1">
-          <span className="font-display text-[13px] font-semibold text-ink">{t('st.title')}</span>
+      <div className="absolute inset-y-0 left-0 flex w-[280px] flex-col overflow-y-auto overscroll-y-contain bg-canvas p-3 shadow-[var(--kiki-sheet-shadow)]">
+        <div className="flex items-center justify-between px-2 pb-1">
+          <span className="font-display text-[15px] font-semibold text-ink">{t('st.title')}</span>
           <button
             type="button"
             onClick={onClose}
             aria-label={t('common.close')}
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+            className="flex h-11 w-11 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
           >
-            <span aria-hidden>✕</span>
+            <Icon name="close" size={16} />
           </button>
         </div>
         <SettingsNavTree active={active} onNavigate={onNavigate} onAfterNavigate={onClose} />
@@ -186,9 +184,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   const pane = active === null ? null
     : active === 'general' ? <GeneralSection />
+    : active === 'appearance' ? <AppearanceSection />
     : active === 'ai' ? <AiSection />
     : active === 'connection' ? <ConnectionSection />
-    : active === 'agents' ? <AgentsSection />
+    : active === 'agents' ? <><UnifiedAgentManager /><AgentsSection /></>
     : active === 'subagents' ? <SubagentsSection />
     : active === 'communication' ? <CommunicationSection />
     : active === 'skills' ? <SkillsSection />
@@ -201,18 +200,26 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'advanced' ? <AdvancedSection />
     : <AboutSection />;
 
+  const activeLabel = activeLabelKey === undefined ? undefined : t(activeLabelKey);
+
   return (
     <SettingsFlashContext.Provider value={focusCard?.cardId ?? null}>
     <SettingsWorkspaceScopeContext.Provider value={setWorkspaceScopeName}>
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
-        <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"><span aria-hidden>☰</span></button>
-        <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">{t('st.title')}</h1>
+      <header className="flex h-12 shrink-0 items-center gap-2 px-4 lg:px-6">
+        <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink md:hidden">
+          <Icon name="menu" size={16} />
+        </button>
+        {/* The page title is the leaf; "Settings" is the breadcrumb above it. */}
+        <h1 className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
+          <span className={activeLabel === undefined ? '' : 'font-normal text-ink-faint'}>{t('st.title')}</span>
+          {activeLabel !== undefined ? <><span aria-hidden className="font-normal text-ink-faint">/</span><span data-settings-page-title className="truncate">{activeLabel}</span></> : null}
+        </h1>
       </header>
-      <main className="flex min-h-0 flex-1">
-        <div className="hidden lg:block"><SettingsNav active={active} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
+      <main className="flex min-h-0 flex-1 border-t border-hairline">
+        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
         <div className="flex min-w-0 flex-1 flex-col">
           {active !== null ? (
-            <div className="border-b border-hairline bg-panel px-4 py-2 lg:hidden">
+            <div className="border-b border-hairline px-4 py-2 lg:hidden">
               <SettingsSearch
                 focusToken={searchFocusToken}
                 onSearchHit={onSearchHit}
@@ -221,18 +228,15 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
                     type="button"
                     data-settings-nav-trigger
                     onClick={() => { setDrawerOpen(true); }}
-                    className="mt-2 flex w-full items-center justify-between gap-2 rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none transition-colors focus:border-accent"
+                    className="mt-2 flex h-11 w-full items-center justify-between gap-2 rounded-md px-2 text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.04]"
                   >
                     <span className="min-w-0 truncate">
                       {activeGroup !== undefined ? (
-                        <>
-                          <span className="text-ink-faint">{t(activeGroup.labelKey)}</span>
-                          <span className="mx-1 text-ink-faint">›</span>
-                        </>
+                        <span className="text-ink-faint">{t(activeGroup.labelKey)}<span aria-hidden> / </span></span>
                       ) : null}
-                      <span>{activeLabelKey === undefined ? active : t(activeLabelKey)}</span>
+                      <span>{activeLabel ?? active}</span>
                     </span>
-                    <span aria-hidden className="shrink-0 text-[11px] text-ink-faint">▾</span>
+                    <Icon name="chevron" size={12} className="rotate-90 text-ink-faint" />
                   </button>
                 }
               />
@@ -249,18 +253,15 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <UnknownSettingsSection section={section ?? ''} onSearchHit={onSearchHit} />
             </div>
           ) : (
-            <>
-              <div className="shrink-0 border-b border-hairline px-4 lg:px-8">
-                <div className="mx-auto max-w-[760px]">
-                  <ScopeHeader section={active} workspaceName={workspaceScopeName} />
-                </div>
+            <div data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
+              <div className="mx-auto max-w-[720px]">
+                <SectionIntro section={active} />
+                {workspaceScopeName !== null ? <span className="sr-only">{t('st.scope.workspace')} {workspaceScopeName}</span> : null}
+                <SettingsPageScopeContext.Provider value={SETTINGS_SECTION_META[active]?.scopes[0] ?? null}>
+                  <div className="space-y-6">{pane}</div>
+                </SettingsPageScopeContext.Provider>
               </div>
-              <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto px-4 py-3 lg:px-8">
-                <div className="mx-auto max-w-[760px]">
-                  <div className="space-y-3">{pane}</div>
-                </div>
-              </div>
-            </>
+            </div>
           )}
         </div>
       </main>

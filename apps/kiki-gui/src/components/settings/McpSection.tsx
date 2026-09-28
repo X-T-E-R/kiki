@@ -11,11 +11,13 @@ import { useConnection } from '../../state/connection';
 import { McpServerRow } from '../capabilities/rows';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
-import { INPUT, PRIMARY_BUTTON } from '../ui';
+import { INPUT } from '../ui';
 import { McpConfigManager } from './McpConfigManager';
 import { ExperimentalSection } from './ExperimentalSection';
 import { SectionCard } from './SectionCard';
 import { SettingsWorkspaceScopeContext } from './workspaceScope';
+import { useDirtyGuard } from '../dirtyGuard';
+import { SettingsDraftFooter } from './SettingsPrimitives';
 
 function optionalNumberDraft(value: number | null | undefined): string {
   return value === null ? 'null' : value === undefined ? '' : String(value);
@@ -123,7 +125,8 @@ function McpTimeoutsCard() {
             <Hint>{t('st.mcp.toolTimeoutHint')}</Hint>
           </label>
         </fieldset>
-        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>{saving ? t('common.saving') : t('common.save')}</button>
+        <SettingsDraftFooter id="mcp-timeouts" dirty={dirty} saving={saving} onSave={() => void save()}
+          onDiscard={() => { setStartupTimeoutMs(optionalNumberDraft(configQuery.data?.mcp?.startupTimeoutMs)); setToolTimeoutMs(optionalNumberDraft(configQuery.data?.mcp?.toolTimeoutMs)); setDirty(false); setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
@@ -137,9 +140,10 @@ function McpTimeoutsCard() {
  * live status list, and the server-wide timeouts.
  */
 export function McpSection() {
-  const { client, klient } = useConnection();
+  const { client, klient, scopeId } = useConnection();
   const { t } = useI18n();
   const queryClient = useQueryClient();
+  const guard = useDirtyGuard();
   const [searchParams] = useSearchParams();
   const requestedWorkspace = searchParams.get('workspace') ?? undefined;
   const [workspaceId, setWorkspaceId] = useState('');
@@ -185,7 +189,7 @@ export function McpSection() {
 
   return (
     <div className="space-y-4">
-      <SectionCard id="st-card-mcp" title={t('st.mcp.title')}>
+      <SectionCard id="st-card-mcp" title={t('st.mcp.title')} scope="server">
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[11px] font-medium text-ink-soft">{t('st.mcp.workspace')}</span>
@@ -193,7 +197,7 @@ export function McpSection() {
               id="workspace-mcp-select"
               options={workspaceOptions}
               value={workspaceId}
-              onChange={setWorkspaceId}
+              onChange={(next) => { if (next !== workspaceId) { if (guard?.confirmDiscard !== undefined) guard.confirmDiscard(`mcp-editor:${scopeId}:${mcpCwd}`, () => setWorkspaceId(next)); else setWorkspaceId(next); } }}
               ariaLabel={t('st.mcp.workspace')}
             />
           </div>

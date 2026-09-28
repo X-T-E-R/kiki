@@ -59,7 +59,7 @@ async function render() {
 async function choose(value: string) {
   const trigger = container.querySelector<HTMLButtonElement>('#subagent-default-profile-select')!;
   await act(async () => { trigger.click(); });
-  const label = value === '__strict__' ? 'Require an explicit profile' : value;
+  const label = value === '__strict__' ? 'Require an explicit agent' : value;
   const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
     .find((candidate) => candidate.querySelector('span span')?.textContent === label);
   expect(option).not.toBeUndefined();
@@ -77,7 +77,7 @@ describe('default subagent target card', () => {
     expect(trigger().textContent).toContain('general');
     await act(async () => { trigger().click(); });
     expect([...container.querySelectorAll('[role="option"]')].map((option) => option.textContent)).toEqual([
-      expect.stringContaining('Require an explicit profile'),
+      expect.stringContaining('Require an explicit agent'),
       expect.stringContaining('explore'),
       expect.stringContaining('general'),
     ]);
@@ -94,7 +94,7 @@ describe('default subagent target card', () => {
     await choose('explore');
     expect(client.patchConfig).toHaveBeenCalledWith({ subagent: { default_profile: 'explore' } });
     expect(target().dataset['value']).toBe('explore');
-    expect(container.textContent).toContain('Default subagent profile saved.');
+    expect(container.textContent).toContain('Default subagent saved.');
     expect(container.textContent).toContain('Strict');
     expect(container.textContent).toContain('fixture/model-a');
     expect(container.textContent).not.toContain('pins no model');

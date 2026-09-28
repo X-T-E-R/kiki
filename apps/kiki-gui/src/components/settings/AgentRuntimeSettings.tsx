@@ -12,8 +12,10 @@ import { useI18n } from '../../i18n';
 import { invalidateAgentProfileCatalogs } from '../../lib/agentProfileCatalog';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingsDraftFooter } from './SettingsPrimitives';
+import { Icon } from '../icons';
 
 type AgentIdentityDraft = Pick<
   RuntimeConfigDraft,
@@ -101,7 +103,7 @@ function StringListEditor({ label, values, onChange, placeholder }: {
             aria-label={t('st.agentIdentity.removeEntry', { n: index + 1 })}
             onClick={() => { update(entries.filter((candidate) => candidate !== entry)); }}
           >
-            ×
+            <Icon name="close" size={14} />
           </button>
         </div>
       ))}
@@ -222,12 +224,8 @@ export function AgentRuntimeCard() {
           <StringListEditor label={t('st.agentIdentity.extraAgentDirs')} values={draft.extraAgentDirs} placeholder="C:\agents" onChange={(extraAgentDirs) => { updateDraft({ ...draft, extraAgentDirs }); }} />
           <StringListEditor label={t('st.agentIdentity.disabledProfiles')} values={draft.disabledNamedProfiles} placeholder="profile-name" onChange={(disabledNamedProfiles) => { updateDraft({ ...draft, disabledNamedProfiles }); }} />
         </fieldset>
-        <div className="flex flex-wrap items-center gap-3 border-t border-hairline pt-3">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-            {saving ? t('common.saving') : t('common.save')}
-          </button>
-          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.tools.unsaved')}</span> : null}
-        </div>
+        <SettingsDraftFooter id="agent-identity" dirty={dirty} saving={saving} onSave={() => void save()}
+          onDiscard={() => { setDraft(saved); setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>

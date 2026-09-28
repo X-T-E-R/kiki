@@ -145,10 +145,17 @@ describe('safe automation drafts', () => {
     expect(technical.textContent).toContain('Flag ID: tool-select');
     expect(toolFlags.textContent).not.toContain('search_worker');
     expect(advanced.textContent).not.toContain('task_wait');
-    await change(toolFlags.querySelectorAll('select')[1]!, 'true');
-    await change(advanced.querySelector('select')!, 'false');
+    // Flag overrides are SearchableSelect pickers: open the trigger, pick the row.
+    const pick = async (trigger: Element, label: string) => {
+      await act(async () => { (trigger as HTMLButtonElement).click(); });
+      const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((row) => row.textContent?.includes(label))!;
+      await act(async () => { option.click(); });
+    };
+    const flagPickers = (scope: Element) => scope.querySelectorAll('[id^="experimental-flag-"]');
+    await pick(flagPickers(toolFlags)[1]!, 'Enabled in config');
+    await pick(flagPickers(advanced)[0]!, 'Disabled in config');
     await click('Save', advanced);
-    expect(toolFlags.querySelectorAll('select')[1]!.value).toBe('true');
+    expect(flagPickers(toolFlags)[1]!.textContent).toContain('Enabled in config');
     await click('Save', toolFlags);
     expect(config.experimental).toEqual({ search_worker: false, 'tool-select': true });
     expect(toolFlags.textContent).toContain('effective: off');

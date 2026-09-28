@@ -16,6 +16,7 @@ import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { useDirtyGuard, useDirtyReporter } from '../dirtyGuard';
 
 /**
  * Read-only entries reach us redacted (`envKeys` / `headerKeys` instead of the
@@ -71,7 +72,7 @@ function klientMcpServer(config: McpServerConfig, name: string): GlobalMcpServer
 
 function breakableOAuthUrl(url: string): string {
   if (url.length <= 36) return url;
-  return [...url].reduce((parts, character, index) => parts + character + ((index + 1) % 24 === 0 ? '\u200B' : ''), '');
+  return Array.from(url).reduce((parts, character, index) => parts + character + ((index + 1) % 24 === 0 ? '\u200B' : ''), '');
 }
 
 function canonicalOAuthUrl(url: string): string {
@@ -113,6 +114,14 @@ export function McpConfigManager({
   const [revealedUrl, setRevealedUrl] = useState<{ scopeId: typeof scopeId; credentialId: string; url: string | null } | null>(null);
   const [revealErrorId, setRevealErrorId] = useState<string | null>(null);
   const [draft, setDraftState] = useState<McpEditorDraft | null>(null);
+  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(mcpDraft(draft.original));
+  useDirtyReporter(`mcp-editor:${scopeId}:${cwd}`, dirty);
+  const guard = useDirtyGuard();
+  const switchDraft = (next: McpEditorDraft | null) => {
+    const apply = () => { setDraft(next); setShowHeaders(false); };
+    if (dirty && guard?.confirmDiscard !== undefined) guard.confirmDiscard(`mcp-editor:${scopeId}:${cwd}`, apply);
+    else apply();
+  };
   const [showHeaders, setShowHeaders] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -368,10 +377,10 @@ export function McpConfigManager({
     <div className="space-y-3 border-t border-hairline pt-4">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">{t('st.mcp.configTitle')}</p>
+          <p className="text-[13px] font-medium text-ink">{t('st.mcp.configTitle')}</p>
           <Hint>{t('st.mcp.configHint')}</Hint>
         </div>
-        <button type="button" className={`${SECONDARY_BUTTON} shrink-0`} disabled={saving || resetting} onClick={() => { setDraft(mcpDraft()); setShowHeaders(false); setFeedback(null); }}>{t('st.mcp.add')}</button>
+        <button type="button" className={`${SECONDARY_BUTTON} shrink-0`} disabled={saving || resetting} onClick={() => { switchDraft(mcpDraft()); }}>{t('st.mcp.add')}</button>
       </div>
       <div className="space-y-2">
         {entries.map((entry) => (
@@ -381,7 +390,7 @@ export function McpConfigManager({
                 {entry.name}
                 {entry.mutable ? null : (
                   <span
-                    className="ml-2 rounded border border-hairline px-1.5 py-0.5 text-[10px] font-normal uppercase tracking-wide text-ink-faint"
+                    className="ml-2 rounded-[4px] bg-hairline/60 px-1.5 py-px text-[11px] font-normal text-ink-faint"
                     title={t('st.mcp.readOnlyHint')}
                   >
                     {t('st.mcp.readOnly')}
@@ -394,7 +403,7 @@ export function McpConfigManager({
               {entry.plugin !== undefined ? (
                 <Link
                   to={{ pathname: '/settings/plugins', search: location.search }}
-                  className="mt-0.5 inline-block text-[10px] font-medium text-accent hover:underline"
+                  className="mt-0.5 inline-block text-[10px] font-medium text-accent-ink hover:underline"
                 >
                   {t('st.plugins.manageLink')}
                 </Link>
@@ -406,7 +415,7 @@ export function McpConfigManager({
                   type="button"
                   className={SECONDARY_BUTTON}
                   disabled={saving || resetting}
-                  onClick={() => { setDraft(mcpDraft(entry)); setShowHeaders(false); setFeedback(null); }}
+                  onClick={() => { switchDraft(mcpDraft(entry)); }}
                 >{t('st.mcp.edit')}</button>
                 <button
                   type="button"
@@ -432,7 +441,7 @@ export function McpConfigManager({
       </div>
       <section aria-label={t('st.mcp.storedOAuthTitle')} className="space-y-2 border-t border-hairline pt-3">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">{t('st.mcp.storedOAuthTitle')}</p>
+          <p className="text-[13px] font-medium text-ink">{t('st.mcp.storedOAuthTitle')}</p>
           <Hint>{t('st.mcp.storedOAuthHint')}</Hint>
         </div>
         {savedCredentialsQuery.isPending ? <Hint>{t('st.mcp.storedOAuthLoading')}</Hint> : null}

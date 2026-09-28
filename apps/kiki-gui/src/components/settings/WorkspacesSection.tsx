@@ -14,6 +14,7 @@ import { Dialog } from '../Dialog';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { Icon } from '../icons';
 
 export function WorkspacesSection() {
   const { client, scopeId, sshLabel, activateSshProfile, activateLocal } = useConnection();
@@ -59,7 +60,7 @@ export function WorkspacesSection() {
     <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}>
       <div className="space-y-2">
         <Hint>{t('st.workspaces.hint')}</Hint>
-        <p className="text-[12px] font-semibold text-accent">
+        <p className="text-[12px] font-medium text-ink-soft">
           {sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${sshLabel}`}
         </p>
         {scopeId.startsWith('ssh:') ? (
@@ -84,7 +85,7 @@ export function WorkspacesSection() {
               <div className="flex flex-wrap items-center gap-2">
                 <p className="truncate text-[13px] font-medium text-ink" title={workspace.name}>{workspace.name}</p>
                 {workspace.pinned ? (
-                  <span className="rounded bg-accent/15 border border-accent/30 px-1.5 py-0.5 text-[9.5px] font-semibold text-accent">
+                  <span className="text-[11px] font-medium text-ink-faint">
                     {t('st.workspaces.pinnedBadge')}
                   </span>
                 ) : null}
@@ -110,31 +111,31 @@ export function WorkspacesSection() {
                     : t('st.workspaces.pinAria', { name: workspace.name })
                 }
                 title={workspace.pinned ? t('st.workspaces.unpin') : t('st.workspaces.pin')}
-                className={`rounded-md border px-2 py-1.5 text-[12px] transition-colors disabled:opacity-50 ${
+                className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors disabled:text-ink-faint ${
                   workspace.pinned
-                    ? 'border-accent/40 bg-accent-soft text-accent'
-                    : 'border-hairline bg-paper text-ink-soft hover:border-hairline-strong hover:text-ink'
+                    ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
+                    : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
                 }`}
               >
-                ⍟
+                <Icon name="pin" size={14} />
               </button>
               <button
                 type="button"
                 onClick={() => setRenaming(workspace)}
                 aria-label={t('st.workspaces.renameAria', { name: workspace.name })}
                 title={t('st.workspaces.rename')}
-                className="rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+                className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
               >
-                ✎
+                <Icon name="edit" size={14} />
               </button>
               <button
                 type="button"
                 onClick={() => setRemoving(workspace)}
                 aria-label={t('st.workspaces.removeAria', { name: workspace.name })}
                 title={t('st.workspaces.remove')}
-                className="rounded-md border border-danger/40 bg-paper px-2 py-1.5 text-[12px] text-danger transition-colors hover:bg-danger/5"
+                className="flex h-8 w-8 items-center justify-center rounded-md text-danger transition-colors hover:bg-danger/5"
               >
-                ×
+                <Icon name="close" size={14} />
               </button>
             </div>
           </div>

@@ -107,10 +107,7 @@ describe('CommunicationSection', () => {
     await click(toggle);
     expect(toggle.checked).toBe(false);
 
-    const saveBtn = [...card.querySelectorAll('button')].find((b) => b.textContent?.includes('Save'))!;
-    expect(saveBtn.disabled).toBe(false);
-
-    await click(saveBtn);
+    expect([...card.querySelectorAll('button')].some((button) => button.textContent?.includes('Save'))).toBe(false);
     expect(patchConfig).toHaveBeenCalledWith({
       thread_communication: { enabled: false },
       replace_domains: ['thread_communication'],
@@ -128,10 +125,7 @@ describe('CommunicationSection', () => {
     await click(toggle);
     expect(toggle.checked).toBe(false);
 
-    const saveBtn = [...card.querySelectorAll('button')].find((b) => b.textContent?.includes('Save'))!;
-    expect(saveBtn.disabled).toBe(false);
-
-    await click(saveBtn);
+    expect([...card.querySelectorAll('button')].some((button) => button.textContent?.includes('Save'))).toBe(false);
     expect(patchConfig).toHaveBeenCalledWith({
       agents: { notify_parent: false },
     });
@@ -149,10 +143,7 @@ describe('CommunicationSection', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
-    const saveBtn = [...card.querySelectorAll('button')].find((b) => b.textContent?.includes('Save'))!;
-    expect(saveBtn.disabled).toBe(false);
-
-    await click(saveBtn);
+    expect([...card.querySelectorAll('button')].some((button) => button.textContent?.includes('Save'))).toBe(false);
     expect(patchConfig).toHaveBeenCalledWith({
       token_counting: { strategy: 'estimated' },
       replace_domains: ['token_counting'],
