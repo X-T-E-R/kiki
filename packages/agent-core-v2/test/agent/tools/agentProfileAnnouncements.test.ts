@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { Emitter } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import type { IAgentContextInjectorService, ContextInjectionProvider } from '#/agent/contextInjector/contextInjector';
 import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import type { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import type { ISubagentTool } from '#/agent/tools/agent/agent';
 import { AgentProfileAnnouncementsService, describeProfileDelta } from '#/agent/tools/agent/agentProfileAnnouncementsService';
+
+import { stubLog } from '../../_base/log/stubs';
 
 function visible(...entries: readonly (readonly [string, string, string])[]) {
   return new Map(entries.map(([name, line, signature]) => [name, { line, signature }]));
@@ -38,6 +40,7 @@ describe('AgentRun profile change reminders', () => {
       { visibleProfileDescriptions: () => profiles } as unknown as ISubagentTool,
       { isToolActive: () => true } as unknown as IAgentToolPolicyService,
       injector,
+      stubLog(),
     );
     await Promise.resolve();
     const context = (isNewTurn: boolean) => ({ isNewTurn, injectedPositions: [], lastInjectedAt: null });
@@ -52,5 +55,34 @@ describe('AgentRun profile change reminders', () => {
     expect(await provider?.(context(true))).toBeUndefined();
     service.dispose();
     change.dispose();
+  });
+
+  it('records a baseline failure instead of leaking an unhandled rejection', async () => {
+    const warnings: string[] = [];
+    const log = { ...stubLog(), warn: (message: string) => { warnings.push(message); } };
+    const build = (ready: Promise<void>, visibleProfileDescriptions: () => unknown) =>
+      new AgentProfileAnnouncementsService(
+        { ready, onDidChange: Event.None } as unknown as ISessionAgentProfileCatalog,
+        { visibleProfileDescriptions } as unknown as ISubagentTool,
+        { isToolActive: () => true } as unknown as IAgentToolPolicyService,
+        { register: () => ({ dispose() {} }) } as unknown as IAgentContextInjectorService,
+        log,
+      );
+
+    const snapshotReadFailed = build(Promise.resolve(), () => {
+      throw new Error('Default agent profile is unavailable');
+    });
+    const catalogUnavailable = build(
+      Promise.reject(new Error('Default agent profile is unavailable')),
+      () => visible(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(warnings).toEqual([
+      'failed to baseline the visible agent profiles for change announcements',
+      'failed to baseline the visible agent profiles for change announcements',
+    ]);
+    snapshotReadFailed.dispose();
+    catalogUnavailable.dispose();
   });
 });

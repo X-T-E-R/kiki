@@ -2,6 +2,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { ILogService } from '#/_base/log/log';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
@@ -43,15 +44,20 @@ export class AgentProfileAnnouncementsService extends Service implements IAgentP
     @ISubagentTool agentRun: ISubagentTool,
     @IAgentToolPolicyService policy: IAgentToolPolicyService,
     @IAgentContextInjectorService injector: IAgentContextInjectorService,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     if (!policy.isToolActive('AgentRun')) return;
     this._register(catalog.onDidChange(() => {
       this.dirty = true;
     }));
-    void catalog.ready.then(() => {
-      this.previous ??= agentRun.visibleProfileDescriptions();
-    });
+    void catalog.ready
+      .then(() => {
+        this.previous ??= agentRun.visibleProfileDescriptions();
+      })
+      .catch((error: unknown) => {
+        this.log.warn('failed to baseline the visible agent profiles for change announcements', { error });
+      });
     this._register(injector.register('agent_profile_changes', async ({ isNewTurn }) => {
       if (!isNewTurn || !this.dirty) return undefined;
       await catalog.ready;
