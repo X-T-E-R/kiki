@@ -74,6 +74,7 @@
         ./packages/node-sdk
         ./packages/oauth
         ./packages/pi-tui
+        ./packages/plugin-sdk
         ./packages/protocol
         ./packages/session-core
         ./packages/transcript
@@ -98,6 +99,7 @@
         "@kiki/oauth"
         "@kiki/klient"
         "@kiki/pi-tui"
+        "@kiki/plugin-sdk"
         "@kiki/protocol"
         "@kiki/session-core"
         "@kiki/transcript"

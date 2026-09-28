@@ -1,5 +1,8 @@
 import { definitions } from './lib/definitions.mjs';
 import { createOfficeCore } from './lib/office.mjs';
+import { installPinnedBinary } from './lib/binary.mjs';
+
+export const installPrerequisite = installPinnedBinary;
 
 export function register(api) {
   for (const definition of definitions) {

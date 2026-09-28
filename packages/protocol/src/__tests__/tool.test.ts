@@ -12,7 +12,7 @@ import {
 } from '../tool';
 
 describe('toolSourceSchema', () => {
-  it.each(['builtin', 'skill', 'mcp'] as const)('accepts %s', (s) => {
+  it.each(['builtin', 'skill', 'mcp', 'plugin'] as const)('accepts %s', (s) => {
     expect(toolSourceSchema.parse(s)).toBe(s);
   });
 

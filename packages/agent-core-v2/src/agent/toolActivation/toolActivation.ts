@@ -7,7 +7,7 @@ export interface IAgentToolActivationService {
   activate(): Promise<void>;
   capabilities(): readonly {
     name: string;
-    source: 'builtin' | 'user' | 'mcp';
+    source: 'builtin' | 'user' | 'mcp' | 'plugin';
     category: string;
     group?: ToolGroupId;
     runtimeAvailable: boolean;

@@ -35,6 +35,7 @@ const PLUGIN_CHANGE_INJECTION_VARIANT = 'plugin_change';
 
 const PLUGIN_CHANGE_VERBS: Record<PluginMutation['kind'], string> = {
   install: 'installed',
+  rollback: 'rolled back',
   enable: 'enabled',
   disable: 'disabled',
   remove: 'removed',
@@ -44,8 +45,7 @@ const PLUGIN_CHANGE_VERBS: Record<PluginMutation['kind'], string> = {
 function renderPluginChangeReminder(mutation: PluginMutation): string {
   return (
     `Plugin "${mutation.id}" was ${PLUGIN_CHANGE_VERBS[mutation.kind]}. ` +
-    'This session keeps the prompt and tools it started with; ' +
-    'run /new or /reload to apply the change, and tell the user if they expect it now.'
+    'Plugin tools refresh in live sessions; prompt contributions may remain until /new or /reload.'
   );
 }
 

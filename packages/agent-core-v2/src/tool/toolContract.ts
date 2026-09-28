@@ -90,7 +90,7 @@ export interface ExecutableTool<Input = unknown> extends Tool {
   resolveExecution(input: Input): ToolExecution | Promise<ToolExecution>;
 }
 
-export type ToolSource = 'builtin' | 'user' | 'mcp';
+export type ToolSource = 'builtin' | 'user' | 'mcp' | 'plugin';
 export type ToolDisclosure = 'inline' | 'deferred';
 
 export interface ToolDefinition {

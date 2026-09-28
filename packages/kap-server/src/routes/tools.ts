@@ -183,6 +183,8 @@ function mapToolSource(source: ToolSource): ToolDescriptor['source'] {
       return 'skill';
     case 'mcp':
       return 'mcp';
+    case 'plugin':
+      return 'plugin';
   }
 }
 

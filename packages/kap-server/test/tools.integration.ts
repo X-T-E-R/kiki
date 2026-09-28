@@ -163,6 +163,7 @@ describe('server-v2 /api tools + mcp', () => {
       registry.register(makeTool('Echo', schema), { source: 'builtin' });
       registry.register(makeTool('MySkill'), { source: 'user' });
       registry.register(makeTool('mcp__myserver__search'), { source: 'mcp' });
+      registry.register(makeTool('plugin__demo__echo'), { source: 'plugin', disclosure: 'deferred' });
 
       const { body } = await getJson<{ tools: ToolWire[] }>('/api/tools');
       expect(body.code).toBe(0);
@@ -177,6 +178,9 @@ describe('server-v2 /api tools + mcp', () => {
 
       const mcp = tools.find((t) => t.name === 'mcp__myserver__search');
       expect(mcp).toMatchObject({ source: 'mcp', mcp_server_id: 'myserver' });
+      const plugin = tools.find((t) => t.name === 'plugin__demo__echo');
+      expect(plugin).toMatchObject({ source: 'plugin' });
+      expect(plugin?.mcp_server_id).toBeUndefined();
     });
 
     it('accepts an explicit session_id query', async () => {

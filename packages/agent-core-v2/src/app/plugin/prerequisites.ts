@@ -8,6 +8,8 @@ const prerequisiteSchema = z.object({
   required: z.boolean(),
   provider: z.enum(['kiki.compat.webbridge', 'kiki.compat.cu']).optional(),
   executionHost: z.literal('plugin-runtime').optional(),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/).optional(),
+  setting: z.string().regex(/^[a-zA-Z][a-zA-Z0-9]{0,63}$/).optional(),
   dependsOn: z.array(dependencyId).max(20).optional(),
   capabilityImpact: z.array(z.string().max(64)).max(20).optional(),
 }).strict();

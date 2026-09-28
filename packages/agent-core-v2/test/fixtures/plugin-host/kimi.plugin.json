@@ -1,0 +1,19 @@
+{
+  "name": "fixture-tool",
+  "version": "1.0.0",
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" },
+    "permissions": { "fs": "workspace", "uiPanel": true },
+    "entry": "./entry.mjs",
+    "panels": [{ "schemaVersion": 1, "id": "fixture", "label": "Fixture", "slot": "sidebar", "path": "./panel.html" }],
+    "prerequisites": { "schemaVersion": 1, "items": [{ "id": "fixture-binary", "kind": "executable", "required": true, "executionHost": "plugin-runtime", "version": "1.0.0", "setting": "binaryPath" }] },
+    "settings": { "schemaVersion": 1, "schema": { "type": "object", "properties": { "binaryPath": { "type": "string" } } } },
+    "tools": [{
+      "schemaVersion": 1,
+      "name": "fixture_echo",
+      "description": "Echo a value",
+      "parameters": { "type": "object", "properties": { "value": { "type": "string" } } },
+      "accesses": [{ "kind": "all" }]
+    }]
+  }
+}

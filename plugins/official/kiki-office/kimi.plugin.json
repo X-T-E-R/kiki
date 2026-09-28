@@ -27,6 +27,8 @@
           "kind": "executable",
           "required": true,
           "executionHost": "plugin-runtime",
+          "version": "1.0.152",
+          "setting": "officecliPath",
           "capabilityImpact": [
             "office-tools"
           ]

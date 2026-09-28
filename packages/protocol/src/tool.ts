@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const toolSourceSchema = z.enum(['builtin', 'skill', 'mcp']);
+export const toolSourceSchema = z.enum(['builtin', 'skill', 'mcp', 'plugin']);
 export type ToolSource = z.infer<typeof toolSourceSchema>;
 
 export const toolDescriptorSchema = z.object({
