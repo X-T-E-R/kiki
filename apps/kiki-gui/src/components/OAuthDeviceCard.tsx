@@ -21,6 +21,8 @@ export interface OAuthDeviceCardProps {
   readonly onCancel: () => void;
   readonly onRetry: () => void;
   readonly onDismiss: () => void;
+  /** Display name of the sign-in method; defaults to the provider id. */
+  readonly label?: string;
 }
 
 export function OAuthDeviceCard({
@@ -29,6 +31,7 @@ export function OAuthDeviceCard({
   onCancel,
   onRetry,
   onDismiss,
+  label,
 }: OAuthDeviceCardProps) {
   const { t, time } = useI18n();
   const host = useHost();
@@ -91,7 +94,7 @@ export function OAuthDeviceCard({
   return (
     <div className="anim-enter rounded-xl border border-accent/30 bg-accent-soft/40 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[12px] font-semibold text-ink">{t('st.oauth.title', { provider: snapshot.provider })}</p>
+        <p className="text-[12px] font-semibold text-ink">{t('st.oauth.title', { provider: label ?? snapshot.provider })}</p>
         <p className="font-mono text-[11px] text-ink-faint">{time.timeUntil(snapshot.expires_at)}</p>
       </div>
       <p className="mt-2 text-[11px] text-ink-soft">{t('st.oauth.codeLabel')}</p>

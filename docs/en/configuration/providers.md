@@ -1,6 +1,6 @@
 # Providers and models
 
-Kiki supports connecting to multiple LLM platforms simultaneously — one-click login via the Kimi Code managed service, connecting Claude with an Anthropic API key, or connecting third-party inference services via the OpenAI-compatible protocol. Each provider corresponds to a specific API protocol; models are declared on top of providers with their own name, context length, and capabilities. This page explains how to configure each type of provider in `config.toml`, with its API key stored in the companion [`credentials.toml`](./config-files.md#provider-credentials).
+Kiki can connect to multiple model providers at once. An API key is the most general connection method; the desktop and browser settings also offer account sign-in for Kimi Code, GitHub Copilot, and ChatGPT (Codex). Kimi is one supported service, not a separate Kiki provider category. Each provider uses a wire protocol; its models have their own IDs, context lengths, and capabilities. This page explains `config.toml` provider types and companion [`credentials.toml`](./config-files.md#provider-credentials) API keys.
 
 ## Supported provider types
 
@@ -40,7 +40,11 @@ In GUI **Settings → Models & providers**, click **Get models** to fetch sugges
 
 Suggestions are kept in server memory and disappear when the server restarts. Changing or deleting a provider connection discards its cached suggestions. A failed fetch shows an error while retaining the last successful suggestions; a successful empty response clears them. Models already configured for that provider are excluded even if their local aliases differ from the upstream model IDs.
 
-Kimi Code **OAuth** accounts retain their managed account-catalog synchronization. A manually entered Kimi API key uses the suggestion-only flow, including at the managed endpoint.
+In the GUI, open **Settings → Models & providers → Connections**. Under **Connect with an API key**, choose one of five protocol entries (`openai`, `openai_responses`, `anthropic`, `google-genai`, `vertexai`) or search for a service by name. A matching service, including DeepSeek, GLM, Kimi, Ollama, LM Studio, or OpenRouter, fills in its protocol and base URL. If there is no match, choose a protocol and enter the base URL yourself. Then enter the key if required and add a model.
+
+Ollama and LM Studio use the same API-key path as other OpenAI-compatible services; their local servers may not require a key. The five quick starts are OpenAI, Anthropic, Google Gemini, DeepSeek, and Moonshot (Kimi). The Kimi shortcut retains the existing `kimi` wire adapter described below, rather than adding a sixth protocol entry.
+
+**Available models** lists configured models across providers: search by name or ID, inspect context size and capabilities, and star a model to set the global default. The provider and model also retain their own per-provider default and remote ID. A manually entered Kimi API key uses the same suggestion-only flow as other API-key connections; account sign-in provisions its own models.
 
 ::: warning
 Kimi Code OAuth managed accounts logged in via `/login` do not appear in `/provider`. Use `/login` and `/logout` to manage them.
@@ -196,7 +200,7 @@ To route Vertex requests through a custom (e.g. proxied) endpoint, set `base_url
 
 ## OAuth and credential injection
 
-The Kimi Code managed service uses OAuth rather than static API keys. After running `/login`, the built-in authentication toolchain automatically writes and refreshes credentials — no manual configuration is needed. OAuth credentials live under `credentials/` (see [Data locations](./data-locations.md)), separate from the provider API keys stored in `credentials.toml`.
+In the GUI **Connections** tab, **Sign in with an account** offers Kimi Code, GitHub Copilot, and ChatGPT (Codex). Choose the account, open the verification URL, enter its device code, and wait for the connected status. An account needs access to the corresponding subscription or service; available models depend on that account. Sign out from the same row to remove its managed connection and models. These are sign-in methods, not new protocol `type` values: Kimi Code and Copilot use `openai`-compatible requests; ChatGPT Codex uses `openai_responses` against the Codex endpoint. OAuth tokens live under `credentials/` (see [Data locations](./data-locations.md)), separate from API keys in `credentials.toml`. The CLI `/login` and `/logout` commands continue to manage Kimi Code only.
 
 ## Next steps
 

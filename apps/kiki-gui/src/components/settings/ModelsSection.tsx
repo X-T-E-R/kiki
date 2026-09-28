@@ -26,11 +26,14 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { ContextStepper, ImagePolicyEditor, SavedGenerationParametersEditor } from '../ProviderFields';
+import { vendorLabelFor } from '../providerPresets';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { SearchableSelect } from '../SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
+import { DisclosureChevron, Icon } from '../icons';
 
 function requestIdentityDraftsEqual(
   a: RequestIdentityLayerDraft,
@@ -231,7 +234,7 @@ export function ModelCatalogCard() {
                 <div className="mb-1.5 flex flex-wrap items-center gap-2">
                   <p className="font-mono text-[11px] font-semibold text-ink-soft">{group.provider}</p>
                   {group.provider === defaultProvider ? (
-                    <span className="rounded-full border border-success/30 bg-success/10 px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-success">{t('st.models.default')}</span>
+                    <span className="rounded-[4px] bg-success/10 px-1.5 py-px text-[11px] font-medium text-success">{t('st.models.default')}</span>
                   ) : null}
                   {providerDefault !== undefined && providerDefault !== null && providerDefault !== '' ? (
                     <span
@@ -324,15 +327,13 @@ export function GlobalDefaultsCard() {
         <div className="grid items-center gap-x-3 gap-y-2 sm:grid-cols-[6.5rem_minmax(0,1fr)]">
           <span className="text-[11px] font-medium text-ink-soft">{t('st.models.providerLabel')}</span>
           <div className="flex items-center gap-2">
-            <select
-              aria-label={t('st.models.providerLabel')}
-              className={SMALL_INPUT}
+            <SettingsSelect
+              ariaLabel={t('st.models.providerLabel')}
               value={defaultProvider}
               disabled={busy}
-              onChange={(event) => void selectDefaultProvider(event.target.value)}
-            >
-              {(providersQuery.data?.items ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
-            </select>
+              onChange={(value) => void selectDefaultProvider(value)}
+              choices={(providersQuery.data?.items ?? []).map((provider) => ({ value: provider.id, label: provider.id }))}
+            />
             <SavedTick show={tick} />
           </div>
           <span className="text-[11px] font-medium text-ink-soft">{t('st.defaults.globalModelLabel')}</span>
@@ -413,15 +414,13 @@ export function ThinkingCard() {
         <div className="flex flex-wrap items-center gap-3">
           <Toggle label={t('st.thinking.enable')} checked={thinkingEnabled} disabled={busy} onChange={(checked) => void saveThinking(checked, effort)} />
           {defaultItem?.support_efforts !== undefined && defaultItem.support_efforts.length > 0 ? (
-            <select
-              aria-label={t('st.thinking.title')}
-              className={SMALL_INPUT}
+            <SettingsSegmented
+              ariaLabel={t('st.thinking.title')}
               value={effort}
               disabled={!thinkingEnabled || busy}
-              onChange={(event) => void saveThinking(thinkingEnabled, event.target.value)}
-            >
-              {defaultItem.support_efforts.map((level) => <option key={level} value={level}>{level}</option>)}
-            </select>
+              onChange={(value) => void saveThinking(thinkingEnabled, value)}
+              choices={defaultItem.support_efforts.map((level) => ({ value: level, label: level }))}
+            />
           ) : (
             <input
               aria-label={t('st.thinking.title')}
@@ -792,24 +791,25 @@ function ModelRow({
           disabled={busy || isDefault}
           aria-label={t('st.models.starAria', { model: item.id })}
           title={isDefault ? t('st.models.starredTitle') : t('st.models.unstarredTitle')}
-          className={`shrink-0 text-[15px] leading-none transition-colors disabled:cursor-default ${
-            isDefault ? 'text-accent' : 'text-hairline-strong hover:text-accent'
+          aria-pressed={isDefault}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-default ${
+            isDefault ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
           }`}
         >
-          {isDefault ? '★' : '☆'}
+          <Icon name={isDefault ? 'check' : 'pin'} size={14} />
         </button>
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] font-medium text-ink">
             {item.display_name ?? item.id}
             {isDefault ? (
-              <span className="ml-2 rounded-full border border-success/30 bg-success/10 px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-success">
+              <span className="ml-2 rounded-[4px] bg-success/10 px-1.5 py-px align-middle text-[11px] font-medium text-success">
                 {t('st.models.default')}
               </span>
             ) : null}
             {editorMounted && !editorOpen && editorDirty ? (
               <span
                 data-collapsed-draft
-                className="ml-2 rounded-full border border-amber-rule/40 bg-amber-card px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-amber-ink"
+                className="ml-2 rounded-[4px] bg-amber-card px-1.5 py-px align-middle text-[11px] font-medium text-amber-ink"
               >
                 {t('st.dirty.badge')}
               </span>
@@ -818,24 +818,26 @@ function ModelRow({
           <p className="truncate font-mono text-[10.5px] text-ink-faint">
             {item.remote_id} · {formatTokens(item.max_context_size)} {t('st.models.context')}
           </p>
-          <p className="truncate font-mono text-[10px] text-ink-faint">{item.id}</p>
+          <p className="truncate font-mono text-[10px] text-ink-faint">{item.id} · {t('st.models.source')}: {vendorLabelFor(provider?.base_url) ?? item.provider_id}</p>
+          {item.capabilities !== undefined && item.capabilities.length > 0 ? (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {item.capabilities.map((capability) => (
+                <span key={capability} className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] text-ink-faint">
+                  {capability === 'thinking' ? t('st.models.reasoning') : capability === 'image_in' ? t('st.models.vision') : capability}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
-        {item.capabilities !== undefined && item.capabilities.length > 0 ? (
-          <div className="hidden shrink-0 flex-wrap justify-end gap-1 sm:flex">
-            {item.capabilities.map((capability) => (
-              <span key={capability} className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] text-ink-faint">{capability}</span>
-            ))}
-          </div>
-        ) : null}
         <button
           type="button"
           aria-label={t('st.models.editAria', { model: item.id })}
           aria-expanded={editorOpen}
           title={t('st.models.editTitle')}
           onClick={toggleEditor}
-          className="shrink-0 text-[10px] text-ink-faint transition-colors hover:text-ink"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink"
         >
-          <span aria-hidden className={`inline-block transition-transform ${editorOpen ? 'rotate-90' : ''}`}>▶</span>
+          <DisclosureChevron open={editorOpen} className="text-current" />
         </button>
       </div>
       {editorMounted ? (

@@ -345,12 +345,12 @@ describe('ProviderEditor save channel', () => {
   it('never sends a draft key to the saved protocol while the draft protocol is unsaved', async () => {
     refreshProvider.mockResolvedValue({ changed: [], unchanged: [COLON_PROVIDER.id], failed: [] });
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
-    const protocol = [...container.querySelectorAll<HTMLSelectElement>('select')].find((select) => select.value === COLON_PROVIDER.type)!;
     const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(async () => {
-      setSelectValue(protocol, 'anthropic');
-      setInputValue(key, 'YOUR_API_KEY');
-    });
+    await act(async () => { container.querySelector<HTMLButtonElement>('#provider-field-protocol')!.click(); });
+    const anthropic = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find((option) => option.textContent?.includes('Anthropic Messages'))!;
+    await act(async () => { anthropic.click(); });
+    await act(async () => { setInputValue(key, 'YOUR_API_KEY'); });
     await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
     expect(refreshProvider).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Save this connection first');
@@ -450,8 +450,10 @@ describe('ProviderEditor save channel', () => {
   it('saves a connection without models after removing the last wizard row', async () => {
     const onSaved = vi.fn(async () => {});
     const { container } = await renderSurface(<NewProviderWizard onSaved={onSaved} />);
-    const template = [...container.querySelectorAll('button')].find((button) => button.textContent?.startsWith('OpenAI'))!;
-    await act(async () => { template.click(); });
+    const template = container.querySelector<HTMLButtonElement>('button[data-provider-template="openai"]');
+    expect(template, 'OpenAI preset').not.toBeNull();
+    await act(async () => { template!.click(); });
+    expect(container.querySelector<HTMLInputElement>('input[value="openai"]')).not.toBeNull();
     await act(async () => { setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'YOUR_API_KEY'); });
     const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove model"]')!;
     expect(remove.disabled).toBe(false);
@@ -462,6 +464,23 @@ describe('ProviderEditor save channel', () => {
     expect(createProvider.mock.calls[0]![0].default_model).toBeUndefined();
     expect(createModel).not.toHaveBeenCalled();
     expect(onSaved).toHaveBeenCalledOnce();
+  });
+
+  it('a protocol card in Settings names the connection from its address and flags an empty one', async () => {
+    const onSaved = vi.fn(async () => {});
+    const { container } = await renderSurface(<NewProviderWizard onSaved={onSaved} />);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-provider-protocol="openai"]')!.click(); });
+    await act(async () => { buttonByText(container, 'Create provider').click(); });
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(container.querySelector('#provider-field-base-url-issue')?.textContent).toBe('Fill in the Base URL first.');
+    const baseUrl = container.querySelector<HTMLInputElement>('#provider-field-base-url')!;
+    await act(async () => { setInputValue(baseUrl, 'https://api.deepseek.com/v1'); });
+    expect(container.querySelector('#provider-field-base-url-issue')).toBeNull();
+    expect(container.querySelector<HTMLInputElement>('#provider-field-id')!.value).toBe('deepseek');
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>('#provider-field-id')!, ''); });
+    await act(async () => { buttonByText(container, 'Create provider').click(); });
+    expect(container.querySelector('#provider-field-id-issue')?.textContent).toBe('Give this connection a name.');
+    expect(createProvider).not.toHaveBeenCalled();
   });
 
   it('allows unrelated repairs with a dangling default and exposes clearing or replacing it', async () => {

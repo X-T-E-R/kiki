@@ -1,7 +1,11 @@
 /**
- * OnboardingWizard — the first-run setup dialog, three steps that each say
+ * OnboardingWizard — the first-run setup dialog, four steps that each say
  * one thing: welcome (language + theme), connect a model (OAuth sign-in or a
- * streamlined API-key form), and the default permission mode.
+ * streamlined API-key form), where Kiki works (workspace), and how much it
+ * may do on its own (default permission mode).
+
+ * Finish lands on the /new hero with an empty composer; the hero's starter
+ * chips offer first prompts, nothing is prefilled or sent for the user.
  *
  * Save semantics are explicit: every primary advance button persists the
  * current step before moving on. On the model step "Save & continue" creates
@@ -22,17 +26,13 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuthSummary, PermissionMode } from '@kiki/protocol';
-import { readDraft, writeDraft } from '@kiki/session-core/composer';
+import { readNewSessionDraft, writeNewSessionDraft } from '@kiki/session-core/composer';
 import { errorText, issueText, type Locale } from '@kiki/session-core/i18n';
-import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import {
   isOnboardingCompleted,
   isProviderDraftDirty,
   markOnboardingCompleted,
-  PROVIDER_TEMPLATES,
-  PROVIDER_WIRE_TYPES,
   providerCreateBody,
-  providerTemplateFor,
   readSettings,
   settingsServerSnapshot,
   settingsSnapshot,
@@ -41,36 +41,54 @@ import {
   writeSettings,
   type ProviderDraft,
   type ProviderModelDraft,
-  type ProviderTemplate,
   type ThemePreference,
 } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import { pushToast } from '../lib/toasts';
+import { Icon } from './icons';
+import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permissionModes';
 import { useConnection } from '../state/connection';
+import { AccountSignIn } from './AccountSignIn';
 import { Dialog } from './Dialog';
-import { needsProviderSetup } from './NewSessionDraft';
-import { OAuthDeviceCard } from './OAuthDeviceCard';
+import { AUTO_WORKSPACE_ID, isAbsoluteCwdPath, needsProviderSetup } from './NewSessionDraft';
+import { PresetGrid } from './PresetGrid';
+import {
+  API_PROTOCOLS,
+  baseUrlRequired,
+  connectionFieldIssue,
+  draftForPreset,
+  defaultContextFor,
+  protocolLabel,
+  withBaseUrl,
+  type ConnectionField,
+  type ConnectionFieldIssue,
+  type ProviderPreset,
+} from './providerPresets';
 import { FeedbackLine, Hint, type Feedback } from './controls';
 import { useDirtyReporter, useGuardedNavigate } from './dirtyGuard';
+import { SearchableSelect } from './SearchableSelect';
 import { mergeConfigEcho } from './settings/configEcho';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
+import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSegmented } from './settings/SettingsPrimitives';
+import { INPUT, PRIMARY_BUTTON as SHARED_PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { Wordmark } from './Wordmark';
 
-/** The /new hero's composer draft key (see NewSessionDraft's DRAFT_KEY). */
-const NEW_SESSION_DRAFT_KEY = 'new';
+// On the dark accent white text falls below AA; the on-accent ink holds it.
+const PRIMARY_BUTTON = `${SHARED_PRIMARY_BUTTON} dark:text-primary-foreground`;
 
-const STEPS = ['welcome', 'model', 'permissions'] as const;
+const STEPS = ['welcome', 'model', 'workspace', 'permissions'] as const;
 type OnboardingStep = (typeof STEPS)[number];
 
 const STEP_TITLE_KEYS = {
   welcome: 'onboarding.step.welcome',
   model: 'onboarding.step.model',
+  workspace: 'onboarding.step.workspace',
   permissions: 'onboarding.step.permissions',
 } as const;
 
-const PERMISSION_OPTIONS = ['auto', 'manual', 'yolo'] as const;
+/** Where Kiki works: written into the /new draft on finish. */
+type WorkspaceChoice = 'folder' | 'auto' | 'chat';
 
 /**
  * The auto-popup rule: only while the server provably has nothing to answer
@@ -119,52 +137,78 @@ function StepDots({ step }: { step: OnboardingStep }) {
             dotIndex === index
               ? 'w-5 bg-accent'
               : dotIndex < index
-                ? 'w-1.5 bg-accent/50'
+                ? 'w-1.5 bg-ink-faint'
                 : 'w-1.5 bg-hairline-strong'
           }`}
         />
       ))}
-      <span className="ml-1.5 text-[11px] tabular-nums text-ink-faint">
+      <span aria-hidden className="ml-1.5 hidden text-[12px] tabular-nums text-ink-faint sm:inline">
         {t('onboarding.progress', { current: index + 1, total: STEPS.length })}
       </span>
     </div>
   );
 }
 
-function ChoicePill({
+function PreferenceRow({ label, labelId, children }: { readonly label: string; readonly labelId: string; readonly children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <span id={labelId} className="text-[13px] text-ink">{label}</span>
+      <div className="flex flex-wrap items-center gap-2">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Selection mark shared by the radio cards: an empty ring at rest, an ink
+ * check on the raised sheet once chosen — state, not accent.
+ */
+function ChoiceMark({ selected }: { readonly selected: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors ${
+        selected ? 'bg-ink text-paper' : 'ring-1 ring-inset ring-hairline-strong'
+      }`}
+    >
+      {selected ? <Icon name="check" size={12} /> : null}
+    </span>
+  );
+}
+
+const CHOICE_CARD =
+  'flex w-full items-start gap-2.5 rounded-[10px] px-3 py-2.5 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+const CHOICE_CARD_SELECTED = 'bg-paper shadow-[var(--kiki-sheet-shadow)]';
+const CHOICE_CARD_IDLE = 'hover:bg-ink/[0.04]';
+
+/** A radio card: label + one honest line (workspace choice). */
+function ChoiceCard({
   label,
+  line,
   selected,
-  disabled,
   onSelect,
+  ...rest
 }: {
   readonly label: string;
+  readonly line: string;
   readonly selected: boolean;
-  readonly disabled?: boolean;
   readonly onSelect: () => void;
+  readonly 'data-workspace-choice'?: string;
 }) {
   return (
     <button
       type="button"
-      aria-pressed={selected}
-      disabled={disabled}
+      role="radio"
+      aria-checked={selected}
       onClick={onSelect}
-      className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors disabled:opacity-50 ${
-        selected
-          ? 'border-accent bg-accent-soft text-accent'
-          : 'border-hairline text-ink-soft hover:border-hairline-strong'
-      }`}
+      {...rest}
+      className={`${CHOICE_CARD} ${selected ? CHOICE_CARD_SELECTED : CHOICE_CARD_IDLE}`}
     >
-      {label}
+      <ChoiceMark selected={selected} />
+      <span className="min-w-0">
+        <span className={`block text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>{label}</span>
+        <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-soft">{line}</span>
+      </span>
     </button>
-  );
-}
-
-function PreferenceRow({ label, children }: { readonly label: string; readonly children: React.ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-      <span className="text-[12.5px] font-medium text-ink">{label}</span>
-      <div className="flex flex-wrap items-center gap-2">{children}</div>
-    </div>
   );
 }
 
@@ -190,57 +234,27 @@ function PermissionOption({
       aria-checked={selected}
       disabled={disabled}
       onClick={onSelect}
-      className={`w-full rounded-xl border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${
-        selected
-          ? 'border-accent bg-accent-soft/40'
-          : 'border-hairline bg-paper hover:border-hairline-strong'
-      }`}
+      data-permission-choice={mode}
+      className={`${CHOICE_CARD} ${selected ? CHOICE_CARD_SELECTED : CHOICE_CARD_IDLE}`}
     >
-      <span className="flex items-center gap-2">
-        <span className={`text-[12.5px] font-semibold ${selected ? 'text-accent' : 'text-ink'}`}>
-          {t(`composer.mode.${mode}`)}
-        </span>
-        {recommended ? (
-          <span className="rounded-full border border-accent/40 bg-accent-soft px-1.5 py-px text-[9.5px] font-medium text-accent">
-            {t('onboarding.permissions.recommended')}
+      <ChoiceMark selected={selected} />
+      <span className="min-w-0">
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          <span className={`text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>
+            {t(`composer.perm.${mode}`)}
           </span>
-        ) : null}
-      </span>
-      <span className="mt-0.5 block text-[11.5px] leading-relaxed text-ink-soft">
-        {t(`onboarding.permissions.${mode}.line`)}
+          {recommended ? (
+            <span className="text-[11px] font-medium text-accent-ink">
+              {t('onboarding.permissions.recommended')}
+            </span>
+          ) : null}
+        </span>
+        <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-soft">
+          {t(`onboarding.permissions.${mode}.line`)}
+        </span>
       </span>
     </button>
   );
-}
-
-/** A fresh draft for the picked template: one blank model row, template base URL. */
-function onboardingDraftFor(template: ProviderTemplate | null): ProviderDraft {
-  const type = template?.type ?? 'openai';
-  const blankModel: ProviderModelDraft = {
-    id: '',
-    remoteId: '',
-    maxContextSize: providerTemplateFor(type).defaultContextSize,
-    displayName: '',
-    capabilities: ['thinking', 'tool_use'],
-    supportEfforts: [],
-    requestIdentityChoice: 'inherit',
-    requestIdentityOverridesJson: '',
-    imageAcceptedTypes: null,
-    imageConvertUnsupported: null,
-  };
-  return {
-    id: type,
-    type,
-    baseUrl: template?.baseUrl ?? '',
-    defaultModel: '',
-    apiKey: '',
-    clearApiKey: false,
-    requestIdentityChoice: 'inherit',
-    requestIdentityOverridesJson: '',
-    imageAcceptedTypes: null,
-    imageConvertUnsupported: null,
-    models: [blankModel],
-  };
 }
 
 /**
@@ -253,6 +267,7 @@ function OnboardingProviderForm({
   suggestions,
   probing,
   probeFeedback,
+  fieldIssue,
   onChange,
   onTest,
   onBack,
@@ -261,14 +276,22 @@ function OnboardingProviderForm({
   readonly suggestions: readonly ProviderModelDraft[];
   readonly probing: boolean;
   readonly probeFeedback: Feedback;
+  /** The one field-level problem the last save attempt found, if any. */
+  readonly fieldIssue: ConnectionFieldIssue | null;
   readonly onChange: (draft: ProviderDraft) => void;
   readonly onTest: () => void;
   readonly onBack: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [showApiKey, setShowApiKey] = useState(false);
   const model = draft.models[0];
-  const isCustomTemplate = !PROVIDER_TEMPLATES.some((template) => template.type === draft.type);
+  const issueFor = (field: ConnectionField) =>
+    fieldIssue?.field === field ? issueText(locale, fieldIssue.issue) : null;
+  const idIssue = issueFor('id');
+  const baseUrlIssue = issueFor('baseUrl');
+  // New connections choose among the public protocols; a preset on another
+  // adapter (Moonshot) keeps its own protocol listed so the value never lies.
+  const protocols = API_PROTOCOLS.includes(draft.type) ? API_PROTOCOLS : [draft.type, ...API_PROTOCOLS];
 
   const updateModel = (patch: Partial<ProviderModelDraft>) => {
     onChange({ ...draft, models: [{ ...draft.models[0]!, ...patch }] });
@@ -284,42 +307,62 @@ function OnboardingProviderForm({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-onboarding-provider-form>
       <button
         type="button"
         onClick={onBack}
-        className="text-[11.5px] font-medium text-accent transition-colors hover:text-accent-deep"
+        className="-ml-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
       >
+        <Icon name="arrowLeft" size={12} />
         {t('onboarding.model.changeTemplate')}
       </button>
-      {isCustomTemplate ? (
-        <label className="block text-[11px] font-medium text-ink-soft">
-          {t('st.providers.protocol')}
-          <select
-            className={`${INPUT} mt-1`}
-            value={draft.type}
-            onChange={(event) => {
-              const type = event.target.value as ProviderDraft['type'];
-              onChange({ ...draft, id: type, type });
-            }}
-          >
-            {PROVIDER_WIRE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-          </select>
-        </label>
-      ) : null}
-      <label className="block text-[11px] font-medium text-ink-soft">
-        {t('st.providers.baseUrl')}
+      <div>
+        <label htmlFor="onboarding-provider-base-url" className={FORM_LABEL}>{t('st.providers.baseUrl')}</label>
         <input
-          className={`${INPUT} mt-1`}
+          id="onboarding-provider-base-url"
+          className={`${INPUT} mt-1 ${baseUrlIssue !== null ? 'border-danger/60' : ''}`}
           value={draft.baseUrl}
-          onChange={(event) => { onChange({ ...draft, baseUrl: event.target.value }); }}
+          aria-invalid={baseUrlIssue !== null || undefined}
+          aria-describedby={baseUrlIssue !== null ? 'onboarding-provider-base-url-issue' : undefined}
+          onChange={(event) => { onChange(withBaseUrl(draft, event.target.value)); }}
           placeholder="https://api.example.com/v1"
         />
-      </label>
-      <label className="block text-[11px] font-medium text-ink-soft">
-        {t('st.providers.apiKey')}
+        <FieldIssue id="onboarding-provider-base-url-issue" text={baseUrlIssue} />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="min-w-0">
+          <label htmlFor="onboarding-provider-id" className={FORM_LABEL}>{t('st.providers.idLabel')}</label>
+          <input
+            id="onboarding-provider-id"
+            className={`${INPUT} mt-1 ${idIssue !== null ? 'border-danger/60' : ''}`}
+            value={draft.id}
+            aria-invalid={idIssue !== null || undefined}
+            aria-describedby={idIssue !== null ? 'onboarding-provider-id-issue' : undefined}
+            onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
+            placeholder="my-provider"
+          />
+          <FieldIssue id="onboarding-provider-id-issue" text={idIssue} />
+        </div>
+        <div className="min-w-0">
+          <span id="onboarding-provider-protocol-label" className={FORM_LABEL}>{t('st.providers.protocol')}</span>
+          <div className="mt-1">
+            <SearchableSelect
+              id="onboarding-provider-protocol"
+              ariaLabel={t('st.providers.protocol')}
+              value={draft.type}
+              hideFilter
+              options={protocols.map((type) => ({ value: type, label: protocolLabel(type), hint: type }))}
+              onChange={(next) => { onChange({ ...draft, type: next as ProviderDraft['type'] }); }}
+              buttonClassName={FORM_SELECT_TRIGGER}
+            />
+          </div>
+        </div>
+      </div>
+      <div>
+        <label htmlFor="onboarding-provider-key" className={FORM_LABEL}>{t('st.providers.apiKey')}</label>
         <span className="mt-1 flex items-center gap-2">
           <input
+            id="onboarding-provider-key"
             type={showApiKey ? 'text' : 'password'}
             autoComplete="new-password"
             className={`${INPUT} min-w-0 flex-1`}
@@ -333,7 +376,7 @@ function OnboardingProviderForm({
             </button>
           ) : null}
         </span>
-      </label>
+      </div>
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -344,44 +387,47 @@ function OnboardingProviderForm({
           >
             {probing ? t('st.fetchModels.working') : t('onboarding.model.test')}
           </button>
-          <span className="min-w-0 flex-1 text-[10.5px] leading-relaxed text-ink-faint">
+          <span className="min-w-0 flex-1 text-[12px] leading-4 text-ink-faint">
             {t('onboarding.model.testHint')}
           </span>
         </div>
         <div className="mt-2"><FeedbackLine feedback={probeFeedback} /></div>
       </div>
       <div>
-        <label className="block text-[11px] font-medium text-ink-soft">
-          {t('onboarding.model.model')}
-          <input
-            className={`${INPUT} mt-1 font-mono`}
-            value={model?.remoteId ?? ''}
-            onChange={(event) => {
-              updateModel({
-                remoteId: event.target.value,
-                maxContextSize: providerTemplateFor(draft.type).defaultContextSize,
-              });
-            }}
-            placeholder="model-id"
-          />
-        </label>
+        <label htmlFor="onboarding-provider-model" className={FORM_LABEL}>{t('onboarding.model.model')}</label>
+        <input
+          id="onboarding-provider-model"
+          className={`${INPUT} mt-1 font-mono`}
+          value={model?.remoteId ?? ''}
+          onChange={(event) => {
+            updateModel({
+              remoteId: event.target.value,
+              maxContextSize: model?.maxContextSize ?? defaultContextFor(draft.type),
+            });
+          }}
+          placeholder="model-id"
+        />
         {suggestions.length > 0 ? (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {suggestions.slice(0, 8).map((suggestion) => (
-              <button
-                key={suggestion.remoteId}
-                type="button"
-                data-model-suggestion={suggestion.remoteId}
-                onClick={() => { pickSuggestion(suggestion); }}
-                className={`rounded-full border px-2.5 py-1 font-mono text-[10.5px] transition-colors ${
-                  model?.remoteId === suggestion.remoteId
-                    ? 'border-accent bg-accent-soft text-accent'
-                    : 'border-hairline text-ink-soft hover:border-hairline-strong hover:text-ink'
-                }`}
-              >
-                {suggestion.remoteId}
-              </button>
-            ))}
+          <div className="mt-2 flex flex-wrap gap-1" role="group" aria-label={t('onboarding.model.model')}>
+            {suggestions.slice(0, 8).map((suggestion) => {
+              const picked = model?.remoteId === suggestion.remoteId;
+              return (
+                <button
+                  key={suggestion.remoteId}
+                  type="button"
+                  aria-pressed={picked}
+                  data-model-suggestion={suggestion.remoteId}
+                  onClick={() => { pickSuggestion(suggestion); }}
+                  className={`h-7 rounded-md px-2.5 font-mono text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
+                    picked
+                      ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                      : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+                  }`}
+                >
+                  {suggestion.remoteId}
+                </button>
+              );
+            })}
           </div>
         ) : (
           <div className="mt-1"><Hint>{t('onboarding.model.modelHint')}</Hint></div>
@@ -399,11 +445,6 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   const queryClient = useQueryClient();
   const [step, setStep] = useState<OnboardingStep>('welcome');
   const [finishing, setFinishing] = useState(false);
-  const [oauthBusy, setOauthBusy] = useState(false);
-  const [oauthCancelling, setOauthCancelling] = useState(false);
-  const [oauthFeedback, setOauthFeedback] = useState<Feedback>(null);
-  const [dismissedFlows, setDismissedFlows] = useState<readonly string[]>([]);
-  const prevFlowStatus = useRef<string | null>(null);
 
   // Model step: the draft lives at wizard level, so Back/Next never loses it.
   // It is only persisted by the step's own "Save & continue" (saveProvider).
@@ -414,6 +455,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   const [probing, setProbing] = useState(false);
   const [probeFeedback, setProbeFeedback] = useState<Feedback>(null);
   const [providerFeedback, setProviderFeedback] = useState<Feedback>(null);
+  const [providerFieldIssue, setProviderFieldIssue] = useState<ConnectionFieldIssue | null>(null);
   const [savingProvider, setSavingProvider] = useState(false);
 
   // A fresh run (auto-popup, onboarding never completed) defaults the
@@ -425,6 +467,11 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     () => readSettings().defaultPermissionMode,
   );
   const [permissionBusy, setPermissionBusy] = useState(false);
+  const host = useHost();
+  const [workspaceChoice, setWorkspaceChoice] = useState<WorkspaceChoice>('auto');
+  const [workspaceFolder, setWorkspaceFolder] = useState('');
+  const workspaceTouched = useRef(false);
+  const workspaceFolderInvalid = workspaceChoice === 'folder' && !isAbsoluteCwdPath(workspaceFolder.trim());
   const [permissionFeedback, setPermissionFeedback] = useState<Feedback>(null);
 
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
@@ -432,26 +479,12 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   const authQuery = useQuery({ queryKey: ['auth'], queryFn: () => client.getAuth(), staleTime: 10_000 });
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const oauthQuery = useQuery({
-    queryKey: ['oauth'],
-    queryFn: () => client.getOAuthStatus(),
-    staleTime: 0,
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      return data !== null && data !== undefined && data.status === 'pending'
-        ? Math.max(2000, data.interval * 1000)
-        : false;
-    },
-  });
-
-  const snapshot = oauthQuery.data ?? null;
-
   useEffect(() => {
     if (permissionTouched.current) return;
     const mode = configQuery.data?.default_permission_mode;
     if (mode !== 'manual' && mode !== 'auto' && mode !== 'yolo') return;
-    // A fresh install still ships the engine's manual default; the wizard
-    // preselects auto instead and persists it when the run finishes.
+    // A first run upgrades a manual server preference to the recommended auto
+    // choice; reopening from Settings preserves an explicit manual preference.
     setPermissionMode(freshRun.current && mode === 'manual' ? 'auto' : mode);
   }, [configQuery.data]);
 
@@ -463,22 +496,6 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       queryClient.invalidateQueries({ queryKey: ['config'] }),
     ]);
   }, [queryClient]);
-
-  // authenticated → collapse the card and refresh the provider read-out.
-  useEffect(() => {
-    if (snapshot === null) {
-      prevFlowStatus.current = null;
-      return;
-    }
-    if (snapshot.status === 'authenticated' && !dismissedFlows.includes(snapshot.flow_id)) {
-      if (prevFlowStatus.current === 'pending') {
-        setOauthFeedback({ tone: 'success', text: t('st.oauth.authenticated') });
-      }
-      setDismissedFlows((flows) => [...flows, snapshot.flow_id]);
-      void refreshProviderData();
-    }
-    prevFlowStatus.current = snapshot.status;
-  }, [snapshot, dismissedFlows, t, refreshProviderData]);
 
   const providerReady =
     authQuery.data?.ready === true || (providersQuery.data?.items.length ?? 0) > 0;
@@ -493,44 +510,40 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     onClose();
   }, [onClose]);
 
-  const startOAuth = async () => {
-    setOauthBusy(true);
-    setOauthFeedback(null);
-    try {
-      const result = await client.startOAuthLogin();
-      if (result.status === 'authenticated') {
-        setOauthFeedback({ tone: 'success', text: t('st.auth.already') });
-        await refreshProviderData();
-      } else {
-        setDismissedFlows([]);
-        queryClient.setQueryData(['oauth'], result);
-      }
-    } catch (error) {
-      setOauthFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setOauthBusy(false);
+  // Dialog handles Escape at the window capture phase, ahead of any popover
+  // inside it. While the protocol picker is open, Escape belongs to the
+  // picker: close it and keep the wizard (and the unsaved form) in place.
+  const dismiss = useCallback(() => {
+    const openPicker = document.querySelector<HTMLButtonElement>(
+      '[role="dialog"] [data-searchable-select] > button[aria-expanded="true"]',
+    );
+    if (openPicker !== null) {
+      openPicker.click();
+      openPicker.focus();
+      return;
     }
-  };
+    close();
+  }, [close]);
 
-  const cancelOAuth = async () => {
-    setOauthCancelling(true);
-    try {
-      await client.cancelOAuthLogin();
-    } catch (error) {
-      setOauthFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setOauthCancelling(false);
-      await queryClient.invalidateQueries({ queryKey: ['oauth'] });
-    }
-  };
-
-  const chooseTemplate = (template: ProviderTemplate | null) => {
-    const draft = onboardingDraftFor(template);
+  const chooseTemplate = (template: ProviderPreset | null, protocol?: ProviderDraft['type']) => {
+    const draft = draftForPreset(template, protocol);
     setProviderDraft(draft);
     setProviderBaseline(draft);
     setSuggestions([]);
     setProbeFeedback(null);
     setProviderFeedback(null);
+    setProviderFieldIssue(null);
+  };
+
+  /** A form edit clears the field error it answers; other errors wait for the next save. */
+  const editProviderDraft = (next: ProviderDraft) => {
+    if (providerFieldIssue !== null && providerDraft !== null) {
+      const field = providerFieldIssue.field;
+      if ((field === 'id' && next.id !== providerDraft.id) || (field === 'baseUrl' && next.baseUrl !== providerDraft.baseUrl)) {
+        setProviderFieldIssue(null);
+      }
+    }
+    setProviderDraft(next);
   };
 
   const testConnection = async () => {
@@ -573,6 +586,16 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       ...providerDraft,
       defaultModel: providerDraft.defaultModel || (firstModel?.remoteId ?? ''),
     };
+    // Field problems (no address, no name) land on their own field; the rest
+    // (models, context size) keeps the form-level line under the form.
+    const fieldIssue = connectionFieldIssue(normalized, { requireBaseUrl: baseUrlRequired(normalized.type) });
+    if (fieldIssue !== null) {
+      setProviderFieldIssue(fieldIssue);
+      setProviderFeedback(null);
+      document.getElementById(fieldIssue.field === 'id' ? 'onboarding-provider-id' : 'onboarding-provider-base-url')?.focus();
+      return false;
+    }
+    setProviderFieldIssue(null);
     const validation = validateNewProviderDraft(normalized);
     if (validation !== null) {
       setProviderFeedback({ tone: 'error', text: issueText(locale, validation) });
@@ -628,14 +651,18 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       return;
     }
     if (step === 'model' && await saveProvider()) {
+      setStep('workspace');
+      return;
+    }
+    if (step === 'workspace' && !workspaceFolderInvalid) {
       setStep('permissions');
     }
   };
 
-  // Finish: a fresh session with the kiki-ops setup prompt pre-filled (never
-  // sent for the user). Without any workspace the server cannot anchor a
-  // session, so the same prefill lands on the /new draft instead; a failed
-  // create degrades there too. An existing /new draft is never overwritten.
+  // Finish: land on the /new hero with an empty composer. The workspace
+  // choice is written into the /new draft (folder → cwd, auto → automatic
+  // creation, chat → automatic creation too: a session needs a home, and a
+  // Kiki Home folder is the "just chat" answer). Nothing is sent or prefilled.
   const finish = async () => {
     if (finishing) return;
     setFinishing(true);
@@ -644,64 +671,41 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       return;
     }
     markOnboardingCompleted();
-    const welcomeDraft = t('onboarding.welcomeDraft');
-    const prefillNewDraft = () => {
-      if (readDraft(NEW_SESSION_DRAFT_KEY) === '') {
-        writeDraft(NEW_SESSION_DRAFT_KEY, welcomeDraft);
-      }
-    };
-    try {
-      const workspaces = await client
-        .listWorkspaces()
-        .then((result) => sortWorkspacesByRecency(result.items))
-        .catch(() => []);
-      const target = workspaces[0];
-      if (target !== undefined) {
-        const session = await client.createSession({ workspace_id: target.id });
-        writeDraft(session.id, welcomeDraft);
-        void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-        onClose();
-        navigate(`/s/${session.id}`);
-        return;
-      }
-      prefillNewDraft();
-      onClose();
-      navigate('/new');
-    } catch {
-      prefillNewDraft();
-      onClose();
-      pushToast({ tone: 'info', text: t('onboarding.sessionFallback') });
-      navigate('/new');
-    }
+    const previous = readNewSessionDraft();
+    // An untouched workspace step keeps /new's own default (most recent
+    // workspace, else automatic creation); only an explicit pick writes.
+    if (workspaceTouched.current) writeNewSessionDraft(
+      workspaceChoice === 'folder' && isAbsoluteCwdPath(workspaceFolder.trim())
+        ? { ...previous, workspaceId: undefined, cwd: workspaceFolder.trim() }
+        : { ...previous, workspaceId: AUTO_WORKSPACE_ID, cwd: undefined },
+    );
+    onClose();
+    navigate('/new');
   };
-
-  const visibleSnapshot = snapshot !== null
-    && snapshot.status !== 'authenticated'
-    && !dismissedFlows.includes(snapshot.flow_id)
-    ? snapshot
-    : null;
 
   const stepIndex = STEPS.indexOf(step);
   const last = stepIndex === STEPS.length - 1;
-  const showTemplateGrid = step === 'model'
-    && providerDraft === null
-    && (!providerReady || addingProvider);
+  const showConnectionOptions = !providerReady || addingProvider || providerDraft !== null;
+  const showTemplateGrid = step === 'model' && showConnectionOptions && providerDraft === null;
   const showProviderForm = step === 'model' && providerDraft !== null;
 
-  const modelPrimaryLabel = providerReady && !addingProvider
-    ? t('onboarding.next')
-    : providerDraft !== null
-      ? t('onboarding.saveNext')
-      : t('onboarding.next');
+  // Until a provider is connected the model step's advance reads as what it
+  // is — skipping — and renders as a text button, not the primary action.
+  const modelSkipping = !providerReady && providerDraft === null;
+  const modelPrimaryLabel = providerDraft !== null
+    ? t('onboarding.saveNext')
+    : providerReady
+      ? t('onboarding.next')
+      : t('onboarding.skipForNow');
 
   return (
     <Dialog
-      onClose={close}
+      onClose={dismiss}
       ariaLabel={t('onboarding.title')}
       overlayId="onboarding-wizard"
       // Same chrome as DIALOG_PANEL_BASE, minus the padding: the wizard owns
       // its header/body/footer insets so the scroll region meets the dividers.
-      panelClassName="anim-enter w-full max-w-[680px] max-h-[85vh] flex flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
+      panelClassName="anim-enter w-full max-w-[680px] max-h-[85vh] flex flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
     >
       <div className="flex items-start justify-between gap-4 border-b border-hairline px-6 pb-4 pt-5">
         <div className="min-w-0">
@@ -721,36 +725,34 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             aria-label={t('onboarding.close')}
             className="flex h-7 w-7 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
           >
-            <span aria-hidden>×</span>
+            <Icon name="close" />
           </button>
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-        <h3 className="text-[13.5px] font-semibold text-ink">{t(STEP_TITLE_KEYS[step])}</h3>
+        <h3 className="font-display text-[15px] leading-5 font-semibold text-ink">{t(STEP_TITLE_KEYS[step])}</h3>
 
         {step === 'welcome' ? (
           <div className="mt-3 space-y-4">
             <p className="text-[12px] leading-relaxed text-ink-soft">{t('onboarding.welcome.body')}</p>
-            <PreferenceRow label={t('st.language.title')}>
-              {(['en', 'zh'] as Locale[]).map((choice) => (
-                <ChoicePill
-                  key={choice}
-                  label={choice === 'en' ? 'English' : '中文'}
-                  selected={locale === choice}
-                  onSelect={() => { setLocale(choice); }}
-                />
-              ))}
+            <PreferenceRow label={t('st.language.title')} labelId="onboarding-language-label">
+              <SettingsSegmented<Locale>
+                ariaLabelledBy="onboarding-language-label"
+                value={locale}
+                onChange={(choice) => { setLocale(choice); }}
+                choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
+              />
             </PreferenceRow>
-            <PreferenceRow label={t('st.appearance.theme')}>
-              {(['light', 'dark', 'system'] as ThemePreference[]).map((choice) => (
-                <ChoicePill
-                  key={choice}
-                  label={t(`st.appearance.theme.${choice}`)}
-                  selected={settings.theme === choice}
-                  onSelect={() => { writeSettings({ theme: choice }); }}
-                />
-              ))}
+            <PreferenceRow label={t('st.appearance.theme')} labelId="onboarding-theme-label">
+              <SettingsSegmented<ThemePreference>
+                ariaLabelledBy="onboarding-theme-label"
+                value={settings.theme}
+                onChange={(choice) => { writeSettings({ theme: choice }); }}
+                choices={(['light', 'dark', 'system'] as ThemePreference[]).map((choice) => ({
+                  value: choice, label: t(`st.appearance.theme.${choice}`),
+                }))}
+              />
             </PreferenceRow>
           </div>
         ) : null}
@@ -758,102 +760,114 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         {step === 'model' ? (
           <div className="mt-3 space-y-4">
             <p className="text-[12px] leading-relaxed text-ink-soft">{t('onboarding.model.body')}</p>
-            {providerReady ? (
-              <p role="status" className="rounded-md border border-success/30 bg-success/5 px-2.5 py-2 text-[11.5px] text-success">
+            {providerReady && !showConnectionOptions ? (
+              <p role="status" className="rounded-md border border-success/30 bg-success/5 px-2.5 py-2 text-[12px] text-success">
                 {t('onboarding.model.ready')}
               </p>
             ) : null}
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                disabled={oauthBusy}
-                onClick={() => void startOAuth()}
-                className={SECONDARY_BUTTON}
-              >
-                {oauthBusy ? t('st.auth.working') : t('onboarding.model.signIn')}
-              </button>
-            </div>
-            {visibleSnapshot !== null ? (
-              <OAuthDeviceCard
-                snapshot={visibleSnapshot}
-                cancelling={oauthCancelling}
-                onCancel={() => void cancelOAuth()}
-                onRetry={() => { void startOAuth(); }}
-                onDismiss={() => { setDismissedFlows((flows) => [...flows, visibleSnapshot.flow_id]); }}
-              />
-            ) : null}
-            <FeedbackLine feedback={oauthFeedback} />
-            {showTemplateGrid ? (
-              <div className="border-t border-hairline pt-3">
-                <p className="mb-2 text-[11px] font-medium text-ink-faint">{t('onboarding.model.orApiKey')}</p>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {PROVIDER_TEMPLATES.map((template) => (
-                    <button
-                      key={template.type}
-                      type="button"
-                      data-provider-template={template.type}
-                      onClick={() => { chooseTemplate(template); }}
-                      className="rounded-xl border border-hairline bg-paper p-3 text-left transition-colors hover:border-accent hover:bg-accent-soft/40"
-                    >
-                      <span className="block text-[13px] font-semibold text-ink">{template.label}</span>
-                      <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-faint">{template.baseUrl}</span>
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    data-provider-template="custom"
-                    onClick={() => { chooseTemplate(null); }}
-                    className="rounded-xl border border-dashed border-hairline bg-paper p-3 text-left transition-colors hover:border-accent hover:bg-accent-soft/40"
-                  >
-                    <span className="block text-[13px] font-semibold text-ink">{t('st.wizard.manual')}</span>
-                    <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-faint">{t('st.wizard.manualHint')}</span>
-                  </button>
-                </div>
-              </div>
-            ) : null}
-            {showProviderForm ? (
-              <div className="border-t border-hairline pt-3">
-                <p className="mb-2 text-[11px] font-medium text-ink-faint">{t('onboarding.model.orApiKey')}</p>
-                <OnboardingProviderForm
-                  draft={providerDraft}
-                  suggestions={suggestions}
-                  probing={probing}
-                  probeFeedback={probeFeedback}
-                  onChange={setProviderDraft}
-                  onTest={() => { void testConnection(); }}
-                  onBack={() => {
-                    setProviderDraft(null);
-                    setProviderBaseline(null);
-                    setSuggestions([]);
-                    setProbeFeedback(null);
-                    setProviderFeedback(null);
-                  }}
-                />
-              </div>
+            {showTemplateGrid || showProviderForm ? (
+              <section aria-label={t('onboarding.model.orApiKey')} className="space-y-2" data-connection-lane="api">
+                <p className="text-[12px] font-medium text-ink-soft">{t('onboarding.model.orApiKey')}</p>
+                {showTemplateGrid ? <PresetGrid dense onPick={chooseTemplate} /> : null}
+                {showProviderForm ? (
+                  <OnboardingProviderForm
+                    draft={providerDraft}
+                    suggestions={suggestions}
+                    probing={probing}
+                    probeFeedback={probeFeedback}
+                    fieldIssue={providerFieldIssue}
+                    onChange={editProviderDraft}
+                    onTest={() => { void testConnection(); }}
+                    onBack={() => {
+                      setProviderDraft(null);
+                      setProviderBaseline(null);
+                      setSuggestions([]);
+                      setProbeFeedback(null);
+                      setProviderFeedback(null);
+                      setProviderFieldIssue(null);
+                    }}
+                  />
+                ) : null}
+              </section>
             ) : null}
             {providerReady && !addingProvider && providerDraft === null ? (
               <button
                 type="button"
                 onClick={() => { setAddingProvider(true); }}
-                className="text-[11.5px] font-medium text-accent transition-colors hover:text-accent-deep"
+                className="text-[12px] font-medium text-accent-ink underline-offset-2 transition-colors hover:underline"
               >
                 {t('onboarding.model.addAnother')}
               </button>
             ) : null}
             <FeedbackLine feedback={providerFeedback} />
+            {showConnectionOptions ? (
+              <section className="space-y-2 border-t border-hairline pt-3" aria-label={t('st.account.title')}>
+                <p className="text-[12px] font-semibold text-ink">{t('st.account.title')}</p>
+                <AccountSignIn compact onChanged={refreshProviderData} />
+              </section>
+            ) : null}
+          </div>
+        ) : null}
+
+        {step === 'workspace' ? (
+          <div className="mt-3 space-y-3">
+            <p className="text-[13px] leading-relaxed text-ink-soft">{t('onboarding.workspace.body')}</p>
+            <div role="radiogroup" aria-label={t('onboarding.step.workspace')} className="space-y-2">
+              {(['folder', 'auto', 'chat'] as const).map((choice) => (
+                <ChoiceCard
+                  key={choice}
+                  data-workspace-choice={choice}
+                  label={t(`onboarding.workspace.${choice}`)}
+                  line={t(`onboarding.workspace.${choice}Line`)}
+                  selected={workspaceChoice === choice}
+                  onSelect={() => {
+                    workspaceTouched.current = true;
+                    setWorkspaceChoice(choice);
+                  }}
+                />
+              ))}
+            </div>
+            {workspaceChoice === 'folder' ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {host.pickDirectory !== undefined ? (
+                  <button
+                    type="button"
+                    className={SECONDARY_BUTTON}
+                    onClick={() => {
+                      void host.pickDirectory?.().then((picked) => {
+                        if (picked !== null && picked !== undefined) setWorkspaceFolder(picked);
+                      }).catch(() => undefined);
+                    }}
+                  >
+                    {t('new.browse')}
+                  </button>
+                ) : null}
+                <input
+                  type="text"
+                  value={workspaceFolder}
+                  onChange={(event) => { setWorkspaceFolder(event.target.value); }}
+                  aria-label={t('new.cwdAria')}
+                  placeholder={t('new.cwdPlaceholder')}
+                  className={`${INPUT} min-w-0 flex-1 font-mono`}
+                />
+                {workspaceFolder.trim() !== '' && workspaceFolderInvalid ? (
+                  <p role="alert" className="w-full text-[12px] text-danger">{t('new.cwdInvalid')}</p>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
         {step === 'permissions' ? (
           <div className="mt-3 space-y-4">
-            <p className="text-[12px] leading-relaxed text-ink-soft">{t('onboarding.permissions.body')}</p>
+            <p className="text-[13px] leading-relaxed text-ink-soft">{t('onboarding.permissions.body')}</p>
             <div role="radiogroup" aria-label={t('onboarding.step.permissions')} className="space-y-2">
-              {PERMISSION_OPTIONS.map((mode) => (
+              {PERMISSION_MODES.map(({ id: mode }) => (
                 <PermissionOption
                   key={mode}
                   mode={mode}
                   selected={permissionMode === mode}
-                  recommended={mode === 'auto'}
+                  recommended={mode === RECOMMENDED_PERMISSION_MODE}
                   disabled={permissionBusy}
                   onSelect={() => {
                     permissionTouched.current = true;
@@ -871,7 +885,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         <button
           type="button"
           onClick={close}
-          className="text-[11.5px] font-medium text-ink-faint transition-colors hover:text-ink"
+          className="text-[12px] font-medium text-ink-faint transition-colors hover:text-ink"
         >
           {t('onboarding.skip')}
         </button>
@@ -899,9 +913,11 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             <button
               type="button"
               data-autofocus
-              disabled={savingProvider}
+              disabled={savingProvider || (step === 'workspace' && workspaceFolderInvalid)}
               onClick={() => void goNext()}
-              className={PRIMARY_BUTTON}
+              className={step === 'model' && modelSkipping
+                ? 'rounded-md px-2.5 py-1.5 text-[13px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none'
+                : PRIMARY_BUTTON}
             >
               {step === 'model'
                 ? (savingProvider ? t('common.saving') : modelPrimaryLabel)

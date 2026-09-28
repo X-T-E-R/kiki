@@ -1,6 +1,6 @@
 # 平台与模型
 
-Kiki 支持同时接入多家 LLM 平台——用 Kimi Code 托管服务一键登录、用 Anthropic API key 接 Claude、用 OpenAI 兼容协议连接第三方推理服务。每个供应商对应一种 API 协议，模型在供应商之上声明自己的名称、上下文长度和能力。本页介绍如何在 `config.toml` 里配置各种供应商，其 API 密钥存放在配套的 [`credentials.toml`](./config-files.md#供应商凭证) 里。
+Kiki 可以同时连接多家模型提供商。API 密钥是适用范围最广的连接方式；桌面和浏览器设置还支持使用 Kimi Code、GitHub Copilot、ChatGPT（Codex）账号登录。Kimi 是受支持的服务之一，不是 Kiki 独有的提供商类别。提供商使用相应的通信协议，模型则各自声明 ID、上下文长度和能力。本页介绍 `config.toml` 中的协议类型以及配套的 [`credentials.toml`](./config-files.md#供应商凭证) API 密钥。
 
 ## 支持的供应商类型
 
@@ -40,7 +40,11 @@ Kiki 支持同时接入多家 LLM 平台——用 Kimi Code 托管服务一键�
 
 建议只保存在服务器内存中，服务器重启后消失。修改或删除提供商连接会丢弃该连接的缓存建议。获取失败会显示错误并保留上次成功的建议；成功返回空列表则清空建议。该提供商已配置的模型不会重复出现，即使本地别名与上游模型 ID 不同。
 
-Kimi Code **OAuth** 账号保留原有的托管账号目录同步。手动填写的 Kimi API 密钥即使使用托管端点，也只产生建议。
+在 GUI 的 **设置 → 模型与提供商 → 连接服务** 中，**用 API 密钥连接**提供五个协议入口：`openai`、`openai_responses`、`anthropic`、`google-genai`、`vertexai`；也可以按服务名称搜索。搜索 DeepSeek、GLM、Kimi、Ollama、LM Studio 或 OpenRouter，选中结果后会自动填入协议和 base URL。没有匹配结果时，选协议后手填 base URL；之后按需填写密钥并添加模型。
+
+Ollama 和 LM Studio 与其他 OpenAI 兼容服务共用 API 密钥路径，本地服务可能无需密钥。五个快捷入口是 OpenAI、Anthropic、Google Gemini、DeepSeek 和 Moonshot（Kimi）。Kimi 快捷入口沿用下文已有的 `kimi` 通信适配器，不额外增加第六张协议卡片。
+
+**可用模型**集中展示已配置的模型：按名称或 ID 搜索、查看上下文长度与能力，星标一个模型作为全局默认。提供商还保留自身的默认模型，模型也保留实际发送给上游的 ID。手动填写的 Kimi API 密钥和其他 API 密钥连接一样只获取建议；账号登录则配置其托管模型。
 
 ::: warning
 通过 `/login` 登录的 Kimi Code OAuth 托管账号不会在 `/provider` 里显示，请用 `/login` 和 `/logout` 管理。
@@ -196,7 +200,7 @@ kiki
 
 ## OAuth 与凭证注入
 
-Kimi Code 托管服务使用 OAuth 而非静态 API 密钥。运行 `/login` 后，内置的认证工具链会自动写入并刷新凭证，无需手动配置。OAuth 凭据存在 `credentials/` 目录下（见[数据路径](./data-locations.md)），与 `credentials.toml` 里的供应商 API 密钥分开管理。
+GUI 的 **连接服务 → 用账号登录** 提供 Kimi Code、GitHub Copilot、ChatGPT（Codex）三种选项。选择账号后打开验证地址、输入设备码，等待页面显示「已连接」。对应账号须有相关订阅或服务权限；可用模型取决于账号。退出登录会移除该账号的托管连接与模型。这些是登录方式，并非新的 `type` 协议值：Kimi Code 与 Copilot 使用 OpenAI 兼容请求，ChatGPT Codex 使用指向 Codex 端点的 `openai_responses`。OAuth 凭据存放在 `credentials/`（见[数据路径](./data-locations.md)），与 `credentials.toml` 中的 API 密钥分开。CLI 的 `/login`、`/logout` 目前仍只管理 Kimi Code。
 
 ## 下一步
 

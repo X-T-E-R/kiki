@@ -39,7 +39,6 @@ import {
   msUnitFor,
   modelCreateBody,
   modelPatchBody,
-  PROVIDER_TEMPLATES,
   PROVIDER_WIRE_TYPES,
   providerCreateBody,
   providerDraftFromCatalog,
@@ -50,17 +49,31 @@ import {
   type MsUnit,
   type ProviderDraft,
   type ProviderModelDraft,
-  type ProviderTemplate,
 } from '@kiki/session-core/settings';
 import { formatTokens } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { DisclosureChevron, Icon } from './icons';
 import { useConnection } from '../state/connection';
 import { ChipSelect } from './ChipSelect';
 import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from './controls';
 import { useDirtyReporter } from './dirtyGuard';
 import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
+import { PresetGrid } from './PresetGrid';
+import {
+  API_PROTOCOLS,
+  baseUrlRequired,
+  connectionFieldIssue,
+  draftForPreset,
+  PROTOCOL_ORDER,
+  protocolLabel,
+  vendorLabelFor,
+  withBaseUrl,
+  type ConnectionFieldIssue,
+  type ProviderPreset,
+} from './providerPresets';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
+import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER } from './settings/SettingsPrimitives';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 /**
@@ -340,7 +353,7 @@ export function MsUnitInput({
           {MS_UNITS.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}
         </select>
       </div>
-      <p className="mt-1 text-[10.5px] text-ink-faint">= {t(`st.unit.${humanized.unit}`, { n: humanized.value })}</p>
+      <p className="mt-1 text-[11px] text-ink-faint">= {t(`st.unit.${humanized.unit}`, { n: humanized.value })}</p>
     </div>
   );
 }
@@ -358,11 +371,11 @@ export function ImagePolicyEditor({
   const acceptedMode = value.imageAcceptedTypes === null ? 'inherit' : 'custom';
   return (
     <div className="space-y-2 rounded-lg border border-hairline bg-panel/50 p-3">
-      <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-faint">
+      <p className="text-[12px] font-medium text-ink-soft">
         {t('st.images.title')}
       </p>
       <div className="grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-center">
-        <span className="text-[10.5px] font-medium text-ink-soft">
+        <span className="text-[11px] font-medium text-ink-soft">
           {t('st.images.acceptedTypes')}
         </span>
         <select
@@ -395,7 +408,7 @@ export function ImagePolicyEditor({
         />
       )}
       <div className="grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-center">
-        <span className="text-[10.5px] font-medium text-ink-soft">
+        <span className="text-[11px] font-medium text-ink-soft">
           {t('st.images.convertUnsupported')}
         </span>
         <select
@@ -507,11 +520,11 @@ function ModelDraftRow({
           title={t('st.providers.defaultStarTitle')}
           disabled={model.remoteId === ''}
           onClick={onSetDefault}
-          className={`shrink-0 text-[15px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-30 ${
-            isDefault ? 'text-accent' : 'text-hairline-strong hover:text-accent'
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-30 ${
+            isDefault ? 'text-accent' : 'text-ink-faint hover:text-ink'
           }`}
         >
-          {isDefault ? '★' : '☆'}
+          <Icon name={isDefault ? 'starFilled' : 'star'} />
         </button>
         <button
           type="button"
@@ -524,20 +537,20 @@ function ModelDraftRow({
             {model.remoteId === '' ? 'model-id' : model.remoteId}
           </span>
           {model.id !== '' ? (
-            <span className="hidden shrink-0 truncate font-mono text-[10px] text-ink-faint sm:inline">
+            <span className="hidden shrink-0 truncate font-mono text-[11px] text-ink-faint sm:inline">
               {model.id}
             </span>
           ) : null}
-          <span className="shrink-0 font-mono text-[10px] text-ink-faint">{formatTokens(model.maxContextSize)}</span>
+          <span className="shrink-0 font-mono text-[11px] text-ink-faint">{formatTokens(model.maxContextSize)}</span>
           {model.capabilities.slice(0, 3).map((capability) => (
-            <span key={capability} className="hidden shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px text-[9.5px] text-ink-faint sm:inline">
+            <span key={capability} className="hidden shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px text-[11px] text-ink-faint sm:inline">
               {capability}
             </span>
           ))}
-          <span className="hidden shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px text-[9.5px] text-ink-faint sm:inline">
+          <span className="hidden shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px text-[11px] text-ink-faint sm:inline">
             {t(`st.providers.requestIdentityBadge.${requestIdentitySummary}`)}
           </span>
-          <span aria-hidden className={`ml-auto shrink-0 text-[10px] text-ink-faint transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
+          <DisclosureChevron open={open} className="ml-auto text-ink-faint" />
         </button>
         <button
           type="button"
@@ -546,13 +559,13 @@ function ModelDraftRow({
           onClick={onRemove}
           className={`${SECONDARY_BUTTON} shrink-0 px-2 text-danger`}
         >
-          ×
+          <Icon name="close" size={12} />
         </button>
       </div>
       {open ? (
         <div className="mt-3 space-y-2.5 border-t border-hairline pt-3">
           {model.id !== '' ? (
-            <p className="truncate font-mono text-[10px] text-ink-faint">{model.id}</p>
+            <p className="truncate font-mono text-[11px] text-ink-faint">{model.id}</p>
           ) : null}
           <div className="grid items-start gap-2 sm:grid-cols-2">
             <div className="min-w-0 space-y-1">
@@ -571,7 +584,7 @@ function ModelDraftRow({
               />
               <Hint>{t('st.providers.catalogModelHint')}</Hint>
               {selectedIsSuggestion ? (
-                <p data-model-suggestion className="text-[10.5px] font-medium text-accent">
+                <p data-model-suggestion className="text-[11px] font-medium text-accent-ink">
                   {t('st.providers.catalogSuggestionNote')}
                 </p>
               ) : null}
@@ -590,7 +603,7 @@ function ModelDraftRow({
             ariaLabel={t('st.providers.modelContextAria', { n })}
           />
           <div className="space-y-1">
-            <p className="text-[10.5px] font-medium text-ink-faint">{t('st.chips.capabilities')}</p>
+            <p className="text-[11px] font-medium text-ink-faint">{t('st.chips.capabilities')}</p>
             <ChipSelect
               values={model.capabilities}
               knownOptions={KNOWN_CAPABILITIES}
@@ -601,7 +614,7 @@ function ModelDraftRow({
             />
           </div>
           <div className="space-y-1">
-            <p className="text-[10.5px] font-medium text-ink-faint">{t('st.chips.efforts')}</p>
+            <p className="text-[11px] font-medium text-ink-faint">{t('st.chips.efforts')}</p>
             <ChipSelect
               values={model.supportEfforts}
               knownOptions={KNOWN_EFFORTS}
@@ -647,6 +660,7 @@ export function ProviderFields({
   baselineType,
   catalogModels = [],
   onRefreshed,
+  fieldIssue = null,
 }: {
   draft: ProviderDraft;
   onChange: (draft: ProviderDraft) => void;
@@ -678,9 +692,13 @@ export function ProviderFields({
    */
   catalogModels?: readonly ProviderModelCatalogChoice[];
   onRefreshed?: () => Promise<void>;
+  /** New connections only: the field-level problem the last create attempt found. */
+  fieldIssue?: ConnectionFieldIssue | null;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
+  const idIssue = fieldIssue?.field === 'id' ? issueText(locale, fieldIssue.issue) : null;
+  const baseUrlIssue = fieldIssue?.field === 'baseUrl' ? issueText(locale, fieldIssue.issue) : null;
   const [probing, setProbing] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [probeFeedback, setProbeFeedback] = useState<Feedback>(null);
@@ -755,31 +773,61 @@ export function ProviderFields({
     }
   };
 
+  // A new connection chooses among the public protocols; a stored or preset
+  // connection on another adapter keeps its own protocol in the list.
+  const protocolChoices = (idLocked || managed ? PROTOCOL_ORDER : API_PROTOCOLS)
+    .filter((type) => PROVIDER_WIRE_TYPES.includes(type));
+  const protocols = protocolChoices.includes(draft.type) ? protocolChoices : [draft.type, ...protocolChoices];
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.idLabel')}
+        <div className="min-w-0">
+          <label htmlFor="provider-field-id" className={FORM_LABEL}>{t('st.providers.idLabel')}</label>
           <input
-            className={`${INPUT} mt-1 disabled:cursor-not-allowed disabled:opacity-60`}
+            id="provider-field-id"
+            className={`${INPUT} mt-1 disabled:cursor-not-allowed disabled:opacity-60 ${idIssue !== null ? 'border-danger/60' : ''}`}
             value={draft.id}
             disabled={managed || idLocked}
+            aria-invalid={idIssue !== null || undefined}
+            aria-describedby={idIssue !== null ? 'provider-field-id-issue' : undefined}
+            placeholder={idLocked ? undefined : 'my-provider'}
             onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
           />
-        </label>
-        <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.protocol')}
-          <select
-            className={`${INPUT} mt-1 disabled:cursor-not-allowed disabled:opacity-60`}
-            value={draft.type}
-            disabled={managed}
-            onChange={(event) => { onChange({ ...draft, type: event.target.value as ProviderDraft['type'] }); }}
-          >
-            {PROVIDER_WIRE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-          </select>
-        </label>
+          <FieldIssue id="provider-field-id-issue" text={idIssue} />
+        </div>
+        <div className="min-w-0">
+          <span className={FORM_LABEL}>{t('st.providers.protocol')}</span>
+          <div className="mt-1">
+            <SearchableSelect
+              id="provider-field-protocol"
+              ariaLabel={t('st.providers.protocol')}
+              value={draft.type}
+              disabled={managed}
+              hideFilter
+              options={protocols.map((type) => ({ value: type, label: protocolLabel(type), hint: type }))}
+              onChange={(next) => { onChange({ ...draft, type: next as ProviderDraft['type'] }); }}
+              buttonClassName={FORM_SELECT_TRIGGER}
+            />
+          </div>
+        </div>
       </div>
-      <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.baseUrl')}
-        <input className={`${INPUT} mt-1`} value={draft.baseUrl} onChange={(event) => { onChange({ ...draft, baseUrl: event.target.value }); }} placeholder="https://api.example.com/v1" />
-      </label>
+      <div>
+        <label htmlFor="provider-field-base-url" className={FORM_LABEL}>{t('st.providers.baseUrl')}</label>
+        <input
+          id="provider-field-base-url"
+          className={`${INPUT} mt-1 ${baseUrlIssue !== null ? 'border-danger/60' : ''}`}
+          value={draft.baseUrl}
+          aria-invalid={baseUrlIssue !== null || undefined}
+          aria-describedby={baseUrlIssue !== null ? 'provider-field-base-url-issue' : undefined}
+          onChange={(event) => {
+            // A new connection's id follows the address until the user names it.
+            onChange(idLocked || managed ? { ...draft, baseUrl: event.target.value } : withBaseUrl(draft, event.target.value));
+          }}
+          placeholder="https://api.example.com/v1"
+        />
+        <FieldIssue id="provider-field-base-url-issue" text={baseUrlIssue} />
+      </div>
       <RequestIdentityLayerEditor
         value={draft}
         onChange={(identity) => { onChange({ ...draft, ...identity }); }}
@@ -796,8 +844,8 @@ export function ProviderFields({
         <Hint>{t('st.providers.managedHint')}</Hint>
       ) : (
         <div>
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.apiKey')}
-            <span className="mt-1 flex items-center gap-2">
+          <label className={FORM_LABEL}>{t('st.providers.apiKey')}
+            <span className="mt-1 flex items-center gap-2 font-normal">
               <input
                 type={showApiKey ? 'text' : 'password'}
                 autoComplete="new-password"
@@ -827,11 +875,11 @@ export function ProviderFields({
       </div>
       <div className="space-y-2.5">
         <div className="flex items-center justify-between">
-          <p className="text-[11px] font-medium text-ink-soft">{t('st.providers.models')}</p>
+          <p className={FORM_LABEL}>{t('st.providers.models')}</p>
           <button type="button" className={SECONDARY_BUTTON} onClick={() => { onChange({ ...draft, models: [...draft.models, blankModel()] }); }}>{t('st.providers.addModel')}</button>
         </div>
         {idLocked ? (
-          <label className="block text-[11px] font-medium text-ink-soft">
+          <label className={FORM_LABEL}>
             {t('st.models.providerDefault')}
             <select
               className={`${INPUT} mt-1`}
@@ -889,12 +937,15 @@ export function ProviderEditor({
   provider,
   models,
   managed = false,
+  modelCount,
   onSaved,
 }: {
   provider: ProviderCatalogItem;
   models: readonly ModelCatalogItem[];
   /** OAuth-managed providers keep the editable fields but no credential surface. */
   managed?: boolean;
+  /** Configured models on this connection, shown in the collapsed row. */
+  modelCount?: number;
   onSaved: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
@@ -1070,6 +1121,7 @@ export function ProviderEditor({
       : provider.status === 'error' ? 'bg-danger'
         : 'bg-amber-rule';
 
+  const vendor = vendorLabelFor(provider.base_url);
   const requestIdentitySummary = provider.request_identity === undefined
     ? 'inherit'
     : (provider.request_identity.preset ?? 'custom_overrides');
@@ -1078,25 +1130,25 @@ export function ProviderEditor({
     : t(`st.requestIdentity.option.${requestIdentitySummary}`);
 
   return (
-    <details className="rounded-xl border border-hairline bg-paper p-3">
+    <details className="group/provider rounded-lg border border-hairline bg-paper px-3 py-2.5 open:pb-3">
       <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-[13px] font-semibold text-ink">
         <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${statusDot}`} />
         {provider.id}
-        <span className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] font-normal text-ink-faint">{provider.type}</span>
+        <span className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[11px] font-normal text-ink-faint">{provider.type}</span>
         <span
           title={`${t('st.providers.requestIdentity')}: ${requestIdentityFull}`}
-          className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] font-normal text-ink-faint"
+          className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[11px] font-normal text-ink-faint"
         >
           {t(`st.providers.requestIdentityBadge.${requestIdentitySummary}`)}
         </span>
         {provider.default_model !== undefined ? (
-          <span className="truncate font-mono text-[10px] font-normal text-ink-faint">{provider.default_model}</span>
+          <span className="truncate font-mono text-[11px] font-normal text-ink-faint">{provider.default_model}</span>
         ) : null}
         {provider.has_api_key ? (
-          <span className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] font-normal text-ink-faint">{t('st.providers.keyBadge')}</span>
+          <span className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[11px] font-normal text-ink-faint">{t('st.providers.keyBadge')}</span>
         ) : null}
         {dirty ? (
-          <span className="rounded-full border border-amber-rule/60 bg-amber-card px-1.5 py-px text-[9.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span>
+          <span className="rounded-full border border-amber-rule/60 bg-amber-card px-1.5 py-px text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span>
         ) : null}
       </summary>
       <div className="mt-4 space-y-4">
@@ -1123,11 +1175,11 @@ export function ProviderEditor({
           <button type="button" className={PRIMARY_BUTTON} disabled={saving || revisions === null || !dirty} onClick={() => void save()}>
             {saving ? t('common.saving') : t('st.providers.save')}
           </button>
-          {dirty ? <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
         </div>
         {managed ? null : (
           <div className="rounded-lg border border-danger/25 bg-danger/[0.03] p-3">
-            <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide text-danger">{t('st.danger.title')}</p>
+            <p className="mb-2 text-[12px] font-medium text-danger">{t('st.danger.title')}</p>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -1328,7 +1380,7 @@ export function SavedGenerationParametersEditor({
                   value={typeof value === 'number' ? value : 0} disabled={saving}
                   onChange={(event) => { change(key, Number(event.target.value)); }} />
               ) : null}
-              {scope === 'model' ? <p className="text-[10px] text-ink-faint">
+              {scope === 'model' ? <p className="text-[11px] text-ink-faint">
                 {zh ? '生效' : 'Effective'}: {parameterValue(effective?.[key], zh)} · {sources?.[key] ?? (zh ? '适配器 / API 默认' : 'adapter / API default')}
               </p> : null}
             </div>
@@ -1358,18 +1410,24 @@ export function NewProviderWizard({
   const [draft, setDraft] = useState(blank);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [fieldIssue, setFieldIssue] = useState<ConnectionFieldIssue | null>(null);
 
   const dirty = step === 'form' && isProviderDraftDirty(draft, blank);
   useDirtyReporter('new-provider', dirty);
 
-  const chooseTemplate = (template: ProviderTemplate | null) => {
-    setDraft({
-      ...blank,
-      type: template?.type ?? 'openai',
-      baseUrl: template?.baseUrl ?? '',
-      id: template?.type ?? '',
-    });
+  // An edit to the flagged field clears its error; the next create re-checks.
+  const editDraft = (next: ProviderDraft) => {
+    if ((fieldIssue?.field === 'id' && next.id !== draft.id)
+      || (fieldIssue?.field === 'baseUrl' && next.baseUrl !== draft.baseUrl)) setFieldIssue(null);
+    setDraft(next);
+  };
+
+  const [preset, setPreset] = useState<ProviderPreset | null>(null);
+  const chooseTemplate = (picked: ProviderPreset | null, protocol?: ProviderDraft['type']) => {
+    setPreset(picked);
+    setDraft(draftForPreset(picked, protocol));
     setFeedback(null);
+    setFieldIssue(null);
     setStep('form');
   };
 
@@ -1380,6 +1438,13 @@ export function NewProviderWizard({
         draft.defaultModel
         || (draft.models[0]?.id ?? draft.models[0]?.remoteId ?? ''),
     };
+    const issue = connectionFieldIssue(normalized, { requireBaseUrl: baseUrlRequired(normalized.type) });
+    setFieldIssue(issue);
+    if (issue !== null) {
+      setFeedback(null);
+      document.getElementById(issue.field === 'id' ? 'provider-field-id' : 'provider-field-base-url')?.focus();
+      return;
+    }
     const validation = validateNewProviderDraft(normalized);
     if (validation !== null) {
       setFeedback({ tone: 'error', text: issueText(locale, validation) });
@@ -1403,28 +1468,7 @@ export function NewProviderWizard({
   if (step === 'template') {
     return (
       <div className="space-y-3">
-        <div className="grid gap-2 sm:grid-cols-2">
-          {PROVIDER_TEMPLATES.map((template) => (
-            <button
-              key={template.type}
-              type="button"
-              onClick={() => { chooseTemplate(template); }}
-              className="rounded-xl border border-hairline bg-paper p-3 text-left transition-colors hover:border-accent hover:bg-accent-soft/40"
-            >
-              <span className="block text-[13px] font-semibold text-ink">{template.label}</span>
-              <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-faint">{template.baseUrl}</span>
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => { chooseTemplate(null); }}
-            className="rounded-xl border border-dashed border-hairline bg-paper p-3 text-left transition-colors hover:border-accent hover:bg-accent-soft/40"
-          >
-            <span className="block text-[13px] font-semibold text-ink">{t('st.wizard.manual')}</span>
-            <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-faint">{t('st.wizard.manualHint')}</span>
-          </button>
-        </div>
-        <Hint>{t('st.wizard.chooseTemplate')}</Hint>
+        <PresetGrid onPick={chooseTemplate} />
         <FeedbackLine feedback={feedback} />
       </div>
     );
@@ -1432,14 +1476,21 @@ export function NewProviderWizard({
 
   return (
     <div className="space-y-4">
-      <button
-        type="button"
-        onClick={() => { setDraft(blank); setFeedback(null); setStep('template'); }}
-        className="text-[11.5px] font-medium text-accent transition-colors hover:text-accent-deep"
-      >
-        {t('st.wizard.back')}
-      </button>
-      <ProviderFields draft={draft} onChange={setDraft} hasStoredKey={false} />
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <button
+          type="button"
+          onClick={() => { setDraft(blank); setFeedback(null); setFieldIssue(null); setStep('template'); }}
+          className="-ml-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink"
+        >
+          <Icon name="arrowLeft" size={12} />
+          {t('st.wizard.back')}
+        </button>
+        <span className="text-[12px] text-ink-faint">
+          {preset === null ? protocolLabel(draft.type) : `${preset.label} · ${protocolLabel(preset.type)}`}
+        </span>
+      </div>
+      {preset?.keyOptional === true ? <Hint>{t('st.presets.localHint')}</Hint> : null}
+      <ProviderFields draft={draft} onChange={editDraft} hasStoredKey={false} fieldIssue={fieldIssue} />
       <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>
         {saving ? t('st.providers.creating') : t('st.providers.create')}
       </button>
