@@ -9,6 +9,7 @@
  */
 
 import { z } from 'zod';
+import { pluginInstallPlanSchema, pluginPreviewRequestSchema } from '@kiki/protocol';
 
 import { noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
@@ -69,7 +70,7 @@ const pluginCommandEntrySchema = z.object({
   name: z.string(),
 });
 
-const pluginManifestKindSchema = z.enum(['kimi-plugin-root', 'kimi-plugin-dir']);
+const pluginManifestKindSchema = z.enum(['kimi-plugin-root', 'kimi-plugin-dir', 'claude-code']);
 
 const pluginSourceSchema = z.enum(['local-path', 'zip-url', 'github']);
 
@@ -97,6 +98,7 @@ export const pluginManifestSchema = z.object({
   interface: pluginInterfaceSchema.optional(),
   skillInstructions: z.string().optional(),
   systemPrompt: z.string().optional(),
+  unsupportedComponents: z.array(z.string()).optional(),
 });
 
 export const pluginMcpServerInfoSchema = z.object({
@@ -134,6 +136,14 @@ export const pluginSummarySchema = z.object({
   source: pluginSourceSchema,
   originalSource: z.string().optional(),
   github: pluginGithubMetadataSchema.optional(),
+  zipSha256: z.string().optional(),
+  rollback: z.object({
+    version: z.string().optional(),
+    source: pluginSourceSchema,
+    originalSource: z.string().optional(),
+    github: pluginGithubMetadataSchema.optional(),
+    zipSha256: z.string().optional(),
+  }).optional(),
 });
 
 export const pluginInfoSchema = pluginSummarySchema.extend({
@@ -172,8 +182,9 @@ export const pluginCommandDefSchema = z.object({
   path: z.string(),
 });
 
-export const installPluginInputSchema = z.object({
-  source: z.string(),
+export const installPluginInputSchema = pluginPreviewRequestSchema.extend({
+  fingerprint: z.string().optional(),
+  consent: z.boolean().optional(),
 });
 
 export const setPluginEnabledInputSchema = z.object({
@@ -189,6 +200,7 @@ export const setPluginMcpServerEnabledInputSchema = z.object({
 
 export const removePluginInputSchema = z.object({
   id: z.string(),
+  deleteData: z.boolean().optional(),
 });
 
 export const getPluginInfoInputSchema = z.object({
@@ -197,7 +209,9 @@ export const getPluginInfoInputSchema = z.object({
 
 export const pluginsContract = {
   listPlugins: { input: z.tuple([]), output: z.array(pluginSummarySchema) },
+  previewPlugin: { input: z.tuple([pluginPreviewRequestSchema]), output: pluginInstallPlanSchema },
   installPlugin: { input: z.tuple([installPluginInputSchema]), output: pluginSummarySchema },
+  rollbackPlugin: { input: z.tuple([z.object({ id: z.string() })]), output: pluginSummarySchema },
   setPluginEnabled: { input: z.tuple([setPluginEnabledInputSchema]), output: noResult },
   setPluginMcpServerEnabled: {
     input: z.tuple([setPluginMcpServerEnabledInputSchema]),

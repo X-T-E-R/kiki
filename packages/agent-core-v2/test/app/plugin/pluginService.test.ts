@@ -12,6 +12,7 @@ import {
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
 import { PluginService } from '#/app/plugin/pluginService';
 import * as pluginStore from '#/app/plugin/store';
@@ -36,6 +37,11 @@ vi.mock('#/app/plugin/store', async (importOriginal) => {
 const readInstalled = vi.mocked(pluginStore.readInstalled);
 const writeInstalled = vi.mocked(pluginStore.writeInstalled);
 
+async function installWithConsent(service: IPluginService, source: string): Promise<void> {
+  const plan = await service.previewPlugin({ source });
+  await service.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+}
+
 function makeHost(
   homeDir: string,
   providers = stubProviderService(),
@@ -44,6 +50,12 @@ function makeHost(
   return createScopedTestHost([
     stubPair(IBootstrapService, stubBootstrap(homeDir, env)),
     stubPair(IProviderService, providers),
+    stubPair(IConfigService, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: () => ({}),
+      replace: async () => {},
+    } as unknown as IConfigService),
     stubPair(ISkillDiscovery, {
       _serviceBrand: undefined,
       discover: async () => ({
@@ -276,7 +288,7 @@ describe('PluginService (plugin boundary)', () => {
       const reloads: ReloadSummary[] = [];
       svc.onDidReload((summary) => reloads.push(summary));
 
-      await svc.installPlugin({ source: pluginRoot });
+      await installWithConsent(svc, pluginRoot);
       await svc.setPluginEnabled({ id: 'notify-demo', enabled: false });
       await svc.setPluginEnabled({ id: 'notify-demo', enabled: true });
       await svc.removePlugin({ id: 'notify-demo' });
@@ -299,7 +311,7 @@ describe('PluginService (plugin boundary)', () => {
       const mutations: PluginMutationSummary[] = [];
       svc.onDidMutate((summary) => mutations.push(summary));
 
-      await svc.installPlugin({ source: pluginRoot });
+      await installWithConsent(svc, pluginRoot);
       await svc.setPluginEnabled({ id: 'mutate-demo', enabled: false });
       await svc.setPluginEnabled({ id: 'mutate-demo', enabled: true });
       await svc.removePlugin({ id: 'mutate-demo' });
@@ -465,7 +477,7 @@ describe('PluginService (plugin boundary)', () => {
       const svc = host.app.accessor.get(IPluginService);
       await expect(svc.listPlugins()).resolves.toEqual([]);
 
-      const install = svc.installPlugin({ source: 'https://downloads.example.test/plugin.zip' });
+      const install = svc.previewPlugin({ source: 'https://downloads.example.test/plugin.zip', sha256: '0'.repeat(64) });
       await downloadStarted.promise;
 
       const roots = svc.pluginSkillRoots();
@@ -493,11 +505,12 @@ describe('PluginService (plugin boundary)', () => {
     const host = makeHost(home);
     try {
       const svc = host.app.accessor.get(IPluginService);
-      await svc.installPlugin({ source: previousSource });
+      await installWithConsent(svc, previousSource);
       const previous = await svc.getPluginInfo({ id: 'demo' });
 
+      const plan = await svc.previewPlugin({ source: nextSource });
       writeInstalled.mockRejectedValueOnce(new Error('persist failed'));
-      await expect(svc.installPlugin({ source: nextSource })).rejects.toThrow('persist failed');
+      await expect(svc.installPlugin({ source: nextSource, fingerprint: plan.fingerprint, consent: true })).rejects.toThrow('persist failed');
 
       await expect(svc.getPluginInfo({ id: 'demo' })).resolves.toEqual(
         expect.objectContaining({ root: previous.root, version: '1.0.0' }),
@@ -656,7 +669,7 @@ describe('PluginService (plugin boundary)', () => {
         },
       });
       createdDirs.push(pluginRoot);
-      await svc.installPlugin({ source: pluginRoot });
+      await installWithConsent(svc, pluginRoot);
       await svc.setPluginEnabled({ id: 'demo', enabled: true });
 
       const servers = await svc.enabledMcpServers();
@@ -699,7 +712,7 @@ describe('PluginService (plugin boundary)', () => {
         },
       });
       createdDirs.push(pluginRoot);
-      await svc.installPlugin({ source: pluginRoot });
+      await installWithConsent(svc, pluginRoot);
       await svc.setPluginEnabled({ id: 'demo', enabled: true });
       await svc.setPluginMcpServerEnabled({ id: 'demo', server: 'finance', enabled: false });
 
@@ -748,7 +761,7 @@ describe('PluginService (plugin boundary)', () => {
         mcpServers: { finance: { command: 'finance-mcp' } },
       });
       createdDirs.push(pluginRoot);
-      await svc.installPlugin({ source: pluginRoot });
+      await installWithConsent(svc, pluginRoot);
       await svc.setPluginEnabled({ id: 'ready-demo', enabled: true });
 
       const servers = svc.enabledMcpServers();
@@ -794,7 +807,7 @@ describe('PluginService (plugin boundary)', () => {
         mcpServers: { finance: { command: 'finance-mcp' } },
       });
       createdDirs.push(pluginRoot);
-      await svc.installPlugin({ source: pluginRoot });
+      await installWithConsent(svc, pluginRoot);
       await svc.setPluginEnabled({ id: 'demo', enabled: true });
 
       const servers = await svc.enabledMcpServers();
@@ -821,7 +834,7 @@ describe('PluginService (plugin boundary)', () => {
         mcpServers: { finance: { command: 'finance-mcp', env: { CUSTOM: '1' } } },
       });
       createdDirs.push(pluginRoot);
-      await svc.installPlugin({ source: pluginRoot });
+      await installWithConsent(svc, pluginRoot);
       await svc.setPluginEnabled({ id: 'demo', enabled: true });
 
       const servers = await svc.enabledMcpServers();

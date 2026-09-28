@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { pluginInstallPlanSchema, pluginInstallRequestSchema, pluginPreviewRequestSchema } from '@kiki/protocol';
+
+export { pluginInstallPlanSchema, pluginPreviewRequestSchema };
 
 /** GitHub provenance for github-sourced plugins (domain PluginGithubMetadata). */
 export const pluginGithubMetadataSchema = z.object({
@@ -26,6 +29,14 @@ export const pluginSummarySchema = z.object({
   source: z.enum(['local-path', 'zip-url', 'github']),
   originalSource: z.string().optional(),
   github: pluginGithubMetadataSchema.optional(),
+  zipSha256: z.string().optional(),
+  rollback: z.object({
+    version: z.string().optional(),
+    source: z.enum(['local-path', 'zip-url', 'github']),
+    originalSource: z.string().optional(),
+    github: pluginGithubMetadataSchema.optional(),
+    zipSha256: z.string().optional(),
+  }).optional(),
 });
 export type PluginSummaryWire = z.infer<typeof pluginSummarySchema>;
 
@@ -34,9 +45,7 @@ export const listPluginsResponseSchema = z.object({
 });
 export type ListPluginsResponse = z.infer<typeof listPluginsResponseSchema>;
 
-export const installPluginRequestSchema = z.object({
-  source: z.string().min(1),
-});
+export const installPluginRequestSchema = pluginInstallRequestSchema;
 export type InstallPluginRequest = z.infer<typeof installPluginRequestSchema>;
 
 export const pluginMarketplaceEntrySchema = z.object({
@@ -46,6 +55,10 @@ export const pluginMarketplaceEntrySchema = z.object({
   description: z.string().optional(),
   homepage: z.string().optional(),
   keywords: z.array(z.string()).optional(),
+  relevance: z.object({
+    cwd: z.array(z.string()).optional(), fileGlobs: z.array(z.string()).optional(),
+    commands: z.array(z.string()).optional(), dependencies: z.array(z.string()).optional(),
+  }).optional(),
   version: z.string().optional(),
   source: z.string(),
   installed: z
@@ -88,7 +101,7 @@ export const pluginInfoSchema = pluginSummarySchema.extend({
   root: z.string(),
   installedAt: z.string(),
   updatedAt: z.string().optional(),
-  manifestKind: z.enum(['kimi-plugin-root', 'kimi-plugin-dir']).optional(),
+  manifestKind: z.enum(['kimi-plugin-root', 'kimi-plugin-dir', 'claude-code']).optional(),
   manifestPath: z.string().optional(),
   manifest: z.unknown().optional(),
   prerequisites: z.object({
@@ -96,6 +109,7 @@ export const pluginInfoSchema = pluginSummarySchema.extend({
     items: z.object({ schemaVersion: z.literal(1), items: z.array(z.object({
       id: z.string(), kind: z.enum(['host-capability', 'daemon', 'browser-extension', 'executable', 'configuration']),
       required: z.boolean(), provider: z.string().optional(), executionHost: z.string().optional(),
+      version: z.string().optional(), setting: z.string().optional(),
       dependsOn: z.array(z.string()).optional(), capabilityImpact: z.array(z.string()).optional(),
     })) }),
   }).optional(),

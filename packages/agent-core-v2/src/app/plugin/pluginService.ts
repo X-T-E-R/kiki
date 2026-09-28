@@ -5,6 +5,8 @@ import { Service } from '#/_base/di/service';
 import { AsyncEmitter, Emitter, type Event } from '#/_base/event';
 import type { HookDef } from '#/features/externalHooks/internal/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
+import { PLUGIN_SETTINGS_SECTION, PluginSettingsSectionSchema } from './settingsConfigSection';
 import { LifecycleScope } from '#/app/scopes';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import type { SkillRoot } from '#/app/skillCatalog/types';
@@ -72,6 +74,7 @@ export class PluginService extends Service implements IPluginService {
     @IBootstrapService bootstrap: IBootstrapService,
     @ISkillDiscovery discovery: ISkillDiscovery,
     @IProviderService private readonly providers: IProviderService,
+    @IConfigService private readonly configService: IConfigService,
   ) {
     super();
     this.homeDir = bootstrap.homeDir;
@@ -88,9 +91,16 @@ export class PluginService extends Service implements IPluginService {
     return this.runManagementRead(async () => this.manager.summaries());
   }
 
+  previewPlugin(input: Pick<InstallPluginInput, 'source' | 'sha256'>) {
+    return this.runSerializedOperation(() => this.manager.preview(input.source, input.sha256));
+  }
+
   installPlugin(input: InstallPluginInput): Promise<PluginSummary> {
     return this.runNotifiedMutation(async () => {
-      const record = await this.manager.install(input.source);
+      if (input.fingerprint === undefined) {
+        throw new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, 'Preview this plugin before installing');
+      }
+      const record = await this.manager.install(input.source, input);
       const info = this.manager.info(record.id);
       if (info === undefined)
         throw new BugIndicatingError(`Plugin "${record.id}" missing right after install`);
@@ -98,6 +108,14 @@ export class PluginService extends Service implements IPluginService {
         mutation: { kind: 'install', id: record.id },
       });
       return { result: info, notification };
+    });
+  }
+
+  rollbackPlugin(input: { readonly id: string }): Promise<PluginSummary> {
+    return this.runNotifiedMutation(async () => {
+      const record = await this.manager.rollback(input.id);
+      const notification = await this.reloadAndNotify({ mutation: { kind: 'rollback', id: record.id } });
+      return { result: this.manager.info(record.id)!, notification };
     });
   }
 
@@ -123,7 +141,16 @@ export class PluginService extends Service implements IPluginService {
 
   removePlugin(input: RemovePluginInput): Promise<void> {
     return this.runNotifiedMutation(async () => {
-      await this.manager.remove(input.id);
+      if (this.manager.get(input.id) === undefined) {
+        throw new Error2(PluginErrors.codes.PLUGIN_NOT_FOUND, `Plugin ${input.id} is not installed`);
+      }
+      await this.configService.ready;
+      const all = PluginSettingsSectionSchema.parse(this.configService.get(PLUGIN_SETTINGS_SECTION));
+      if (input.id in all) {
+        const { [input.id]: _removed, ...rest } = all;
+        await this.configService.replace(PLUGIN_SETTINGS_SECTION, rest);
+      }
+      await this.manager.remove(input.id, input.deleteData);
       const notification = await this.reloadAndNotify({
         mutation: { kind: 'remove', id: input.id },
       });

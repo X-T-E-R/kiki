@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -347,12 +348,13 @@ describe('PluginManager consumption plane', () => {
     const sourceRoot = await mkdtemp(path.join(tmpdir(), 'plugin-no-manifest-'));
     await writeFile(path.join(sourceRoot, 'README.md'), 'no manifest here', 'utf8');
     const isolated = await isolatedTmpdir();
-    const url = await serveOnce(await zipDir(sourceRoot));
+    const archive = await zipDir(sourceRoot);
+    const url = await serveOnce(archive);
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
 
     let message = '';
-    await manager.install(url).catch((error: Error) => {
+    await manager.install(url, { sha256: createHash('sha256').update(archive).digest('hex') }).catch((error: Error) => {
       message = error.message;
     });
 
@@ -422,10 +424,11 @@ describe('PluginManager consumption plane', () => {
     const home = await makeKimiHome();
     const root = await makePlugin('zip-demo');
     const isolated = await isolatedTmpdir();
-    const url = await serveOnce(await zipDir(root));
+    const archive = await zipDir(root);
+    const url = await serveOnce(archive);
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
-    await manager.install(url);
+    await manager.install(url, { sha256: createHash('sha256').update(archive).digest('hex') });
     expect(manager.get('zip-demo')?.state).toBe('ok');
     expect(await zipTempLeftovers(isolated)).toEqual([]);
     await rm(isolated, { recursive: true, force: true });
@@ -869,11 +872,12 @@ describe('PluginManager consumption plane', () => {
       JSON.stringify({ name: 'superpowers', version: '5.0.0' }),
       'utf8',
     );
-    const cdnUrl = await serveOnce(await zipDir(cdnSource));
+    const archive = await zipDir(cdnSource);
+    const cdnUrl = await serveOnce(archive);
 
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
-    const first = await manager.install(cdnUrl);
+    const first = await manager.install(cdnUrl, { sha256: createHash('sha256').update(archive).digest('hex') });
     expect(first.source).toBe('zip-url');
     await manager.setEnabled('superpowers', false);
 

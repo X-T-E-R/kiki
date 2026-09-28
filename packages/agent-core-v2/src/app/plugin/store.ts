@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { Error2, ErrorCodes } from '#/errors';
 
-import type { PluginCapabilityState, PluginGithubMetadata, PluginSource } from './types';
+import type { PluginCapabilityState, PluginGithubMetadata, PluginRollback, PluginSource } from './types';
 
 const INSTALLED_REL = path.join('plugins', 'installed.json');
 
@@ -17,6 +17,8 @@ export interface InstalledRecord {
   readonly originalSource?: string;
   readonly capabilities?: PluginCapabilityState;
   readonly github?: PluginGithubMetadata;
+  readonly zipSha256?: string;
+  readonly rollback?: PluginRollback;
 }
 
 export interface InstalledFile {

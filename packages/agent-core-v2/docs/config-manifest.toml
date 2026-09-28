@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (39 sections · 1 overlay(s))
+# Index (40 sections · 1 overlay(s))
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
 #   background                      src/agent/task/configSection.ts
@@ -33,6 +33,7 @@
 #   nbSearchSource                  src/app/nbSearch/configSection.ts
 #   permission                      src/agent/permissionRules/configSection.ts
 #   plan                            src/features/plan/configSection.ts
+#   plugin_settings                 src/app/plugin/settingsConfigSection.ts
 #   plugins                         src/app/plugin/configSection.ts
 #   prompt                          src/app/prompt/configSection.ts
 #   providers                       src/app/kosongConfig/configSection.ts
@@ -114,6 +115,7 @@ notify_parent = true
 # max_running_tasks: integer
 # keep_alive_on_exit: boolean
 # bash_auto_background_on_timeout: boolean
+# bash_file_tool_hints: boolean
 # bash_task_timeout_s: integer
 # kill_grace_period_ms: integer
 # print_wait_ceiling_s: integer
@@ -272,6 +274,7 @@ advertise_as_kimi_code = false
 # max_attempts_per_step: integer
 # max_ralph_iterations: integer
 # reserved_context_size: integer
+# auto_compact: string
 # compaction_trigger_ratio: number
 # compaction_max_attempts: integer
 compaction_soft_context_size = 0
@@ -345,6 +348,7 @@ merge_all_available_skills = true
   # default_effort: string
   # off_effort: string
   # context_budget: integer
+  # auto_compact: integer
   # max_completion_tokens: integer
   # service_tier: "auto" | "default" | "flex" | "priority"
   # request_params: record<string, string | number | boolean>
@@ -369,6 +373,7 @@ merge_all_available_skills = true
     # default_effort: string
     # off_effort: string
     # context_budget: integer
+    # auto_compact: integer
     # max_completion_tokens: integer
     # service_tier: "auto" | "default" | "flex" | "priority"
     # request_params: record<string, string | number | boolean>
@@ -459,6 +464,15 @@ reuse_local_config = true
 [plan]
 gate = "free"
 enter_approval_timeout_ms = 60000
+
+# ##########################################################################
+# plugin_settings
+#   owner: src/app/plugin/settingsConfigSection.ts
+#   scope: core
+# ##########################################################################
+
+[plugin_settings]
+# <name>: record<string, string | number | boolean>
 
 # ##########################################################################
 # plugins
@@ -655,6 +669,7 @@ allowed_tools = []
 # max_running_tasks: integer
 # keep_alive_on_exit: boolean
 # bash_auto_background_on_timeout: boolean
+# bash_file_tool_hints: boolean
 # bash_task_timeout_s: integer
 # kill_grace_period_ms: integer
 # print_wait_ceiling_s: integer

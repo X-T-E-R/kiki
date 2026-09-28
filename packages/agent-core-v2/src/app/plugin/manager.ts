@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { cp, mkdir, mkdtemp, realpath, rename, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,7 @@ import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 import { downloadZip, extractZip } from './archive';
 import { loadPluginCommand } from './commands';
+import { buildInstallPlan, fingerprintDirectory, type PluginInstallPlan } from './installPlan';
 import { resolveGithubCommitSha, resolveGithubSource } from './github-resolver';
 import { parseManifest, type ParsedManifestResult } from './manifest';
 import { resolvePluginPrerequisites } from './prerequisites';
@@ -28,6 +30,7 @@ import {
   type PluginMcpServerEntry,
   type PluginMcpServerInfo,
   type PluginRecord,
+  type PluginRollback,
   type PluginSource,
   type PluginSummary,
   type PluginUpdateStatus,
@@ -71,67 +74,46 @@ export class PluginManager {
     return this.records.get(normalizePluginId(id));
   }
 
-  async install(source: string): Promise<PluginRecord> {
-    const resolved = resolveInstallSource(source);
+  async preview(source: string, sha256?: string): Promise<PluginInstallPlan> {
+    const candidate = await preparePluginSource(source, sha256);
+    try {
+      const parsed = await parseManifest(candidate.root);
+      assertInstallable(parsed);
+      const fingerprint = await fingerprintDirectory(candidate.root);
+      return buildInstallPlan(parsed.manifest!, fingerprint, this.records.get(normalizePluginId(parsed.manifest!.name))?.manifest);
+    } finally {
+      if (candidate.tempDir !== undefined) await rm(candidate.tempDir, { recursive: true, force: true });
+    }
+  }
 
-    let sourceRoot: string;
-    let originalSource: string;
-    let sourceType: PluginSource;
-    let zipTmpDir: string | undefined;
+  async install(source: string, options: { readonly sha256?: string; readonly fingerprint?: string; readonly consent?: boolean } = {}): Promise<PluginRecord> {
+    const candidate = await preparePluginSource(source, options.sha256);
     let managedCopy: ManagedPluginCopy | undefined;
-    let github: PluginGithubMetadata | undefined;
+    let previousRollback: string | undefined;
+    let rollbackRoot: string | undefined;
 
     try {
-      if (resolved.kind === 'local-path') {
-        sourceRoot = await normalizeInstallRoot(resolved.path);
-        originalSource = resolved.path;
-        sourceType = 'local-path';
-      } else {
-        originalSource = source.trim();
-        sourceType = resolved.kind === 'github' ? 'github' : 'zip-url';
-        const zipUrl =
-          resolved.kind === 'github'
-            ? await (async () => {
-                const resolution = await resolveGithubSource(resolved);
-                const installedSha = await installedGithubSha(
-                  resolved.owner,
-                  resolved.repo,
-                  resolution.ref,
-                );
-                github = {
-                  owner: resolved.owner,
-                  repo: resolved.repo,
-                  ref: resolution.ref,
-                  installedSha,
-                };
-                if (installedSha !== undefined) {
-                  return `https://codeload.github.com/${resolved.owner}/${resolved.repo}/zip/${installedSha}`;
-                }
-                return resolution.tarballUrl;
-              })()
-            : resolved.path;
-        const buffer = await downloadZip(zipUrl);
-        zipTmpDir = await mkdtemp(path.join(tmpdir(), 'kimi-plugin-zip-'));
-        sourceRoot = await extractZip(buffer, zipTmpDir);
+      const parsed = await parseManifest(candidate.root);
+      try { assertInstallable(parsed); }
+      catch (error) {
+        const reason = error instanceof Error ? error.message.replace(/^Cannot install plugin: /, '') : String(error);
+        throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED,
+          `Cannot install plugin ${candidate.source === 'local-path' ? `at ${candidate.root}` : `from ${candidate.originalSource}`}: ${reason}`);
       }
-
-      const parsed = await parseManifest(sourceRoot);
-      if (parsed.manifest === undefined) {
-        const msg =
-          parsed.diagnostics.find((d) => d.severity === 'error')?.message ?? 'no manifest';
-        throw new Error2(
-          ErrorCodes.PLUGIN_LOAD_FAILED,
-          sourceType === 'local-path'
-            ? `Cannot install plugin at ${sourceRoot}: ${msg}`
-            : `Cannot install plugin from ${originalSource}: ${msg}`,
-          { details: { sourceType } },
-        );
+      const id = normalizePluginId(parsed.manifest!.name);
+      if (options.fingerprint !== undefined) {
+        const actual = await fingerprintDirectory(candidate.root);
+        const plan = buildInstallPlan(parsed.manifest!, actual, this.records.get(id)?.manifest);
+        if (actual !== options.fingerprint) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin changed since installation preview');
+        if (plan.consentRequired && options.consent !== true) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Installation consent required for plugin changes');
       }
-
-      const id = normalizePluginId(parsed.manifest.name);
-      managedCopy = await copyPluginToManagedRoot(this.kimiHomeDir, id, sourceRoot);
+      managedCopy = await copyPluginToManagedRoot(this.kimiHomeDir, id, candidate.root);
       const normalizedRoot = managedCopy.root;
+      if (options.fingerprint !== undefined && await fingerprintDirectory(normalizedRoot) !== options.fingerprint) {
+        throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin changed while copying the installation');
+      }
       const managedParsed = await parseManifest(normalizedRoot);
+      assertInstallable(managedParsed);
       const existing = this.records.get(id);
       const now = new Date().toISOString();
       const record = await recordFrom({
@@ -140,26 +122,44 @@ export class PluginManager {
         enabled: existing?.enabled ?? false,
         installedAt: existing?.installedAt ?? now,
         updatedAt: now,
-        originalSource,
-        source: sourceType,
+        originalSource: candidate.originalSource,
+        source: candidate.source,
         capabilities: existing?.capabilities,
-        github,
+        github: candidate.github,
+        zipSha256: candidate.zipSha256,
         parsed: managedParsed,
         discoverSkills: this.discoverSkills,
       });
+      if (existing === undefined && managedCopy.previousRoot !== undefined) {
+        throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Unmanaged plugin directory already exists for ${id}`);
+      }
       const next = new Map(this.records);
-      next.set(id, record);
+      if (existing !== undefined && managedCopy.previousRoot !== undefined) {
+        rollbackRoot = path.join(this.kimiHomeDir, 'plugins', 'rollback', id);
+        await mkdir(path.dirname(rollbackRoot), { recursive: true });
+        previousRollback = `${managedCopy.previousRoot}-older`;
+        try { await rename(rollbackRoot, previousRollback); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; previousRollback = undefined; }
+        await rename(managedCopy.previousRoot, rollbackRoot);
+        managedCopy = { root: managedCopy.root, previousRoot: rollbackRoot };
+        const previous: PluginRollback = {
+          version: existing.manifest?.version, source: existing.source, originalSource: existing.originalSource,
+          github: existing.github, zipSha256: existing.zipSha256,
+        };
+        next.set(id, { ...record, rollback: previous });
+      } else {
+        next.set(id, record);
+      }
       await this.persist(next);
       this.records = next;
-      if (managedCopy.previousRoot !== undefined) {
-        await rm(managedCopy.previousRoot, { recursive: true, force: true }).catch(() => undefined);
-      }
+      if (previousRollback !== undefined) await rm(previousRollback, { recursive: true, force: true }).catch(() => undefined);
       managedCopy = undefined;
-      return record;
+      return next.get(id)!;
     } catch (error) {
       if (managedCopy !== undefined) {
         try {
           await rollbackManagedPluginCopy(managedCopy);
+          if (previousRollback !== undefined && rollbackRoot !== undefined) await rename(previousRollback, rollbackRoot);
         } catch (rollbackError) {
           throw new Error2(
             ErrorCodes.PLUGIN_LOAD_FAILED,
@@ -176,8 +176,8 @@ export class PluginManager {
       }
       throw error;
     } finally {
-      if (zipTmpDir !== undefined) {
-        await rm(zipTmpDir, { recursive: true, force: true });
+      if (candidate.tempDir !== undefined) {
+        await rm(candidate.tempDir, { recursive: true, force: true });
       }
     }
   }
@@ -222,7 +222,7 @@ export class PluginManager {
     this.records = next;
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, deleteData = false): Promise<void> {
     const key = normalizePluginId(id);
     const next = new Map(this.records);
     if (!next.delete(key)) {
@@ -230,6 +230,38 @@ export class PluginManager {
     }
     await this.persist(next);
     this.records = next;
+    if (deleteData) await rm(path.join(this.kimiHomeDir, 'plugins', 'data', key), { recursive: true, force: true });
+  }
+
+  async rollback(id: string): Promise<PluginRecord> {
+    const key = normalizePluginId(id);
+    const current = this.records.get(key);
+    if (current === undefined) throw pluginNotFound(id);
+    if (current.rollback === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, `No previous version of ${id} is available`);
+    const rollbackRoot = path.join(this.kimiHomeDir, 'plugins', 'rollback', key);
+    const parsed = await parseManifest(rollbackRoot);
+    assertInstallable(parsed);
+    if (normalizePluginId(parsed.manifest!.name) !== key) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Rollback copy has a mismatched plugin name');
+    await swapPluginCopies(current.root, rollbackRoot);
+    try {
+      const previous = await recordFrom({
+        id: key, root: current.root, enabled: current.enabled, installedAt: current.installedAt,
+        updatedAt: new Date().toISOString(), originalSource: current.rollback.originalSource,
+        source: current.rollback.source, capabilities: current.capabilities, github: current.rollback.github,
+        zipSha256: current.rollback.zipSha256, parsed: await parseManifest(current.root),
+        rollback: { version: current.manifest?.version, source: current.source, originalSource: current.originalSource,
+          github: current.github, zipSha256: current.zipSha256 },
+        discoverSkills: this.discoverSkills,
+      });
+      const next = new Map(this.records);
+      next.set(key, previous);
+      await this.persist(next);
+      this.records = next;
+      return previous;
+    } catch (error) {
+      await swapPluginCopies(current.root, rollbackRoot);
+      throw error;
+    }
   }
 
   async checkUpdates(): Promise<readonly PluginUpdateStatus[]> {
@@ -308,6 +340,10 @@ export class PluginManager {
           fallbackName: entry.name,
         });
         if (def !== undefined) out.push(def);
+      }
+      for (const command of record.manifest.kiki?.commands ?? []) {
+        out.push({ pluginId: record.id, name: command.name, description: command.description,
+          body: command.prompt, path: record.manifestPath ?? record.root });
       }
     }
     return out;
@@ -420,6 +456,8 @@ export class PluginManager {
       originalSource: record.originalSource,
       capabilities: record.capabilities,
       github: record.github,
+      zipSha256: record.zipSha256,
+      rollback: record.rollback,
     }));
     await writeInstalled(this.kimiHomeDir, { version: 1, plugins: installed });
   }
@@ -435,10 +473,61 @@ export class PluginManager {
       originalSource: entry.originalSource,
       capabilities: entry.capabilities,
       github: entry.github,
+      zipSha256: entry.zipSha256,
+      rollback: entry.rollback,
       source: entry.source,
       parsed,
       discoverSkills: this.discoverSkills,
     });
+  }
+}
+
+interface PreparedPluginSource {
+  readonly root: string;
+  readonly tempDir?: string;
+  readonly originalSource: string;
+  readonly source: PluginSource;
+  readonly github?: PluginGithubMetadata;
+  readonly zipSha256?: string;
+}
+
+function assertInstallable(parsed: ParsedManifestResult): void {
+  const failure = parsed.diagnostics.find((diagnostic) => diagnostic.severity === 'error');
+  if (parsed.manifest === undefined || failure !== undefined) {
+    throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Cannot install plugin: ${failure?.message ?? 'no manifest'}`);
+  }
+}
+
+async function preparePluginSource(source: string, sha256?: string): Promise<PreparedPluginSource> {
+  const resolved = resolveInstallSource(source);
+  if (resolved.kind === 'local-path') {
+    return { root: await normalizeInstallRoot(resolved.path), originalSource: resolved.path, source: 'local-path' };
+  }
+  const originalSource = source.trim();
+  let github: PluginGithubMetadata | undefined;
+  let zipUrl = resolved.kind === 'zip-url' ? resolved.path : '';
+  if (resolved.kind === 'github') {
+    const resolution = await resolveGithubSource(resolved);
+    const installedSha = await installedGithubSha(resolved.owner, resolved.repo, resolution.ref);
+    if (installedSha === undefined || installedSha.length !== 40) {
+      throw new Error2(ErrorCodes.VALIDATION_FAILED, 'GitHub plugin requires a pinned 40-character commit SHA');
+    }
+    github = { owner: resolved.owner, repo: resolved.repo, ref: resolution.ref, installedSha };
+    zipUrl = `https://codeload.github.com/${resolved.owner}/${resolved.repo}/zip/${installedSha}`;
+  } else if (sha256 === undefined || !/^[0-9a-fA-F]{64}$/.test(sha256)) {
+    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'ZIP plugins require a sha256 checksum');
+  }
+  const buffer = await downloadZip(zipUrl);
+  if (resolved.kind === 'zip-url' && createHash('sha256').update(buffer).digest('hex') !== sha256!.toLowerCase()) {
+    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin ZIP sha256 mismatch');
+  }
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'kimi-plugin-zip-'));
+  try {
+    const root = await extractZip(buffer, tempDir);
+    return { root, tempDir, originalSource, source: resolved.kind, github, zipSha256: resolved.kind === 'zip-url' ? sha256?.toLowerCase() : undefined };
+  } catch (error) {
+    await rm(tempDir, { recursive: true, force: true });
+    throw error;
   }
 }
 
@@ -581,6 +670,19 @@ async function copyPluginToManagedRoot(
   }
 }
 
+async function swapPluginCopies(current: string, rollback: string): Promise<void> {
+  const staging = `${current}.swap-${randomUUID()}`;
+  await rename(current, staging);
+  try {
+    await rename(rollback, current);
+    try { await rename(staging, rollback); }
+    catch (error) { await rename(current, rollback); throw error; }
+  } catch (error) {
+    await rename(staging, current);
+    throw error;
+  }
+}
+
 async function rollbackManagedPluginCopy(copy: ManagedPluginCopy): Promise<void> {
   await rm(copy.root, { recursive: true, force: true });
   if (copy.previousRoot !== undefined) {
@@ -597,6 +699,8 @@ async function recordFrom(input: {
   originalSource?: string;
   capabilities?: PluginCapabilityState;
   github?: PluginGithubMetadata;
+  zipSha256?: string;
+  rollback?: PluginRollback;
   source?: PluginSource;
   parsed: ParsedManifestResult;
   discoverSkills: (roots: readonly SkillRoot[]) => Promise<SkillDiscoveryResult>;
@@ -614,6 +718,8 @@ async function recordFrom(input: {
     originalSource: input.originalSource,
     capabilities: input.capabilities,
     github: input.github,
+    zipSha256: input.zipSha256,
+    rollback: input.rollback,
     skillCount: await countDiscoveredPluginSkills(input.id, parsed.manifest, input.discoverSkills),
     manifest: parsed.manifest,
     manifestKind: parsed.manifestKind,
@@ -640,6 +746,8 @@ function recordToSummary(record: PluginRecord): PluginSummary {
     source: record.source,
     originalSource: record.originalSource,
     github: record.github,
+    zipSha256: record.zipSha256,
+    rollback: record.rollback,
   };
 }
 
@@ -716,6 +824,14 @@ function withPluginMcpRuntime(
 ): McpServerConfig {
   if (config.transport === 'http' || config.transport === 'sse') return config;
 
+  const translate = (value: string): string => value.replaceAll('${CLAUDE_PLUGIN_ROOT}', pluginRoot);
+  config = {
+    ...config,
+    command: translate(config.command),
+    args: config.args?.map(translate),
+    cwd: config.cwd === undefined ? undefined : translate(config.cwd),
+    env: config.env === undefined ? undefined : Object.fromEntries(Object.entries(config.env).map(([key, value]) => [key, translate(value)])),
+  };
   const env = {
     ...config.env,
     KIKI_HOME: kimiHomeDir,

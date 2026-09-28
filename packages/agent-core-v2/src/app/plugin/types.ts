@@ -3,6 +3,7 @@ import type { HookDefConfig } from '#/features/externalHooks/configSection';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 import type { PluginPrerequisites } from './prerequisites';
+import type { PluginExtension } from './contributions';
 
 export type PluginDiagnosticSeverity = 'error' | 'warn' | 'info';
 
@@ -52,6 +53,8 @@ export interface PluginManifest {
   readonly skillInstructions?: string;
   readonly systemPrompt?: string;
   readonly prerequisites?: PluginPrerequisites;
+  readonly unsupportedComponents?: readonly string[];
+  readonly kiki?: PluginExtension;
 }
 
 export interface PluginMcpServerState {
@@ -95,7 +98,7 @@ export interface PluginCommandEntry {
   readonly name: string;
 }
 
-export type PluginManifestKind = 'kimi-plugin-root' | 'kimi-plugin-dir';
+export type PluginManifestKind = 'kimi-plugin-root' | 'kimi-plugin-dir' | 'claude-code';
 export type PluginSource = 'local-path' | 'zip-url' | 'github';
 export type PluginState = 'ok' | 'error';
 
@@ -111,6 +114,14 @@ export interface PluginGithubMetadata {
   readonly installedSha?: string;
 }
 
+export interface PluginRollback {
+  readonly version?: string;
+  readonly source: PluginSource;
+  readonly originalSource?: string;
+  readonly github?: PluginGithubMetadata;
+  readonly zipSha256?: string;
+}
+
 export interface PluginRecord {
   readonly id: string;
   readonly root: string;
@@ -122,6 +133,8 @@ export interface PluginRecord {
   readonly originalSource?: string;
   readonly capabilities?: PluginCapabilityState;
   readonly github?: PluginGithubMetadata;
+  readonly zipSha256?: string;
+  readonly rollback?: PluginRollback;
   readonly skillInstructions?: string;
   readonly skillCount: number;
   readonly manifest?: PluginManifest;
@@ -146,6 +159,8 @@ export interface PluginSummary {
   readonly source: PluginSource;
   readonly originalSource?: string;
   readonly github?: PluginGithubMetadata;
+  readonly zipSha256?: string;
+  readonly rollback?: PluginRollback;
 }
 
 export interface PluginInfo extends PluginSummary {
@@ -180,7 +195,7 @@ export interface ReloadSummary {
 export type PluginReloadEvent = ReloadSummary & IWaitUntil;
 
 export interface PluginMutation {
-  readonly kind: 'install' | 'enable' | 'disable' | 'remove' | 'mcp-server';
+  readonly kind: 'install' | 'rollback' | 'enable' | 'disable' | 'remove' | 'mcp-server';
   readonly id: string;
 }
 

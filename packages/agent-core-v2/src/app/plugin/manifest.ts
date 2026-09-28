@@ -4,6 +4,8 @@ import path from 'node:path';
 import { HookDefSchema, type HookDefConfig } from '#/features/externalHooks/configSection';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
 
+import { parsePluginExtension } from './contributions';
+import { importClaudePlugin } from './claudeImport';
 import { pluginPrerequisitesSchema } from './prerequisites';
 import {
   PLUGIN_NAME_REGEX,
@@ -43,11 +45,16 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
   const dirJsonExists = await isFile(dirJsonPath);
 
   if (!rootJsonExists && !dirJsonExists) {
+    const claudePath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
+    if (await isFile(claudePath)) {
+      const imported = await importClaudePlugin(pluginRoot, claudePath);
+      return { ...imported, manifestKind: 'claude-code', manifestPath: claudePath };
+    }
     return {
       diagnostics: [
         {
           severity: 'error',
-          message: `No manifest at ${KIMI_PLUGIN_ROOT_PATH} or ${KIMI_PLUGIN_DIR_PATH}`,
+          message: `No manifest at ${KIMI_PLUGIN_ROOT_PATH}, ${KIMI_PLUGIN_DIR_PATH}, or .claude-plugin/plugin.json`,
         },
       ],
     };
@@ -133,6 +140,7 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     }
   }
 
+  const kiki = await parsePluginExtension(pluginRoot, raw['x-kiki'], diagnostics);
   recordUnsupportedRuntimeFields(raw, diagnostics);
 
   const manifest: PluginManifest = {
@@ -154,6 +162,7 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     skillInstructions,
     systemPrompt,
     prerequisites,
+    kiki,
   };
 
   return { manifest, manifestKind, manifestPath, shadowedManifestPath, diagnostics };

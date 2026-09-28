@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -111,7 +112,8 @@ describe('PluginManager', () => {
       if (address === null || typeof address === 'string') throw new Error('bad server address');
       const manager = new PluginManager({ kimiHomeDir: home });
 
-      const record = await manager.install(`http://127.0.0.1:${address.port}/plugin.zip`);
+      const sha256 = createHash('sha256').update(await readFile(zipPath)).digest('hex');
+      const record = await manager.install(`http://127.0.0.1:${address.port}/plugin.zip`, { sha256 });
 
       expect(record.id).toBe('zip-plugin');
       expect(record.source).toBe('zip-url');
