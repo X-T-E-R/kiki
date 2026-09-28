@@ -1623,6 +1623,18 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(outputText(second.output)).not.toContain('main_profile_notice');
   });
 
+  it('appends the main profile notice to a foreground receipt', async () => {
+    const { lane } = mainProfileLane();
+    const pending = lane.runInternal({
+      prompt: 'work', description: 'Main profile foreground', profile: 'solo',
+    });
+    await complete(lane, 0, 'foreground result');
+    const result = await pending;
+    expect(result.isError).not.toBe(true);
+    expect(outputText(result.output)).toContain('main_profile_notice: "solo"');
+    expect(outputText(result.output)).toContain('foreground result');
+  });
+
   it('dispatches a main profile file as a subagent with the same notice', async () => {
     const { lane } = mainProfileLane();
     const runtime = lane.ix.get(IAgentRuntimeService).inspect();
