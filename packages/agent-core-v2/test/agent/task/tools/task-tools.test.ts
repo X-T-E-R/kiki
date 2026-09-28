@@ -467,17 +467,15 @@ describe('TaskListTool', () => {
 });
 
 describe('TaskOutputTool', () => {
-  it('describes purposeful snapshots without redirecting idle root to foreground waiting', async () => {
+  it('describes non-blocking snapshots without redirecting to foreground waiting', async () => {
     const ctx = createTestAgent();
     try {
       const tool = ctx.get(IAgentToolRegistryService).resolve('TaskOutput');
       expect(tool).toBeDefined();
-      expect(tool!.description).toContain('always non-blocking');
-      expect(tool!.description).toContain('specific progress check');
-      expect(tool!.description).toContain('end the current turn normally');
-      expect(tool!.description).toContain('when root is idle');
-      expect(tool!.description).toContain('background shell commands or environments without automatic continuation');
-      expect(tool!.description).toContain('subagent still handles its own dependencies');
+      expect(tool!.description).toContain('Inspect a running or completed background task without waiting');
+      expect(tool!.description).toContain('Use TaskList first if you do not know its id');
+      expect(tool!.description).toContain('Prefer completion notifications; do not poll merely to hold a turn open');
+      expect(tool!.description).toContain('A subagent must resolve its own outstanding dependencies before returning a final receipt');
       expect(tool!.description).not.toContain('run that task in the foreground instead');
     } finally {
       await ctx.dispose();
@@ -899,12 +897,10 @@ describe('TaskWait tool', () => {
     const ctx = createTestAgent();
     try {
       const tool = ctx.get(ITaskWaitTool);
-      expect(tool.description).toContain('interactive main agent (root)');
-      expect(tool.description).toContain('end the current turn normally');
-      expect(tool.description).toContain('Completion starts a follow-up turn when root is idle');
-      expect(tool.description).toContain('TaskOutput or AgentList polling, sleep, or timed loops');
-      expect(tool.description).toContain('subagent must handle its own outstanding dependencies');
-      expect(tool.description).toContain('If automatic notification is unavailable');
+      expect(tool.description).toContain('Wait for an owned background task to finish within the current turn');
+      expect(tool.description).toContain('Use only for a genuine same-turn dependency, not to poll an automatically notifying task');
+      expect(tool.description).toContain('A task reported here does not also send an automatic completion notification');
+      expect(tool.description).toContain('Subagents must resolve their own dependencies before returning a final receipt');
       expect(tool.description).not.toContain('To wait longer, call TaskWait again');
       expect(TaskWaitInputSchema.shape.timeout.description).toContain('explicit same-turn wait');
       expect(TaskWaitInputSchema.shape.timeout.description).toContain('do not automatically repeat');

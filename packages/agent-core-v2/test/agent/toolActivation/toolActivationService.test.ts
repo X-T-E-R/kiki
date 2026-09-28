@@ -36,6 +36,7 @@ import {
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
+import { IAgentToolSelectService, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 import type { RuntimeCapability } from '#/runtime/runtime';
 import type { AgentTool, ToolExecution } from '#/tool/toolContract';
 import '#/agent/tools/agent/agentTool';
@@ -683,6 +684,14 @@ describe('AgentToolActivationService', () => {
               runtimeData.available && required.every((capability) => runtimeData.capabilities.has(capability)),
           },
         ],
+        [
+          IAgentToolSelectService,
+          {
+            _serviceBrand: undefined,
+            enabled: () => false,
+            load: () => ({ toLoad: [], alreadyAvailable: [], unknown: [] }),
+          },
+        ],
         ...extra,
       ];
     }
@@ -801,7 +810,11 @@ describe('AgentToolActivationService', () => {
       }
 
       await agent.accessor.get(IAgentToolActivationService).activate();
-      expect(agent.accessor.get(IAgentToolRegistryService).list()).toHaveLength(0);
+      // The profile allowlist withholds every profile-gated builtin, but the progressive-disclosure
+      // control tool stays disclosed so a model can load deferred tools later.
+      expect(agent.accessor.get(IAgentToolRegistryService).list().map((tool) => tool.name)).toEqual([
+        SELECT_TOOLS_TOOL_NAME,
+      ]);
       app.dispose();
     });
   });
