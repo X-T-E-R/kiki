@@ -1,30 +1,29 @@
 /**
- * UsagePage (/usage) — the V2 cross-session usage dashboard, rebuilt on
- * `GET /api/v2/usage` (design doc §15.3). Structure:
+ * UsagePage (/usage) — the cross-session usage dashboard on `GET /api/usage`
+ * (V2 aggregation). Reading order, top to bottom:
  *
- *   - a compact live strip (current session, today, burn rate — statusline
- *     style) above the fold;
- *   - the ccusage-style three-axis filter bar (granularity × range ×
- *     dimension) with workspace scope and the archived toggle; the URL query
- *     carries every axis so views are deep-linkable, while query-less visits
- *     always stay bounded to the local-today defaults;
- *   - a real time-bucket trend chart (cost/tokens metric toggle, click a
- *     bucket for the session/turn drilldown);
- *   - detail tabs: Sessions (server-sorted cost-descending, paged), the
- *     dimension breakdown (agents render as parent/child trees), and the 5h
- *     rhythm view (drills from trend[i].drilldown.sessions, never guessed);
- *   - a permanently visible data-reliability card (coverage, unknown-price
- *     models, deleted-session inclusion, incomplete reasons).
+ *   - a quiet live line (current session, today, burn rate);
+ *   - the filter bar: time range first (the question most visits ask), then
+ *     workspace, bucket size, breakdown axis, and the archived toggle; every
+ *     axis rides the URL so views are deep-linkable, while query-less visits
+ *     stay bounded to local today;
+ *   - four KPIs: estimated cost, tokens, cache hit rate (cache read share of
+ *     input, with the input composition), sessions;
+ *   - the trend chart, stacked by the breakdown axis, with cost / tokens /
+ *     cache-hit metrics; a bucket opens its session/turn drilldown;
+ *   - detail tabs: Sessions (server-ranked by cost, the "most expensive
+ *     session" drilldown), the breakdown (share, tokens, cache hit per key,
+ *     agent trees, provider/role rollups), and the 5h rhythm;
+ *   - the data-reliability card, always visible.
  *
  * Honesty rules: the no-query state is local today; an explicit all-history
- * query still surfaces the server's `defaulted_to_all_history` flag, never hides
- * it; cost is labeled an estimate and flagged "partially unknown" whenever
- * `cost_unknown` is set;
- * `unknown` dimension keys and null provider/parent/profile are shown as
- * missing data, never reconstructed.
+ * query surfaces the server's `defaulted_to_all_history` flag; cost is an
+ * estimate flagged "partially unknown" whenever `cost_unknown` is set;
+ * `unknown` keys and null provider/parent/profile render as missing data,
+ * never reconstructed. Nothing here derives a number the server did not send.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -35,37 +34,50 @@ import { readLastSessionId } from '@kiki/session-core/settings';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import {
-  aggregateDimensionGroups,
-  browserTimezoneOffsetMinutes,
-  buildAgentTree,
-  buildUsageApiQuery,
   bucketLabel,
+  browserTimezoneOffsetMinutes,
+  buildUsageApiQuery,
   burnRatePerHour,
   cacheHitRateOf,
-  parseUsageFilters,
   parseUsageDetailView,
+  parseUsageFilters,
   searchHasUsageParams,
   totalTokensOf,
+  usageDetailViewToSearch,
+  usageFiltersToSearch,
   usageTokenTotalIsUnknown,
   USAGE_DIMENSIONS,
   USAGE_FILTER_DEFAULTS,
   USAGE_GRANULARITIES,
   USAGE_RANGE_PRESETS,
-  usageDetailViewToSearch,
-  usageFiltersToSearch,
   writeStoredUsageFilters,
-  type UsageAggregateWire,
   type UsageDetailView,
-  type UsageDimensionRow,
-  type UsageDrilldownSessionWire,
   type UsageFilters,
   type UsageResponseWire,
   type UsageTrendBucketWire,
 } from '../lib/usageV2';
 import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
+import { PageHeader } from './PageChrome';
+import { segmentClass } from './WorkspaceScopeControl';
+import { Icon } from './icons';
+import { DimensionBreakdown } from './usage/UsageBreakdown';
+import { DrilldownPanel, DrilldownSessionList, TrendChart } from './usage/UsageTrend';
+import {
+  AxisGroup,
+  bucketCost,
+  bucketTokens,
+  bucketTokenTotalIsUnknown,
+  dimensionKeyLabel,
+  formatPercent,
+  hasUnknownTokenSubtotal,
+  KnownSubtotalMarker,
+  ShareBar,
+  UsageCard,
+} from './usage/usageShared';
 
 const SESSION_PAGE_SIZE = 25;
+const DAY_MS = 24 * 3600_000;
 
 type DetailTab = 'sessions' | 'breakdown' | 'fiveHour';
 
@@ -89,72 +101,8 @@ const INCOMPLETE_REASON_KEYS: Record<
   deadline: 'usage.incomplete.deadline',
 };
 
-// ---------------------------------------------------------------------------
-// Small building blocks
-// ---------------------------------------------------------------------------
-
-function Card({ title, aside, children }: {
-  title: string;
-  aside?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-2xl border border-hairline bg-panel p-5 shadow-[0_2px_4px_rgba(28,25,23,0.03)]">
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <h2 className="font-display text-[16px] font-semibold text-ink">{title}</h2>
-        {aside}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function AxisGroup<T extends string>({
-  label,
-  options,
-  value,
-  onChange,
-  labelFor,
-  dataAxis,
-}: {
-  label: string;
-  options: readonly T[];
-  value: T;
-  onChange: (next: T) => void;
-  labelFor: (option: T) => string;
-  dataAxis: string;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-        {label}
-      </span>
-      <div
-        role="group"
-        aria-label={label}
-        data-axis={dataAxis}
-        className="inline-flex flex-wrap rounded-lg border border-hairline bg-panel p-0.5"
-      >
-        {options.map((option) => (
-          <button
-            key={option}
-            type="button"
-            data-axis-value={option}
-            onClick={() => { onChange(option); }}
-            aria-pressed={value === option}
-            className={`rounded-md px-2.5 py-1 text-[11.5px] whitespace-nowrap transition-colors ${
-              value === option
-                ? 'bg-accent-soft font-semibold text-accent'
-                : 'text-ink-soft hover:text-ink'
-            }`}
-          >
-            {labelFor(option)}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
+const NOTICE_AMBER = 'rounded-lg border border-amber-rule/40 bg-amber-card px-3 py-2 text-[12.5px] leading-relaxed text-amber-ink';
+const NOTICE_SOFT = 'rounded-lg border border-hairline bg-panel px-3 py-2 text-[12.5px] leading-relaxed text-ink-soft';
 
 function toDateInputValue(ms: number | undefined): string {
   if (ms === undefined) return '';
@@ -172,8 +120,6 @@ function fromDateInputValue(value: string): number | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.getTime();
 }
 
-const DAY_MS = 24 * 3600_000;
-
 function localDateKey(nowMs: number): string {
   const date = new Date(nowMs);
   return [date.getFullYear(), date.getMonth() + 1, date.getDate()]
@@ -181,23 +127,7 @@ function localDateKey(nowMs: number): string {
     .join('-');
 }
 
-function bucketTokens(bucket: UsageTrendBucketWire): number {
-  return bucket.groups.reduce((sum, group) => sum + totalTokensOf(group), 0);
-}
-
-function bucketCost(bucket: UsageTrendBucketWire): number {
-  return bucket.groups.reduce((sum, group) => sum + group.cost_usd_estimated, 0);
-}
-
-function bucketTokenTotalIsUnknown(bucket: UsageTrendBucketWire): boolean {
-  return bucketTokens(bucket) === 0 && bucket.groups.some((group) => group.tokens_unknown === true);
-}
-
 type UsageCoverage = NonNullable<UsageResponseWire['reliability']['usage_coverage']>;
-
-function hasUnknownTokenSubtotal(aggregate: UsageAggregateWire): boolean {
-  return aggregate.tokens_unknown === true && !usageTokenTotalIsUnknown(aggregate);
-}
 
 function UsageAccountingNotices({
   coverage,
@@ -217,26 +147,17 @@ function UsageAccountingNotices({
   return (
     <div data-usage-accounting-notices className="space-y-1.5">
       {coverage !== undefined && coverage.missing_records > 0 ? (
-        <p
-          data-usage-accounting-missing
-          className="rounded-xl border border-amber-rule/40 bg-amber-card px-3 py-2 text-[11px] leading-relaxed text-amber-ink"
-        >
+        <p data-usage-accounting-missing className={NOTICE_AMBER}>
           {t('usage.accounting.missing', { count: coverage.missing_records })}
         </p>
       ) : null}
       {coverage !== undefined && coverage.legacy_zero_records > 0 ? (
-        <p
-          data-usage-accounting-legacy-zero
-          className="rounded-xl border border-amber-rule/40 bg-amber-card px-3 py-2 text-[11px] leading-relaxed text-amber-ink"
-        >
+        <p data-usage-accounting-legacy-zero className={NOTICE_AMBER}>
           {t('usage.accounting.legacyZero', { count: coverage.legacy_zero_records })}
         </p>
       ) : null}
       {knownSubtotal ? (
-        <p
-          data-usage-accounting-known-subtotal
-          className="rounded-xl border border-accent/25 bg-accent-soft px-3 py-2 text-[11px] leading-relaxed text-ink-soft"
-        >
+        <p data-usage-accounting-known-subtotal className={NOTICE_SOFT}>
           {t('usage.accounting.knownSubtotal')}
         </p>
       ) : null}
@@ -244,22 +165,8 @@ function UsageAccountingNotices({
   );
 }
 
-function KnownSubtotalMarker() {
-  const { t } = useI18n();
-  return (
-    <span
-      data-usage-accounting-known-subtotal
-      title={t('usage.accounting.knownSubtotal')}
-      aria-label={t('usage.accounting.knownSubtotal')}
-      className="ml-1 text-[9.5px] text-amber-ink"
-    >
-      ◔
-    </span>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Live strip — current session, today, burn rate
+// Live line — current session, today, burn rate
 // ---------------------------------------------------------------------------
 
 function LiveStrip() {
@@ -292,55 +199,51 @@ function LiveStrip() {
   });
 
   const today = todayQuery.data?.summary;
-  const todayTokens = today !== undefined ? totalTokensOf(today) : undefined;
   const todayTokenTotalUnknown = today !== undefined && usageTokenTotalIsUnknown(today);
   const todayHasUnknownSubtotal = today !== undefined && hasUnknownTokenSubtotal(today);
-  const knownTodayTokens = todayTokenTotalUnknown ? undefined : todayTokens;
-  const rate =
-    knownTodayTokens !== undefined ? burnRatePerHour(knownTodayTokens, nowMs) : undefined;
+  const knownTodayTokens = today === undefined || todayTokenTotalUnknown ? undefined : totalTokensOf(today);
+  const rate = knownTodayTokens !== undefined ? burnRatePerHour(knownTodayTokens, nowMs) : undefined;
   const current: Session | undefined = sessionQuery.data;
+
+  const item = (label: string, value: ReactNode, extra?: Record<string, boolean>) => (
+    <span className="flex min-w-0 items-baseline gap-1.5" {...extra}>
+      <span className="shrink-0 text-ink-faint">{label}</span>
+      {value}
+    </span>
+  );
 
   return (
     <div
       data-usage-strip
-      className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-hairline bg-panel px-3 py-2 text-[11.5px]"
+      className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[12.5px]"
     >
-      <span className="flex min-w-0 items-baseline gap-1.5">
-        <span className="shrink-0 text-ink-faint">{t('usage.strip.currentSession')}</span>
-        {current !== undefined ? (
-          <>
-            <span className="min-w-0 truncate font-medium text-ink">
-              {current.title.trim() !== '' ? current.title : t('sidebar.untitled')}
-            </span>
-            <span className="shrink-0 font-mono text-ink-soft tabular-nums">
-              {formatCostUsd(current.usage.total_cost_usd)}
-            </span>
-          </>
-        ) : (
-          <span className="text-ink-faint">—</span>
-        )}
-      </span>
-      <span className="flex items-baseline gap-1.5">
-        <span className="text-ink-faint">{t('usage.strip.today')}</span>
-        {today !== undefined ? (
-          <span data-usage-strip-tokens className="font-mono text-ink tabular-nums">
-            {todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(today))}
-            {' · '}
-            {todayTokenTotalUnknown ? '—' : formatCostUsd(today.cost_usd_estimated)}
-            {todayHasUnknownSubtotal ? <KnownSubtotalMarker /> : null}
+      {item(t('usage.strip.currentSession'), current !== undefined ? (
+        <>
+          <span className="min-w-0 max-w-64 truncate text-ink">
+            {current.title.trim() !== '' ? current.title : t('sidebar.untitled')}
           </span>
-        ) : (
-          <span className="text-ink-faint">…</span>
-        )}
-      </span>
-      <span className="flex items-baseline gap-1.5">
-        <span className="text-ink-faint">{t('usage.strip.burnRate')}</span>
-        <span className="font-mono text-ink tabular-nums">
-          {rate !== undefined
-            ? t('usage.strip.burnRateValue', { rate: formatGrouped(rate) })
-            : '…'}
+          <span className="shrink-0 font-mono text-ink-soft tabular-nums">
+            {formatCostUsd(current.usage.total_cost_usd)}
+          </span>
+        </>
+      ) : (
+        <span className="text-ink-faint">—</span>
+      ))}
+      {item(t('usage.strip.today'), today !== undefined ? (
+        <span data-usage-strip-tokens className="font-mono text-ink tabular-nums">
+          {todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(today))}
+          {' · '}
+          {todayTokenTotalUnknown ? '—' : formatCostUsd(today.cost_usd_estimated)}
+          {todayHasUnknownSubtotal ? <KnownSubtotalMarker /> : null}
         </span>
-      </span>
+      ) : (
+        <span className="text-ink-faint">…</span>
+      ))}
+      {item(t('usage.strip.burnRate'), (
+        <span className="font-mono text-ink tabular-nums">
+          {rate !== undefined ? t('usage.strip.burnRateValue', { rate: formatGrouped(rate) }) : '…'}
+        </span>
+      ))}
     </div>
   );
 }
@@ -359,470 +262,232 @@ function FilterBar({
   onChange: (next: UsageFilters) => void;
 }) {
   const { t } = useI18n();
-  // Field-level guard for the custom range: an inverted pair (start >= end)
-  // is rejected locally with an inline error instead of being sent to the
-  // server (which would answer 40001 and degrade the page to a load failure).
+  // Field-level guard for the custom range: an inverted pair is rejected
+  // locally with an inline error instead of being sent (the server answers
+  // 40001 and the page would degrade to a load failure).
   const [rangeInvalid, setRangeInvalid] = useState(false);
+  const dateInput = 'h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[12px] text-ink outline-none focus:border-accent aria-[invalid=true]:border-danger';
   return (
-    <div data-usage-filters className="flex flex-wrap items-center gap-x-4 gap-y-2">
-      <AxisGroup
-        label={t('usage.axis.granularity')}
-        dataAxis="granularity"
-        options={USAGE_GRANULARITIES}
-        value={filters.granularity}
-        onChange={(granularity) => { onChange({ ...filters, granularity }); }}
-        labelFor={(option) => t(`usage.granularity.${option}`)}
-      />
-      <AxisGroup
-        label={t('usage.axis.range')}
-        dataAxis="range"
-        options={USAGE_RANGE_PRESETS}
-        value={filters.range}
-        onChange={(range) => {
-          setRangeInvalid(false);
-          if (range === 'custom') {
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            onChange({
-              ...filters,
-              range,
-              startAt: filters.startAt ?? today.getTime() - 6 * DAY_MS,
-              endAt: filters.endAt ?? today.getTime() + DAY_MS,
-            });
-          } else {
-            onChange({ ...filters, range, startAt: undefined, endAt: undefined });
-          }
-        }}
-        labelFor={(option) => t(`usage.range.${option}`)}
-      />
-      <AxisGroup
-        label={t('usage.axis.dimension')}
-        dataAxis="dimension"
-        options={USAGE_DIMENSIONS}
-        value={filters.dimension}
-        onChange={(dimension) => { onChange({ ...filters, dimension }); }}
-        labelFor={(option) => t(`usage.dimension.${option}`)}
-      />
-      <label className="flex items-center gap-1.5 text-[11.5px] text-ink-soft">
-        <span className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          {t('usage.workspace.label')}
-        </span>
-        <select
-          data-usage-workspace
-          value={filters.workspaceId ?? ''}
-          onChange={(event) => {
-            onChange({
-              ...filters,
-              workspaceId: event.target.value === '' ? undefined : event.target.value,
-            });
+    <div data-usage-filters className="space-y-3 rounded-xl border border-hairline bg-panel/70 p-3 sm:p-4">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
+        <AxisGroup
+          label={t('usage.axis.range')}
+          dataAxis="range"
+          options={USAGE_RANGE_PRESETS}
+          value={filters.range}
+          onChange={(range) => {
+            setRangeInvalid(false);
+            if (range === 'custom') {
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              onChange({
+                ...filters,
+                range,
+                startAt: filters.startAt ?? today.getTime() - 6 * DAY_MS,
+                endAt: filters.endAt ?? today.getTime() + DAY_MS,
+              });
+            } else {
+              onChange({ ...filters, range, startAt: undefined, endAt: undefined });
+            }
           }}
-          className="rounded-lg border border-hairline bg-panel px-2 py-1 text-[11.5px] text-ink outline-none transition-colors focus:border-accent"
-        >
-          <option value="">{t('usage.workspace.all')}</option>
-          {workspaces.map((workspace) => (
-            <option key={workspace.id} value={workspace.id}>
-              {workspace.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <Toggle
-        label={t('usage.includeArchived')}
-        checked={filters.includeArchived}
-        onChange={(includeArchived) => { onChange({ ...filters, includeArchived }); }}
-      />
-      {filters.range === 'custom' ? (
-        <div className="flex flex-wrap items-center gap-1.5" data-usage-custom-range>
-          <input
-            type="date"
-            aria-label={t('usage.customRange.start')}
-            aria-invalid={rangeInvalid}
-            value={toDateInputValue(filters.startAt)}
-            max={toDateInputValue(
-              filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined,
-            )}
-            onChange={(event) => {
-              const startAt = fromDateInputValue(event.target.value);
-              if (startAt === undefined) return;
-              if (filters.endAt !== undefined && startAt >= filters.endAt) {
-                setRangeInvalid(true);
-                return;
-              }
-              setRangeInvalid(false);
-              onChange({ ...filters, startAt });
-            }}
-            className="rounded-lg border border-hairline bg-panel px-2 py-1 font-mono text-[11px] text-ink outline-none focus:border-accent"
+          labelFor={(option) => t(`usage.range.${option}`)}
+        />
+        {filters.range === 'custom' ? (
+          <div className="flex flex-wrap items-center gap-1.5" data-usage-custom-range>
+            <input
+              type="date"
+              aria-label={t('usage.customRange.start')}
+              aria-invalid={rangeInvalid}
+              value={toDateInputValue(filters.startAt)}
+              max={toDateInputValue(filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined)}
+              onChange={(event) => {
+                const startAt = fromDateInputValue(event.target.value);
+                if (startAt === undefined) return;
+                if (filters.endAt !== undefined && startAt >= filters.endAt) {
+                  setRangeInvalid(true);
+                  return;
+                }
+                setRangeInvalid(false);
+                onChange({ ...filters, startAt });
+              }}
+              className={dateInput}
+            />
+            <span aria-hidden className="text-ink-faint">→</span>
+            <input
+              type="date"
+              aria-label={t('usage.customRange.end')}
+              aria-invalid={rangeInvalid}
+              value={toDateInputValue(filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined)}
+              min={toDateInputValue(filters.startAt)}
+              onChange={(event) => {
+                const day = fromDateInputValue(event.target.value);
+                if (day === undefined) return;
+                const endAt = day + DAY_MS;
+                if (filters.startAt !== undefined && endAt <= filters.startAt) {
+                  setRangeInvalid(true);
+                  return;
+                }
+                setRangeInvalid(false);
+                onChange({ ...filters, endAt });
+              }}
+              className={dateInput}
+            />
+            {rangeInvalid ? (
+              <p role="alert" data-usage-range-error className="text-[12px] text-danger">
+                {t('usage.customRange.invalid')}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
+        <label className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.workspace.label')}</span>
+          <span className="relative min-w-0">
+            <select
+              data-usage-workspace
+              value={filters.workspaceId ?? ''}
+              onChange={(event) => {
+                onChange({ ...filters, workspaceId: event.target.value === '' ? undefined : event.target.value });
+              }}
+              className={`${segmentClass(filters.workspaceId !== undefined, 'h-8 max-w-52 pr-7 pl-2.5 text-[13px]')} cursor-pointer appearance-none truncate border border-hairline bg-paper`}
+            >
+              <option value="">{t('usage.workspace.all')}</option>
+              {workspaces.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+              ))}
+            </select>
+            <Icon name="chevron" size={12} className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 rotate-90 text-ink-faint" />
+          </span>
+        </label>
+        <AxisGroup
+          label={t('usage.axis.granularity')}
+          dataAxis="granularity"
+          options={USAGE_GRANULARITIES}
+          value={filters.granularity}
+          onChange={(granularity) => { onChange({ ...filters, granularity }); }}
+          labelFor={(option) => t(`usage.granularity.${option}`)}
+        />
+        <AxisGroup
+          label={t('usage.axis.dimension')}
+          dataAxis="dimension"
+          options={USAGE_DIMENSIONS}
+          value={filters.dimension}
+          onChange={(dimension) => { onChange({ ...filters, dimension }); }}
+          labelFor={(option) => t(`usage.dimension.${option}`)}
+        />
+        <div className="ml-auto">
+          <Toggle
+            label={t('usage.includeArchived')}
+            checked={filters.includeArchived}
+            onChange={(includeArchived) => { onChange({ ...filters, includeArchived }); }}
           />
-          <span aria-hidden className="text-ink-faint">→</span>
-          <input
-            type="date"
-            aria-label={t('usage.customRange.end')}
-            aria-invalid={rangeInvalid}
-            value={toDateInputValue(
-              filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined,
-            )}
-            min={toDateInputValue(filters.startAt)}
-            onChange={(event) => {
-              const day = fromDateInputValue(event.target.value);
-              if (day === undefined) return;
-              const endAt = day + DAY_MS;
-              if (filters.startAt !== undefined && endAt <= filters.startAt) {
-                setRangeInvalid(true);
-                return;
-              }
-              setRangeInvalid(false);
-              onChange({ ...filters, endAt });
-            }}
-            className="rounded-lg border border-hairline bg-panel px-2 py-1 font-mono text-[11px] text-ink outline-none focus:border-accent"
-          />
-          {rangeInvalid ? (
-            <p role="alert" data-usage-range-error className="text-[10.5px] text-danger">
-              {t('usage.customRange.invalid')}
-            </p>
-          ) : null}
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Trend chart + drilldown
+// KPI row
 // ---------------------------------------------------------------------------
 
-function TrendChart({
-  trend,
-  filters,
-  selectedKey,
-  onSelect,
-}: {
-  trend: readonly UsageTrendBucketWire[];
-  filters: UsageFilters;
-  selectedKey: string | null;
-  onSelect: (key: string | null) => void;
+function Kpi({ label, value, hint, dataValue, children }: {
+  readonly label: string;
+  readonly value: ReactNode;
+  readonly hint?: ReactNode;
+  readonly dataValue?: string;
+  readonly children?: ReactNode;
 }) {
-  const { t, locale, time } = useI18n();
-  const [metric, setMetric] = useState<'cost' | 'tokens'>('cost');
-  const values = trend.map((bucket) => (metric === 'cost' ? bucketCost(bucket) : bucketTokens(bucket)));
-  const max = Math.max(0, ...values);
+  const valueProps = dataValue === undefined ? {} : { [dataValue]: true };
   return (
-    <Card
-      title={t('usage.trend.title')}
-      aside={
-        <div
-          role="group"
-          aria-label={t('usage.trend.title')}
-          className="ml-auto inline-flex rounded-lg border border-hairline bg-paper p-0.5"
-        >
-          {(['cost', 'tokens'] as const).map((candidate) => (
-            <button
-              key={candidate}
-              type="button"
-              data-trend-metric={candidate}
-              onClick={() => { setMetric(candidate); }}
-              aria-pressed={metric === candidate}
-              className={`rounded-md px-2 py-0.5 text-[10.5px] transition-colors ${
-                metric === candidate
-                  ? 'bg-accent-soft font-semibold text-accent'
-                  : 'text-ink-soft hover:text-ink'
-              }`}
-            >
-              {t(`usage.trend.metric.${candidate}`)}
-            </button>
-          ))}
-        </div>
-      }
-    >
-      <div
-        className="flex h-32 items-end gap-[3px]"
-        role="img"
-        aria-label={t('usage.trend.title')}
-        data-usage-trend
-      >
-        {trend.map((bucket, index) => {
-          const value = values[index] ?? 0;
-          const height = value > 0 && max > 0 ? Math.max(4, (value / max) * 100) : 0;
-          const selected = selectedKey === bucket.key;
-          const title = [
-            bucketLabel(bucket, filters.granularity, locale),
-            `${bucketTokenTotalIsUnknown(bucket) ? '—' : time.formatTokens(bucketTokens(bucket))} ${t('usage.col.tokens')}`,
-            bucketTokenTotalIsUnknown(bucket) ? '—' : formatCostUsd(bucketCost(bucket)),
-            ...(bucket.groups.some((group) => group.tokens_unknown === true) ? [t('usage.kpi.partialUnknown')] : []),
-          ].join(' · ');
-          return (
-            <button
-              key={bucket.key}
-              type="button"
-              data-bucket={bucket.key}
-              aria-pressed={selected}
-              onClick={() => { onSelect(selected ? null : bucket.key); }}
-              title={title}
-              className="flex min-w-0 flex-1 flex-col justify-end self-stretch"
-            >
-              <span
-                className={`w-full rounded-t-[3px] transition-colors ${
-                  value > 0
-                    ? selected
-                      ? 'bg-accent'
-                      : 'bg-accent/55 hover:bg-accent/80'
-                    : 'bg-hairline/70'
-                }`}
-                style={{ height: value > 0 ? `${height}%` : '2px' }}
-              />
-            </button>
-          );
-        })}
-      </div>
-      <div className="mt-1.5 flex items-baseline justify-between text-[9.5px] text-ink-faint">
-        <span className="font-mono tabular-nums">
-          {trend.length > 0 ? bucketLabel(trend[0]!, filters.granularity, locale) : ''}
-        </span>
-        <span>{t('usage.trend.clickHint')}</span>
-        <span className="font-mono tabular-nums">
-          {trend.length > 1 ? bucketLabel(trend.at(-1)!, filters.granularity, locale) : ''}
-        </span>
-      </div>
-    </Card>
-  );
-}
-
-/**
- * Drilldown session rows with per-turn locators: the session id opens the
- * session, and each returned turn id is its own action that lands on
- * `/s/{id}?turn={n}` so the session view can scroll to that turn. The wire
- * `turn_ids` are rendered, never collapsed into a bare count.
- */
-function DrilldownSessionList({
-  sessions,
-}: {
-  sessions: readonly UsageDrilldownSessionWire[];
-}) {
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  return (
-    <ul className="space-y-1">
-      {sessions.map((session) => (
-        <li key={session.session_id}>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded-lg px-2 py-1.5">
-            <button
-              type="button"
-              data-usage-drilldown-session={session.session_id}
-              onClick={() => void navigate(`/s/${session.session_id}`)}
-              className="min-w-0 flex-1 truncate text-left font-mono text-[11.5px] text-ink transition-colors hover:text-accent hover:underline"
-            >
-              {session.session_id}
-            </button>
-            <span className="shrink-0 font-mono text-[10.5px] text-ink-soft tabular-nums">
-              {t('usage.drilldown.turns', { count: session.turn_count })}
-              {session.turn_ids_truncated ? ` · ${t('usage.drilldown.turnIdsTruncated')}` : ''}
-            </span>
-            {session.unknown_turn_records > 0 ? (
-              <span className="shrink-0 text-[10px] text-amber-ink">
-                {t('usage.drilldown.unknownTurns', { count: session.unknown_turn_records })}
-              </span>
-            ) : null}
-          </div>
-          {session.turn_ids.length > 0 ? (
-            <div className="flex flex-wrap gap-1 px-2 pb-1">
-              {session.turn_ids.map((turnId) => (
-                <button
-                  key={turnId}
-                  type="button"
-                  data-usage-turn={turnId}
-                  onClick={() => void navigate(`/s/${session.session_id}?turn=${turnId}`)}
-                  title={t('usage.drilldown.turnHint')}
-                  className="rounded-md border border-hairline px-1.5 py-0.5 font-mono text-[10px] text-ink-soft tabular-nums transition-colors hover:border-accent hover:text-accent"
-                >
-                  {t('usage.drilldown.turnId', { id: turnId })}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function DrilldownPanel({
-  bucket,
-  filters,
-  onClose,
-}: {
-  bucket: UsageTrendBucketWire;
-  filters: UsageFilters;
-  onClose: () => void;
-}) {
-  const { t, locale } = useI18n();
-  return (
-    <section
-      data-usage-drilldown
-      className="rounded-2xl border border-accent/25 bg-accent-soft/40 p-4"
-    >
-      <div className="flex items-baseline gap-2">
-        <h3 className="text-[12px] font-semibold text-ink">
-          {t('usage.drilldown.title')} · {bucketLabel(bucket, filters.granularity, locale)}
-        </h3>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t('common.close')}
-          className="ml-auto flex h-6 w-6 items-center justify-center rounded-md border border-hairline text-ink-soft hover:text-ink"
-        >
-          <span aria-hidden>✕</span>
-        </button>
-      </div>
-      {bucket.drilldown.sessions.length === 0 ? (
-        <p className="mt-2 text-[11.5px] text-ink-faint">{t('usage.empty')}</p>
-      ) : (
-        <div className="mt-2">
-          <DrilldownSessionList sessions={bucket.drilldown.sessions} />
-        </div>
-      )}
-      {bucket.drilldown.sessions_truncated ? (
-        <p className="mt-2 text-[10.5px] text-amber-ink">{t('usage.drilldown.sessionsTruncated')}</p>
-      ) : null}
+    <section className="flex min-w-0 flex-col rounded-xl border border-hairline bg-panel p-4">
+      <p className="text-[12px] text-ink-faint">{label}</p>
+      <p {...valueProps} className="mt-1.5 truncate font-display text-[28px] leading-none font-semibold tracking-tight text-ink tabular-nums">
+        {value}
+      </p>
+      {hint !== undefined ? <div className="mt-2 text-[12px] leading-snug">{hint}</div> : null}
+      {children}
     </section>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Detail tabs
-// ---------------------------------------------------------------------------
-
-function detailKeyLabel(row: UsageDimensionRow, filters: UsageFilters, unknownLabel: string): string {
-  if (row.key === 'unknown') return unknownLabel;
-  if (filters.dimension === 'model') return row.modelAlias ?? row.key;
-  if (filters.dimension === 'agent') return row.profileName ?? row.agentId ?? row.key;
-  return row.key;
-}
-
-function DimensionBreakdown({
-  trend,
-  filters,
-}: {
-  trend: readonly UsageTrendBucketWire[];
-  filters: UsageFilters;
-}) {
+function KpiRow({ summary }: { readonly summary: UsageResponseWire['summary'] }) {
   const { t, time } = useI18n();
-  const rows = useMemo(() => aggregateDimensionGroups(trend), [trend]);
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const maxCost = Math.max(0, ...rows.map((row) => row.costUsdEstimated));
-  const unknownLabel = t('usage.dim.unknown');
-
-  const renderRow = (row: UsageDimensionRow, depth: number) => (
-    <div key={`${depth}:${row.key}`}>
-      <div className="flex items-baseline gap-2" style={{ paddingLeft: depth * 16 }}>
-        {depth === 0 && filters.dimension === 'agent' ? (
-          <button
-            type="button"
-            aria-label={row.key}
-            aria-expanded={expanded.has(row.key)}
-            onClick={() => {
-              setExpanded((current) => {
-                const next = new Set(current);
-                if (next.has(row.key)) next.delete(row.key);
-                else next.add(row.key);
-                return next;
-              });
-            }}
-            className="w-4 shrink-0 text-[10px] text-ink-faint hover:text-ink"
-          >
-            {expanded.has(row.key) ? '▾' : '▸'}
-          </button>
-        ) : (
-          <span className="w-4 shrink-0" aria-hidden />
-        )}
-        <span
-          className={`min-w-0 truncate font-mono text-[12px] ${
-            row.key === 'unknown' ? 'text-ink-soft italic' : 'text-ink'
-          }`}
-          title={row.key}
-        >
-          {detailKeyLabel(row, filters, unknownLabel)}
-        </span>
-        <span className="hidden shrink-0 font-mono text-[10px] text-ink-faint sm:block">
-          {row.mixedAttribution
-            ? t('usage.dim.mixedAttribution')
-            : (row.provider ?? '')}
-        </span>
-        <span
-          data-usage-breakdown-cost={row.key}
-          className="ml-auto shrink-0 font-mono text-[12px] font-semibold text-ink tabular-nums"
-        >
-          {row.tokensUnknown && row.totalTokens === 0 ? '—' : formatCostUsd(row.costUsdEstimated)}
-          {row.costUnknown ? '◔' : ''}
-        </span>
-      </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-hairline/60" style={{ marginLeft: depth * 16 + 16 }}>
-        <div
-          className="h-full rounded-full bg-accent"
-          style={{
-            width: `${maxCost > 0 ? Math.max(2, (row.costUsdEstimated / maxCost) * 100) : 2}%`,
-          }}
-        />
-      </div>
-      <p
-        data-usage-breakdown-tokens={row.key}
-        className="mt-0.5 font-mono text-[10px] text-ink-faint tabular-nums"
-        style={{ paddingLeft: depth * 16 + 16 }}
-      >
-        {row.tokensUnknown && row.totalTokens === 0 ? '—' : time.formatTokens(row.totalTokens)}{' '}
-        {t('usage.col.tokens')}
-        {row.tokensUnknown && row.totalTokens > 0 ? <KnownSubtotalMarker /> : null}
-      </p>
-    </div>
-  );
-
-  if (rows.length === 0) {
-    return <p className="py-6 text-center text-[12.5px] text-ink-faint">{t('usage.empty')}</p>;
-  }
-  if (filters.dimension !== 'agent') {
-    return <div className="space-y-3.5">{rows.map((row) => renderRow(row, 0))}</div>;
-  }
-  const tree = buildAgentTree(rows);
+  const totalUnknown = usageTokenTotalIsUnknown(summary);
+  const cacheHit = cacheHitRateOf(summary);
+  const input = summary.tokens.input_other + summary.tokens.input_cache_read + summary.tokens.input_cache_creation;
+  const composition = [
+    { key: 'read', label: t('usage.tokens.cacheRead'), value: summary.tokens.input_cache_read, fill: 'bg-success/70' },
+    { key: 'write', label: t('usage.tokens.cacheWrite'), value: summary.tokens.input_cache_creation, fill: 'bg-amber-rule' },
+    { key: 'fresh', label: t('usage.composition.fresh'), value: summary.tokens.input_other, fill: 'bg-hairline-strong' },
+  ];
   return (
-    <div className="space-y-3.5" data-usage-agent-tree>
-      {tree.roots.map((row) => {
-        const children = tree.childrenByParent.get(row.agentId ?? row.key) ?? [];
-        const open = expanded.has(row.key);
-        return (
-          <div key={row.key}>
-            {renderRow(row, 0)}
-            {children.length > 0 ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setExpanded((current) => {
-                    const next = new Set(current);
-                    if (next.has(row.key)) next.delete(row.key);
-                    else next.add(row.key);
-                    return next;
-                  });
-                }}
-                className="mt-0.5 block text-[10px] text-accent hover:underline"
-                style={{ paddingLeft: 16 }}
-              >
-                {t('usage.agent.subagents', { count: children.length })}
-              </button>
-            ) : null}
-            {open ? <div className="mt-2 space-y-3">{children.map((child) => renderRow(child, 1))}</div> : null}
+    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+      <Kpi
+        label={t('usage.kpi.estimatedCost')}
+        dataValue="data-usage-summary-cost"
+        value={totalUnknown ? '—' : formatCostUsd(summary.cost_usd_estimated)}
+        hint={summary.cost_unknown ? (
+          <span className="text-amber-ink">
+            {summary.cost_usd_estimated > 0 ? t('usage.kpi.partialUnknown') : t('usage.kpi.pricingUnknown')}
+          </span>
+        ) : summary.session_count > 0 && !totalUnknown ? (
+          <span className="text-ink-faint">
+            {t('usage.kpi.perSession', { cost: formatCostUsd(summary.cost_usd_estimated / summary.session_count) })}
+          </span>
+        ) : undefined}
+      />
+      <Kpi
+        label={t('usage.card.tokens')}
+        dataValue="data-usage-summary-tokens"
+        value={totalUnknown ? '—' : time.formatTokens(totalTokensOf(summary))}
+        hint={(
+          <span data-usage-summary-input-output className="font-mono text-ink-faint tabular-nums">
+            {totalUnknown
+              ? '— / —'
+              : t('usage.kpi.inputOutput', {
+                  input: time.formatTokens(input),
+                  output: time.formatTokens(summary.tokens.output),
+                })}
+          </span>
+        )}
+      />
+      <Kpi
+        label={t('usage.kpi.cacheHit')}
+        dataValue="data-usage-summary-cache"
+        value={totalUnknown ? '—' : formatPercent(cacheHit)}
+        hint={cacheHit === null && !totalUnknown ? <span className="text-ink-faint">{t('usage.kpi.cacheHitNone')}</span> : undefined}
+      >
+        {!totalUnknown && input > 0 ? (
+          <div className="mt-2.5" title={t('usage.cacheHitHint')}>
+            <div aria-hidden className="flex h-1.5 overflow-hidden rounded-full bg-hairline/70">
+              {composition.map((part) => (
+                <span key={part.key} className={part.fill} style={{ width: `${(part.value / input) * 100}%` }} />
+              ))}
+            </div>
+            <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-ink-faint">
+              {composition.map((part) => (
+                <li key={part.key} className="inline-flex items-center gap-1">
+                  <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${part.fill}`} />
+                  {part.label} <span className="font-mono tabular-nums">{time.formatTokens(part.value)}</span>
+                </li>
+              ))}
+            </ul>
           </div>
-        );
-      })}
-      {/* Orphan children: their parent fell outside the current range. */}
-      {rows
-        .filter(
-          (row) =>
-            row.parentAgentId !== null &&
-            !tree.roots.some(
-              (root) => (root.agentId ?? root.key) === row.parentAgentId,
-            ),
-        )
-        .map((row) => renderRow(row, 1))}
+        ) : null}
+      </Kpi>
+      <Kpi
+        label={t('usage.card.sessions')}
+        value={formatGrouped(summary.session_count)}
+      />
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Sessions tab — server-ranked by cost, so row one is the most expensive
+// ---------------------------------------------------------------------------
 
 function SessionsTab({
   data,
@@ -831,7 +496,8 @@ function SessionsTab({
   isFetchingNextPage,
   sessionLocator,
   locatorSearching,
-  workspaces,
+  workspaceName,
+  summaryCost,
 }: {
   data: { pages: readonly UsageResponseWire[] };
   fetchNextPage: () => void;
@@ -840,97 +506,95 @@ function SessionsTab({
   sessionLocator: string | undefined;
   /** True while the locator walk is still pulling pages for the target. */
   locatorSearching: boolean;
-  workspaces: readonly Workspace[];
+  workspaceName: (id: string) => string;
+  summaryCost: number;
 }) {
   const { t, time } = useI18n();
   const navigate = useNavigate();
   const items = useMemo(() => data.pages.flatMap((page) => page.sessions.items), [data.pages]);
   const total = data.pages[0]?.sessions.total ?? items.length;
   const located = sessionLocator !== undefined && items.some((item) => item.id === sessionLocator);
-  const visible =
-    sessionLocator !== undefined && located
-      ? items.filter((item) => item.id === sessionLocator)
-      : items;
-  const workspaceName = (id: string) =>
-    workspaces.find((workspace) => workspace.id === id)?.name ?? id;
+  const visible = sessionLocator !== undefined && located
+    ? items.filter((item) => item.id === sessionLocator)
+    : items;
+  const grid = 'grid grid-cols-[1.75rem_minmax(0,1fr)_5.5rem] items-center gap-x-3 sm:grid-cols-[1.75rem_minmax(0,1fr)_8rem_4.5rem_4rem_5rem_5.5rem]';
 
   return (
     <div data-usage-sessions>
       {sessionLocator !== undefined && !located ? (
         locatorSearching ? (
-          <p
-            data-usage-locating
-            className="mb-2 flex items-center gap-2 rounded-lg border border-hairline bg-paper px-3 py-1.5 text-[11px] text-ink-soft"
-          >
+          <p data-usage-locating className={`mb-3 flex items-center gap-2 ${NOTICE_SOFT}`}>
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
             {t('usage.sessions.locating')}
           </p>
         ) : (
-          <p className="mb-2 rounded-lg border border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink">
-            {t('usage.sessions.notInPage')}
-          </p>
+          <p className={`mb-3 ${NOTICE_AMBER}`}>{t('usage.sessions.notInPage')}</p>
         )
       ) : null}
-      <div className="flex items-center gap-3 px-2 pb-1 text-[9.5px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
-        <span className="min-w-0 flex-1">{t('usage.col.session')}</span>
-        <span className="hidden w-28 shrink-0 sm:block">{t('usage.col.workspace')}</span>
-        <span className="hidden w-20 shrink-0 text-right md:block">{t('usage.col.tokens')}</span>
-        <span className="hidden w-20 shrink-0 text-right lg:block">{t('usage.col.updated')}</span>
-        <span className="w-20 shrink-0 text-right">{t('usage.col.cost')}</span>
+      <div aria-hidden className={`${grid} px-2 pb-2 text-[11px] text-ink-faint`}>
+        <span className="text-right">#</span>
+        <span>{t('usage.col.session')}</span>
+        <span className="hidden sm:block">{t('usage.col.workspace')}</span>
+        <span className="hidden text-right sm:block">{t('usage.col.tokens')}</span>
+        <span className="hidden text-right sm:block">{t('usage.col.cacheHit')}</span>
+        <span className="hidden text-right sm:block">{t('usage.col.updated')}</span>
+        <span className="text-right">{t('usage.col.cost')}</span>
       </div>
       {visible.length === 0 ? (
-        <p className="py-6 text-center text-[12.5px] text-ink-faint">{t('usage.empty')}</p>
+        <p className="py-8 text-center text-[13px] text-ink-faint">{t('usage.empty')}</p>
       ) : (
-        visible.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            data-usage-session={item.id}
-            onClick={() => void navigate(`/s/${item.id}`)}
-            className="flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-paper"
-          >
-            <span className="min-w-0 flex-1 truncate text-[12px] text-ink">
-              {item.title ?? t('sidebar.untitled')}
-              {item.archived ? (
-                <span className="ml-1.5 rounded-full border border-hairline px-1.5 py-px text-[9px] text-ink-faint">
-                  {t('sidebar.archived')}
-                </span>
-              ) : null}
-              {item.deleted ? (
-                <span className="ml-1.5 rounded-full border border-danger/40 px-1.5 py-px text-[9px] text-danger">
-                  {t('usage.reliability.deleted.included')}
-                </span>
-              ) : null}
-              {item.unknown_price_models.length > 0 ? (
-                <span
-                  className="ml-1.5 text-[9.5px] text-amber-ink"
-                  title={item.unknown_price_models.join(', ')}
+        <ol className="divide-y divide-hairline border-t border-hairline">
+          {visible.map((item) => {
+            const rank = items.indexOf(item) + 1;
+            const unknownTotal = usageTokenTotalIsUnknown(item.usage);
+            const share = summaryCost > 0 ? item.usage.cost_usd_estimated / summaryCost : 0;
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  data-usage-session={item.id}
+                  onClick={() => void navigate(`/s/${item.id}`)}
+                  className={`${grid} w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-accent`}
                 >
-                  ◔
-                </span>
-              ) : null}
-            </span>
-            <span className="hidden w-28 shrink-0 truncate font-mono text-[10.5px] text-ink-faint sm:block">
-              {workspaceName(item.workspace_id)}
-            </span>
-            <span
-              data-usage-session-tokens={item.id}
-              className="hidden w-20 shrink-0 text-right font-mono text-[10.5px] text-ink-faint tabular-nums md:block"
-            >
-              {usageTokenTotalIsUnknown(item.usage) ? '—' : time.formatTokens(totalTokensOf(item.usage))}
-              {hasUnknownTokenSubtotal(item.usage) ? <KnownSubtotalMarker /> : null}
-            </span>
-            <span className="hidden w-20 shrink-0 text-right font-mono text-[10.5px] text-ink-faint lg:block">
-              {time.relativeTime(new Date(item.updated_at).toISOString())}
-            </span>
-            <span
-              data-usage-session-cost={item.id}
-              className="w-20 shrink-0 text-right font-mono text-[11.5px] font-semibold text-ink tabular-nums"
-            >
-              {usageTokenTotalIsUnknown(item.usage) ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
-            </span>
-          </button>
-        ))
+                  <span className={`text-right font-mono text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-accent' : 'text-ink-faint'}`}>
+                    {rank}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 truncate text-[13px] text-ink">{item.title ?? t('sidebar.untitled')}</span>
+                      {item.archived ? (
+                        <span className="shrink-0 rounded-full border border-hairline px-1.5 text-[10.5px] text-ink-faint">{t('sidebar.archived')}</span>
+                      ) : null}
+                      {item.deleted ? (
+                        <span className="shrink-0 rounded-full border border-danger/40 px-1.5 text-[10.5px] text-danger">{t('usage.reliability.deleted.included')}</span>
+                      ) : null}
+                      {item.unknown_price_models.length > 0 ? (
+                        <span className="flex shrink-0 text-amber-ink" title={item.unknown_price_models.join(', ')}><Icon name="partial" size={12} /></span>
+                      ) : null}
+                    </span>
+                    <span className="mt-1 block w-full max-w-48"><ShareBar ratio={share} tone="bg-accent/70" /></span>
+                  </span>
+                  <span className="hidden truncate text-[12px] text-ink-soft sm:block" title={item.workspace_id}>
+                    {workspaceName(item.workspace_id)}
+                  </span>
+                  <span data-usage-session-tokens={item.id} className="hidden text-right font-mono text-[12px] text-ink-soft tabular-nums sm:block">
+                    {unknownTotal ? '—' : time.formatTokens(totalTokensOf(item.usage))}
+                    {hasUnknownTokenSubtotal(item.usage) ? <KnownSubtotalMarker /> : null}
+                  </span>
+                  <span className="hidden text-right font-mono text-[12px] text-ink-soft tabular-nums sm:block">
+                    {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
+                  </span>
+                  <span className="hidden text-right text-[12px] text-ink-faint sm:block">
+                    {time.relativeTime(new Date(item.updated_at).toISOString())}
+                  </span>
+                  <span data-usage-session-cost={item.id} className="text-right font-mono text-[13px] font-semibold text-ink tabular-nums">
+                    {unknownTotal ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
       )}
       {hasNextPage ? (
         <button
@@ -938,7 +602,7 @@ function SessionsTab({
           data-usage-load-more
           onClick={fetchNextPage}
           disabled={isFetchingNextPage}
-          className="mt-2 w-full rounded-lg border border-hairline py-1.5 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50"
+          className="mt-3 h-9 w-full rounded-md border border-hairline text-[13px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50"
         >
           {t('usage.sessions.loadMore', { shown: items.length, total })}
         </button>
@@ -948,30 +612,30 @@ function SessionsTab({
 }
 
 /**
- * The 5h rhythm detail tab (§15.1/§15.3): a second-level view over the 5h
- * window granularity — each window lists its sessions and per-turn locators
- * straight from the bucket's server drilldown, newest window first. Without
- * the 5h granularity selected there is no data to show honestly, so the tab
- * offers the switch instead of a placeholder.
+ * 5h rhythm tab: each window lists its sessions and per-turn locators from
+ * the bucket's server drilldown, newest first. Without the 5h granularity
+ * there is no honest data, so the tab offers the switch instead.
  */
 function FiveHourTab({
   trend,
   filters,
   onSwitchGranularity,
+  sessionTitle,
 }: {
   trend: readonly UsageTrendBucketWire[];
   filters: UsageFilters;
   onSwitchGranularity: () => void;
+  sessionTitle: (id: string) => string | undefined;
 }) {
   const { t, locale, time } = useI18n();
   if (filters.granularity !== 'five_hour') {
     return (
-      <div className="flex flex-col items-center gap-2 py-8 text-center" data-usage-fivehour-hint>
-        <p className="text-[12px] text-ink-faint">{t('usage.fiveHour.hint')}</p>
+      <div className="flex flex-col items-start gap-2 py-6" data-usage-fivehour-hint>
+        <p className="text-[13px] text-ink-soft">{t('usage.fiveHour.hint')}</p>
         <button
           type="button"
           onClick={onSwitchGranularity}
-          className="rounded-lg border border-accent/40 bg-accent-soft px-3 py-1.5 text-[11.5px] font-medium text-accent transition-colors hover:border-accent"
+          className="h-8 rounded-md border border-hairline bg-paper px-3 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
         >
           {t('usage.fiveHour.switch')}
         </button>
@@ -980,41 +644,42 @@ function FiveHourTab({
   }
   const windows = [...trend].reverse();
   if (windows.length === 0) {
-    return <p className="py-6 text-center text-[12.5px] text-ink-faint">{t('usage.empty')}</p>;
+    return <p className="py-8 text-center text-[13px] text-ink-faint">{t('usage.empty')}</p>;
   }
   return (
-    <div className="space-y-3" data-usage-fivehour>
-      {windows.map((bucket) => (
-        <section
-          key={bucket.key}
-          data-usage-fivehour-window={bucket.key}
-          className="rounded-xl border border-hairline bg-paper/60 p-3"
-        >
-          <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-1 pb-2">
-            <h3 className="font-mono text-[11.5px] font-semibold text-ink tabular-nums">
-              {bucketLabel(bucket, 'five_hour', locale)}
-            </h3>
-            <span className="ml-auto shrink-0 font-mono text-[10.5px] text-ink-soft tabular-nums">
-              {bucketTokenTotalIsUnknown(bucket) ? '—' : time.formatTokens(bucketTokens(bucket))} {t('usage.col.tokens')}
-              {bucket.groups.some((group) => group.tokens_unknown === true) ? <KnownSubtotalMarker /> : null}
-            </span>
-            <span className="shrink-0 font-mono text-[10.5px] font-semibold text-ink tabular-nums">
-              {bucketTokenTotalIsUnknown(bucket) ? '—' : formatCostUsd(bucketCost(bucket))}
-            </span>
-          </header>
-          {bucket.drilldown.sessions.length === 0 ? (
-            <p className="px-1 pb-1 text-[11px] text-ink-faint">{t('usage.empty')}</p>
-          ) : (
-            <DrilldownSessionList sessions={bucket.drilldown.sessions} />
-          )}
-          {bucket.drilldown.sessions_truncated ? (
-            <p className="px-1 pt-1 text-[10.5px] text-amber-ink">
-              {t('usage.drilldown.sessionsTruncated')}
-            </p>
-          ) : null}
-        </section>
-      ))}
-    </div>
+    <ol className="space-y-3" data-usage-fivehour>
+      {windows.map((bucket) => {
+        const unknownTotal = bucketTokenTotalIsUnknown(bucket);
+        return (
+          <li
+            key={bucket.key}
+            data-usage-fivehour-window={bucket.key}
+            className="rounded-lg border border-hairline bg-paper/50 px-3 pt-2.5 pb-1"
+          >
+            <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+              <h3 className="font-mono text-[12.5px] font-semibold text-ink tabular-nums">
+                {bucketLabel(bucket, 'five_hour', locale)}
+              </h3>
+              <span className="ml-auto font-mono text-[12px] text-ink-soft tabular-nums">
+                {unknownTotal ? '—' : time.formatTokens(bucketTokens(bucket))} {t('usage.col.tokens')}
+                {bucket.groups.some((group) => group.tokens_unknown === true) ? <KnownSubtotalMarker /> : null}
+              </span>
+              <span className="font-mono text-[12.5px] font-semibold text-ink tabular-nums">
+                {unknownTotal ? '—' : formatCostUsd(bucketCost(bucket))}
+              </span>
+            </header>
+            {bucket.drilldown.sessions.length === 0 ? (
+              <p className="py-2 text-[12.5px] text-ink-faint">{t('usage.empty')}</p>
+            ) : (
+              <DrilldownSessionList sessions={bucket.drilldown.sessions} sessionTitle={sessionTitle} />
+            )}
+            {bucket.drilldown.sessions_truncated ? (
+              <p className="pb-2 text-[12px] text-amber-ink">{t('usage.drilldown.sessionsTruncated')}</p>
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -1036,29 +701,21 @@ function ReliabilityCard({ reliability }: { reliability: UsageResponseWire['reli
         });
   const earliest = formatMs(reliability.coverage.earliest_at);
   const latest = formatMs(reliability.coverage.latest_at);
-  const rows: { label: string; value: React.ReactNode }[] = [
+  const partial = reliability.incomplete_reason !== null || reliability.incomplete_sessions > 0;
+  const rows: { label: string; value: ReactNode }[] = [
     {
       label: t('usage.reliability.coverage'),
-      value:
-        earliest !== null && latest !== null
-          ? `${earliest} → ${latest}`
-          : t('usage.reliability.coverageEmpty'),
+      value: earliest !== null && latest !== null ? `${earliest} → ${latest}` : t('usage.reliability.coverageEmpty'),
     },
     { label: t('usage.reliability.scanned'), value: formatGrouped(reliability.scanned_sessions) },
-    {
-      label: t('usage.reliability.incomplete'),
-      value: formatGrouped(reliability.incomplete_sessions),
-    },
+    { label: t('usage.reliability.incomplete'), value: formatGrouped(reliability.incomplete_sessions) },
     {
       label: t('usage.reliability.unknownPrices'),
-      value:
-        reliability.unknown_price_models.length > 0 ? (
-          <span className="font-mono text-amber-ink">
-            {reliability.unknown_price_models.join(', ')}
-          </span>
-        ) : (
-          t('usage.reliability.none')
-        ),
+      value: reliability.unknown_price_models.length > 0 ? (
+        <span className="font-mono text-amber-ink">{reliability.unknown_price_models.join(', ')}</span>
+      ) : (
+        t('usage.reliability.none')
+      ),
     },
     {
       label: t('usage.reliability.deleted'),
@@ -1068,24 +725,30 @@ function ReliabilityCard({ reliability }: { reliability: UsageResponseWire['reli
     },
   ];
   return (
-    <Card title={t('usage.reliability.title')}>
-      <p className="mb-3 text-[10.5px] text-ink-faint">{t('usage.reliability.costSource')}</p>
-      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-[11.5px] sm:grid-cols-2" data-usage-reliability>
+    <UsageCard
+      title={t('usage.reliability.title')}
+      aside={(
+        <span
+          data-usage-reliability-state={partial ? 'partial' : 'complete'}
+          className={`rounded-full px-2 py-0.5 text-[11.5px] font-medium ${partial ? 'bg-amber-card text-amber-ink' : 'bg-success/10 text-success'}`}
+        >
+          {partial ? t('usage.reliability.partial') : t('usage.reliability.complete')}
+        </span>
+      )}
+    >
+      <p className="mb-3 text-[12px] text-ink-faint">{t('usage.reliability.costSource')}</p>
+      <dl className="grid grid-cols-1 gap-x-8 gap-y-2 text-[12.5px] sm:grid-cols-2" data-usage-reliability>
         {rows.map((row) => (
-          <div key={row.label} className="flex items-baseline justify-between gap-3">
+          <div key={row.label} className="flex items-baseline justify-between gap-3 border-b border-dashed border-hairline pb-1.5">
             <dt className="shrink-0 text-ink-faint">{row.label}</dt>
-            <dd className="min-w-0 truncate text-right font-mono text-ink-soft tabular-nums">
-              {row.value}
-            </dd>
+            <dd className="min-w-0 truncate text-right font-mono text-ink-soft tabular-nums">{row.value}</dd>
           </div>
         ))}
       </dl>
       {reliability.incomplete_reason !== null ? (
-        <p className="mt-3 text-[10.5px] text-amber-ink">
-          {tp('usage.sessionChip', reliability.incomplete_sessions)}
-        </p>
+        <p className="mt-3 text-[12px] text-amber-ink">{tp('usage.sessionChip', reliability.incomplete_sessions)}</p>
       ) : null}
-    </Card>
+    </UsageCard>
   );
 }
 
@@ -1095,7 +758,7 @@ function ReliabilityCard({ reliability }: { reliability: UsageResponseWire['reli
 
 export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { client } = useConnection();
-  const { t, time } = useI18n();
+  const { t } = useI18n();
   const location = useLocation();
   const [, setSearchParams] = useSearchParams();
   const [usageNowMs, setUsageNowMs] = useState(() => Date.now());
@@ -1108,10 +771,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   // visit always uses the local-today defaults; persisted selections never
   // silently widen or hide this bounded result set.
   const filters = useMemo<UsageFilters>(
-    () =>
-      searchHasUsageParams(location.search)
-        ? parseUsageFilters(location.search)
-        : USAGE_FILTER_DEFAULTS,
+    () => (searchHasUsageParams(location.search) ? parseUsageFilters(location.search) : USAGE_FILTER_DEFAULTS),
     [location.search],
   );
   useEffect(() => {
@@ -1119,29 +779,23 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   }, [filters]);
 
   // Today and local bucket boundaries change with the wall clock and browser
-  // timezone. Read the offset directly on every render, rather than memoizing
-  // it at mount, while the tick below makes midnight/zone changes observable.
+  // timezone: read the offset on every render; the minute tick makes
+  // midnight/zone changes observable.
   const localUsageDate = localDateKey(usageNowMs);
   const timezoneOffsetMinutes = browserTimezoneOffsetMinutes();
 
   const sessionParam = new URLSearchParams(location.search).get('session') ?? undefined;
   const [dismissedLocator, setDismissedLocator] = useState<string | null>(null);
-  const sessionLocator = sessionParam !== undefined && sessionParam !== dismissedLocator
-    ? sessionParam
-    : undefined;
+  const sessionLocator = sessionParam !== undefined && sessionParam !== dismissedLocator ? sessionParam : undefined;
 
-  // The detail tab rides the URL (`view=`) so breakdown/5h views are
-  // deep-linkable and shareable; a session locator without an explicit view
-  // pins the sessions tab so the located row is actually on screen.
+  // The detail tab rides the URL (`view=`); a session locator without an
+  // explicit view pins the sessions tab so the located row is on screen.
   const hasExplicitView = new URLSearchParams(location.search).has('view');
-  const tab: DetailTab =
-    sessionLocator !== undefined && !hasExplicitView
-      ? 'sessions'
-      : VIEW_TO_DETAIL_TAB[parseUsageDetailView(location.search)];
+  const tab: DetailTab = sessionLocator !== undefined && !hasExplicitView
+    ? 'sessions'
+    : VIEW_TO_DETAIL_TAB[parseUsageDetailView(location.search)];
   const selectTab = (next: DetailTab) => {
-    setSearchParams(
-      new URLSearchParams(usageDetailViewToSearch(DETAIL_TAB_TO_VIEW[next], location.search)),
-    );
+    setSearchParams(new URLSearchParams(usageDetailViewToSearch(DETAIL_TAB_TO_VIEW[next], location.search)));
   };
   const [selectedBucketKey, setSelectedBucketKey] = useState<string | null>(null);
   // Bucket keys only exist within the query that produced them.
@@ -1149,8 +803,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   const applyFilters = (next: UsageFilters) => {
     writeStoredUsageFilters(next);
-    // Condition change → new result set → any old page token is dropped with
-    // the react-query key; the session locator survives in the URL.
+    // New conditions → new result set → the old page token drops with the
+    // react-query key; the session locator survives in the URL.
     setSearchParams(new URLSearchParams(usageFiltersToSearch(next, location.search)));
   };
 
@@ -1158,27 +812,19 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     queryKey: ['usage-v2', filters, localUsageDate, timezoneOffsetMinutes],
     queryFn: ({ pageParam }) =>
       client.getUsage(
-        buildUsageApiQuery(filters, {
-          timezoneOffsetMinutes,
-          pageSize: SESSION_PAGE_SIZE,
-          pageToken: pageParam,
-        }),
+        buildUsageApiQuery(filters, { timezoneOffsetMinutes, pageSize: SESSION_PAGE_SIZE, pageToken: pageParam }),
       ),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
       lastPage.sessions.has_more ? (lastPage.sessions.next_page_token ?? undefined) : undefined,
   });
-  // A session locator deep link must find its target even when it sits beyond
-  // the first 25 rows: keep pulling pages with the server token until the
-  // target appears or the result set is exhausted (a failed page fetch stops
-  // the walk instead of retrying forever). `usageQuery.data` is a dep so the
-  // walk re-evaluates on every arrived page, even when the fetching flags
-  // flip within a single batched render.
+  // A session locator must find its target beyond the first page: keep
+  // pulling pages until it appears or the set is exhausted (a failed page
+  // stops the walk). `usageQuery.data` is a dep so every arrived page
+  // re-evaluates, even when the fetching flags flip within one render.
   const locatedSession =
     sessionLocator !== undefined &&
-    (usageQuery.data?.pages.some((page) =>
-      page.sessions.items.some((item) => item.id === sessionLocator),
-    ) ?? false);
+    (usageQuery.data?.pages.some((page) => page.sessions.items.some((item) => item.id === sessionLocator)) ?? false);
   const locatorSearching =
     sessionLocator !== undefined &&
     !locatedSession &&
@@ -1208,85 +854,80 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     queryFn: () => client.listWorkspaces(),
     staleTime: 30_000,
   });
-  const workspaces = useMemo(
-    () => workspacesQuery.data?.items ?? [],
-    [workspacesQuery.data],
-  );
+  const workspaces = useMemo(() => workspacesQuery.data?.items ?? [], [workspacesQuery.data]);
+
+  // Name lookups: workspaces from the registry, session titles from the rows
+  // the server already returned for this result set (never fetched per id).
+  const workspaceNames = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace.name])), [workspaces]);
+  const sessionTitles = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const page of usageQuery.data?.pages ?? []) {
+      for (const item of page.sessions.items) if (item.title !== null) map.set(item.id, item.title);
+    }
+    return map;
+  }, [usageQuery.data]);
+  const workspaceName = (id: string) => workspaceNames.get(id);
+  const sessionTitle = (id: string) => sessionTitles.get(id);
+  const lookups = { unknownLabel: t('usage.dim.unknown'), workspaceName, sessionTitle };
 
   const summary = firstPage?.summary;
   const reliability = firstPage?.reliability;
-  const summaryTokenTotalUnknown = summary !== undefined && usageTokenTotalIsUnknown(summary);
   const summaryHasUnknownSubtotal = summary !== undefined && hasUnknownTokenSubtotal(summary);
-  const cacheHit = summary !== undefined ? cacheHitRateOf(summary) : null;
   const showAllHistoryChip = firstPage?.query.range.defaulted_to_all_history === true;
   const incompleteReason = reliability?.incomplete_reason ?? null;
-  const showIncomplete =
-    incompleteReason !== null || (reliability?.incomplete_sessions ?? 0) > 0;
-
+  const showIncomplete = incompleteReason !== null || (reliability?.incomplete_sessions ?? 0) > 0;
   const breakdownTabLabel = t(`usage.dimension.${filters.dimension}`);
+  const tabs = [
+    ['sessions', t('usage.tab.sessions')],
+    ['breakdown', breakdownTabLabel],
+    ['fiveHour', t('usage.tab.fiveHour')],
+  ] as const;
 
   return (
-    <>
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
-        <button
-          type="button"
-          onClick={onToggleSidebar}
-          aria-label={t('sv.openMenuAria')}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
-        >
-          <span aria-hidden>☰</span>
-        </button>
-        <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
-          {t('usage.title')}
-        </h1>
-      </header>
-      <main className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-8">
-        <div className="mx-auto max-w-[860px] space-y-4" data-usage-page>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
+      <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar} />
+      <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
+        <div className="mx-auto max-w-[1120px] space-y-4" data-usage-page>
           <LiveStrip />
           <FilterBar filters={filters} workspaces={workspaces} onChange={applyFilters} />
-
           {usageQuery.isPending ? (
-            <div className="flex items-center justify-center gap-2 rounded-2xl border border-hairline bg-panel px-4 py-10 text-[12px] text-ink-faint">
+            <div role="status" className="flex items-center justify-center gap-2 rounded-xl border border-hairline bg-panel px-4 py-12 text-[13px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
               {t('usage.loading')}
             </div>
           ) : usageQuery.isError ? (
-            <div className="rounded-2xl border border-danger/30 bg-danger/5 p-5">
-              <p className="text-[12.5px] font-medium text-danger">{t('usage.loadFailed')}</p>
-              <p className="mt-1 font-mono text-[10.5px] text-danger/80">
+            <div className="rounded-xl border border-danger/30 bg-danger/5 p-5">
+              <p className="text-[13px] font-medium text-danger">{t('usage.loadFailed')}</p>
+              <p className="mt-1 font-mono text-[12px] text-danger/80">
                 {usageQuery.error instanceof Error ? usageQuery.error.message : t('common.unknownError')}
               </p>
               <button
                 type="button"
                 onClick={() => void usageQuery.refetch()}
-                className="mt-2 text-[11.5px] font-medium text-danger underline"
+                className="mt-3 h-8 rounded-md border border-danger/40 px-3 text-[13px] font-medium text-danger hover:bg-danger/5"
               >
                 {t('common.retry')}
               </button>
             </div>
           ) : firstPage !== undefined ? (
             <>
-              <div className="flex flex-wrap items-center gap-2">
-                {showAllHistoryChip ? (
-                  <span
-                    data-usage-all-history
-                    className="rounded-full border border-accent/30 bg-accent-soft px-2.5 py-0.5 text-[10.5px] font-medium text-accent"
-                  >
-                    {t('usage.allHistoryChip')}
-                  </span>
-                ) : null}
-                {summary?.cost_unknown === true ? (
-                  <span className="rounded-full border border-amber-rule/40 bg-amber-card px-2.5 py-0.5 text-[10.5px] font-medium text-amber-ink">
-                    {t('usage.kpi.partialUnknown')}
-                  </span>
-                ) : null}
-              </div>
+              {showAllHistoryChip || summary?.cost_unknown === true ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {showAllHistoryChip ? (
+                    <span data-usage-all-history className="rounded-full border border-accent/30 bg-accent-soft px-2.5 py-0.5 text-[12px] font-medium text-accent-deep">
+                      {t('usage.allHistoryChip')}
+                    </span>
+                  ) : null}
+                  {summary?.cost_unknown === true ? (
+                    <span className="rounded-full border border-amber-rule/40 bg-amber-card px-2.5 py-0.5 text-[12px] font-medium text-amber-ink">
+                      {t('usage.kpi.partialUnknown')}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
 
               {showIncomplete ? (
-                <p
-                  data-usage-incomplete
-                  className="rounded-xl border border-amber-rule/40 bg-amber-card px-3 py-2 text-[11px] leading-relaxed text-amber-ink"
-                >
+                <p data-usage-incomplete className={NOTICE_AMBER}>
                   {incompleteReason !== null ? t(INCOMPLETE_REASON_KEYS[incompleteReason]) : null}
                   {reliability !== undefined && reliability.incomplete_sessions > 0
                     ? ` ${t('usage.incomplete.sessions', { count: reliability.incomplete_sessions })}`
@@ -1294,84 +935,16 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                 </p>
               ) : null}
               {reliability !== undefined && reliability.unknown_price_models.length > 0 ? (
-                <p className="rounded-xl border border-accent/25 bg-accent-soft px-3 py-2 text-[11px] leading-relaxed text-ink-soft">
+                <p className={NOTICE_SOFT}>
                   {t('usage.partialCost', { models: reliability.unknown_price_models.join(', ') })}
                 </p>
               ) : null}
-              <UsageAccountingNotices
-                coverage={reliability?.usage_coverage}
-                knownSubtotal={summaryHasUnknownSubtotal}
-              />
+              <UsageAccountingNotices coverage={reliability?.usage_coverage} knownSubtotal={summaryHasUnknownSubtotal} />
 
-              {summary !== undefined ? (
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                  <section className="rounded-2xl border border-hairline bg-panel p-4 shadow-[0_2px_4px_rgba(28,25,23,0.03)]">
-                    <p className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-                      {t('usage.kpi.estimatedCost')}
-                    </p>
-                    <p
-                      data-usage-summary-cost
-                      className="mt-1.5 font-mono text-[22px] leading-none font-semibold text-ink tabular-nums"
-                    >
-                      {summaryTokenTotalUnknown ? '—' : formatCostUsd(summary.cost_usd_estimated)}
-                    </p>
-                    {summary.cost_unknown ? (
-                      <p className="mt-1 text-[10px] text-amber-ink">
-                        {summary.cost_usd_estimated > 0
-                          ? t('usage.kpi.partialUnknown')
-                          : t('usage.kpi.pricingUnknown')}
-                      </p>
-                    ) : null}
-                  </section>
-                  <section className="rounded-2xl border border-hairline bg-panel p-4 shadow-[0_2px_4px_rgba(28,25,23,0.03)]">
-                    <p className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-                      {t('usage.card.tokens')}
-                    </p>
-                    <p
-                      data-usage-summary-tokens
-                      className="mt-1.5 font-mono text-[22px] leading-none font-semibold text-ink tabular-nums"
-                    >
-                      {summaryTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(summary))}
-                    </p>
-                    {cacheHit !== null && !summaryTokenTotalUnknown ? (
-                      <p className="mt-1 text-[10px] text-ink-faint" title={t('usage.cacheHitHint')}>
-                        {t('usage.cacheHit', { percent: Math.round(cacheHit * 100) })}
-                      </p>
-                    ) : null}
-                  </section>
-                  <section className="rounded-2xl border border-hairline bg-panel p-4 shadow-[0_2px_4px_rgba(28,25,23,0.03)]">
-                    <p className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-                      {t('usage.card.sessions')}
-                    </p>
-                    <p className="mt-1.5 font-mono text-[22px] leading-none font-semibold text-ink tabular-nums">
-                      {formatGrouped(summary.session_count)}
-                    </p>
-                  </section>
-                  <section className="col-span-2 rounded-2xl border border-hairline bg-panel p-4 shadow-[0_2px_4px_rgba(28,25,23,0.03)] lg:col-span-1">
-                    <p className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-                      {t('usage.tokens.input')} / {t('usage.tokens.output')}
-                    </p>
-                    <p
-                      data-usage-summary-input-output
-                      className="mt-1.5 font-mono text-[13px] leading-snug font-semibold text-ink tabular-nums"
-                    >
-                      {summaryTokenTotalUnknown
-                        ? '— / —'
-                        : `${time.formatTokens(summary.tokens.input_other)} / ${time.formatTokens(summary.tokens.output)}`}
-                    </p>
-                    {!summaryTokenTotalUnknown ? (
-                      <p className="mt-1 font-mono text-[10px] text-ink-faint tabular-nums">
-                        {t('usage.tokens.cacheRead')} {time.formatTokens(summary.tokens.input_cache_read)}
-                        {' · '}
-                        {t('usage.tokens.cacheWrite')} {time.formatTokens(summary.tokens.input_cache_creation)}
-                      </p>
-                    ) : null}
-                  </section>
-                </div>
-              ) : null}
+              {summary !== undefined ? <KpiRow summary={summary} /> : null}
 
               {trend.length === 0 ? (
-                <p className="rounded-2xl border border-hairline bg-panel px-4 py-10 text-center text-[12.5px] text-ink-faint">
+                <p className="rounded-xl border border-hairline bg-panel px-4 py-12 text-center text-[13px] text-ink-faint">
                   {t('usage.empty')}
                 </p>
               ) : (
@@ -1380,38 +953,29 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   filters={filters}
                   selectedKey={selectedBucketKey}
                   onSelect={setSelectedBucketKey}
+                  labelForKey={(key) => {
+                    const group = trend.flatMap((bucket) => bucket.groups).find((entry) => entry.key === key);
+                    return dimensionKeyLabel(
+                      { key, modelAlias: group?.model_alias ?? null, profileName: group?.profile_name ?? null, agentId: group?.agent_id ?? null },
+                      filters.dimension,
+                      lookups,
+                    );
+                  }}
                 />
               )}
               {selectedBucket !== undefined ? (
                 <DrilldownPanel
                   bucket={selectedBucket}
                   filters={filters}
+                  sessionTitle={sessionTitle}
                   onClose={() => { setSelectedBucketKey(null); }}
                 />
               ) : null}
 
-              <Card
-                title={
-                  tab === 'sessions'
-                    ? t('usage.tab.sessions')
-                    : tab === 'breakdown'
-                      ? breakdownTabLabel
-                      : t('usage.tab.fiveHour')
-                }
-                aside={
-                  <div
-                    role="tablist"
-                    aria-label={t('usage.title')}
-                    className="ml-auto flex gap-1"
-                    data-usage-tabs
-                  >
-                    {(
-                      [
-                        ['sessions', t('usage.tab.sessions')],
-                        ['breakdown', breakdownTabLabel],
-                        ['fiveHour', t('usage.tab.fiveHour')],
-                      ] as const
-                    ).map(([id, label]) => (
+              <UsageCard>
+                <div className="-mt-1 mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline">
+                  <div role="tablist" aria-label={t('usage.title')} className="flex gap-1" data-usage-tabs>
+                    {tabs.map(([id, label]) => (
                       <button
                         key={id}
                         type="button"
@@ -1419,60 +983,57 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         aria-selected={tab === id}
                         data-usage-tab={id}
                         onClick={() => { selectTab(id); }}
-                        className={`rounded-md px-2.5 py-1 text-[11.5px] transition-colors ${
-                          tab === id
-                            ? 'bg-accent-soft font-semibold text-accent'
-                            : 'text-ink-soft hover:text-ink'
+                        className={`-mb-px min-h-10 border-b-2 px-2.5 text-[13.5px] transition-colors ${
+                          tab === id ? 'border-accent font-semibold text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                         }`}
                       >
                         {label}
                       </button>
                     ))}
                   </div>
-                }
-              >
+                  {tab === 'sessions' && sessionLocator !== undefined ? (
+                    <p className="ml-auto flex items-center gap-2 pb-1 text-[12px] text-ink-soft">
+                      <span className="rounded-full border border-accent/30 bg-accent-soft px-2 py-0.5 font-medium text-accent-deep">
+                        {t('usage.sessions.deepLinkChip')}
+                      </span>
+                      <button type="button" className="text-ink-faint underline hover:text-ink" onClick={() => { setDismissedLocator(sessionLocator); }}>
+                        {t('common.close')}
+                      </button>
+                    </p>
+                  ) : null}
+                </div>
                 {tab === 'sessions' ? (
-                  <>
-                    {sessionLocator !== undefined ? (
-                      <p className="mb-2 flex items-center gap-2 text-[11px] text-ink-soft">
-                        <span className="rounded-full border border-accent/30 bg-accent-soft px-2 py-0.5 font-medium text-accent">
-                          {t('usage.sessions.deepLinkChip')}
-                        </span>
-                        <button
-                          type="button"
-                          className="text-ink-faint underline hover:text-ink"
-                          onClick={() => { setDismissedLocator(sessionLocator); }}
-                        >
-                          {t('common.close')}
-                        </button>
-                      </p>
-                    ) : null}
-                    <SessionsTab
-                      data={{ pages: usageQuery.data.pages }}
-                      fetchNextPage={() => void usageQuery.fetchNextPage()}
-                      hasNextPage={usageQuery.hasNextPage}
-                      isFetchingNextPage={usageQuery.isFetchingNextPage}
-                      sessionLocator={sessionLocator}
-                      locatorSearching={locatorSearching}
-                      workspaces={workspaces}
-                    />
-                  </>
+                  <SessionsTab
+                    data={{ pages: usageQuery.data.pages }}
+                    fetchNextPage={() => void usageQuery.fetchNextPage()}
+                    hasNextPage={usageQuery.hasNextPage}
+                    isFetchingNextPage={usageQuery.isFetchingNextPage}
+                    sessionLocator={sessionLocator}
+                    locatorSearching={locatorSearching}
+                    workspaceName={(id) => workspaceName(id) ?? id}
+                    summaryCost={summary?.cost_usd_estimated ?? 0}
+                  />
                 ) : tab === 'breakdown' ? (
-                  <DimensionBreakdown trend={trend} filters={filters} />
+                  <DimensionBreakdown
+                    trend={trend}
+                    filters={filters}
+                    labelFor={(row) => dimensionKeyLabel(row, filters.dimension, lookups)}
+                  />
                 ) : (
                   <FiveHourTab
                     trend={trend}
                     filters={filters}
+                    sessionTitle={sessionTitle}
                     onSwitchGranularity={() => { applyFilters({ ...filters, granularity: 'five_hour' }); }}
                   />
                 )}
-              </Card>
+              </UsageCard>
 
               {reliability !== undefined ? <ReliabilityCard reliability={reliability} /> : null}
             </>
           ) : null}
         </div>
       </main>
-    </>
+    </div>
   );
 }

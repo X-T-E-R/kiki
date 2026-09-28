@@ -103,7 +103,8 @@ function dayStart(daysBack) {
 
 function dayBucket(daysBack, groups, drill) {
   const start = dayStart(daysBack);
-  return { key: String(start), start_at: start, end_at: start + DAY_MS, groups, drilldown: drill };
+  const turnCount = drill.sessions.reduce((total, session) => total + session.turn_count, 0);
+  return { key: String(start), start_at: start, end_at: start + DAY_MS, turn_count: turnCount, request_count: turnCount + drill.sessions.reduce((total, session) => total + session.unknown_turn_records, 0), groups, drilldown: drill };
 }
 
 const K2 = 'k2-thinking';
@@ -141,7 +142,8 @@ function fiveHourStart(windowsBack) {
 
 function fiveHourBucket(windowsBack, groups, drill) {
   const start = fiveHourStart(windowsBack);
-  return { key: String(start), start_at: start, end_at: start + 5 * HOUR_MS, groups, drilldown: drill };
+  const turnCount = drill.sessions.reduce((total, session) => total + session.turn_count, 0);
+  return { key: String(start), start_at: start, end_at: start + 5 * HOUR_MS, turn_count: turnCount, request_count: turnCount + drill.sessions.reduce((total, session) => total + session.unknown_turn_records, 0), groups, drilldown: drill };
 }
 
 const fiveHourTrend = [
@@ -158,9 +160,26 @@ const fiveHourTrend = [
   ], drilldown([[ZETA, [3, 4]]])),
 ];
 
+// Like kap-server, the agent dimension keys by agent id: one group per agent
+// per bucket, with model/provider collapsing to null when an agent spoke to
+// more than one model in that bucket (`singleValue`).
+function mergeByKey(groups) {
+  const merged = new Map();
+  for (const entry of groups) {
+    const prev = merged.get(entry.key);
+    if (prev === undefined) { merged.set(entry.key, { ...entry, tokens: { ...entry.tokens } }); continue; }
+    for (const field of Object.keys(prev.tokens)) prev.tokens[field] += entry.tokens[field];
+    prev.cost_usd_estimated = Math.round((prev.cost_usd_estimated + entry.cost_usd_estimated) * 100) / 100;
+    prev.cost_unknown ||= entry.cost_unknown;
+    if (prev.model_alias !== entry.model_alias) prev.model_alias = null;
+    if (prev.provider !== entry.provider) prev.provider = null;
+  }
+  return [...merged.values()].sort((left, right) => right.cost_usd_estimated - left.cost_usd_estimated);
+}
+
 const agentDayTrend = dayTrend.map((bucket) => ({
   ...bucket,
-  groups: bucket.groups.flatMap((entry) => {
+  groups: mergeByKey(bucket.groups.flatMap((entry) => {
     const mainShare = Math.round(entry.cost_usd_estimated * 0.7 * 100) / 100;
     const subShare = Math.round((entry.cost_usd_estimated - mainShare) * 100) / 100;
     const mainTokens = tok(
@@ -175,7 +194,7 @@ const agentDayTrend = dayTrend.map((bucket) => ({
       entry.tokens.input_cache_read - mainTokens.input_cache_read,
       entry.tokens.input_cache_creation - mainTokens.input_cache_creation,
     );
-    const main = group(`agent-main-${entry.key}`, mainTokens, mainShare, {
+    const main = group('agent_main', mainTokens, mainShare, {
       provider: entry.provider,
       model_alias: entry.model_alias,
       agent_id: 'agent_main',
@@ -185,7 +204,7 @@ const agentDayTrend = dayTrend.map((bucket) => ({
     if (subShare <= 0 && entry.cost_unknown !== true) return [main];
     return [
       main,
-      group(`agent-sub-${entry.key}`, subTokens, subShare, {
+      group('agent_researcher', subTokens, subShare, {
         provider: entry.provider,
         model_alias: entry.model_alias,
         agent_id: 'agent_researcher',
@@ -194,13 +213,41 @@ const agentDayTrend = dayTrend.map((bucket) => ({
         cost_unknown: entry.cost_unknown,
       }),
     ];
-  }),
+  })),
 }));
+
+const DOCS_WS = 'wd_docs_site_000000000000';
+
+// The workspace (project) dimension keys by workspace id; split each day's
+// cost between the two registered workspaces so the breakdown resolves names.
+const projectDayTrend = dayTrend.map((bucket) => {
+  const sum = (pickField) => bucket.groups.reduce((acc, entry) => acc + pickField(entry), 0);
+  const tokens = tok(
+    sum((entry) => entry.tokens.input_other),
+    sum((entry) => entry.tokens.output),
+    sum((entry) => entry.tokens.input_cache_read),
+    sum((entry) => entry.tokens.input_cache_creation),
+  );
+  const cost = sum((entry) => entry.cost_usd_estimated);
+  const split = (share) => tok(
+    Math.round(tokens.input_other * share),
+    Math.round(tokens.output * share),
+    Math.round(tokens.input_cache_read * share),
+    Math.round(tokens.input_cache_creation * share),
+  );
+  return {
+    ...bucket,
+    groups: [
+      group('wd_fixture_000000000000', split(0.72), Math.round(cost * 0.72 * 100) / 100, { cost_unknown: bucket.groups.some((entry) => entry.cost_unknown) }),
+      group(DOCS_WS, split(0.28), Math.round(cost * 0.28 * 100) / 100),
+    ],
+  };
+});
 
 function sessionItem(id, title, minutesUpdated, usageEntry, fields = {}) {
   return {
     id,
-    workspace_id: 'wd_fixture_000000000000',
+    workspace_id: fields.workspace_id ?? 'wd_fixture_000000000000',
     title,
     created_at: msAgo(minutesUpdated + 60 * 24),
     updated_at: msAgo(minutesUpdated),
@@ -212,6 +259,11 @@ function sessionItem(id, title, minutesUpdated, usageEntry, fields = {}) {
       cost_unknown: fields.cost_unknown ?? false,
     },
     unknown_price_models: fields.unknown_price_models ?? [],
+    primary_model: fields.primary_model ?? (
+      id === ETA || id === 'session_fixture_usage_gamma' || id === 'session_fixture_usage_epsilon'
+        ? SONNET : id === 'session_fixture_usage_delta' ? 'mystery-9' : K2
+    ),
+    profile_names: fields.profile_names ?? ['default'],
   };
 }
 
@@ -220,8 +272,8 @@ const sessionItems = [
   sessionItem('session_fixture_usage_alpha', 'Fixture: bench harness', 45, [1_204_000, 88_100, 3_410_000, 240_000, 4.8213]),
   sessionItem('session_fixture_usage_epsilon', 'Fixture: archived spike', 9 * 24 * 60, [701_000, 44_800, 1_204_000, 96_000, 2.662], { archived: true }),
   sessionItem(ETA, 'Fixture: production migration', 8, [412_800, 31_500, 980_000, 77_400, 2.1044]),
-  sessionItem('session_fixture_usage_beta', 'Fixture: stylesheet polish', 300, [320_400, 21_700, 910_000, 61_000, 1.2044]),
-  sessionItem('session_fixture_usage_iota', 'Fixture: month-old draft', 24 * 24 * 60, [210_500, 12_300, 402_000, 31_000, 0.9421]),
+  sessionItem('session_fixture_usage_beta', 'Fixture: stylesheet polish', 300, [320_400, 21_700, 910_000, 61_000, 1.2044], { workspace_id: DOCS_WS }),
+  sessionItem('session_fixture_usage_iota', 'Fixture: month-old draft', 24 * 24 * 60, [210_500, 12_300, 402_000, 31_000, 0.9421], { workspace_id: DOCS_WS }),
   sessionItem(ZETA, 'Fixture: usage aggregation rework', 3, [84_300, 9_400, 210_000, 18_200, 0.5312]),
   sessionItem('session_fixture_usage_delta', 'Fixture: notes cleanup', 5 * 24 * 60, [61_200, 8_900, 0, 0, 0.1871], { cost_unknown: true, unknown_price_models: ['mystery-9'] }),
   sessionItem(THETA, 'Fixture: reference corpus index', 16, [12_900, 1_800, 0, 4_100, 0.0871]),
@@ -239,9 +291,10 @@ function sumTokens(items) {
   );
 }
 
-const usageV2 = {
+/** Exported so other scenarios (e.g. `skins`) can show a populated /usage. */
+export const usageV2 = {
   trend: { day: dayTrend, five_hour: fiveHourTrend },
-  trendByDimension: { agent: { day: agentDayTrend } },
+  trendByDimension: { agent: { day: agentDayTrend }, project: { day: projectDayTrend } },
   summary: {
     tokens: sumTokens(sessionItems),
     cost_usd_estimated: Math.round(sessionItems.reduce((sum, item) => sum + item.usage.cost_usd_estimated, 0) * 10000) / 10000,
@@ -274,6 +327,10 @@ const usageV2 = {
 };
 
 export default {
+  workspaces: [
+    { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: ts(40 * DAY_MIN), last_opened_at: ts(3), session_count: 7, pinned: false },
+    { id: DOCS_WS, root: 'C:/fixture-docs', name: 'docs-site', created_at: ts(20 * DAY_MIN), last_opened_at: ts(300), session_count: 2, pinned: false },
+  ],
   sessions: [
     sessionRecord(ZETA, {
       title: 'Fixture: usage aggregation rework',
@@ -317,6 +374,8 @@ export default {
       updated_at: ts(45),
     }),
     sessionRecord('session_fixture_usage_beta', {
+      workspace_id: DOCS_WS,
+      metadata: { cwd: 'C:/fixture-docs' },
       title: 'Fixture: stylesheet polish',
       agent_config: { model: 'kimi/k2-thinking' },
       usage: usage(320_400, 21_700, 910_000, 61_000, 1.2044, 11),
@@ -346,6 +405,8 @@ export default {
       updated_at: ts(9 * DAY_MIN),
     }),
     sessionRecord('session_fixture_usage_iota', {
+      workspace_id: DOCS_WS,
+      metadata: { cwd: 'C:/fixture-docs' },
       title: 'Fixture: month-old draft',
       agent_config: { model: 'kimi/k2-thinking' },
       usage: usage(210_500, 12_300, 402_000, 31_000, 0.9421, 7),
