@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { parseManifest, PLUGIN_SYSTEM_PROMPT_MAX_BYTES } from '#/app/plugin/manifest';
+import { parseManifest, PLUGIN_ICON_MAX_BYTES, PLUGIN_SYSTEM_PROMPT_MAX_BYTES } from '#/app/plugin/manifest';
 import { resolvePluginPrerequisites } from '#/app/plugin/prerequisites';
 
 import { symlinkDir } from '../../_base/utils/symlink';
@@ -337,6 +337,82 @@ describe('plugin manifest parser', () => {
 
     expect(result.manifest?.systemPrompt).toBe('x'.repeat(PLUGIN_SYSTEM_PROMPT_MAX_BYTES));
     expect(result.diagnostics).toEqual([]);
+  });
+
+  it('inlines an svg icon declared in the manifest as a data URI', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>';
+    await writeFile(join(dir, 'icon.svg'), svg, 'utf8');
+    await writeFile(
+      join(dir, 'kimi.plugin.json'),
+      JSON.stringify({ name: 'demo', icon: './icon.svg' }),
+      'utf8',
+    );
+
+    const result = await parseManifest(dir);
+
+    expect(result.manifest?.icon).toBe(
+      `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('inlines a png icon with the png media type', async () => {
+    await writeFile(join(dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await writeFile(
+      join(dir, 'kimi.plugin.json'),
+      JSON.stringify({ name: 'demo', icon: './icon.png' }),
+      'utf8',
+    );
+
+    const result = await parseManifest(dir);
+
+    expect(result.manifest?.icon).toBe('data:image/png;base64,iVBORw==');
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('drops an icon that is missing, outside the plugin, or not an svg or png', async () => {
+    await writeFile(join(dir, 'icon.txt'), 'not an image', 'utf8');
+    for (const [icon, message] of [
+      ['./missing.svg', '"icon" is not a file (./missing.svg)'],
+      ['./icon.txt', '"icon" must be an .svg or .png file inside the plugin (./icon.txt)'],
+      ['../icon.svg', '"icon" path must start with "./" (got "../icon.svg")'],
+      ['./../icon.png', '"icon" path resolves outside the plugin (./../icon.png)'],
+    ] as const) {
+      await writeFile(
+        join(dir, 'kimi.plugin.json'),
+        JSON.stringify({ name: 'demo', icon }),
+        'utf8',
+      );
+
+      const result = await parseManifest(dir);
+
+      expect(result.manifest?.icon, icon).toBeUndefined();
+      expect(result.diagnostics.map((d) => d.message), icon).toEqual([message]);
+      expect(result.diagnostics[0]?.severity, icon).toBe('warn');
+    }
+  });
+
+  it('ignores an oversized icon and a non-string icon value with a warning', async () => {
+    await writeFile(join(dir, 'icon.svg'), 'x'.repeat(PLUGIN_ICON_MAX_BYTES + 1), 'utf8');
+    await writeFile(
+      join(dir, 'kimi.plugin.json'),
+      JSON.stringify({ name: 'demo', icon: './icon.svg' }),
+      'utf8',
+    );
+    const oversized = await parseManifest(dir);
+    expect(oversized.manifest?.icon).toBeUndefined();
+    expect(oversized.diagnostics.map((d) => d.message)).toEqual([
+      `"icon" is ${PLUGIN_ICON_MAX_BYTES + 1} bytes, exceeding the 64 KB limit; the icon is ignored (./icon.svg)`,
+    ]);
+
+    await writeFile(
+      join(dir, 'kimi.plugin.json'),
+      JSON.stringify({ name: 'demo', icon: true }),
+      'utf8',
+    );
+    const wrongType = await parseManifest(dir);
+    expect(wrongType.manifest?.icon).toBeUndefined();
+    expect(wrongType.diagnostics.map((d) => d.message)).toEqual(['"icon" must be a string']);
   });
 
   it('parses declarative x-kiki prerequisites without accepting install scripts', async () => {
