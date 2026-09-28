@@ -736,7 +736,6 @@ describe('GlobalSearchService', () => {
       expect(unscoped.items.length).toBe(2);
       expect(unscoped.hasMore).toBe(true);
 
-      // The filter is applied before paging: WS alone still fills the page.
       const scoped1 = await service.search({
         query: '苹果',
         workspaceId: WS,
@@ -757,8 +756,6 @@ describe('GlobalSearchService', () => {
       expect(scoped2.items.map((h) => h.time)).toEqual([T3]);
       expect(scoped2.hasMore).toBe(false);
 
-      // The token fingerprint covers workspace_id, so a token issued under one
-      // scope can never be replayed under another.
       await expect(
         service.search({
           query: '苹果',

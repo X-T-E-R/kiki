@@ -1,16 +1,3 @@
-/**
- * Read-only GUI skin files from `<KIKI_HOME>/themes/`.
- *
- * The same directory the TUI reads for its JSON color themes. The two formats
- * coexist by discriminator: a file carrying `"kind": "kiki-skin"` is a GUI
- * skin, anything else is left to the TUI loader and reported as skipped here.
- *
- * Read-only on purpose. The GUI never writes a user's theme directory: the
- * settings editor hands the user a file to place themselves, so an agent, a
- * stray click, or a compromised browser session cannot rewrite what the user
- * sees on screen.
- */
-
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -43,10 +30,8 @@ export interface SkinsRouteOptions {
   readonly themesDir: string;
 }
 
-/** One skin id ↔ one `<id>.json`; the slug shape is what keeps this in-directory. */
 const SKIN_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
-/** Refuse to read anything unreasonable for a token file. */
 const MAX_SKIN_BYTES = 64 * 1024;
 
 async function readSkinJson(themesDir: string, id: string): Promise<unknown> {
@@ -73,7 +58,7 @@ export function registerSkinsRoutes(app: SkinsRouteHost, opts: SkinsRouteOptions
         entries = dir.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
           .map((entry) => entry.name);
       } catch {
-        // No themes directory yet is the normal case, not an error.
+        entries = [];
       }
       for (const file of entries.sort()) {
         const id = file.slice(0, -'.json'.length);
@@ -123,8 +108,6 @@ export function registerSkinsRoutes(app: SkinsRouteHost, opts: SkinsRouteOptions
     },
     async (req, reply) => {
       const { skin_id: skinId } = req.params as { skin_id: string };
-      // The param schema already constrains the shape; the explicit re-check
-      // is the one that guarantees no separator ever reaches `join`.
       if (!SKIN_ID.test(skinId)) {
         reply.send(errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, 'skin not found', req.id));
         return;
