@@ -3,10 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { createServices } from '#/_base/di/test';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IFlagService } from '#/app/flag/flag';
 import { SshHostStore } from '#/app/ssh/sshHosts';
+import { ISshHostService, SshHostService } from '#/app/ssh/sshService';
 import { appendSshHost, discoverSshAliases, resolveSshConfig, workspaceSshKey } from '#/app/ssh/sshConfig';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { ISshCredentialStore } from '#/persistence/interface/sshCredentialStore';
+import { ISshHostDocumentStore } from '#/persistence/interface/sshHostDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 const directories: string[] = [];
 
@@ -55,5 +63,28 @@ describe('SSH host store', () => {
     await expect(hosts.writeBack('gpu')).rejects.toThrow('already exists');
     await expect(appendSshHost(config, '-bad', 'example.test', 'tester', 22)).rejects.toThrow('Invalid SSH host alias');
     await expect(resolveSshConfig('-oProxyCommand=bad', config)).rejects.toThrow('Invalid SSH host alias');
+  });
+
+  it('resolves the app-scoped host service through DI and gates connections with the native SSH flag', async () => {
+    const { home } = await fixture();
+    const disposables = new DisposableStore();
+    try {
+      const ix = createServices(disposables, {
+        additionalServices: (registry) => {
+          registry.defineInstance(IFileSystemStorageService, new FileStorageService(home, 0o700, 0o600));
+          registry.define(ISshHostDocumentStore, TomlAtomicDocumentStore);
+          registry.definePartialInstance(IBootstrapService, { homeDir: home, osHomeDir: home });
+          registry.definePartialInstance(IFlagService, { enabled: () => false });
+          registry.definePartialInstance(ISshCredentialStore, { read: async () => undefined });
+          registry.define(ISshHostService, SshHostService);
+        },
+      });
+      const service = ix.get(ISshHostService);
+      await service.upsert({ id: 'dev', name: 'Dev', hostname: '127.0.0.1', user: 'tester' });
+      expect((await service.list()).map((host) => host.id)).toEqual(['dev']);
+      await expect(service.connect('dev')).rejects.toThrow('Native SSH is disabled');
+    } finally {
+      disposables.dispose();
+    }
   });
 });

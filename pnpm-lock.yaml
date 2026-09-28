@@ -411,6 +411,9 @@ importers:
       '@kiki/codex-client':
         specifier: workspace:^
         version: link:../codex-client
+      '@kiki/kaos':
+        specifier: workspace:^
+        version: link:../kaos
       '@kiki/minidb':
         specifier: workspace:^
         version: link:../minidb

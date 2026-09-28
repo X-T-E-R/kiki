@@ -189,12 +189,11 @@ function buildAuthHandler(
   username: string,
   privateKeys: readonly (Buffer | string)[],
   password?: string,
+  agent?: ConnectConfig['agent'],
 ): ConnectConfig['authHandler'] {
-  const authQueue: AnyAuthMethod[] = privateKeys.map((key) => ({
-    key,
-    type: 'publickey',
-    username,
-  }));
+  const authQueue: AnyAuthMethod[] = [];
+  if (agent !== undefined) authQueue.push({ type: 'agent', username, agent });
+  for (const key of privateKeys) authQueue.push({ key, type: 'publickey', username });
   if (password !== undefined) {
     authQueue.push({
       password,
@@ -442,6 +441,7 @@ export class SSHKaos implements Kaos {
   private _home: string;
   private _cwd: string;
   private readonly _envLayers: readonly Record<string, string>[];
+  private _closed = false;
 
   // Stub: real wiring (probing the remote host via `uname` / `$SHELL` over the
   // SSH transport) is deferred.
@@ -463,6 +463,12 @@ export class SSHKaos implements Kaos {
     this._home = home;
     this._cwd = cwd;
     this._envLayers = envLayers;
+    this._client.once('close', () => { this._closed = true; });
+  }
+
+  onDidDisconnect(listener: () => void): () => void {
+    this._client.on('close', listener);
+    return () => { this._client.off('close', listener); };
   }
 
   withCwd(cwd: string): SSHKaos {
@@ -505,14 +511,21 @@ export class SSHKaos implements Kaos {
       }
     }
     if (options.keyPaths) {
-      const keyPromises = options.keyPaths.map((keyPath) => readFile(keyPath, 'utf-8'));
+      const keyPromises = options.keyPaths.map(async (keyPath) => {
+        try {
+          return await readFile(keyPath, 'utf-8');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+          throw error;
+        }
+      });
       const keyData = await Promise.all(keyPromises);
       for (const key of keyData) {
-        privateKeys.push(key);
+        if (key !== undefined) privateKeys.push(key);
       }
     }
-    if (privateKeys.length > 0) {
-      const authHandler = buildAuthHandler(options.username, privateKeys, options.password);
+    if (privateKeys.length > 0 || config.agent !== undefined) {
+      const authHandler = buildAuthHandler(options.username, privateKeys, options.password, config.agent);
       if (authHandler !== undefined) {
         config.authHandler = authHandler;
       }
@@ -937,11 +950,10 @@ export class SSHKaos implements Kaos {
    * Close the SSH connection. After this, the SSHKaos instance is unusable.
    */
   close(): Promise<void> {
+    if (this._closed) return Promise.resolve();
     this._sftp.end();
     return new Promise<void>((resolve) => {
-      this._client.once('close', () => {
-        resolve();
-      });
+      this._client.once('close', () => { resolve(); });
       this._client.end();
     });
   }

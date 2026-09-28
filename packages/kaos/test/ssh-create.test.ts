@@ -15,6 +15,7 @@ interface CreateHarnessState {
 interface CreateHarnessOptions {
   onConnect?: (client: EventEmitter, config: ConnectConfig, state: CreateHarnessState) => void;
   readFileValues?: Record<string, string>;
+  missingKeyPaths?: readonly string[];
   sftp?: SFTPWrapper;
   sftpError?: Error;
 }
@@ -122,6 +123,7 @@ async function loadSSHModule(options: CreateHarnessOptions = {}): Promise<{
   vi.doMock('node:fs/promises', () => ({
     readFile: vi.fn(async (path: string) => {
       state.readFileCalls.push(path);
+      if (options.missingKeyPaths?.includes(path)) throw Object.assign(new Error('missing key'), { code: 'ENOENT' });
       const value = options.readFileValues?.[path];
       if (value === undefined) {
         throw new Error(`Unexpected readFile(${path})`);
@@ -248,6 +250,34 @@ describe('SSHKaos.create()', () => {
     expect(state.attemptedKeys).toEqual(['first-key', 'second-key']);
     expect(state.connectConfigs[0]?.authHandler).toBeTypeOf('function');
     expect(state.connectConfigs[0]?.privateKey).toBeUndefined();
+  });
+
+  it('skips absent default identity files and tries ssh-agent before an available private key', async () => {
+    const yielded: string[] = [];
+    const { SSHKaos, state } = await loadSSHModule({
+      missingKeyPaths: ['/keys/absent'],
+      readFileValues: { '/keys/available': 'available-key' },
+      onConnect(client, config) {
+        const handler = config.authHandler;
+        if (typeof handler !== 'function') throw new Error('Missing SSH auth handler');
+        handler([], false, (first: string | AnyAuthMethod | false) => {
+          if (first === false || typeof first === 'string') throw new Error('Missing agent auth method');
+          yielded.push(first.type);
+          handler([], false, (second: string | AnyAuthMethod | false) => {
+            if (second === false || typeof second === 'string') throw new Error('Missing key auth method');
+            yielded.push(second.type);
+            client.emit('ready');
+          });
+        });
+      },
+    });
+    await SSHKaos.create({
+      host: 'example.com', username: 'tester',
+      keyPaths: ['/keys/absent', '/keys/available'],
+      extraOptions: { agent: '\\\\.\\pipe\\openssh-ssh-agent' },
+    });
+    expect(yielded).toEqual(['agent', 'publickey']);
+    expect(state.readFileCalls).toEqual(['/keys/absent', '/keys/available']);
   });
 
   it('ends the client when opening SFTP fails after connect succeeds', async () => {

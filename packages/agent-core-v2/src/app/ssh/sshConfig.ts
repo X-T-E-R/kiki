@@ -14,6 +14,7 @@ export interface ResolvedSshConfig {
   readonly user: string;
   readonly port: number;
   readonly identityFiles: readonly string[];
+  readonly identityAgent?: string;
   readonly proxyJump?: string;
   readonly proxyCommand?: string;
   readonly userKnownHostsFiles: readonly string[];
@@ -47,6 +48,7 @@ export async function resolveSshConfig(alias: string, configFile?: string): Prom
     user,
     port,
     identityFiles: fields.get('identityfile') ?? [],
+    identityAgent: first('identityagent'),
     proxyJump: first('proxyjump') === 'none' ? undefined : first('proxyjump'),
     proxyCommand: first('proxycommand') === 'none' ? undefined : first('proxycommand'),
     userKnownHostsFiles: fields.get('userknownhostsfile') ?? [],

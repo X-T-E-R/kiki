@@ -5,6 +5,11 @@ import { userInfo } from 'node:os';
 import { promisify } from 'node:util';
 import { join } from 'pathe';
 
+import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { LifecycleScope } from '#/app/scopes';
+import { ISshCredentialStore } from '#/persistence/interface/sshCredentialStore';
+
 const execFileAsync = promisify(execFile);
 
 async function restrictWindowsAcl(path: string): Promise<void> {
@@ -143,3 +148,30 @@ export class SshCredentialStore {
     return path;
   }
 }
+
+export class SshCredentialStorageService implements ISshCredentialStore {
+  declare readonly _serviceBrand: undefined;
+  private readonly store: SshCredentialStore;
+
+  constructor(@IBootstrapService bootstrap: IBootstrapService) {
+    this.store = new SshCredentialStore(bootstrap.homeDir);
+  }
+
+  save(hostId: string, kind: 'password' | 'passphrase', value: string, remember?: boolean): Promise<'keyring' | 'file' | 'memory'> {
+    return this.store.save(hostId, kind, value, remember);
+  }
+
+  read(hostId: string, kind: 'password' | 'passphrase'): Promise<string | undefined> {
+    return this.store.read(hostId, kind);
+  }
+
+  forget(hostId: string, kind: 'password' | 'passphrase'): Promise<void> {
+    return this.store.forget(hostId, kind);
+  }
+
+  savePrivateKey(hostId: string, contents: string): Promise<string> {
+    return this.store.savePrivateKey(hostId, contents);
+  }
+}
+
+registerScopedService(LifecycleScope.App, ISshCredentialStore, SshCredentialStorageService, ScopeActivation.OnDemand, 'ssh');

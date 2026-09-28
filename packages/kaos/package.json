@@ -37,6 +37,10 @@
     "./ssh": {
       "types": "./src/ssh.ts",
       "default": "./src/ssh.ts"
+    },
+    "./ssh-connection": {
+      "types": "./src/ssh-connection.ts",
+      "default": "./src/ssh-connection.ts"
     }
   },
   "scripts": {

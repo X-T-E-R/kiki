@@ -66,6 +66,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@kiki/acp-client": "workspace:^",
     "@kiki/codex-client": "workspace:^",
+    "@kiki/kaos": "workspace:^",
     "@kiki/oauth": "workspace:^",
     "@kiki/minidb": "workspace:^",
     "@kiki/protocol": "workspace:^",
