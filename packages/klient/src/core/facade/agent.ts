@@ -147,6 +147,9 @@ export interface AgentFacade {
   compact(input?: { instruction?: string }): Promise<boolean>;
   cancelCompaction(): Promise<void>;
   isCompacting(): Promise<boolean>;
+  getAutoCompact(): Promise<import('@kiki/agent-core-v2/agent/fullCompaction/autoCompact').ResolvedAutoCompact>;
+  getDefaultAutoCompact(): Promise<import('@kiki/agent-core-v2/agent/fullCompaction/autoCompact').ResolvedAutoCompact>;
+  setAutoCompactOverride(tokens: number | null): Promise<void>;
 }
 
 export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFacade {
@@ -289,5 +292,11 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentFullCompactionService', 'cancel', []) as Promise<void>,
     isCompacting: () =>
       call(scope, 'agentFullCompactionService', 'isCompacting', []) as Promise<boolean>,
+    getAutoCompact: () =>
+      call(scope, 'agentFullCompactionService', 'getAutoCompact', []) as ReturnType<AgentFacade['getAutoCompact']>,
+    getDefaultAutoCompact: () =>
+      call(scope, 'agentFullCompactionService', 'getDefaultAutoCompact', []) as ReturnType<AgentFacade['getDefaultAutoCompact']>,
+    setAutoCompactOverride: (tokens) =>
+      call(scope, 'agentFullCompactionService', 'setAutoCompactOverride', [tokens]) as Promise<void>,
   };
 }

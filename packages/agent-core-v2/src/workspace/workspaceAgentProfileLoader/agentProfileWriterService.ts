@@ -67,6 +67,7 @@ const TOP_LEVEL_KEYS = new Set([
   'modelAlias',
   'thinkingEffort',
   'serviceTier',
+  'autoCompact',
   'tools',
   'disallowedTools',
   'routes',
@@ -224,6 +225,9 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     }
     if (request.serviceTier !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'service_tier', request.serviceTier);
+    }
+    if (request.autoCompact !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'auto_compact', request.autoCompact);
     }
     if (request.tools !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'tools', request.tools);
@@ -428,6 +432,10 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   validateModelAlias(request.modelAlias, 'modelAlias', issues);
   validateOptionalString(request.thinkingEffort, 'thinkingEffort', issues);
   validateServiceTier(request.serviceTier, issues);
+  if (request.autoCompact !== undefined && request.autoCompact !== null &&
+      (!Number.isSafeInteger(request.autoCompact) || request.autoCompact <= 0)) {
+    issues.push({ path: 'autoCompact', message: 'profile auto_compact must be an absolute positive integer token count' });
+  }
   validateStringList(request.tools, 'tools', issues);
   validateStringList(request.disallowedTools, 'disallowedTools', issues);
   if (request.prompt !== undefined && typeof request.prompt !== 'string') {
@@ -471,6 +479,7 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.modelAlias,
     request.thinkingEffort,
     request.serviceTier,
+    request.autoCompact,
     request.tools,
     request.disallowedTools,
     request.prompt,
@@ -568,7 +577,7 @@ function replacePromptBody(text: string, prompt: string): string {
 function updateFrontmatterScalar(
   text: string,
   key: string,
-  value: string | boolean | readonly string[] | null,
+  value: string | number | boolean | readonly string[] | null,
 ): string {
   const block = locateFrontmatter(text);
   const lines = scanLines(block.content);

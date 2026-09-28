@@ -9,6 +9,10 @@ export interface AgentStatusUpdatedPayload {
   model?: string;
   thinkingEffort?: string;
   maxContextTokens?: number;
+  autoCompactTokens?: number;
+  autoCompactSource?: 'session' | 'profile' | 'model' | 'global' | 'legacy';
+  effectiveMaxContextTokens?: number;
+  reservedContextTokens?: number;
   contextTokens?: number;
 }
 

@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 105 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 106 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -67,6 +67,7 @@
 //     agentsMdReminder.cwd                            src/agent/agentsMdReminder/agentsMdReminderService.ts
 //     agentsMdReminder.known                          src/agent/agentsMdReminder/agentsMdReminderService.ts
 //     agentsMdReminder.seeded                         src/agent/agentsMdReminder/agentsMdReminderService.ts
+//     autoCompactOverride                             src/agent/fullCompaction/autoCompactOps.ts
 //     contextMemory                                   src/agent/contextMemory/contextOps.ts
 //     contextProjector.lastRepairSignature            src/agent/contextProjector/contextProjectorService.ts
 //     cron                                            src/session/cron/cronOps.ts
@@ -1351,6 +1352,9 @@ export interface AgentStateSnapshot {
       cachedWriteTokens?: number;
     };
   };
+  // src/agent/fullCompaction/autoCompactOps.ts
+  // replayable · durable — folds: AutoCompactOverrideChanged
+  'autoCompactOverride': Record<string, number>;
   // src/agent/fullCompaction/compactionOps.ts
   // replayable · durable — folds: FullCompactionBegin, FullCompactionCancel, FullCompactionComplete
   'fullCompaction': /* CompactionState — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ {
@@ -1436,6 +1440,10 @@ export interface AgentStateSnapshot {
       readonly alwaysThinking: boolean | undefined;
       readonly thinkingLevel: /* ThinkingEffort — packages/agent-core-v2/src/kosong/contract/provider.ts */ 'off' | 'on' | (string & {});
       readonly reservedContextSize: number | undefined;
+      readonly globalAutoCompact?: string;
+      readonly modelAutoCompact?: number;
+      readonly profileAutoCompact?: number;
+      readonly sessionAutoCompact?: number;
       readonly compactionTriggerRatio: number | undefined;
       readonly compactionMaxAttempts: number | undefined;
       readonly compactionSoftContextSize: number | undefined;
@@ -1751,6 +1759,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1785,6 +1794,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1846,6 +1856,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1880,6 +1891,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -1922,6 +1934,7 @@ export interface AgentStateSnapshot {
         };
       }) => Promise<string>;
       readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+        readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly name: string;
@@ -1975,6 +1988,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
+            readonly autoCompact?: number;
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2009,6 +2023,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
+            readonly autoCompact?: number;
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2039,6 +2054,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
+          readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2126,6 +2142,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
+          readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2160,6 +2177,7 @@ export interface AgentStateSnapshot {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           };
+          readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2190,6 +2208,7 @@ export interface AgentStateSnapshot {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         };
+        readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2266,11 +2285,13 @@ export interface AgentStateSnapshot {
         readonly retries: number;
       };
       readonly delegationNotice?: 'off' | 'auto';
+      readonly autoCompact?: number;
       readonly contextBudget?: number;
       readonly maxCompletionTokens?: number;
     }, 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix'> & {
       readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
         readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly name: string;
@@ -2324,6 +2345,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2358,6 +2380,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2388,6 +2411,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
+            readonly autoCompact?: number;
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2473,6 +2497,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2507,6 +2532,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2568,6 +2594,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2602,6 +2629,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2676,6 +2704,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2685,6 +2714,7 @@ export interface AgentStateSnapshot {
           readonly status: 'ready' | 'unavailable';
           readonly sourceDefinitionId?: string;
           readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+            readonly autoCompact?: number;
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly name: string;
@@ -2738,6 +2768,7 @@ export interface AgentStateSnapshot {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 };
+                readonly autoCompact?: number;
                 readonly contextBudget?: number;
                 readonly maxCompletionTokens?: number;
                 readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2772,6 +2803,7 @@ export interface AgentStateSnapshot {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 };
+                readonly autoCompact?: number;
                 readonly contextBudget?: number;
                 readonly maxCompletionTokens?: number;
                 readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2802,6 +2834,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2830,6 +2863,7 @@ export interface AgentStateSnapshot {
           };
         }>>>>;
         readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly name: string;
@@ -2883,6 +2917,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2917,6 +2952,7 @@ export interface AgentStateSnapshot {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               };
+              readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
@@ -2947,6 +2983,7 @@ export interface AgentStateSnapshot {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             };
+            readonly autoCompact?: number;
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';

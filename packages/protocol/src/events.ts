@@ -564,6 +564,11 @@ export interface AgentStatusUpdatedEvent {
   readonly thinkingEffort?: string;
   readonly contextTokens?: number;
   readonly maxContextTokens?: number;
+  readonly autoCompactTokens?: number;
+  /** The effective layer; legacy means no auto_compact key was configured. */
+  readonly autoCompactSource?: 'session' | 'profile' | 'model' | 'global' | 'legacy';
+  readonly effectiveMaxContextTokens?: number;
+  readonly reservedContextTokens?: number;
   readonly contextUsage?: number;
   readonly planMode?: boolean;
   readonly swarmMode?: boolean;

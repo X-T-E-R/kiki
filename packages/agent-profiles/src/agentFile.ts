@@ -58,6 +58,7 @@ const AGENT_FILE_KEYS = new Set([
   'service_tier',
   'request_params',
   'context_budget',
+  'auto_compact',
   'max_completion_tokens',
   'prompt_overrides',
   'system_prompt_mode',
@@ -306,6 +307,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     serviceTier,
     requestParams,
     contextBudget: parseTokenBudget(frontmatter['context_budget'], 'context_budget', options.path),
+    autoCompact: parseAutoCompactTokens(frontmatter['auto_compact'], 'profile auto_compact', options.path),
     maxCompletionTokens: parseTokenBudget(frontmatter['max_completion_tokens'], 'max_completion_tokens', options.path),
     promptOverrides,
     systemPromptMode: resolvedSystemPromptMode,
@@ -326,6 +328,7 @@ const MODEL_PROFILE_ENTRY_KEYS = new Set([
   'service_tier',
   'request_params',
   'context_budget',
+  'auto_compact',
   'max_completion_tokens',
   'prompt_overrides',
 ]);
@@ -401,6 +404,7 @@ function parseModelProfiles(
       serviceTier: parseServiceTier(item['service_tier'], filePath),
       requestParams: parseRequestParams(item['request_params'], filePath),
       contextBudget: parseTokenBudget(item['context_budget'], `${prefix}.context_budget`, filePath),
+      autoCompact: parseAutoCompactTokens(item['auto_compact'], `profile ${prefix}.auto_compact`, filePath),
       maxCompletionTokens: parseTokenBudget(item['max_completion_tokens'], `${prefix}.max_completion_tokens`, filePath),
       promptOverrides: Object.hasOwn(item, 'prompt_overrides')
         ? parsePromptOverridesField(item['prompt_overrides'], `${prefix}.prompt_overrides`, filePath)
@@ -425,6 +429,12 @@ function parseTokenBudget(value: unknown, field: string, filePath: string): numb
   if (value === undefined) return undefined;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
   throw new AgentFileParseError(`Frontmatter field "${field}" in ${filePath} must be a positive integer token budget`);
+}
+
+function parseAutoCompactTokens(value: unknown, field: string, filePath: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
+  throw new AgentFileParseError(`Frontmatter field "${field}" in ${filePath} must be an absolute positive integer token count, not a percentage`);
 }
 
 function parseModelProfilePromptMode(

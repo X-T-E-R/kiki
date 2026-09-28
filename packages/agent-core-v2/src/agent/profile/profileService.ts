@@ -1605,6 +1605,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const modelAlias = this.model;
     const model = this.modelCatalog.get(modelAlias);
     const loopControl = this.config.get<LoopControl>('loopControl');
+    const bound = this.profileState.boundProfile ?? this.activeProfile;
+    const candidate = this.profileState.profileName === undefined ? undefined : this.catalog.get(this.profileState.profileName);
+    const profile = candidate?.definitionId !== undefined && candidate.definitionId === bound?.definitionId
+      ? candidate : bound;
+    const entry = resolveModelProfileEntry(profile?.modelProfiles, model.id, (id) => this.models.resolveId(id));
     return {
       modelAlias,
       modelCapabilities: this.getModelCapabilities(),
@@ -1612,6 +1617,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       alwaysThinking: model.alwaysThinking || undefined,
       thinkingLevel: this.resolveThinkingState(model).effective,
       reservedContextSize: loopControl?.reservedContextSize,
+      globalAutoCompact: loopControl?.autoCompact,
+      modelAutoCompact: model.autoCompact,
+      profileAutoCompact: entry?.autoCompact ?? profile?.autoCompact,
       compactionTriggerRatio: loopControl?.compactionTriggerRatio,
       compactionMaxAttempts: loopControl?.compactionMaxAttempts,
       compactionSoftContextSize: loopControl?.compactionSoftContextSize,

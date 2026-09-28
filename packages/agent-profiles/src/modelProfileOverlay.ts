@@ -12,6 +12,7 @@ export function mergeModelParameters(
   const requestLayers = defined.flatMap((layer) => layer.requestParams === undefined ? [] : [layer.requestParams]);
   return {
     contextBudget: minimum('contextBudget'),
+    autoCompact: defined.findLast((layer) => layer.autoCompact !== undefined)?.autoCompact,
     maxCompletionTokens: minimum('maxCompletionTokens'),
     serviceTier: defined.findLast((layer) => layer.serviceTier !== undefined)?.serviceTier,
     requestParams: requestLayers.length === 0 ? undefined : Object.assign({}, ...requestLayers),

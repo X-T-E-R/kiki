@@ -24,7 +24,8 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (73 record types)
+// Index (74 record types)
+//   auto_compact.override_changed      autoCompactOverride                                                   src/agent/fullCompaction/autoCompactOps.ts
 //   config.update                      profile                                                               src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory, turn                                                   src/agent/contextMemory/contextEvents.ts
 //   context.append_message             contextMemory, goalForkNotice, plan, task.notificationDelivery, todo  src/agent/contextMemory/contextEvents.ts
@@ -98,6 +99,16 @@
 //   turn.step.interrupted              (none)                                                                src/agent/loop/turnEvents.ts
 //   turn.step.retrying                 (none)                                                                src/agent/stepRetry/stepRetryService.ts
 //   usage.record                       usage, usage.panelAccounting                                          src/agent/usage/usageOps.ts
+
+/**
+ * states: autoCompactOverride
+ * owner: src/agent/fullCompaction/autoCompactOps.ts
+ */
+interface AutoCompactOverrideChangedPayload {
+  _name: 'auto_compact.override_changed';
+  modelId: string;
+  tokens: number | null;
+}
 
 /**
  * states: profile
@@ -1199,6 +1210,7 @@ interface UsageRecordPayload {
 
 /** Record type → payload sketch. */
 interface WirePayloadMap {
+  "auto_compact.override_changed": AutoCompactOverrideChangedPayload;
   "config.update": ConfigUpdatePayload;
   "context.append_loop_event": ContextAppendLoopEventPayload;
   "context.append_message": ContextAppendMessagePayload;

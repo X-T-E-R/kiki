@@ -24,6 +24,7 @@ export interface AgentFileRoot {
 }
 
 export interface AgentFileDefinition {
+  readonly autoCompact?: number;
   readonly contextBudget?: number;
   readonly maxCompletionTokens?: number;
   readonly name: string;

@@ -34,6 +34,7 @@ export interface AgentProfileWriteRequest {
   readonly modelAlias?: string | null;
   readonly thinkingEffort?: string | null;
   readonly serviceTier?: ServiceTier | null;
+  readonly autoCompact?: number | null;
   readonly tools?: readonly string[] | null;
   readonly disallowedTools?: readonly string[] | null;
   readonly routes?: readonly AgentProfileRouteUpdate[];

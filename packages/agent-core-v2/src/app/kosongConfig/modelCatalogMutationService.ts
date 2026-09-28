@@ -223,6 +223,7 @@ function modelEntity(
     max_context_size: record.maxContextSize,
     max_input_size: record.maxInputSize,
     max_output_size: record.maxOutputSize,
+    auto_compact: record.autoCompact,
     capabilities: record.capabilities,
     support_efforts: record.supportEfforts,
     default_effort: record.defaultEffort,
@@ -325,10 +326,14 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   if (patch.max_output_size !== undefined && patch.max_output_size !== null) {
     assertTokenBudget('max_output_size', patch.max_output_size);
   }
+  if (patch.auto_compact !== undefined && patch.auto_compact !== null) {
+    assertTokenBudget('model auto_compact', patch.auto_compact);
+  }
   setOrClear('displayName', patch.display_name);
   setOrClear('maxContextSize', patch.max_context_size);
   setOrClear('maxInputSize', patch.max_input_size);
   setOrClear('maxOutputSize', patch.max_output_size);
+  setOrClear('autoCompact', patch.auto_compact);
   setOrClear('capabilities', patch.capabilities);
   setOrClear('supportEfforts', patch.support_efforts);
   setOrClear('defaultEffort', patch.default_effort);
@@ -518,6 +523,7 @@ export class ModelCatalogMutationService
       if (request.max_context_size !== undefined) record.maxContextSize = request.max_context_size;
       if (request.max_input_size !== undefined) record.maxInputSize = request.max_input_size;
       if (request.max_output_size !== undefined) record.maxOutputSize = request.max_output_size;
+      if (request.auto_compact !== undefined) record.autoCompact = request.auto_compact;
       if (request.capabilities !== undefined) record.capabilities = [...request.capabilities];
       if (request.support_efforts !== undefined) {
         record.supportEfforts = [...request.support_efforts];

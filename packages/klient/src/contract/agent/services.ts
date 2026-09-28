@@ -219,6 +219,15 @@ export const agentFullCompactionContract = {
   begin: { input: z.tuple([fullCompactionInputSchema]), output: z.boolean() },
   cancel: { input: z.tuple([]), output: noResult },
   isCompacting: { input: z.tuple([]), output: z.boolean() },
+  getAutoCompact: { input: z.tuple([]), output: z.object({
+    tokens: z.number(), source: z.enum(['session', 'profile', 'model', 'global', 'legacy']),
+    effectiveMaxContextTokens: z.number(), reservedContextTokens: z.number(),
+  }) },
+  getDefaultAutoCompact: { input: z.tuple([]), output: z.object({
+    tokens: z.number(), source: z.enum(['session', 'profile', 'model', 'global', 'legacy']),
+    effectiveMaxContextTokens: z.number(), reservedContextTokens: z.number(),
+  }) },
+  setAutoCompactOverride: { input: z.tuple([z.number().int().positive().safe().nullable()]), output: noResult },
 } satisfies ServiceContract;
 
 export const agentTaskContract = {

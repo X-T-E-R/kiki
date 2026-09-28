@@ -47,6 +47,7 @@ export function agentProfileFromFile(
     serviceTier: definition.serviceTier,
     requestParams: definition.requestParams,
     contextBudget: definition.contextBudget,
+    autoCompact: definition.autoCompact,
     maxCompletionTokens: definition.maxCompletionTokens,
     promptOverrides: definition.promptOverrides,
     systemPromptMode: definition.systemPromptMode,

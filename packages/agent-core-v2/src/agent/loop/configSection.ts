@@ -17,6 +17,9 @@ export const LoopControlSchema = z.object({
   maxAttemptsPerStep: z.number().int().min(0).optional(),
   maxRalphIterations: z.number().int().min(-1).optional(),
   reservedContextSize: z.number().int().min(0).optional(),
+  autoCompact: z.string({ error: 'global loop_control.auto_compact must be a percentage such as "85%"; token counts belong at model, profile, or session level' })
+    .regex(/^(?:100(?:\.0+)?|(?:[1-9]?\d)(?:\.\d+)?)%$/, 'global loop_control.auto_compact must be a percentage such as "85%"; token counts belong at model, profile, or session level')
+    .optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.99).optional(),
   compactionMaxAttempts: z.number().int().min(1).optional(),
   compactionSoftContextSize: z.number().int().min(0).optional(),

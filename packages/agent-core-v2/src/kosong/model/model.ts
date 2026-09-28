@@ -11,6 +11,7 @@ import type { OAuthRef } from '../provider/provider';
 import type { GenerationParameters } from './parameters';
 
 export interface ModelParameterDefaults {
+  autoCompact?: number;
   contextBudget?: number;
   maxCompletionTokens?: number;
   serviceTier?: ServiceTier;

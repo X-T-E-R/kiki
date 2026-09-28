@@ -24,6 +24,7 @@ export type SubagentDeclaration =
 export type AgentModelProfilePromptMode = 'prepend' | 'append' | 'wrap';
 
 export interface AgentModelParameters {
+  readonly autoCompact?: number;
   readonly contextBudget?: number;
   readonly maxCompletionTokens?: number;
   readonly serviceTier?: ServiceTier;

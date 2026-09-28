@@ -9,6 +9,7 @@ import {
   APIContextOverflowError,
   APIRequestTooLargeError,
   APIStatusError,
+  normalizeAPIStatusError,
 } from '#/kosong/contract/errors';
 import { type Message, type StreamedMessagePart, type ToolCall } from '#/kosong/contract/message';
 import { generate as runKosongGenerate } from '#/kosong/contract/generate';
@@ -871,7 +872,7 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('reduces the compacted prefix and retries when the model returns only thinking content', async () => {
+  it('retries an empty compaction response without dropping input messages', async () => {
     vi.useFakeTimers();
     const firstThinkOnly = deferred<void>();
     const inputs: string[][] = [];
@@ -902,7 +903,7 @@ describe('FullCompaction', () => {
     await completed;
 
     expect(inputs).toHaveLength(2);
-    expect(inputs[1]!.length).toBeLessThan(inputs[0]!.length);
+    expect(inputs[1]).toEqual(inputs[0]);
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
@@ -982,13 +983,14 @@ describe('FullCompaction', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
 
-    expect(inputs).toHaveLength(5);
-    expect(inputs[1]!.length).toBeLessThan(inputs[0]!.length);
+    expect(inputs).toHaveLength(3);
+    expect(inputs[1]).toEqual(inputs[0]);
+    expect(inputs[2]).toEqual(inputs[0]);
     expect(records).toContainEqual({
       event: 'compaction_failed',
       properties: expect.objectContaining({
         source: 'manual',
-        retry_count: 1,
+        retry_count: 2,
         error_type: 'APIEmptyResponseError',
       }),
     });
@@ -1029,6 +1031,40 @@ describe('FullCompaction', () => {
       { role: 'user', text: 'recent user two' },
       { role: 'assistant', text: 'recent assistant two' },
     ]);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('reports a 409 CONTENT_FILTERED failure with its upstream cause without retrying', async () => {
+    let attempts = 0;
+    const generate: GenerateFn = async () => {
+      attempts += 1;
+      throw normalizeAPIStatusError(409, 'Conflict', 'req-filtered', null, 'trace-filtered', {
+        error: { code: 'CONTENT_FILTERED', message: 'Rejected by moderation' },
+      });
+    };
+    const ctx = testAgent({ generate });
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const failed = ctx.once('error');
+
+    await ctx.rpc.beginCompaction({});
+    await failed;
+
+    expect(attempts).toBe(1);
+    expect(ctx.newEvents()).toContainEqual(expect.objectContaining({
+      event: 'error',
+      args: expect.objectContaining({
+        code: 'compaction.failed',
+        message: expect.stringContaining('HTTP 409 CONTENT_FILTERED'),
+      }),
+    }));
+    expect(ctx.compactHistory()).toEqual([
+      { role: 'user', text: 'old user one' },
+      { role: 'assistant', text: 'old assistant one' },
+      { role: 'user', text: 'recent user two' },
+      { role: 'assistant', text: 'recent assistant two' },
+    ]);
+    await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('waits before retrying compaction generation after a retryable failure', async () => {
@@ -1371,14 +1407,14 @@ describe('FullCompaction', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
 
-    expect(attempts).toBe(5);
+    expect(attempts).toBe(3);
     expect(records).toContainEqual({
       event: 'compaction_failed',
       properties: expect.objectContaining({
         source: 'manual',
         tokens_before: tokensBefore,
         duration_ms: expect.any(Number),
-        retry_count: 4,
+        retry_count: 2,
         error_type: 'APIConnectionError',
       }),
     });
@@ -1818,6 +1854,30 @@ describe('FullCompaction', () => {
       'RACE-NOTIFY-OUTPUT',
     );
     expect(countEvents(ctx.newEvents(), 'full_compaction.complete')).toBe(0);
+    await ctx.expectResumeMatches();
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('applies a lowered session threshold only at the next step boundary, once', async () => {
+    const ctx = testAgent();
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 100);
+    ctx.appendExchange(2, 'old user two', 'old assistant two', 200);
+    ctx.appendExchange(3, 'recent user three', 'recent assistant three', 120_000);
+    const compaction = ctx.get(IAgentFullCompactionService);
+    const profile = ctx.get(IAgentProfileService);
+    const requestParamsBefore = profile.resolveRequestParams();
+    expect(compaction.getAutoCompact().source).toBe('legacy');
+    for (let i = 0; i < 10; i++) compaction.setAutoCompactOverride(80_000 + i * 100);
+    expect(compaction.getAutoCompact()).toMatchObject({ tokens: 80_900, source: 'session' });
+    expect(profile.resolveRequestParams()).toEqual(requestParamsBefore);
+    expect(ctx.llmCalls).toHaveLength(0);
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted once.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Answer.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Next step' }] });
+    const events = await ctx.untilTurnEnd();
+    expect(countEvents(events, 'compaction.started')).toBe(1);
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(eventIndex(events, 'full_compaction.complete')).toBeLessThan(eventIndex(events, 'turn.step.started'));
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 

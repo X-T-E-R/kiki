@@ -3,6 +3,7 @@ import type { ReplayableStateKey } from '#/state/state';
 import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
 import { staleGuardKey } from '#/features/staleGuard/staleGuardOps';
 import { fullCompactionKey } from '#/agent/fullCompaction/compactionOps';
+import { autoCompactOverrideKey } from '#/agent/fullCompaction/autoCompactOps';
 import { goalKey } from '#/agent/goal/goalOps';
 import { goalForkNoticeKey } from '#/agent/goal/goalService';
 import { interruptionReminderKey } from '#/agent/interruptionReminder/interruptionReminderOps';
@@ -35,6 +36,7 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   contextMemoryKey,
   staleGuardKey,
   fullCompactionKey,
+  autoCompactOverrideKey,
   goalKey,
   goalForkNoticeKey,
   interruptionReminderKey,

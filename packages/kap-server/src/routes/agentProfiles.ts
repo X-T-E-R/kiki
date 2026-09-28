@@ -280,6 +280,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           modelAlias: req.body.pinned_model_alias,
           thinkingEffort: req.body.thinking_effort,
           serviceTier: req.body.service_tier,
+          autoCompact: req.body.auto_compact,
           tools: req.body.tools,
           disallowedTools: req.body.disallowed_tools,
           routes: req.body.routes?.map((route) => ({
@@ -503,6 +504,7 @@ function toNamedAgentProfile(
     service_tier: profile.serviceTier,
     request_params: profile.requestParams === undefined ? undefined : { ...profile.requestParams },
     context_budget: profile.contextBudget,
+    auto_compact: profile.autoCompact,
     max_completion_tokens: profile.maxCompletionTokens,
     tools: profile.tools === undefined ? undefined : [...profile.tools],
     disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
@@ -568,6 +570,7 @@ function toNamedAgentModelProfile(
     alias: modelProfile.alias,
     when: modelProfile.when,
     context_budget: modelProfile.contextBudget,
+    auto_compact: modelProfile.autoCompact,
     max_completion_tokens: modelProfile.maxCompletionTokens,
     service_tier: modelProfile.serviceTier,
     request_params: modelProfile.requestParams === undefined ? undefined : { ...modelProfile.requestParams },

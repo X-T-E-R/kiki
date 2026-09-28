@@ -29,6 +29,15 @@ function parse(text: string): AgentFileDefinition {
 }
 
 describe('parseAgentFileText', () => {
+  it('accepts token-only profile and model-profile auto_compact values', () => {
+    const def = parse('---\nname: solo\ndescription: d\nauto_compact: 400000\nmodel_profiles:\n  - alias: opus\n    auto_compact: 300000\n---\nbody\n');
+    expect(def.autoCompact).toBe(400_000);
+    expect(def.modelProfiles?.[0]?.autoCompact).toBe(300_000);
+    expect(agentProfileFromFile(def, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } })).autoCompact).toBe(400_000);
+    expect(() => parse('---\nname: solo\ndescription: d\nauto_compact: "85%"\n---\nbody\n')).toThrow(/profile auto_compact.*absolute positive integer token count/);
+    expect(() => parse('---\nname: solo\ndescription: d\nmodel_profiles:\n  - alias: opus\n    auto_compact: "85%"\n---\nbody\n')).toThrow(/profile model_profiles\[0\]\.auto_compact.*absolute positive integer token count/);
+  });
+
   it('parses a full agent file', () => {
     const def = parse(FULL_FILE);
 

@@ -5,7 +5,7 @@ import type {
   ExperimentalFeatureState,
 } from '@kiki/agent-core-v2';
 import type { Kaos } from '@kiki/kaos';
-import type { Event } from '@kiki/protocol';
+import type { AutoCompactStatus, AutoCompactWrite, AutoCompactWriteResult, Event } from '@kiki/protocol';
 
 import { ErrorCodes, KimiError, makeErrorPayload } from '#/errors';
 import type {
@@ -704,6 +704,16 @@ export abstract class SDKRpcClientBase {
       sessionId: input.sessionId,
       agentId: this.interactiveAgentId,
     });
+  }
+
+  async getAutoCompact(input: SessionIdRpcInput): Promise<AutoCompactStatus> {
+    void input;
+    throw new KimiError(ErrorCodes.NOT_IMPLEMENTED, 'Auto compaction settings require the agent-core-v2 engine.');
+  }
+
+  async setAutoCompact(input: SessionIdRpcInput & AutoCompactWrite): Promise<AutoCompactWriteResult> {
+    void input;
+    throw new KimiError(ErrorCodes.NOT_IMPLEMENTED, 'Auto compaction settings require the agent-core-v2 engine.');
   }
 
   async getTodos(input: SessionIdRpcInput): Promise<readonly SessionTodoItem[]> {

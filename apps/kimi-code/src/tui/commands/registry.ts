@@ -272,6 +272,14 @@ export const BUILTIN_SLASH_COMMANDS = [
     argumentHint: '<instruction>',
   },
   {
+    name: 'autocompact',
+    aliases: [],
+    description: 'Show or set the automatic compaction point for this session',
+    priority: 80,
+    argumentHint: '[400k|73%|default] [--save model|profile|global]',
+    availability: 'always',
+  },
+  {
     name: 'goal',
     aliases: [],
     description: 'Start or manage an autonomous goal',

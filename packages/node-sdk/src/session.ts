@@ -1,4 +1,5 @@
 import type { AgentContextData } from '@kiki/agent-core-v2';
+import type { AutoCompactStatus, AutoCompactWrite, AutoCompactWriteResult } from '@kiki/protocol';
 
 import { ErrorCodes, KimiError, type KimiErrorCode } from '#/errors';
 import { type ApprovalHandler, type Event, type QuestionHandler } from '#/events';
@@ -335,6 +336,16 @@ export class Session {
   async cancelCompaction(): Promise<void> {
     this.ensureOpen();
     await this.rpc.cancelCompaction({ sessionId: this.id });
+  }
+
+  async getAutoCompact(): Promise<AutoCompactStatus> {
+    this.ensureOpen();
+    return this.rpc.getAutoCompact({ sessionId: this.id });
+  }
+
+  async setAutoCompact(input: AutoCompactWrite): Promise<AutoCompactWriteResult> {
+    this.ensureOpen();
+    return this.rpc.setAutoCompact({ sessionId: this.id, ...input });
   }
 
   async undoHistory(count: number = 1): Promise<void> {

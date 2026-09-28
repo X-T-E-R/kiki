@@ -59,6 +59,7 @@ export interface Model {
   readonly defaultEffort?: string;
   readonly overrides?: ModelRecord['overrides'];
   readonly contextBudget?: number;
+  readonly autoCompact?: number;
   readonly maxCompletionTokens?: number;
   readonly requestParams?: ModelRecord['requestParams'];
   readonly serviceTier?: ServiceTier;
@@ -93,6 +94,7 @@ export const modelCatalogItemSchema = z.object({
   remote_id: z.string().min(1),
   display_name: z.string().min(1).optional(),
   max_context_size: z.number().int().min(0),
+  auto_compact: z.number().int().positive().safe().optional(),
   capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
@@ -161,6 +163,7 @@ export function toProtocolModel(
     remote_id: model.name ?? model.id,
     display_name: model.displayName ?? model.name ?? model.id,
     max_context_size: model.maxContextSize,
+    auto_compact: model.autoCompact,
     capabilities: effectiveModelConfig(record, providerType ?? model.providerType).capabilities,
     support_efforts: model.supportEfforts === undefined ? undefined : [...model.supportEfforts],
     default_effort: model.defaultEffort,
@@ -184,6 +187,7 @@ export function toProtocolModelFallback(
     remote_id: remoteId,
     display_name: effective.displayName ?? remoteId,
     max_context_size: effective.maxContextSize ?? 0,
+    auto_compact: effective.autoCompact,
     capabilities: effective.capabilities,
     support_efforts: effective.supportEfforts,
     default_effort: effective.defaultEffort,

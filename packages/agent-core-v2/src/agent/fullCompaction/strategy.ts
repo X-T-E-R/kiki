@@ -3,6 +3,7 @@ import type { ProfileModelContext } from '#/agent/profile/profile';
 import { DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE } from '#/agent/loop/configSection';
 import type { CompactionSource } from './types';
 import { estimateTokensForMessage } from '#/kosong/contract/tokens';
+import { resolveAutoCompact } from './autoCompact';
 
 export interface CompactionConfig {
   triggerRatio: number;
@@ -42,6 +43,7 @@ export class RuntimeCompactionStrategy implements CompactionStrategy {
   constructor(
     private readonly context: () => ProfileModelContext,
     private readonly estimateMessage: (message: Message) => number = estimateTokensForMessage,
+    private readonly fixedCost: () => number = () => 0,
   ) { }
 
   shouldCompact(usedSize: number): boolean {
@@ -56,9 +58,11 @@ export class RuntimeCompactionStrategy implements CompactionStrategy {
 
   computeCompactCount(messages: readonly Message[], source: CompactionSource): number {
     const model = this.context();
-    const maxSize =
-      source === 'auto' ? this.compactionWindowSize(model) : this.modelWindowSize(model);
-    return this.windowDelegate(maxSize).computeCompactCount(messages, source);
+    const maxSize = source === 'auto' ? this.compactionWindowSize(model) : this.modelWindowSize(model);
+    const recentBase = source === 'auto' && this.hasAutoCompact(model)
+      ? this.automaticThreshold(model, this.config(model).triggerRatio)
+      : maxSize;
+    return this.windowDelegate(maxSize, recentBase).computeCompactCount(messages, source);
   }
 
   reduceCompactOnOverflow(messages: readonly Message[]): number {
@@ -68,11 +72,10 @@ export class RuntimeCompactionStrategy implements CompactionStrategy {
 
   get checkAfterStep(): boolean {
     const model = this.context();
+    if (this.hasAutoCompact(model)) return false;
     const config = this.config(model);
-    return (
-      this.automaticThreshold(model, config.triggerRatio) !==
-      this.automaticThreshold(model, config.blockRatio)
-    );
+    return this.automaticThreshold(model, config.triggerRatio) !==
+      this.automaticThreshold(model, config.blockRatio);
   }
 
   get maxCompactionPerTurn(): number {
@@ -83,11 +86,12 @@ export class RuntimeCompactionStrategy implements CompactionStrategy {
     return DEFAULT_COMPACTION_CONFIG.maxOverflowCompactionAttempts;
   }
 
-  private windowDelegate(maxSize: number): DefaultCompactionStrategy {
+  private windowDelegate(maxSize: number, recentBase = maxSize): DefaultCompactionStrategy {
     return new DefaultCompactionStrategy(
       () => maxSize,
       DEFAULT_COMPACTION_CONFIG,
       this.estimateMessage,
+      () => recentBase,
     );
   }
 
@@ -97,12 +101,19 @@ export class RuntimeCompactionStrategy implements CompactionStrategy {
 
   private compactionWindowSize(model: ProfileModelContext): number {
     const maxSize = this.modelWindowSize(model);
+    if (this.hasAutoCompact(model)) return maxSize;
     const softContextSize =
       model.compactionSoftContextSize ?? DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE;
     return softContextSize > 0 ? Math.min(maxSize, softContextSize) : maxSize;
   }
 
+  private hasAutoCompact(model: ProfileModelContext): boolean {
+    return model.sessionAutoCompact !== undefined || model.profileAutoCompact !== undefined ||
+      model.modelAutoCompact !== undefined || model.globalAutoCompact !== undefined;
+  }
+
   private automaticThreshold(model: ProfileModelContext, ratio: number): number {
+    if (this.hasAutoCompact(model)) return resolveAutoCompact(model, model.sessionAutoCompact, this.fixedCost()).tokens;
     const maxSize = this.modelWindowSize(model);
     if (maxSize <= 0) return Infinity;
     let threshold = maxSize * ratio;
@@ -136,6 +147,7 @@ export class DefaultCompactionStrategy implements CompactionStrategy {
     protected readonly maxSizeProvider: () => number,
     protected readonly config: CompactionConfig = DEFAULT_COMPACTION_CONFIG,
     protected readonly estimateMessage: (message: Message) => number = estimateTokensForMessage,
+    protected readonly recentBaseProvider: () => number = maxSizeProvider,
   ) { }
 
   protected get maxSize(): number {
@@ -195,7 +207,7 @@ export class DefaultCompactionStrategy implements CompactionStrategy {
 
       const reachesMax = recentMessages >= this.config.maxRecentMessages
         || recentUserMessages >= this.config.maxRecentUserMessages
-        || recentSize >= this.maxSize * this.config.maxRecentSizeRatio;
+        || recentSize >= this.recentBaseProvider() * this.config.maxRecentSizeRatio;
       if (reachesMax && bestN !== undefined) {
         break;
       }

@@ -318,6 +318,10 @@ export const warningEventSchema = z.object({
 export const agentStatusUpdatedEventSchema = z.looseObject({
   time: z.number().optional(),
   phase: z.string().optional(),
+  autoCompactTokens: z.number().optional(),
+  autoCompactSource: z.enum(['session', 'profile', 'model', 'global', 'legacy']).optional(),
+  effectiveMaxContextTokens: z.number().optional(),
+  reservedContextTokens: z.number().optional(),
 });
 
 // ── registrations ───────────────────────────────────────────────────────────

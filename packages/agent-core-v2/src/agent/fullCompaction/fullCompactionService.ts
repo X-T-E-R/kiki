@@ -28,7 +28,6 @@ import {
   APIContextOverflowError,
   APIEmptyResponseError,
   APIStatusError,
-  isRetryableGenerateError,
 } from '#/kosong/contract/errors';
 import { createUserMessage, type Message } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
@@ -36,7 +35,7 @@ import { inputTotal, type TokenUsage } from '#/kosong/contract/usage';
 import { IEventBus } from '#/app/event/eventBus';
 import type { CompactionFailedEvent, CompactionFinishedEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import { ErrorCodes, Error2, isCodedError, isError2, toKimiErrorPayload, unwrapErrorCause } from "#/errors";
+import { ErrorCodes, Error2, isCodedError, isError2, toKimiErrorPayload } from "#/errors";
 import { AgentErrorEvent } from '#/agent/mcp/mcpEvents';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import compactionInstructionTemplate from './compaction-instruction.md?raw';
@@ -64,8 +63,12 @@ import {
 } from './types';
 import { Emitter, type Event } from '#/_base/event';
 import { OrderedHookSlot } from '#/hooks';
+import { resolveAutoCompact, type ResolvedAutoCompact } from './autoCompact';
+import { AutoCompactOverrideChanged, autoCompactOverrideKey } from './autoCompactOps';
+import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
+import { describeCompactionFailure, isRetryableCompactionError } from './compactionFailure';
 
-export const MAX_COMPACTION_RETRY_ATTEMPTS = 5;
+export const MAX_COMPACTION_RETRY_ATTEMPTS = 3;
 const DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS = 128 * 1024;
 const OVERFLOW_CONTEXT_SAFETY_RATIO = 0.85;
 const OVERFLOW_STATUS_RECOVERY_RATIO = 0.5;
@@ -151,6 +154,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   ) {
     super();
     this.states.contributeState(fullCompactionKey);
+    this.states.contributeState(autoCompactOverrideKey);
     this.states.contributeState(fullCompactionCompactionCountInTurnKey);
     this.states.contributeState(fullCompactionObservedMaxContextTokensByModelKey);
     this.states.contributeState(fullCompactionLastCompactedTokenCountKey);
@@ -159,7 +163,11 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     this.strategy = new RuntimeCompactionStrategy(
       () => this.resolveModelContextWithEffectiveMax(),
       (message) => this.tokenCounting.estimateMessage(message),
+      () => this.requestTokens([]),
     );
+    this._register(this.eventBus.subscribe(AgentStatusUpdated, (event) => {
+      if (event.model !== undefined) this.publishAutoCompactStatus();
+    }));
     this._register(
       this.dispatcher.hooks.onDidRestore.register('full-compaction', async (_ctx, next) => {
         this.normalizeAfterReplay();
@@ -266,12 +274,46 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const effectiveMax = this.getEffectiveMaxContextTokens();
     return {
       ...resolved,
+      sessionAutoCompact: this.states.get(autoCompactOverrideKey)[resolved.modelAlias],
       modelCapabilities: {
         ...resolved.modelCapabilities,
         max_context_tokens: effectiveMax,
         max_input_tokens: effectiveMax,
       },
     };
+  }
+
+  getAutoCompact(): ResolvedAutoCompact {
+    const resolved = this.resolveModelContextWithEffectiveMax();
+    return resolveAutoCompact(resolved, resolved.sessionAutoCompact, this.requestTokens([]));
+  }
+
+  getDefaultAutoCompact(): ResolvedAutoCompact {
+    return resolveAutoCompact(this.resolveModelContextWithEffectiveMax(), undefined, this.requestTokens([]));
+  }
+
+  setAutoCompactOverride(tokens: number | null): void {
+    if (tokens !== null && (!Number.isSafeInteger(tokens) || tokens <= 0)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'session auto_compact must be an absolute positive integer token count, not a percentage');
+    }
+    const modelId = this.profile.resolveModelContext().modelAlias;
+    void this.dispatcher.dispatch(new AutoCompactOverrideChanged({ modelId, tokens }));
+    this.publishAutoCompactStatus();
+  }
+
+  private publishAutoCompactStatus(): void {
+    if (!this.profile.hasModel() || !this.profile.isRunnable()) return;
+    try {
+      const resolved = this.getAutoCompact();
+      void this.dispatcher.dispatch(new AgentStatusUpdated({
+        autoCompactTokens: resolved.tokens,
+        autoCompactSource: resolved.source,
+        effectiveMaxContextTokens: resolved.effectiveMaxContextTokens,
+        reservedContextTokens: resolved.reservedContextTokens,
+      }));
+    } catch (error) {
+      this.log.warn('failed to publish auto compaction status', { error });
+    }
   }
 
   private currentRequestTokens(): number {
@@ -323,6 +365,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const current = this.getEffectiveMaxContextTokens();
     if (current > 0 && observed >= current) return;
     this.observedMaxContextTokensByModel.set(modelAlias, observed);
+    this.publishAutoCompactStatus();
   }
 
   begin(input: FullCompactionInput): boolean {
@@ -637,6 +680,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const originalHistory = [...this.context.get()];
     const tokensBefore = this.requestTokens(originalHistory);
     let retryCount = 0;
+    let requestAttempts = 0;
     let thinkingEffort = this.profile.data().thinkingLevel;
 
     try {
@@ -647,12 +691,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
       const resolvedModel = this.profile.resolveModelContext();
       thinkingEffort = resolvedModel.thinkingLevel;
-      const maxContextTokens = resolvedModel.modelCapabilities.max_context_tokens;
-      const defaultCompactionCap =
-        maxContextTokens > 0
-          ? Math.min(maxContextTokens, DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS)
-          : undefined;
-      const compactionMaxOutputSize = resolvedModel.maxOutputSize ?? defaultCompactionCap;
+      const compactionMaxOutputSize = resolvedModel.maxOutputSize ?? DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS;
 
       const customInstruction = data.instruction?.trim() ?? '';
       const instruction = renderPrompt(compactionInstructionTemplate, {
@@ -669,7 +708,6 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       let attempt: CompactionAttemptResult | undefined;
       let droppedCount = 0;
       let overflowShrinkCount = 0;
-      let requestAttempts = 0;
       let leadingDropRounds = 0;
       const selectHistoryForModel = (): readonly ContextMessage[] => {
         let selected = stripDynamicToolContext(originalHistory.slice(0, compactCount));
@@ -738,28 +776,17 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
             retryCount = 0;
             continue;
           }
-          const unwrappedError = unwrapErrorCause(error);
-          if (
-            (error instanceof CompactionTruncatedError ||
-              (unwrappedError instanceof APIEmptyResponseError &&
-                unwrappedError.finishReason !== 'filtered')) &&
-            messagesToCompact.length > 1
-          ) {
-            if (requestAttempts >= maxAttempts) {
-              throw error;
-            }
-            leadingDropRounds += 1;
-            historyForModel = selectHistoryForModel();
-            retryCount = 0;
-            continue;
-          }
-          if (!isRetryableGenerateError(unwrappedError)) {
+          if (!(error instanceof CompactionTruncatedError) && !isRetryableCompactionError(error)) {
             throw error;
           }
           if (requestAttempts >= maxAttempts) {
             throw error;
           }
-          await sleepForRetry(retryBackoffDelay(retryCount), signal);
+          const status = findAPIStatusError(error);
+          const delay = status?.retryAfterMs === null || status?.retryAfterMs === undefined
+            ? retryBackoffDelay(retryCount)
+            : Math.min(status.retryAfterMs, 60_000);
+          await sleepForRetry(delay, signal);
           retryCount += 1;
         }
       }
@@ -819,14 +846,15 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         trace_id: findAPIStatusError(error)?.traceId ?? active.traceId,
       };
       this.telemetry.track2('compaction_failed', properties);
-      if (
-        isError2(error) &&
-        (error.code === ErrorCodes.AUTH_LOGIN_REQUIRED ||
-          error.code === ErrorCodes.PROVIDER_AUTH_ERROR)
-      ) {
-        throw error;
-      }
-      throw new Error2(ErrorCodes.COMPACTION_FAILED, String(error), { cause: error });
+      const code = isError2(error) &&
+        (error.code === ErrorCodes.AUTH_LOGIN_REQUIRED || error.code === ErrorCodes.PROVIDER_AUTH_ERROR)
+        ? error.code : ErrorCodes.COMPACTION_FAILED;
+      throw new Error2(code, describeCompactionFailure(
+        error,
+        this.profile.getModelProviderType() ?? 'unknown-provider',
+        this.profile.data().modelAlias ?? 'unknown-model',
+        requestAttempts,
+      ), { cause: error });
     }
   }
 

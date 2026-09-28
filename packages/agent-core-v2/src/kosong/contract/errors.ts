@@ -401,7 +401,10 @@ function extractStatusErrorBodyDetail(body: unknown): string | null {
     const nestedMessage = readObjectStringProp(current, 'message');
     if (nestedMessage !== undefined) {
       const trimmed = nestedMessage.trim();
-      if (trimmed.length > 0) return trimmed;
+      if (trimmed.length > 0) {
+        const upstreamCode = readObjectStringProp(current, 'code') ?? readObjectStringProp(current, 'type');
+        return upstreamCode === undefined ? trimmed : `${upstreamCode}: ${trimmed}`;
+      }
     }
     current = readNestedErrorObject(current);
   }
@@ -456,7 +459,7 @@ function compose400StatusErrorMessage(message: string, body: unknown): string {
 }
 
 function appendStatusErrorBodySnippet(statusCode: number, message: string, body: unknown): string {
-  if (statusCode !== 400) return message;
+  if (statusCode < 400 || statusCode >= 500) return message;
   return compose400StatusErrorMessage(message, body);
 }
 
@@ -474,7 +477,7 @@ export function normalizeAPIStatusError(
 ): APIStatusError {
   const displayMessage = appendStatusErrorBodySnippet(statusCode, message, body);
   if (statusCode === 429) {
-    return new APIProviderRateLimitError(message, requestId, retryAfterMs, traceId);
+    return new APIProviderRateLimitError(displayMessage, requestId, retryAfterMs, traceId);
   }
   if (isContextOverflowStatusError(statusCode, message)) {
     return new APIContextOverflowError(statusCode, displayMessage, requestId, retryAfterMs, traceId);

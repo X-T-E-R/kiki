@@ -11,6 +11,7 @@ export const namedAgentModelProfileSchema = z.object({
   alias: z.string(),
   when: z.string().optional(),
   context_budget: z.number().int().min(1).optional(),
+  auto_compact: z.number().int().positive().safe().optional(),
   max_completion_tokens: z.number().int().min(1).optional(),
   service_tier: serviceTierSchema.optional(),
   request_params: requestParamsSchema.optional(),
@@ -94,6 +95,7 @@ export const namedAgentProfileSchema = z.object({
   service_tier: serviceTierSchema.optional(),
   request_params: requestParamsSchema.optional(),
   context_budget: z.number().int().min(1).optional(),
+  auto_compact: z.number().int().positive().safe().optional(),
   max_completion_tokens: z.number().int().min(1).optional(),
   tools: z.array(z.string()).optional(),
   disallowed_tools: z.array(z.string()).optional(),
@@ -408,6 +410,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
   pinned_model_alias: modelAliasSchema.nullable().optional(),
   thinking_effort: optionalProfileStringSchema,
   service_tier: serviceTierSchema.nullable().optional(),
+  auto_compact: z.number().int().positive().safe().nullable().optional(),
   tools: profileStringListSchema,
   disallowed_tools: profileStringListSchema,
   routes: z.array(updateNamedAgentRouteSchema).optional(),
@@ -420,6 +423,7 @@ export const updateNamedAgentProfileRequestSchema = z.object({
     value.pinned_model_alias !== undefined ||
     value.thinking_effort !== undefined ||
     value.service_tier !== undefined ||
+    value.auto_compact !== undefined ||
     value.tools !== undefined ||
     value.disallowed_tools !== undefined ||
     value.prompt !== undefined ||

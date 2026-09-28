@@ -112,6 +112,9 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { AgentContextData, ExperimentalFeatureState } from '@kiki/agent-core-v2';
+import { autoCompactWriteSchema, type AutoCompactStatus, type AutoCompactWrite, type AutoCompactWriteResult } from '@kiki/protocol';
+import { globalPercentFromTokens } from '@kiki/agent-core-v2/agent/fullCompaction/autoCompact';
+import type { LoopControl } from '@kiki/agent-core-v2/agent/loop/configSection';
 
 import {
   ensureConfigFile,
@@ -140,6 +143,7 @@ import {
   ensureKikiHome,
   ensureMainAgent,
   IAgentActivityView,
+  IAgentFullCompactionService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
   IAgentPermissionRulesService,
@@ -157,6 +161,7 @@ import {
   IModelService,
   IProviderService,
   ISessionContext,
+  ISessionAgentProfileCatalog,
   ISessionExportService,
   ISessionIndex,
   ISessionIndexMirror,
@@ -1975,6 +1980,59 @@ export class SDKRpcClient extends SDKRpcClientBase {
   override async cancelCompaction(input: SessionIdRpcInput): Promise<void> {
     const agent = await this.agentFacade(input.sessionId);
     await this.engineCall(() => agent.cancelCompaction());
+  }
+
+  override async getAutoCompact(input: SessionIdRpcInput): Promise<AutoCompactStatus> {
+    const agent = await this.agentFacade(input.sessionId);
+    return agent.getAutoCompact();
+  }
+
+  override async setAutoCompact(input: SessionIdRpcInput & AutoCompactWrite): Promise<AutoCompactWriteResult> {
+    autoCompactWriteSchema.parse({ tokens: input.tokens, save: input.save });
+    const scope = await this.agentScope(input.sessionId);
+    const compact = scope.accessor.get(IAgentFullCompactionService);
+    const profile = scope.accessor.get(IAgentProfileService);
+    let savedAs: number | string | undefined;
+    if (input.save === 'model' && input.tokens !== null) {
+      const id = profile.getModel();
+      const models = this.engineAccessor.get(IModelService);
+      const model = models.get(id);
+      if (model === undefined) throw new KimiError(ErrorCodes.CONFIG_INVALID, `Model ${id} not found`);
+      await models.set(id, { ...model, autoCompact: input.tokens });
+      savedAs = input.tokens;
+    } else if (input.save === 'profile' && input.tokens !== null) {
+      const bound = profile.data().boundProfile;
+      const source = bound?.fileDefinition?.source;
+      const name = profile.data().profileName;
+      const program = await programForSession(this.engineAccessor, input.sessionId);
+      if (name === undefined || program === undefined ||
+          (source !== 'user' && source !== 'project' && source !== 'extra')) {
+        throw new KimiError(ErrorCodes.CONFIG_INVALID, 'The active profile is not an editable file-backed profile');
+      }
+      await program.agentProfileWriter.update({
+        name, scope: source, sourcePath: bound?.fileDefinition?.path, autoCompact: input.tokens,
+      });
+      const session = this.requireLiveSession(input.sessionId);
+      await session.accessor.get(ISessionAgentProfileCatalog).reload();
+      savedAs = input.tokens;
+    } else if (input.save === 'global' && input.tokens !== null) {
+      const config = this.engineAccessor.get(IConfigService);
+      const percent = globalPercentFromTokens(input.tokens, compact.getAutoCompact().effectiveMaxContextTokens);
+      await config.replace('loopControl', {
+        ...config.get<LoopControl>('loopControl'),
+        compactionTriggerRatio: undefined,
+        compactionSoftContextSize: undefined,
+        autoCompact: percent,
+      });
+      savedAs = percent;
+    }
+    compact.setAutoCompactOverride(input.tokens);
+    profile.republishStatus();
+    const defaults = compact.getDefaultAutoCompact();
+    const effective = compact.getAutoCompact();
+    const overrideCleared = input.save !== undefined && effective.source === 'session' && effective.tokens === defaults.tokens;
+    if (overrideCleared) compact.setAutoCompactOverride(null);
+    return { effective: compact.getAutoCompact(), default: defaults, overrideCleared, savedAs };
   }
 
   /**

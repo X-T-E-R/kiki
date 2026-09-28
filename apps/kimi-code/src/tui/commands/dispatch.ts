@@ -25,6 +25,7 @@ import {
   findInlineSkillTokens,
 } from '../utils/inline-skill-tokens';
 import { handleAgentCommand } from './agent';
+import { handleAutoCompactCommand } from './auto-compact';
 import { handleLoginCommand, handleLogoutCommand } from './auth';
 import { handleBtwCommand } from './btw';
 import { handleCopyCommand } from './copy';
@@ -415,6 +416,7 @@ async function ensureSessionForCommand(host: SlashCommandHost): Promise<Session 
 const SESSION_REQUIRING_COMMANDS: ReadonlySet<BuiltinSlashCommandName> = new Set([
   'btw',
   'compact',
+  'autocompact',
   'export-debug-zip',
   'export-md',
   'fork',
@@ -565,6 +567,9 @@ async function handleBuiltInSlashCommand(
       return;
     case 'compact':
       await handleCompactCommand(host, args);
+      return;
+    case 'autocompact':
+      await handleAutoCompactCommand(host, args);
       return;
     case 'goal':
       await handleGoalCommand(host, args);
