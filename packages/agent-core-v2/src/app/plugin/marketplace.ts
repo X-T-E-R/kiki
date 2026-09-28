@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { gt, valid } from 'semver';
+import { pluginRelevanceSchema, type PluginRelevance } from './relevance';
 
 export const KIKI_PLUGIN_MARKETPLACE_URL_ENV = 'KIKI_PLUGIN_MARKETPLACE_URL';
 
@@ -48,6 +49,7 @@ export interface PluginMarketplaceEntry {
   readonly description?: string;
   readonly homepage?: string;
   readonly keywords?: readonly string[];
+  readonly relevance?: PluginRelevance;
   readonly builtIn?: boolean;
 }
 
@@ -219,6 +221,7 @@ function parseMarketplaceEntry(
     description: stringField(value, 'description') ?? stringField(value, 'shortDescription'),
     homepage: stringField(value, 'homepage') ?? stringField(value, 'websiteURL'),
     keywords: stringArrayField(value, 'keywords'),
+    relevance: value['relevance'] === undefined ? undefined : pluginRelevanceSchema.parse(value['relevance']),
   };
 }
 

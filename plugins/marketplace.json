@@ -26,7 +26,18 @@
       "version": "0.1.0",
       "description": "Create and edit local Word, Excel and PowerPoint files.",
       "keywords": ["office", "docx", "xlsx", "pptx"],
+      "relevance": { "fileGlobs": ["**/*.docx", "**/*.xlsx", "**/*.pptx"], "commands": ["officecli"] },
       "source": "./official/kiki-office"
+    },
+    {
+      "id": "kiki-writing",
+      "tier": "official",
+      "displayName": "Kiki Writing",
+      "version": "0.1.0",
+      "description": "A focused manuscript panel and draft command.",
+      "keywords": ["writing", "manuscript", "fiction"],
+      "relevance": { "fileGlobs": ["**/*.md", "**/*.txt"] },
+      "source": "./official/kiki-writing"
     },
     {
       "id": "superpowers",
@@ -44,6 +55,7 @@
       "description": "Comprehensive Vercel ecosystem plugin — skills, agents, and conventions for the Vercel platform.",
       "homepage": "https://vercel.com/docs/agent-resources/vercel-plugin",
       "keywords": ["vercel", "deployment", "nextjs", "skills", "agents"],
+      "relevance": { "dependencies": ["next", "@vercel/*"] },
       "source": "https://github.com/vercel/vercel-plugin"
     },
     {

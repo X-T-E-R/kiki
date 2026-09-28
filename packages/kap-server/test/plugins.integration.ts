@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { IPluginHostService } from '@kiki/agent-core-v2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -28,6 +29,7 @@ const CATALOG = {
       tier: 'official',
       displayName: 'Demo Plugin',
       version: 'v2.0.0',
+      relevance: { fileGlobs: ['**/*.docx'] },
       source: 'https://cdn.example.test/demo.zip',
     },
     {
@@ -146,6 +148,12 @@ describe('server-v2 /api plugins', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
+  async function install<T>(source: string): Promise<{ status: number; body: Envelope<T> }> {
+    const preview = await call<{ fingerprint: string; consentRequired: boolean }>('POST', '/api/plugins:preview', { source });
+    expect(preview.body.code).toBe(0);
+    return call<T>('POST', '/api/plugins', { source, fingerprint: preview.body.data.fingerprint, consent: true });
+  }
+
   async function makePluginDir(id: string, version: string): Promise<string> {
     const dir = await mkdtemp(join(tmpdir(), `kimi-test-plugin-${id}-`));
     createdDirs.push(dir);
@@ -156,16 +164,71 @@ describe('server-v2 /api plugins', () => {
     return dir;
   }
 
+  it('serves an enabled writing panel as CSP-protected srcdoc and lists its command', async () => {
+    const source = join(import.meta.dirname, '../../../plugins/official/kiki-writing');
+    expect((await install(source)).body.code).toBe(0);
+    expect((await call('POST', '/api/plugins/kiki-writing:enable')).body.code).toBe(0);
+    const listed = await call<{ panels: { pluginId: string; id: string }[] }>('GET', '/api/plugins/panels');
+    expect(listed.body.data.panels).toContainEqual(expect.objectContaining({ pluginId: 'kiki-writing', id: 'manuscript' }));
+    const document = await call<{ html: string; sandbox: string }>('GET', '/api/plugins/kiki-writing/panels/manuscript/document');
+    expect(document.body.code).toBe(0);
+    expect(document.body.data.sandbox).toBe('allow-scripts');
+    expect(document.body.data.html).toContain('Content-Security-Policy');
+    expect(document.body.data.html).toContain("connect-src 'none'");
+    expect(document.body.data.html).toContain('kiki.panel.v1');
+    const commands = await call<{ commands: { name: string }[] }>('GET', '/api/plugins/commands');
+    expect(commands.body.data.commands).toContainEqual(expect.objectContaining({ name: 'continue-draft' }));
+    const rejected = await call('POST', '/api/plugins/kiki-writing/panels/manuscript/bridge', {
+      method: 'plugin.call', session_id: 'missing', action: 'unknown', args: {},
+    });
+    expect(rejected.body.code).toBe(40401);
+    const session = await call<{ id: string }>('POST', '/api/sessions', { metadata: { cwd: home! } });
+    expect(session.body.code).toBe(0);
+    const summary = await call<{ result: { id: string } }>('POST', '/api/plugins/kiki-writing/panels/manuscript/bridge', {
+      method: 'session.summary', session_id: session.body.data.id,
+    });
+    expect(summary.body.data.result.id).toBe(session.body.data.id);
+    const submitted = await call('POST', '/api/plugins/kiki-writing/panels/manuscript/bridge', {
+      method: 'session.sendMessage', session_id: session.body.data.id, text: 'Continue the manuscript.',
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(40110);
+    await call('POST', '/api/plugins/kiki-writing:remove');
+    expect((await call<{ panels: unknown[] }>('GET', '/api/plugins/panels')).body.data.panels).toEqual([]);
+  });
+
+  it('stores declared secrets in credentials without exposing them to settings reads', async () => {
+    const source = await makePluginDir('settings-fixture', '1.0.0');
+    await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({
+      name: 'settings-fixture', version: '1.0.0',
+      'x-kiki': {
+        engines: { kiki: '^0.4.0' }, permissions: { secrets: true },
+        settings: { schemaVersion: 1, schema: { type: 'object', properties: {
+          apiKey: { type: 'string', secret: true }, label: { type: 'string' },
+        } } },
+      },
+    }));
+    expect((await install(source)).body.code).toBe(0);
+    const updated = await call<{ values: Record<string, string>; secretsConfigured: string[] }>(
+      'POST', '/api/plugins/settings-fixture/settings', { values: { apiKey: 'test-secret-value', label: 'visible' } },
+    );
+    expect(updated.body.code).toBe(0);
+    expect(updated.body.data).toMatchObject({ values: { label: 'visible' }, secretsConfigured: ['apiKey'] });
+    expect(JSON.stringify(updated.body.data)).not.toContain('test-secret-value');
+    const fetched = await call<{ values: Record<string, string>; secretsConfigured: string[] }>(
+      'GET', '/api/plugins/settings-fixture/settings',
+    );
+    expect(fetched.body.data).toMatchObject({ values: { label: 'visible' }, secretsConfigured: ['apiKey'] });
+    expect(await readFile(join(home!, 'config.toml'), 'utf8')).not.toContain('test-secret-value');
+    expect(await readFile(join(home!, 'credentials.toml'), 'utf8')).toContain('test-secret-value');
+    expect((await call('POST', '/api/plugins/settings-fixture:remove', { deleteData: true })).body.code).toBe(0);
+  });
+
   it('installs, lists, disables, enables, and removes a plugin', async () => {
     const empty = await call<{ plugins: unknown[] }>('GET', '/api/plugins');
     expect(empty.body.data.plugins).toEqual([]);
 
     const source = await makePluginDir('demo-plugin', '1.0.0');
-    const installed = await call<{ id: string; version: string; enabled: boolean }>(
-      'POST',
-      '/api/plugins',
-      { source },
-    );
+    const installed = await install<{ id: string; version: string; enabled: boolean }>(source);
     expect(installed.body.code).toBe(0);
     expect(installed.body.data).toMatchObject({ id: 'demo-plugin', version: '1.0.0', enabled: false });
 
@@ -188,6 +251,105 @@ describe('server-v2 /api plugins', () => {
     const afterRemove = await call<{ plugins: unknown[] }>('GET', '/api/plugins');
     expect(afterRemove.body.data.plugins).toEqual([]);
   });
+
+  it('keeps tool hosts lazy and retires them when the plugin is removed', async () => {
+    const source = await mkdtemp(join(tmpdir(), 'kiki-tool-fixture-'));
+    createdDirs.push(source);
+    await cp(join(import.meta.dirname, '../../agent-core-v2/test/fixtures/plugin-host'), source, { recursive: true });
+    const installed = await install<{ id: string }>(source);
+    expect(installed.body.code).toBe(0);
+    await call('POST', '/api/plugins/fixture-tool:enable');
+    const hosts = server!.core.accessor.get(IPluginHostService);
+    expect((await hosts.list()).map((item) => item.definition.name)).toEqual(['fixture_echo']);
+    expect(hosts.running('fixture-tool')).toBe(false);
+    await expect(hosts.execute('fixture-tool', 'fixture_echo', { value: 'server' }, new AbortController().signal))
+      .resolves.toEqual({ output: 'server' });
+    expect(hosts.running('fixture-tool')).toBe(true);
+    const session = await call<{ id: string }>('POST', '/api/sessions', { metadata: { cwd: home! } });
+    expect(session.body.code).toBe(0);
+    const panel = await call<{ result: { args: { value: string } } }>('POST',
+      '/api/plugins/fixture-tool/panels/fixture/bridge', {
+        method: 'plugin.call', session_id: session.body.data.id, action: 'echo', args: { value: 'panel' },
+      });
+    expect(panel.body.data.result.args).toEqual({ value: 'panel' });
+    await call('POST', '/api/plugins/fixture-tool:remove');
+    expect(hosts.running('fixture-tool')).toBe(false);
+    expect(await hosts.list()).toEqual([]);
+  });
+
+  it('matches only curated catalog relevance and honors do-not-remind', async () => {
+    const matched = await call<{ entries: { id: string }[] }>('POST', '/api/plugins/recommendations/match', {
+      files: ['draft.docx'], commands: [], dependencies: [],
+    });
+    expect(matched.body.code).toBe(0);
+    expect(matched.body.data.entries.map((entry) => entry.id)).toEqual(['demo-plugin']);
+    expect((await call('POST', '/api/plugins/demo-plugin:dismiss-recommendation')).body.code).toBe(0);
+    const suppressed = await call<{ entries: unknown[] }>('POST', '/api/plugins/recommendations/match', { files: ['draft.docx'] });
+    expect(suppressed.body.data.entries).toEqual([]);
+    expect((await call<{ plugins: unknown[] }>('GET', '/api/plugins')).body.data.plugins).toEqual([]);
+  });
+
+  it('does not expose project plugin recommendations before workspace trust', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-project-recommendation-'));
+    createdDirs.push(root);
+    await mkdir(join(root, '.kiki'));
+    await writeFile(join(root, '.kiki', 'plugins.json'), JSON.stringify({ recommendations: [
+      { id: 'kiki-office', source: 'https://example.org/office.zip' },
+    ] }));
+    const session = await call<{ workspace_id: string }>('POST', '/api/sessions', { metadata: { cwd: root } });
+    expect(session.body.code).toBe(0);
+    const workspaceId = session.body.data.workspace_id;
+    const untrusted = await call<{ trusted: boolean; recommendations: unknown[] }>('GET',
+      `/api/workspaces/${workspaceId}/plugin-recommendations`);
+    expect(untrusted.body.data).toEqual({ trusted: false, recommendations: [] });
+    expect((await call('POST', `/api/workspaces/${workspaceId}/trust`)).body.code).toBe(0);
+    const trusted = await call<{ trusted: boolean; recommendations: { id: string }[] }>('GET',
+      `/api/workspaces/${workspaceId}/plugin-recommendations`);
+    expect(trusted.body.code).toBe(0);
+    expect(trusted.body.data.recommendations).toContainEqual(expect.objectContaining({ id: 'kiki-office' }));
+  });
+
+  it('requires explicit consent to install a declared prerequisite and persists its own path', async () => {
+    const source = await mkdtemp(join(tmpdir(), 'kiki-prerequisite-fixture-'));
+    createdDirs.push(source);
+    await cp(join(import.meta.dirname, '../../agent-core-v2/test/fixtures/plugin-host'), source, { recursive: true });
+    expect((await install(source)).body.code).toBe(0);
+    const withoutConsent = await call('POST', '/api/plugins/fixture-tool:install-prerequisite', { id: 'fixture-binary', consent: false });
+    expect(withoutConsent.body.code).toBe(40001);
+    const installed = await call('POST', '/api/plugins/fixture-tool:install-prerequisite', { id: 'fixture-binary', consent: true });
+    expect(installed.body.code).toBe(0);
+    const destination = join(home!, 'plugins', 'data', 'fixture-tool', `fixture-binary-1.0.0${process.platform === 'win32' ? '.exe' : ''}`);
+    expect(await readFile(destination, 'utf8')).toBe('pinned fixture binary');
+    expect((await call<{ values: { binaryPath: string } }>('GET', '/api/plugins/fixture-tool/settings')).body.data.values.binaryPath).toBe(destination);
+    expect(server!.core.accessor.get(IPluginHostService).running('fixture-tool')).toBe(false);
+    await call('POST', '/api/plugins/fixture-tool:remove', { deleteData: true });
+    await expect(readFile(destination, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.runIf(process.env['KIKI_OFFICE_E2E'] === '1')('installs OfficeCLI with consent, creates a docx, and retires the tool host', async () => {
+    const source = join(import.meta.dirname, '../../../plugins/official/kiki-office');
+    const installed = await install<{ id: string }>(source);
+    expect(installed.body.code).toBe(0);
+    expect(installed.body.data.id).toBe('kiki-office');
+    expect((await call('POST', '/api/plugins/kiki-office:enable')).body.code).toBe(0);
+    const hosts = server!.core.accessor.get(IPluginHostService);
+    expect((await hosts.list()).filter((item) => item.pluginId === 'kiki-office')).toHaveLength(9);
+    expect(hosts.running('kiki-office')).toBe(false);
+    expect((await call('POST', '/api/plugins/kiki-office:install-prerequisite', { id: 'officecli', consent: true })).body.code).toBe(0);
+    const binary = join(home!, 'plugins', 'data', 'kiki-office', `officecli-1.0.152${process.platform === 'win32' ? '.exe' : ''}`);
+    expect((await stat(binary)).isFile()).toBe(true);
+    expect(hosts.running('kiki-office')).toBe(false);
+    const document = join(home!, 'demo.docx');
+    const created = await hosts.execute('kiki-office', 'office_create', { file: document }, new AbortController().signal, undefined,
+      { workspaceRoot: home!, approvedPaths: [], imageIn: false });
+    expect(created.isError).toBeFalsy();
+    expect((await stat(document)).isFile()).toBe(true);
+    expect(hosts.running('kiki-office')).toBe(true);
+    expect((await call('POST', '/api/plugins/kiki-office:remove', { deleteData: true })).body.code).toBe(0);
+    expect(hosts.running('kiki-office')).toBe(false);
+    expect(await hosts.list()).toEqual([]);
+    await expect(stat(binary)).rejects.toMatchObject({ code: 'ENOENT' });
+  }, 120_000);
 
   it('rejects bare ids, bogus actions, and unknown plugins', async () => {
     const bare = await call('POST', '/api/plugins/demo-plugin');
@@ -218,7 +380,7 @@ describe('server-v2 /api plugins', () => {
       });
 
       const source = await makePluginDir('demo-plugin', '1.0.0');
-      await call('POST', '/api/plugins', { source });
+      await install(source);
       await vi.waitFor(() => {
         expect(types).toContain('event.plugin.changed');
       });
@@ -233,15 +395,15 @@ describe('server-v2 /api plugins', () => {
   });
 
   it('maps client-fixable install input errors to 4xx, never 50001', async () => {
-    const relative = await call('POST', '/api/plugins', { source: 'relative/dir' });
+    const relative = await call('POST', '/api/plugins:preview', { source: 'relative/dir' });
     expect(relative.body.code).toBe(40001);
-    const missing = await call('POST', '/api/plugins', {
+    const missing = await call('POST', '/api/plugins:preview', {
       source: join(home!, 'no-such-plugin-dir'),
     });
     expect(missing.body.code).toBe(40409);
     const noManifest = await mkdtemp(join(tmpdir(), 'kimi-no-manifest-'));
     createdDirs.push(noManifest);
-    const unloadable = await call('POST', '/api/plugins', { source: noManifest });
+    const unloadable = await call('POST', '/api/plugins:preview', { source: noManifest });
     expect(unloadable.body.code).toBe(40001);
   });
 
@@ -296,7 +458,7 @@ describe('server-v2 /api plugins', () => {
     expect(meta?.keywords).toEqual(['web', 'tools']);
 
     const source = await makePluginDir('demo-plugin', '1.0.0');
-    await call('POST', '/api/plugins', { source });
+    await install(source);
 
     const after = await call<{
       entries: {
@@ -310,7 +472,7 @@ describe('server-v2 /api plugins', () => {
     expect(demo?.updateAvailable).toBe(true);
 
     const ghSource = await makePluginDir('gh-plugin', '1.5.0');
-    await call('POST', '/api/plugins', { source: ghSource });
+    await install(ghSource);
     const afterGh = await call<{
       entries: { id: string; updateAvailable?: boolean }[];
     }>('GET', '/api/plugins/marketplace');
@@ -498,7 +660,7 @@ describe('server-v2 /api plugins', () => {
 
   it('returns plugin info including MCP servers and diagnostics', async () => {
     const source = await makePluginDir('demo-plugin', '1.0.0');
-    await call('POST', '/api/plugins', { source });
+    await install(source);
     const info = await call<{
       id: string;
       mcpServers: unknown[];
@@ -522,7 +684,7 @@ describe('server-v2 /api plugins', () => {
         { id: 'browser', kind: 'browser-extension', required: true },
       ] } },
     }));
-    await call('POST', '/api/plugins', { source });
+    await install(source);
     const info = await call<{ prerequisites?: { origin: string; items: { items: { id: string }[] } } }>(
       'GET', '/api/plugins/kimi-webbridge');
     expect(info.body.data.prerequisites).toMatchObject({

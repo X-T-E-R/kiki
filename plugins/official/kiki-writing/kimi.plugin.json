@@ -1,0 +1,23 @@
+{
+  "name": "kiki-writing",
+  "version": "0.1.0",
+  "description": "A focused writing panel and a declarative draft command.",
+  "license": "MIT",
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" },
+    "permissions": { "uiPanel": true },
+    "panels": [{
+      "schemaVersion": 1,
+      "id": "manuscript",
+      "label": "Manuscript",
+      "slot": "workspace",
+      "path": "./panel.html"
+    }],
+    "commands": [{
+      "schemaVersion": 1,
+      "name": "continue-draft",
+      "description": "Continue the current manuscript scene",
+      "prompt": "Continue the current manuscript scene while preserving its established voice and point of view."
+    }]
+  }
+}
