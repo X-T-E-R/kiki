@@ -1,0 +1,16 @@
+const string = { type: 'string' };
+const props = { type: 'object', minProperties: 1, maxProperties: 32, additionalProperties: { type: ['string', 'number', 'boolean'] } };
+const schema = (properties, required = []) => ({ type: 'object', properties: { file: { type: 'string', description: 'Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx).' }, ...properties }, required: ['file', ...required], additionalProperties: false });
+const fileAccess = (operation) => [{ kind: 'file', operation, path: '$.file' }, { kind: 'all' }];
+const tool = (name, description, parameters, operation) => ({ schemaVersion: 1, name, description, parameters, accesses: fileAccess(operation), disclosure: 'deferred' });
+export const definitions = [
+  tool('office_create', 'Create a new blank docx, xlsx or pptx. Use before adding content; never overwrites an existing file. The pinned OfficeCLI binary must already be installed.', schema({}, []), 'write'),
+  tool('office_get', 'Read a node at an exact semantic path as bounded structured JSON. Use after a text overview to locate paragraphs, cells or shapes; depth is capped at 3.', schema({ path: string, depth: { type: 'integer', minimum: 0, maximum: 3 } }, ['path']), 'read'),
+  tool('office_query', 'Find nodes matching an OfficeCLI selector and return bounded structured JSON. Use to identify stable element paths before editing.', schema({ selector: string }, ['selector']), 'read'),
+  tool('office_set', 'Modify properties or replace matched text at a semantic path. Use on an existing document; specify props or find and replace. No match may be a no-op.', schema({ path: string, props, find: string, replace: string }, ['path']), 'readwrite'),
+  tool('office_add', 'Add an element under a parent semantic path in an existing document. Supply a type and optional properties; use office_get to discover valid paths.', schema({ parent: string, type: string, props }, ['parent', 'type']), 'readwrite'),
+  tool('office_remove', 'Remove an element at an exact semantic path. Destructive document edit: inspect with office_get before calling.', schema({ path: string }, ['path']), 'readwrite'),
+  tool('office_view', 'Get a bounded plain-text, annotated, outline, stats or issues overview. Defaults to text; large sheets are capped at 200 rows/200 cells with explicit truncation.', schema({ mode: { type: 'string', enum: ['text', 'annotated', 'outline', 'stats', 'issues'] }, range: string, start: { type: 'integer', minimum: 1 }, end: { type: 'integer', minimum: 1 }, maxSheetRows: { type: 'integer', minimum: 1, maximum: 200 }, maxCells: { type: 'integer', minimum: 1, maximum: 200 } }), 'read'),
+  tool('office_batch', 'Apply 1–32 add, set or remove operations atomically to an existing document. Any failed item rolls back the batch; inspect element paths first.', schema({ commands: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'object', additionalProperties: true } } }, ['commands']), 'readwrite'),
+  tool('office_preview', 'Render one page of an Office document as PNG for visual inspection when image input is supported; otherwise return a text outline. A separate HTML renderer is available for a future sandbox panel.', schema({ page: { type: 'integer', minimum: 1, maximum: 100 } }), 'read'),
+];

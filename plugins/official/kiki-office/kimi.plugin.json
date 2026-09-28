@@ -1,0 +1,418 @@
+{
+  "name": "kiki-office",
+  "version": "0.1.0",
+  "description": "Create, inspect, edit and preview Word, Excel and PowerPoint files locally with pinned OfficeCLI.",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Kiki Office Suite",
+    "shortDescription": "Create and edit local .docx, .xlsx and .pptx files"
+  },
+  "x-kiki": {
+    "engines": {
+      "kiki": "^0.4.0"
+    },
+    "entry": "./entry.mjs",
+    "permissions": {
+      "fs": "outside",
+      "exec": [
+        "officecli"
+      ]
+    },
+    "prerequisites": {
+      "schemaVersion": 1,
+      "items": [
+        {
+          "id": "officecli",
+          "kind": "executable",
+          "required": true,
+          "executionHost": "plugin-runtime",
+          "capabilityImpact": [
+            "office-tools"
+          ]
+        }
+      ]
+    },
+    "settings": {
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "officecliPath": {
+            "type": "string",
+            "title": "OfficeCLI executable",
+            "description": "Optional path to the pinned, compatible OfficeCLI binary."
+          }
+        }
+      }
+    },
+    "tools": [
+      {
+        "schemaVersion": 1,
+        "name": "office_create",
+        "description": "Create a new blank docx, xlsx or pptx. Use before adding content; never overwrites an existing file. The pinned OfficeCLI binary must already be installed.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx)."
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "additionalProperties": false
+        },
+        "accesses": [
+          {
+            "kind": "file",
+            "operation": "write",
+            "path": "$.file"
+          },
+          {
+            "kind": "all"
+          }
+        ],
+        "disclosure": "deferred"
+      },
+      {
+        "schemaVersion": 1,
+        "name": "office_get",
+        "description": "Read a node at an exact semantic path as bounded structured JSON. Use after a text overview to locate paragraphs, cells or shapes; depth is capped at 3.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx)."
+            },
+            "path": {
+              "type": "string"
+            },
+            "depth": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3
+            }
+          },
+          "required": [
+            "file",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "accesses": [
+          {
+            "kind": "file",
+            "operation": "read",
+            "path": "$.file"
+          },
+          {
+            "kind": "all"
+          }
+        ],
+        "disclosure": "deferred"
+      },
+      {
+        "schemaVersion": 1,
+        "name": "office_query",
+        "description": "Find nodes matching an OfficeCLI selector and return bounded structured JSON. Use to identify stable element paths before editing.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx)."
+            },
+            "selector": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file",
+            "selector"
+          ],
+          "additionalProperties": false
+        },
+        "accesses": [
+          {
+            "kind": "file",
+            "operation": "read",
+            "path": "$.file"
+          },
+          {
+            "kind": "all"
+          }
+        ],
+        "disclosure": "deferred"
+      },
+      {
+        "schemaVersion": 1,
+        "name": "office_set",
+        "description": "Modify properties or replace matched text at a semantic path. Use on an existing document; specify props or find and replace. No match may be a no-op.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx)."
+            },
+            "path": {
+              "type": "string"
+            },
+            "props": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 32,
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "find": {
+              "type": "string"
+            },
+            "replace": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "accesses": [
+          {
+            "kind": "file",
+            "operation": "readwrite",
+            "path": "$.file"
+          },
+          {
+            "kind": "all"
+          }
+        ],
+        "disclosure": "deferred"
+      },
+      {
+        "schemaVersion": 1,
+        "name": "office_add",
+        "description": "Add an element under a parent semantic path in an existing document. Supply a type and optional properties; use office_get to discover valid paths.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx)."
+            },
+            "parent": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "props": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 32,
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            }
+          },
+          "required": [
+            "file",
+            "parent",
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        "accesses": [
+          {
+            "kind": "file",
+            "operation": "readwrite",
+            "path": "$.file"
+          },
+          {
+            "kind": "all"
+          }
+        ],
+        "disclosure": "deferred"
+      },
+      {
+        "schemaVersion": 1,
+        "name": "office_remove",
+        "description": "Remove an element at an exact semantic path. Destructive document edit: inspect with office_get before calling.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx)."
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "accesses": [
+          {
+            "kind": "file",
+            "operation": "readwrite",
+            "path": "$.file"
+          },
+          {
+            "kind": "all"
+          }
+        ],
+        "disclosure": "deferred"
+      },
+      {
+        "schemaVersion": 1,
+        "name": "office_view",
+        "description": "Get a bounded plain-text, annotated, outline, stats or issues overview. Defaults to text; large sheets are capped at 200 rows/200 cells with explicit truncation.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx)."
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "text",
+                "annotated",
+                "outline",
+                "stats",
+                "issues"
+              ]
+            },
+            "range": {
+              "type": "string"
+            },
+            "start": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "end": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxSheetRows": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "maxCells": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "additionalProperties": false
+        },
+        "accesses": [
+          {
+            "kind": "file",
+            "operation": "read",
+            "path": "$.file"
+          },
+          {
+            "kind": "all"
+          }
+        ],
+        "disclosure": "deferred"
+      },
+      {
+        "schemaVersion": 1,
+        "name": "office_batch",
+        "description": "Apply 1–32 add, set or remove operations atomically to an existing document. Any failed item rolls back the batch; inspect element paths first.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx)."
+            },
+            "commands": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          "required": [
+            "file",
+            "commands"
+          ],
+          "additionalProperties": false
+        },
+        "accesses": [
+          {
+            "kind": "file",
+            "operation": "readwrite",
+            "path": "$.file"
+          },
+          {
+            "kind": "all"
+          }
+        ],
+        "disclosure": "deferred"
+      },
+      {
+        "schemaVersion": 1,
+        "name": "office_preview",
+        "description": "Render one page of an Office document as PNG for visual inspection when image input is supported; otherwise return a text outline. A separate HTML renderer is available for a future sandbox panel.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path or explicitly approved absolute path (.docx/.xlsx/.pptx)."
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "additionalProperties": false
+        },
+        "accesses": [
+          {
+            "kind": "file",
+            "operation": "read",
+            "path": "$.file"
+          },
+          {
+            "kind": "all"
+          }
+        ],
+        "disclosure": "deferred"
+      }
+    ]
+  }
+}

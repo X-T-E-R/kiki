@@ -20,6 +20,15 @@
       "source": "./official/kimi-webbridge"
     },
     {
+      "id": "kiki-office",
+      "tier": "official",
+      "displayName": "Kiki Office Suite",
+      "version": "0.1.0",
+      "description": "Create and edit local Word, Excel and PowerPoint files.",
+      "keywords": ["office", "docx", "xlsx", "pptx"],
+      "source": "./official/kiki-office"
+    },
+    {
       "id": "superpowers",
       "tier": "curated",
       "displayName": "Superpowers",
