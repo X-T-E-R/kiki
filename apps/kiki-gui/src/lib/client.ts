@@ -1753,6 +1753,24 @@ export class KikiClient {
     return this.run(this.rest.sessions.compact(sessionId, body));
   }
 
+  /** Effective automatic-compaction point for one agent of a session. */
+  getAutoCompact(sessionId: string, agentId: string): Promise<import('@kiki/protocol').AutoCompactStatus> {
+    return this.run(this.rest.sessions.getAutoCompact(sessionId, agentId));
+  }
+
+  /**
+   * Sets (or with `tokens: null` clears) this agent's per-model session
+   * override; `save` also writes the token point as a model/profile/global
+   * default. The response says whether the new default took over.
+   */
+  setAutoCompact(
+    sessionId: string,
+    agentId: string,
+    input: import('@kiki/protocol').AutoCompactWrite,
+  ): Promise<import('@kiki/protocol').AutoCompactWriteResult> {
+    return this.run(this.rest.sessions.setAutoCompact(sessionId, agentId, input));
+  }
+
   /** Removes the last `count` turns. 40911 when there is nothing to undo. */
   undoSession(
     sessionId: string,
