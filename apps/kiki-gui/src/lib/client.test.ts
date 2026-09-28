@@ -12,9 +12,11 @@ import {
   isSessionIndexBuildingError,
   isSessionNotFoundMessage,
   KikiClient,
+  MEMORY_REVISION_CONFLICT,
   NativeChildPromptConflictError,
   type AgentTranscriptResponse,
 } from './client';
+import { isMemoryToolName, parseMemoryWriteResult } from '../components/MemoryToolRow';
 
 describe('KikiClient capability plan', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
@@ -1430,5 +1432,105 @@ describe('KikiClient transcript protocol', () => {
     await transcriptView('s1', true).transcript.catchUp({ agentId: 'main', since: { seq: 3, epoch: 'e1' } });
     expect(fetchMock).toHaveBeenCalledOnce();
     vi.unstubAllGlobals();
+  });
+});
+
+describe('memory client surface', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const client = () => new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+  const envelope = (data: unknown, code = 0, msg = 'success') =>
+    new Response(JSON.stringify({ code, msg, data, request_id: 'req_1' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+  it('carries the workspace scope as a query param and unwraps the envelope', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      seen.push(String(url));
+      return envelope({ items: [] });
+    }));
+    await client().listMemory({ scope: 'workspace', workspaceId: 'wd_a_0123456789ab' }, { query: 'pnpm', type: 'project', include_inactive: true });
+    expect(seen[0]).toContain('/api/memory/workspace');
+    expect(seen[0]).toContain('workspace_id=wd_a_0123456789ab');
+    expect(seen[0]).toContain('query=pnpm');
+    expect(seen[0]).toContain('type=project');
+    expect(seen[0]).toContain('include_inactive=true');
+  });
+
+  it('omits the workspace param for the global scope and blank filters', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      seen.push(String(url));
+      return envelope({ items: [] });
+    }));
+    await client().listMemory({ scope: 'global' }, { query: '   ' });
+    expect(seen[0]).not.toContain('workspace_id');
+    expect(seen[0]).not.toContain('query=');
+    expect(seen[0]).not.toContain('include_inactive');
+  });
+
+  it('sends a PUT with the body and surfaces a revision conflict as ApiError 40944', async () => {
+    let method: string | undefined;
+    let sent: unknown;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      method = init?.method;
+      sent = JSON.parse(String(init?.body));
+      return envelope(null, MEMORY_REVISION_CONFLICT, 'memory.revision_conflict');
+    }));
+    await expect(client().putMemory({ scope: 'global' }, 'm_1', {
+      type: 'project', title: 't', body: 'b', reason: 'r', expected_revision: 'rev',
+    })).rejects.toMatchObject({ code: MEMORY_REVISION_CONFLICT });
+    expect(method).toBe('PUT');
+    expect(sent).toMatchObject({ expected_revision: 'rev', title: 't' });
+  });
+
+  it('guards a delete with expected_revision', async () => {
+    const seen: { url: string; method?: string }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      seen.push({ url: String(url), method: init?.method });
+      return envelope({ operation_id: 'op_1' });
+    }));
+    const result = await client().deleteMemory({ scope: 'global' }, 'm_1', 'rev_9');
+    expect(seen[0]?.method).toBe('DELETE');
+    expect(seen[0]?.url).toContain('expected_revision=rev_9');
+    expect(result.operation_id).toBe('op_1');
+  });
+
+  it('rejects a non-envelope response instead of returning undefined data', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>nope</html>', { status: 502 })));
+    await expect(client().getMemorySettings()).rejects.toMatchObject({ code: API_CODES.INVALID_RESPONSE });
+  });
+});
+
+describe('memory timeline rows', () => {
+  it('claims only the three memory tools', () => {
+    expect(isMemoryToolName('MemoryWrite')).toBe(true);
+    expect(isMemoryToolName('MemoryRead')).toBe(true);
+    expect(isMemoryToolName('MemorySearch')).toBe(true);
+    expect(isMemoryToolName('Write')).toBe(false);
+    expect(isMemoryToolName('TodoList')).toBe(false);
+  });
+
+  it('parses a MemoryWrite result and ignores anything that is not one', () => {
+    const output = JSON.stringify({
+      id: 'm_1', title: 'Use pnpm', scope: 'workspace', status: 'active',
+      revision: 'rev_1', operation_id: 'op_1',
+    });
+    expect(parseMemoryWriteResult(output)).toEqual({
+      id: 'm_1', title: 'Use pnpm', scope: 'workspace', status: 'active',
+      revision: 'rev_1', operation_id: 'op_1',
+    });
+    // A running call, a plain string, and a foreign shape all yield undefined.
+    expect(parseMemoryWriteResult(undefined)).toBeUndefined();
+    expect(parseMemoryWriteResult('Memory is disabled.')).toBeUndefined();
+    expect(parseMemoryWriteResult(JSON.stringify({ id: 'm_1', title: 't', scope: 'elsewhere' }))).toBeUndefined();
+    expect(parseMemoryWriteResult(JSON.stringify([{ id: 'm_1' }]))).toBeUndefined();
+  });
+
+  it('defaults the optional result fields so a partial payload still renders', () => {
+    const parsed = parseMemoryWriteResult(JSON.stringify({ id: 'm_2', title: 'T', scope: 'global' }));
+    expect(parsed).toMatchObject({ status: 'active', revision: '', operation_id: '' });
   });
 });

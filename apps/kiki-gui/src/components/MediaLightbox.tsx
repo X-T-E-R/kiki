@@ -9,6 +9,7 @@ import { useState } from 'react';
 
 import { useI18n } from '../i18n';
 import { Dialog } from './Dialog';
+import { Icon } from './icons';
 
 export function MediaLightbox({
   src,
@@ -33,7 +34,7 @@ export function MediaLightbox({
   };
 
   const controlClass =
-    'rounded-full border border-white/25 bg-white/10 px-3 py-1 text-[11.5px] font-medium text-white/90 transition-colors hover:bg-white/20';
+    'rounded-full border border-shell-hairline bg-shell-hover px-3 py-1 text-[11.5px] font-medium text-shell-ink transition-colors hover:bg-shell-hover';
 
   return (
     <Dialog
@@ -56,7 +57,7 @@ export function MediaLightbox({
           {t('media.download')}
         </button>
         <button type="button" onClick={onClose} aria-label={t('common.close')} className={controlClass}>
-          ×
+          <Icon name="close" />
         </button>
       </div>
       <div

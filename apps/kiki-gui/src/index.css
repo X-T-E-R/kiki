@@ -1,6 +1,11 @@
 @import '@xterm/xterm/css/xterm.css';
 @import 'katex/dist/katex.min.css';
 @import 'tailwindcss';
+/* Skin-system tokens (on-accent, on-danger, shell hairline/hover) and their
+ * dark duals. Imported here rather than from main.tsx so its `@theme` block
+ * joins Tailwind's compilation unit and generates real utilities. It adds
+ * tokens only; the base palette below stays the single source for those. */
+@import './styles/skin.css';
 
 /* Let Tailwind see the utility classes used inside Streamdown's dist (the
  * code plugin's dist has none, but the directive is cheap insurance). */
@@ -8,36 +13,53 @@
 @source '../node_modules/@streamdown/code/dist/*.js';
 
 @theme {
-  --color-paper: #f7f3ec;
-  --color-panel: #fffdf8;
-  --color-hairline: #e7dfd0;
-  --color-hairline-strong: #d9cfba;
-  --color-ink: #1c1917;
-  --color-ink-soft: #6b6257;
-  --color-ink-faint: #6b6257;
-  --color-accent: #e8590c;
-  --color-accent-deep: #d9480f;
-  --color-accent-soft: #fdeee2;
-  --color-amber-ink: #b45309;
-  --color-amber-card: #fdf3e3;
-  --color-amber-rule: #e8b04b;
-  --color-success: #2f9e44;
-  --color-danger: #c92a2a;
+  /* Surface ladder, darkest to lightest: canvas (the app ground the sidebar
+   * sits on) < paper (the raised conversation sheet) < panel (inspector,
+   * preview and floating cards). Panes are told apart by this ladder and the
+   * gaps between sheets, not by rules. */
+  --color-canvas: #f0eadf;
+  --color-paper: #f6f1e7;
+  --color-panel: #fbf8f2;
+  --color-hairline: #e9e1d2;
+  --color-hairline-strong: #d8ccb6;
+  --color-ink: #1f1b16;
+  --color-ink-soft: #5b5247;
+  /* Faint text holds AA (≥4.5:1) on every step of the ladder, canvas included,
+   * and under the neutral hover wash (ink/0.04). */
+  --color-ink-faint: #6b6053;
+  --color-accent: #c2410c;
+  --color-accent-deep: #9a3412;
+  /* The accent when it is the text itself (a "needs you" word, a link): the
+   * brand accent is for dots, rings and filled buttons and sits at 4.3:1 on
+   * canvas, so words take this deeper step (≥6:1 on every surface). */
+  --color-accent-ink: #9a3412;
+  --color-accent-soft: #f6e6d6;
+  --color-amber-ink: #92400e;
+  --color-amber-card: #f8eedd;
+  --color-amber-rule: #d9a441;
+  --color-success: #37703f;
+  --color-danger: #b42318;
 
   /* Non-utility surfaces that used to be literal hex: the user bubble, the
    * scrollbar thumbs, and the shadow/scrim ink. Tokenized so the dark dual
    * below can move them with everything else. */
-  --color-bubble-user: #f3ede1;
-  --color-scrollbar: #d9cfba;
-  --color-scrollbar-hover: #c9bda3;
+  --color-bubble-user: #efe7d8;
+  --color-scrollbar: #dcd1bd;
+  --color-scrollbar-hover: #c8baa1;
   --color-term-scrollbar: #4a4238;
   --kiki-shadow-ink: 28 25 23;
+  /* Raised sheets: a hairline ring plus a low, wide shadow — lift without a
+   * visible box. Dark swaps the shadow for a faint light ring (below). */
+  --kiki-sheet-shadow: 0 0 0 1px rgb(28 25 23 / 0.055), 0 1px 2px rgb(28 25 23 / 0.04),
+    0 6px 20px -12px rgb(28 25 23 / 0.12);
+  --kiki-sheet-radius: 12px;
+  --kiki-stage-gap: 8px;
 
   /* The always-dark shell: the terminal island, tool-output wells, and modal
    * scrims. These are deliberately NOT part of the light/dark dual — a scrim
    * that inverts stops being a scrim, and the terminal reads as an inset well
    * in both themes. Only the ground moves, to stay darker than the page. */
-  --color-shell: #1c1917;
+  --color-shell: #1f1b16;
   --color-shell-ink: #e8dcc4;
   --color-shell-ink-strong: #f3e9d8;
   --color-shell-ink-soft: #8a7f6d;
@@ -45,21 +67,21 @@
 
   /* Streamdown's components are built on shadcn custom properties; map them
    * onto the kiki palette so its internals (code blocks, tables) stay warm. */
-  --color-background: #fffdf8;
-  --color-foreground: #1c1917;
-  --color-muted: #f7f3ec;
-  --color-muted-foreground: #6b6257;
-  --color-border: #e7dfd0;
-  --color-input: #e7dfd0;
-  --color-primary: #e8590c;
-  --color-primary-foreground: #fffdf8;
-  --color-sidebar: #f7f3ec;
+  --color-background: #fbf8f2;
+  --color-foreground: #1f1b16;
+  --color-muted: #f6f1e7;
+  --color-muted-foreground: #5b5247;
+  --color-border: #e9e1d2;
+  --color-input: #e9e1d2;
+  --color-primary: #c2410c;
+  --color-primary-foreground: #fbf8f2;
+  --color-sidebar: #f6f1e7;
 
   /* Fraunces/Space Grotesk/JetBrains Mono carry no CJK glyphs — the fallback
    * stacks keep the Latin identity and land Chinese on deliberate Song-style
    * serif (display) and system sans (body/mono) faces. */
-  --font-display: 'Fraunces Variable', 'Fraunces', Georgia, 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
-  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --font-display: 'Newsreader Variable', 'Newsreader', Georgia, 'Songti SC', 'Noto Serif SC', 'SimSun', serif;
+  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', monospace;
 }
 
@@ -80,23 +102,26 @@
 [data-theme='dark'] {
   color-scheme: dark;
 
-  --color-paper: #16130f;
-  --color-panel: #1e1a15;
-  --color-hairline: #302a22;
-  --color-hairline-strong: #453d31;
-  --color-ink: #f2ece2;
-  --color-ink-soft: #a89c8c;
-  --color-ink-faint: #8b7f6f;
-  --color-accent: #ff8340;
-  --color-accent-deep: #ff9a63;
-  --color-accent-soft: #3a2415;
+  /* Canvas sinks below the paper so the sheet still reads as raised. */
+  --color-canvas: #110e0a;
+  --color-paper: #17140f;
+  --color-panel: #1d1914;
+  --color-hairline: #2c261e;
+  --color-hairline-strong: #40382c;
+  --color-ink: #efe8dc;
+  --color-ink-soft: #b3a795;
+  --color-ink-faint: #8f8373;
+  --color-accent: #f08a4b;
+  --color-accent-deep: #f6a574;
+  --color-accent-ink: #f08a4b;
+  --color-accent-soft: #33231a;
   --color-amber-ink: #e0a63c;
   --color-amber-card: #2c2114;
   --color-amber-rule: #7a5a20;
-  --color-success: #5cc46b;
-  --color-danger: #ff6b6b;
+  --color-success: #7fb88a;
+  --color-danger: #f2877c;
 
-  --color-bubble-user: #262019;
+  --color-bubble-user: #241f18;
   --color-scrollbar: #453d31;
   --color-scrollbar-hover: #5a5142;
   --color-term-scrollbar: #5a5142;
@@ -105,16 +130,17 @@
   /* Shadows on a dark ground read as depth only when they are darker than the
    * surface, so the scrim ink goes to near-black rather than following ink. */
   --kiki-shadow-ink: 0 0 0;
+  --kiki-sheet-shadow: 0 0 0 1px rgb(239 232 220 / 0.06), 0 8px 24px -12px rgb(0 0 0 / 0.5);
 
-  --color-background: #1e1a15;
-  --color-foreground: #f2ece2;
-  --color-muted: #16130f;
-  --color-muted-foreground: #a89c8c;
-  --color-border: #302a22;
-  --color-input: #302a22;
-  --color-primary: #ff8340;
-  --color-primary-foreground: #16130f;
-  --color-sidebar: #16130f;
+  --color-background: #1d1914;
+  --color-foreground: #efe8dc;
+  --color-muted: #17140f;
+  --color-muted-foreground: #b3a795;
+  --color-border: #2c261e;
+  --color-input: #2c261e;
+  --color-primary: #f08a4b;
+  --color-primary-foreground: #17140f;
+  --color-sidebar: #17140f;
 }
 
 html,
@@ -148,6 +174,7 @@ body {
 
 .font-display {
   font-optical-sizing: auto;
+  letter-spacing: -0.012em;
 }
 
 /* ---- embedded terminal (xterm.js) ---- */
@@ -291,8 +318,71 @@ body {
   width: var(--kiki-sidebar-width, 264px);
   flex-shrink: 0;
   flex-direction: column;
-  border-right: 1px solid var(--color-hairline);
-  background-color: var(--color-panel);
+  /* The sidebar IS the canvas: no rule, no fill of its own — the raised
+   * sheet beside it carries the edge. */
+  background-color: var(--color-canvas);
+}
+
+/* ---- stage: the canvas-side frame that holds the raised sheets ----
+ * Desktop: the main column is inset from the window edge by the stage gap
+ * (the sidebar supplies its own inner padding on the left), and every pane —
+ * the page sheet, or the conversation / preview / inspector panes — floats on
+ * the canvas as its own rounded sheet. Below md the sidebar is a drawer, so
+ * the stage collapses to an edge-to-edge single sheet. */
+.app-stage {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--kiki-stage-gap) var(--kiki-stage-gap) var(--kiki-stage-gap) 0;
+}
+
+/* Connection / restart banners ride the stage above the sheet as quiet
+ * rounded strips instead of full-bleed ruled bars. */
+.app-stage > [data-app-banner],
+.app-stage > [role='status'] {
+  border: none;
+  border-radius: 10px;
+}
+
+.app-sheet {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--kiki-sheet-radius);
+  background-color: var(--color-paper);
+  box-shadow: var(--kiki-sheet-shadow);
+}
+
+/* The conversation route splits into its own sheets (conversation, preview,
+ * inspector), so the wrapper steps aside and lets the row carry the gaps. */
+.app-sheet:has(> .conversation-shell) {
+  overflow: visible;
+  border-radius: 0;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+@media (max-width: 767px) {
+  .app-stage {
+    padding: 0;
+    gap: 0;
+  }
+  .app-stage > [data-app-banner],
+  .app-stage > [role='status'] {
+    border-radius: 0;
+  }
+  .app-sheet,
+  .app-sheet:has(> .conversation-shell) {
+    border-radius: 0;
+    box-shadow: none;
+  }
 }
 
 /* Only the desktop flex panel exposes the resize grab handle; the mobile
@@ -351,20 +441,30 @@ body[data-pane-resizing='true'] {
   width: var(--kiki-rail-width, 300px);
   flex-shrink: 0;
   flex-direction: column;
-  gap: 1.25rem;
   overflow-y: auto;
-  border-left: 1px solid var(--color-hairline);
   background-color: var(--color-panel);
-  padding: 1rem;
+  /* The inspector's scroller (data-agent-panel-scroll) owns the gutter so
+   * its sticky heading can run edge to edge. */
+  padding: 0;
+}
+
+/* Desktop: the inspector is its own sheet beside the conversation, split
+ * from it by the stage gap instead of a rule. */
+@media (min-width: 1024px) {
+  .app-rail {
+    border-radius: var(--kiki-sheet-radius);
+    box-shadow: var(--kiki-sheet-shadow);
+  }
 }
 
 /* The rail's aside is a scroll container (`overflow: hidden` inline), so a
  * straddling strip would be clipped if it lived inside. The handle lives in
- * .app-rail-shell (sibling of the aside) and centers the 12px strip on the
- * boundary so it can be grabbed from the conversation side too. */
+ * .app-rail-shell (sibling of the aside) and fills the stage gap to its left,
+ * so it can be grabbed from the conversation side too; the 2px hover line
+ * sits centered in that gap. */
 .app-rail__resizer {
   position: absolute;
-  left: -6px;
+  left: -10px;
   top: 0;
   bottom: 0;
   z-index: 10;
@@ -377,27 +477,16 @@ body[data-pane-resizing='true'] {
   content: '';
   position: absolute;
   left: 5px;
-  top: 0;
-  bottom: 0;
+  top: 12px;
+  bottom: 12px;
   width: 2px;
+  border-radius: 1px;
   background-color: transparent;
 }
 
 .app-rail__resizer:hover::after,
 .app-rail__resizer[data-dragging='true']::after {
   background-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
-}
-
-.app-rail__board-launcher {
-  margin: -1.25rem -1rem -1rem;
-}
-
-/* Stacked directly beneath the board launcher: the rail's 1.25rem flex gap
- * minus the board bar's -1rem bottom margin leaves a 0.25rem sliver, which
- * this top margin cancels so the two bars read as one segmented footer with
- * the cron bar flush to the rail's bottom edge. */
-.app-rail__cron-launcher {
-  margin: -0.25rem -1rem -1rem;
 }
 
 /* Scroll chaining containment for the page-level scrollers: when the
@@ -423,11 +512,13 @@ body[data-pane-resizing='true'] {
     left: 0;
     top: 0;
     z-index: 40;
+    max-width: calc(100vw - 3rem);
     transform: translateX(-100%);
-    transition: transform 200ms ease-out;
+    transition: transform 200ms ease-out, box-shadow 200ms ease-out;
   }
   .app-sidebar.open {
     transform: translateX(0);
+    box-shadow: var(--kiki-sheet-shadow), 12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
   }
 }
 
@@ -438,12 +529,26 @@ body[data-pane-resizing='true'] {
     right: 0;
     top: 0;
     z-index: 30;
+    max-width: calc(100vw - 3rem);
     transform: translateX(100%);
     transition: transform 200ms ease-out;
   }
   .app-rail.open,
   .app-rail-shell:has(> .app-rail.open) {
     transform: translateX(0);
+  }
+  /* The drawer floats over the stage: the sheet ring carries the edge (a cast
+   * shadow alone is invisible on the dark ground), the deep shadow the lift. */
+  .app-rail.open {
+    box-shadow: var(--kiki-sheet-shadow), -12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-sidebar,
+  .app-rail-shell,
+  .app-rail {
+    transition: none;
   }
 }
 
@@ -452,7 +557,21 @@ body[data-pane-resizing='true'] {
   position: fixed;
   inset: 0;
   z-index: 25;
-  background-color: rgb(var(--kiki-shadow-ink) / 0.25);
+  background-color: rgb(var(--kiki-shadow-ink) / 0.22);
+}
+
+/* Inspector peek: hovering an agent surface (card, pane, tree row) marks its
+ * tree row — a soft wash and an accent tick — without retargeting the rail.
+ * Pinning (click / keyboard focus) is what switches the inspector. */
+.agent-tree-row[data-agent-peek] {
+  background-color: color-mix(in srgb, var(--color-accent-soft) 55%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-tree-row[data-agent-peek] {
+    transition: background-color 150ms ease-out, box-shadow 150ms ease-out;
+  }
 }
 
 /* ---- conversation shell (/new + /s/:id layout route) ---- */
@@ -481,11 +600,32 @@ body[data-pane-resizing='true'] {
 }
 
 .conversation-center {
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+
+/* Inside the stage the shell itself is transparent canvas; the conversation
+ * column, the preview workspace and the inspector each become a sheet, split
+ * by the stage gap. The column keeps its paper ground so the seat's fade
+ * mask still resolves against the surface it sits on. */
+.app-sheet > .conversation-shell {
+  background: transparent;
+}
+
+@media (min-width: 768px) {
+  .app-sheet > .conversation-shell .conversation-row {
+    gap: var(--kiki-stage-gap);
+  }
+  .app-sheet > .conversation-shell .conversation-center {
+    overflow: hidden;
+    border-radius: var(--kiki-sheet-radius);
+    background: var(--color-paper);
+    box-shadow: var(--kiki-sheet-shadow);
+  }
 }
 
 .conversation-header-slot:empty,
@@ -528,13 +668,71 @@ body[data-pane-resizing='true'] {
   height: 100%;
   flex-shrink: 0;
   flex-direction: column;
-  border-left: 1px solid var(--color-hairline);
   background-color: var(--color-panel);
+}
+
+/* Desktop: a sheet of its own. It is the pane that yields first when the row
+ * runs out of room — it shrinks from its stored width toward the 320px floor
+ * before the conversation column drops under its reading minimum. */
+@media (min-width: 1024px) {
+  .preview-workspace:not(.preview-workspace--overlay) {
+    flex-shrink: 3;
+    min-width: 320px;
+    overflow: hidden;
+    border-radius: var(--kiki-sheet-radius);
+    box-shadow: var(--kiki-sheet-shadow);
+  }
+  /* The sheet clips its corners, so the grab strip lives on its inner edge. */
+  .preview-workspace:not(.preview-workspace--overlay) > .preview-workspace__resizer {
+    left: 0;
+    width: 8px;
+  }
+  .preview-workspace:not(.preview-workspace--overlay) > .preview-workspace__resizer::after {
+    left: 0;
+  }
+  /* The inspector yields second, down to its own 240px floor. */
+  .app-sheet > .conversation-shell .app-rail-shell {
+    flex-shrink: 1;
+    min-width: 240px;
+  }
+  .app-sheet > .conversation-shell .app-rail {
+    flex-shrink: 1;
+    max-width: 100%;
+  }
+  .app-sheet > .conversation-shell .conversation-center {
+    min-width: 420px;
+  }
+  .app-sheet > .conversation-shell .conversation-row {
+    position: relative;
+  }
+}
+
+@media (min-width: 1360px) {
+  .app-sheet > .conversation-shell .conversation-center {
+    min-width: 480px;
+  }
+}
+
+/* Collapse strategy between lg and 1360px: conversation + preview + inspector
+ * cannot all dock at a readable width, so with the preview open the
+ * inspector floats over the right edge as a raised sheet instead of pushing
+ * the conversation under its minimum. */
+@media (min-width: 1024px) and (max-width: 1359px) {
+  .app-sheet > .conversation-shell .conversation-row:has(.preview-workspace:not([hidden]):not([data-preview-fullscreen])) .conversation-rail-slot .app-rail-shell {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+  }
+  .app-sheet > .conversation-shell .conversation-row:has(.preview-workspace:not([hidden]):not([data-preview-fullscreen])) .conversation-rail-slot .app-rail {
+    box-shadow: var(--kiki-sheet-shadow), -16px 0 48px -24px rgb(var(--kiki-shadow-ink) / 0.4);
+  }
 }
 
 .preview-workspace__resizer {
   position: absolute;
-  left: -6px;
+  left: -10px;
   top: 0;
   bottom: 0;
   z-index: 10;
@@ -547,9 +745,10 @@ body[data-pane-resizing='true'] {
   content: '';
   position: absolute;
   left: 5px;
-  top: 0;
-  bottom: 0;
+  top: 12px;
+  bottom: 12px;
   width: 2px;
+  border-radius: 1px;
   background-color: transparent;
 }
 
@@ -605,6 +804,13 @@ body[data-pane-resizing='true'] {
   display: flex;
   flex: none;
   flex-direction: column;
+}
+
+/* The composer card's border carries the input's focus state; the global
+ * :focus-visible outline would draw a second box inside the card. */
+.conversation-seat textarea[data-composer]:focus-visible,
+[data-composer-variant] textarea[data-composer]:focus-visible {
+  outline: none;
 }
 
 /* Active phase: the seat overlaps the transcript's bottom edge by a FIXED
@@ -715,6 +921,39 @@ body[data-pane-resizing='true'] {
   line-height: 1.65;
   overflow-wrap: break-word;
 }
+/* Assistant answers read as set prose: Newsreader for Latin at a reading
+ * size, with Chinese falling through to the UI sans faces (a Song face at
+ * this size reads thin and spotty on Windows) rather than the display
+ * stack's Song fallbacks. Code, tables and chrome inside keep their own
+ * families. The measure caps running text only; fences and tables may use
+ * the full column. */
+.kiki-prose,
+.thinking-row {
+  --kiki-prose-font: 'Newsreader Variable', 'Newsreader', Georgia, 'PingFang SC', 'Hiragino Sans GB',
+    'Noto Sans SC', 'Microsoft YaHei', serif;
+}
+.kiki-prose {
+  font-family: var(--kiki-prose-font);
+  font-optical-sizing: auto;
+  font-size: 15.5px;
+  line-height: 1.65;
+  color: var(--color-ink);
+}
+.kiki-prose .kiki-md {
+  font-size: inherit;
+  line-height: inherit;
+}
+.kiki-prose-tail {
+  font-size: inherit;
+  line-height: inherit;
+}
+.kiki-prose .kiki-md :is(p, ul, ol, blockquote, h1, h2, h3, h4),
+.kiki-prose-tail {
+  max-width: 40em;
+}
+.kiki-prose :is(button, input, kbd, [data-row-actions]) {
+  font-family: var(--font-sans);
+}
 .kiki-md:not(.kiki-md--edges) > *:first-child {
   margin-top: 0;
 }
@@ -768,14 +1007,16 @@ body[data-pane-resizing='true'] {
 }
 .kiki-md code {
   font-family: var(--font-mono);
-  font-size: 0.86em;
-  background: var(--color-paper);
-  border: 1px solid var(--color-hairline);
-  border-radius: 5px;
-  padding: 0.08em 0.34em;
+  font-size: 0.84em;
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+  border-radius: 4px;
+  padding: 0.1em 0.32em;
+}
+.kiki-prose .kiki-md :not(pre) > code {
+  font-size: 0.8em;
 }
 .kiki-md pre {
-  background: var(--color-paper);
+  background: var(--color-panel);
   border: 1px solid var(--color-hairline);
   border-radius: 10px;
   padding: 10px 12px;
@@ -790,12 +1031,15 @@ body[data-pane-resizing='true'] {
   line-height: 1.55;
 }
 .kiki-md a {
-  color: var(--color-accent);
+  color: inherit;
   text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--color-hairline-strong);
+  transition: color 150ms ease-out, text-decoration-color 150ms ease-out;
 }
 .kiki-md a:hover {
+  color: var(--color-accent-deep);
   text-decoration-color: var(--color-accent);
 }
 .kiki-md img {
@@ -813,30 +1057,90 @@ body[data-pane-resizing='true'] {
   border-top: 1px solid var(--color-hairline);
   margin: 1em 0;
 }
+/* Tables: hairline rows, no vertical grid, no frame. Set in the UI sans so
+ * figures align and columns scan; Streamdown's wrapper chrome is flattened. */
+.kiki-md [data-streamdown='table-wrapper'] {
+  margin: 0.8em 0;
+  padding: 0;
+  gap: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.kiki-md [data-streamdown='table-wrapper'] > div {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
 .kiki-md table {
   border-collapse: collapse;
+  border: none;
   margin: 0.6em 0;
-  font-size: 0.92em;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.kiki-md [data-streamdown='table-wrapper'] table {
+  margin: 0;
+}
+.kiki-md thead {
+  background: transparent;
 }
 .kiki-md th,
 .kiki-md td {
-  border: 1px solid var(--color-hairline);
-  padding: 4px 10px;
+  border: none;
+  border-bottom: 1px solid var(--color-hairline);
+  padding: 6px 16px 6px 0;
   text-align: left;
+  font-size: 13px;
 }
 .kiki-md th {
-  background: var(--color-paper);
+  background: transparent;
+  border-bottom-color: var(--color-hairline-strong);
+  color: var(--color-ink-soft);
   font-weight: 600;
+  white-space: nowrap;
+}
+.kiki-md tr {
+  border: none;
+}
+.kiki-md tr:last-child td {
+  border-bottom: none;
 }
 .kiki-md strong {
   font-weight: 650;
 }
 
-/* ---- code fence chrome (KikiCodeBlock wraps Streamdown's CodeBlock) ---- */
+/* ---- code fence chrome (KikiCodeBlock wraps Streamdown's CodeBlock) ----
+ * One quiet surface: panel tone, a single hairline, no header bar. The
+ * language + copy strip floats in the top-right corner and appears on
+ * hover or keyboard focus (always on touch, where there is no hover). */
+.kiki-cb {
+  position: relative;
+  font-family: var(--font-mono);
+}
+.kiki-cb-tools {
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+.kiki-cb:hover .kiki-cb-tools,
+.kiki-cb:focus-within .kiki-cb-tools,
+.kiki-cb-tools[data-copied] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .kiki-cb-tools {
+    opacity: 1;
+  }
+}
 .kiki-cb [data-streamdown='code-block'] {
   border: none;
   background: transparent;
   border-radius: 0;
+  margin: 0;
+  padding: 0;
+  gap: 0;
 }
 /* kiki draws the header/actions itself — suppress Streamdown's. */
 .kiki-cb [data-streamdown='code-block-header'],
@@ -844,6 +1148,7 @@ body[data-pane-resizing='true'] {
   display: none;
 }
 .kiki-cb-body pre,
+.kiki-cb-body code,
 .kiki-cb [data-streamdown='code-block-body'] pre {
   background: transparent !important;
   border: none;
@@ -859,7 +1164,7 @@ body[data-pane-resizing='true'] {
   border: none;
   background: transparent;
   border-radius: 0;
-  padding: 8px 12px;
+  padding: 10px 14px;
 }
 /* github-light token colors arrive as --shiki-light CSS vars; the dark slot
  * exists only because the plugin requires two themes — never shown. */
@@ -874,6 +1179,8 @@ body[data-pane-resizing='true'] {
 .thinking-row {
   position: relative;
   overflow: hidden;
+  font-family: var(--kiki-prose-font);
+  font-optical-sizing: auto;
 }
 .thinking-row[data-streaming='true']::after {
   content: '';

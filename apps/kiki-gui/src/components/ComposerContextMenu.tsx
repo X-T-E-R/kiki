@@ -251,7 +251,7 @@ export function useComposerContextMenu({
         data-composer-context-menu
         aria-label={t('composer.contextMenuAria')}
         onContextMenu={(event) => { event.preventDefault(); }}
-        className="fixed z-[100] min-w-40 select-none overflow-hidden rounded-lg border border-hairline bg-panel p-1 shadow-[0_20px_60px_-20px_rgba(28,25,23,0.35)]"
+        className="fixed z-[100] min-w-40 select-none overflow-hidden rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
         style={{ left: anchor.x, top: anchor.y }}
       >
         <button

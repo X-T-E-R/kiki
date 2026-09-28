@@ -198,10 +198,8 @@ describe('Sidebar resize wiring', () => {
               fetchNextPage: async () => {},
             }}
             workspaceOptions={[]}
-            workspaceFilter={undefined}
-            onWorkspaceFilter={() => {}}
-            showArchived={false}
-            onToggleArchived={() => {}}
+            filters={{ status: [], workspaces: [], archived: 'hide' }}
+            onFiltersChange={() => {}}
             onNewSession={() => {}}
             groupBy="time"
             onGroupBy={() => {}}

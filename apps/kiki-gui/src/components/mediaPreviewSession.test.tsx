@@ -199,7 +199,7 @@ async function renderReadMedia(block: ToolBlock): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
   await renderSettled(root, <MediaPreviewProvider sessionId="session_test"><ToolCard block={block} agentId="main" /></MediaPreviewProvider>);
   await act(async () => {
-    container.querySelector('[data-tool] > button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await Promise.resolve();
   });
   return container;
@@ -256,7 +256,7 @@ describe('ReadMediaFile tool result preview', () => {
       <ToolCard block={rightBlock} agentId="agent-1" />
     </MediaPreviewProvider>);
     await act(async () => {
-      for (const button of container.querySelectorAll('[data-tool] > button')) {
+      for (const button of container.querySelectorAll('[data-tool] [data-activity-toggle]')) {
         button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       }
       await Promise.resolve();

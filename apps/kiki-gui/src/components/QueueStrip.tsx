@@ -1,5 +1,5 @@
 /**
- * QueueStrip — the parked-prompt queue as an amber card strip directly above
+ * QueueStrip — the parked-prompt queue as a quiet panel strip directly above
  * the composer (between the transcript and the input card):
  *
  *   - one row per queued prompt, in drain order (#1 runs first), each with a
@@ -38,6 +38,7 @@ import { useEffect, useId, useRef, useState, type DragEvent, type KeyboardEvent,
 import type { DeferredAppendTiming } from '@kiki/protocol';
 import type { QueuedPromptPreview } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
+import { DisclosureChevron, Icon } from './icons';
 
 /** The armed remove falls back to idle after this long without the second click. */
 const REMOVE_ARM_TIMEOUT_MS = 5_000;
@@ -234,8 +235,8 @@ export function QueueStrip({
         key={item.promptId}
         onDragOver={(event) => { rowDragOver(event, index); }}
         onDrop={rowDrop}
-        className={`anim-enter group flex flex-wrap items-center gap-2 rounded-lg border bg-panel px-2.5 py-1.5 ${
-          isEditing ? 'border-amber-ink/60 ring-1 ring-amber-rule/60' : 'border-amber-rule/30'
+        className={`anim-enter group flex flex-wrap items-center gap-2 rounded-md px-2 py-1 transition-colors duration-150 ${
+          isEditing ? 'bg-accent-soft' : 'hover:bg-paper focus-within:bg-paper'
         } ${dragId === item.promptId ? 'opacity-50' : ''}`}
       >
         {draggable ? (
@@ -248,24 +249,24 @@ export function QueueStrip({
             disabled={pending || interactionLocked || isEditing}
             title={t('queue.dragHandleTitle')}
             aria-label={t('queue.dragHandleAria')}
-            className="flex h-5 w-4 shrink-0 cursor-grab items-center justify-center rounded text-[11px] leading-none text-amber-ink/60 transition-colors hover:bg-amber-rule/20 hover:text-amber-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none active:cursor-grabbing"
+            className="flex h-5 w-4 shrink-0 cursor-grab items-center justify-center rounded text-[11px] leading-none text-ink-faint transition-colors hover:bg-hairline hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none active:cursor-grabbing"
           >
-            <span aria-hidden>⠿</span>
+            <Icon name="grip" size={12} />
           </button>
         ) : null}
-        <span aria-hidden className="shrink-0 font-mono text-[10px] font-semibold text-amber-ink/70">
-          #{index + 1}
+        <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
+          {index + 1}
         </span>
         <span
           title={item.text === '' ? undefined : item.text}
-          className="min-w-0 flex-1 basis-36 truncate text-[12px] text-ink"
+          className="min-w-0 flex-1 basis-36 truncate text-[13px] text-ink"
         >
           {item.text === '' ? t('sv.queueNoText') : item.text}
         </span>
         {item.media?.map((media, mediaIndex) => {
           const label = media.name ?? media.mime ?? t('media.attachment');
           return (
-            <span key={`${item.promptId}-media-${mediaIndex}`} className="inline-flex max-w-28 shrink-0 items-center gap-1 rounded border border-amber-rule/50 bg-panel px-1.5 py-0.5 text-[10px] text-amber-ink" title={label}>
+            <span key={`${item.promptId}-media-${mediaIndex}`} className="inline-flex max-w-28 shrink-0 items-center gap-1 rounded-[4px] bg-paper px-1.5 py-0.5 text-[12px] text-ink-soft" title={label}>
               {media.kind === 'image' && media.url !== undefined ? (
                 <img src={media.url} alt="" className="h-4 w-4 rounded object-cover" />
               ) : null}
@@ -276,18 +277,18 @@ export function QueueStrip({
                   aria-label={`${t('sv.queueRemove')} ${label}`}
                   disabled={pending || editLocked || (item.text.trim() === '' && item.media?.length === 1)}
                   onClick={() => { run(item.promptId, (id) => onRemoveAttachment(id, mediaIndex)); }}
-                  className="rounded px-0.5 hover:bg-amber-rule/20 disabled:opacity-40"
-                >×</button>
+                  className="flex h-4 w-4 items-center justify-center rounded hover:bg-hairline disabled:opacity-40"
+                ><Icon name="close" size={12} /></button>
               ) : null}
             </span>
           );
         })}
         {isEditing ? (
-          <span className="shrink-0 rounded-full border border-amber-rule/60 bg-amber-card px-2 py-0.5 text-[10.5px] font-medium text-amber-ink">
+          <span className="shrink-0 text-[12px] font-medium text-accent">
             {t('queue.editingBadge')}
           </span>
         ) : (
-          <span className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          <span className="flex shrink-0 items-center gap-1 opacity-70 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100">
             {onChangeTiming !== undefined ? (
               <select
                 aria-label={t('queue.timingAria')}
@@ -300,7 +301,7 @@ export function QueueStrip({
                   if (timing === (item.appendTiming ?? 'agent_idle')) return;
                   run(item.promptId, (id) => onChangeTiming(id, timing));
                 }}
-                className="rounded-full border border-amber-rule/50 bg-panel px-1.5 py-0.5 text-[10.5px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/20 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none"
+                className="h-7 rounded-md border border-hairline bg-panel px-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
               >
                 {QUEUE_TIMINGS.map((timing) => (
                   <option key={timing} value={timing} data-timing={timing}>
@@ -316,7 +317,7 @@ export function QueueStrip({
                 onClick={() => { onEdit(item.promptId); }}
                 title={t('queue.editTitle')}
                 aria-label={t('sv.queueEditAria')}
-                className="rounded-full border border-amber-rule/50 px-2 py-0.5 text-[10.5px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/20 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none"
+                className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-hairline hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
               >
                 {t('sv.queueEdit')}
               </button>
@@ -327,7 +328,7 @@ export function QueueStrip({
               onClick={() => { run(item.promptId, onSendNow); }}
               title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')}
               aria-label={t('sv.queueSendNow')}
-              className="rounded-full bg-amber-ink px-2 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-amber-ink/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none"
+              className="h-7 rounded-md px-2 text-[12px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
             >
               {t('sv.queueSendNow')}
             </button>
@@ -344,10 +345,10 @@ export function QueueStrip({
               }}
               title={armed ? t('queue.removeConfirmTitle') : t('sv.queueRemoveTitle')}
               aria-label={armed ? t('queue.removeConfirm') : t('sv.queueRemove')}
-              className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
+              className={`h-7 rounded-md px-2 text-[12px] font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
                 armed
-                  ? 'border-danger/60 bg-danger/10 text-danger hover:bg-danger/20 focus-visible:ring-danger/50'
-                  : 'border-amber-rule/50 text-amber-ink hover:bg-amber-rule/20 focus-visible:ring-amber-rule/60'
+                  ? 'bg-danger/10 text-danger hover:bg-danger/15 focus-visible:ring-danger/50'
+                  : 'text-ink-soft hover:bg-hairline hover:text-ink focus-visible:ring-accent/40'
               }`}
             >
               {armed ? t('queue.removeConfirm') : t('sv.queueRemove')}
@@ -366,9 +367,9 @@ export function QueueStrip({
       <section
         data-queue-strip
         aria-label={t('sv.queueAria')}
-        className="anim-enter mx-auto max-w-[760px] rounded-xl border border-amber-rule/40 bg-amber-card px-3 py-2"
+        className="anim-enter mx-auto max-w-[var(--kiki-chat-content-width,760px)] rounded-[10px] border border-hairline bg-panel px-2 py-1.5"
       >
-        <header className="flex items-center gap-2">
+        <header className="flex items-center gap-2 px-1">
           {items.length > 1 ? (
             <button
               type="button"
@@ -379,18 +380,13 @@ export function QueueStrip({
               disabled={editingPromptId !== undefined}
               className="flex min-w-0 flex-1 items-center gap-1.5 text-left disabled:opacity-70"
             >
-              <span className="min-w-0 truncate text-[11px] font-medium text-amber-ink">
+              <span className="min-w-0 truncate text-[12px] font-medium text-ink-soft">
                 {countLabel}
               </span>
-              <span
-                aria-hidden
-                className={`shrink-0 text-[9px] text-amber-ink/70 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
-              >
-                ▶
-              </span>
+              <DisclosureChevron open={expanded} />
             </button>
           ) : (
-            <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-amber-ink">
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink-soft">
               {countLabel}
             </span>
           )}
@@ -398,7 +394,7 @@ export function QueueStrip({
             type="button"
             onClick={onClearAll}
             title={t('sv.queueClearAllTitle')}
-            className="shrink-0 rounded-full border border-amber-rule/50 px-2 py-0.5 text-[10.5px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/20 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none"
+            className="shrink-0 rounded-md px-2 py-0.5 text-[12px] text-ink-faint transition-colors hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
           >
             {t('sv.queueClearAll')}
           </button>
@@ -406,7 +402,7 @@ export function QueueStrip({
         <ol
           id={listId}
           hidden={!listVisible}
-          className="mt-1.5 flex-col gap-1"
+          className="mt-1 flex-col gap-0.5"
           style={{ display: listVisible ? 'flex' : undefined }}
         >
           {rows}

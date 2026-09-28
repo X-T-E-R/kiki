@@ -5,8 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session, Workspace } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
+import { MemoryRouter } from 'react-router-dom';
 import {
-  GlobalTaskBoard,
+  TaskBoardPage,
   canOpenGlobalTaskBoardSession,
   resolveGlobalTaskBoardScope,
 } from './GlobalTaskBoard';
@@ -122,23 +123,19 @@ describe('global task board session navigation', () => {
   });
 });
 
-describe('global task board dialog rendering', () => {
+describe('task board page rendering', () => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   let root: Root;
   let container: HTMLDivElement;
-  let rail: HTMLDivElement;
 
   beforeEach(() => {
     container = document.createElement('div');
     document.body.append(container);
-    rail = document.createElement('div');
-    rail.setAttribute('data-session-rail', '');
     root = createRoot(container);
   });
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
-    rail.remove();
     vi.clearAllMocks();
   });
 
@@ -150,69 +147,56 @@ describe('global task board dialog rendering', () => {
     { id: 'workspace-b', name: 'Beta' },
   ] as unknown as readonly Workspace[];
 
-  async function mount(): Promise<void> {
+  async function mount(entry: string): Promise<void> {
     await act(async () => {
       root.render(
-        <I18nProvider>
-          <GlobalTaskBoard
-            activeSessionId="session-a"
-            sessions={sessions}
-            workspaceOptions={workspaceOptions}
-            onNavigate={() => undefined}
-          />
-        </I18nProvider>,
+        <MemoryRouter initialEntries={[entry]}>
+          <I18nProvider>
+            <TaskBoardPage
+              originSessionId="session-a"
+              sessions={sessions}
+              workspaceOptions={workspaceOptions}
+              onNavigate={() => undefined}
+              onToggleSidebar={() => undefined}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
       );
     });
   }
 
-  it('renders no launcher while the session rail is absent', async () => {
-    await mount();
-    expect(document.querySelector('[data-session-task-board]')).toBeNull();
-
-    // The launcher appears inside the rail once it mounts (route change to a
-    // session page with the panel open).
-    await act(async () => { document.body.append(rail); });
-    const launcher = rail.querySelector<HTMLButtonElement>('[data-session-task-board]');
-    expect(launcher).not.toBeNull();
-  });
-
-  it('opens the board dialog from the launcher scoped to the session workspace', async () => {
-    document.body.append(rail);
-    await mount();
-    const launcher = rail.querySelector<HTMLButtonElement>('[data-session-task-board]');
-    expect(launcher).not.toBeNull();
-
-    await act(async () => { launcher!.click(); });
-
-    const panel = document.querySelector('[role="dialog"]');
-    expect(panel).not.toBeNull();
-    expect(panel!.className).toContain('max-w-[1280px]');
-    expect(panel!.querySelector('[data-task-board-container]')).not.toBeNull();
-    expect(panel!.querySelectorAll('[data-board-column]')).toHaveLength(6);
-    // Opening from the rail reads only the active session's workspace; the
-    // cross-workspace overview must stay cold until the user asks for it.
+  it('renders the board as a page scoped to the workspace carried in the URL', async () => {
+    await mount('/board?workspace=workspace-a');
+    const page = container.querySelector('[data-task-board-page]');
+    expect(page).not.toBeNull();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(page!.querySelector('[data-task-board-container]')).not.toBeNull();
+    expect(page!.querySelectorAll('[data-board-column]')).toHaveLength(6);
+    // A workspace-scoped entry reads only that workspace; the cross-workspace
+    // overview stays cold until the user asks for it.
     expect(board.overview).not.toHaveBeenCalled();
     expect(board.read).toHaveBeenCalledTimes(1);
     expect(board.read.mock.calls[0]![0]).toMatchObject({ action: 'list', workspaceId: 'workspace-a' });
-    const scopeSelect = panel!.querySelector<HTMLSelectElement>('[data-task-board-scope]');
-    expect(scopeSelect).not.toBeNull();
-    expect(scopeSelect!.value).toBe('workspace-a');
+    expect(container.querySelector('[data-task-board-scope]')!.getAttribute('data-task-board-scope')).toBe('workspace-a');
+    expect(container.querySelector('[data-scope-option="workspace-a"]')!.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('defaults to all workspaces when the URL carries no scope', async () => {
+    await mount('/board');
+    expect(container.querySelector('[data-task-board-scope]')!.getAttribute('data-task-board-scope')).toBe('all');
+    expect(container.querySelector('[data-scope-option="all"]')!.getAttribute('aria-pressed')).toBe('true');
+    expect(board.overview).toHaveBeenCalledTimes(1);
   });
 
   it('switches to the all-workspaces overview only from the explicit scope switcher', async () => {
-    document.body.append(rail);
-    await mount();
-    const launcher = rail.querySelector<HTMLButtonElement>('[data-session-task-board]');
-    await act(async () => { launcher!.click(); });
+    await mount('/board?workspace=workspace-a');
+    expect(container.querySelector('[data-task-board-scope]')!.getAttribute('data-task-board-scope')).toBe('workspace-a');
 
-    const scopeSelect = document.querySelector<HTMLSelectElement>('[data-task-board-scope]')!;
-    expect(scopeSelect.value).toBe('workspace-a');
-
-    scopeSelect.value = 'all';
-    await act(async () => { scopeSelect.dispatchEvent(new Event('change', { bubbles: true })); });
+    const all = container.querySelector<HTMLButtonElement>('[data-scope-option="all"]')!;
+    await act(async () => { all.click(); });
 
     expect(board.overview).toHaveBeenCalledTimes(1);
     expect(board.read).toHaveBeenCalledTimes(1);
-    expect(scopeSelect.value).toBe('all');
+    expect(container.querySelector('[data-task-board-scope]')!.getAttribute('data-task-board-scope')).toBe('all');
   });
 });

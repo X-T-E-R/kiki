@@ -15,6 +15,11 @@ export type ToastTone = 'success' | 'info' | 'error';
 export interface ToastRetry {
   /** Re-runs the failed action; failures are expected to raise a fresh toast. */
   readonly run: () => void;
+  /**
+   * Overrides the default "Retry" label. A toast that offers to reverse what
+   * just happened (an undo) must not be labelled as repeating it.
+   */
+  readonly label?: string;
 }
 
 export interface ToastInput {

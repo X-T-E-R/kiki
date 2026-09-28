@@ -12,7 +12,7 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
 
-import { AgentWorkspace, PanelIcon, ResyncStatusBanner, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
+import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -26,9 +26,11 @@ import { GoalCard, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
+import { useInspectorFocusTracking } from './inspectorFocus';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
 import { useStableForest, type TranscriptRowActions } from './Transcript';
+import { Icon } from './icons';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import {
@@ -67,6 +69,7 @@ import {
   queuedPromptPreviews,
   sessionAgentForest,
   type ApprovalBlock,
+  type QuestionBlock,
   type AssistantBlock,
   type Block,
   type SubagentBlock,
@@ -79,6 +82,7 @@ import {
   readLastSessionId,
   readSettings,
   readTerminalPanelPrefs,
+  markSessionSeen,
   resolveEffectiveModel,
   resolveModelSource,
   resolveSessionModelOverride,
@@ -98,6 +102,8 @@ import {
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage, type UpdateAgentGoalInput } from '../lib/client';
 import { revealSubagentCard } from './ActivityHistory';
+import { InteractionPlacementContext, type InteractionPlacement } from './Interactions';
+import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { useConnection, useControllerRegistry } from '../state/connection';
@@ -188,7 +194,6 @@ function Header({
   onToggleSidebar,
   onRenameSession,
   onSessionAction,
-  onRequestBatchResolve,
 }: {
   controller: SessionController | null;
   railOpen: boolean;
@@ -199,7 +204,6 @@ function Header({
   onToggleSidebar: () => void;
   onRenameSession: (title: string) => Promise<void>;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
-  onRequestBatchResolve: (decision: 'approved' | 'rejected', ids: readonly string[]) => void;
 }) {
   const { t, tp } = useI18n();
   const [renaming, setRenaming] = useState(false);
@@ -208,30 +212,13 @@ function Header({
     controller?.getState ?? emptyState,
   );
   const session = state.session;
-  const unresolvedApprovalIds = useMemo(
-    () =>
-      state.blocks
-        .filter(
-          (block): block is ApprovalBlock =>
-            block.kind === 'approval' && block.resolution === undefined,
-        )
-        .map((block) => block.request.approval_id),
+  const approvals = useMemo(
+    () => state.blocks.filter((block) => block.kind === 'approval' && block.resolution === undefined).length,
     [state.blocks],
   );
-  const approvals = unresolvedApprovalIds.length;
   const questions = pendingQuestionCount(state);
-
-  // The amber badge doubles as a locator: clicking it smooth-scrolls the
-  // transcript to the first unresolved approval card.
-  const scrollToFirstApproval = () => {
-    document.querySelector('[data-agent-workspace-target="main"] [data-approval-id]')
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  };
-
-  const requestBatch = (decision: 'approved' | 'rejected') => {
-    if (unresolvedApprovalIds.length === 0) return;
-    onRequestBatchResolve(decision, unresolvedApprovalIds);
-  };
+  const waiting = approvals + questions;
+  const runningTasks = state.tasks.filter((task) => task.status === 'running').length;
 
   return (
     <WorkspaceHeader main>
@@ -239,9 +226,9 @@ function Header({
         type="button"
         onClick={onToggleSidebar}
         aria-label={t('sv.openMenuAria')}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
+        className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
       >
-        <span aria-hidden>☰</span>
+        <Icon name="menu" size={16} />
       </button>
       {session !== undefined ? (
         <>
@@ -253,41 +240,13 @@ function Header({
             onRename={onRenameSession}
             onOpenRail={onToggleRail}
           />
-          {approvals > 0 || questions > 0 ? (
-            <button
-              type="button"
-              onClick={approvals > 0 ? scrollToFirstApproval : undefined}
-              title={approvals > 0 ? t('sv.scrollToApprovals') : undefined}
-              className={`shrink-0 rounded-full bg-amber-card px-2 py-0.5 text-[10.5px] font-semibold text-amber-ink ${
-                approvals > 0 ? 'cursor-pointer transition-colors hover:bg-amber-rule/30' : ''
-              }`}
-            >
-              {approvals > 0 ? tp('sv.approvals', approvals) : ''}
-              {approvals > 0 && questions > 0 ? ' · ' : ''}
-              {questions > 0 ? tp('sv.questions', questions) : ''}
-            </button>
-          ) : null}
-          {approvals >= 2 ? (
-            <span className="flex shrink-0 items-center gap-1" data-approval-batch>
-              <button
-                type="button"
-                onClick={() => { requestBatch('approved'); }}
-                className="rounded-full border border-accent bg-accent-soft px-2 py-0.5 text-[10.5px] font-semibold text-accent transition-colors hover:bg-accent hover:text-white"
-              >
-                {t('sv.approveAll')}
-              </button>
-              <button
-                type="button"
-                onClick={() => { requestBatch('rejected'); }}
-                className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-danger hover:text-danger"
-              >
-                {t('sv.rejectAll')}
-              </button>
-            </span>
-          ) : null}
+          {/* What is waiting on you — the count and the batch decisions —
+              lives in the tray above the composer, which lists the items
+              themselves. The header keeps one quiet state word and ONE
+              overflow menu. */}
           {state.busy ? (
-            <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-accent">
-              <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+            <span data-header-working className="hidden shrink-0 items-center gap-1.5 text-[12px] text-ink-soft sm:flex">
+              <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
               {t('sv.working')}
             </span>
           ) : null}
@@ -310,13 +269,27 @@ function Header({
         aria-label={t('sv.togglePanelAria')}
         aria-expanded={railOpen}
         data-rail-toggle
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
+        data-rail-hint={waiting > 0 ? 'needs-you' : state.busy || runningTasks > 0 ? 'running' : undefined}
+        className={`relative flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-8 lg:min-w-8 ${
           railOpen
-            ? 'bg-accent-soft text-accent'
-            : 'text-ink-faint hover:bg-paper hover:text-ink'
+            ? 'bg-canvas text-ink'
+            : 'text-ink-faint hover:bg-canvas hover:text-ink'
         }`}
       >
-        <PanelIcon className="h-[13px] w-[13px]" />
+        <PanelIcon />
+        {/* The closed inspector stays discoverable: what is waiting on you
+            (accent), else a quiet running mark with the task count. */}
+        {waiting > 0 ? (
+          // A bare count, no fill: the tray already carries the loud mark.
+          <span data-rail-toggle-badge className="text-[12px] leading-[18px] font-medium text-accent-ink tabular-nums" aria-label={tp('inspector.waiting', waiting)} title={tp('inspector.waiting', waiting)}>
+            {waiting}
+          </span>
+        ) : state.busy || runningTasks > 0 ? (
+          <span data-rail-toggle-running className="flex items-center gap-1 text-[12px] text-ink-soft" title={runningTasks > 0 ? tp('inspector.tasks', runningTasks) : t('inspector.running')}>
+            <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
+            {runningTasks > 0 ? <span className="tabular-nums">{runningTasks}</span> : null}
+          </span>
+        ) : null}
       </button>
     </WorkspaceHeader>
   );
@@ -370,8 +343,10 @@ export function SessionTitle({
   };
 
   const shown = title !== '' ? title : t('sidebar.untitled');
+  // Title keeps its width; the cwd beside it yields first (shrink-[100]) so a
+  // roomy header never truncates the name to make space for the path.
   return (
-    <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
+    <div className="flex min-w-0 flex-1 items-baseline gap-2">
       {editing ? (
         <input
           ref={inputRef}
@@ -391,17 +366,17 @@ export function SessionTitle({
             }
           }}
           onBlur={commit}
-          className="min-w-0 max-w-md flex-1 rounded-md border border-accent bg-paper px-1.5 py-0.5 font-display text-[15px] font-semibold tracking-tight text-ink outline-none"
+          className="min-w-0 max-w-md flex-1 rounded-md border border-hairline-strong bg-panel px-1.5 py-0.5 font-display text-[16px] font-semibold tracking-tight text-ink outline-none focus:border-accent"
         />
       ) : (
-        <h1 className="min-w-0 max-w-full">
+        <h1 className="-ml-1.5 min-w-0 max-w-full">
           <button
             type="button"
             data-session-title
             onClick={() => { onEditingChange(true); }}
             title={t('sv.renameAria')}
             aria-label={`${shown} — ${t('sv.renameAria')}`}
-            className="block max-w-full truncate rounded-md px-1 py-0.5 text-left font-display text-[15px] font-semibold tracking-tight text-ink transition-colors hover:bg-paper"
+            className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left font-display text-[16px] leading-tight font-semibold tracking-tight text-ink transition-colors hover:bg-canvas"
           >
             {shown}
           </button>
@@ -413,7 +388,7 @@ export function SessionTitle({
           data-session-cwd
           onClick={onOpenRail}
           title={cwd}
-          className="hidden shrink-0 truncate font-mono text-[10.5px] text-ink-faint transition-colors hover:text-ink-soft sm:block"
+          className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint transition-colors hover:text-ink-soft sm:block"
         >
           {shortCwd(cwd)}
         </button>
@@ -492,7 +467,7 @@ export function SessionActionsMenu({
   }, [open]);
 
   const itemClass =
-    'w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
+    'flex h-8 w-full items-center rounded-md px-2.5 text-left text-[13px] text-ink transition-colors hover:bg-paper';
   const pick = (action: 'fork' | 'undo' | 'compact' | 'export') => {
     setOpen(false);
     onAction(action);
@@ -506,14 +481,12 @@ export function SessionActionsMenu({
         aria-label={t('sv.actionsAria')}
         aria-haspopup="menu"
         aria-expanded={open}
-        className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
-          open ? 'bg-paper text-ink' : 'text-ink-faint hover:bg-paper hover:text-ink'
-        }`}
+        className={HEADER_ICON_BUTTON}
       >
-        <MoreIcon className="h-[13px] w-[13px]" />
+        <MoreIcon className="h-[15px] w-[15px]" />
       </button>
       {open ? (
-        <div className="anim-enter absolute right-0 top-7 z-40 w-56 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
+        <div role="menu" className="anim-enter absolute right-0 top-full z-40 mt-1 w-56 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
           <button
             type="button"
             role="menuitem"
@@ -538,8 +511,8 @@ export function SessionActionsMenu({
                 onToggleTerminal();
               }}
             >
-              <span className={terminalOpen ? 'text-accent' : undefined}>{t('term.menuItem')}</span>
-              <span className="font-mono text-[10px] text-ink-faint">{TERMINAL_SHORTCUT_LABEL}</span>
+              <span className={terminalOpen ? 'font-medium' : undefined}>{t('term.menuItem')}</span>
+              <span className="text-[12px] text-ink-faint">{TERMINAL_SHORTCUT_LABEL}</span>
             </button>
           ) : null}
           <div className="my-1 h-px bg-hairline" />
@@ -590,7 +563,7 @@ type ModelSource = ComposerModelSource;
 export const NOT_FOUND_FALLBACK_MS = 3000;
 
 /**
- * Permission/plan/swarm pills are controlled by the server-reported store
+ * Permission/plan pills are controlled by the server-reported store
  * fields (snapshot agent_config + `agent.status.updated`): another client —
  * or the server itself — can move them. The local override is only an
  * optimistic echo: an uncommitted pill click wins until the store reports the
@@ -628,7 +601,6 @@ interface SessionCreateHandoff {
   readonly thinking?: string;
   readonly permissionMode?: PermissionMode;
   readonly planMode?: boolean;
-  readonly swarmMode?: boolean;
   readonly goalObjective?: string;
 }
 
@@ -670,7 +642,6 @@ export function parseSessionCreateHandoff(state: unknown): SessionCreateHandoff 
     thinking: raw.thinking,
     permissionMode: raw.permissionMode,
     planMode: raw.planMode,
-    swarmMode: raw.swarmMode,
     goalObjective: raw.goalObjective,
   };
 }
@@ -1169,12 +1140,11 @@ export function SessionView({
   // only): attachment chips and pill overrides restore instead of vanishing
   // on every session switch. The /new hand-off state wins on first mount.
   const restoredComposer = useMemo(() => readComposerState(sessionId), [sessionId]);
-  // Below lg the rail is a fixed overlay drawer (see .app-rail in index.css):
-  // start it closed there so no backdrop sits over the transcript uninvited.
+  // The inspector is on demand at every width: it starts closed and opens
+  // from the header toggle (which carries a running / needs-you hint so the
+  // closed state stays discoverable). Below lg it is a fixed overlay drawer.
   const railIsOverlay = useMediaQuery('(max-width: 1023px)');
-  const [railOpen, setRailOpen] = useState(
-    () => typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 1024px)').matches,
-  );
+  const [railOpen, setRailOpen] = useState(false);
   // A desktop rail becomes a fixed drawer on resize. Do not let that drawer
   // cover a full-width preview tab that was already open; a deliberate rail
   // toggle while narrow still works because this runs only at the breakpoint.
@@ -1184,7 +1154,7 @@ export function SessionView({
   // rail's owner when the user is looking at an embedded subagent view — the
   // routed agent page (selectedAgentId) owns the rail through AgentWorkspace.
   const [panelFocusAgent, setPanelFocusAgent] = useState<string | undefined>(undefined);
-  // Permission/plan/swarm are store-controlled (see resolveControlledValue):
+  // Permission/plan are store-controlled (see resolveControlledValue):
   // local state is only the optimistic echo of an uncommitted pill click.
   const [permissionOverride, setPermissionOverride] = useState<PermissionMode | undefined>(
     restoredComposer.permissionMode ?? initialOptionsRef.current.permissionMode,
@@ -1197,9 +1167,6 @@ export function SessionView({
   // takes `plan_gate` per prompt), so the override simply persists.
   const [planGateOverride, setPlanGateOverride] = useState<PromptPlanGate | undefined>(
     restoredComposer.planGate,
-  );
-  const [swarmOverride, setSwarmOverride] = useState(
-    restoredComposer.swarmMode ?? initialOptionsRef.current.swarmMode,
   );
   // Goal mode (composer toggle): the next plain message becomes the goal. A
   // successful goal send disarms it; run-state control lives on the GoalCard.
@@ -1441,7 +1408,6 @@ export function SessionView({
       permissionMode: permissionOverride,
       planMode: planOverride,
       planGate: planGateOverride,
-      swarmMode: swarmOverride,
       goalObjective: '',
       modelOverride,
       effortOverride,
@@ -1453,7 +1419,6 @@ export function SessionView({
     permissionOverride,
     planOverride,
     planGateOverride,
-    swarmOverride,
     modelOverride,
     effortOverride,
   ]);
@@ -1474,6 +1439,16 @@ export function SessionView({
     controller?.getState ?? emptyState,
   );
 
+  // Read state: while a session is on screen, keep its seen-mark at the newest
+  // event the user has therefore looked at. This clears the session from the
+  // activity inbox and from the sidebar's unread state, and re-arms both the
+  // moment a later turn pushes `last_seq` past the mark.
+  const seenSeq = state.session?.last_seq;
+  useEffect(() => {
+    if (seenSeq === undefined) return;
+    markSessionSeen(sessionId, seenSeq);
+  }, [sessionId, seenSeq]);
+
   // Store-controlled pills: the server-reported value wins unless a local
   // click is still waiting to be committed with the next prompt.
   const permissionMode = resolveControlledValue(
@@ -1482,7 +1457,6 @@ export function SessionView({
     defaults.defaultPermissionMode,
   );
   const planMode = resolveControlledFlag(planOverride, state.planMode, state.loaded, defaults.defaultPlanMode);
-  const swarmMode = resolveControlledFlag(swarmOverride, state.swarmMode, state.loaded, false);
   useEffect(() => {
     if (shouldClearModeOverride(permissionOverride, state.permissionMode)) {
       setPermissionOverride(undefined);
@@ -1493,11 +1467,6 @@ export function SessionView({
       setPlanOverride(undefined);
     }
   }, [planOverride, state.loaded, state.planMode]);
-  useEffect(() => {
-    if (state.loaded && shouldClearModeOverride(swarmOverride, state.swarmMode)) {
-      setSwarmOverride(undefined);
-    }
-  }, [swarmOverride, state.loaded, state.swarmMode]);
 
   // A deleted/unknown session can never recover: toast the reason, keep the
   // card visible for a beat, then fall back home (clearing the remembered id
@@ -1769,7 +1738,6 @@ export function SessionView({
             permissionMode,
             planMode,
             planGate,
-            swarmMode,
             goalObjective: promptGoalObjective(options),
             appendTiming: liveSettings.defaultAppendTiming,
           })
@@ -1973,7 +1941,6 @@ export function SessionView({
     permissionMode,
     planMode,
     planGate,
-    swarmMode,
     liveSettings.defaultAppendTiming,
     quote,
     annotations,
@@ -2194,6 +2161,8 @@ export function SessionView({
       onEditMessage: handleEditMessage,
       onRegenerate: handleRegenerate,
       onFork: handleForkMessage,
+      // Resume after a user stop re-runs the stopped reply (same path as regenerate).
+      onResumeStopped: handleRegenerate,
     }),
     [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, handleRegenerate, handleForkMessage],
   );
@@ -2316,13 +2285,35 @@ export function SessionView({
   // read as foreign entries under the "X's panel" badge. Main focus keeps the
   // session-wide set unchanged.
   const focusTaskOwner = panelFocusAgent;
+  // The inspector's now / needs-you / recent chapters read the focused
+  // agent's own blocks and run state too; the session record stays main's.
   const focusState = useMemo(
     () =>
       panelFocusAgent === undefined
         ? state
-        : { ...state, tasks: panelAgentState.tasks },
-    [panelFocusAgent, panelAgentState.tasks, state],
+        : {
+            ...state,
+            tasks: panelAgentState.tasks,
+            blocks: panelAgentState.blocks,
+            busy: panelAgentState.busy,
+            model: panelAgentState.model,
+            thinkingEffort: panelAgentState.thinkingEffort,
+          },
+    [panelFocusAgent, panelAgentState, state],
   );
+  // Inspector follows the user's focus (inspectorFocus.ts): click / keyboard
+  // focus into main's column pins main; into a subagent card, tree node or
+  // embedded pane pins that subagent. Hover only peeks. The routed agent page
+  // owns its own rail, so tracking runs on the main view only.
+  const forestRef = useRef(forest);
+  forestRef.current = forest;
+  const isKnownAgent = useCallback((agentId: string) => forestRef.current.byId[agentId] !== undefined, []);
+  useInspectorFocusTracking({
+    onPin: setPanelFocusAgent,
+    isKnown: isKnownAgent,
+  });
+  const inspectMain = useCallback(() => { setPanelFocusAgent(undefined); }, []);
+  const openFileInPreview = useCallback((path: string) => { previewRef.current?.openFile(path); }, []);
 
   const handleResolveApproval = useCallback(
     (
@@ -2651,7 +2642,6 @@ export function SessionView({
             permissionMode={permissionMode}
             planMode={planMode}
             planGate={planGate}
-            swarmMode={swarmMode}
             goalMode={goalMode}
             efforts={supportedEfforts}
             effort={effectiveEffort}
@@ -2680,7 +2670,6 @@ export function SessionView({
             onChangePermissionMode={setPermissionOverride}
             onChangePlanMode={setPlanOverride}
             onChangePlanGate={setPlanGateOverride}
-            onChangeSwarmMode={setSwarmOverride}
             onChangeGoalMode={setGoalMode}
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}
@@ -2712,7 +2701,6 @@ export function SessionView({
     permissionMode,
     planMode,
     planGate,
-    swarmMode,
     goalMode,
     supportedEfforts,
     effectiveEffort,
@@ -2751,6 +2739,30 @@ export function SessionView({
   const mainTranscriptBlocks = useMemo(
     () => withOptimisticUserBlock(filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID), pendingSubmission),
     [state.blocks, forest, pendingSubmission],
+  );
+  // "Needs you" tray: every pending approval/question in the session (main
+  // and subagents) answers above the composer; the timeline keeps one-line
+  // records (InteractionPlacementContext) whose Review action focuses the
+  // tray item.
+  const trayRef = useRef<NeedsYouTrayHandle>(null);
+  const trayItems = useMemo(
+    () => state.blocks.filter(
+      (block): block is ApprovalBlock | QuestionBlock =>
+        (block.kind === 'approval' && block.resolution === undefined) ||
+        (block.kind === 'question' && block.outcome === undefined),
+    ),
+    [state.blocks],
+  );
+  const trayAgentNames = useMemo(() => {
+    const names = new Map<string, string>();
+    if (forest !== undefined) {
+      for (const node of Object.values(forest.byId)) names.set(node.agentId, node.label);
+    }
+    return names;
+  }, [forest]);
+  const interactionPlacement = useMemo<InteractionPlacement>(
+    () => ({ inTray: true, onReview: (kind, id) => { trayRef.current?.focusItem(kind, id); } }),
+    [],
   );
   // The subagent route branch: the shell resolves the target and navigation;
   // the workspace owns header, timeline, resync, details, and actions.
@@ -2834,6 +2846,7 @@ export function SessionView({
       onStopAgentTask={stopAgentTask}
     >
       <PreviewFocusBridge onFocusedAgent={setPanelFocusAgent} />
+      <InteractionPlacementContext.Provider value={interactionPlacement}>
       <AgentWorkspace
         target={{ sessionId, agentId: MAIN_AGENT_ID }}
         controller={controller}
@@ -2853,7 +2866,7 @@ export function SessionView({
             terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
             onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
             onToggleSidebar={onToggleSidebar} onRenameSession={renameSession}
-            onSessionAction={runSessionAction} onRequestBatchResolve={handleBatchResolve}
+            onSessionAction={runSessionAction}
           />,
           timeline: {
             state: { ...state, blocks: mainTranscriptBlocks },
@@ -2895,6 +2908,15 @@ export function SessionView({
                 sendNowDisabled={state.resyncing || state.resyncFailed}
               />
             ) : null}
+            <NeedsYouTray
+              ref={trayRef}
+              items={trayItems}
+              agentNames={trayAgentNames}
+              onResolveApproval={handleResolveApproval}
+              onAnswerQuestion={handleAnswerQuestion}
+              onDismissQuestion={handleDismissQuestion}
+              onRequestBatchResolve={handleBatchResolve}
+            />
           </>,
           rail: <RightRail
             className={`app-rail ${railOpen ? 'open' : ''}`}
@@ -2902,9 +2924,12 @@ export function SessionView({
             subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
             onCancelTask={handleCancelTask} onStopAgentTask={stopAgentTask}
             onOpenSubagent={openAgent} onClose={closeRail}
+            onInspectMain={inspectMain} onOpenFile={openFileInPreview}
+            onReviewPending={(kind, id) => { trayRef.current?.focusItem(kind, id); }}
           />,
         }}
       />
+      </InteractionPlacementContext.Provider>
       {slots.footer !== null && terminalOpen && currentTerminalManager !== null
         ? createPortal(
             <TerminalPanel

@@ -1,0 +1,301 @@
+/* ---- motion language ----
+ * One vocabulary for every moving thing in kiki. Loaded after index.css (see
+ * main.tsx), so the few global motion classes defined there (.anim-enter,
+ * .status-dot-busy, .stream-caret, .expand-collapse) are re-pointed at these
+ * tokens here and the whole app speaks the same language.
+ *
+ * Rules:
+ *  - Motion reports a state change or keeps spatial continuity. Nothing moves
+ *    to decorate.
+ *  - Only opacity and transform animate (compositor-only); colors and borders
+ *    may transition on hover/focus. Streaming output never animates layout.
+ *  - Three agent states own a signature, applied to small marks only (dots,
+ *    the wordmark dot), never to text or cards:
+ *      working  a slow breath (--kiki-motion-loop-breath), aggregate marks
+ *               only; list rows pass `data-life-still` and stay solid
+ *      waiting  a steady dot with an outward ring (--kiki-motion-loop-beckon)
+ *      done     one settle pop, only on a mark carrying `data-life-changed`
+ *               (the moment the state flipped), never on a remount
+ *    idle is not drawn at all; failed does not move.
+ *  - Enter is quick and eased out; exits are instant (unmounts are not held).
+ *  - Duration roles: instant = press feedback only; quick = hover/colour
+ *    transitions; base = enter, expand; slow = list stagger and the settle.
+ *
+ * Motion preference (data-kiki-motion on any ancestor, normally <html>):
+ *   system (or absent)  follow prefers-reduced-motion
+ *   reduce              behave as if prefers-reduced-motion were set
+ *   full                keep the signatures even when the OS asks to reduce
+ * Reduced: every duration collapses and every loop stops; the states stay
+ * distinguishable by colour (accent waiting vs ink working vs success done).
+ */
+
+:root {
+  --kiki-motion-instant: 90ms;
+  --kiki-motion-quick: 160ms;
+  --kiki-motion-base: 240ms;
+  --kiki-motion-slow: 420ms;
+  --kiki-motion-settle: 840ms;
+  --kiki-motion-caret: 1100ms;
+  --kiki-motion-loop-breath: 2400ms;
+  --kiki-motion-loop-beckon: 2800ms;
+  --kiki-motion-stagger: 45ms;
+  --kiki-motion-distance: 6px;
+
+  /* Settle: fast start, long soft landing (enter, popovers, rows). */
+  --kiki-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Loop: symmetric, for breath and caret. */
+  --kiki-ease-loop: cubic-bezier(0.45, 0, 0.55, 1);
+  /* Pop: a small overshoot, reserved for the done settle on tiny marks. */
+  --kiki-ease-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Collapsed tokens. Stated twice because a custom-property block cannot be
+ * shared between a media query and an attribute selector. */
+:root[data-kiki-motion='reduce'] {
+  --kiki-motion-instant: 0.01ms;
+  --kiki-motion-quick: 0.01ms;
+  --kiki-motion-base: 0.01ms;
+  --kiki-motion-slow: 0.01ms;
+  --kiki-motion-settle: 0.01ms;
+  --kiki-motion-stagger: 0ms;
+  --kiki-motion-distance: 0px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-kiki-motion='full']) {
+    --kiki-motion-instant: 0.01ms;
+    --kiki-motion-quick: 0.01ms;
+    --kiki-motion-base: 0.01ms;
+    --kiki-motion-slow: 0.01ms;
+    --kiki-motion-settle: 0.01ms;
+    --kiki-motion-stagger: 0ms;
+    --kiki-motion-distance: 0px;
+  }
+}
+
+/* ---- keyframes ---- */
+@keyframes kiki-rise {
+  from {
+    opacity: 0;
+    transform: translateY(var(--kiki-motion-distance));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes kiki-breath {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.42;
+    transform: scale(0.78);
+  }
+}
+
+@keyframes kiki-beckon {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+
+@keyframes kiki-settle {
+  0% {
+    transform: scale(0.4);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes kiki-settle-ring {
+  0% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+@keyframes kiki-caret-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+/* ---- the shared global classes, on the new tokens ---- */
+.anim-enter {
+  animation: kiki-rise var(--kiki-motion-base) var(--kiki-ease-out) both;
+}
+
+.status-dot-busy {
+  animation: kiki-breath var(--kiki-motion-loop-breath) var(--kiki-ease-loop) infinite;
+}
+
+/* The streaming caret breathes instead of blinking: a hard blink at 1Hz reads
+ * as a terminal cursor; a soft fade reads as someone still writing. */
+.stream-caret {
+  animation: kiki-caret-breath var(--kiki-motion-caret) var(--kiki-ease-loop) infinite;
+}
+
+.expand-collapse {
+  transition: grid-template-rows var(--kiki-motion-base) var(--kiki-ease-out);
+}
+
+/* Staggered entrance for a short list of siblings: set --kiki-i on each. */
+.motion-stagger > * {
+  animation: kiki-rise var(--kiki-motion-slow) var(--kiki-ease-out) both;
+  animation-delay: calc(var(--kiki-i, 0) * var(--kiki-motion-stagger));
+}
+
+/* Press feedback for hero starters and primary buttons only: a 1px sink, no
+ * bounce. List rows and nav items never take it. */
+.motion-press {
+  transition:
+    transform var(--kiki-motion-instant) var(--kiki-ease-out),
+    background-color var(--kiki-motion-quick) var(--kiki-ease-out),
+    border-color var(--kiki-motion-quick) var(--kiki-ease-out),
+    color var(--kiki-motion-quick) var(--kiki-ease-out),
+    box-shadow var(--kiki-motion-quick) var(--kiki-ease-out);
+}
+.motion-press:active:not(:disabled) {
+  transform: translateY(1px) scale(0.99);
+}
+
+/* ---- life marks: the agent-state signature ----
+ * <span class="kiki-life" data-life="working|waiting|done|failed">.
+ * The element is the dot; its color comes from the caller (bg-*), and the
+ * ring inherits it through `background: inherit`.
+ *   data-life-still    the mark never moves, whatever its state (LifeMark
+ *                      sets it for a still working row and an unchanged done)
+ *   data-life-changed  done plays its settle (set only at the flip)
+ * idle is never drawn: a dot always means something is going on. */
+.kiki-life {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  border-radius: 9999px;
+}
+.kiki-life::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  opacity: 0;
+  pointer-events: none;
+}
+.kiki-life[data-life='working'] {
+  animation: kiki-breath var(--kiki-motion-loop-breath) var(--kiki-ease-loop) infinite;
+}
+.kiki-life[data-life='waiting']::after {
+  animation: kiki-beckon var(--kiki-motion-loop-beckon) var(--kiki-ease-out) infinite;
+}
+.kiki-life[data-life='done'][data-life-changed] {
+  animation: kiki-settle var(--kiki-motion-slow) var(--kiki-ease-pop) both;
+}
+.kiki-life[data-life='done'][data-life-changed]::after {
+  animation: kiki-settle-ring var(--kiki-motion-settle) var(--kiki-ease-out) both;
+}
+.kiki-life[data-life='idle'] {
+  display: none;
+}
+/* A still mark never moves, whatever its state. The doubled class outranks
+ * every state rule above, including done + data-life-changed. */
+.kiki-life.kiki-life[data-life-still],
+.kiki-life.kiki-life[data-life-still]::after {
+  animation: none;
+}
+
+/* ---- wordmark dot: the brand point carries the app's pulse ---- */
+.kiki-wordmark-dot {
+  position: relative;
+  transform-origin: 50% 60%;
+}
+.kiki-wordmark-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  opacity: 0;
+  pointer-events: none;
+}
+.kiki-wordmark-dot[data-life='working'] {
+  animation: kiki-breath var(--kiki-motion-loop-breath) var(--kiki-ease-loop) infinite;
+}
+.kiki-wordmark-dot[data-life='waiting']::after {
+  animation: kiki-beckon var(--kiki-motion-loop-beckon) var(--kiki-ease-out) infinite;
+}
+.kiki-wordmark-dot[data-life='done'][data-life-changed] {
+  animation: kiki-settle var(--kiki-motion-slow) var(--kiki-ease-pop) both;
+}
+
+/* ---- reduced motion ----
+ * Pseudo-elements are not valid inside :is(), and a selector list that puts
+ * them there is dropped without a warning, so the ::after rings are listed as
+ * plain selectors next to the :is() group, never inside it.
+ * Tailwind's `animate-pulse` / `animate-spin` must carry `motion-reduce:animate-none`
+ * at the call site; the `reduce` setting below collapses them globally.
+ * system: the OS preference, unless the user chose `full`. */
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-kiki-motion='full'])
+    :is(
+      .anim-enter,
+      .status-dot-busy,
+      .stream-caret,
+      .motion-stagger > *,
+      .kiki-life,
+      .kiki-wordmark-dot
+    ),
+  :root:not([data-kiki-motion='full']) .kiki-life::after,
+  :root:not([data-kiki-motion='full']) .kiki-wordmark-dot::after {
+    animation: none !important;
+  }
+  :root:not([data-kiki-motion='full']) .motion-press:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* reduce, chosen in settings: the same stops, plus a blanket collapse so the
+ * rules other stylesheets gate on the media query (drawers, sweeps, spinners,
+ * Tailwind motion-reduce variants) also go still without the OS setting. */
+:root[data-kiki-motion='reduce']
+  :is(
+    .anim-enter,
+    .status-dot-busy,
+    .stream-caret,
+    .motion-stagger > *,
+    .kiki-life,
+    .kiki-wordmark-dot
+  ),
+:root[data-kiki-motion='reduce'] .kiki-life::after,
+:root[data-kiki-motion='reduce'] .kiki-wordmark-dot::after {
+  animation: none !important;
+}
+:root[data-kiki-motion='reduce'] .motion-press:active:not(:disabled) {
+  transform: none;
+}
+:root[data-kiki-motion='reduce'] *,
+:root[data-kiki-motion='reduce'] *::before,
+:root[data-kiki-motion='reduce'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}

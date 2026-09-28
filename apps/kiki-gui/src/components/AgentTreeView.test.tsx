@@ -22,14 +22,14 @@ describe('AgentTreeView tool-count display', () => {
       agentId: 'child', name: 'Child', status: 'completed',
       toolCallCount: 0, toolCallCountKnown: true,
     });
-    expect(html).toContain('completed');
+    expect(html).toContain('Completed');
     expect(html).toContain('0 tools');
     expect(html).not.toContain('Not reported');
   });
 
   it('silently omits the count on an older terminal row with no stored value', () => {
     const html = renderRow({ agentId: 'child', name: 'Child', status: 'failed' });
-    expect(html).toContain('failed');
+    expect(html).toContain('Failed');
     expect(html).not.toContain(' tools');
     expect(html).not.toContain('Not reported');
   });
@@ -39,7 +39,7 @@ describe('AgentTreeView tool-count display', () => {
       agentId: 'child', name: 'Child', status: 'running',
       toolCallCount: 0, toolCallCountKnown: false,
     });
-    expect(html).toContain('running');
+    expect(html).toContain('Running');
     expect(html).not.toContain(' tools');
     expect(html).not.toContain('Not reported');
   });
@@ -51,10 +51,10 @@ describe('AgentTreeView tool-count display', () => {
       model: 'provider/previous', endedAt: '2026-01-01T00:00:02.000Z',
     });
     expect(html).toContain('Child');
-    expect(html).toContain('refreshing');
+    expect(html).toContain('Refreshing');
     expect(html).toContain('provider/previous');
     expect(html).toContain('bg-amber-rule');
-    expect(html).not.toContain('status unknown');
+    expect(html).not.toContain('Status unknown');
   });
 
   it('stops showing refresh feedback after the wake lease expires', () => {
@@ -62,14 +62,14 @@ describe('AgentTreeView tool-count display', () => {
       agentId: 'child', name: 'Child', status: 'completed', refreshing: true,
       refreshingUntil: new Date(Date.now() - 1).toISOString(),
     });
-    expect(html).toContain('completed');
-    expect(html).not.toContain('refreshing');
+    expect(html).toContain('Completed');
+    expect(html).not.toContain('Refreshing');
     expect(html).not.toContain('bg-amber-rule');
   });
 
   it('renders an unknown tree node instead of dropping the row', () => {
     const html = renderRow({ agentId: 'child', name: 'Child', status: 'unknown' });
     expect(html).toContain('Child');
-    expect(html).toContain('status unknown');
+    expect(html).toContain('Status unknown');
   });
 });

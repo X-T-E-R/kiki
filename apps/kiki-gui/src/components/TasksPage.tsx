@@ -23,6 +23,7 @@ import type { Task, TaskStatus } from '@kiki/protocol';
 
 import { sortTasks } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
+import { DisclosureChevron, Icon } from './icons';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 
@@ -37,7 +38,7 @@ const STATUS_FILTERS: readonly (TaskStatus | 'all')[] = [
 function statusPillTone(status: TaskStatus): string {
   switch (status) {
     case 'running':
-      return 'bg-accent-soft text-accent';
+      return 'bg-ink/[0.05] text-ink';
     case 'completed':
       return 'bg-success/10 text-success';
     case 'failed':
@@ -50,9 +51,9 @@ function statusPillTone(status: TaskStatus): string {
 function DetailRow({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex items-baseline gap-3">
-      <span className="w-20 shrink-0 text-[10.5px] text-ink-faint">{label}</span>
+      <span className="w-20 shrink-0 text-[12px] text-ink-faint">{label}</span>
       <span
-        className={`min-w-0 truncate text-[11.5px] text-ink ${mono ? 'font-mono' : ''}`}
+        className={`min-w-0 truncate text-[12px] text-ink ${mono ? 'font-mono' : ''}`}
         title={value}
       >
         {value}
@@ -104,7 +105,7 @@ function TaskDetail({ task }: { task: Task }) {
       </div>
       {task.command !== undefined ? (
         <div>
-          <p className="mb-1 text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+          <p className="mb-1 text-[12px] font-medium text-ink-soft">
             {t('tasks.field.command')}
           </p>
           <pre className="overflow-x-auto rounded-lg bg-paper px-3 py-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap text-ink">
@@ -113,12 +114,12 @@ function TaskDetail({ task }: { task: Task }) {
         </div>
       ) : null}
       <div>
-        <p className="mb-1 text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+        <p className="mb-1 text-[12px] font-medium text-ink-soft">
           {t('tasks.field.output')}
         </p>
         {detailQuery.isPending && output === undefined ? (
           <p className="flex items-center gap-2 text-[11px] text-ink-faint">
-            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
             {t('tasks.outputLoading')}
           </p>
         ) : output !== undefined && output !== '' ? (
@@ -207,7 +208,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           aria-label={t('sv.openMenuAria')}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
         >
-          <span aria-hidden>☰</span>
+          <Icon name="menu" size={16} />
         </button>
         <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
           {t('tasks.title')}
@@ -215,7 +216,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <button
           type="button"
           onClick={() => void navigate(`/s/${sessionId}`)}
-          className="shrink-0 rounded-lg border border-hairline px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+          className="shrink-0 rounded-lg border border-hairline px-2.5 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
         >
           {t('tasks.back')}
         </button>
@@ -224,13 +225,13 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <div className="mx-auto max-w-[860px] space-y-4" data-tasks-page>
           {tasksQuery.isPending ? (
             <div className="flex items-center justify-center gap-2 rounded-2xl border border-hairline bg-panel px-4 py-10 text-[12px] text-ink-faint">
-              <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+              <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
               {t('tasks.loading')}
             </div>
           ) : tasksQuery.isError ? (
             <div className="rounded-2xl border border-danger/30 bg-danger/5 p-5">
-              <p className="text-[12.5px] font-medium text-danger">{t('tasks.loadFailed')}</p>
-              <p className="mt-1 font-mono text-[10.5px] text-danger/80">
+              <p className="text-[13px] font-medium text-danger">{t('tasks.loadFailed')}</p>
+              <p className="mt-1 font-mono text-[12px] text-danger">
                 {tasksQuery.error instanceof Error
                   ? tasksQuery.error.message
                   : t('common.unknownError')}
@@ -238,13 +239,13 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               <button
                 type="button"
                 onClick={() => void tasksQuery.refetch()}
-                className="mt-2 text-[11.5px] font-medium text-danger underline"
+                className="mt-2 text-[12px] font-medium text-danger underline"
               >
                 {t('common.retry')}
               </button>
             </div>
           ) : tasks.length === 0 ? (
-            <p className="rounded-2xl border border-hairline bg-panel px-4 py-10 text-center text-[12.5px] text-ink-faint">
+            <p className="rounded-2xl border border-hairline bg-panel px-4 py-10 text-center text-[13px] text-ink-faint">
               {t('tasks.empty')}
             </p>
           ) : (
@@ -262,9 +263,9 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                       data-status-filter={candidate}
                       onClick={() => { setFilter(candidate); }}
                       aria-pressed={filter === candidate}
-                      className={`rounded-md px-2.5 py-1 text-[11.5px] transition-colors ${
+                      className={`rounded-md px-2.5 py-1 text-[12px] transition-colors ${
                         filter === candidate
-                          ? 'bg-accent-soft font-semibold text-accent'
+                          ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
                           : 'text-ink-soft hover:text-ink'
                       }`}
                     >
@@ -274,13 +275,13 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     </button>
                   ))}
                 </div>
-                <span className="ml-auto text-[11px] text-ink-faint">
+                <span className="ml-auto text-[12px] text-ink-faint tabular-nums">
                   {tp('tasks.count', tasks.length)}
                 </span>
               </div>
 
               {tasks.length === 0 ? (
-                <p className="rounded-2xl border border-hairline bg-panel px-4 py-10 text-center text-[12.5px] text-ink-faint">
+                <p className="rounded-2xl border border-hairline bg-panel px-4 py-10 text-center text-[13px] text-ink-faint">
                   {t('tasks.emptyFilter')}
                 </p>
               ) : (
@@ -292,32 +293,32 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                       <li
                         key={task.id}
                         data-task-row
-                        className={`rounded-2xl border bg-panel px-4 py-3 shadow-[0_2px_4px_rgba(28,25,23,0.03)] transition-colors ${
-                          running ? 'border-accent/40' : 'border-hairline'
+                        className={`rounded-2xl border bg-panel px-4 py-3 shadow-[0_2px_4px_rgb(var(--kiki-shadow-ink)/0.03)] transition-colors ${
+                          running ? 'border-hairline-strong' : 'border-hairline'
                         }`}
                       >
                         <div className="flex items-center gap-2">
                           <span
-                            className={`shrink-0 rounded-full px-2 py-px text-[10.5px] font-medium ${statusPillTone(task.status)}`}
+                            className={`shrink-0 rounded-full px-2 py-px text-[11px] font-medium ${statusPillTone(task.status)}`}
                           >
                             {running ? (
                               <span
                                 aria-hidden
-                                className="status-dot-busy mr-1 inline-block h-1.5 w-1.5 rounded-full bg-accent"
+                                className="status-dot-busy mr-1 inline-block h-1.5 w-1.5 rounded-full bg-ink-soft"
                               />
                             ) : null}
                             {t(`rail.taskStatus.${task.status}`)}
                           </span>
-                          <span className="shrink-0 rounded-md border border-hairline px-1.5 py-px text-[10px] text-ink-faint">
+                          <span className="shrink-0 rounded-md border border-hairline px-1.5 py-px text-[11px] text-ink-faint">
                             {t(`tasks.kind.${task.kind}`)}
                           </span>
                           <span
-                            className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink"
+                            className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink"
                             title={task.description}
                           >
                             {task.description}
                           </span>
-                          <span className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint sm:inline">
+                          <span className="hidden shrink-0 text-[12px] text-ink-faint tabular-nums sm:inline">
                             {time.relativeTime(task.created_at)}
                           </span>
                           {running ? (
@@ -329,7 +330,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                                 cancelMutation.mutate(task.id);
                               }}
                               title={t('rail.stopTitle')}
-                              className="shrink-0 rounded-md border border-hairline px-2 py-0.5 text-[10.5px] text-ink-soft transition-colors hover:border-danger hover:text-danger disabled:opacity-50"
+                              className="shrink-0 rounded-md border border-hairline px-2 py-0.5 text-[12px] text-ink-soft transition-colors hover:border-danger hover:text-danger disabled:opacity-50"
                             >
                               {pendingCancelId === task.id ? t('tasks.stopping') : t('rail.stop')}
                             </button>
@@ -339,14 +340,9 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                             aria-expanded={expanded}
                             aria-label={expanded ? t('tasks.collapse') : t('tasks.expand')}
                             onClick={() => { setExpandedId(expanded ? null : task.id); }}
-                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-hairline text-[9px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
                           >
-                            <span
-                              aria-hidden
-                              className={`inline-block transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
-                            >
-                              ▶
-                            </span>
+                            <DisclosureChevron open={expanded} className="text-current" />
                           </button>
                         </div>
                         {task.command !== undefined ? (

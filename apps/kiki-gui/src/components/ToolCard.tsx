@@ -1,7 +1,10 @@
 /**
- * Tool call card — hairline-bordered, mono 13px data, chevron expand, status
- * icon (spinner / check / ×), duration. Shell *commands* render as a dark
+ * Tool step — one timeline line (glyph, verb, target, ±stats, duration,
+ * status) that expands in place to its diff/input/output. No card frame:
+ * the output wells are the only surface. Shell *commands* expand to a dark
  * island; everything else stays on paper.
+ *
+ * The memory tools are quieter still and render through `MemoryToolRow`.
  */
 
 import { memo, useMemo, useState, type ReactNode } from 'react';
@@ -10,60 +13,69 @@ import type { ToolInputDisplay } from '@kiki/protocol';
 
 import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
 import type { ToolBlock } from '@kiki/session-core/session';
-import { extractEditSource, diffStat } from '@kiki/session-core/util';
+import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { DiffCard } from './DiffCard';
+import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
 import { FilePathLink, MediaPartList } from './mediaPreview';
+import { Icon, OutcomeMark, type IconName } from './icons';
+import { ActivityRow, ActivityStats, type ActivityTone } from './timeline/ActivityRow';
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
 
-export function toolGlyph(block: ToolBlock): string {
+/**
+ * Which drawn icon names a tool's KIND of action. Several tools share one
+ * picture on purpose (Read and Glob both "look"; every write is the pencil):
+ * the icon answers "what sort of thing happened", the label names the tool.
+ */
+export function toolIcon(block: ToolBlock): IconName {
   const display = block.display;
   if (display !== undefined) {
     switch (display.kind) {
       case 'command':
-        return '›_';
+        return 'terminal';
       case 'file_io':
         return display.operation === 'read'
-          ? '◧'
+          ? 'read'
           : display.operation === 'write' || display.operation === 'edit'
-            ? '✎'
-            : '⌕';
+            ? 'edit'
+            : 'search';
       case 'diff':
-        return '±';
+      case 'plan_review':
+        return 'edit';
       case 'search':
-        return '⌕';
+        return 'search';
       case 'url_fetch':
-        return '⌁';
+        return 'web';
       case 'agent_call':
-        return '⧉';
+        return 'agent';
       case 'skill_call':
-        return '✦';
+        return 'skill';
       case 'todo_list':
-        return '☰';
+        return 'plan';
       case 'task':
       case 'task_stop':
-        return '⏵';
-      case 'plan_review':
-        return '✎';
+        return 'task';
       case 'plan_enter':
-        return '◷';
+        return 'plan';
       case 'goal_start':
-        return '◎';
+        return 'goal';
+      case 'external_permission':
+        return 'gate';
       case 'generic':
         break;
     }
   }
   const name = block.name.toLowerCase();
-  if (name.includes('bash') || name.includes('shell') || name.includes('cmd')) return '›_';
-  if (name.includes('read')) return '◧';
-  if (name.includes('write') || name.includes('edit')) return '✎';
-  if (name.includes('grep') || name.includes('glob') || name.includes('search')) return '⌕';
-  if (name.includes('fetch') || name.includes('web')) return '⌁';
-  if (name.includes('task') || name.includes('agent')) return '⧉';
-  if (name.includes('todo')) return '☰';
-  return '⚙';
+  if (name.includes('bash') || name.includes('shell') || name.includes('cmd')) return 'terminal';
+  if (name.includes('read')) return 'read';
+  if (name.includes('write') || name.includes('edit')) return 'edit';
+  if (name.includes('grep') || name.includes('glob') || name.includes('search')) return 'search';
+  if (name.includes('fetch') || name.includes('web')) return 'web';
+  if (name.includes('task') || name.includes('agent')) return 'agent';
+  if (name.includes('todo')) return 'plan';
+  return 'tool';
 }
 
 /** The one-line "key argument" summary shown on the collapsed card. */
@@ -87,13 +99,9 @@ export function toolSummary(block: ToolBlock, t: Translate, tp: TranslatePlural)
 export function toolErrorFullText(block: ToolBlock): string | undefined {
   if (block.status !== 'error') return undefined;
   const output = block.output;
-  const text =
-    typeof output === 'string'
-      ? output
-      : typeof output === 'object' && output !== null
-        ? ((output as { message?: unknown }).message as string | undefined)
-        : undefined;
-  return typeof text === 'string' && text.trim() !== '' ? text : undefined;
+  // Only text or structured error payloads carry a readable failure.
+  if (typeof output !== 'string' && (typeof output !== 'object' || output === null)) return undefined;
+  return describeError(output);
 }
 
 export function toolErrorSummary(block: ToolBlock): string | undefined {
@@ -162,54 +170,58 @@ function hasCommandSummary(block: ToolBlock, summary: string): boolean {
   return typeof command === 'string' && command !== '' && summary !== '';
 }
 
+/**
+ * The outcome mark, only when there is an outcome worth marking. Success is
+ * the common case and gets NO mark: a column of ticks is noise that trains the
+ * eye to skip the column, and then a real failure in it gets skipped too.
+ * A done row still announces itself to assistive tech through a visually
+ * hidden label, so the silence is visual only.
+ */
 function StatusIcon({ block }: { block: ToolBlock }) {
   const { t } = useI18n();
-  if (block.status === 'running') {
-    return (
-      <svg className="spinner h-3.5 w-3.5 text-accent" viewBox="0 0 16 16" fill="none" aria-label={t('transcript.runningAria')}>
-        <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
-        <path d="M14.5 8a6.5 6.5 0 0 0-6.5-6.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (block.status === 'error') {
-    return (
-      <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-danger/10 text-[10px] font-bold text-danger" aria-label={t('transcript.failedAria')}>
-        ×
-      </span>
-    );
-  }
-  if (block.status === 'stopped') {
-    const reasonText =
-      typeof block.output === 'string' && block.output.trim() !== ''
-        ? block.output
-        : t('transcript.stopped');
-    return (
-      <span
-        className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-rule/15 text-[9px] font-bold text-amber-ink"
-        aria-label={t('transcript.stoppedAria')}
-        title={reasonText}
-      >
-        ■
-      </span>
-    );
-  }
+  const reasonText =
+    block.status === 'stopped' && typeof block.output === 'string' && block.output.trim() !== ''
+      ? block.output
+      : block.status === 'stopped' ? t('transcript.stopped') : undefined;
   return (
-    <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-success/10 text-[10px] font-bold text-success" aria-label={t('transcript.doneAria')}>
-      ✓
-    </span>
+    <OutcomeMark
+      state={
+        block.status === 'running' ? 'running'
+          : block.status === 'error' ? 'failed'
+            : block.status === 'stopped' ? 'stopped' : 'done'
+      }
+      labels={activityOutcomeLabels(t)}
+      title={reasonText}
+    />
   );
 }
 
+/** The four outcome labels every activity row speaks, from one i18n source. */
+export function activityOutcomeLabels(t: Translate) {
+  return {
+    running: t('transcript.runningAria'),
+    failed: t('transcript.failedAria'),
+    stopped: t('transcript.stoppedAria'),
+    done: t('transcript.doneAria'),
+  };
+}
+
+/**
+ * Whether a finished duration earns the column. Sub-2s successes are the
+ * common read/grep/edit rhythm and their numbers only add a column to skip;
+ * a slow step, a failure, a stop, or a still-unknown timing always shows.
+ */
+export const DURATION_WORTH_SHOWING_MS = 2_000;
+
 function CommandIsland({ command, output }: { command: string; output?: ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-lg bg-shell">
-      <div className="border-b border-white/10 px-3 py-1.5 font-mono text-[12.5px] text-shell-ink-strong">
-        <span className="mr-2 text-accent">$</span>
+    <div className="overflow-hidden rounded-[10px] bg-shell">
+      <div className="px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-shell-ink-strong">
+        <span className="mr-1 text-shell-ink-soft select-none">$ </span>
         {command}
       </div>
       {output !== undefined ? (
-        <div className="max-h-72 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
+        <div className="max-h-72 overflow-auto border-t border-shell-hairline px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
           {output}
         </div>
       ) : null}
@@ -217,7 +229,18 @@ function CommandIsland({ command, output }: { command: string; output?: ReactNod
   );
 }
 
-function OutputView({ output, agentId }: { output: unknown; agentId: string }) {
+/** Output wells: one flat surface a tone off the page, no frame. Inside the
+ * dark command island the well dissolves into the island itself. */
+function wellClass(island: boolean, tone: 'plain' | 'danger' = 'plain'): string {
+  if (island) {
+    return `whitespace-pre-wrap font-mono text-[12px] leading-relaxed ${tone === 'danger' ? 'text-shell-danger' : ''}`;
+  }
+  return `max-h-72 overflow-auto rounded-md px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap ${
+    tone === 'danger' ? 'bg-danger/[0.06] text-danger' : 'bg-panel text-ink'
+  }`;
+}
+
+function OutputView({ output, agentId, island = false }: { output: unknown; agentId: string; island?: boolean }) {
   const { t } = useI18n();
   if (output === undefined || output === null) return null;
   // Engine media results (ReadMediaFile & friends) arrive as raw content-part
@@ -227,7 +250,7 @@ function OutputView({ output, agentId }: { output: unknown; agentId: string }) {
     return (
       <div className="space-y-2">
         {mediaOutput.text !== '' ? (
-          <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+          <pre className={wellClass(island)}>
             {mediaOutput.text}
           </pre>
         ) : null}
@@ -237,7 +260,7 @@ function OutputView({ output, agentId }: { output: unknown; agentId: string }) {
   }
   if (typeof output === 'string') {
     return (
-      <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+      <pre className={wellClass(island)}>
         {output}
       </pre>
     );
@@ -249,36 +272,36 @@ function OutputView({ output, agentId }: { output: unknown; agentId: string }) {
       return (
         <div className="space-y-1">
           {o.stdout !== undefined && o.stdout !== '' ? (
-            <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">{o.stdout}</pre>
+            <pre className={wellClass(island)}>{o.stdout}</pre>
           ) : null}
           {o.stderr !== undefined && o.stderr !== '' ? (
-            <pre className="max-h-72 overflow-auto rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-danger">{o.stderr}</pre>
+            <pre className={wellClass(island, 'danger')}>{o.stderr}</pre>
           ) : null}
-          <p className="font-mono text-[11px] text-ink-faint">{t('tc.exit', { code: o.exit_code })}</p>
+          <p className={`text-[12px] ${island ? 'text-shell-ink-soft' : 'text-ink-faint'}`}>{t('tc.exit', { code: o.exit_code })}</p>
         </div>
       );
     }
     if (candidate.kind === 'text') {
       const o = output as { text: string };
       return (
-        <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">{o.text}</pre>
+        <pre className={wellClass(island)}>{o.text}</pre>
       );
     }
     if (candidate.kind === 'error') {
       const o = output as { message: string };
       return (
-        <pre className="max-h-72 overflow-auto rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-danger">{o.message}</pre>
+        <pre className={wellClass(island, 'danger')}>{o.message}</pre>
       );
     }
     if (candidate.kind === 'file_content') {
       const o = output as { path: string; content: string };
       return (
-        <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">{o.content}</pre>
+        <pre className={wellClass(island)}>{o.content}</pre>
       );
     }
   }
   return (
-    <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">
+    <pre className={wellClass(island)}>
       {truncateJson(output, t('tc.truncated'))}
     </pre>
   );
@@ -298,15 +321,21 @@ export const ToolCard = memo(function ToolCard({
   agentId = 'main',
   agentNames,
   onOpenAgent,
+  nested = false,
 }: {
   block: ToolBlock;
   agentId?: string;
   /** subagentId → display name, so agentRef chips read as names, not ids. */
   agentNames?: ReadonlyMap<string, string>;
   onOpenAgent?: (agentId: string) => void;
+  /** Rendered inside a folded read run's spine. */
+  nested?: boolean;
 }) {
   const { t, tp, time } = useI18n();
   const [expanded, setExpanded] = useState(false);
+  // Memory stays quieter than a tool step: one line with View / Undo instead of
+  // this header and its input/output wells. Routed here so every mount agrees.
+  const memoryRow = isMemoryToolName(block.name);
   const errorSummary = toolErrorSummary(block);
   const errorTitle = toolErrorFullText(block) ?? errorSummary;
   const summary = toolSummary(block, t, tp);
@@ -318,10 +347,6 @@ export const ToolCard = memo(function ToolCard({
     (block.display.kind === 'file_io' || block.display.kind === 'diff')
       ? block.display.path
       : undefined;
-  const displayOperation =
-    block.display !== undefined && block.display.kind === 'file_io'
-      ? block.display.operation
-      : undefined;
   // Edit-style calls (Edit/MultiEdit/Write): hunks from display or args —
   // diffstat in the collapsed header, unified diff card in the detail view.
   const editSource = useMemo(
@@ -330,115 +355,100 @@ export const ToolCard = memo(function ToolCard({
   );
   const stat = editSource !== undefined ? diffStat(editSource.hunks) : undefined;
 
-  return (
-    <div data-tool data-tool-id={block.toolCallId} className="anim-enter overflow-hidden rounded-xl border border-hairline bg-panel">
-      <button
-        type="button"
-        onClick={() => { setExpanded((value) => !value); }}
-        className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-paper/60"
-      >
-        <span className="w-6 shrink-0 text-center font-mono text-[12px] text-ink-soft">
-          {toolGlyph(block)}
-        </span>
-        <span className="shrink-0 text-[12.5px] font-semibold text-ink">{block.name}</span>
-        {keepCommandSummary ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-soft">
-            {summary}
-          </span>
-        ) : errorSummary !== undefined ? (
-          <span
-            title={errorTitle}
-            className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-danger"
-          >
-            {errorSummary}
-          </span>
-        ) : block.status === 'stopped' ? (
-          <span
-            title={typeof block.output === 'string' && block.output.trim() !== '' ? block.output : t('transcript.stopped')}
-            className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-amber-ink"
-          >
-            {typeof block.output === 'string' && block.output.trim() !== ''
-              ? `${t('transcript.stopped')} — ${block.output.split('\n', 1)[0]}`
-              : t('transcript.stopped')}
-          </span>
-        ) : displayPath !== undefined ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-soft">
-            {displayOperation !== undefined ? `${displayOperation} ` : ''}
-            <FilePathLink path={displayPath} />
-          </span>
-        ) : summary !== '' ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-soft">
-            {summary}
-          </span>
-        ) : (
-          <span className="flex-1" />
-        )}
-        {stat !== undefined && (stat.insertions > 0 || stat.deletions > 0) ? (
-          <span className="shrink-0 font-mono text-[10.5px]">
-            <span className="text-success">+{stat.insertions}</span>
-            <span className="text-ink-faint">/</span>
-            <span className="text-danger">−{stat.deletions}</span>
-          </span>
-        ) : null}
-        {block.progressText !== undefined && block.status === 'running' ? (
-          <span className="max-w-40 truncate font-mono text-[10.5px] text-ink-faint">
-            {block.progressText}
-          </span>
-        ) : null}
-        {block.durationMs !== undefined && block.durationSource === 'frame' ? (
-          <span className="shrink-0 font-mono text-[10.5px] text-ink-faint">
-            {time.formatDuration(block.durationMs)}
-          </span>
-        ) : block.status !== 'running' ? (
-          <span
-            className="shrink-0 font-mono text-[10.5px] text-ink-faint/60"
-            title={t('transcript.durationUnknown')}
-          >
-            —
-          </span>
-        ) : null}
-        <StatusIcon block={block} />
-        <span
-          aria-hidden
-          className={`shrink-0 text-[10px] text-ink-faint transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
-        >
-          ▶
-        </span>
-      </button>
+  if (memoryRow) return <MemoryToolRow block={block} />;
 
+  const target = keepCommandSummary ? (
+    <span className="font-mono">{summary}</span>
+  ) : errorSummary !== undefined ? (
+    <span title={errorTitle} className="font-mono">{errorSummary}</span>
+  ) : block.status === 'stopped' ? (
+    <span
+      title={typeof block.output === 'string' && block.output.trim() !== '' ? block.output : t('transcript.stopped')}
+    >
+      {typeof block.output === 'string' && block.output.trim() !== ''
+        ? `${t('transcript.stopped')} — ${block.output.split('\n', 1)[0]}`
+        : t('transcript.stopped')}
+    </span>
+  ) : displayPath !== undefined ? (
+    // The label already names the action (Read / Edit / Glob); the display's
+    // operation word would say it a second time, so the path stands alone.
+    <span className="font-mono">
+      <FilePathLink path={displayPath} />
+    </span>
+  ) : block.progressText !== undefined && block.status === 'running' ? (
+    <span className="text-ink-faint">{block.progressText}</span>
+  ) : summary !== '' ? (
+    <span className="font-mono">{summary}</span>
+  ) : undefined;
+  const label = 'mb-1 text-[12px] font-medium text-ink-faint';
+
+  // Tone comes from the outcome, not the tool: a failure lights the whole
+  // line, a stop washes it amber, success stays as quiet as a Read.
+  const tone: ActivityTone =
+    block.status === 'error' ? 'danger' : block.status === 'stopped' ? 'warn' : 'plain';
+  // Only a frame-measured duration is this tool's own; a turn-level fallback
+  // is never passed off as runtime. An unknown duration leaves the column
+  // empty in every state — a dash placeholder next to the outcome mark read
+  // as two unexplained symbols.
+  const frameDuration =
+    block.durationMs !== undefined && block.durationSource === 'frame' ? block.durationMs : undefined;
+  const durationMeta =
+    block.status === 'running' || frameDuration === undefined
+      ? undefined
+      : block.status === 'done' && frameDuration < DURATION_WORTH_SHOWING_MS
+        ? undefined
+        : time.formatDuration(frameDuration);
+  return (
+    <ActivityRow
+      nested={nested}
+      attrs={{ 'data-tool': true, 'data-tool-id': block.toolCallId }}
+      glyph={<Icon name={toolIcon(block)} />}
+      tone={tone}
+      label={block.name}
+      detail={target}
+      expanded={expanded}
+      onToggle={() => { setExpanded((value) => !value); }}
+      stats={
+        stat !== undefined && (stat.insertions > 0 || stat.deletions > 0)
+          ? <ActivityStats insertions={stat.insertions} deletions={stat.deletions} />
+          : undefined
+      }
+      meta={durationMeta}
+      status={<StatusIcon block={block} />}
+    >
       {expanded ? (
-        <div className="space-y-2 border-t border-hairline px-3 py-2.5">
+        // Expands in place under the line; no frame of its own — the wells
+        // inside carry the only surface.
+        <div className="space-y-2.5">
           {isCommand && block.display?.kind === 'command' ? (
             <CommandIsland
               command={block.display.command}
               output={
-                block.output !== undefined ? <OutputView output={block.output} agentId={agentId} /> : undefined
+                block.output !== undefined ? <OutputView output={block.output} agentId={agentId} island /> : undefined
               }
             />
           ) : (
             <>
               {block.description !== undefined ? (
-                <p className="text-[12px] text-ink-soft">{block.description}</p>
+                <p className="text-[13px] text-ink-soft">{block.description}</p>
               ) : null}
               {editSource !== undefined ? (
                 <div>
-                  <p className="mb-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
-                    {t('tc.changes')}
-                    {editSource.path !== undefined ? (
-                      <span className="font-mono font-normal normal-case">
+                  {editSource.path !== undefined && editSource.path !== displayPath ? (
+                    <p className={label}>
+                      {t('tc.changes')}
+                      <span className="font-mono font-normal">
                         {' — '}
                         <FilePathLink path={editSource.path} />
                       </span>
-                    ) : null}
-                  </p>
+                    </p>
+                  ) : null}
                   <DiffCard hunks={editSource.hunks} />
                 </div>
               ) : (
                 <div>
-                  <p className="mb-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
-                    {t('tc.input')}
-                  </p>
-                  <pre className="max-h-60 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+                  <p className={label}>{t('tc.input')}</p>
+                  <pre className="max-h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
                     {block.args !== undefined
                       ? truncateJson(block.args, t('tc.truncated'))
                       : block.argsText !== ''
@@ -449,7 +459,7 @@ export const ToolCard = memo(function ToolCard({
               )}
               {block.output !== undefined ? (
                 <div>
-                  <p className="mb-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
+                  <p className={label}>
                     {t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}
                   </p>
                   <OutputView output={block.output} agentId={agentId} />
@@ -457,9 +467,7 @@ export const ToolCard = memo(function ToolCard({
               ) : null}
               {block.agentRefs !== undefined && block.agentRefs.length > 0 && onOpenAgent !== undefined ? (
                 <div>
-                  <p className="mb-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
-                    {t('tc.spawnedAgents')}
-                  </p>
+                  <p className={label}>{t('tc.spawnedAgents')}</p>
                   <div className="flex flex-wrap gap-1.5">
                     {block.agentRefs.map((ref) => (
                       <button
@@ -467,7 +475,7 @@ export const ToolCard = memo(function ToolCard({
                         type="button"
                         onClick={() => { onOpenAgent(ref.agentId); }}
                         title={ref.agentId}
-                        className="rounded-full border border-hairline bg-paper px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+                        className="min-h-7 rounded-md px-2.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
                       >
                         {t('tc.openSpawnedAgent', { name: agentNames?.get(ref.agentId) ?? ref.agentId })}
                       </button>
@@ -478,7 +486,7 @@ export const ToolCard = memo(function ToolCard({
             </>
           )}
         </div>
-      ) : null}
-    </div>
+      ) : undefined}
+    </ActivityRow>
   );
 });

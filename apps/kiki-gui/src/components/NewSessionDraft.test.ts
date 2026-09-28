@@ -179,7 +179,6 @@ describe('buildNewSessionCreate', () => {
         thinking: 'high',
         permissionMode: 'yolo',
         planMode: true,
-        swarmMode: true,
       }),
     ).toEqual({
       workspace_id: 'wd_fixture_0123456789ab',
@@ -189,7 +188,6 @@ describe('buildNewSessionCreate', () => {
         thinking: 'high',
         permission_mode: 'yolo',
         plan_mode: true,
-        swarm_mode: true,
       },
     });
   });
@@ -200,7 +198,6 @@ describe('buildNewSessionCreate', () => {
       profile: 'agent',
       permissionMode: 'manual',
       planMode: false,
-      swarmMode: false,
     });
     expect(body.workspace_id).toBeUndefined();
     expect(body.metadata).toBeUndefined();
@@ -1039,7 +1036,9 @@ describe('buildAgentProfileOptions', () => {
     );
     // Only enabled main profiles are pickable; non-main and disabled ones drop out.
     expect(options.map((option) => option.value)).toEqual(['agent', 'grok-only']);
-    expect(options[0]?.label).toBe('agent');
+    // The default profile reads as the product name, not the literal id.
+    expect(options[0]?.label).toBe('composer.agentDefaultOption');
+    expect(options[1]?.label).toBe('grok-only');
     expect(options[0]?.description).toBe('General-purpose.');
     expect(options[0]?.group).toBe('composer.profileGroupMain');
     expect(options[1]?.group).toBe('composer.profileGroupMain');

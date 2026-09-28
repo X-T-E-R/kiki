@@ -2,6 +2,7 @@ import { memo, useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { AgentCapabilityTarget } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
+import { Icon } from '../icons';
 import { useOptionalConnection } from '../../state/connection';
 import { Dialog } from '../Dialog';
 import { FilePathLink } from '../mediaPreview';
@@ -76,7 +77,7 @@ function ProfileDraftDetail({
 
   if (capabilities.isPending) {
     return (
-      <p role="status" className="font-mono text-[11px] text-ink-soft animate-pulse">
+      <p role="status" className="font-mono text-[11px] text-ink-soft animate-pulse motion-reduce:animate-none">
         {t('diagnostics.loading')}
       </p>
     );
@@ -195,17 +196,17 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             <button
               type="button"
               onClick={popTarget}
-              className="rounded border border-hairline px-1.5 py-0.5 text-[10px] font-mono text-ink-soft hover:text-ink hover:bg-paper cursor-pointer transition-colors"
+              className="rounded border border-hairline px-1.5 py-0.5 text-[11px] font-mono text-ink-soft hover:text-ink hover:bg-paper cursor-pointer transition-colors"
               title={t('agentPanel.detailBack')}
             >
-              ← {t('agentPanel.detailBack')}
+              <span className="inline-flex items-center gap-1"><Icon name="arrowLeft" size={12} />{t('agentPanel.detailBack')}</span>
             </button>
           ) : null}
           <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
             {title}
           </span>
           {categoryLabel ? (
-            <span className="rounded bg-paper border border-hairline px-1.5 py-0.2 font-mono text-[10px] text-ink-soft truncate">
+            <span className="rounded bg-paper border border-hairline px-1.5 py-px font-mono text-[11px] text-ink-soft truncate">
               {categoryLabel}
             </span>
           ) : null}
@@ -215,9 +216,9 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
           data-autofocus
           onClick={onClose}
           aria-label={t('agentPanel.detailClose')}
-          className="rounded-md border border-hairline px-2 py-0.5 text-[12px] font-mono text-ink-soft hover:bg-paper hover:text-ink transition-colors cursor-pointer"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-ink-soft hover:bg-paper hover:text-ink transition-colors cursor-pointer"
         >
-          ×
+          <Icon name="close" />
         </button>
       </div>
 
@@ -252,14 +253,14 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
                 </h3>
                 <div className="flex items-center gap-1.5 shrink-0">
                   {currentTarget.tool.readOnly ? (
-                    <span className="rounded bg-accent-soft px-1.5 py-0.2 text-[9.5px] font-mono text-accent">
+                    <span className="px-0.5 text-[11px] font-mono font-medium text-accent-ink">
                       {t('agentPanel.readOnly')}
                     </span>
                   ) : null}
                   <CapabilityStateBadge state={currentTarget.tool.state} />
                 </div>
               </div>
-              <div className="mt-1 font-mono text-[10.5px] text-ink-faint">
+              <div className="mt-1 font-mono text-[11px] text-ink-faint">
                 {toolCategoryLabel(t, currentTarget.tool.category || t('agentPanel.generalCategory'))}
               </div>
             </div>
@@ -284,7 +285,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             {/* Description */}
             {currentTarget.tool.description ? (
               <div className="space-y-1">
-                <div className="font-mono text-[10px] font-semibold uppercase text-ink-faint">
+                <div className="font-mono text-[11px] font-semibold uppercase text-ink-faint">
                   {t('agentPanel.profileDescription')}
                 </div>
                 <p className="text-ink leading-relaxed">{currentTarget.tool.description}</p>
@@ -293,10 +294,10 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
 
             {/* Parameters Schema */}
             <details open className="space-y-1">
-              <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+              <summary className="font-mono text-[11px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
                 {t('agentPanel.parametersSchema')}
               </summary>
-              <pre className="mt-1 max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2.5 font-mono text-[10px] leading-snug text-ink-soft whitespace-pre-wrap">
+              <pre className="mt-1 max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2.5 font-mono text-[11px] leading-snug text-ink-soft whitespace-pre-wrap">
                 {currentTarget.tool.parametersSchema ??
                   currentTarget.tool.parametersSummary ??
                   t('agentPanel.noParameters')}
@@ -315,7 +316,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
                 </h3>
                 <CapabilityStateBadge state={currentTarget.skill.state} />
               </div>
-              <div className="mt-1 font-mono text-[10.5px] text-ink-faint">
+              <div className="mt-1 font-mono text-[11px] text-ink-faint">
                 {currentTarget.skill.scope === 'workspace'
                   ? t('agentPanel.scopeWorkspace')
                   : t('agentPanel.scopeGlobal')}
@@ -332,7 +333,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             {/* Description */}
             {currentTarget.skill.description ? (
               <div className="space-y-1">
-                <div className="font-mono text-[10px] font-semibold uppercase text-ink-faint">
+                <div className="font-mono text-[11px] font-semibold uppercase text-ink-faint">
                   {t('agentPanel.profileDescription')}
                 </div>
                 <p className="text-ink leading-relaxed">{currentTarget.skill.description}</p>
@@ -340,7 +341,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             ) : null}
 
             {/* Path & Hints */}
-            <dl className="grid grid-cols-1 gap-2 font-mono text-[10.5px] bg-paper/50 rounded-lg p-2.5 border border-hairline">
+            <dl className="grid grid-cols-1 gap-2 font-mono text-[11px] bg-paper/50 rounded-lg p-2.5 border border-hairline">
               <div className="flex items-baseline justify-between gap-2">
                 <dt className="text-ink-faint">{t('agentPanel.scope')}</dt>
                 <dd className="text-ink">
@@ -364,13 +365,13 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               {currentTarget.skill.promptCommand ? (
                 <div className="flex items-baseline justify-between gap-2 pt-1 border-t border-hairline">
                   <dt className="text-ink-faint">{t('agentPanel.promptCommandBadge')}</dt>
-                  <dd className="text-accent font-semibold">{t('agentPanel.promptCommandBadge')}</dd>
+                  <dd className="font-medium text-accent-ink">{t('agentPanel.promptCommandBadge')}</dd>
                 </div>
               ) : null}
               {currentTarget.skill.path ? (
                 <div className="flex flex-col gap-0.5 pt-1 border-t border-hairline">
                   <dt className="text-ink-faint">{t(currentTarget.skill.source === 'builtin' ? 'cap.source.builtin' : 'agentPanel.fileLabel')}</dt>
-                  <dd className="text-ink-soft break-all text-[10px]">
+                  <dd className="text-ink-soft break-all text-[11px]">
                     {currentTarget.skill.source === 'builtin'
                       ? currentTarget.skill.path
                       : <FilePathLink path={currentTarget.skill.path} />}
@@ -380,7 +381,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               {currentTarget.skill.argumentHint ? (
                 <div className="flex flex-col gap-0.5 pt-1 border-t border-hairline">
                   <dt className="text-ink-faint">{t('agentPanel.argumentHint')}</dt>
-                  <dd className="text-ink-soft break-all text-[10px]">{currentTarget.skill.argumentHint}</dd>
+                  <dd className="text-ink-soft break-all text-[11px]">{currentTarget.skill.argumentHint}</dd>
                 </div>
               ) : null}
             </dl>
@@ -405,7 +406,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
                   {currentTarget.target.route ? ` / ${currentTarget.target.route}` : ''}
                 </h3>
                 <span
-                  className={`rounded px-1.5 py-0.2 font-mono text-[9.5px] font-medium uppercase ${
+                  className={`rounded px-1.5 py-px font-mono text-[11px] font-medium uppercase ${
                     currentTarget.target.launchAllowed !== false && currentTarget.target.defaultsAvailable
                       ? 'bg-success/15 text-success border border-success/30'
                       : 'bg-danger/10 text-danger border border-danger/30'
@@ -416,7 +417,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
                     : t('agentPanel.blocked')}
                 </span>
               </div>
-              <div className="mt-1 font-mono text-[10.5px] text-ink-faint">
+              <div className="mt-1 font-mono text-[11px] text-ink-faint">
                 {t('agentPanel.executor', { value: currentTarget.target.executor })}
               </div>
             </div>
@@ -430,13 +431,13 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               <div className="rounded-lg border border-danger/30 bg-danger/5 p-2.5 text-[11px] text-danger space-y-1">
                 <p className="font-medium">{t('agentPanel.launchBlockedNotice')}</p>
                 {launchReason !== undefined ? (
-                  <p className="text-[10.5px] opacity-90">{launchReason}</p>
+                  <p className="text-[11px]">{launchReason}</p>
                 ) : null}
               </div>
             )}
 
             {currentTarget.target.executionRestriction === 'research-readonly' && (
-              <div className="rounded-lg border border-hairline bg-paper/60 p-2 text-[11px] text-accent font-mono">
+              <div className="rounded-lg border border-hairline bg-paper/60 p-2 text-[11px] text-ink font-mono">
                 {t('agentPanel.researchReadonly')}
               </div>
             )}
@@ -460,10 +461,10 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             <button
               type="button"
               onClick={() => pushTarget({ kind: 'profile-draft', profile: currentTarget.target.profile })}
-              className="inline-flex items-center gap-1 font-mono text-[11px] text-accent transition-colors hover:text-accent-deep hover:underline"
+              className="inline-flex items-center gap-1 font-mono text-[11px] text-accent-ink transition-colors hover:underline"
             >
               <span>{t('agentPanel.profileDetail')}</span>
-              <span aria-hidden>→</span>
+              <Icon name="arrowRight" size={12} />
             </button>
           </div>
         )}

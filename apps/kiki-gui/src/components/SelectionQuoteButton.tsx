@@ -16,7 +16,9 @@
  *     outside mousedown only hides the popover temporarily so its draft can be
  *     resumed by selecting the same text again. A different selection returns
  *     to the actions pill with a fresh annotation draft; Escape cancels the
- *     retained draft explicitly.
+ *     retained draft explicitly and the pill it restores is anchored to that
+ *     captured text, so the collapse that focusing the input caused does not
+ *     dismiss it.
  *   - Never renders on coarse-pointer (touch) devices.
  *   - The actions pill never steals the selection: its mousedown is prevented,
  *     while the annotate input keeps the default mousedown so the caret works.
@@ -30,6 +32,7 @@ import {
   selectionTextWithin,
 } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 
 const PILL_HEIGHT = 32;
 const VIEWPORT_MARGIN = 8;
@@ -67,6 +70,11 @@ export function SelectionQuoteButton({
   const composingRef = useRef(false);
   const submittingRef = useRef(false);
   const draftRef = useRef<AnnotationDraft | null>(null);
+  // Whether target still mirrors the live document selection. Escape from the
+  // annotate input keeps the captured text on purpose: that input's own focus
+  // already collapsed the selection, so the collapse it reports must not
+  // dismiss the pill that Escape just restored.
+  const liveSelectionRef = useRef(true);
   const popoverRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -77,6 +85,7 @@ export function SelectionQuoteButton({
     setComment('');
     if (clearDraft) draftRef.current = null;
     composingRef.current = false;
+    liveSelectionRef.current = true;
   };
   const closeRef = useRef(close);
   closeRef.current = close;
@@ -102,6 +111,7 @@ export function SelectionQuoteButton({
         if (!resumingAnnotation) closeRef.current(draftRef.current === null);
         return;
       }
+      liveSelectionRef.current = true;
       const pendingTarget = targetRef.current;
       if (resumingAnnotation && (pendingTarget === null || pendingTarget.text !== text)) {
         // A different selection gets the ordinary actions pill. The one
@@ -139,6 +149,9 @@ export function SelectionQuoteButton({
       if (modeRef.current === 'annotate') return;
       const selection = window.getSelection();
       if (selection === null || selection.isCollapsed) {
+        // Only a live selection can collapse away from the pill; the one
+        // Escape restored is anchored to captured text instead.
+        if (!liveSelectionRef.current) return;
         closeRef.current(draftRef.current === null);
       }
     };
@@ -262,6 +275,9 @@ export function SelectionQuoteButton({
               submittingRef.current = false;
               composingRef.current = false;
               draftRef.current = null;
+              // This input's own focus already collapsed the document
+              // selection; the pill goes back to the captured text.
+              liveSelectionRef.current = false;
               setMode('actions');
               setComment('');
             }
@@ -289,7 +305,7 @@ export function SelectionQuoteButton({
           close(draftRef.current === null);
         }}
       >
-        <span aria-hidden className="text-accent">❝</span>
+        <Icon name="quote" className="text-accent" />
         {t('composer.quoteSelection')}
       </button>
       <span aria-hidden className="h-4 w-px bg-hairline" />
@@ -309,7 +325,7 @@ export function SelectionQuoteButton({
           setMode('annotate');
         }}
       >
-        <span aria-hidden className="text-amber-ink">✎</span>
+        <Icon name="edit" className="text-amber-ink" />
         {t('composer.annotateSelection')}
       </button>
     </div>

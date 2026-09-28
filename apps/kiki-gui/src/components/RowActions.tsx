@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 
 export interface MessageRowActionsProps {
   /** Copy target; the copy button renders only when this is a non-empty string. */
@@ -106,7 +107,7 @@ export function MessageRowActions({
             copied ? 'text-success' : 'text-ink-faint hover:text-accent'
           }`}
         >
-          {copied ? '✓' : t('transcript.copy')}
+          {copied ? <Icon name="check" size={12} /> : t('transcript.copy')}
         </button>
       ) : null}
       {canEdit && onEdit !== undefined ? (
@@ -212,7 +213,7 @@ export function UserMessageEditor({
             disabled={text.trim() === ''}
             onClick={submit}
             title={t('transcript.editSubmitTitle')}
-            className="rounded-full bg-accent px-2 py-0.5 text-[10.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-full bg-accent px-2 py-0.5 text-[10.5px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-40"
           >
             {t('transcript.editSubmit')}
           </button>

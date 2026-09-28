@@ -13,6 +13,15 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 
 import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
+
+/**
+ * The one floating-surface look shared by composer pickers and popovers:
+ * 10px radius, hairline edge, the soft two-layer elevation. Callers add
+ * their own position/size classes.
+ */
+export const POPOVER_SURFACE_CLASS =
+  'rounded-[10px] border border-hairline bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]';
 
 export interface SearchableSelectOptionBadge {
   readonly label: string;
@@ -54,7 +63,10 @@ export function SearchableSelect({
   buttonClassName,
   panelClassName,
   placement = 'below',
+  triggerLabel,
+  triggerIcon,
   triggerSuffix,
+  hideChevron = false,
   panelHeader,
   panelFooter,
   hideFilter = false,
@@ -77,8 +89,17 @@ export function SearchableSelect({
   readonly panelClassName?: string;
   /** 'above' for triggers docked near the viewport bottom (the composer). */
   readonly placement?: 'below' | 'above';
+  /**
+   * Replaces the selected option's label on the trigger (a short form of a
+   * long row label); the panel rows keep the full label.
+   */
+  readonly triggerLabel?: ReactNode;
+  /** Rendered before the (truncating) trigger label, never truncated (a kind icon). */
+  readonly triggerIcon?: ReactNode;
   /** Rendered after the (truncating) trigger label without truncating itself. */
   readonly triggerSuffix?: ReactNode;
+  /** Drops the trigger chevron (quiet text triggers such as the composer status line). */
+  readonly hideChevron?: boolean;
   /** Rows above the filter input — related settings that share this trigger. */
   readonly panelHeader?: ReactNode;
   /** Rows below the option list — related settings that share this trigger. */
@@ -215,24 +236,27 @@ export function SearchableSelect({
           'flex max-w-full items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint'
         }
       >
+        {triggerIcon}
         <span className="min-w-0 truncate">
           {/* A value outside the option set (e.g. a session-bound model absent
               from the catalog) still displays verbatim instead of the empty text. */}
-          {selected?.label ?? (value !== '' ? value : (emptyText ?? t('select.empty')))}
+          {triggerLabel ?? selected?.label ?? (value !== '' ? value : (emptyText ?? t('select.empty')))}
         </span>
         {triggerSuffix}
-        <svg
-          width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden
-          className={`shrink-0 text-ink-faint transition-transform ${open ? 'rotate-180' : ''}`}
-        >
-          <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        {hideChevron ? null : (
+          <svg
+            width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden
+            className={`shrink-0 text-ink-faint transition-transform ${open ? 'rotate-180' : ''}`}
+          >
+            <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
       </button>
       {open ? (
         <div
           className={
             panelClassName ??
-            `anim-enter absolute z-40 w-64 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] ${
+            `anim-enter absolute z-40 w-64 max-w-[calc(100vw-48px)] overflow-hidden ${POPOVER_SURFACE_CLASS} ${
               placement === 'above' ? 'bottom-full mb-1 left-0' : 'top-full mt-1 left-0'
             }`
           }
@@ -258,7 +282,7 @@ export function SearchableSelect({
               aria-activedescendant={
                 rowCount > 0 ? `${listId}-option-${activeIndex}` : undefined
               }
-              className="w-full bg-transparent text-[12px] text-ink outline-none placeholder:text-ink-faint"
+              className="w-full bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-faint"
             />
           </div>
           )}
@@ -271,7 +295,7 @@ export function SearchableSelect({
             className="max-h-[min(340px,55vh)] overflow-y-auto p-1.5"
           >
             {rowCount === 0 ? (
-              <p className="px-2 py-4 text-center text-[11.5px] text-ink-faint">
+              <p className="px-2 py-4 text-center text-[12px] text-ink-faint">
                 {options.length === 0
                   ? (emptyText ?? t('select.empty'))
                   : (noMatchText ?? ((q: string) => t('select.noMatches', { query: q })))(query.trim())}
@@ -290,7 +314,7 @@ export function SearchableSelect({
                     <div key={`${option.value}-${index}`} role="presentation">
                       {groupHeader !== undefined ? (
                         <p
-                          className={`px-2.5 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase ${index === 0 ? 'pt-1' : 'pt-2'}`}
+                          className={`px-2.5 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-2.5'}`}
                         >
                           {groupHeader}
                         </p>
@@ -304,29 +328,31 @@ export function SearchableSelect({
                         title={option.title ?? option.label}
                         onClick={() => { commit(option); }}
                         onMouseMove={() => { if (!active) setActiveIndex(index); }}
-                        className={`flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
-                          active ? 'bg-accent-soft' : 'hover:bg-paper'
+                        className={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+                          isSelected
+                            ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
+                            : active ? 'bg-ink/[0.04]' : ''
                         }`}
                       >
                         <span className="flex items-center gap-2">
                           <span
-                            className={`min-w-0 truncate text-[12px] ${
-                              isSelected ? 'font-medium text-accent' : 'text-ink'
+                            className={`min-w-0 truncate text-[13px] text-ink ${
+                              isSelected ? 'font-medium' : ''
                             }`}
                           >
                             {option.label}
                           </span>
                           {isSelected ? (
-                            <span aria-hidden className="ml-auto shrink-0 text-[11px] text-accent">✓</span>
+                            <Icon name="check" size={12} className="ml-auto text-ink-soft" />
                           ) : null}
                         </span>
                         {option.description !== undefined ? (
-                          <span className="line-clamp-2 text-[11px] leading-snug text-ink-faint">
+                          <span className="line-clamp-2 text-[12px] leading-snug text-ink-faint">
                             {option.description}
                           </span>
                         ) : null}
                         {option.hint !== undefined ? (
-                          <span className="truncate font-mono text-[10px] text-ink-faint">
+                          <span className="truncate font-mono text-[11px] text-ink-faint">
                             {option.hint}
                           </span>
                         ) : null}
@@ -335,10 +361,10 @@ export function SearchableSelect({
                             {option.badges.map((badge) => (
                               <span
                                 key={badge.label}
-                                className={`rounded-full border px-1.5 py-px text-[9.5px] leading-3.5 ${
+                                className={`rounded-[4px] py-px text-[11px] leading-4 ${
                                   badge.accent === true
-                                    ? 'border-accent/50 bg-accent-soft/60 text-accent'
-                                    : 'border-hairline text-ink-faint'
+                                    ? 'font-medium text-accent-ink'
+                                    : 'bg-ink/[0.05] px-1.5 text-ink-faint'
                                 }`}
                               >
                                 {badge.label}
@@ -360,11 +386,11 @@ export function SearchableSelect({
                     title={customRow}
                     onClick={() => { onChange(customRow); close(); }}
                     onMouseMove={() => { setActiveIndex(visible.length); }}
-                    className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left font-mono text-[11px] transition-colors ${
-                      activeIndex === visible.length ? 'bg-accent-soft text-accent' : 'text-ink hover:bg-paper'
+                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left font-mono text-[12px] text-ink transition-colors duration-[var(--kiki-motion-quick)] ${
+                      activeIndex === visible.length ? 'bg-ink/[0.04]' : 'hover:bg-ink/[0.04]'
                     }`}
                   >
-                    <span aria-hidden className="shrink-0 text-ink-faint">+</span>
+                    <Icon name="plus" size={12} className="text-ink-faint" />
                     <span className="min-w-0 truncate">
                       {(customValueLabel ?? ((custom) => custom))(customRow)}
                     </span>

@@ -1,5 +1,5 @@
 /**
- * Approval card — the amber attention element. Hardened after aionui's
+ * Approval strip — the inline decision element (one accent left rule, no tint). Hardened after aionui's
  * PermissionRequestPanel (https://github.com/AionUi/AionUi —
  * `packages/desktop/src/renderer/pages/conversation/Messages/components/
  * MessagePermission/PermissionRequestPanel.tsx` + `permissionOptions.ts`,
@@ -17,15 +17,31 @@
  *     back to labeled raw JSON instead of a misleading pseudo-title.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 
 import type { ApprovalDecision, QuestionAnswer, QuestionItem } from '@kiki/protocol';
 
 import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
+import { reviewerLabel, reviewerTooltip } from './approvalReviewer';
+import { DisclosureChevron, Icon } from './icons';
 import { Markdown } from './Markdown';
 
 type ApprovalIntent = 'allow-once' | 'allow-always' | 'reject-once';
+
+/* Shared decision-strip styling for approvals and questions. The accent is
+ * ONE left rule (the "needs you" mark) on a flat surface — no tint: the tray
+ * around the strip is already the container, and a tinted card inside it was
+ * a card inside a card. One flat detail well, a solid primary, a quiet
+ * secondary. */
+const STRIP_CLASS =
+  'anim-enter border-l-2 border-accent py-2.5 pr-3 pl-3.5';
+const DETAIL_WELL =
+  'mt-2 max-h-40 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink';
+const PRIMARY_BUTTON =
+  'inline-flex min-h-8 items-center rounded-md bg-accent px-3.5 text-[13px] font-semibold text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
+const SECONDARY_BUTTON =
+  'inline-flex min-h-8 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
 
 /* ── External permission display (ACP harness, design §9) ──────────────── */
 
@@ -190,6 +206,16 @@ function approvalDetail(
   }
 }
 
+const NEAR_DEADLINE_MS = 10 * 60_000;
+
+/** True when the request expires within ten minutes (and has a real deadline). */
+export function deadlineIsNear(expiresAt: string, now: number = Date.now()): boolean {
+  const at = new Date(expiresAt).getTime();
+  if (Number.isNaN(at)) return false;
+  const left = at - now;
+  return left > 0 && left < NEAR_DEADLINE_MS;
+}
+
 export function ApprovalCard({
   block,
   onResolve,
@@ -230,7 +256,7 @@ export function ApprovalCard({
   );
 
   if (block.resolution !== undefined) {
-    const { decision } = block.resolution;
+    const { decision, reviewer } = block.resolution;
     const label =
       decision === 'approved'
         ? t('ia.resolution.approved')
@@ -241,19 +267,22 @@ export function ApprovalCard({
             : decision === 'expired'
               ? t('ia.resolution.expired')
               : t('ia.resolution.resolvedElsewhere');
+    // Same outcome rule as every timeline row: an approval that went through
+    // is a plain fact with no mark; only a refusal is marked and tinted.
     const tone =
-      decision === 'approved'
-        ? 'border-success/40 text-success'
-        : decision === 'resolved_elsewhere'
-          ? 'border-hairline text-ink-faint'
-          : 'border-danger/40 text-danger';
+      decision === 'approved' || decision === 'resolved_elsewhere'
+        ? 'text-ink-soft'
+        : 'text-danger';
     return (
       <div
-        className={`anim-enter flex items-center gap-2 rounded-lg border bg-panel px-3 py-1.5 text-[12px] ${tone}`}
+        data-approval-resolution={decision}
+        className={`anim-enter flex min-h-7 items-center gap-2 text-[13px] ${tone}`}
       >
-        <span aria-hidden>{decision === 'approved' ? '✓' : decision === 'resolved_elsewhere' ? '·' : '×'}</span>
-        <span className="font-medium">{label}</span>
-        <span className="truncate font-mono text-[11px] text-ink-faint">
+        {decision === 'approved' || decision === 'resolved_elsewhere' ? null : <Icon name="cross" />}
+        <span className="font-medium" title={reviewer === undefined ? undefined : reviewerTooltip(reviewer, t)}>
+          {reviewer === undefined ? label : reviewerLabel(decision, reviewer, t, label)}
+        </span>
+        <span className="truncate font-mono text-[12px] text-ink-faint">
           {block.request.tool_name} — {block.request.action}
         </span>
       </div>
@@ -295,194 +324,173 @@ export function ApprovalCard({
       });
   };
 
+  const cancelButton = (
+    <button
+      type="button"
+      disabled={submittingOptionId !== null}
+      onClick={() => { submit('cancelled'); }}
+      className={SECONDARY_BUTTON}
+    >
+      {submittingOptionId === '__cancel' ? t('ia.external.cancelling') : t('ia.external.cancel')}
+    </button>
+  );
+  const sendFailed = failed ? (
+    <p role="alert" className="mt-2 text-[12px] text-danger">
+      {t('ia.sendFailed')}
+    </p>
+  ) : null;
+
   return (
     <div
       data-approval-id={approvalId}
-      className="anim-enter overflow-hidden rounded-xl border border-amber-rule/50 bg-amber-card shadow-[0_2px_12px_-6px_rgba(180,83,9,0.25)]"
+      className={STRIP_CLASS}
     >
-      <div className="flex">
-        <div className="w-1 shrink-0 bg-amber-rule" />
-        <div className="min-w-0 flex-1 px-4 py-3">
-          <div className="flex items-baseline gap-2">
-            <span className="text-[13px] font-semibold text-amber-ink">
-              {external === undefined
-                ? planEnter
-                  ? t('ia.planEnter.title')
-                  : t('ia.approvalNeeded')
-                : t('ia.external.title')}
-            </span>
-            {external !== undefined ? (
-              <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
-                {t('ia.external.badge')}
-              </span>
-            ) : null}
-            {originAgentName !== undefined ? (
-              <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
-                {t('ia.fromSubagent', { name: originAgentName })}
-              </span>
-            ) : null}
-            <span className="text-[10.5px] text-amber-ink/60">
-              {time.timeUntil(block.request.expires_at)}
-            </span>
-          </div>
-          <p className="mt-1 text-[13px] text-ink">
-            <span className="font-mono font-semibold">{block.request.tool_name}</span>
-            <span className="text-ink-soft"> · {block.request.action}</span>
-          </p>
-          {planEnter ? (
-            <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
-              {t('ia.planEnter.body')}
-            </p>
+      {/* Provenance line: what kind of decision, who asked, time left. */}
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
+        <span className="font-medium text-accent-ink">
+          {external === undefined
+            ? planEnter
+              ? t('ia.planEnter.title')
+              : t('ia.approvalNeeded')
+            : t('ia.external.title')}
+        </span>
+        {external !== undefined ? (
+          <span className="text-ink-faint">· {t('ia.external.badge')}</span>
+        ) : null}
+        {originAgentName !== undefined ? (
+          <span className="text-ink-faint">· {t('ia.fromSubagent', { name: originAgentName })}</span>
+        ) : null}
+        {/* A far-off deadline is noise; it only matters once it is close. */}
+        {deadlineIsNear(block.request.expires_at) ? (
+          <span className="ml-auto text-ink-faint tabular-nums">
+            {time.timeUntil(block.request.expires_at)}
+          </span>
+        ) : null}
+      </div>
+      {/* What: tool + action, then the exact command/target. */}
+      <p className="mt-1 min-w-0 text-[14px] leading-snug text-ink">
+        <span className="font-mono text-[13px] font-semibold">{block.request.tool_name}</span>
+        <span className="text-ink-soft"> · {block.request.action}</span>
+      </p>
+      {planEnter ? (
+        <p className="mt-1 text-[13px] leading-relaxed text-ink-soft">
+          {t('ia.planEnter.body')}
+        </p>
+      ) : null}
+      {detail !== undefined ? (
+        <pre
+          aria-label={detail.label}
+          title={detail.label}
+          className={DETAIL_WELL}
+        >
+          {detail.label === t('ia.detail.command') ? (
+            <span className="text-ink-faint select-none">$ </span>
           ) : null}
-          {detail !== undefined ? (
-            <div className="mt-2">
-              <p className="mb-0.5 text-[10px] font-semibold tracking-wide text-amber-ink/60 uppercase">
-                {detail.label}
-              </p>
-              <pre className="max-h-40 overflow-auto rounded-lg border border-amber-rule/30 bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
-                {detail.text}
-              </pre>
-            </div>
-          ) : null}
+          {detail.text}
+        </pre>
+      ) : null}
 
-          {external?.ok === true ? (
-            <div className="mt-2">
-              <p className="text-[13px] text-ink">{external.display.summary}</p>
-              {external.display.detail !== undefined ? (
-                <pre className="mt-1.5 max-h-40 overflow-auto rounded-lg border border-amber-rule/30 bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
-                  {typeof external.display.detail === 'string'
-                    ? external.display.detail
-                    : boundedJson(external.display.detail)}
-                </pre>
-              ) : null}
-            </div>
+      {external?.ok === true ? (
+        <div className="mt-1.5">
+          <p className="text-[13px] text-ink">{external.display.summary}</p>
+          {external.display.detail !== undefined ? (
+            <pre className={DETAIL_WELL}>
+              {typeof external.display.detail === 'string'
+                ? external.display.detail
+                : boundedJson(external.display.detail)}
+            </pre>
           ) : null}
+        </div>
+      ) : null}
 
-          {answered === null ? (
-            external === undefined ? (
-            <>
-              <label className="mt-2.5 flex cursor-pointer items-center gap-1.5 text-[11.5px] text-amber-ink/80">
+      {answered === null ? (
+        external === undefined ? (
+          <>
+            <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-2" aria-busy={submitting !== null}>
+              <button
+                type="button"
+                disabled={submitting !== null}
+                onClick={() => { submit('approved'); }}
+                className={PRIMARY_BUTTON}
+              >
+                {submitting === 'allow-once' || submitting === 'allow-always'
+                  ? t('ia.approving')
+                  : t('ia.approve')}{' '}
+                {showShortcutHints ? (
+                  <kbd className="ml-1 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-medium">y</kbd>
+                ) : null}
+              </button>
+              <button
+                type="button"
+                disabled={submitting !== null}
+                onClick={() => { submit('rejected'); }}
+                className={SECONDARY_BUTTON}
+              >
+                {submitting === 'reject-once' ? t('ia.rejecting') : t('ia.reject')}{' '}
+                {showShortcutHints ? (
+                  <kbd className="ml-1 rounded-[4px] bg-ink/[0.07] px-1 font-mono text-[11px] text-ink-soft">n</kbd>
+                ) : null}
+              </button>
+              <label className="ml-1 flex min-h-8 cursor-pointer items-center gap-1.5 text-[12px] text-ink-soft">
                 <input
                   type="checkbox"
                   checked={forSession}
                   disabled={submitting !== null}
                   onChange={(event) => { setForSession(event.target.checked); }}
-                  className="h-3 w-3 accent-accent"
+                  className="h-3.5 w-3.5 accent-accent"
                 />
-                {t('ia.remember')}
+                {t('ia.remember', { tool: block.request.tool_name })}
               </label>
-
-              <div className="mt-3 flex items-center gap-2" aria-busy={submitting !== null}>
-                <button
-                  type="button"
-                  disabled={submitting !== null}
-                  onClick={() => { submit('approved'); }}
-                  className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
-                >
-                  {submitting === 'allow-once' || submitting === 'allow-always'
-                    ? t('ia.approving')
-                    : t('ia.approve')}{' '}
-                  {showShortcutHints ? (
-                    <kbd className="ml-1 rounded bg-white/20 px-1 font-mono text-[10px]">y</kbd>
-                  ) : null}
-                </button>
-                <button
-                  type="button"
-                  disabled={submitting !== null}
-                  onClick={() => { submit('rejected'); }}
-                  className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-danger hover:text-danger disabled:opacity-60"
-                >
-                  {submitting === 'reject-once' ? t('ia.rejecting') : t('ia.reject')}{' '}
-                  {showShortcutHints ? (
-                    <kbd className="ml-1 rounded bg-paper px-1 font-mono text-[10px]">n</kbd>
-                  ) : null}
-                </button>
-              </div>
-              {failed ? (
-                <p role="alert" className="mt-2 text-[11.5px] text-danger">
-                  {t('ia.sendFailed')}
-                </p>
-              ) : null}
-            </>
-            ) : external.ok ? (
-              <>
-                <div
-                  className="mt-3 space-y-1.5"
-                  role="radiogroup"
-                  aria-busy={submittingOptionId !== null}
-                >
-                  {external.display.options.map((option) => (
-                    <ExternalOptionButton
-                      key={option.id}
-                      option={option}
-                      busy={submittingOptionId !== null}
-                      submitting={submittingOptionId === option.id}
-                      onPick={() => { submit(decisionForExternalKind(option.kind), option.id); }}
-                    />
-                  ))}
-                </div>
-                <div className="mt-2.5">
-                  <button
-                    type="button"
-                    disabled={submittingOptionId !== null}
-                    onClick={() => { submit('cancelled'); }}
-                    className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-danger hover:text-danger disabled:opacity-60"
-                  >
-                    {submittingOptionId === '__cancel' ? t('ia.external.cancelling') : t('ia.external.cancel')}
-                  </button>
-                </div>
-                {failed ? (
-                  <p role="alert" className="mt-2 text-[11.5px] text-danger">
-                    {t('ia.sendFailed')}
-                  </p>
-                ) : null}
-              </>
-            ) : (
-              /* Fail closed: the payload claims external_permission but does not
-                 validate — no option may be picked, cancel stays available. */
-              <>
-                <p role="alert" className="mt-2 text-[12px] text-danger">
-                  {t('ia.external.unknownShape')}
-                </p>
-                <div className="mt-2.5">
-                  <button
-                    type="button"
-                    disabled={submittingOptionId !== null}
-                    onClick={() => { submit('cancelled'); }}
-                    className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-danger hover:text-danger disabled:opacity-60"
-                  >
-                    {submittingOptionId === '__cancel' ? t('ia.external.cancelling') : t('ia.external.cancel')}
-                  </button>
-                </div>
-                {failed ? (
-                  <p role="alert" className="mt-2 text-[11.5px] text-danger">
-                    {t('ia.sendFailed')}
-                  </p>
-                ) : null}
-              </>
-            )
-          ) : (
-            <p
-              role="status"
-              className={`mt-3 flex items-center gap-1.5 text-[12px] font-medium ${
-                answered === 'approved'
-                  ? 'text-success'
-                  : answered === 'cancelled'
-                    ? 'text-ink-faint'
-                    : 'text-danger'
-              }`}
+            </div>
+            {sendFailed}
+          </>
+        ) : external.ok ? (
+          <>
+            <div
+              className="mt-2.5 space-y-1"
+              role="radiogroup"
+              aria-busy={submittingOptionId !== null}
             >
-              <span aria-hidden>{answered === 'approved' ? '✓' : '×'}</span>
-              {answered === 'approved'
-                ? t('ia.resolution.approved')
-                : answered === 'cancelled'
-                  ? t('ia.resolution.cancelled')
-                  : t('ia.resolution.rejected')}
-              {t('ia.sentToKikiSuffix')}
+              {external.display.options.map((option) => (
+                <ExternalOptionButton
+                  key={option.id}
+                  option={option}
+                  busy={submittingOptionId !== null}
+                  submitting={submittingOptionId === option.id}
+                  onPick={() => { submit(decisionForExternalKind(option.kind), option.id); }}
+                />
+              ))}
+            </div>
+            <div className="mt-2">{cancelButton}</div>
+            {sendFailed}
+          </>
+        ) : (
+          /* Fail closed: the payload claims external_permission but does not
+             validate — no option may be picked, cancel stays available. */
+          <>
+            <p role="alert" className="mt-2 text-[13px] text-danger">
+              {t('ia.external.unknownShape')}
             </p>
-          )}
-        </div>
-      </div>
+            <div className="mt-2">{cancelButton}</div>
+            {sendFailed}
+          </>
+        )
+      ) : (
+        <p
+          role="status"
+          className={`mt-2.5 flex items-center gap-1.5 text-[13px] font-medium ${
+            answered === 'approved' || answered === 'cancelled' ? 'text-ink-soft' : 'text-danger'
+          }`}
+        >
+          {answered === 'approved' || answered === 'cancelled' ? null : <Icon name="cross" />}
+          {answered === 'approved'
+            ? t('ia.resolution.approved')
+            : answered === 'cancelled'
+              ? t('ia.resolution.cancelled')
+              : t('ia.resolution.rejected')}
+          {t('ia.sentToKikiSuffix')}
+        </p>
+      )}
     </div>
   );
 }
@@ -507,15 +515,16 @@ function ExternalOptionButton({
   const [expanded, setExpanded] = useState(false);
   const lowered = option.kind.toLowerCase();
   const tone = lowered.startsWith('allow')
-    ? { icon: '✓', marker: 'border-success/50 text-success', chip: 'border-success/40 text-success' }
+    ? { icon: 'check' as const, marker: 'text-success', chip: 'text-success' }
     : lowered.startsWith('reject')
-      ? { icon: '×', marker: 'border-danger/50 text-danger', chip: 'border-danger/40 text-danger' }
-      : { icon: '•', marker: 'border-hairline-strong text-ink-faint', chip: 'border-hairline text-ink-faint' };
+      ? { icon: 'cross' as const, marker: 'text-danger', chip: 'text-danger' }
+      : { icon: 'dash' as const, marker: 'text-ink-faint', chip: 'text-ink-faint' };
   const changes = option.changes ?? [];
+  const kindLabel = externalKindLabel(option.kind, t);
   return (
     <div
-      className={`rounded-lg border bg-panel transition-colors ${
-        submitting ? 'border-accent' : 'border-hairline hover:border-hairline-strong'
+      className={`rounded-md transition-colors duration-[var(--kiki-motion-quick)] ${
+        submitting ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
       }`}
     >
       <button
@@ -524,38 +533,33 @@ function ExternalOptionButton({
         aria-checked={submitting}
         disabled={busy}
         onClick={onPick}
-        className="flex w-full items-start gap-2 px-2.5 py-1.5 text-left disabled:opacity-60"
+        className="flex min-h-9 w-full items-center gap-2.5 px-3 py-1.5 text-left disabled:opacity-60"
       >
-        <span
-          aria-hidden
-          className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border text-[9px] ${tone.marker}`}
-        >
-          {tone.icon}
-        </span>
+        <Icon name={tone.icon} className={`h-3.5 w-3.5 ${tone.marker}`} />
         <span className="min-w-0 flex-1">
-          <span className="block text-[12.5px] font-medium text-ink">
+          <span className="block text-[13px] font-medium text-ink">
             {submitting ? t('ia.sending') : option.label}
           </span>
         </span>
-        <span
-          className={`shrink-0 rounded-full border px-1.5 py-px text-[10px] font-medium ${tone.chip}`}
-        >
-          {externalKindLabel(option.kind, t)}
-        </span>
+        {/* The kind reads as a quiet tag; skip it when the agent's own label
+            already says the same thing. */}
+        {kindLabel.toLowerCase() === option.label.toLowerCase() ? null : (
+          <span className={`shrink-0 text-[12px] ${tone.chip}`}>{kindLabel}</span>
+        )}
       </button>
       {changes.length > 0 ? (
-        <div className="px-2.5 pb-1.5 pl-[26px]">
+        <div className="px-3 pb-1.5 pl-[34px]">
           <button
             type="button"
             aria-expanded={expanded}
             onClick={() => { setExpanded((prev) => !prev); }}
-            className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-faint transition-colors hover:text-accent"
+            className="inline-flex min-h-6 items-center gap-1 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink"
           >
             {tp('ia.external.changes', changes.length)}
-            <span aria-hidden className="text-[9px]">{expanded ? '▴' : '▾'}</span>
+            <DisclosureChevron open={expanded} />
           </button>
           {expanded ? (
-            <pre className="mt-1 max-h-40 overflow-auto rounded-lg border border-amber-rule/30 bg-amber-card/50 px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+            <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-paper px-2.5 py-1.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-soft">
               {changes.map((change) => boundedJson(change, 300)).join('\n')}
             </pre>
           ) : null}
@@ -597,17 +601,15 @@ function QuestionItemView({
   return (
     <div>
       {item.header !== undefined ? (
-        <p className="text-[10.5px] font-semibold tracking-wide text-amber-ink/70 uppercase">
-          {item.header}
-        </p>
+        <p className="text-[12px] font-medium text-ink-faint">{item.header}</p>
       ) : null}
-      <p className="mt-0.5 text-[13px] font-medium text-ink">{item.question}</p>
+      <p className="mt-0.5 text-[14px] font-medium text-ink">{item.question}</p>
       {item.body !== undefined ? (
-        <div className="mt-1 text-[12px] text-ink-soft">
+        <div className="mt-1 text-[13px] text-ink-soft">
           <Markdown text={item.body} />
         </div>
       ) : null}
-      <div className="mt-2 space-y-1">
+      <div className="mt-2 space-y-0.5">
         {item.options.map((option) => {
           const selected = answer.optionIds.includes(option.id);
           return (
@@ -616,39 +618,37 @@ function QuestionItemView({
               type="button"
               aria-pressed={selected}
               onClick={() => { toggle(option.id); }}
-              className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors ${
-                selected
-                  ? 'border-accent bg-accent-soft'
-                  : 'border-hairline bg-panel hover:border-hairline-strong'
+              className={`flex min-h-9 w-full items-start gap-2.5 rounded-md px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+                selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
               }`}
             >
               <span
                 aria-hidden
-                className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border text-[9px] ${
-                  selected ? 'border-accent bg-accent text-white' : 'border-hairline-strong bg-panel'
+                className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border ${
+                  selected ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper'
                 }`}
               >
-                {selected ? '✓' : ''}
+                {selected ? <Icon name="check" size={12} /> : null}
               </span>
               <span className="min-w-0">
-                <span className="block text-[12.5px] font-medium text-ink">{option.label}</span>
+                <span className="block text-[13px] font-medium text-ink">{option.label}</span>
                 {option.description !== undefined ? (
-                  <span className="block text-[11.5px] text-ink-soft">{option.description}</span>
+                  <span className="block text-[12px] text-ink-soft">{option.description}</span>
                 ) : null}
               </span>
             </button>
           );
         })}
-        <div className="rounded-lg border border-hairline bg-panel px-2.5 py-1.5">
-          <span className="text-[12.5px] font-medium text-ink">{otherLabel}</span>
+        <label className="flex items-center gap-2.5 rounded-md px-3 pt-1.5">
+          <span className="shrink-0 text-[13px] font-medium text-ink-soft">{otherLabel}</span>
           <input
             aria-label={otherLabel}
-            className="mt-1.5 w-full rounded-md border border-hairline bg-panel px-2 py-1 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+            className="min-h-8 w-full min-w-0 rounded-md border border-hairline bg-panel px-2.5 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
             placeholder={item.other_description ?? t('ia.otherPlaceholder')}
             value={answer.otherText}
             onChange={(event) => { onChange({ ...answer, otherText: event.target.value }); }}
           />
-        </div>
+        </label>
       </div>
     </div>
   );
@@ -680,12 +680,12 @@ export function QuestionCard({
           ? t('ia.question.dismissed')
           : t('ia.question.expired');
     return (
-      <details className="anim-enter rounded-lg border border-hairline bg-panel px-3 py-1.5 text-[12px] text-ink-faint" data-question-history>
-        <summary className="cursor-pointer font-medium">{label}</summary>
+      <details className="anim-enter text-[12px] text-ink-faint" data-question-history>
+        <summary className="min-h-7 cursor-pointer font-medium">{label}</summary>
         <div className="mt-2 space-y-2 text-ink-soft">
           {block.request.questions.map((item) => <div key={item.id}>
             <p className="break-words">{item.question}</p>
-            <ul className="mt-1 list-inside list-disc text-[11px]">
+            <ul className="mt-1 list-inside list-disc text-[12px]">
               {item.options.map((option) => <li key={option.id}>{option.label}</li>)}
             </ul>
           </div>)}
@@ -760,18 +760,16 @@ export function QuestionCard({
   };
 
   return (
-    <div className="anim-enter overflow-hidden rounded-xl border border-amber-rule/50 bg-amber-card">
-      <div className="flex">
-        <div className="w-1 shrink-0 bg-amber-rule" />
-        <div className="min-w-0 flex-1 space-y-4 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-amber-ink">{t('ia.kikiAsks')}</span>
+    <div data-question-card className={STRIP_CLASS}>
+      <div className="space-y-4">
+        <div>
+          <div className="flex flex-wrap items-baseline gap-x-2 text-[12px]">
+            <span className="font-medium text-accent-ink">{t('ia.kikiAsks')}</span>
             {originAgentName !== undefined ? (
-              <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
-                {t('ia.fromSubagent', { name: originAgentName })}
-              </span>
+              <span className="text-ink-faint">· {t('ia.fromSubagent', { name: originAgentName })}</span>
             ) : null}
           </div>
+        </div>
           {block.request.questions.map((item) => (
             <QuestionItemView
               key={item.id}
@@ -791,7 +789,7 @@ export function QuestionCard({
                     : undefined
                 }
                 onClick={submit}
-                className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
+                className={PRIMARY_BUTTON}
               >
                 {busy ? t('ia.sending') : t('ia.submit')}
               </button>
@@ -799,29 +797,104 @@ export function QuestionCard({
                 type="button"
                 disabled={busy}
                 onClick={dismiss}
-                className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:text-danger disabled:opacity-60"
+                className={SECONDARY_BUTTON}
               >
                 {t('ia.dismiss')}
               </button>
               {unansweredCount > 0 ? (
-                <span className="text-[11px] text-amber-ink/70">
+                <span className="text-[12px] text-ink-faint">
                   {tp('ia.unanswered', unansweredCount)}
                 </span>
               ) : null}
               {failed !== null ? (
-                <span role="alert" className="text-[11.5px] text-danger">
+                <span role="alert" className="text-[12px] text-danger">
                   {failed}
                 </span>
               ) : null}
             </div>
           ) : (
-            <p role="status" className="pt-1 text-[12px] font-medium text-success">
-              <span aria-hidden>✓</span>{' '}
+            <p role="status" className="pt-1 text-[13px] font-medium text-ink-soft">
               {sent === 'answered' ? t('ia.sentToKiki') : t('ia.dismissed')}
             </p>
           )}
-        </div>
       </div>
+    </div>
+  );
+}
+
+/* ── Transcript placement: one-line records for the "Needs you" tray ───── */
+
+/**
+ * Where pending approvals/questions are answered. By default the transcript
+ * renders the full interactive card in place; when the composer's "Needs you"
+ * tray is mounted it provides `{ inTray: true }` and the transcript keeps
+ * only a one-line record per item (the tray renders ApprovalCard/QuestionCard
+ * itself). `onReview` lets the record's action focus that item in the tray.
+ */
+export interface InteractionPlacement {
+  readonly inTray: boolean;
+  readonly onReview?: (kind: 'approval' | 'question', id: string) => void;
+}
+
+export const InteractionPlacementContext = createContext<InteractionPlacement>({ inTray: false });
+
+export function useInteractionPlacement(): InteractionPlacement {
+  return useContext(InteractionPlacementContext);
+}
+
+/**
+ * The transcript's one-line record of a PENDING approval/question while its
+ * decision lives in the tray: a static accent dot (waiting on the user), the
+ * specific ask ("Awaiting approval" / "Awaiting answer"), origin, subject,
+ * and a Review action that jumps to the tray. Same line rhythm as the
+ * resolved history line so a record reads as one entry whose outcome fills
+ * in later. `data-interaction-record` carries the wire id so the tray's
+ * "Show in timeline" can scroll to it.
+ */
+export function InteractionRecord({
+  block,
+  originName,
+  onReview,
+}: {
+  block: ApprovalBlock | QuestionBlock;
+  originName?: string;
+  onReview?: () => void;
+}) {
+  const { t } = useI18n();
+  const id = block.kind === 'approval' ? block.request.approval_id : block.request.question_id;
+  const subject =
+    block.kind === 'approval'
+      ? `${block.request.tool_name} · ${block.request.action}`
+      : (block.request.questions[0]?.question ?? t('ia.kikiAsks'));
+  return (
+    <div
+      data-interaction-record={id}
+      data-interaction-kind={block.kind}
+      className="anim-enter flex min-h-7 items-center gap-2 text-[12px]"
+    >
+      {/* Static dot: the tray above the composer is where the waiting pulses;
+          a record repeated per row would turn the column into a flicker. */}
+      <span aria-hidden className="flex w-[18px] shrink-0 justify-center">
+        <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+      </span>
+      <span className="shrink-0 font-medium text-ink">
+        {t(block.kind === 'approval' ? 'ia.record.awaitingApproval' : 'ia.record.awaitingAnswer')}
+      </span>
+      <span className="min-w-0 truncate text-ink-faint">
+        {originName === undefined ? '' : `${originName} · `}
+        {subject}
+      </span>
+      {onReview !== undefined ? (
+        <button
+          type="button"
+          onClick={onReview}
+          aria-label={t('ia.record.reviewAria')}
+          className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink"
+        >
+          {t('ia.record.review')}
+          <Icon name="arrowDown" size={12} />
+        </button>
+      ) : null}
     </div>
   );
 }

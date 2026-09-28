@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n';
 import { useOptionalConnection } from '../../state/connection';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { Hint } from '../controls';
+import { useDirtyReporter } from '../dirtyGuard';
 
 export interface RawFileCollapseProps {
   readonly sourceFile?: string;
@@ -12,6 +13,7 @@ export interface RawFileCollapseProps {
   readonly fallbackText?: string;
   readonly dataSection?: string;
   readonly onSave?: (text: string) => Promise<void>;
+  readonly onDirtyChange?: (dirty: boolean) => void;
 }
 
 export const RawFileCollapse = memo(function RawFileCollapse({
@@ -21,12 +23,17 @@ export const RawFileCollapse = memo(function RawFileCollapse({
   fallbackText,
   dataSection = 'raw',
   onSave,
+  onDirtyChange,
 }: RawFileCollapseProps) {
   const { t, locale } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
 
   const [rawText, setRawText] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState<string | null>(null);
+  const dirty = editable && writable && rawText !== null && baseline !== null && rawText !== baseline;
+  useDirtyReporter(`agent-raw:${sourceFile ?? 'none'}`, dirty);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -62,22 +69,22 @@ export const RawFileCollapse = memo(function RawFileCollapse({
         data-profile-section={dataSection}
         className="rounded-lg border border-hairline bg-paper/40 p-2.5"
       >
-        <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+        <summary className="cursor-pointer text-[12px] font-medium text-ink-soft select-none">
           {t('agentPanel.profileSection.raw')}
         </summary>
         <div className="mt-2">
           {loading ? (
-            <p className="font-mono text-[10px] text-ink-faint animate-pulse">
+            <p className="text-[12px] text-ink-faint animate-pulse motion-reduce:animate-none">
               {t('st.namedAgents.rawLoading')}
             </p>
           ) : error ? (
-            <p className="font-mono text-[10px] text-danger">{error}</p>
+            <p className="text-[12px] text-danger">{error}</p>
           ) : displayedRaw ? (
-            <pre className="max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2.5 font-mono text-[10px] leading-snug text-ink-soft whitespace-pre-wrap">
+            <pre className="max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2.5 font-mono text-[11px] leading-snug text-ink-soft whitespace-pre-wrap">
               {displayedRaw}
             </pre>
           ) : (
-            <p className="font-mono text-[10px] text-ink-faint italic">
+            <p className="text-[12px] text-ink-faint italic">
               {t('st.namedAgents.builtin')}
             </p>
           )}
@@ -101,6 +108,7 @@ export const RawFileCollapse = memo(function RawFileCollapse({
       try {
         const text = await client.readHostFile(sourceFile);
         setRawText(text);
+        setBaseline(text);
       } catch (err) {
         setOpen(false);
         setError(errorText(locale, err));
@@ -116,6 +124,7 @@ export const RawFileCollapse = memo(function RawFileCollapse({
     setError(null);
     try {
       await onSave(rawText);
+      setBaseline(rawText);
     } catch (err) {
       setError(errorText(locale, err));
     } finally {
@@ -150,16 +159,15 @@ export const RawFileCollapse = memo(function RawFileCollapse({
               }}
             />
           )}
-          {writable && !loading ? (
-            <button
-              type="button"
-              className={PRIMARY_BUTTON}
-              disabled={saving}
-              onClick={() => void handleSave()}
-            >
+          {writable && !loading ? <div className="flex flex-wrap gap-2">
+            <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void handleSave()}>
               {saving ? t('common.saving') : t('st.namedAgents.saveRaw')}
             </button>
-          ) : null}
+            <button type="button" className={SECONDARY_BUTTON} disabled={!dirty || saving}
+              onClick={() => { setRawText(baseline); setError(null); }}>
+              {t('st.advanced.discard')}
+            </button>
+          </div> : null}
         </div>
       ) : null}
     </div>

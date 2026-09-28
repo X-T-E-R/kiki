@@ -39,7 +39,7 @@ const FOCUSABLE_SELECTOR =
  * full-bleed panel inside the overlay padding.
  */
 export const DIALOG_PANEL_BASE =
-  'anim-enter w-full rounded-2xl border border-hairline bg-panel p-6 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]';
+  'anim-enter w-full rounded-2xl border border-hairline bg-panel p-6 shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]';
 
 export const DIALOG_PANEL_SIZES = {
   sm: 'max-w-[520px]',

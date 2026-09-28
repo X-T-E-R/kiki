@@ -4,6 +4,7 @@
  */
 
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 
 export type Feedback = { tone: 'success' | 'error' | 'info'; text: string } | null;
 
@@ -38,50 +39,60 @@ export function Toggle({
   checked,
   onChange,
   disabled = false,
+  layout = 'inline',
 }: {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
+  /** `row`: label on the left, switch on the right edge (settings rows). */
+  layout?: 'inline' | 'row';
 }) {
+  const text = <span className="text-[13px] text-ink">{label}</span>;
+  // Quiet switch: a tinted track with a solid knob. Only the ON knob carries
+  // the accent, so a column of switches reads as state, not as a row of
+  // orange buttons. The real checkbox sits first so the track can show its
+  // keyboard focus.
   return (
-    <label className={`flex items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
-      <span
-        role="switch"
-        aria-checked={checked}
-        aria-disabled={disabled}
-        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-          checked ? 'bg-accent' : 'bg-hairline-strong'
-        }`}
-      >
-        <span
-          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-            checked ? 'translate-x-[18px]' : 'translate-x-1'
-          }`}
-        />
-      </span>
+    <label className={`${layout === 'row' ? 'flex w-full justify-between' : 'inline-flex'} min-h-7 items-center gap-2.5 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+      {layout === 'row' ? text : null}
       <input
         type="checkbox"
-        className="sr-only"
+        className="peer sr-only"
         checked={checked}
         disabled={disabled}
         onChange={(event) => { onChange(event.target.checked); }}
       />
-      <span className="text-[12.5px] text-ink-soft">{label}</span>
+      <span
+        role="switch"
+        aria-checked={checked}
+        aria-disabled={disabled}
+        className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-150 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent ${
+          checked ? 'bg-accent-soft ring-accent/45' : 'bg-hairline ring-hairline-strong'
+        }`}
+      >
+        <span
+          className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-150 motion-reduce:transition-none ${
+            checked ? 'translate-x-[16px] bg-accent' : 'translate-x-[3px] bg-ink-faint'
+          }`}
+        />
+      </span>
+      {layout === 'inline' ? text : null}
     </label>
   );
 }
 
 export function Hint({ children }: { children: React.ReactNode }) {
-  return <p className="text-[11px] leading-relaxed text-ink-faint">{children}</p>;
+  return <p className="max-w-[62ch] text-[12px] leading-snug text-ink-faint">{children}</p>;
 }
 
-/** Transient "✓ Saved" affirmation for instant-apply controls. */
+/** Transient "Saved" affirmation for instant-apply controls; the check is drawn, not typed. */
 export function SavedTick({ show }: { show: boolean }) {
   const { t } = useI18n();
   if (!show) return null;
   return (
-    <span role="status" className="anim-enter text-[11px] font-medium text-success">
+    <span role="status" className="anim-enter inline-flex items-center gap-1 text-[12px] font-medium text-success">
+      <Icon name="check" size={12} />
       {t('st.savedTick')}
     </span>
   );

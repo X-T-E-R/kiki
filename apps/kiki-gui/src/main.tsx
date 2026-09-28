@@ -1,8 +1,6 @@
-import '@fontsource-variable/fraunces';
-import '@fontsource/space-grotesk/400.css';
-import '@fontsource/space-grotesk/500.css';
-import '@fontsource/space-grotesk/600.css';
-import '@fontsource/space-grotesk/700.css';
+import '@fontsource-variable/newsreader/opsz.css';
+import '@fontsource-variable/newsreader/opsz-italic.css';
+import '@fontsource-variable/instrument-sans';
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/600.css';
 
@@ -16,11 +14,16 @@ import { HostProvider, hostAdapter } from './host';
 import { I18nProvider } from './i18n';
 import { ConnectionProvider } from './state/connection';
 import { startThemeSync } from './lib/theme';
+import { startSkinSync } from './lib/skins';
 import './index.css';
+import './styles/motion.css';
+import './styles/new-session.css';
 
 // Before the first render: the palette must be right on the first frame, or a
 // dark-theme user gets a paper-white flash on every launch.
 startThemeSync(hostAdapter);
+// The skin rides on top of the resolved theme and follows it from here on.
+startSkinSync();
 
 createRoot(document.querySelector('#root')!).render(
   <StrictMode>

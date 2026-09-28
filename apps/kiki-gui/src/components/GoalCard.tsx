@@ -30,6 +30,7 @@ import type { GoalFollowUpTiming, GoalSnapshot } from '@kiki/protocol';
 import { API_CODES, ApiError } from '../lib/client';
 import type { UpdateAgentGoalInput } from '../lib/client';
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 
 /** The armed cancel falls back to idle after this long without the second click. */
 const CANCEL_ARM_TIMEOUT_MS = 5_000;
@@ -209,9 +210,7 @@ export function GoalCard({
         className="anim-enter mx-auto max-w-[760px] rounded-xl border border-accent/35 bg-panel px-3 py-2"
       >
         <div className="flex items-center gap-2">
-          <span aria-hidden className="shrink-0 text-[12px] text-accent">
-            ◎
-          </span>
+          <Icon name="goal" className="h-3.5 w-3.5 text-accent" />
           <span
             className={`shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-semibold tracking-[0.04em] uppercase ${
               goal.status === 'active'
@@ -344,7 +343,7 @@ export function GoalCard({
                     data-goal-timing={timing}
                     onClick={() => { setFollowUpTiming(timing); }}
                     className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${
-                      timing === followUpTiming ? 'bg-accent text-white' : 'text-ink-soft hover:bg-hairline/60'
+                      timing === followUpTiming ? 'bg-accent text-on-accent' : 'text-ink-soft hover:bg-hairline/60'
                     }`}
                   >
                     {t(GOAL_TIMING_LABEL_KEY[timing])}
@@ -369,7 +368,7 @@ export function GoalCard({
                   onClick={save}
                   disabled={pending !== null || objective.trim() === ''}
                   data-goal-save
-                  className="rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+                  className="rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-on-accent transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
                 >
                   {t('common.save')}
                 </button>
@@ -416,7 +415,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-on-accent transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>
@@ -433,9 +432,7 @@ export function RecoveryHoldBar({
         className="anim-enter mx-auto max-w-[760px] rounded-xl border border-hairline bg-panel px-3 py-2"
       >
         <div className="flex flex-wrap items-center gap-2">
-          <span aria-hidden className="shrink-0 text-[11px] text-ink-faint">
-            ◔
-          </span>
+          <Icon name="hold" className="h-3.5 w-3.5 text-ink-faint" />
           <span className="min-w-0 flex-1 text-[11.5px] text-ink-soft">
             {tp('sv.queueRecovered.body', count)}
           </span>
@@ -443,7 +440,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-on-accent transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>

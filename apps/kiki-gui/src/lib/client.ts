@@ -48,6 +48,7 @@ import type {
   PatchModelRequest,
   PatchProviderRequest,
   ProviderEntity,
+  CreateNamedAgentProfileRequest as ProtocolCreateNamedAgentProfileRequest,
   ListNamedAgentProfilesResponse as ProtocolListNamedAgentProfilesResponse,
   ListShippedAgentProfilesResponse as ProtocolListShippedAgentProfilesResponse,
   NamedAgentModelProfile as ProtocolNamedAgentModelProfile,
@@ -100,7 +101,7 @@ import type {
   Workspace,
 } from '@kiki/protocol';
 
-import { RPCError, type HttpRestCronTask, type SessionViewFacade } from '@kiki/klient';
+import { RPCError, type HttpRestCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import {
   fetchRemoteModels,
@@ -196,7 +197,6 @@ export interface MessageRunOverrides {
   readonly permission_mode?: PermissionMode;
   readonly plan_gate?: PromptPlanGate;
   readonly plan_mode?: boolean;
-  readonly swarm_mode?: boolean;
 }
 
 /** `POST /sessions/{sid}/messages/{mid}:edit` body — full replacement semantics. */
@@ -379,12 +379,14 @@ export type KikiConfigPatch = Omit<
   readonly replace_domains?: readonly string[];
 };
 
+export type { OAuthMethodStatus };
 export type NamedAgentRoute = ProtocolNamedAgentRoute;
 export type NamedAgentModelProfile = ProtocolNamedAgentModelProfile;
 export type NamedAgentSpawnConstraints = ProtocolNamedAgentSpawnConstraints;
 export type NamedAgentSubagentLease = ProtocolNamedAgentSubagentLease;
 export type NamedAgentProfile = ProtocolNamedAgentProfile;
 export type ListNamedAgentProfilesResponse = ProtocolListNamedAgentProfilesResponse;
+export type CreateNamedAgentProfileRequest = ProtocolCreateNamedAgentProfileRequest;
 export type UpdateNamedAgentProfileRequest = ProtocolUpdateNamedAgentProfileRequest;
 export type ShippedAgentProfile = ProtocolShippedAgentProfile;
 export type ListShippedAgentProfilesResponse = ProtocolListShippedAgentProfilesResponse;
@@ -427,6 +429,87 @@ export interface ListCronTasksResponse {
   readonly has_more?: boolean;
   readonly next_offset?: number;
 }
+
+/**
+ * Memory wire shapes (`/api/memory/*`, kap-server `routes/memory.ts`; the
+ * entry and journal types mirror agent-core-v2 `app/memory/memoryStore.ts`).
+ * Not part of `@kiki/protocol`, so they are hand-rolled here.
+ */
+export type MemoryScopeKind = 'global' | 'workspace';
+export type MemoryType = 'user' | 'feedback' | 'project' | 'reference';
+export type MemoryStatus = 'active' | 'pending' | 'superseded' | 'archived';
+export type MemoryWriter = 'user' | 'agent' | 'consolidator' | 'import';
+export type MemoryApproval = 'auto' | 'review' | 'off';
+
+export const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project', 'reference'];
+
+export interface MemoryEntry {
+  readonly id: string;
+  readonly type: MemoryType;
+  readonly title: string;
+  readonly body: string;
+  readonly status: MemoryStatus;
+  readonly pinned: boolean;
+  readonly created: string;
+  readonly updated: string;
+  readonly source: { readonly writer: MemoryWriter; readonly session?: string; readonly turn?: number | string; readonly step?: string };
+  readonly reason: string;
+  readonly superseded_by?: string;
+  readonly supersedes?: string;
+  readonly revision: string;
+}
+
+export interface MemorySettings {
+  readonly enabled: boolean;
+  readonly approval: MemoryApproval;
+  readonly budget: number;
+  readonly workspaces: Readonly<Record<string, boolean>>;
+  readonly effective_enabled?: boolean;
+}
+
+export interface MemoryWorkspaceSettings {
+  readonly workspace_id: string;
+  /** `null` follows the global switch. */
+  readonly enabled: boolean | null;
+  readonly effective_enabled: boolean;
+}
+
+export interface MemoryJournalRecord {
+  readonly operationId: string;
+  readonly action: string;
+  readonly id: string;
+  readonly at: string;
+  readonly writer: MemoryWriter;
+  readonly before: string | null;
+  readonly beforeRevision: string | null;
+  readonly afterRevision: string | null;
+}
+
+/** Which store a memory call addresses; `workspaceId` is required for `workspace`. */
+export interface MemoryTarget {
+  readonly scope: MemoryScopeKind;
+  readonly workspaceId?: string;
+}
+
+export interface MemoryPutBody {
+  readonly action?: 'create' | 'update' | 'supersede' | 'archive';
+  readonly type: MemoryType;
+  readonly title: string;
+  readonly body: string;
+  readonly reason: string;
+  readonly expected_revision?: string;
+  readonly pinned?: boolean;
+}
+
+export interface MemoryListQuery {
+  readonly query?: string;
+  readonly type?: MemoryType;
+  readonly include_inactive?: boolean;
+}
+
+/** 40423 / 40944 on the memory routes. */
+export const MEMORY_NOT_FOUND = 40423;
+export const MEMORY_REVISION_CONFLICT = 40944;
 
 export interface CapabilityStatus {
   readonly id: 'kimi-cu' | 'kimi-webbridge';
@@ -1119,6 +1202,19 @@ export class KikiClient {
     return this.run(this.klient.global.kosong.listModels().then((items) => ({ items: [...items] })));
   }
 
+  /**
+   * GUI skin files in the connected server's themes directory. An older server
+   * without the route answers `undefined` rather than throwing, so the
+   * appearance page degrades to built-in skins only.
+   */
+  listSkins(): Promise<import('@kiki/protocol').ListSkinsResponse | undefined> {
+    return this.run(() => this.rest.skins.list());
+  }
+
+  getSkin(skinId: string): Promise<import('@kiki/protocol').GetSkinResponse> {
+    return this.run(() => this.rest.skins.get(skinId));
+  }
+
   async getConfig(): Promise<KikiConfigResponse> {
     return parseKikiConfigResponse(await this.run(this.rest.config.get()));
   }
@@ -1164,6 +1260,10 @@ export class KikiClient {
     signal?: AbortSignal,
   ): Promise<import('@kiki/protocol').AgentCapabilitiesResponse> {
     return this.run(this.klient.global.agentPanel.read(query, { signal }));
+  }
+
+  createAgentProfile(body: CreateNamedAgentProfileRequest): Promise<NamedAgentProfile> {
+    return this.run(this.rest.agents.create(body));
   }
 
   updateNamedAgentProfile(
@@ -1385,6 +1485,11 @@ export class KikiClient {
     return this.run(this.klient.global.auth.cancelLogin(query.provider));
   }
 
+  /** Account sign-in methods (Kimi Code is one of several) and whether each is signed in. */
+  listOAuthMethods(): Promise<readonly OAuthMethodStatus[]> {
+    return this.run(this.klient.global.auth.methods());
+  }
+
   logoutOAuth(body: OAuthLogoutRequest = {}): Promise<OAuthLogoutResponse> {
     return this.run(this.klient.global.auth.logout(body.provider));
   }
@@ -1516,6 +1621,111 @@ export class KikiClient {
 
   deleteCronTask(taskId: string, sessionId?: string): Promise<{ readonly deleted: true }> {
     return this.run(this.rest.cron.remove(taskId, { session_id: sessionId }));
+  }
+
+  /**
+   * Memory REST calls. klient's typed REST facade has no memory domain (and
+   * no PUT verb) yet, so these go through `memoryRequest` with the same
+   * bearer auth and `{code,msg,data}` envelope handling.
+   */
+  getMemorySettings(): Promise<MemorySettings> {
+    return this.memoryRequest('GET', '/memory/settings');
+  }
+
+  patchMemorySettings(patch: { readonly enabled?: boolean; readonly approval?: MemoryApproval; readonly budget?: number }): Promise<MemorySettings> {
+    return this.memoryRequest('PATCH', '/memory/settings', { body: patch });
+  }
+
+  getWorkspaceMemorySettings(workspaceId: string): Promise<MemoryWorkspaceSettings> {
+    return this.memoryRequest('GET', `/memory/workspaces/${encodeURIComponent(workspaceId)}/settings`);
+  }
+
+  patchWorkspaceMemorySettings(workspaceId: string, enabled: boolean | null): Promise<MemoryWorkspaceSettings> {
+    return this.memoryRequest('PATCH', `/memory/workspaces/${encodeURIComponent(workspaceId)}/settings`, { body: { enabled } });
+  }
+
+  listMemory(target: MemoryTarget, query: MemoryListQuery = {}): Promise<{ readonly items: readonly MemoryEntry[] }> {
+    return this.memoryRequest('GET', `/memory/${target.scope}`, {
+      target,
+      query: {
+        query: query.query !== undefined && query.query.trim() !== '' ? query.query.trim() : undefined,
+        type: query.type,
+        include_inactive: query.include_inactive === true ? 'true' : undefined,
+      },
+    });
+  }
+
+  getMemory(target: MemoryTarget, id: string): Promise<MemoryEntry> {
+    return this.memoryRequest('GET', `/memory/${target.scope}/${encodeURIComponent(id)}`, { target });
+  }
+
+  /** `id: 'new'` creates; otherwise `expected_revision` guards the update (40944 on a stale revision). */
+  putMemory(target: MemoryTarget, id: string, body: MemoryPutBody): Promise<{ readonly entry: MemoryEntry; readonly operationId: string }> {
+    return this.memoryRequest('PUT', `/memory/${target.scope}/${encodeURIComponent(id)}`, { target, body });
+  }
+
+  deleteMemory(target: MemoryTarget, id: string, expectedRevision: string): Promise<{ readonly operation_id: string }> {
+    return this.memoryRequest('DELETE', `/memory/${target.scope}/${encodeURIComponent(id)}`, {
+      target,
+      query: { expected_revision: expectedRevision },
+    });
+  }
+
+  memoryJournal(target: MemoryTarget, id?: string): Promise<readonly MemoryJournalRecord[]> {
+    return this.memoryRequest('GET', `/memory/${target.scope}/journal`, { target, query: { id } });
+  }
+
+  memoryInbox(target: MemoryTarget): Promise<readonly MemoryEntry[]> {
+    return this.memoryRequest('GET', `/memory/${target.scope}/inbox`, { target });
+  }
+
+  undoMemory(target: MemoryTarget, operationId: string): Promise<{ readonly entry: MemoryEntry | null }> {
+    return this.memoryRequest('POST', `/memory/${target.scope}/undo`, { target, body: { operation_id: operationId } });
+  }
+
+  private async memoryRequest<T>(
+    method: 'GET' | 'PUT' | 'PATCH' | 'POST' | 'DELETE',
+    path: string,
+    options: { readonly target?: MemoryTarget; readonly query?: Record<string, string | undefined>; readonly body?: unknown } = {},
+  ): Promise<T> {
+    const root = this.baseUrl.replace(/\/+$/u, '');
+    const url = root === '' ? new URL(`/api${path}`, globalThis.location?.origin ?? 'http://localhost') : new URL(`${root}/api${path}`);
+    const query = { ...options.query, workspace_id: options.target?.scope === 'workspace' ? options.target.workspaceId : undefined };
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined) url.searchParams.set(key, value);
+    }
+    const headers: Record<string, string> = { accept: 'application/json' };
+    if (this.token !== undefined) headers['authorization'] = `Bearer ${this.token}`;
+    if (options.body !== undefined) headers['content-type'] = 'application/json';
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'TimeoutError') {
+        throw new ApiError({ code: API_CODES.TIMEOUT, msg: translate('en', 'common.requestTimedOut'), data: null });
+      }
+      throw error;
+    }
+    let envelope: unknown;
+    try {
+      envelope = await response.json();
+    } catch {
+      envelope = null;
+    }
+    if (envelope === null || typeof envelope !== 'object' || !('code' in envelope) || typeof envelope.code !== 'number'
+      || !('msg' in envelope) || typeof envelope.msg !== 'string') {
+      throw new ApiError({ code: API_CODES.INVALID_RESPONSE, msg: `HTTP ${response.status} — non-JSON response`, data: null });
+    }
+    if (envelope.code !== 0) {
+      throw new ApiError({ code: envelope.code, msg: envelope.msg, data: 'data' in envelope ? envelope.data ?? null : null,
+        request_id: 'request_id' in envelope && typeof envelope.request_id === 'string' ? envelope.request_id : undefined });
+    }
+    return ('data' in envelope ? envelope.data : null) as T;
   }
 
   /**

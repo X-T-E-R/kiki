@@ -1,7 +1,8 @@
 /**
  * DiffCard — renders edit-tool hunks as a unified diff: single new-file
  * line-number gutter, muted `… N unchanged lines` separators between hunks,
- * insert/delete row tints confined to the content area (gutter stays clean).
+ * insert/delete row tints confined to the content area (gutter stays clean),
+ * on one flat panel surface with no frame (it sits inside a tool step).
  * Rendering recipe follows grok-build's edit.rs (Apache-2.0, see lib/diff.ts);
  * tints use kiki's success/danger palette at low alpha on paper.
  */
@@ -14,9 +15,9 @@ function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number })
     line.tag === 'delete' ? String(line.lo) : line.ln > 0 ? String(line.ln) : '';
   const tint =
     line.tag === 'insert'
-      ? 'bg-success/10'
+      ? 'bg-success/[0.09]'
       : line.tag === 'delete'
-        ? 'bg-danger/10'
+        ? 'bg-danger/[0.08]'
         : undefined;
   const marker =
     line.tag === 'insert' ? '+' : line.tag === 'delete' ? '−' : ' ';
@@ -54,18 +55,18 @@ export function DiffCard({ hunks }: { hunks: readonly DiffHunk[] }) {
   const gutterWidth = String(maxLine).length;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-hairline bg-panel font-mono text-[12px] leading-[1.55]">
+    <div className="overflow-x-auto rounded-md bg-panel py-1 font-mono text-[12px] leading-[1.6]">
       {hunks.map((hunk, hunkIndex) => {
         const previous = hunkIndex > 0 ? hunks[hunkIndex - 1] : undefined;
         const gap = previous !== undefined ? hunkGapLines(previous, hunk) : undefined;
         return (
           <div key={hunkIndex}>
             {hunkIndex > 0 ? (
-              <div className="border-y border-hairline bg-paper px-3 py-0.5 text-[10.5px] text-ink-faint select-none">
+              <div className="my-1 px-3 py-0.5 font-sans text-[12px] text-ink-faint italic select-none">
                 {gap !== undefined ? tp('diff.unchanged', gap) : t('diff.unchangedSome')}
               </div>
             ) : null}
-            <div className="py-1">
+            <div>
               {hunk.map((line, lineIndex) => (
                 <DiffRow key={lineIndex} line={line} gutterWidth={gutterWidth} />
               ))}

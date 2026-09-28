@@ -21,6 +21,11 @@ export interface TaskBoardContainerProps {
   readonly onOpenSession?: (sessionId: string, workspaceId?: string) => void;
   readonly onOpenSettings?: () => void;
   readonly onCloseBoard?: () => void;
+  /** Controlled load scope ('all' or a workspace id) — the routed page keeps it in the URL. */
+  readonly scopeSelection?: string;
+  readonly onScopeSelectionChange?: (selection: string) => void;
+  /** Lane sizing, passed through to the board ('fill' on the routed page). */
+  readonly laneLayout?: 'fixed' | 'fill';
 }
 const toPriority: Record<string, TaskPriority> = { P0: 'urgent', P1: 'high', P2: 'medium', P3: 'low' };
 const fromPriority = { urgent: 'P0', high: 'P1', medium: 'P2', low: 'P3' } as const;
@@ -41,7 +46,7 @@ function view(card: BoardSummary | BoardCard, workspaces: readonly BoardWorkspac
   };
 }
 
-export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, currentSessionId, workspaces = [], sessions = [], onOpenSession, onOpenSettings, onCloseBoard }: TaskBoardContainerProps) {
+export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, currentSessionId, workspaces = [], sessions = [], onOpenSession, onOpenSettings, onCloseBoard, scopeSelection: controlledScope, onScopeSelectionChange, laneLayout }: TaskBoardContainerProps) {
   const { t } = useI18n();
   const { client: sessionClient, klient } = useConnection();
   const registry = useControllerRegistry();
@@ -55,7 +60,9 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
   // Load scope: opening the board from a session reads only that session's
   // workspace (~tens of ms) instead of aggregating every registered one; the
   // header switcher opts back into the full cross-workspace overview.
-  const [scopeSelection, setScopeSelection] = useState<string>(currentWorkspaceId ?? 'all');
+  const [localScope, setLocalScope] = useState<string>(currentWorkspaceId ?? 'all');
+  const scopeSelection = controlledScope ?? localScope;
+  const setScopeSelection = onScopeSelectionChange ?? setLocalScope;
   const scopedWorkspaceIds = useMemo(
     () => (scopeSelection === 'all' || !workspaceIds.includes(scopeSelection) ? workspaceIds : [scopeSelection]),
     [scopeSelection, workspaceIds],
@@ -72,7 +79,7 @@ export function TaskBoardContainer({ client, workspaceIds, currentWorkspaceId, c
     <BoardAssociatedTodosProvider manager={associatedTodoManager}>
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <TaskBoard
-        tasks={tasks} columns={columns} prototypeMode={false}
+        tasks={tasks} columns={columns} prototypeMode={false} laneLayout={laneLayout}
         onRefresh={refresh} refreshDisabled={snapshot.loading} refreshLabel={t('taskBoard.refresh')}
         workspaces={workspaces} sessions={sessions} currentWorkspaceId={currentWorkspaceId} currentSessionId={currentSessionId}
         scopeSelection={scopeSelection} onScopeSelectionChange={setScopeSelection}

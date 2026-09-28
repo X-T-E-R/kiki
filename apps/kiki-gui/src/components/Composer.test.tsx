@@ -15,6 +15,7 @@ import type { HostFileDrop } from '../host';
 import { I18nProvider } from '../i18n';
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
+import { PERMISSION_MODES } from '../lib/permissionModes';
 import { Composer } from './Composer';
 import { canAbortActiveTurn } from './SessionView';
 
@@ -146,7 +147,6 @@ async function renderComposer(
                 agentProfileCatalogMode={{ mode: 'global' }}
                 permissionMode="manual"
                 planMode={false}
-                swarmMode={false}
                 goalObjective=""
                 efforts={undefined}
                 effort={undefined}
@@ -155,7 +155,6 @@ async function renderComposer(
                 onChangeModel={() => {}}
                 onChangePermissionMode={() => {}}
                 onChangePlanMode={() => {}}
-                onChangeSwarmMode={() => {}}
                 onChangeGoalObjective={() => {}}
                 onChangeEffort={() => {}}
                 onSend={() => {}}
@@ -216,9 +215,23 @@ async function openModePanel(container: HTMLDivElement): Promise<HTMLButtonEleme
 }
 
 /** Open the plan chip's panel and hand back its trigger. */
+/** Opens ＋ and returns its trigger. */
+async function openAddMenu(container: HTMLDivElement): Promise<HTMLButtonElement> {
+  const trigger = container.querySelector<HTMLButtonElement>('[data-add-menu-trigger]')!;
+  if (trigger.getAttribute('aria-expanded') !== 'true') await click(trigger);
+  return trigger;
+}
+
+/** ＋ → Attach files (the attach action lives in the ＋ menu). */
+async function clickAttach(container: HTMLDivElement): Promise<void> {
+  await openAddMenu(container);
+  await click(container.querySelector<HTMLButtonElement>('[data-attach-button]')!);
+}
+
+/** ＋ → Mode ▸ : the run-shape panel (Normal / Plan / Goal + sub-toggles). */
 async function openPlanPanel(container: HTMLDivElement): Promise<HTMLButtonElement> {
-  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Plan"]')!;
-  await click(trigger);
+  const trigger = await openAddMenu(container);
+  await click(container.querySelector<HTMLButtonElement>('[data-add-menu-mode]')!);
   return trigger;
 }
 
@@ -466,7 +479,8 @@ describe('Composer agent profile picker', () => {
       onChangeAgentProfile: () => {},
     });
     const trigger = await waitForTrigger(container);
-    expect(trigger.textContent).toContain('agent');
+    // The default `agent` profile reads as the product name on the chip.
+    expect(trigger.textContent).toContain('Kiki');
     expect(trigger.textContent).not.toContain('main');
 
     await act(async () => {
@@ -479,13 +493,13 @@ describe('Composer agent profile picker', () => {
     expect(options.some((text) => text.includes('grok-only'))).toBe(true);
     expect(options.some((text) => text.includes('reviewer'))).toBe(false);
     expect(options.some((text) => text.includes('legacy'))).toBe(false);
-    expect(options.findIndex((text) => text.includes('agent'))).toBeLessThan(
+    expect(options.findIndex((text) => text.includes('Kiki (default)'))).toBeLessThan(
       options.findIndex((text) => text.includes('grok-only')),
     );
     expect(options.some((text) => text.includes('main'))).toBe(false);
     // Rows carry the useful facts: description, source badge.
     const agentRow = [...container.querySelectorAll('[role="option"]')].find(
-      (row) => row.textContent?.includes('agent'),
+      (row) => row.textContent?.includes('Kiki (default)'),
     );
     expect(agentRow?.textContent).toContain('General-purpose built-in agent.');
     expect(agentRow?.textContent).toContain('builtin');
@@ -519,11 +533,11 @@ describe('Composer agent profile picker', () => {
       onChangeAgentProfile: () => {},
       onRebuildContext,
     });
-    await click(await waitForTrigger(container));
-    const rebuildRow = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
-      (row) => row.textContent?.includes('Rebuild context'),
-    );
-    expect(rebuildRow).toBeDefined();
+    await waitForTrigger(container);
+    // Rebuild moved out of the profile picker into the ＋ menu.
+    await openAddMenu(container);
+    const rebuildRow = container.querySelector<HTMLButtonElement>('[data-add-menu-rebuild]');
+    expect(rebuildRow?.textContent).toContain('Rebuild context');
     await click(rebuildRow!);
     expect(onRebuildContext).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alertdialog"]')?.textContent).toContain(
@@ -546,11 +560,9 @@ describe('Composer agent profile picker', () => {
       onChangeAgentProfile: () => {},
       onRebuildContext,
     });
-    await click(await waitForTrigger(rendered.container));
-    const rebuildRow = [...rendered.container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
-      (row) => row.textContent?.includes('Rebuild context'),
-    );
-    await click(rebuildRow!);
+    await waitForTrigger(rendered.container);
+    await openAddMenu(rendered.container);
+    await click(rendered.container.querySelector<HTMLButtonElement>('[data-add-menu-rebuild]')!);
     const confirm = [...rendered.container.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(
       (button) => button.textContent === 'Rebuild context',
     );
@@ -568,6 +580,8 @@ describe('Composer agent profile picker', () => {
     const trigger = rendered.container.querySelector<HTMLButtonElement>('#composer-agent-profile-select')!;
     expect(trigger.disabled).toBe(true);
     expect(trigger.title).toContain('Wait for the current turn');
+    await openAddMenu(rendered.container);
+    expect(rendered.container.querySelector<HTMLButtonElement>('[data-add-menu-rebuild]')?.disabled).toBe(true);
   });
 
   it('hides without a handler but preserves the choice and offers retry when the catalog fails', async () => {
@@ -578,7 +592,7 @@ describe('Composer agent profile picker', () => {
     listNamedAgentProfiles.mockRejectedValue(new Error('catalog offline'));
     const second = await renderComposer({ agentProfile: 'agent', onChangeAgentProfile: () => {} });
     for (let index = 0; index < 5; index += 1) await settle();
-    expect(second.container.querySelector('#composer-agent-profile-select')?.textContent).toContain('agent');
+    expect(second.container.querySelector('#composer-agent-profile-select')?.textContent).toContain('Kiki');
     expect(second.container.querySelector('[role="alert"]')?.textContent).toContain('catalog offline');
     expect(second.container.querySelector('[role="alert"] button')?.textContent).toBe('Retry');
   });
@@ -716,155 +730,170 @@ describe('Composer agent profile picker', () => {
       onChangeAgentProfile: () => {},
     });
     const trigger = await waitForTrigger(container);
-    expect(trigger.textContent).toContain('reviewer');
-    expect(trigger.className).toContain('border-accent');
+    // A pending switch names the profile and when it applies.
+    expect(trigger.textContent).toContain('reviewer · next message');
+    expect(trigger.title).toContain('applies from your next message');
   });
 });
 
-describe('Composer mode dropdown', () => {
-  it('shows the current mode on the trigger and opens the option panel', async () => {
-    const { container } = await renderComposer({ permissionMode: 'auto' });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]');
-    expect(trigger).not.toBeNull();
-    expect(trigger?.textContent).toContain('auto');
-    expect(trigger?.getAttribute('aria-haspopup')).toBe('listbox');
-    expect(trigger?.getAttribute('aria-expanded')).toBe('false');
-    expect(container.querySelector('[role="listbox"]')).toBeNull();
+describe('Composer permission chip', () => {
+  const trigger = (container: HTMLDivElement) =>
+    container.querySelector<HTMLButtonElement>('[data-mode-select] > button')!;
+  const rows = (container: HTMLDivElement) =>
+    [...container.querySelectorAll<HTMLElement>('[data-mode-select] [role="option"]')];
 
-    await act(async () => {
-      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    expect(trigger?.getAttribute('aria-expanded')).toBe('true');
-    const options = [...container.querySelectorAll<HTMLElement>('[data-mode-select] [role="option"]')];
-    expect(options).toHaveLength(3);
-    // Each row carries its hint line; the current mode is aria-selected.
-    expect(options.map((row) => row.textContent ?? '')).toEqual([
-      expect.stringContaining('Ask before every action'),
-      expect.stringContaining('Fully autonomous — never asks'),
-      expect.stringContaining('Approve everything, but may still ask'),
-    ]);
-    expect(options.map((row) => row.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false']);
-    // Focus lands on the current option when the panel opens.
-    expect(document.activeElement).toBe(options[1]);
+  it('shows the current mode and lists every wire mode with its hint', async () => {
+    const { container } = await renderComposer({ permissionMode: 'auto' });
+    expect(trigger(container).getAttribute('aria-label')).toBe('Approvals');
+    expect(trigger(container).textContent).toContain('Auto');
+    expect(trigger(container).getAttribute('aria-haspopup')).toBe('listbox');
+    expect(rows(container)).toHaveLength(0);
+
+    await click(trigger(container));
+    expect(trigger(container).getAttribute('aria-expanded')).toBe('true');
+    // Data-driven: one row per offered mode, in display order.
+    expect(rows(container).map((row) => row.dataset['permissionMode'])).toEqual(
+      PERMISSION_MODES.map((mode) => mode.id),
+    );
+    expect(rows(container).map((row) => row.textContent ?? '')).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Ask every time'),
+        expect.stringContaining('Full access'),
+      ]),
+    );
+    const selected = rows(container).find((row) => row.getAttribute('aria-selected') === 'true');
+    expect(selected?.dataset['permissionMode']).toBe('auto');
+    expect(document.activeElement).toBe(selected);
+  });
+
+  it('stays quiet at rest and tints only Full access', async () => {
+    const quiet = await renderComposer({ permissionMode: 'manual' });
+    expect(trigger(quiet.container).dataset['permissionTone']).toBe('plain');
+    const risky = await renderComposer({ permissionMode: 'yolo' });
+    expect(trigger(risky.container).dataset['permissionTone']).toBe('danger');
   });
 
   it('reports picks through onChangePermissionMode and closes the panel', async () => {
     const onChangePermissionMode = vi.fn();
     const { container } = await renderComposer({ permissionMode: 'manual', onChangePermissionMode });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
-    await act(async () => {
-      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    const yoloRow = [...container.querySelectorAll<HTMLElement>('[data-mode-select] [role="option"]')]
-      .find((row) => row.textContent?.includes('yolo'))!;
-    await act(async () => {
-      yoloRow.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await click(trigger(container));
+    await click(rows(container).find((row) => row.dataset['permissionMode'] === 'yolo')!);
     expect(onChangePermissionMode).toHaveBeenCalledWith('yolo');
-    expect(container.querySelector('[data-mode-select] [role="option"]')).toBeNull();
-    // Focus returns to the trigger after a pick.
-    expect(document.activeElement).toBe(trigger);
+    expect(rows(container)).toHaveLength(0);
+    expect(document.activeElement).toBe(trigger(container));
   });
 
   it('closes on Escape without changing the mode', async () => {
     const onChangePermissionMode = vi.fn();
     const { container } = await renderComposer({ permissionMode: 'manual', onChangePermissionMode });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
-    await act(async () => {
-      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    expect(container.querySelector('[data-mode-select] [role="option"]')).not.toBeNull();
+    await click(trigger(container));
     await act(async () => {
       container.querySelector('[data-mode-select]')!
         .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
-    expect(container.querySelector('[data-mode-select] [role="option"]')).toBeNull();
+    expect(rows(container)).toHaveLength(0);
     expect(onChangePermissionMode).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(trigger);
+    expect(document.activeElement).toBe(trigger(container));
   });
 
   it('closes when a pointerdown lands outside the dropdown', async () => {
     const { container } = await renderComposer({ permissionMode: 'manual' });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
-    await act(async () => {
-      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    expect(container.querySelector('[data-mode-select] [role="option"]')).not.toBeNull();
+    await click(trigger(container));
     await act(async () => {
       // jsdom has no PointerEvent constructor; the listener only reads .target.
       document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
     });
-    expect(container.querySelector('[data-mode-select] [role="option"]')).toBeNull();
+    expect(rows(container)).toHaveLength(0);
   });
+});
 
-  it('keeps plan and swarm state off the permission trigger', async () => {
-    const { container } = await renderComposer({
-      permissionMode: 'manual',
-      planMode: true,
-      swarmMode: true,
+describe('Composer run mode (Normal / Plan / Goal)', () => {
+  const runRow = (container: HTMLDivElement, id: string) =>
+    container.querySelector<HTMLButtonElement>(`[data-run-mode-panel] [data-mode-switch="${id}"]`)!;
+
+  it('rests on attach, agent-less model and permission — no mode chip in Normal', async () => {
+    listModels.mockResolvedValue({
+      items: [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 128000 }],
     });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
-    expect(trigger.textContent).toContain('manual');
-    expect(trigger.textContent).not.toContain('plan');
-    expect(trigger.textContent).not.toContain('swarm');
+    const { container } = await renderComposer();
+    for (let index = 0; index < 5; index += 1) await settle();
+    const labels = [...container.querySelectorAll<HTMLElement>('[data-composer-toolbar] button')]
+      .map((button) => button.getAttribute('aria-label'));
+    expect(labels).toEqual(['Add and actions', 'Model', 'Approvals', 'Send message']);
+    expect(container.querySelector('[data-run-mode-chip]')).toBeNull();
   });
 
-  it('spells the active plan/swarm combination on the plan trigger', async () => {
-    const { container } = await renderComposer({ planMode: true, swarmMode: true });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Plan"]')!;
-    expect(trigger.textContent).toContain('plan · swarm');
-
-    const resting = await renderComposer();
-    const restingTrigger = resting.container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Plan"]',
-    )!;
-    expect(restingTrigger.textContent).toContain('plan');
-    expect(restingTrigger.textContent).not.toContain('swarm');
-  });
-
-  it('reports plan and swarm from the plan panel and keeps it open for the next pick', async () => {
+  it('shows a mode chip only when not Normal, and its ✕ returns to Normal', async () => {
     const onChangePlanMode = vi.fn();
-    const onChangeSwarmMode = vi.fn();
-    const { container } = await renderComposer({ onChangePlanMode, onChangeSwarmMode });
-    await openPlanPanel(container);
-    const plan = container.querySelector<HTMLButtonElement>('[data-plan-select] [data-mode-switch="plan"]')!;
-    const swarm = container.querySelector<HTMLButtonElement>('[data-plan-select] [data-mode-switch="swarm"]')!;
-    expect(plan.getAttribute('aria-pressed')).toBe('false');
-    await click(plan);
-    await click(swarm);
-    expect(onChangePlanMode).toHaveBeenCalledWith(true);
-    expect(onChangeSwarmMode).toHaveBeenCalledWith(true);
-    // Combinations are the point — the panel stays put between toggles.
-    expect(container.querySelector('[data-plan-select] [data-mode-switch]')).not.toBeNull();
+    const { container } = await renderComposer({ planMode: true, onChangePlanMode });
+    const chip = container.querySelector<HTMLElement>('[data-run-mode-chip]')!;
+    expect(chip.dataset['runModeChip']).toBe('plan');
+    expect(chip.textContent).toContain('Plan');
+    await click(chip.querySelector<HTMLButtonElement>('button[aria-label="Back to Normal mode"]')!);
+    expect(onChangePlanMode).toHaveBeenCalledWith(false);
   });
 
-  it('reports the plan gate from the plan panel; the row hides without a gate handler', async () => {
-    const onChangePlanGate = vi.fn();
-    const { container } = await renderComposer({ planGate: 'free', onChangePlanGate });
+  it('offers exactly Normal / Plan / Goal — no parallel-subagents switch', async () => {
+    const { container } = await renderComposer({ onChangeGoalMode: vi.fn() });
     await openPlanPanel(container);
-    const gate = container.querySelector<HTMLButtonElement>(
-      '[data-plan-select] [data-mode-switch="planGate"]',
-    )!;
-    // free = the "auto plan mode" switch reads on.
-    expect(gate.getAttribute('aria-pressed')).toBe('true');
+    const ids = [...container.querySelectorAll<HTMLElement>('[data-run-mode-panel] [data-mode-switch]')]
+      .map((row) => row.dataset['modeSwitch']);
+    expect(ids).toEqual(['normal', 'plan', 'goal']);
+  });
+
+  it('opens the Mode menu with Ctrl+Shift+M from the input', async () => {
+    const { container } = await renderComposer();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'M', ctrlKey: true, shiftKey: true, bubbles: true }));
+    });
+    expect(container.querySelector('[data-run-mode-panel]')).not.toBeNull();
+  });
+
+  it('keeps plan and goal mutually exclusive from the Mode panel', async () => {
+    const onChangePlanMode = vi.fn();
+    const onChangeGoalMode = vi.fn();
+    const { container, rerender } = await renderComposer({ onChangePlanMode, onChangeGoalMode });
+    await openPlanPanel(container);
+    expect(runRow(container, 'normal').getAttribute('aria-checked')).toBe('true');
+    await click(runRow(container, 'plan'));
+    expect(onChangePlanMode).toHaveBeenLastCalledWith(true);
+
+    // The panel stays open across the parent's echo.
+    await rerender({ onChangePlanMode, onChangeGoalMode, planMode: true });
+    expect(runRow(container, 'plan').getAttribute('aria-checked')).toBe('true');
+    await click(runRow(container, 'goal'));
+    // Goal turns plan off and arms goal in one pick.
+    expect(onChangePlanMode).toHaveBeenLastCalledWith(false);
+    expect(onChangeGoalMode).toHaveBeenLastCalledWith(true);
+  });
+
+  it('shows the plan gate only inside Plan and only with a gate handler', async () => {
+    const onChangePlanGate = vi.fn();
+    const { container } = await renderComposer({ planMode: true, planGate: 'free', onChangePlanGate });
+    await openPlanPanel(container);
+    const gate = runRow(container, 'planGate');
+    expect(gate.getAttribute('aria-checked')).toBe('true');
     await click(gate);
     expect(onChangePlanGate).toHaveBeenCalledWith('gated');
-    expect(container.querySelector('[data-plan-select] [data-mode-switch="planGate"]')).not.toBeNull();
 
-    // Without the session-scoped handler pair (e.g. /new) there is no gate row.
-    const bare = await renderComposer();
+    const normal = await renderComposer({ planGate: 'free', onChangePlanGate });
+    await openPlanPanel(normal.container);
+    expect(normal.container.querySelector('[data-mode-switch="planGate"]')).toBeNull();
+
+    const bare = await renderComposer({ planMode: true });
     await openPlanPanel(bare.container);
     expect(bare.container.querySelector('[data-mode-switch="planGate"]')).toBeNull();
   });
 
-  it('expands the goal objective inside the plan panel', async () => {
+  it('offers the objective field under Goal in a /new-style draft', async () => {
     const onChangeGoalObjective = vi.fn();
     const { container } = await renderComposer({ onChangeGoalObjective });
     await openPlanPanel(container);
     expect(container.querySelector('[data-goal-objective]')).toBeNull();
-    await click(container.querySelector('[data-goal-open]')!);
+    await click(runRow(container, 'goal'));
     const field = container.querySelector<HTMLInputElement>('[data-goal-objective]')!;
-    expect(document.activeElement).toBe(field);
+    expect(container.querySelector('[data-goal-open]')).not.toBeNull();
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(field, 'Ship the batch');
@@ -873,32 +902,10 @@ describe('Composer mode dropdown', () => {
     expect(onChangeGoalObjective).toHaveBeenCalledWith('Ship the batch');
   });
 
-  it('rests on one trigger per control, each carrying its own state', async () => {
-    listModels.mockResolvedValue({
-      items: [
-        {
-          id: 'fixture/kiki-pro',
-          provider_id: 'fixture',
-          remote_id: 'kiki-pro',
-          display_name: 'Kiki Pro',
-          max_context_size: 128000,
-        },
-      ],
-    });
-    const { container } = await renderComposer({ planMode: true, swarmMode: true });
-    for (let index = 0; index < 5; index += 1) await settle();
-    const buttons = [...container.querySelectorAll<HTMLElement>('[data-composer-toolbar] button')];
-    // Attach, mode, plan, model, send — and nothing else at rest (no agent
-    // handler was passed, so the profile control stays hidden).
-    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Attach files',
-      'Mode',
-      'Plan',
-      'Model',
-      'Send message',
-    ]);
-    expect(buttons[1]?.textContent).toContain('manual');
-    expect(buttons[2]?.textContent).toContain('plan · swarm');
+  it('hides the Goal row when no goal path is wired', async () => {
+    const { container } = await renderComposer({ onChangeGoalObjective: undefined });
+    await openPlanPanel(container);
+    expect(container.querySelector('[data-goal-mode-toggle]')).toBeNull();
   });
 });
 
@@ -912,11 +919,10 @@ describe('Composer goal mode', () => {
     });
     await settle();
     expect(onSend).toHaveBeenCalledWith('ship the batch', [], { goalObjective: 'ship the batch' });
-    // The send path consumes the draft; the plan panel stays closed.
-    expect(container.querySelector('[data-plan-select] [aria-expanded="true"]')).toBeNull();
+    expect(container.querySelector('[data-run-mode-panel]')).toBeNull();
   });
 
-  it('uses bare `/goal` to arm goal mode when the live-session toggle is available', async () => {
+  it('uses bare `/goal` to arm goal mode and open the Mode panel on it', async () => {
     const onSend = vi.fn();
     const onChangeGoalMode = vi.fn();
     const { container } = await renderComposer({ value: '/goal', onSend, onChangeGoalMode });
@@ -927,27 +933,29 @@ describe('Composer goal mode', () => {
     await settle();
     expect(onSend).not.toHaveBeenCalled();
     expect(onChangeGoalMode).toHaveBeenCalledWith(true);
-    expect(container.querySelector('[data-plan-select] [aria-expanded="true"]')).toBeNull();
+    expect(container.querySelector('[data-run-mode-panel]')).not.toBeNull();
   });
 
-  it('keeps bare `/goal` on the objective panel for the new-session fallback', async () => {
+  it('arms goal locally for the new-session draft and opens the objective', async () => {
     const onSend = vi.fn();
-    const { container } = await renderComposer({ value: '/goal', onSend });
+    const { container } = await renderComposer({ value: '/goal', onSend, onChangeGoalObjective: vi.fn() });
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     await settle();
     expect(onSend).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-plan-select] [aria-expanded="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-goal-objective]')).not.toBeNull();
+    expect(container.querySelector('[data-goal-armed]')).not.toBeNull();
   });
 
-  it('arms goal mode from the toolbar, flags the next message, and disarms from the chip', async () => {
+  it('arms goal from the Mode panel, flags the next message, and disarms from the chip', async () => {
     const onSend = vi.fn();
     const onChangeGoalMode = vi.fn();
     const { container, rerender } = await renderComposer({ onSend, onChangeGoalMode });
+    await openPlanPanel(container);
     const toggle = container.querySelector<HTMLButtonElement>('[data-goal-mode-toggle]')!;
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
     await act(async () => { toggle.click(); });
     expect(onChangeGoalMode).toHaveBeenCalledWith(true);
 
@@ -956,6 +964,7 @@ describe('Composer goal mode', () => {
     expect(container.querySelector('[data-goal-armed]')?.textContent).toContain(
       'this message becomes the objective',
     );
+    expect(container.querySelector('[data-run-mode-chip]')?.getAttribute('data-run-mode-chip')).toBe('goal');
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -968,19 +977,19 @@ describe('Composer goal mode', () => {
     expect(onChangeGoalMode).toHaveBeenLastCalledWith(false);
   });
 
-  it('hides the toggle when no goal-mode handler is wired', async () => {
+  it('shows no goal chip when no goal-mode handler is wired', async () => {
     const { container } = await renderComposer();
-    expect(container.querySelector('[data-goal-mode-toggle]')).toBeNull();
     expect(container.querySelector('[data-goal-armed]')).toBeNull();
+    expect(container.querySelector('[data-run-mode-chip]')).toBeNull();
   });
 
   it('hides the persistent objective field when goal mode owns live-session creation', async () => {
     const { container } = await renderComposer({
+      goalMode: true,
       onChangeGoalMode: vi.fn(),
       onChangeGoalObjective: undefined,
     });
-    await click(container.querySelector<HTMLButtonElement>('[data-plan-select] > button')!);
-    expect(container.querySelector('[data-goal-open]')).toBeNull();
+    await openPlanPanel(container);
     expect(container.querySelector('[data-goal-objective]')).toBeNull();
   });
 });
@@ -1015,8 +1024,10 @@ describe('Composer model chip', () => {
     for (let index = 0; index < 5; index += 1) await settle();
     const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
     expect(trigger.textContent).toContain('Kiki Pro');
-    expect(trigger.textContent).toContain('· high');
-    const label = trigger.querySelector('span')!;
+    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('high');
+    // The gauge draws the depth: high is the top of two levels, all bars lit.
+    expect(trigger.querySelector('[data-effort-gauge]')?.getAttribute('data-effort-gauge')).toBe('3');
+    const label = trigger.querySelector('span.truncate')!;
     expect(label.className).toContain('truncate');
     expect(label.textContent).not.toContain('high');
   });
@@ -1163,11 +1174,10 @@ describe('Composer attachment button', () => {
   it('routes the browser file input into the attachment pipeline', async () => {
     const onChangeAttachments = vi.fn();
     const { container } = await renderComposer({ onChangeAttachments });
-    const button = container.querySelector<HTMLButtonElement>('[data-attach-button]')!;
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     expect(input.multiple).toBe(true);
     const clicked = vi.spyOn(input, 'click');
-    await click(button);
+    await clickAttach(container);
     expect(clicked).toHaveBeenCalled();
 
     const file = new File(['x'], 'note.txt', { type: 'text/plain' });
@@ -1187,7 +1197,7 @@ describe('Composer attachment button', () => {
     ]);
     const { container } = await renderComposer();
 
-    await click(container.querySelector('[data-attach-button]')!);
+    await clickAttach(container);
     await settle();
 
     expect(read).not.toHaveBeenCalled();
@@ -1211,7 +1221,7 @@ describe('Composer attachment button', () => {
     }));
     const { container } = await renderComposer({ attachments });
 
-    await click(container.querySelector('[data-attach-button]')!);
+    await clickAttach(container);
     await settle();
 
     expect(read).not.toHaveBeenCalled();
@@ -1286,7 +1296,7 @@ describe('Composer file drops', () => {
     const onChange = vi.fn();
     const { container } = await renderComposer({ value: '', onChange });
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
-    const card = textarea.closest<HTMLDivElement>('div.relative.rounded-2xl')!;
+    const card = textarea.closest<HTMLDivElement>('[data-composer-card]')!;
     vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
       x: 20,
       y: 30,
@@ -1325,14 +1335,16 @@ describe('Composer footer hints', () => {
     expect(working.container.querySelector('[data-composer-hints]')).toBeNull();
   });
 
-  it('keeps the meter anchored whether the hints show or not', async () => {
+  it('keeps the context meter inside the card whether the hints show or not', async () => {
     const contextUsage = { used: 1000, limit: 10_000 };
     const empty = await renderComposer({ value: '', contextUsage });
     const typed = await renderComposer({ value: 'hello', contextUsage });
-    const spacerOf = (container: HTMLDivElement) =>
-      container.querySelector<HTMLElement>('[data-composer-hints]')?.parentElement ??
-      container.querySelector<HTMLElement>('.min-h-4');
-    expect(spacerOf(empty.container)?.className).toBe(spacerOf(typed.container)?.className);
+    for (const { container } of [empty, typed]) {
+      const meter = container.querySelector('[data-context-meter]');
+      expect(meter?.closest('[data-composer-card]')).not.toBeNull();
+      // Hints live outside the card, so they can never displace the meter.
+      expect(container.querySelector('[data-composer-card] [data-composer-hints]')).toBeNull();
+    }
   });
 });
 
@@ -1697,7 +1709,6 @@ function StatefulHarness({
       agentProfileCatalogMode={{ mode: 'global' }}
       permissionMode="manual"
       planMode={false}
-      swarmMode={false}
       goalObjective=""
       efforts={undefined}
       effort={undefined}
@@ -1706,7 +1717,6 @@ function StatefulHarness({
       onChangeModel={() => {}}
       onChangePermissionMode={() => {}}
       onChangePlanMode={() => {}}
-      onChangeSwarmMode={() => {}}
       onChangeGoalObjective={() => {}}
       onChangeEffort={() => {}}
       value={text}

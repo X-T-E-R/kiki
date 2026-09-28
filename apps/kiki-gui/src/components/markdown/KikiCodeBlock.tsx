@@ -1,6 +1,6 @@
 /**
- * KikiCodeBlock — code-block chrome for markdown fences: language label, copy
- * button, and collapse for long blocks ("View more (N lines)").
+ * KikiCodeBlock — quiet code-block chrome for markdown fences: hover-revealed
+ * language label + copy in the corner, and collapse for long blocks ("View more (N lines)").
  *
  * Chrome pattern adapted from aionui (https://github.com/AionUi/AionUi —
  * `packages/desktop/src/renderer/components/Markdown/CodeBlock.tsx`,
@@ -15,13 +15,14 @@ import { useEffect, useState, type ComponentProps, type ReactElement, type React
 import { CodeBlock } from 'streamdown';
 
 import { useI18n } from '../../i18n';
+import { Icon } from '../icons';
 import { useMermaidEngine } from './streamdown-plugins';
 
 /** Lines shown before a fence collapses behind "View more". */
 const PREVIEW_LINES = 12;
 /** JetBrains Mono 12.5px × 1.55 line-height + vertical padding. */
 const LINE_HEIGHT_PX = 19.4;
-const BODY_PADDING_PX = 16;
+const BODY_PADDING_PX = 20;
 
 function extractCode(children: ReactNode): { code: string; language: string } {
   // `pre` wraps a single <code className="language-x"> element.
@@ -67,7 +68,7 @@ function KikiMermaidBlock({ children, isIncomplete }: PreProps) {
     return <KikiCodeBlock isIncomplete={isIncomplete}>{children}</KikiCodeBlock>;
   }
   return (
-    <div className="my-2 overflow-x-auto rounded-lg border border-hairline bg-paper p-3">
+    <div className="my-3 overflow-x-auto rounded-[10px] border border-hairline bg-panel p-3">
       <img src={rendered.url} alt={code} className="mx-auto h-auto max-w-full" />
     </div>
   );
@@ -97,33 +98,27 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   };
 
   return (
-    <div className="kiki-cb my-2 overflow-hidden rounded-lg border border-hairline bg-paper">
-      <div className="flex h-7 items-center justify-between border-b border-hairline px-3">
-        <span className="font-mono text-[10.5px] tracking-wide text-ink-faint lowercase">
-          {language}
-        </span>
-        <div className="flex items-center gap-1">
-          {canCollapse ? (
-            <button
-              type="button"
-              onClick={() => { setExpanded((value) => !value); }}
-              title={expanded ? t('cb.collapse') : t('cb.expand')}
-              className="rounded px-1 py-0.5 font-mono text-[10.5px] text-ink-faint transition-colors hover:text-ink"
-            >
-              {expanded ? '▴' : '▾'}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={copy}
-            title={t('cb.copyTitle')}
-            className={`rounded px-1 py-0.5 font-mono text-[10.5px] transition-colors ${
-              copied ? 'text-success' : 'text-ink-faint hover:text-ink'
-            }`}
-          >
-            {copied ? t('cb.copied') : t('cb.copy')}
-          </button>
-        </div>
+    <div className="kiki-cb my-3 overflow-hidden rounded-[10px] border border-hairline bg-panel">
+      {/* Corner tools: language + copy, revealed on hover/focus (index.css). */}
+      <div
+        data-copied={copied || undefined}
+        className="kiki-cb-tools absolute top-1.5 right-1.5 z-[1] flex items-center gap-0.5 rounded-md bg-panel/90 pl-2"
+      >
+        {language !== 'text' ? (
+          <span className="pr-1 font-sans text-[12px] text-ink-faint">{language}</span>
+        ) : null}
+        <button
+          type="button"
+          onClick={copy}
+          title={t('cb.copyTitle')}
+          aria-label={t('cb.copyTitle')}
+          className={`inline-flex min-h-7 items-center gap-1 rounded-md px-2 font-sans text-[12px] font-medium transition-colors ${
+            copied ? 'text-success' : 'text-ink-soft hover:bg-paper hover:text-ink'
+          }`}
+        >
+          {copied ? <Icon name="check" size={12} /> : null}
+          {copied ? t('cb.copied') : t('cb.copy')}
+        </button>
       </div>
 
       <div
@@ -143,10 +138,11 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
         <button
           type="button"
           onClick={() => { setExpanded((value) => !value); }}
-          className="flex w-full items-center justify-center gap-1 border-t border-hairline py-1 text-[11px] text-ink-faint transition-colors hover:text-ink"
+          aria-expanded={expanded}
+          className="flex min-h-7 w-full items-center justify-center gap-1 border-t border-hairline font-sans text-[12px] text-ink-faint transition-colors hover:bg-paper/60 hover:text-ink"
         >
           {expanded ? t('cb.showLess') : t('cb.viewMore', { count: totalLines - PREVIEW_LINES })}
-          <span aria-hidden>{expanded ? '▴' : '▾'}</span>
+          <Icon name="chevron" size={12} className={expanded ? '-rotate-90' : 'rotate-90'} />
         </button>
       ) : null}
     </div>

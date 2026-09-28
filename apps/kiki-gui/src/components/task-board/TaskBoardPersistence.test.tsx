@@ -412,22 +412,22 @@ describe('board container and controlled forms (mock transport, no persistence c
         sessions={[{ id: 'session-a', title: 'First' }, { id: 'session-b', title: 'Second' }]}
       />,
     ));
-    const scopeSelect = document.body.querySelector('[data-task-board-scope]') as HTMLSelectElement;
-    expect(scopeSelect.value).toBe('workspace-a');
+    const scopeGroup = () => document.body.querySelector('[data-task-board-scope]')!.getAttribute('data-task-board-scope');
+    const pickScope = (id: string) => document.body.querySelector<HTMLButtonElement>(`[data-scope-option="${id}"]`)!;
+    expect(scopeGroup()).toBe('workspace-a');
     expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(2);
     const scopedListWorkspaceIds = () => read.mock.calls.map(([input]) => input).filter(isScopedListRead).map(({ workspaceId }) => workspaceId);
     expect(scopedListWorkspaceIds()).toEqual(['workspace-a']);
 
     // Switching the scope reloads that workspace instead of filtering locally.
-    scopeSelect.value = 'workspace-b';
-    await act(async () => scopeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await act(async () => { pickScope('workspace-b').click(); });
     expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
     expect(container.textContent).toContain('Beta task');
     expect(scopedListWorkspaceIds()).toEqual(['workspace-a', 'workspace-b']);
 
     // The 'all' scope fans out to every registered workspace.
-    scopeSelect.value = 'all';
-    await act(async () => scopeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await act(async () => { pickScope('all').click(); });
+    expect(scopeGroup()).toBe('all');
     expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(3);
     expect(scopedListWorkspaceIds()).toEqual(['workspace-a', 'workspace-b', 'workspace-a', 'workspace-b']);
   });

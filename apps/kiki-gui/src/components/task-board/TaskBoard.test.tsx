@@ -138,6 +138,28 @@ describe('TaskBoard Component Presentation', () => {
     expect(document.body.querySelector('[data-board-task-card="t-4"]')).not.toBeNull();
   });
 
+  it('keeps fixed-width lanes by default and shares the container width when asked to fill', async () => {
+    await act(async () => {
+      renderBoard(<TaskBoard tasks={sampleTasks} workspaces={sampleWorkspaces} sessions={sampleSessions} />);
+    });
+    const fixed = document.body.querySelector('[data-board-lanes]');
+    expect(fixed?.getAttribute('data-board-lanes')).toBe('fixed');
+    expect(fixed?.className).not.toContain('sm:flex-1');
+    expect(document.body.querySelector('[data-board-column="done"]')?.className).not.toContain('sm:w-auto');
+
+    await act(async () => {
+      renderBoard(<TaskBoard tasks={sampleTasks} workspaces={sampleWorkspaces} sessions={sampleSessions} laneLayout="fill" />);
+    });
+    const fill = document.body.querySelector('[data-board-lanes]');
+    expect(fill?.getAttribute('data-board-lanes')).toBe('fill');
+    expect(fill?.className).toContain('sm:flex-1');
+    expect(fill?.className).toContain('sm:auto-cols-[minmax(200px,1fr)]');
+    // Every lane, including the last ("done"), gives up its fixed width.
+    for (const lane of document.body.querySelectorAll('[data-board-column]')) {
+      expect(lane.className).toContain('sm:w-auto');
+    }
+  });
+
   it('filters cards by search query and workspace selection', async () => {
     await act(async () => {
       renderBoard(
@@ -275,7 +297,66 @@ describe('TaskBoard Component Presentation', () => {
     const card = document.body.querySelector('[data-board-task-card="t-1"]');
     expect(card).not.toBeNull();
     expect(card?.textContent).not.toContain('未记录执行');
-    expect(card?.textContent).toContain('⌁ 1');
+    expect(card?.querySelector('[data-board-card-sessions="1"]')).not.toBeNull();
+    expect(card?.textContent).toContain('UI Aesthetic Polish Session');
+  });
+
+  it('tags cards with their workspace only in the all-workspaces view', async () => {
+    await act(async () => {
+      renderBoard(<TaskBoard tasks={sampleTasks} workspaces={sampleWorkspaces} sessions={sampleSessions} />);
+    });
+    expect(document.body.querySelector('[data-board-task-card="t-1"] [data-board-card-workspace]')?.textContent).toContain('EasyAgent / Kiki GUI');
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    await act(async () => {
+      renderBoard(<TaskBoard tasks={sampleTasks} workspaces={sampleWorkspaces} sessions={sampleSessions} currentWorkspaceId="ws-kiki" />);
+    });
+    expect(document.body.querySelector('[data-board-task-card="t-1"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-board-card-workspace]')).toBeNull();
+  });
+
+  it('opens a card from the keyboard and moves its status from the detail view', async () => {
+    const onMove = vi.fn();
+    const onOpenSession = vi.fn();
+    await act(async () => {
+      renderBoard(
+        <TaskBoard
+          tasks={sampleTasks}
+          workspaces={sampleWorkspaces}
+          sessions={sampleSessions}
+          onMoveTaskStatus={onMove}
+          onOpenSession={onOpenSession}
+        />
+      );
+    });
+    const card = document.body.querySelector<HTMLElement>('[data-board-task-card="t-1"]')!;
+    await act(async () => {
+      card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    const modal = document.body.querySelector('[data-task-detail-modal]')!;
+    expect(modal).not.toBeNull();
+    const target = modal.querySelector<HTMLButtonElement>('[data-task-detail-move="done"]')!;
+    expect(target.disabled).toBe(false);
+    expect(modal.querySelector('[data-task-detail-move="backlog"]')?.getAttribute('aria-pressed')).toBe('true');
+    await act(async () => { target.click(); });
+    expect(onMove).toHaveBeenCalledWith('t-1', 'done');
+    await act(async () => {
+      modal.querySelector<HTMLButtonElement>('[data-task-detail-open-session="s-101"]')!.click();
+    });
+    expect(onOpenSession).toHaveBeenCalledWith('s-101', 'ws-kiki');
+  });
+
+  it('renders the card description as markdown in the detail view', async () => {
+    const tasks: BoardTask[] = [{ ...sampleTasks[0]!, description: '## Scope\n\n- first **bold** item' }];
+    await act(async () => {
+      renderBoard(<TaskBoard tasks={tasks} workspaces={sampleWorkspaces} sessions={sampleSessions} />);
+    });
+    await act(async () => { (document.body.querySelector('[data-board-task-card="t-1"]') as HTMLElement).click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    const description = document.body.querySelector('[data-task-detail-description]');
+    expect(description?.querySelector('h2')?.textContent).toBe('Scope');
+    expect(description?.querySelector('li [data-streamdown="strong"]')?.textContent).toBe('bold');
+    expect(description?.textContent).not.toContain('**');
   });
 
   it('supports empty state presentation cleanly', async () => {

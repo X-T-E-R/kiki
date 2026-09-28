@@ -7,14 +7,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 
-import type { Session } from '@kiki/protocol';
+import type { Session, Workspace } from '@kiki/protocol';
 
 import {
   buildSwitcherItems,
-  isSearchable,
-  SEARCH_DEBOUNCE_MS,
   settingsCardRoute,
   type SwitcherItem,
   type SwitcherSettingItem,
@@ -25,41 +22,40 @@ import {
   settingsSectionLabels,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
-import { useConnection } from '../state/connection';
+import { useSessionSearch } from '../lib/sessionSearch';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
+import { Icon } from './icons';
 
 export function QuickSwitcher({
   sessions,
+  workspaces = [],
   onClose,
 }: {
   sessions: readonly Session[];
+  workspaces?: readonly Workspace[];
   onClose: () => void;
 }) {
-  const { client } = useConnection();
   const { t, time } = useI18n();
   const navigate = useGuardedNavigate();
   const [input, setInput] = useState('');
-  const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Debounce the server search; title matching below stays on the raw input.
-  useEffect(() => {
-    const timer = setTimeout(() => { setQuery(input.trim()); }, SEARCH_DEBOUNCE_MS);
-    return () => { clearTimeout(timer); };
-  }, [input]);
-
-  const searchActive = isSearchable(query);
-  const searchQuery = useQuery({
-    queryKey: ['quick-switcher-search', query],
-    queryFn: ({ signal }) =>
-      client.searchMessages({ query, page_size: 20, sort: 'score' }, signal),
-    enabled: searchActive,
-    staleTime: 15_000,
-  });
-
   const untitled = t('sidebar.untitled');
+  // The same two-layer engine as the sidebar: instant local ranking plus the
+  // debounced, abortable content search.
+  const search = useSessionSearch({
+    text: input,
+    sessions,
+    workspaces,
+    untitled,
+    queryKeyPrefix: 'quick-switcher-search',
+  });
+  const localMatches = useMemo(
+    () => (search.parsed.text.trim() === '' ? undefined : search.local.sessions.map((match) => match.session.source)),
+    [search.local.sessions, search.parsed.text],
+  );
   const usageActionTitle = t('switcher.action.usage');
   const settingsActionTitle = t('switcher.action.settings');
   // The settings index is the same one the settings page searches, so a name
@@ -84,10 +80,14 @@ export function QuickSwitcher({
       buildSwitcherItems({
         query: input,
         sessions,
-        hits: searchActive ? (searchQuery.data?.items ?? []) : [],
+        hits: search.hits,
         untitled,
+        localMatches,
         actions: [
           { actionId: 'usage', title: usageActionTitle, route: '/usage' },
+          { actionId: 'board', title: t('nav.board'), route: '/board' },
+          { actionId: 'cron', title: t('nav.cron'), route: '/cron' },
+          { actionId: 'memory', title: t('nav.memory'), route: '/memory' },
           { actionId: 'settings', title: settingsActionTitle, route: '/settings' },
         ],
         settings: settingsMatches,
@@ -95,8 +95,8 @@ export function QuickSwitcher({
     [
       input,
       sessions,
-      searchActive,
-      searchQuery.data,
+      search.hits,
+      localMatches,
       untitled,
       usageActionTitle,
       settingsActionTitle,
@@ -137,7 +137,7 @@ export function QuickSwitcher({
     }
   };
 
-  const searching = searchActive && searchQuery.isPending;
+  const searching = search.contentPending;
   const firstActionIndex = items.findIndex((item) => item.kind === 'action');
   const firstSessionIndex = items.findIndex((item) => item.kind === 'session');
   const firstHitIndex = items.findIndex((item) => item.kind === 'hit');
@@ -148,7 +148,7 @@ export function QuickSwitcher({
       onClose={onClose}
       ariaLabel={t('switcher.aria')}
       overlayId="quick-switcher"
-      panelClassName="anim-enter w-full max-w-[560px] overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
+      panelClassName="anim-enter w-full max-w-[560px] overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
     >
       <div className="border-b border-hairline px-4 py-3">
         <input
@@ -201,7 +201,7 @@ export function QuickSwitcher({
             return (
               <div key={itemKey}>
                 {headerText !== null ? (
-                  <p className={`px-2 pb-0.5 text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase ${index === 0 ? 'pt-1' : 'pt-1.5'}`}>
+                  <p className={`px-2 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-2'}`}>
                     {headerText}
                   </p>
                 ) : null}
@@ -213,54 +213,47 @@ export function QuickSwitcher({
                   aria-selected={active}
                   onClick={() => { openItem(item); }}
                   onMouseMove={() => { if (!active) setActiveIndex(index); }}
-                  className={`flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
-                    active ? 'bg-accent-soft' : 'hover:bg-paper'
+                  className={`flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
+                    active ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
                   }`}
                 >
                   {item.kind === 'action' ? (
                     <span className="flex items-center gap-2">
-                      <span
-                        aria-hidden
-                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-hairline bg-paper text-[11px] font-semibold text-accent"
-                      >
-                        $
-                      </span>
-                      <span className="truncate text-[12.5px] font-medium text-ink">
+                      <Icon name="arrowUpRight" size={14} className="text-ink-faint" />
+                      <span className="truncate text-[13px] font-medium text-ink">
                         {item.title}
                       </span>
                     </span>
                   ) : item.kind === 'setting' ? (
-                    <span className="flex min-w-0 items-baseline gap-1.5">
-                      <span className="shrink-0 text-[10.5px] text-ink-faint">
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span className="shrink-0 text-[12px] text-ink-faint">
                         {item.sectionLabel}
                       </span>
-                      <span aria-hidden className="shrink-0 text-[10.5px] text-ink-faint">›</span>
-                      <span className="truncate text-[12.5px] font-medium text-ink">
+                      <Icon name="chevron" size={12} className="text-ink-faint" />
+                      <span className="truncate text-[13px] font-medium text-ink">
                         {item.title}
                       </span>
                     </span>
                   ) : item.kind === 'session' ? (
                     <>
-                      <span className="truncate text-[12.5px] font-medium text-ink">
+                      <span className="truncate text-[13px] font-medium text-ink">
                         {item.title}
                       </span>
-                      <span className="flex items-center gap-1.5 text-[10.5px] text-ink-faint">
-                        <span className="truncate font-mono">{item.cwd}</span>
+                      <span className="flex items-center gap-1.5 text-[12px] text-ink-faint">
+                        <span className="truncate">{item.cwd}</span>
                         <span className="shrink-0">· {time.relativeTime(item.updatedAt)}</span>
                       </span>
                     </>
                   ) : (
                     <>
-                      <span className="line-clamp-2 text-[11.5px] leading-snug text-ink">
+                      <span className="line-clamp-2 text-[12px] leading-snug text-ink">
                         {item.snippet}
                       </span>
-                      <span className="flex items-center gap-1.5 text-[9.5px] text-ink-faint">
+                      <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
                         <span className="truncate">
                           {item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled}
                         </span>
-                        <span className="shrink-0 rounded border border-hairline px-1 font-mono">
-                          {item.role}
-                        </span>
+                        <span className="shrink-0">· {t(`sidebar.results.role.${item.role}`)}</span>
                       </span>
                     </>
                   )}
@@ -271,7 +264,7 @@ export function QuickSwitcher({
         )}
       </div>
 
-      <div className="border-t border-hairline px-4 py-2 text-[10.5px] text-ink-faint">
+      <div className="border-t border-hairline px-4 py-2 text-[11px] text-ink-faint">
         {t('switcher.hint')}
       </div>
     </Dialog>

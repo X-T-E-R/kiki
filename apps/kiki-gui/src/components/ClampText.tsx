@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 
 export interface ClampTextProps {
@@ -40,10 +41,10 @@ export const ClampText = memo(function ClampText({
             e.stopPropagation();
             toggle();
           }}
-          className="mt-0.5 inline-flex items-center gap-1 text-[10.5px] text-ink-faint transition-colors hover:text-accent cursor-pointer"
+          className="mt-0.5 inline-flex items-center gap-1 text-[12px] text-ink-faint transition-colors hover:text-ink cursor-pointer"
         >
           {expanded ? t('transcript.showLess') : t('transcript.showMore')}
-          <span aria-hidden className="text-[9px]">{expanded ? '▴' : '▾'}</span>
+          <Icon name="chevron" size={12} className={expanded ? '-rotate-90' : 'rotate-90'} />
         </button>
       ) : null}
     </div>

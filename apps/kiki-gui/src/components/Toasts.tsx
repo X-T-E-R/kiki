@@ -7,6 +7,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { useI18n } from '../i18n';
+import { Icon, type IconName } from './icons';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
   dismissToast,
@@ -22,10 +23,12 @@ const TONE_CLASS: Record<ToastItem['tone'], string> = {
   error: 'border-danger/40 text-danger',
 };
 
-const TONE_ICON: Record<ToastItem['tone'], string> = {
-  success: '✓',
-  info: '·',
-  error: '×',
+// A toast IS the "just finished, you should know" moment, so success keeps
+// its check here — unlike a timeline row, where success is silent.
+const TONE_ICON: Record<ToastItem['tone'], IconName | null> = {
+  success: 'check',
+  info: null,
+  error: 'cross',
 };
 
 function ToastCard({ toast }: { toast: ToastItem }) {
@@ -68,8 +71,8 @@ function ToastCard({ toast }: { toast: ToastItem }) {
       className={`anim-enter flex w-88 flex-col rounded-xl border bg-panel p-2.5 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${TONE_CLASS[toast.tone]}`}
     >
       <div className="flex items-start gap-2">
-        <span aria-hidden className="mt-px shrink-0 text-[12px] font-bold">
-          {TONE_ICON[toast.tone]}
+        <span aria-hidden className="mt-[2px] flex w-3.5 shrink-0 justify-center">
+          {TONE_ICON[toast.tone] === null ? null : <Icon name={TONE_ICON[toast.tone]!} />}
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-[12px] leading-snug break-words">{toast.text}</p>
@@ -82,9 +85,10 @@ function ToastCard({ toast }: { toast: ToastItem }) {
             <button
               type="button"
               onClick={handleCopy}
-              className="rounded-md border border-current px-1.5 py-0.5 text-[10px] font-medium transition-opacity hover:opacity-75"
+              className="inline-flex items-center gap-1 rounded-md border border-current px-1.5 py-0.5 text-[11px] font-medium transition-opacity hover:opacity-75"
               title={copyPayload}
             >
+              {copied ? <Icon name="check" size={12} /> : null}
               {copied ? t('cb.copied') : t('cb.copy')}
             </button>
           ) : null}
@@ -97,7 +101,7 @@ function ToastCard({ toast }: { toast: ToastItem }) {
               }}
               className="rounded-md border border-current px-1.5 py-0.5 text-[10px] font-medium transition-opacity hover:opacity-75"
             >
-              {t('common.retry')}
+              {toast.retry.label ?? t('common.retry')}
             </button>
           ) : null}
           {toast.tone === 'error' ? (
@@ -105,9 +109,9 @@ function ToastCard({ toast }: { toast: ToastItem }) {
               type="button"
               aria-label={t('toast.dismissAria')}
               onClick={() => { dismissToast(toast.id); }}
-              className="rounded-md px-1 text-[12px] leading-none transition-opacity hover:opacity-70"
+              className="flex h-5 w-5 items-center justify-center rounded-md transition-opacity hover:opacity-70"
             >
-              ×
+              <Icon name="close" size={12} />
             </button>
           ) : null}
         </div>

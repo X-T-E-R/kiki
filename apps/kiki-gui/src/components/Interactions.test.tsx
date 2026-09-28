@@ -19,7 +19,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { QuestionAnswer, QuestionItem } from '@kiki/protocol';
 import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
-import { ApprovalCard, externalPermissionFromDisplay, QuestionCard } from './Interactions';
+import { ApprovalCard, externalPermissionFromDisplay, InteractionRecord, QuestionCard } from './Interactions';
 
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
@@ -436,5 +436,34 @@ describe('QuestionCard', () => {
       flushSync(() => { click(submit); });
     });
     expect(onAnswer).not.toHaveBeenCalled();
+  });
+});
+
+describe('InteractionRecord (tray placement)', () => {
+  it('renders one line with the subject and a Review action that reports the wire id', async () => {
+    const onReview = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    containers.push(container);
+    await act(async () => {
+      flushSync(() => {
+        root.render(
+          <I18nProvider>
+            <InteractionRecord block={approvalBlock(undefined)} originName="helper" onReview={onReview} />
+          </I18nProvider>,
+        );
+      });
+    });
+    const record = container.querySelector('[data-interaction-record="approval-ext-1"]');
+    expect(record?.textContent).toContain('helper · grok__bash · Run shell command');
+    expect(record?.textContent).toContain('Awaiting approval');
+    // No decision controls in the timeline — the tray owns them.
+    expect(container.textContent).not.toContain('Approve');
+    const review = container.querySelector<HTMLButtonElement>('button[aria-label="Review this request above the composer"]');
+    expect(review).not.toBeNull();
+    await act(async () => { flushSync(() => { click(review!); }); });
+    expect(onReview).toHaveBeenCalledTimes(1);
   });
 });

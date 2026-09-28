@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Task } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 import { startVisiblePoll } from '../lib/visiblePoll';
 import { useConnection } from '../state/connection';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
@@ -139,9 +140,9 @@ export function TaskDetailModal({
           type="button"
           onClick={onClose}
           aria-label={t('common.close')}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:bg-paper hover:text-ink"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink"
         >
-          ×
+          <Icon name="close" />
         </button>
       </div>
 
@@ -172,7 +173,7 @@ export function TaskDetailModal({
       ) : null}
 
       <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg bg-shell">
-        <div className="flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-1.5">
+        <div className="flex shrink-0 items-center gap-2 border-b border-shell-hairline px-3 py-1.5">
           <span className="font-mono text-[10.5px] tracking-wide text-shell-ink-soft select-none">
             {t('tasks.field.output')}
           </span>
@@ -181,7 +182,7 @@ export function TaskDetailModal({
             aria-pressed={!follow}
             data-task-detail-follow={follow ? 'on' : 'off'}
             onClick={() => { setFollow((value) => !value); }}
-            className="ml-auto rounded-md border border-white/15 px-2 py-0.5 font-mono text-[10.5px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
+            className="ml-auto rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[10.5px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
           >
             {follow ? t('tasks.detail.pauseScroll') : t('tasks.detail.resumeScroll')}
           </button>

@@ -113,7 +113,6 @@ export function buildNewSessionCreate(input: {
   readonly thinking?: string;
   readonly permissionMode: PermissionMode;
   readonly planMode: boolean;
-  readonly swarmMode: boolean;
 }): SessionCreate {
   const agent_config = {
     profile: input.profile,
@@ -121,7 +120,6 @@ export function buildNewSessionCreate(input: {
     thinking: input.thinking,
     permission_mode: input.permissionMode,
     plan_mode: input.planMode,
-    swarm_mode: input.swarmMode,
   };
   return input.cwd !== ''
     ? { metadata: { cwd: input.cwd }, agent_config }
@@ -198,7 +196,6 @@ export function useNewSessionDraft({
   );
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode);
   const [planMode, setPlanMode] = useState(settings.defaultPlanMode);
-  const [swarmMode, setSwarmMode] = useState(false);
   const [goalObjective, setGoalObjective] = useState('');
   const [modelOverride, setModelOverrideState] = useState(() =>
     resolveSessionModelOverride(initialRestoredDraft.modelOverride),
@@ -381,7 +378,6 @@ export function useNewSessionDraft({
     agentProfile,
     permissionMode,
     planMode,
-    swarmMode,
     goalObjective,
   });
   sendContextRef.current = {
@@ -394,7 +390,6 @@ export function useNewSessionDraft({
     agentProfile,
     permissionMode,
     planMode,
-    swarmMode,
     goalObjective,
   };
 
@@ -431,7 +426,6 @@ export function useNewSessionDraft({
       thinking: context.effectiveEffort,
       permissionMode: context.permissionMode,
       planMode: context.planMode,
-      swarmMode: context.swarmMode,
     });
 
     // Returned so the composer's send latch rides the create round trip: a
@@ -453,7 +447,6 @@ export function useNewSessionDraft({
             thinking: context.effectiveEffort,
             permissionMode: context.permissionMode,
             planMode: context.planMode,
-            swarmMode: context.swarmMode,
             goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
           },
           replace: false,
@@ -540,7 +533,6 @@ export function useNewSessionDraft({
     cwd,
     permissionMode,
     planMode,
-    swarmMode,
     goalObjective,
     modelOverride,
     agentProfile,
@@ -565,7 +557,6 @@ export function useNewSessionDraft({
     setCwd: updateCwd,
     setPermissionMode,
     setPlanMode,
-    setSwarmMode,
     setGoalObjective,
     setModelOverride,
     setAgentProfile,

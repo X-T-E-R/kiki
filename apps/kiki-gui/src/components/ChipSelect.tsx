@@ -7,6 +7,8 @@ import { useState } from 'react';
 
 import { normalizeTags } from '@kiki/session-core/settings';
 
+import { Icon } from './icons';
+
 export interface ChipSelectProps {
   readonly values: readonly string[];
   readonly knownOptions: readonly string[];
@@ -55,12 +57,15 @@ export function ChipSelect({
             disabled={disabled}
             aria-pressed={selected}
             onClick={() => { toggle(option); }}
-            className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+            // Selected = the raised paper sheet with a check; unselected is
+            // quiet text with a dashed hairline so it still reads as a choice.
+            className={`inline-flex h-6 items-center gap-1 rounded-full px-2.5 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] disabled:cursor-not-allowed disabled:opacity-50 ${
               selected
-                ? 'border-accent bg-accent-soft text-accent'
-                : 'border-hairline bg-paper text-ink-soft hover:border-hairline-strong hover:text-ink'
+                ? 'bg-paper pl-2 font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                : 'border border-dashed border-hairline-strong text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
             }`}
           >
+            {selected ? <Icon name="check" size={12} className="text-ink-soft" /> : null}
             {option}
           </button>
         );
@@ -68,7 +73,7 @@ export function ChipSelect({
       {customValues.map((value) => (
         <span
           key={value}
-          className="inline-flex items-center gap-1 rounded-full border border-accent bg-accent-soft px-2.5 py-0.5 text-[11px] font-medium text-accent"
+          className="inline-flex h-6 items-center gap-1 rounded-full bg-paper pr-1 pl-2.5 text-[12px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]"
         >
           {value}
           <button
@@ -76,9 +81,9 @@ export function ChipSelect({
             disabled={disabled}
             aria-label={removeLabel(value)}
             onClick={() => { toggle(value); }}
-            className="text-accent/70 transition-colors hover:text-accent disabled:opacity-50"
+            className="flex h-4 w-4 items-center justify-center rounded text-ink-faint transition-colors hover:text-ink disabled:opacity-50"
           >
-            ×
+            <Icon name="close" size={12} />
           </button>
         </span>
       ))}

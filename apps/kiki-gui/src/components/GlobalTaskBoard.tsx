@@ -1,11 +1,16 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+/**
+ * /board — the one task board page. Workspace is a filter, not a separate
+ * page: the scope rides `?workspace=` (the sidebar nav and the inspector
+ * link pre-fill it from the current session), and the board's own scope
+ * select switches between one workspace and all of them.
+ */
+import { useCallback, useMemo } from 'react';
 import type { Session, Workspace } from '@kiki/protocol';
 import type { To } from 'react-router-dom';
 
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
-import { Dialog, DIALOG_PANEL_SIZES } from './Dialog';
+import { PageHeader, useWorkspaceScope } from './PageChrome';
 import { TaskBoardContainer } from './task-board/TaskBoardContainer';
 import type { BoardSessionOption, BoardWorkspaceOption } from './task-board/types';
 
@@ -52,159 +57,97 @@ export function canOpenGlobalTaskBoardSession(input: {
   return input.sourceWorkspaceId === undefined || input.sourceWorkspaceId === target.workspace_id;
 }
 
-function EmptyBoardState({ loading, onClose, onOpenSettings }: {
+function EmptyBoardState({ loading, onOpenSettings }: {
   readonly loading: boolean;
-  readonly onClose: () => void;
   readonly onOpenSettings: () => void;
 }) {
   const { t } = useI18n();
-
   return (
     <div
       data-global-task-board-empty
-      className="flex min-h-[min(52vh,420px)] flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center"
+      className="flex flex-1 flex-col items-start justify-center gap-2 px-6 py-10 lg:px-10"
     >
-      <h2 className="font-display text-[18px] font-semibold text-ink">{t('st.agentBoard.title')}</h2>
       {loading ? (
-        <p role="status" className="text-[12px] text-ink-soft">{t('hero.workspaceLoading')}</p>
+        <p role="status" className="text-[13px] text-ink-soft">{t('hero.workspaceLoading')}</p>
       ) : (
         <>
-          <p role="status" className="text-[13px] font-medium text-ink">{t('new.noWorkspaces')}</p>
-          <p className="max-w-md text-[12px] leading-relaxed text-ink-soft">{t('taskBoard.empty.description')}</p>
+          <h2 className="font-display text-[20px] font-semibold text-ink">{t('new.noWorkspaces')}</h2>
+          <p className="max-w-md text-[13px] leading-relaxed text-ink-soft">{t('taskBoard.empty.description')}</p>
           <button
             type="button"
             onClick={onOpenSettings}
-            className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-panel transition-colors hover:bg-accent-deep"
+            className="mt-1 rounded-md bg-ink px-3 py-1.5 text-[13px] font-medium text-paper transition-colors hover:bg-ink/85"
           >
             {t('sidebar.manageWorkspaces')}
           </button>
         </>
       )}
-      <button
-        type="button"
-        onClick={onClose}
-        className="rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
-      >
-        {t('common.close')}
-      </button>
     </div>
   );
 }
 
-export interface GlobalTaskBoardProps {
-  readonly activeSessionId: string | undefined;
+export interface TaskBoardPageProps {
+  /** The session the user came from (last session route), for the create default. */
+  readonly originSessionId: string | undefined;
   readonly sessions: readonly Session[];
   readonly workspaceOptions: readonly Workspace[];
   readonly workspacesLoading?: boolean;
   readonly onNavigate: (target: To) => void;
+  readonly onToggleSidebar: () => void;
 }
 
-export function GlobalTaskBoard({
-  activeSessionId,
+export function TaskBoardPage({
+  originSessionId,
   sessions,
   workspaceOptions,
   workspacesLoading = false,
   onNavigate,
-}: GlobalTaskBoardProps) {
+  onToggleSidebar,
+}: TaskBoardPageProps) {
   const { klient } = useConnection();
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const [railTarget, setRailTarget] = useState<HTMLElement | null>(null);
-  // The launcher lives inside the session rail only: pages without a rail
-  // (/new, settings, a closed right panel) get no entry at all — the former
-  // fixed-position floating fallback leaked onto every one of them.
-  useEffect(() => {
-    const update = () => {
-      setRailTarget(document.querySelector<HTMLElement>('[data-session-rail]'));
-    };
-    update();
-    const observer = new MutationObserver(update);
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
+  const { scope: workspaceScope, setScope } = useWorkspaceScope(workspaceOptions);
   const scope = useMemo(
-    () => resolveGlobalTaskBoardScope({ activeSessionId, sessions, workspaceOptions }),
-    [activeSessionId, sessions, workspaceOptions],
+    () => resolveGlobalTaskBoardScope({ activeSessionId: originSessionId, sessions, workspaceOptions }),
+    [originSessionId, sessions, workspaceOptions],
   );
-
-  const close = useCallback(() => { setOpen(false); }, []);
   const openSession = useCallback(
     (targetSessionId: string, sourceWorkspaceId?: string) => {
-      if (!canOpenGlobalTaskBoardSession({
-        targetSessionId,
-        sourceWorkspaceId,
-        sessions,
-        workspaceIds: scope.workspaceIds,
-      })) {
-        return;
-      }
-      close();
+      if (!canOpenGlobalTaskBoardSession({ targetSessionId, sourceWorkspaceId, sessions, workspaceIds: scope.workspaceIds })) return;
       onNavigate(`/s/${targetSessionId}`);
     },
-    [close, onNavigate, scope.workspaceIds, sessions],
+    [onNavigate, scope.workspaceIds, sessions],
   );
-  const openSettings = useCallback(() => {
-    close();
-    onNavigate('/settings/workspaces');
-  }, [close, onNavigate]);
-
-  let content: ReactNode;
-  if (scope.workspaceIds.length === 0) {
-    content = (
-      <EmptyBoardState
-        loading={workspacesLoading}
-        onClose={close}
-        onOpenSettings={openSettings}
-      />
-    );
-  } else {
-    content = (
-      <TaskBoardContainer
-        key={`${scope.currentSessionId ?? 'none'}:${scope.workspaceIds.join(',')}`}
-        client={klient.global.board}
-        workspaceIds={scope.workspaceIds}
-        currentWorkspaceId={scope.currentWorkspaceId}
-        currentSessionId={scope.currentSessionId}
-        workspaces={scope.workspaces}
-        sessions={scope.sessions}
-        onOpenSession={openSession}
-        onOpenSettings={openSettings}
-        onCloseBoard={close}
-      />
-    );
-  }
-
-  const launcher = (
-    <button
-      type="button"
-      data-session-task-board
-      aria-haspopup="dialog"
-      aria-expanded={open}
-      aria-label={t('st.agentBoard.title')}
-      onClick={() => { setOpen(true); }}
-      className="app-rail__board-launcher flex min-h-12 shrink-0 items-center justify-between gap-2 border-t border-hairline bg-panel px-4 py-2 text-left text-[12px] font-medium text-ink-soft transition-colors hover:bg-accent-soft hover:text-accent"
-    >
-      <span>{t('st.agentBoard.title')}</span>
-      <span aria-hidden className="text-[16px] leading-none">↗</span>
-    </button>
-  );
+  const openSettings = useCallback(() => { onNavigate('/settings/workspaces'); }, [onNavigate]);
 
   return (
-    <>
-      {railTarget ? createPortal(launcher, railTarget) : null}
-      {open ? (
-        <Dialog
-          onClose={close}
-          ariaLabel={t('st.agentBoard.title')}
-          overlayId="global-task-board"
-          stacked
-          panelClassName={`anim-enter flex h-[min(90vh,800px)] w-full ${DIALOG_PANEL_SIZES['2xl']} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-0 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]`}
-        >
-          {content}
-        </Dialog>
-      ) : null}
-    </>
+    <div data-task-board-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
+      {/* The board renders its own title row (search, scope, new task), so the
+          page header only carries the mobile menu entry. */}
+      <div className="md:hidden">
+        <PageHeader title={t('nav.board')} onToggleSidebar={onToggleSidebar} />
+      </div>
+      {scope.workspaceIds.length === 0 ? (
+        <EmptyBoardState loading={workspacesLoading} onOpenSettings={openSettings} />
+      ) : (
+        <TaskBoardContainer
+          key={scope.workspaceIds.join(',')}
+          client={klient.global.board}
+          workspaceIds={scope.workspaceIds}
+          currentWorkspaceId={workspaceScope ?? scope.currentWorkspaceId}
+          currentSessionId={scope.currentSessionId}
+          workspaces={scope.workspaces}
+          sessions={scope.sessions}
+          scopeSelection={workspaceScope ?? 'all'}
+          onScopeSelectionChange={(next) => { setScope(next === 'all' ? undefined : next); }}
+          onOpenSession={openSession}
+          onOpenSettings={openSettings}
+          // The routed page shares the sheet between lanes (1fr each, 200px
+          // floor) so all five fit a 1440 window beside the sidebar; phones
+          // keep the board's one-lane snap layout.
+          laneLayout="fill"
+        />
+      )}
+    </div>
   );
 }

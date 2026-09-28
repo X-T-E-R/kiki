@@ -11,6 +11,7 @@ import {
   type AgentTreeNode,
 } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
+import { DisclosureChevron } from './icons';
 
 export const RELATED_AGENT_PREVIEW_LIMIT = 4;
 
@@ -205,12 +206,7 @@ export const AgentRelations = memo(function AgentRelations({
         onClick={() => { setOpen((value) => !value); }}
         className="flex min-w-0 items-center gap-1.5 text-ink-faint transition-colors hover:text-ink-soft"
       >
-        <span
-          aria-hidden
-          className={`inline-block shrink-0 text-[9px] transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
-        >
-          ▶
-        </span>
+        <DisclosureChevron open={open} className="text-current" />
         <span className="shrink-0 font-medium">{t('sv.relatedAgents')}</span>
         {!open ? (
           <span className="min-w-0 truncate text-ink-faint/70">{summary.join(' · ')}</span>

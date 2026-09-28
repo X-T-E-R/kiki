@@ -1,7 +1,8 @@
 /**
  * Transcript — journal-style rendering of the session blocks: generous
- * whitespace, no assistant bubble (kiki mark + content), ink user cards,
- * collapsible thinking, tool cards, dark shell islands, amber interactions.
+ * whitespace, assistant answers set as unframed prose, soft paper user
+ * bubbles, quiet italic thinking lines, tool steps as a compact timeline,
+ * dark shell islands, and inline decision strips for approvals/questions.
  *
  * The variable-height block list is windowed with TanStack Virtual. Its
  * end-anchor is the single owner of append follow, streaming growth, prepend
@@ -51,7 +52,7 @@ import {
   groupBlocks,
   groupHasError,
   groupHasRunning,
-  groupToolNames,
+  groupSummary,
   latestFinalAssistantBlockId,
   stabilizeAgentForest,
   type AgentForest,
@@ -80,26 +81,36 @@ import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import {
-  groupHistoryRuns,
   HistoryLine,
-  HistoryRunRow,
-  historyRunsEqual,
+  isAbortedPromptNotice,
   isInterruptionNotice,
-  isMarkerNotice,
-  isTerminalPromptNotice,
-  type GroupedDisplayNode,
 } from './ActivityHistory';
+import {
+  ActivityRow,
+  ActivityStats,
+  ACTIVITY_GUTTER,
+  TimelineDivider,
+} from './timeline/ActivityRow';
 import { AnnotationPopover, type AnnotationPopoverOpen } from './AnnotationPopover';
 import { FloorNavRail } from './FloorNavRail';
-import { ApprovalCard, QuestionCard } from './Interactions';
+import {
+  TRANSCRIPT_END_THRESHOLD,
+  TRANSCRIPT_ESTIMATED_ROW_HEIGHT,
+  installTranscriptAnchoring,
+  landAtEnd,
+  measureTranscriptRow,
+  reconcileMountedRows,
+} from './transcriptVirtualizer';
+import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaPreview';
 import { RelativeTime } from './RelativeTime';
 import { MessageRowActions, UserMessageEditor } from './RowActions';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
-import { ToolCard } from './ToolCard';
-import { KikiMark, Wordmark } from './Wordmark';
+import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
+import { DisclosureChevron, Icon, OutcomeMark } from './icons';
+import { Wordmark } from './Wordmark';
 
 /**
  * Split streaming assistant text into a settled prefix (safe to parse as
@@ -191,7 +202,7 @@ export function projectUserText(text: string): ReactNode {
       <span
         key={tokenStart}
         data-ref-chip="subagent"
-        className="rounded-md border border-accent/30 bg-accent-soft px-1 py-px font-mono text-[11.5px] text-accent"
+        className="rounded-md bg-ink/[0.05] px-1 py-px font-mono text-[12px] font-medium text-ink"
       >
         {label}
       </span>,
@@ -213,6 +224,8 @@ export interface TranscriptRowActions {
   onEditMessage: (block: UserBlock, text: string) => void;
   onRegenerate: (block: AssistantBlock) => void;
   onFork: (block: UserBlock | AssistantBlock) => void;
+  /** Re-run the stopped turn (regenerate its assistant reply). */
+  onResumeStopped?: (block: AssistantBlock) => void;
 }
 
 const UserMessage = memo(function UserMessage({
@@ -254,7 +267,10 @@ const UserMessage = memo(function UserMessage({
   const senderLabel = agentMessageLabel ?? peerThreadLabel;
   return (
     <div className="anim-enter group/msg flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
-      <span className="mb-1 flex items-baseline gap-1.5 pr-1">
+      {/* Meta line: the sender shows only when it is not the user (agent or
+          peer-thread messages); the time and row actions stay quiet until
+          hover/focus so the bubble reads as the user's own voice. */}
+      <span className="mb-1 flex min-h-[18px] items-baseline gap-1.5 pr-1">
         {rowActions !== undefined && !editing ? (
           <MessageRowActions
             copyText={block.text}
@@ -265,14 +281,25 @@ const UserMessage = memo(function UserMessage({
             onFork={() => { rowActions.onFork(block); }}
           />
         ) : null}
+        {senderLabel !== undefined ? (
+          <span
+            data-agent-message-sender={block.agentMessage?.senderAgentId}
+            data-peer-thread={block.peerThread?.sessionId}
+            className="text-[12px] font-medium text-ink-soft"
+          >
+            {senderLabel}
+          </span>
+        ) : null}
         <span
-          data-agent-message-sender={block.agentMessage?.senderAgentId}
-          data-peer-thread={block.peerThread?.sessionId}
-          className="text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase"
+          data-user-time
+          className={`text-[12px] text-ink-faint transition-opacity duration-150 ${
+            senderLabel !== undefined
+              ? ''
+              : 'opacity-0 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100'
+          }`}
         >
-          {senderLabel ?? t('transcript.you')}
+          <RelativeTime at={block.createdAt} />
         </span>
-        <span className="text-xs text-ink-faint"><RelativeTime at={block.createdAt} /></span>
       </span>
       {block.media !== undefined ? <div className="mb-1.5"><MediaPartList media={block.media} align="end" /></div> : null}
       {editing && rowActions !== undefined ? (
@@ -285,7 +312,7 @@ const UserMessage = memo(function UserMessage({
           onCancel={() => { setEditing(false); }}
         />
       ) : (
-        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-bubble-user px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
+        <div className="max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2.5 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink">
           <div
             ref={contentRef}
             id={contentId}
@@ -309,19 +336,19 @@ const UserMessage = memo(function UserMessage({
           onClick={toggle}
           aria-expanded={expanded}
           aria-controls={contentId}
-          className="mt-1 mr-1 inline-flex items-center gap-1 text-[11px] font-medium text-ink-faint transition-colors hover:text-accent"
+          className="mt-1 mr-1 inline-flex items-center gap-1 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink"
         >
           {expanded ? t('transcript.showLess') : t('transcript.showMore')}
-          <span aria-hidden className="text-[9px]">{expanded ? '▴' : '▾'}</span>
+          <Icon name="chevron" size={12} className={expanded ? '-rotate-90' : 'rotate-90'} />
         </button>
       ) : null}
       {block.optimisticStatus !== undefined ? (
-        <span role="status" data-optimistic-status={block.optimisticStatus} className="mt-1 mr-1 text-[10.5px] text-ink-faint">
+        <span role="status" data-optimistic-status={block.optimisticStatus} className="mt-1 mr-1 text-[11px] text-ink-faint">
           {t(block.optimisticStatus === 'slow' ? 'transcript.stillSending' : 'transcript.sending')}
         </span>
       ) : null}
       {block.promptStatus === 'blocked' ? (
-        <span className="mt-1 mr-1 flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/5 px-2 py-0.5 text-[10.5px] font-medium text-danger">
+        <span className="mt-1 mr-1 flex items-center gap-1.5 text-[11px] font-medium text-danger">
           {t('transcript.blocked')}
         </span>
       ) : null}
@@ -334,11 +361,14 @@ const AssistantMessage = memo(function AssistantMessage({
   rowActions,
   isLatestFinal = false,
   annotations,
+  stopShownByTail = false,
 }: {
   block: AssistantBlock;
   rowActions?: TranscriptRowActions;
   /** Latest completed turn's final reply — the regenerate/fork anchor. */
   isLatestFinal?: boolean;
+  /** The visible turn tail already carries this turn's stop. */
+  stopShownByTail?: boolean;
   /** Timeline annotations anchored to this message's text (identity-stable). */
   annotations?: readonly TimelineAnnotation[];
 }) {
@@ -356,9 +386,10 @@ const AssistantMessage = memo(function AssistantMessage({
     !block.streaming &&
     (block.text !== '' || (rowActions !== undefined && isLatestFinal));
   return (
-    <div className="anim-enter group/msg relative flex gap-3" title={time.absoluteTime(block.createdAt)}>
-      <KikiMark className="mt-[7px] shrink-0" />
-      <div className="min-w-0 flex-1">
+    <div className="anim-enter group/msg relative" title={time.absoluteTime(block.createdAt)}>
+      {/* No leading marker: the right-aligned user bubble already carries
+          the turn boundary, so the answer sits on the page as prose. */}
+      <div data-assistant-prose className="kiki-prose min-w-0">
         {streaming ? (
           <>
             {segments.length > 0 ? (
@@ -368,7 +399,7 @@ const AssistantMessage = memo(function AssistantMessage({
                 ))}
               </div>
             ) : null}
-            <div className="text-[14px] leading-[1.65] break-words whitespace-pre-wrap text-ink">
+            <div className="kiki-prose-tail break-words whitespace-pre-wrap text-ink">
               {tail}
               <span className="stream-caret font-mono">▍</span>
             </div>
@@ -383,9 +414,11 @@ const AssistantMessage = memo(function AssistantMessage({
           </>
         )}
         {block.media !== undefined ? <MediaPartList media={block.media} /> : null}
-        {block.stopped === true ? (
-          <span className="mt-1 inline-flex items-center gap-1 rounded-md border border-hairline bg-paper px-1.5 py-px text-[10.5px] font-medium text-ink-faint">
-            <span aria-hidden className="text-[9px]">■</span>
+        {/* The turn tail's "Stopped by you" divider already states the stop
+            of the latest turn; the inline mark stays for older stopped turns. */}
+        {block.stopped === true && !stopShownByTail ? (
+          <span className="mt-1.5 inline-flex items-center gap-1.5 font-sans text-[12px] font-medium text-ink-faint">
+            <span aria-hidden className="h-2 w-2 rounded-[2px] bg-ink-faint/70" />
             {t('transcript.stopped')}
           </span>
         ) : null}
@@ -422,32 +455,29 @@ const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: Thinki
   // deepseek-harness's ReasoningRow summary rule: while tokens are streaming
   // the collapsed line tracks the LATEST line; once settled it pins the first.
   const summary = block.streaming ? latestLineOf(block.text) : firstLineOf(block.text);
+  // Thinking is the one activity row set in italic: it is the agent's voice,
+  // not an action it performed, so it reads adjacent to the prose while still
+  // keeping the lane's glyph column and rhythm.
   return (
-    <div
-      className="thinking-row anim-enter border-l-2 border-hairline-strong pl-3"
-      data-streaming={block.streaming || undefined}
-    >
-      <button
-        type="button"
-        onClick={() => { setOpen((value) => !value); }}
-        aria-expanded={open}
-        className="flex w-full items-center gap-1.5 text-left text-[11.5px] font-medium text-ink-faint transition-colors hover:text-ink-soft"
-      >
-        <span aria-hidden className={`inline-block shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
-          ▶
+    <ActivityRow
+      className="thinking-row"
+      attrs={{ 'data-streaming': block.streaming || undefined }}
+      glyph={<Icon name="think" />}
+      label={
+        <span className="font-normal text-ink-faint italic">
+          {t('transcript.thinking')}{block.streaming ? '…' : ''}
         </span>
-        <span className="shrink-0">{t('transcript.thinking')}{block.streaming ? '…' : ''}</span>
-        {block.streaming ? <span className="stream-caret shrink-0">▍</span> : null}
-        {summary !== '' ? (
-          <span className="min-w-0 flex-1 truncate font-normal text-ink-faint/70 italic">{summary}</span>
-        ) : null}
-      </button>
+      }
+      detail={summary === '' ? undefined : <span className="text-ink-faint/80 italic">{summary}</span>}
+      expanded={open}
+      onToggle={() => { setOpen((value) => !value); }}
+    >
       {open ? (
-        <div className="mt-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink-soft italic">
+        <div className="border-l border-hairline pl-3 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink-soft italic">
           {block.text}
         </div>
-      ) : null}
-    </div>
+      ) : undefined}
+    </ActivityRow>
   );
 });
 
@@ -461,24 +491,19 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
   return (
-    <div className="anim-enter border-l-2 border-dashed border-hairline pl-3" title={time.absoluteTime(block.createdAt)}>
-      <button
-        type="button"
-        onClick={() => { setOpen((value) => !value); }}
-        aria-expanded={open}
-        className="flex items-center gap-1.5 text-[11px] font-medium text-ink-faint/80 transition-colors hover:text-ink-soft"
-      >
-        <span aria-hidden className={`inline-block transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
-          ▶
-        </span>
-        {t('transcript.systemReminder')}
-      </button>
+    <ActivityRow
+      glyph={<Icon name="system" />}
+      label={<span className="font-normal text-ink-faint">{t('transcript.systemReminder')}</span>}
+      title={time.absoluteTime(block.createdAt)}
+      expanded={open}
+      onToggle={() => { setOpen((value) => !value); }}
+    >
       {open ? (
-        <div className="mt-1.5 max-h-[140px] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
+        <div className="max-h-[140px] overflow-auto border-l border-hairline pr-2 pl-3 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
           {block.text}
         </div>
-      ) : null}
-    </div>
+      ) : undefined}
+    </ActivityRow>
   );
 });
 
@@ -495,31 +520,54 @@ const SYSTEM_VARIANT_KEYS = {
   system: 'transcript.system.generic',
 } as const;
 
+/**
+ * A background-task notification that reports a failure must stay visible in a
+ * scan; a success is an ordinary quiet row. agent-core owns the title format.
+ */
+function isFailedTaskNotificationText(text: string): boolean {
+  const firstLine = text.split('\n', 1)[0] ?? '';
+  return (
+    /^(?:Title:\s*)?Background \S+ (?:failed|timed_out|killed|lost)\b/.test(firstLine) ||
+    /^Severity:\s*warning\s*$/m.test(text)
+  );
+}
+
+/**
+ * A background-task notification's own headline ("Background process
+ * completed"), so the settled row still names what happened when the event
+ * carries no source. Only task notifications: their first line is a status
+ * headline, while other variants carry injected content that stays folded.
+ * Envelope tags and the `Title:` prefix are transport, not content.
+ */
+function systemHeadline(text: string): string | undefined {
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/<\/?notification[^>]*>/g, '').replace(/^Title:\s*/, '').trim();
+    if (line !== '') return line;
+  }
+  return undefined;
+}
+
 const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBlock }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
+  const failed = block.variant === 'task' && isFailedTaskNotificationText(block.text);
   return (
-    <div data-system={block.variant} className="anim-enter border-l-2 border-hairline pl-3" title={time.absoluteTime(block.createdAt)}>
-      <button
-        type="button"
-        onClick={() => { setOpen((value) => !value); }}
-        aria-expanded={open}
-        className="flex items-center gap-1.5 text-[11px] font-medium text-ink-faint/80 transition-colors hover:text-ink-soft"
-      >
-        <span aria-hidden className={`inline-block shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
-          ▶
-        </span>
-        <span className="shrink-0">{t(SYSTEM_VARIANT_KEYS[block.variant])}</span>
-        {block.source !== undefined ? (
-          <span className="min-w-0 truncate font-normal text-ink-faint/60">· {block.source}</span>
-        ) : null}
-      </button>
+    <ActivityRow
+      attrs={{ 'data-system': block.variant }}
+      glyph={<Icon name={block.variant === 'task' ? 'task' : block.variant === 'cron_job' || block.variant === 'cron_missed' ? 'clock' : 'system'} />}
+      tone={failed ? 'danger' : 'plain'}
+      label={t(SYSTEM_VARIANT_KEYS[block.variant])}
+      detail={block.source ?? (block.variant === 'task' ? systemHeadline(block.text) : undefined)}
+      title={time.absoluteTime(block.createdAt)}
+      expanded={open}
+      onToggle={() => { setOpen((value) => !value); }}
+    >
       {open ? (
-        <div className="mt-1.5 max-h-[140px] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
+        <div className="max-h-[140px] overflow-auto border-l border-hairline pr-2 pl-3 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
           {block.text}
         </div>
-      ) : null}
-    </div>
+      ) : undefined}
+    </ActivityRow>
   );
 });
 
@@ -531,31 +579,25 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
       ? t('transcript.skill.plugin', { name: block.name })
       : t('transcript.skill.skill', { name: block.name });
   return (
-    <div
-      data-skill
-      className="anim-enter max-w-full border-l-2 border-hairline-strong py-0.5 pl-2.5"
+    <ActivityRow
+      attrs={{ 'data-skill': true }}
+      glyph={<Icon name="skill" />}
+      label={title}
+      detail={
+        block.args === undefined || block.args === ''
+          ? undefined
+          : <span className="font-mono">{block.args}</span>
+      }
       title={time.absoluteTime(block.createdAt)}
+      expanded={open}
+      onToggle={block.text === '' ? undefined : () => { setOpen((value) => !value); }}
     >
-      <button
-        type="button"
-        onClick={() => { setOpen((value) => !value); }}
-        aria-expanded={open}
-        className="flex max-w-full items-center gap-1.5 text-left text-[11px] font-medium text-ink-faint transition-colors hover:text-ink-soft"
-      >
-        <span aria-hidden className={`inline-block text-[9px] transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
-          ▶
-        </span>
-        <span className="min-w-0 truncate">{title}</span>
-        {block.args !== undefined && block.args !== '' ? (
-          <span className="min-w-0 truncate font-mono text-[10px] font-normal text-ink-faint/70">{block.args}</span>
-        ) : null}
-      </button>
       {open && block.text !== '' ? (
-        <div className="mt-1 max-h-36 overflow-auto pr-2 text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-faint">
+        <div className="max-h-36 overflow-auto border-l border-hairline pr-2 pl-3 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
           {block.text}
         </div>
-      ) : null}
-    </div>
+      ) : undefined}
+    </ActivityRow>
   );
 });
 
@@ -566,63 +608,63 @@ const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }
   // the latest output line remains a separate muted preview.
   const [open, setOpen] = useState(false);
   const preview = latestLineOf(block.output);
+  // A shell run is an activity line like any other; only its OUTPUT keeps the
+  // dark island. The old always-dark collapsed header made every command look
+  // like the loudest thing in the turn even when it succeeded quietly.
   return (
-    <div data-shell className="anim-enter overflow-hidden rounded-lg bg-shell">
-      <button
-        type="button"
-        onClick={() => { setOpen((value) => !value); }}
-        aria-expanded={open}
-        aria-label={open ? t('transcript.showLess') : t('transcript.showMore')}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
-      >
-        <span
-          aria-hidden
-          className={`inline-block shrink-0 text-[9px] text-shell-ink-soft transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
-        >
-          ▶
-        </span>
-        <span className="shrink-0 font-mono text-[11px] font-semibold text-accent">shell</span>
-        {!block.done ? (
-          <span className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-        ) : null}
-        {block.done && block.isError === true ? (
-          <span className="shrink-0 font-mono text-[10.5px] text-danger">{t('transcript.failed')}</span>
-        ) : null}
-        {block.command !== undefined ? (
-          <span
-            data-shell-command-preview
-            title={block.command}
-            className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-shell-ink-strong"
-          >
-            <span className="mr-1 text-accent">$ </span>
-            {block.command}
-          </span>
-        ) : null}
-        {!open && preview !== '' ? (
-          <span
-            className={`min-w-0 truncate font-mono text-[10.5px] text-shell-ink-soft ${
-              block.command === undefined ? 'flex-1' : 'max-w-[42%] border-l border-white/10 pl-2'
-            }`}
-          >
-            {preview}
-          </span>
-        ) : null}
-      </button>
-      {open && block.command !== undefined ? (
-        <div
-          data-shell-command-full
-          className="border-t border-white/10 px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-shell-ink-strong"
-        >
-          <span className="mr-2 text-accent">$ </span>
-          {block.command}
-        </div>
-      ) : null}
+    <ActivityRow
+      attrs={{ 'data-shell': true }}
+      glyph={<Icon name="terminal" />}
+      tone={block.done && block.isError === true ? 'danger' : 'plain'}
+      label={t('transcript.shell')}
+      detail={
+        block.command === undefined ? (
+          preview === '' ? undefined : <span className="font-mono">{preview}</span>
+        ) : (
+          <>
+            <span data-shell-command-preview title={block.command} className="truncate font-mono">
+              <span className="text-ink-faint select-none">$ </span>{block.command}
+            </span>
+            {/* A failure says the word: a red glyph alone makes the reader
+                decode a symbol, and the aria-label is not on screen. */}
+            {block.done && block.isError === true ? (
+              <span className="font-medium"> — {t('transcript.failed')}</span>
+            ) : null}
+            {/* The latest output line is the reason not to expand: a green
+                suite or an exit code answers the question in place. */}
+            {open || preview === '' ? null : (
+              <span className="font-mono text-ink-faint"> — {preview}</span>
+            )}
+          </>
+        )
+      }
+      expanded={open}
+      onToggle={() => { setOpen((value) => !value); }}
+      ariaLabel={open ? t('transcript.showLess') : t('transcript.showMore')}
+      status={
+        <OutcomeMark
+          state={!block.done ? 'running' : block.isError === true ? 'failed' : 'done'}
+          labels={activityOutcomeLabels(t)}
+        />
+      }
+    >
       {open ? (
-        <pre className="max-h-80 overflow-auto border-t border-white/10 px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
-          {block.output === '' ? '…' : block.output}
-        </pre>
-      ) : null}
-    </div>
+        <div className="overflow-hidden rounded-[10px] bg-shell">
+          {block.command !== undefined ? (
+            <div
+              data-shell-command-full
+              className="px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-shell-ink-strong"
+            >
+              <span className="mr-1 text-shell-ink-soft select-none">$ </span>
+              {block.command}
+            </div>
+          ) : null}
+          <pre className={`max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink${block.command === undefined ? '' : ' border-t border-shell-hairline'}`}>
+            {block.output === '' ? '…' : block.output}
+          </pre>
+        </div>
+      ) : undefined}
+    </ActivityRow>
   );
 });
 
@@ -667,9 +709,13 @@ function subagentStatusTone(status: AgentTreeNode['status'] | SubagentBlock['sta
   switch (status) {
     case 'running':
     case 'background':
-      return 'bg-accent';
+      // Working is not "needs you": accent is reserved for waiting.
+      return 'bg-ink-soft';
     case 'completed':
-      return 'bg-success';
+      // A settled child is ordinary history, not news: neutral like every
+      // other finished row. `success` is reserved for "just finished, you
+      // should know", which the timeline never needs to say.
+      return 'bg-ink-faint';
     case 'failed':
       return 'bg-danger';
     case 'cancelled':
@@ -710,26 +756,24 @@ function SubagentCardBody({
   return (
     <>
       <div className="flex items-center gap-2">
-        <span aria-hidden className="font-mono text-[12px] text-accent">⧉</span>
-        <span className={`h-2 w-2 rounded-full ${subagentStatusTone(status)} ${busy ? 'status-dot-busy' : ''}`} />
-        <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">{name}</span>
+        <span className={`h-2 w-2 shrink-0 rounded-full ${subagentStatusTone(status)} ${busy ? 'status-dot-busy' : ''}`} />
+        <span className="min-w-0 truncate text-[13px] font-semibold text-ink">{name}</span>
         {model !== undefined ? (
-          <span className="shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[9.5px] text-ink-soft">
-            {model}
-          </span>
+          <span className="min-w-0 shrink truncate text-[12px] text-ink-faint">{model}</span>
         ) : null}
-        <span
-          className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint"
-          title={elapsed === undefined ? t('transcript.durationUnknown') : undefined}
-        >
-          {elapsed === undefined ? '—' : time.formatDuration(elapsed)}
+        <span className="ml-auto shrink-0 text-[12px] tabular-nums text-ink-faint">
+          {elapsed === undefined ? null : time.formatDuration(elapsed)}
         </span>
-        <span aria-hidden className="text-[10px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
+        <Icon name="arrowRight" size={12} className="text-ink-faint transition-transform group-hover:translate-x-0.5 motion-reduce:transition-none" />
       </div>
-      <div className="mt-1 flex items-center gap-2 pl-5 text-[10.5px] text-ink-faint">
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 pl-4 text-[12px] text-ink-faint">
         <span>{t(`subagent.status.${status}` as I18nKey)}</span>
-        <span>·</span>
-        <span>{toolCallCountKnown ? tp('transcript.toolCalls', toolCallCount) : t('diagnostics.unknown')}</span>
+        {toolCallCountKnown ? (
+          <>
+            <span>·</span>
+            <span>{tp('transcript.toolCalls', toolCallCount)}</span>
+          </>
+        ) : null}
         {childCount > 0 ? (
           <>
             <span>·</span>
@@ -746,7 +790,7 @@ function SubagentCardBody({
       {description !== undefined || error !== undefined ? (
         <p
           title={error}
-          className={`mt-1 truncate pl-5 text-[11.5px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
+          className={`mt-1 truncate pl-4 text-[13px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
         >
           {error ?? description}
         </p>
@@ -805,61 +849,49 @@ function SubagentCompactCard({
 }) {
   const { t, tp, time } = useI18n();
   const line = error ?? summary;
+  // The agent is the subject: its name is the label (the same line the main
+  // and child timelines both use), the status word opens the detail and the
+  // result summary follows. Unknown counts and timings leave their columns
+  // empty rather than printing a placeholder.
+  const detail = (
+    <>
+      <span className={error !== undefined ? undefined : 'text-ink-soft'}>{t(`subagent.status.${status}` as I18nKey)}</span>
+      {line === undefined || line === '' ? null : <> · {line}</>}
+    </>
+  );
   return (
-    <div
-      data-subagent-id={block.subagentId}
-      data-agent-depth={depth}
-      data-card-form="compact"
-      data-orphaned={block.orphaned === true || undefined}
-      className={`${depth === 0 ? 'ml-6' : 'ml-4'}${block.orphaned === true ? ' opacity-60' : ''}`}
-    >
-      <div className="flex items-center gap-1">
-        <button
-          type="button"
-          onClick={() => { onOpenAgent?.(block.subagentId); }}
-          data-agent-open={block.subagentId}
-          className="anim-enter group flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-hairline bg-panel/60 px-2.5 py-1.5 text-left transition-colors hover:border-accent/50"
-        >
-          <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${subagentStatusTone(status)}`} />
-          <span className="shrink-0 text-[12px] font-medium text-ink">{block.name}</span>
-          <span className="shrink-0 text-[10.5px] text-ink-faint">
-            {t(`subagent.status.${status}` as I18nKey)}
-          </span>
-          {line !== undefined ? (
-            <span
-              title={error}
-              className={`min-w-0 flex-1 truncate text-[11px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
-            >
-              {line}
-            </span>
-          ) : (
-            <span className="min-w-0 flex-1" />
-          )}
-          <span
-            className="shrink-0 font-mono text-[10px] text-ink-faint"
-            title={elapsed === undefined ? t('transcript.durationUnknown') : undefined}
-          >
-            {elapsed === undefined ? '—' : time.formatDuration(elapsed)}
-          </span>
-          <span className="shrink-0 text-[10px] text-ink-faint">
-            {toolCalls.known ? tp('transcript.toolCalls', toolCalls.count) : t('diagnostics.unknown')}
-          </span>
-          <span aria-hidden className="shrink-0 text-[10px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
-        </button>
-        {onExpand !== undefined ? (
+    <ActivityRow
+      className={depth === 0 ? '' : `ml-4${block.orphaned === true ? ' opacity-60' : ''}`}
+      attrs={{
+        'data-subagent-id': block.subagentId,
+        'data-agent-depth': depth,
+        'data-card-form': 'compact',
+        'data-orphaned': block.orphaned === true || undefined,
+      }}
+      buttonAttrs={{ 'data-agent-open': block.subagentId }}
+      glyph={<span className={`inline-block h-2 w-2 rounded-full align-middle ${subagentStatusTone(status)}`} />}
+      tone={error !== undefined ? 'danger' : 'plain'}
+      label={block.name}
+      detail={detail}
+      title={error ?? t('subagent.openAgent', { name: block.name })}
+      onOpen={() => { onOpenAgent?.(block.subagentId); }}
+      stats={toolCalls.known ? <span className="font-sans">{tp('transcript.toolCalls', toolCalls.count)}</span> : undefined}
+      meta={elapsed === undefined ? undefined : time.formatDuration(elapsed)}
+      aside={
+        onExpand === undefined ? undefined : (
           <button
             type="button"
             data-card-expand={block.subagentId}
             aria-label={t('subagent.expandCard')}
             title={t('subagent.expandCard')}
             onClick={onExpand}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[10px] text-ink-faint transition-colors hover:bg-paper hover:text-accent"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-panel hover:text-ink"
           >
-            ▸
+            <DisclosureChevron open={false} className="text-current" />
           </button>
-        ) : null}
-      </div>
-    </div>
+        )
+      }
+    />
   );
 }
 
@@ -925,7 +957,7 @@ const SubagentCard = memo(function SubagentCard({
     );
   }
   const cardClass =
-    'anim-enter group flex items-start gap-1 rounded-xl border border-hairline bg-panel/80 px-3 py-2.5 transition-all hover:-translate-y-px hover:border-accent/50 hover:shadow-[0_8px_24px_-16px_rgba(28,25,23,0.35)]';
+    'anim-enter group flex items-start gap-1 rounded-[10px] bg-panel px-3 py-2.5 transition-colors duration-150 hover:bg-bubble-user/60';
   const body = (
     <SubagentCardBody
       name={block.name}
@@ -946,7 +978,7 @@ const SubagentCard = memo(function SubagentCard({
       data-agent-depth={depth}
       data-card-form="full"
       data-orphaned={block.orphaned === true || undefined}
-      className={`${depth === 0 ? 'ml-6' : 'ml-4'}${block.orphaned === true ? ' opacity-60' : ''}`}
+      className={`${depth === 0 ? '' : 'ml-4'}${block.orphaned === true ? ' opacity-60' : ''}`}
     >
       <div className="flex items-stretch gap-1">
         {depth > 0 ? <span aria-hidden className="w-px shrink-0 bg-hairline" /> : null}
@@ -967,14 +999,14 @@ const SubagentCard = memo(function SubagentCard({
                 aria-label={t('subagent.collapseCard')}
                 title={t('subagent.collapseCard')}
                 onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
-                className="-mt-0.5 -mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[10px] text-ink-faint transition-colors hover:bg-paper hover:text-accent"
+                className="-mt-1 -mr-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink"
               >
-                ▾
+                <DisclosureChevron open className="text-current" />
               </button>
             ) : null}
           </div>
           {block.orphaned === true ? (
-            <p className="mt-1 pl-1 text-[10.5px] text-ink-faint italic">
+            <p className="mt-1 pl-1 text-[12px] text-ink-faint italic">
               {t('transcript.orphanedSubagent')}
             </p>
           ) : null}
@@ -986,7 +1018,7 @@ const SubagentCard = memo(function SubagentCard({
                 onClick={() => {
                   setExpanded((value) => !value);
                 }}
-                className="mt-1 rounded px-1.5 py-0.5 text-[10.5px] text-ink-faint transition-colors hover:text-accent"
+                className="mt-1 min-h-7 rounded-md px-2 text-[12px] text-ink-faint transition-colors hover:bg-panel hover:text-ink"
               >
                 {expanded ? t('subagent.collapseChildren') : t('subagent.expandChildren')}
               </button>
@@ -1037,62 +1069,56 @@ const SubagentEventRow = memo(function SubagentEventRow({
   const busy = block.status === 'running' || block.status === 'suspended';
   const isFailed = block.event === 'failed' || block.status === 'failed';
   const messageSummary = block.message === undefined ? undefined : agentMessageSummary(block.message);
-  return (
-    <div className="ml-6">
-      <button
-        type="button"
-        onClick={() => { onOpenAgent?.(block.subagentId); }}
-        data-subagent-event={block.subagentId}
-        data-agent-event={block.event}
-        data-agent-open={block.subagentId}
-        title={block.error ?? t('subagent.openAgent', { name: block.name })}
-        className={`anim-enter group flex w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors ${
-          isFailed ? 'hover:bg-danger/10' : 'hover:bg-panel'
-        }`}
-      >
-        <span
-          aria-hidden
-          className={`h-1.5 w-1.5 shrink-0 rounded-full ${subagentStatusTone(block.status)} ${busy ? 'status-dot-busy' : ''}`}
-        />
-        <span className={`shrink-0 text-[11.5px] font-medium ${isFailed ? 'text-danger' : 'text-ink-soft'}`}>{block.name}</span>
-        <span className={`shrink-0 text-[10.5px] ${isFailed ? 'text-danger font-medium' : 'text-ink-faint'}`}>
-          {t(`subagent.event.${block.event}` as I18nKey)}
-        </span>
-        {messageSummary === undefined ? null : (
-          <span
-            data-agent-message-summary
-            title={block.message}
-            className="min-w-0 flex-1 truncate text-[10.5px] text-ink-soft"
-          >
-            {messageSummary}
+  // The EVENT is the label ("Dispatched", "Reported") and the agent plus what
+  // it carried is the detail, so a column of these reads as a sequence of
+  // things that happened rather than a list of names. A queued delivery is
+  // NAMED rather than reduced to a glyph — "waiting to be delivered" is not
+  // something a reader should have to decode from a symbol.
+  const line = block.error ?? messageSummary;
+  const detail = (
+    <>
+      <span className="text-ink">{block.name}</span>
+      {line === undefined || line === '' ? null : (
+        <>
+          {' · '}
+          <span data-agent-message-summary={block.message === undefined ? undefined : true} title={block.message}>
+            {line}
           </span>
-        )}
-        {block.delivery === undefined ? null : (
+        </>
+      )}
+    </>
+  );
+  return (
+    <ActivityRow
+      glyph={
+        <span
+          className={`inline-block h-1.5 w-1.5 rounded-full align-middle ${subagentStatusTone(block.status)} ${busy ? 'status-dot-busy' : ''}`}
+        />
+      }
+      tone={isFailed ? 'danger' : 'plain'}
+      label={t(`subagent.event.${block.event}` as I18nKey)}
+      detail={detail}
+      title={block.error ?? t('subagent.openAgent', { name: block.name })}
+      onOpen={() => { onOpenAgent?.(block.subagentId); }}
+      meta={
+        block.delivery !== undefined ? (
           <span
             data-agent-message-delivery={block.delivery}
-            className={`shrink-0 rounded-full border px-1.5 py-px text-[9.5px] font-medium ${
-              block.delivery === 'queued'
-                ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
-                : 'border-success/30 bg-success/5 text-success'
-            }`}
+            className={block.delivery === 'queued' ? 'text-amber-ink' : 'text-ink-faint'}
           >
             {t(block.delivery === 'queued' ? 'agentMessage.pending' : 'agentMessage.delivered')}
           </span>
-        )}
-        {block.error !== undefined ? (
-          <span
-            title={block.error}
-            className="min-w-0 flex-1 truncate text-[10.5px] text-danger"
-          >
-            {block.error}
-          </span>
-        ) : null}
-        <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-faint">
-          {block.at === undefined ? '' : <RelativeTime at={block.at} />}
-        </span>
-        <span aria-hidden className="shrink-0 text-[9.5px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
-      </button>
-    </div>
+        ) : block.at === undefined ? undefined : (
+          <RelativeTime at={block.at} />
+        )
+      }
+      metaWidth={block.delivery === undefined ? 'fixed' : 'auto'}
+      attrs={{
+        'data-subagent-event': block.subagentId,
+        'data-agent-event': block.event,
+      }}
+      buttonAttrs={{ 'data-agent-open': block.subagentId }}
+    />
   );
 });
 
@@ -1119,37 +1145,55 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
   };
 }
 
+/**
+ * A notice is a boundary, not an event: compaction, a marker, the start of a
+ * plan. It gets the divider rule so the log reads as regions. A danger notice
+ * (a failed prompt) is the exception — it keeps the amber-coded rule so a
+ * failure is visible in a fast scroll, but it stays one line of type rather
+ * than a filled card.
+ */
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const { t, time } = useI18n();
   const text = block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
   const title = time.absoluteTime(block.createdAt);
-  if (block.tone === 'danger') {
-    return (
-      <div
-        data-notice-tone={block.tone}
-        title={title}
-        className="anim-enter rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-[12px] text-danger"
-      >
-        {text}
-      </div>
-    );
-  }
   return (
-    <div data-notice-tone={block.tone} title={title} className="anim-enter flex items-center gap-3 py-1">
-      <span className="h-px flex-1 bg-hairline" />
-      <span className="text-[11px] text-ink-faint">{text}</span>
-      <span className="h-px flex-1 bg-hairline" />
-    </div>
+    <TimelineDivider
+      tone={block.tone === 'danger' ? 'warn' : 'plain'}
+      title={title}
+      attrs={{ 'data-notice-tone': block.tone }}
+    >
+      {block.tone === 'danger' ? <span className="font-medium text-danger">{text}</span> : text}
+    </TimelineDivider>
   );
 });
 
 /**
- * Folded step run — aionui's group summary row, kiki rules: collapsed by
- * default, spinner while any member runs, auto-expands on error only. The
- * row folds tool calls, shell runs and thinking into one compact block; the
- * summary shows the step count, tool names and the real framed durations
- * (unknown timings never fabricate a total).
+ * Folded read run (opt-in, `foldSteps`): ≥3 consecutive pure reads collapse
+ * into one line that still names every object it looked at — "read plan.ts,
+ * notes.md · searched TODO" — so folding hides the rows, never the facts.
+ * Spinner while a member runs, auto-expands on error only, and the duration
+ * sums real framed timings (unknown timings never fabricate a total).
  */
+function ReadRunSummary({ group }: { group: ToolGroup }) {
+  const { t } = useI18n();
+  const parts = groupSummary(group);
+  return (
+    <>
+      {parts.map((part, index) => (
+        <span key={index} data-read-run-part={part.verb}>
+          {index > 0 ? <span aria-hidden className="text-ink-faint/70"> · </span> : null}
+          {/* Read runs only ever hold read / list / search / fetch verbs. */}
+          {t(`transcript.step.${part.verb}` as I18nKey)}
+          {part.targets.length > 0 ? (
+            <span className="font-mono text-ink-soft"> {part.targets.join(', ')}</span>
+          ) : null}
+          {part.more > 0 ? <span> {t('transcript.step.more', { count: part.more })}</span> : null}
+        </span>
+      ))}
+    </>
+  );
+}
+
 const ToolGroupRow = memo(
   function ToolGroupRow({
     group,
@@ -1171,61 +1215,41 @@ const ToolGroupRow = memo(
     if (hasError) setExpanded(true);
   }, [hasError]);
 
+  // Unlike a bare "N actions" lid, the line names every object the run looked
+  // at and sits ON the run it describes; the count rides the aria label.
   return (
-    <div className="anim-enter overflow-hidden rounded-xl border border-hairline bg-panel">
-      <button
-        type="button"
-        onClick={() => { setExpanded((value) => !value); }}
-        aria-expanded={expanded}
-        aria-label={t('transcript.stepsAria')}
-        className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-paper/60"
-      >
-        <span className="w-6 shrink-0 text-center font-mono text-[12px] text-ink-soft">☰</span>
-        <span className="shrink-0 text-[12.5px] font-semibold text-ink">
-          {t('transcript.steps', { count: group.count })}
-        </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
-          {groupToolNames(group)}
-        </span>
-        {!running && !hasError && group.durationMs !== undefined ? (
-          <span className="shrink-0 font-mono text-[10px] text-ink-faint">
-            {time.formatDuration(group.durationMs)}
-          </span>
-        ) : null}
-        {running ? (
-          <svg className="spinner h-3.5 w-3.5 text-accent" viewBox="0 0 16 16" fill="none" aria-label={t('transcript.runningAria')}>
-            <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
-            <path d="M14.5 8a6.5 6.5 0 0 0-6.5-6.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-          </svg>
-        ) : hasError ? (
-          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-danger/10 text-[10px] font-bold text-danger">×</span>
-        ) : (
-          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-success/10 text-[10px] font-bold text-success">✓</span>
-        )}
-        <span
-          aria-hidden
-          className={`shrink-0 text-[10px] text-ink-faint transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
-        >
-          ▶
-        </span>
-      </button>
+    <ActivityRow
+      attrs={{ 'data-read-run': group.count }}
+      glyph={<DisclosureChevron open={expanded} className="text-ink-faint" />}
+      chevronInGlyph
+      label={t('transcript.readRun')}
+      detail={<ReadRunSummary group={group} />}
+      expanded={expanded}
+      onToggle={() => { setExpanded((value) => !value); }}
+      ariaLabel={t('transcript.stepsAria', { count: group.count })}
+      meta={
+        !running && !hasError && group.durationMs !== undefined && group.durationMs >= DURATION_WORTH_SHOWING_MS
+          ? time.formatDuration(group.durationMs)
+          : undefined
+      }
+      status={
+        <OutcomeMark
+          state={running ? 'running' : hasError ? 'failed' : 'done'}
+          labels={activityOutcomeLabels(t)}
+        />
+      }
+    >
       {expanded ? (
-        <div className="space-y-2 border-t border-hairline px-3 py-2.5">
-          {/* Members render in ORIGINAL occurrence order — never the per-kind
-              aggregations, so Read → shell → thinking → Edit stays in the
-              order it happened. */}
-          {group.members.map((member) =>
-            member.kind === 'tool' ? (
-              <ToolCard key={member.id} block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
-            ) : member.kind === 'shell' ? (
-              <ShellMessage key={member.id} block={member} />
-            ) : member.kind === 'thinking' ? (
-              <ThinkingMessage key={member.id} block={member} />
-            ) : null,
-          )}
+        // Members hang off a hairline spine in the glyph column — a timeline,
+        // not a box inside a box. Their own glyphs keep the shared axis, and
+        // their hover wash stops at the spine (`nested`).
+        <div className="-ml-[9px] border-l border-hairline pl-[17px]">
+          {group.tools.map((member) => (
+            <ToolCard key={member.id} nested block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+          ))}
         </div>
-      ) : null}
-    </div>
+      ) : undefined}
+    </ActivityRow>
   );
   },
   // groupBlocks rebuilds the wrapper per publish; the step blocks themselves
@@ -1260,8 +1284,11 @@ const BlockView = memo(function BlockView({
   rowActions,
   latestFinalAssistantId,
   annotations,
+  stoppedTailTurnId,
 }: {
   block: Exclude<Block, ToolBlock>;
+  /** Turn whose stop the visible tail divider already states. */
+  stoppedTailTurnId?: string;
   readOnly: boolean;
   onResolveApproval: (
     approvalId: string,
@@ -1286,6 +1313,9 @@ const BlockView = memo(function BlockView({
   annotations?: readonly TimelineAnnotation[];
 }) {
   const { t } = useI18n();
+  // Pending interactions answer in the composer's tray when it is mounted;
+  // the transcript then keeps a one-line record per item.
+  const placement = useInteractionPlacement();
   const originUnknown =
     (block.kind === 'approval' || block.kind === 'question') && block.originUnknown === true;
   const originAgentName =
@@ -1294,9 +1324,9 @@ const BlockView = memo(function BlockView({
     block.originAgentId !== undefined
       ? (agentNames?.get(block.originAgentId) ?? block.originAgentId)
       : undefined;
-  const originFallback = originUnknown
-    ? t(readOnly ? 'ia.originCurrentContext' : 'ia.originUnknown')
-    : undefined;
+  // An unknown origin says nothing actionable: show no provenance at all
+  // (read-only child transcripts still name their context).
+  const originFallback = originUnknown && readOnly ? t('ia.originCurrentContext') : undefined;
   const liveRowActions = readOnly ? undefined : rowActions;
   switch (block.kind) {
     case 'user':
@@ -1321,6 +1351,7 @@ const BlockView = memo(function BlockView({
           rowActions={liveRowActions}
           isLatestFinal={block.id === latestFinalAssistantId}
           annotations={annotations}
+          stopShownByTail={stoppedTailTurnId !== undefined && sameTurn(block.turnId, stoppedTailTurnId)}
         />
       );
     case 'thinking':
@@ -1356,6 +1387,16 @@ const BlockView = memo(function BlockView({
             tone: 'neutral',
           }}
         />
+      ) : placement.inTray ? (
+        <InteractionRecord
+          block={block}
+          originName={originAgentName ?? originFallback}
+          onReview={
+            placement.onReview === undefined
+              ? undefined
+              : () => { placement.onReview?.('approval', block.request.approval_id); }
+          }
+        />
       ) : (
         <ApprovalCard
           block={block}
@@ -1378,6 +1419,16 @@ const BlockView = memo(function BlockView({
             tone: 'neutral',
           }}
         />
+      ) : placement.inTray ? (
+        <InteractionRecord
+          block={block}
+          originName={originAgentName ?? originFallback}
+          onReview={
+            placement.onReview === undefined
+              ? undefined
+              : () => { placement.onReview?.('question', block.request.question_id); }
+          }
+        />
       ) : (
         <QuestionCard
           block={block}
@@ -1390,82 +1441,108 @@ const BlockView = memo(function BlockView({
 });
 
 function nodeKey(node: DisplayNode): string {
-  return node.kind === 'tool-group' ? node.id : node.id;
+  return node.id;
+}
+
+/**
+ * Vertical rhythm by lane transition — the grouping is expressed by space
+ * alone, no frame or rule. Consecutive activity rows sit 2px apart so a run
+ * of settled work reads as one quiet column (§3.2 S0); a change of lane keeps
+ * the base 16px (S5); a new user turn opens with 24px (S6), the largest break
+ * on the page, so turns read as chapters.
+ *
+ * A margin on the row content, on top of the virtualizer's uniform 16px gap.
+ * The absolutely positioned row box does not collapse margins, so its
+ * measured height moves by exactly the same amount as its content: positions,
+ * anchoring and the overlap gate all see one consistent geometry.
+ */
+function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode): string {
+  if (previous === undefined || node === undefined) return '';
+  if (node.kind === 'user') return 'mt-2';
+  const lane = timelineLane(node);
+  return lane === 'activity' && timelineLane(previous) === 'activity' ? '-mt-3.5' : '';
+}
+
+/** Lifecycle entries a subagent card already states through its own status. */
+const CARD_ABSORBED_EVENTS: ReadonlySet<SubagentEventBlock['event']> = new Set([
+  'spawned',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
+/**
+ * One subagent, one timeline line. With the agent's card on the page, the
+ * lifecycle entries that only restate its status and the tool call that
+ * dispatched it are dropped; a failed dispatch call stays, because its error
+ * is not on the card. Returns the input array when nothing merges, so row
+ * memos keep their identity.
+ */
+export function mergeSubagentRows(nodes: readonly DisplayNode[]): readonly DisplayNode[] {
+  const cards = new Set<string>();
+  const dispatchCalls = new Set<string>();
+  for (const node of nodes) {
+    if (node.kind !== 'subagent') continue;
+    cards.add(node.subagentId);
+    if (node.parentToolCallId !== undefined) dispatchCalls.add(node.parentToolCallId);
+  }
+  if (cards.size === 0) return nodes;
+  const absorbed = (node: DisplayNode): boolean => {
+    if (node.kind === 'subagent-event') {
+      return cards.has(node.subagentId) && CARD_ABSORBED_EVENTS.has(node.event);
+    }
+    if (node.kind !== 'tool' || node.status === 'error' || node.isError === true) return false;
+    if (dispatchCalls.has(node.toolCallId)) return true;
+    const refs = node.agentRefs ?? [];
+    return refs.length > 0 && refs.every((ref) => cards.has(ref.agentId));
+  };
+  const merged = nodes.filter((node) => !absorbed(node));
+  return merged.length === nodes.length ? nodes : merged;
 }
 
 /** Turn a display node belongs to (tool groups take their first tool's). */
-function displayNodeTurnId(node: GroupedDisplayNode): string | undefined {
-  if (node.kind === 'history-run') {
-    const first = node.nodes[0];
-    return first === undefined ? undefined : displayNodeTurnId(first);
-  }
+function displayNodeTurnId(node: DisplayNode): string | undefined {
   if (node.kind === 'tool-group') return node.tools[0]?.turnId;
   return 'turnId' in node ? node.turnId : undefined;
 }
 
 /**
- * Background-task terminal notifications project as `system` blocks (variant
- * 'task') whose text leads with the producer's title line — `Background agent
- * failed`, a format agent-core owns — or, for stripped-XML history, carries a
- * `Severity: warning` header line. Successes may fold; failures must not.
+ * Which lane a display node belongs to — the element taxonomy in one place.
+ *
+ * `conversation`: what was said. Owns the full content column, gets the widest
+ *   vertical rhythm, and is what the eye lands on first (user bubble, assistant
+ *   prose, and a pending approval/question, because an unanswered question IS
+ *   the conversation's current turn).
+ * `activity`: what was done. Inset to the shared glyph column, one line each
+ *   until opened (tools, step groups, shell, file writes, dispatches, agent
+ *   reports, plan/todo, background tasks, memory, settled decisions, skills).
+ * `divider`: a boundary between regions rather than an event inside one
+ *   (compaction, markers, stop notices, system injections) — spans the column.
  */
-function isFailedTaskNotificationText(text: string): boolean {
-  const firstLine = text.split('\n', 1)[0] ?? '';
-  return (
-    /^(?:Title:\s*)?Background \S+ (?:failed|timed_out|killed|lost)\b/.test(firstLine) ||
-    /^Severity:\s*warning\s*$/m.test(text)
-  );
-}
-
-function isCompactHistoryNode(
-  node: DisplayNode,
-  forest: AgentForest | undefined,
-  cardForms: ReadonlyMap<string, SubagentCardForm>,
-  visibleTailTurnId: string | undefined,
-): boolean {
+function timelineLane(node: DisplayNode): 'conversation' | 'activity' | 'divider' {
   switch (node.kind) {
+    case 'user':
+    case 'assistant':
+      return 'conversation';
     case 'approval':
-      return node.resolution !== undefined;
+      return node.resolution === undefined ? 'conversation' : 'activity';
     case 'question':
-      return node.outcome !== undefined;
+      return node.outcome === undefined ? 'conversation' : 'activity';
     case 'notice':
-      if (
-        visibleTailTurnId !== undefined &&
-        node.turnId === visibleTailTurnId &&
-        (isTerminalPromptNotice(node) || isInterruptionNotice(node))
-      ) {
-        return false;
-      }
-      return isMarkerNotice(node) || isTerminalPromptNotice(node);
+      return 'divider';
     case 'system':
-      return (
-        node.variant === 'cron_job' ||
-        (node.variant === 'task' && !isFailedTaskNotificationText(node.text))
-      );
-    case 'subagent-event':
-      return (
-        node.event === 'spawned' ||
-        node.event === 'resumed' ||
-        node.event === 'sent' ||
-        node.event === 'completed'
-      );
-    case 'subagent': {
-      const status = forest?.byId[node.subagentId]?.status ?? node.status;
-      const form = cardForms.get(node.subagentId) ?? subagentAutoForm(status);
-      return (
-        form === 'compact' &&
-        status !== 'failed' &&
-        status !== 'cancelled' &&
-        node.error === undefined
-      );
-    }
+      // A compaction summary is a boundary; the rest are things that happened.
+      return node.variant === 'compaction_summary' ? 'divider' : 'activity';
     default:
-      return false;
+      return 'activity';
   }
 }
 
-function groupedNodeKey(node: GroupedDisplayNode): string {
-  return node.kind === 'history-run' ? node.id : nodeKey(node);
+/** Turn ids arrive as `3` or `t3` depending on the source; compare normalized. */
+function sameTurn(left: string | undefined, right: string | undefined): boolean {
+  if (left === undefined || right === undefined) return false;
+  const norm = (value: string) => (value.startsWith('t') ? value : `t${value}`);
+  return norm(left) === norm(right);
 }
 
 /**
@@ -1569,13 +1646,11 @@ function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
   return false;
 }
 
-const TRANSCRIPT_ESTIMATED_ROW_HEIGHT = 120;
 const TRANSCRIPT_OVERSCAN = 6;
-const TRANSCRIPT_END_THRESHOLD = 80;
 const TRANSCRIPT_OLDER_INTENT_MS = 1000;
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 
-type TranscriptVirtualNode = GroupedDisplayNode | undefined;
+type TranscriptVirtualNode = DisplayNode | undefined;
 type TranscriptViewportAnchor = {
   atEnd: boolean;
   key: string | undefined;
@@ -1589,11 +1664,7 @@ type PendingResetRestore = {
 };
 
 function virtualNodeKey(node: TranscriptVirtualNode): string {
-  return node === undefined ? EMPTY_TRANSCRIPT_ITEM_KEY : groupedNodeKey(node);
-}
-
-function measureTranscriptRow(element: HTMLDivElement, entry: ResizeObserverEntry | undefined): number {
-  return Math.round(entry?.borderBoxSize?.[0]?.blockSize ?? element.offsetHeight);
+  return node === undefined ? EMPTY_TRANSCRIPT_ITEM_KEY : nodeKey(node);
 }
 
 function captureTranscriptAnchor(
@@ -1609,7 +1680,7 @@ function captureTranscriptAnchor(
 }
 
 type TranscriptRowProps = {
-  node: GroupedDisplayNode;
+  node: DisplayNode;
   agentId: string;
   readOnly: boolean;
   approvalShortcutHints: boolean;
@@ -1621,6 +1692,8 @@ type TranscriptRowProps = {
   annotations?: readonly TimelineAnnotation[];
   /** External-executor badge shown above the first row of the turn. */
   executionBadge?: TurnExecutionInfo;
+  /** Turn whose stop the visible tail divider already states. */
+  stoppedTailTurnId?: string;
   /** Manual subagent card form overrides, keyed by subagentId (empty = auto). */
   subagentFormOverrides: ReadonlyMap<string, SubagentCardForm>;
   onToggleSubagentForm?: (agentId: string, form: SubagentCardForm) => void;
@@ -1636,24 +1709,20 @@ type TranscriptRowProps = {
   onOpenAgent?: (agentId: string) => void;
 };
 
-function nodeUsesAgentNames(node: GroupedDisplayNode): boolean {
+function nodeUsesAgentNames(node: DisplayNode): boolean {
   return (
     node.kind === 'approval' ||
     node.kind === 'question' ||
     node.kind === 'tool' ||
-    node.kind === 'tool-group' ||
-    node.kind === 'history-run'
+    node.kind === 'tool-group'
   );
 }
 
 function subagentBranchEqual(
-  node: GroupedDisplayNode,
+  node: DisplayNode,
   previousForest: AgentForest | undefined,
   nextForest: AgentForest | undefined,
 ): boolean {
-  if (node.kind === 'history-run') {
-    return node.nodes.every((member) => subagentBranchEqual(member, previousForest, nextForest));
-  }
   if (node.kind !== 'subagent') return true;
   return previousForest?.byId[node.subagentId] === nextForest?.byId[node.subagentId];
 }
@@ -1677,6 +1746,7 @@ const TranscriptRow = memo(
     latestFinalAssistantId,
     annotations,
     executionBadge,
+    stoppedTailTurnId,
     subagentFormOverrides,
     onToggleSubagentForm,
     onResolveApproval,
@@ -1694,6 +1764,8 @@ const TranscriptRow = memo(
         <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
       ) : member.kind === 'tool' ? (
         <ToolCard block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+      ) : member.kind === 'shell' ? (
+        <ShellMessage block={member} />
       ) : (
         <BlockView
           block={member}
@@ -1714,26 +1786,26 @@ const TranscriptRow = memo(
           rowActions={rowActions}
           latestFinalAssistantId={latestFinalAssistantId}
           annotations={member.id === node.id ? annotations : undefined}
+          stoppedTailTurnId={stoppedTailTurnId}
         />
       );
-    if (node.kind === 'history-run') {
-      return (
-        <div data-block-id={node.id} data-turn-id={rowTurnId}>
-          {executionBadge !== undefined ? <TurnExecutionBadge execution={executionBadge} /> : null}
-          <HistoryRunRow run={node} renderMember={renderNode} />
-        </div>
-      );
-    }
+    // Conversation keeps the full content column; everything the agent DID is
+    // inset into the shared activity lane, so a scan follows one glyph axis.
+    // Dividers span the column by design and are therefore not inset.
     return (
-      <div data-block-id={nodeKey(node)} data-turn-id={rowTurnId}>
+      <div
+        data-block-id={nodeKey(node)}
+        data-turn-id={rowTurnId}
+        data-timeline-lane={timelineLane(node)}
+        className={timelineLane(node) === 'activity' ? ACTIVITY_GUTTER : undefined}
+      >
         {executionBadge !== undefined ? <TurnExecutionBadge execution={executionBadge} /> : null}
         {renderNode(node)}
       </div>
     );
   },
   (prev, next) =>
-    (displayNodesEqual(prev.node as DisplayNode, next.node as DisplayNode) ||
-      historyRunsEqual(prev.node, next.node)) &&
+    displayNodesEqual(prev.node, next.node) &&
     prev.agentId === next.agentId &&
     prev.readOnly === next.readOnly &&
     prev.approvalShortcutHints === next.approvalShortcutHints &&
@@ -1743,6 +1815,7 @@ const TranscriptRow = memo(
     prev.latestFinalAssistantId === next.latestFinalAssistantId &&
     prev.annotations === next.annotations &&
     prev.executionBadge === next.executionBadge &&
+    prev.stoppedTailTurnId === next.stoppedTailTurnId &&
     prev.subagentFormOverrides === next.subagentFormOverrides &&
     prev.onToggleSubagentForm === next.onToggleSubagentForm &&
     prev.onResolveApproval === next.onResolveApproval &&
@@ -1763,10 +1836,10 @@ function JumpToBottom({
   return (
     <button
       type="button"
-      onClick={() => { virtualizer.scrollToEnd({ behavior: 'smooth' }); }}
-      className="anim-enter absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline bg-panel/95 px-3 py-1.5 text-[11.5px] font-medium text-ink-soft shadow-[0_4px_16px_-6px_rgba(28,25,23,0.25)] transition-colors hover:border-accent hover:text-accent"
+      onClick={() => { virtualizer.scrollToEnd(); }}
+      className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3.5 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-150 hover:text-ink"
     >
-      <span aria-hidden className="text-[10px]">▼</span> {t('transcript.jumpToLatest')}
+      <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
     </button>
   );
 }
@@ -1780,15 +1853,15 @@ function TopEdge({ state, onLoadOlder }: {
   if (state.historyCoverageKind === 'unknown') {
     return (
       <div role="status" className="mx-auto flex max-w-[440px] flex-col items-center gap-1.5 rounded-lg border border-hairline bg-panel px-4 py-3 text-center">
-        <p className="text-[11.5px] font-medium text-ink">{t('transcript.historyUnverified')}</p>
-        <p className="text-[10.5px] text-ink-soft">{t('transcript.historyUnverifiedHint')}</p>
-        {state.olderError !== undefined ? <p className="text-[10.5px] text-danger">{state.olderError}</p> : null}
-        {state.loadingOlder ? <span className="text-[10.5px] text-ink-faint">{t('transcript.loadingEarlier')}</span> : null}
+        <p className="text-[13px] font-medium text-ink">{t('transcript.historyUnverified')}</p>
+        <p className="text-[12px] text-ink-soft">{t('transcript.historyUnverifiedHint')}</p>
+        {state.olderError !== undefined ? <p className="text-[11px] text-danger">{state.olderError}</p> : null}
+        {state.loadingOlder ? <span className="text-[11px] text-ink-faint">{t('transcript.loadingEarlier')}</span> : null}
         {!state.loadingOlder && state.hasMoreHistory && state.oldestMessageId !== undefined ? (
           <button
             type="button"
             onClick={() => { void onLoadOlder(); }}
-            className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
+            className="rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
           >
             {t(state.olderError === undefined ? 'transcript.loadEarlier' : 'transcript.retryEarlier')}
           </button>
@@ -1799,8 +1872,8 @@ function TopEdge({ state, onLoadOlder }: {
 
   if (state.loadingOlder) {
     return (
-      <div className="flex items-center justify-center gap-2 pb-2 text-[11.5px] text-ink-faint">
-        <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+      <div className="flex items-center justify-center gap-2 pb-2 text-[12px] text-ink-faint">
+        <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
         {t('transcript.loadingEarlier')}
       </div>
     );
@@ -1808,12 +1881,12 @@ function TopEdge({ state, onLoadOlder }: {
   if (state.olderError !== undefined) {
     return (
       <div className="flex flex-col items-center justify-center gap-1.5 pb-2 text-center">
-        <p className="text-[11.5px] text-danger">{t('transcript.olderFailed')}</p>
-        <p className="max-w-[360px] font-mono text-[10.5px] text-danger/80">{state.olderError}</p>
+        <p className="text-[12px] text-danger">{t('transcript.olderFailed')}</p>
+        <p className="max-w-[360px] font-mono text-[11px] text-danger/80">{state.olderError}</p>
         <button
           type="button"
           onClick={() => { void onLoadOlder(); }}
-          className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
+          className="rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
         >
           {t('transcript.retryEarlier')}
         </button>
@@ -1824,7 +1897,7 @@ function TopEdge({ state, onLoadOlder }: {
     return (
       <div className="flex items-center gap-3 pb-1">
         <span className="h-px flex-1 bg-hairline" />
-        <span className="text-[10.5px] text-ink-faint">{t('transcript.beginning')}</span>
+        <span className="text-[12px] text-ink-faint">{t('transcript.beginning')}</span>
         <span className="h-px flex-1 bg-hairline" />
       </div>
     );
@@ -1834,7 +1907,7 @@ function TopEdge({ state, onLoadOlder }: {
       <button
         type="button"
         onClick={() => { void onLoadOlder(); }}
-        className="mx-auto block rounded-full border border-hairline px-3 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
+        className="mx-auto block rounded-full border border-hairline px-3 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
       >
         {t('transcript.loadEarlier')}
       </button>
@@ -1889,12 +1962,12 @@ const TurnStatusLine = memo(function TurnStatusLine({
       role="status"
       aria-live="polite"
       data-turn-status
-      className={`anim-enter flex items-center gap-2 pl-1 text-[11.5px] font-medium ${retryText === undefined ? 'text-ink-faint' : 'text-amber-ink'}`}
+      className={`anim-enter flex min-h-6 items-center gap-2 text-[13px] ${retryText === undefined ? 'text-ink-faint' : 'text-amber-ink'}`}
     >
-      <span className={`status-dot-busy h-1.5 w-1.5 rounded-full ${retryText === undefined ? 'bg-accent' : 'bg-amber-ink'}`} />
+      <span className={`status-dot-busy h-1.5 w-1.5 rounded-full ${retryText === undefined ? 'bg-ink-soft' : 'bg-amber-ink'}`} />
       <span>{retryText ?? t('transcript.turnWorking')}</span>
       {startedAt !== undefined && elapsedMs >= TURN_CLOCK_AFTER_MS ? (
-        <span aria-hidden className="font-mono text-[10.5px] tabular-nums text-ink-faint/80">
+        <span aria-hidden className="text-[12px] tabular-nums text-ink-faint">
           {time.formatDuration(elapsedMs)}
         </span>
       ) : null}
@@ -1939,20 +2012,20 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({
             ? undefined
             : t('transcript.exec.resumeMode', { mode: execution.resumeMode })
         }
-        className="inline-flex items-center gap-1 rounded-full border border-hairline bg-panel px-2 py-0.5 text-[10.5px] font-medium text-ink-faint"
+        className="inline-flex items-center gap-1 rounded-md bg-panel px-2 py-0.5 text-[12px] font-medium text-ink-soft"
       >
-        <span aria-hidden className="text-[9px]">⬈</span>
+        <Icon name="external" size={12} className="text-ink-faint" />
         {t('transcript.exec.badge', { executor, protocol })}
       </span>
       {degraded ? (
         <span
           title={lossTooltip === '' ? undefined : lossTooltip}
-          className="inline-flex items-center gap-1 rounded-full border border-amber-rule/40 bg-amber-card px-2 py-0.5 text-[10.5px] font-medium text-amber-ink"
+          className="inline-flex min-w-0 items-center gap-1 rounded-md bg-amber-card px-2 py-0.5 text-[12px] font-medium text-amber-ink"
         >
-          <span aria-hidden className="text-[9px]">⚠</span>
+          <Icon name="warning" size={12} />
           {t('transcript.exec.degraded')}
           {execution.losses.length > 0 ? (
-            <span className="font-mono text-[9.5px] text-amber-ink/80">
+            <span className="truncate font-mono text-[11px] font-normal text-amber-ink/85">
               {execution.losses.join(' ')}
             </span>
           ) : null}
@@ -1966,7 +2039,16 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({
  * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
  * Ran for … · TTFT … · output decode throughput.
  */
-export const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTailInfo }) {
+export const TurnTailLine = memo(function TurnTailLine({
+  tail,
+  onResume,
+  resumeDisabled = false,
+}: {
+  tail: TurnTailInfo;
+  /** Present when the stopped turn can be re-run (cancelled tails only). */
+  onResume?: () => void;
+  resumeDisabled?: boolean;
+}) {
   const { t, time } = useI18n();
   const [copied, setCopied] = useState(false);
   const isFailed = tail.state === 'failed';
@@ -1999,37 +2081,52 @@ export const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTai
       className={`anim-enter py-1 ${isFailed ? 'text-danger' : isCancelled ? 'text-amber-ink' : ''}`}
     >
       <div className="flex items-center gap-3">
-        <span className={`h-px flex-1 ${isFailed ? 'bg-danger/30' : isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
+        <span className={`h-px flex-1 ${isFailed ? 'bg-danger/25' : isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
         <div className="flex items-center gap-2">
           {isFailed ? (
-            <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[10.5px] font-semibold text-danger">
+            <span className="text-[12px] font-semibold text-danger">
               {t('notice.turnFailed')}
             </span>
           ) : isCancelled ? (
-            <span className="rounded-full bg-amber-card px-2 py-0.5 text-[10.5px] font-semibold text-amber-ink">
-              {t('transcript.stopped')}
+            <span className="text-[12px] font-semibold text-amber-ink">
+              {t('transcript.stoppedByYou')}
             </span>
           ) : null}
-          <span className={`font-mono text-[10.5px] ${isFailed ? 'text-danger/80' : isCancelled ? 'text-amber-ink/80' : 'text-ink-faint'}`}>
+          {isCancelled && onResume !== undefined ? (
+            <>
+              <span aria-hidden className="text-[12px] text-amber-ink">·</span>
+              <button
+                type="button"
+                data-turn-tail-resume
+                onClick={onResume}
+                disabled={resumeDisabled}
+                title={t('transcript.resumeTitle')}
+                className="min-h-6 rounded-md px-1 text-[12px] font-semibold text-amber-ink underline underline-offset-2 transition-colors duration-150 hover:bg-amber-rule/15 disabled:cursor-default disabled:no-underline disabled:opacity-60"
+              >
+                {t('transcript.resume')}
+              </button>
+            </>
+          ) : null}
+          <span className={`text-[12px] tabular-nums ${isFailed ? 'text-danger' : isCancelled ? 'text-amber-ink' : 'text-ink-faint'}`}>
             <RelativeTime at={tail.endedAt} />{facts.length > 0 ? ` · ${facts.join(' · ')}` : ''}
           </span>
           {isFailed && tail.error !== undefined ? (
             <button
               type="button"
               onClick={handleCopyError}
-              className="rounded border border-danger/30 px-1.5 py-0.5 text-[10px] font-medium text-danger hover:bg-danger/10"
+              className="min-h-6 rounded-md px-1.5 text-[12px] font-medium text-danger hover:bg-danger/[0.08]"
               title={tail.error}
             >
               {copied ? t('cb.copied') : t('cb.copy')}
             </button>
           ) : null}
         </div>
-        <span className={`h-px flex-1 ${isFailed ? 'bg-danger/30' : isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
+        <span className={`h-px flex-1 ${isFailed ? 'bg-danger/25' : isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
       </div>
       {isFailed && tail.error !== undefined ? (
         <div
           title={tail.error}
-          className="mx-auto mt-1 max-w-[var(--kiki-chat-content-width,760px)] truncate rounded border border-danger/30 bg-danger/5 px-2.5 py-1 text-center font-mono text-[11px] text-danger"
+          className="mx-auto mt-1 max-w-[var(--kiki-chat-content-width,760px)] truncate rounded-md bg-danger/[0.06] px-2.5 py-1 text-center font-mono text-[12px] text-danger"
         >
           {tail.error}
         </div>
@@ -2181,16 +2278,31 @@ export function Transcript({
     });
   }, []);
   const visibleTailTurnId = state.busy ? undefined : state.turnTail?.turnId;
-  // Fold historical terminal entries into one expandable summary row. Failures
-  // keep a danger summary; terminal notices for the visible latest tail remain
-  // standalone so the current outcome is never hidden.
-  const groupedNodes = useMemo(
-    () => groupHistoryRuns(
-      nodes,
-      (node) => isCompactHistoryNode(node, stableForest, cardForms, visibleTailTurnId),
-    ),
-    [nodes, stableForest, cardForms, visibleTailTurnId],
-  );
+  // A user stop reads as ONE line: the tail's "Stopped by you · Resume". The
+  // same turn's "Prompt aborted" / interruption notices would repeat it.
+  const stoppedTailTurnId =
+    visibleTailTurnId !== undefined && state.turnTail?.state === 'cancelled' ? visibleTailTurnId : undefined;
+  const tailNodes = useMemo(() => {
+    if (stoppedTailTurnId === undefined) return nodes;
+    // Live abort notices can lack a turn id; anything after the last user row
+    // belongs to the stopped tail turn too.
+    const lastUserIndex = nodes.findLastIndex((node) => node.kind === 'user');
+    return nodes.filter(
+      (node, index) =>
+        !(
+          node.kind === 'notice' &&
+          (isAbortedPromptNotice(node) || isInterruptionNotice(node)) &&
+          (sameTurn(node.turnId, stoppedTailTurnId) || (node.turnId === undefined && index > lastUserIndex))
+        ),
+    );
+  }, [nodes, stoppedTailTurnId]);
+  // Settled entries are NOT folded behind a counter: they stay in place at
+  // their own timestamp, one quiet activity line each. One subagent is ONE
+  // line, though: when its card is on the page, the card absorbs the
+  // lifecycle entries (spawned / completed / failed / cancelled) and the
+  // dispatching tool call — all three said the same thing three times.
+  // Deliveries (sent / resumed) carry their own message and stay.
+  const groupedNodes = useMemo(() => mergeSubagentRows(tailNodes), [tailNodes]);
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
     for (const block of blocks) {
@@ -2225,6 +2337,25 @@ export function Transcript({
   // Regenerate/fork anchor: the latest completed turn's final assistant reply.
   // Changes only at turn boundaries, so the page memos survive token deltas.
   const latestFinalAssistantId = useMemo(() => latestFinalAssistantBlockId(blocks), [blocks]);
+  // Resume = regenerate the stopped turn's reply; offered only when that reply
+  // exists and the session is writable.
+  const stoppedAssistant = useMemo(
+    () =>
+      stoppedTailTurnId === undefined
+        ? undefined
+        : blocks.findLast(
+          (block): block is AssistantBlock => block.kind === 'assistant' && sameTurn(block.turnId, stoppedTailTurnId),
+        ),
+    [blocks, stoppedTailTurnId],
+  );
+  const onResumeStopped = readOnly ? undefined : rowActions?.onResumeStopped;
+  const resumeStopped = useMemo(
+    () =>
+      stoppedAssistant === undefined || onResumeStopped === undefined
+        ? undefined
+        : () => { onResumeStopped(stoppedAssistant); },
+    [stoppedAssistant, onResumeStopped],
+  );
   // External-executor badges: first display node of each turn that carries
   // `execution` provenance. Entry identity is stabilized upstream (the
   // projection reuses unchanged TurnExecutionInfo objects), so the map — and
@@ -2237,7 +2368,7 @@ export function Transcript({
       if (turnId === undefined || seenTurns.has(turnId)) continue;
       seenTurns.add(turnId);
       const execution = state.turnExecutions[turnId];
-      if (execution !== undefined) map.set(groupedNodeKey(node), execution);
+      if (execution !== undefined) map.set(nodeKey(node), execution);
     }
     return map;
   });
@@ -2357,18 +2488,7 @@ export function Transcript({
   const initialScrollFrameRef = useRef<number | null>(null);
   const measuredResetRef = useRef(state.transcriptResetVersion);
   const pendingResetRestoreRef = useRef<PendingResetRestore | null>(null);
-  // Restore end anchoring when the estimate→actual delta breaks it. During a
-  // streaming turn a row grows from TRANSCRIPT_ESTIMATED_ROW_HEIGHT (120px)
-  // to its real height (a streamed answer reaches 500px+); the fork's
-  // #1218-style re-measure rule skips the scrollTop compensation for a row
-  // that spans the fold, and its `wasAtEnd` gate reads the VIRTUAL distance —
-  // already polluted by the stale estimate — so the end anchor is lost the
-  // first time the viewport rests below a growing block. Re-assert "truly at
-  // end" from the ACTUAL DOM distance (scrollHeight − clientHeight −
-  // scrollTop): when the viewport is still anchored (the real distance after
-  // the growth stays within the follow threshold), the compensation runs and
-  // follow survives. Returning true only there leaves the fork's default
-  // backward-scroll and above-fold rules untouched.
+  // Measurement + anchoring model: see transcriptVirtualizer.ts.
   const virtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
   const priorHistoryShapeRef = useRef({ resetVersion: state.transcriptResetVersion, length: virtualNodes.length });
   useInsertionEffect(() => {
@@ -2391,6 +2511,7 @@ export function Transcript({
     rangeExtractor,
     paddingStart: 24,
     paddingEnd: 60,
+    // The base gap; rowSpacing tightens or widens it per lane transition.
     gap: 16,
     initialRect: { width: 760, height: 600 },
     useAnimationFrameWithResizeObserver: false,
@@ -2401,19 +2522,32 @@ export function Transcript({
       viewportAnchorRef.current = captureTranscriptAnchor(instance);
     },
   });
-  // The instance field (not an option) — assign once, after mount.
+  // The instance field (not an option) — assign once, before the first
+  // ResizeObserver delivery.
   virtualizerRef.current = virtualizer;
-  useEffect(() => {
-    const instance = virtualizerRef.current;
-    if (instance === null) return;
-    instance.shouldAdjustScrollPositionOnItemSizeChange = (_item, delta) => {
-      if (delta <= 0) return false;
-      const el = instance.scrollElement;
-      if (!(el instanceof HTMLElement)) return false;
-      const realDistanceFromEnd = el.scrollHeight - el.clientHeight - el.scrollTop;
-      return realDistanceFromEnd - delta <= TRANSCRIPT_END_THRESHOLD;
-    };
+  useLayoutEffect(() => {
+    installTranscriptAnchoring(virtualizer);
   }, [virtualizer]);
+  // Settle pass: re-read mounted rows once scrolling goes idle. A resize the
+  // observer delivered mid-scroll can be skipped by virtual-core, and the
+  // observer never repeats it; this is the only path that heals such a row.
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element === null) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onScroll = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        reconcileMountedRows(virtualizer);
+      }, 160);
+    };
+    element.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      element.removeEventListener('scroll', onScroll);
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [loaded, loadError, virtualizer]);
 
   useLayoutEffect(() => {
     if (!loaded || loadError !== undefined) return;
@@ -2441,10 +2575,17 @@ export function Transcript({
     if (!initialScrollDoneRef.current) {
       initialScrollDoneRef.current = true;
       measuredResetRef.current = state.transcriptResetVersion;
-      virtualizer.scrollToEnd();
+      landAtEnd(virtualizer);
+      // One more landing after the first measured frame, unless something
+      // moved the viewport off the end in between (a floor jump, a reader
+      // scroll) — that intent wins over the initial placement.
       initialScrollFrameRef.current = requestAnimationFrame(() => {
         initialScrollFrameRef.current = null;
-        virtualizer.scrollToEnd();
+        // First measurements keep the end pinned (following → compensate), so
+        // a real distance past the threshold means someone else moved it.
+        const scroll = scrollRef.current;
+        if (scroll !== null && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > TRANSCRIPT_END_THRESHOLD) return;
+        landAtEnd(virtualizer);
         viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
       });
       viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
@@ -2457,10 +2598,11 @@ export function Transcript({
         cancelAnimationFrame(previousPending.frame);
       }
       const anchor = previousPending?.anchor ?? viewportAnchorRef.current;
-      virtualizer.measure();
-      for (const element of virtualizer.elementsCache.values()) {
-        virtualizer.measureElement(element);
-      }
+      // Keys survive a reset, so cached sizes stay valid for unchanged rows;
+      // mounted rows whose content changed are re-read in place. (A full
+      // `measure()` here would drop every cached size while mounted rows keep
+      // their height — the observer then never fires and estimates stick.)
+      reconcileMountedRows(virtualizer);
       pendingResetRestoreRef.current = {
         version: state.transcriptResetVersion,
         anchor,
@@ -2509,7 +2651,7 @@ export function Transcript({
             <button
               type="button"
               onClick={onRetryLoad}
-              className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-accent-deep"
+              className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
             >
               {t('common.retry')}
             </button>
@@ -2522,7 +2664,7 @@ export function Transcript({
   if (!loaded) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-[13px] text-ink-faint">
-        <span className="status-dot-busy h-2 w-2 rounded-full bg-accent" />
+        <span className="status-dot-busy h-2 w-2 rounded-full bg-ink-soft" />
         {t('transcript.opening')}
       </div>
     );
@@ -2559,6 +2701,7 @@ export function Transcript({
             const node = virtualNodes[virtualItem.index];
             const first = virtualItem.index === 0;
             const last = virtualItem.index === virtualNodes.length - 1;
+            const spacing = first ? '' : rowSpacing(virtualNodes[virtualItem.index - 1], node);
             return (
               <div
                 key={virtualItem.key}
@@ -2567,7 +2710,7 @@ export function Transcript({
                 data-transcript-virtual-item
                 className="absolute left-0 w-full"
               >
-                <div className="mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6">
+                <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
                   {first ? <TopEdge state={state} onLoadOlder={onLoadOlder} /> : null}
                   {node === undefined ? null : (
                     <TranscriptRow
@@ -2582,6 +2725,7 @@ export function Transcript({
                       latestFinalAssistantId={latestFinalAssistantId}
                       annotations={annotationTargets.get(virtualNodeKey(node))}
                       executionBadge={executionBadges.get(virtualNodeKey(node))}
+                      stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
                       subagentFormOverrides={cardForms}
                       onToggleSubagentForm={handleToggleSubagentForm}
                       onResolveApproval={onResolveApproval}
@@ -2595,7 +2739,11 @@ export function Transcript({
                     <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} />
                   ) : null}
                   {last && !state.busy && state.turnTail !== undefined ? (
-                    <TurnTailLine tail={state.turnTail} />
+                    <TurnTailLine
+                      tail={state.turnTail}
+                      onResume={resumeStopped}
+                      resumeDisabled={rowActions?.disabled === true}
+                    />
                   ) : null}
                 </div>
               </div>

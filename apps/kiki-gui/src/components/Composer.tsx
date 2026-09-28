@@ -1,8 +1,9 @@
 /**
  * Composer — floating rounded-2xl card: chips above a full-width multiline
  * input (send shortcut from settings), a bottom toolbar with one control per
- * concern (attach, permission-mode dropdown, plan/swarm/goal dropdown, agent
- * profile picker, model+effort selector fed from the server catalog), and a
+ * concern (＋ menu with attach and the Normal/Plan/Goal mode, permission
+ * dropdown, agent profile picker, model+effort selector fed from the server
+ * catalog), and a
  * round accent send button; busy state swaps in Abort.
  *
  * Batch B additions:
@@ -24,7 +25,7 @@
  *     text (disabled `reference` skills explain themselves instead).
  */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
@@ -79,13 +80,19 @@ import { useConnection } from '../state/connection';
 import { ContextMeter, type ContextMeterUsage } from './ContextMeter';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
-import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
+import { Icon } from './icons';
+import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
+import {
+  AddMenu,
+  PermissionSelect,
+  RunModeChip,
+  STATUS_SEGMENT_CLASS,
+  STATUS_SEGMENT_ICON_CLASS,
+  STATUS_SEGMENT_SET,
+  type RunMode,
+  type RunModeControls,
+} from './ComposerControls';
 
-const MODES: readonly { id: PermissionMode; labelKey: I18nKey; hintKey: I18nKey }[] = [
-  { id: 'manual', labelKey: 'composer.mode.manual', hintKey: 'composer.mode.manualHint' },
-  { id: 'auto', labelKey: 'composer.mode.auto', hintKey: 'composer.mode.autoHint' },
-  { id: 'yolo', labelKey: 'composer.mode.yolo', hintKey: 'composer.mode.yoloHint' },
-];
 
 /** Localized descriptions for the client-side slash shortcuts (skills carry server text). */
 const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
@@ -99,7 +106,6 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 
 const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
-const REBUILD_CONTEXT_OPTION = '__kiki_rebuild_context__';
 const CATALOG_RETRY_INTERVAL_MS = 30_000;
 
 const isTransientCatalogError = (error: unknown): boolean =>
@@ -152,7 +158,7 @@ export function buildAgentProfileOptions(
   );
   const toOption = (item: NamedAgentProfile, group: string): SearchableSelectOption => ({
     value: item.name,
-    label: item.name,
+    label: item.name === DEFAULT_AGENT_PROFILE ? t('composer.agentDefaultOption') : item.name,
     description: nonEmpty(item.description) ?? nonEmpty(item.when_to_use),
     hint: nonEmpty(item.pinned_model_alias),
     title: item.name,
@@ -184,6 +190,7 @@ export function Composer({
   busy,
   disabled,
   variant = 'main',
+  replyingTo,
   sendDisabled = false,
   sendDisabledTitle,
   disabledPlaceholder,
@@ -198,7 +205,6 @@ export function Composer({
   permissionMode,
   planMode,
   planGate,
-  swarmMode,
   goalObjective = '',
   goalMode = false,
   efforts,
@@ -226,7 +232,6 @@ export function Composer({
   onChangePermissionMode,
   onChangePlanMode,
   onChangePlanGate,
-  onChangeSwarmMode,
   onChangeGoalObjective,
   onChangeGoalMode,
   onChangeEffort,
@@ -247,6 +252,8 @@ export function Composer({
   disabled: boolean;
   /** Main composer controls, or the subagent endpoint controls only. */
   variant?: 'main' | 'subagent';
+  /** Subagent composer: the agent this message goes to ("Replying to …"). */
+  replyingTo?: string;
   /**
    * Blocks sending without locking the textarea (default false): the /new
    * page uses it while no workspace or absolute path is chosen yet, so the
@@ -280,11 +287,9 @@ export function Composer({
   /**
    * Effective plan gate for the next prompt (`plan_gate`). Provided together
    * with `onChangePlanGate` only where a session-level override exists (/s);
-   * the PlanSelect gate row hides when the pair is absent (/new).
+   * the Mode menu's gate row hides when the pair is absent (/new).
    */
   planGate?: PromptPlanGate;
-  /** PromptSubmission.swarm_mode — enables concurrent subagent orchestration. */
-  swarmMode: boolean;
   goalObjective?: string;
   /**
    * Goal mode (composer toggle): the next plain message is sent with
@@ -350,9 +355,8 @@ export function Composer({
   onRebuildContext?: () => Promise<{ readonly changed: boolean }>;
   onChangePermissionMode: (mode: PermissionMode) => void;
   onChangePlanMode: (on: boolean) => void;
-  /** Session plan-gate pick; required for the PlanSelect gate row to show. */
+  /** Session plan-gate pick; required for the Mode menu's gate row to show. */
   onChangePlanGate?: (gate: PromptPlanGate) => void;
-  onChangeSwarmMode: (on: boolean) => void;
   onChangeGoalObjective?: (objective: string) => void;
   /** Goal-mode toggle; when absent the composer hides the goal toggle button. */
   onChangeGoalMode?: (on: boolean) => void;
@@ -448,13 +452,33 @@ export function Composer({
     attachmentBaselineRef.current = next;
     onChangeAttachments(next);
   };
-  // Two independent dropdowns share the run-shape settings: the permission
-  // panel owns the approval mode; the plan panel owns plan/swarm/goal.
-  // `goalOpen` expands the objective field inside the plan panel (the `/goal`
-  // shortcut opens both at once).
+  // The permission chip owns the approval mode; the ＋ menu owns attach,
+  // the run-shape (Mode) view and rebuild. `/plan` and `/goal` open ＋ straight
+  // into its Mode view. The /new draft has no parent goal flag, so it arms
+  // goal locally (`localGoalArmed`).
   const [modeOpen, setModeOpen] = useState(false);
-  const [planOpen, setPlanOpen] = useState(false);
-  const [goalOpen, setGoalOpen] = useState(false);
+  const [addView, setAddView] = useState<'closed' | 'root' | 'mode'>('closed');
+  const [localGoalArmed, setLocalGoalArmed] = useState(false);
+  // Run shape: Normal / Plan / Goal are one exclusive choice. A live session
+  // owns goal mode (onChangeGoalMode); the /new draft arms it locally and
+  // folds it into the send as the objective.
+  const goalArmed = onChangeGoalMode !== undefined
+    ? goalMode
+    : localGoalArmed || goalObjective !== '';
+  const runMode: RunMode = goalArmed ? 'goal' : planMode ? 'plan' : 'normal';
+  const setGoalArmed = (on: boolean) => {
+    if (onChangeGoalMode !== undefined) {
+      onChangeGoalMode(on);
+      return;
+    }
+    setLocalGoalArmed(on);
+    if (!on && goalObjective !== '') onChangeGoalObjective?.('');
+  };
+  const changeRunMode = (next: RunMode) => {
+    if (next !== 'plan' && planMode) onChangePlanMode(false);
+    if (next === 'plan' && !planMode) onChangePlanMode(true);
+    if ((next === 'goal') !== goalArmed) setGoalArmed(next === 'goal');
+  };
   const [menu, setMenu] = useState<ComposerMenu | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -557,7 +581,7 @@ export function Composer({
         },
         ...models.map((item) => ({
           value: item.id,
-          label: `${item.display_name ?? item.id}${item.id === defaultModel ? t('composer.sessionDefaultSuffix') : ''}`,
+          label: `${item.display_name ?? item.id}${item.id === defaultModel ? t('composer.modelCurrentSuffix') : ''}`,
           // The hint names the local alias: two aliases of one remote model
           // (the supported shape) must stay distinguishable in the picker.
           hint:
@@ -597,20 +621,6 @@ export function Composer({
   const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
     () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? [], t),
     [agentProfilesQuery.data, t],
-  );
-  const profileSelectOptions: readonly SearchableSelectOption[] = useMemo(
-    () => onRebuildContext === undefined
-      ? agentProfileOptions
-      : [
-          ...agentProfileOptions,
-          {
-            value: REBUILD_CONTEXT_OPTION,
-            label: t('profile.rebuildMenu'),
-            description: t('profile.rebuildMenuDescription'),
-            group: t('profile.actionsGroup'),
-          },
-        ],
-    [agentProfileOptions, onRebuildContext, t],
   );
   const validateProfile = agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
   const validatingModel = model ?? defaultModel ?? serverDefaultModel;
@@ -776,7 +786,7 @@ export function Composer({
     queueEditing ||
     (quote !== undefined && quote !== null) ||
     (annotations !== undefined && annotations.length > 0) ||
-    (goalMode && onChangeGoalMode !== undefined) ||
+    runMode === 'goal' ||
     attachments.length > 0 ||
     attachmentError !== null ||
     slashConfirm !== null;
@@ -876,15 +886,24 @@ export function Composer({
   const runAction = (action: SlashActionId) => {
     switch (action) {
       case 'plan':
-        onChangePlanMode(!planMode);
+        // Plan and goal are exclusive: turning plan on disarms goal.
+        if (!planMode) {
+          onChangePlanMode(true);
+          if (onChangeGoalMode !== undefined && goalMode) onChangeGoalMode(false);
+          setLocalGoalArmed(false);
+        } else {
+          onChangePlanMode(false);
+        }
+        setAddView('mode');
         break;
       case 'goal':
+        if (planMode) onChangePlanMode(false);
         if (onChangeGoalMode !== undefined) {
           onChangeGoalMode(true);
         } else {
-          setPlanOpen(true);
-          setGoalOpen(true);
+          setLocalGoalArmed(true);
         }
+        setAddView('mode');
         break;
       case 'new':
         void navigate('/new');
@@ -1173,7 +1192,15 @@ export function Composer({
         }
       }
     }
-    sendPrompt(text.trim(), goalMode && onChangeGoalMode !== undefined ? { goalObjective: text.trim() } : undefined);
+    // Goal mode: the message itself becomes the objective unless the draft
+    // carries an explicit one.
+    sendPrompt(
+      text.trim(),
+      runMode === 'goal'
+        ? { goalObjective: goalObjective !== '' ? goalObjective : text.trim() }
+        : undefined,
+    );
+    setLocalGoalArmed(false);
   };
 
   const send = () => {
@@ -1344,6 +1371,15 @@ export function Composer({
       onQueueEditCancel?.();
       return;
     }
+    // ⌘/Ctrl+Shift+M opens the Mode menu from the keyboard.
+    if (
+      (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey &&
+      event.key.toLowerCase() === 'm' && variant !== 'subagent'
+    ) {
+      event.preventDefault();
+      setAddView('mode');
+      return;
+    }
     // Composer-local undo/redo: the controlled value defeats the native
     // textarea undo stack, so these walk our snapshot lane instead.
     if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
@@ -1384,6 +1420,9 @@ export function Composer({
   };
 
   const effectiveModel = model ?? defaultModel ?? serverDefaultModel;
+  // The status line names the model by its catalog display name (the inherit
+  // source and provider live in the picker and the tooltip).
+  const modelShortLabel = selectedModel?.display_name ?? effectiveModel;
 
   // Focus continuity across a busy flip: becoming `disabled` force-blurs the
   // textarea (platform behavior), which used to be invisible because the
@@ -1436,8 +1475,113 @@ export function Composer({
       });
   };
 
+  const runModeControls: RunModeControls = {
+    runMode,
+    onChangeRunMode: changeRunMode,
+    goalAvailable: onChangeGoalMode !== undefined || onChangeGoalObjective !== undefined,
+    planGateFree: planGate === undefined || onChangePlanGate === undefined ? undefined : planGate === 'free',
+    onChangePlanGateFree: onChangePlanGate === undefined ? undefined : (free) => { onChangePlanGate(free ? 'free' : 'gated'); },
+    goalObjective: onChangeGoalObjective !== undefined ? goalObjective : undefined,
+    onChangeGoalObjective,
+  };
+
+  // The agent chip names the profile; the default `agent` reads as "Kiki".
+  const agentDisplayName = (name: string) =>
+    name === DEFAULT_AGENT_PROFILE ? t('composer.agentDefaultName') : name;
+  const agentChipLabel = agentProfile === undefined
+    ? undefined
+    : agentProfilePending
+      ? t('composer.agentPendingSuffix', { name: agentDisplayName(agentProfile) })
+      : agentDisplayName(agentProfile);
+
+  // The status line under the input: ordered segments, each a quiet trigger
+  // for its own picker. Order and grouping live only in this list.
+  const statusSegments: { key: string; node: ReactNode }[] = [];
+  if (variant !== 'subagent') {
+    const chip = (
+      <RunModeChip
+        runMode={runMode}
+        onOpen={() => { setAddView('mode'); }}
+        onClear={() => { changeRunMode('normal'); }}
+      />
+    );
+    if (runMode !== 'normal') statusSegments.push({ key: 'run-mode', node: chip });
+  }
+  if (onChangeAgentProfile !== undefined && agentProfile !== undefined) {
+    statusSegments.push({
+      key: 'agent',
+      node: (
+        <SearchableSelect
+          id="composer-agent-profile-select"
+          options={agentProfileOptions}
+          value={agentProfile ?? DEFAULT_AGENT_PROFILE}
+          onChange={onChangeAgentProfile}
+          disabled={busy}
+          title={
+            busy
+              ? t('profile.rebuildBusy')
+              : agentProfilePending
+                ? t('composer.agentProfilePendingTitle')
+                : t('composer.agentProfileTitle')
+          }
+          ariaLabel={t('composer.agentProfileAria')}
+          emptyText={t('composer.noAgentProfiles')}
+          searchPlaceholder={t('composer.profileSearchPlaceholder')}
+          placement="above"
+          hideChevron
+          // Narrow composers show the agent as its icon only (the name stays
+          // in the aria-label and tooltip) so the model name keeps its room.
+          triggerLabel={
+            agentChipLabel === undefined ? undefined : (
+              <span className="@max-[24rem]/toolbar:sr-only">{agentChipLabel}</span>
+            )
+          }
+          triggerIcon={<Icon name="agent" size={14} className={STATUS_SEGMENT_ICON_CLASS} />}
+          panelClassName={`anim-enter absolute z-40 bottom-full left-0 mb-1.5 w-96 max-w-[calc(100vw-48px)] overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+          buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-52 ${
+            agentProfilePending
+              ? 'font-medium text-accent-ink hover:text-accent-ink'
+              : agentProfile !== DEFAULT_AGENT_PROFILE ? STATUS_SEGMENT_SET : ''
+          }`}
+        />
+      ),
+    });
+  }
+  statusSegments.push({
+    key: 'model',
+    node: (
+      <ModelChip
+        modelOptions={modelOptions}
+        hasCatalog={models.length > 0}
+        model={model}
+        resolvedModelKey={resolvedModelKey}
+        effectiveModel={effectiveModel}
+        shortLabel={modelShortLabel}
+        modelSource={modelSource}
+        disabled={variant === 'subagent' && disabled}
+        onChangeModel={onChangeModel}
+        efforts={efforts}
+        effort={effort}
+        onChangeEffort={onChangeEffort}
+      />
+    ),
+  });
+  if (variant !== 'subagent') {
+    statusSegments.push({
+      key: 'permission',
+      node: (
+        <PermissionSelect
+          open={modeOpen}
+          onOpenChange={setModeOpen}
+          value={permissionMode}
+          onChange={onChangePermissionMode}
+        />
+      ),
+    });
+  }
+
   return (
-    <div className="px-6 pb-5" data-composer-variant={variant}>
+    <div className="group/composer px-6 pb-5" data-composer-variant={variant}>
       {composerContextMenu}
       <ConfirmDialog
         open={contextRebuildConfirm}
@@ -1454,6 +1598,11 @@ export function Composer({
       {/* One width axis with the transcript: the conversation shell declares
           --kiki-chat-content-width; the 760px fallback is defensive. */}
       <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
+        {variant === 'subagent' && replyingTo !== undefined ? (
+          <p data-composer-replying-to className="mb-1.5 truncate px-1 text-[12px] text-ink-faint">
+            {t('composer.replyingTo', { agent: replyingTo })}
+          </p>
+        ) : null}
         {selectionBlocked ? <div data-selection-diagnostic role={selectionLoading ? 'status' : 'alert'} className="mb-2 space-y-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
           {selectionLoading ? <p className="text-ink-soft">{t('selection.loading')}</p> : null}
           {selectionCatalogError !== null ? <p>{t('selection.catalogError', { detail: selectionCatalogError.message })}</p> : null}
@@ -1465,8 +1614,11 @@ export function Composer({
         </div> : null}
         <div
           ref={cardRef}
-          className={`relative rounded-2xl border bg-panel shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)] transition-[border-color,box-shadow] ${
-            dragActive ? 'border-accent ring-2 ring-accent/40' : 'border-hairline'
+          data-composer-card
+          className={`relative rounded-[14px] border bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] transition-[border-color,box-shadow] duration-150 ${
+            dragActive
+              ? 'border-accent ring-2 ring-accent/40'
+              : 'border-hairline has-[textarea:focus-visible]:border-ink-faint'
           }`}
           onDragEnter={(event) => {
             if (!dragHasFiles(event)) return;
@@ -1492,7 +1644,7 @@ export function Composer({
           }}
         >
           {dragActive ? (
-            <div className="pointer-events-none absolute inset-0 z-20 rounded-2xl border-2 border-dashed border-accent/60 bg-panel/85" />
+            <div className="pointer-events-none absolute inset-0 z-20 rounded-[14px] border-2 border-dashed border-accent/60 bg-panel/85" />
           ) : null}
           {/* Chips ride above the input; the toolbar lives below it. The
               wrapper only renders when at least one chip/banner exists so the
@@ -1502,10 +1654,10 @@ export function Composer({
           {queueEditing ? (
             <div
               data-queue-edit-banner
-              className="anim-enter mx-3.5 mt-2 flex items-center gap-2 rounded-lg border border-amber-rule/40 bg-amber-card px-2.5 py-1.5"
+              className="anim-enter mx-3.5 mt-2 flex items-center gap-2 rounded-md bg-amber-card px-2.5 py-1.5"
             >
-              <span aria-hidden className="shrink-0 text-[11.5px] leading-snug text-amber-ink">
-                ✎
+              <span aria-hidden className="flex h-4 shrink-0 items-center text-amber-ink">
+                <Icon name="edit" />
               </span>
               <p className="min-w-0 flex-1 truncate text-[11.5px] leading-snug text-amber-ink">
                 {t('composer.queueEditBanner')}
@@ -1517,18 +1669,18 @@ export function Composer({
                 onClick={() => { onQueueEditCancel?.(); }}
                 className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-amber-ink/60 transition-colors hover:bg-amber-ink/10 hover:text-amber-ink"
               >
-                ×
+                <Icon name="close" size={12} />
               </button>
             </div>
           ) : null}
           {quote !== undefined && quote !== null ? (
             <div
               data-quote-chip
-              className="anim-enter mx-3.5 mt-2 flex items-start gap-2 rounded-lg border-l-2 border-accent/60 bg-paper px-2.5 py-1.5"
+              className="anim-enter mx-3.5 mt-2 flex items-start gap-2 rounded-md border-l-2 border-hairline-strong bg-paper px-2.5 py-1.5"
             >
               <p
                 title={quote}
-                className="max-h-8 min-w-0 flex-1 overflow-hidden text-[11.5px] leading-snug whitespace-pre-wrap text-ink-soft"
+                className="max-h-10 min-w-0 flex-1 overflow-hidden text-[13px] leading-snug whitespace-pre-wrap text-ink-soft"
               >
                 {quote}
               </p>
@@ -1538,7 +1690,7 @@ export function Composer({
                 onClick={onRemoveQuote}
                 className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
               >
-                ×
+                <Icon name="close" size={12} />
               </button>
             </div>
           ) : null}
@@ -1551,8 +1703,8 @@ export function Composer({
                   tabIndex={0}
                   className="group anim-enter relative flex items-start gap-2 rounded-lg border-l-2 border-amber-rule bg-amber-card px-2.5 py-1.5 outline-none"
                 >
-                  <span aria-hidden className="shrink-0 text-[11.5px] leading-snug text-amber-ink">
-                    ✎
+                  <span aria-hidden className="flex h-4 shrink-0 items-center text-amber-ink">
+                    <Icon name="edit" />
                   </span>
                   <p className="min-w-0 flex-1 truncate text-[11.5px] leading-snug text-amber-ink">
                     {annotation.comment}
@@ -1563,11 +1715,11 @@ export function Composer({
                     onClick={() => { onRemoveAnnotation?.(annotation.id); }}
                     className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-amber-ink/60 transition-colors hover:bg-amber-ink/10 hover:text-amber-ink"
                   >
-                    ×
+                    <Icon name="close" size={12} />
                   </button>
                   {/* Hover/focus reveal: the full quoted source + comment. The
                       chip itself is focusable so click/touch opens it too. */}
-                  <div className="pointer-events-none absolute bottom-full left-0 z-40 mb-1 hidden w-72 max-w-[calc(100vw-48px)] rounded-lg border border-amber-rule/50 bg-panel p-2 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] group-hover:block group-focus-within:block">
+                  <div className="pointer-events-none absolute bottom-full left-0 z-40 mb-1 hidden w-72 max-w-[calc(100vw-48px)] rounded-[10px] border border-hairline bg-panel p-2 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] group-hover:block group-focus-within:block">
                     <p className="max-h-16 overflow-hidden border-l-2 border-accent/60 pl-1.5 text-[11px] leading-snug whitespace-pre-wrap text-ink-soft">
                       {annotation.quote}
                     </p>
@@ -1582,22 +1734,23 @@ export function Composer({
           {/* Goal mode armed: the next message becomes the session goal. The
               run-state card (pause/resume/cancel/edit) lives above the
               composer dock — see GoalCard. */}
-          {goalMode && onChangeGoalMode !== undefined ? (
+          {runMode === 'goal' ? (
             <div
               data-goal-armed
               role="group"
               aria-label={t('composer.goalArmedAria')}
-              className="anim-enter mx-3.5 mt-2 flex w-fit items-center gap-1.5 rounded-full border border-accent/50 bg-accent-soft/60 py-0.5 pr-1 pl-2.5 text-[11px] font-medium text-accent"
+              className="anim-enter mx-3.5 mt-2 flex h-7 w-fit items-center gap-1.5 rounded-md bg-paper pr-1 pl-2 text-[12px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]"
             >
+              <Icon name="goal" size={12} className="text-ink-soft" />
               <span>{t('composer.goalArmedChip')}</span>
               <button
                 type="button"
                 aria-label={t('composer.goalDisarmAria')}
                 title={t('composer.goalDisarmAria')}
-                onClick={() => { onChangeGoalMode(false); }}
-                className="flex h-4 w-4 items-center justify-center rounded-full text-[9px] text-accent/70 transition-colors hover:bg-accent/15 hover:text-accent"
+                onClick={() => { setGoalArmed(false); }}
+                className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
               >
-                <span aria-hidden>✕</span>
+                <Icon name="close" size={12} />
               </button>
             </div>
           ) : null}
@@ -1608,9 +1761,10 @@ export function Composer({
                   <span
                     key={`file-${attachment.path}`}
                     title={attachment.path}
-                    className="flex items-center gap-1 rounded-full border border-hairline bg-paper py-0.5 pr-1 pl-2 font-mono text-[11px] text-ink-soft"
+                    className="flex h-7 items-center gap-1.5 rounded-md bg-paper pr-1 pl-2 font-mono text-[12px] text-ink-soft"
                   >
-                    {attachment.isDir ? '📁' : '📄'} {attachment.name}
+                    <FileGlyph dir={attachment.isDir} />
+                    {attachment.name}
                     {attachment.isDir ? '/' : ''}
                     <button
                       type="button"
@@ -1618,9 +1772,9 @@ export function Composer({
                       onClick={() => {
                         updateAttachments(attachments.filter((_, i) => i !== index));
                       }}
-                      className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+                      className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-hairline hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
                     >
-                      ×
+                      <Icon name="close" size={12} />
                     </button>
                   </span>
                 ) : attachment.kind === 'upload' ? (
@@ -1631,19 +1785,19 @@ export function Composer({
                       attachment.fileId === undefined ? t('composer.attachmentUploading') : undefined
                     }
                     data-attachment-uploading={attachment.fileId === undefined ? '' : undefined}
-                    className="flex items-center gap-1.5 rounded-full border border-hairline bg-paper py-0.5 pr-1 pl-2 text-[11px] text-ink-soft"
+                    className="flex h-7 items-center gap-1.5 rounded-md bg-paper pr-1 pl-2 text-[12px] text-ink-soft"
                   >
                     {attachment.fileId === undefined ? (
                       <span className="status-dot-busy flex h-4 w-4 items-center justify-center">
                         <span className="h-1.5 w-1.5 rounded-full bg-accent" />
                       </span>
                     ) : (
-                      <span aria-hidden>📎</span>
+                      <FileGlyph dir={false} />
                     )}
                     <span className="max-w-32 truncate">
                       {attachment.name === '' ? t('attach.pastedFile') : attachment.name}
                     </span>
-                    <span className="font-mono text-[9.5px] text-ink-faint">
+                    <span className="text-[12px] text-ink-faint tabular-nums">
                       {formatBytes(attachment.size)}
                     </span>
                     <button
@@ -1654,9 +1808,9 @@ export function Composer({
                       onClick={() => {
                         updateAttachments(attachments.filter((_, i) => i !== index));
                       }}
-                      className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+                      className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-hairline hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
                     >
-                      ×
+                      <Icon name="close" size={12} />
                     </button>
                   </span>
                 ) : attachment.data === '' ? (
@@ -1667,7 +1821,7 @@ export function Composer({
                     title={t('composer.attachmentReading')}
                     aria-label={t('composer.attachmentReading')}
                     data-attachment-reading
-                    className="flex items-center gap-1.5 rounded-full border border-hairline bg-paper py-0.5 pr-1 pl-2 text-[11px] text-ink-soft"
+                    className="flex h-7 items-center gap-1.5 rounded-md bg-paper pr-1 pl-2 text-[12px] text-ink-soft"
                   >
                     <span className="status-dot-busy flex h-4 w-4 items-center justify-center">
                       <span className="h-1.5 w-1.5 rounded-full bg-accent" />
@@ -1675,7 +1829,7 @@ export function Composer({
                     <span className="max-w-32 truncate">
                       {attachment.name === '' ? t('attach.pastedImage') : attachment.name}
                     </span>
-                    <span className="font-mono text-[9.5px] text-ink-faint">
+                    <span className="text-[12px] text-ink-faint tabular-nums">
                       {formatBytes(attachment.size)}
                     </span>
                     <button
@@ -1686,26 +1840,26 @@ export function Composer({
                       onClick={() => {
                         updateAttachments(attachments.filter((_, i) => i !== index));
                       }}
-                      className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+                      className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-hairline hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
                     >
-                      ×
+                      <Icon name="close" size={12} />
                     </button>
                   </span>
                 ) : (
                   <span
                     key={`image-${attachment.name}-${attachment.size}`}
                     title={`${attachment.name === '' ? t('attach.pastedImage') : attachment.name} · ${formatBytes(attachment.size)}`}
-                    className="flex items-center gap-1.5 rounded-full border border-hairline bg-paper py-0.5 pr-1 pl-0.5 text-[11px] text-ink-soft"
+                    className="flex h-7 items-center gap-1.5 rounded-md bg-paper pr-1 pl-1 text-[12px] text-ink-soft"
                   >
                     <img
                       src={attachment.previewUrl}
                       alt={attachment.name === '' ? t('attach.pastedImage') : attachment.name}
-                      className="h-5 w-5 rounded-full object-cover"
+                      className="h-5 w-5 rounded-[4px] object-cover"
                     />
                     <span className="max-w-32 truncate">
                       {attachment.name === '' ? t('attach.pastedImage') : attachment.name}
                     </span>
-                    <span className="font-mono text-[9.5px] text-ink-faint">
+                    <span className="text-[12px] text-ink-faint tabular-nums">
                       {formatBytes(attachment.size)}
                     </span>
                     <button
@@ -1716,9 +1870,9 @@ export function Composer({
                       onClick={() => {
                         updateAttachments(attachments.filter((_, i) => i !== index));
                       }}
-                      className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+                      className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-hairline hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
                     >
-                      ×
+                      <Icon name="close" size={12} />
                     </button>
                   </span>
                 ),
@@ -1726,13 +1880,13 @@ export function Composer({
             </div>
           ) : null}
           {attachmentError !== null ? (
-            <p className="px-3.5 pt-1.5 font-mono text-[10.5px] text-danger">{attachmentError}</p>
+            <p role="alert" className="px-3.5 pt-1.5 text-[12px] text-danger">{attachmentError}</p>
           ) : null}
           {slashConfirm !== null ? (
             <div
               role="alert"
               data-slash-confirm
-              className="mx-3.5 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-amber-rule/40 bg-amber-card px-2.5 py-1.5 text-[11px] font-medium text-amber-ink"
+              className="mx-3.5 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-amber-card px-2.5 py-1.5 text-[12px] font-medium text-amber-ink"
             >
               <span>
                 {slashConfirm.reason === 'unknown'
@@ -1744,14 +1898,14 @@ export function Composer({
                   type="button"
                   onClick={confirmSendPlain}
                   disabled={!canSend}
-                  className="rounded-full border border-amber-ink/30 px-2 py-0.5 text-[10.5px] transition-colors hover:bg-amber-ink/10 disabled:opacity-50"
+                  className="rounded-full border border-amber-ink/30 px-2 py-0.5 text-[11px] transition-colors hover:bg-amber-ink/10 disabled:opacity-50"
                 >
                   {t('composer.slash.sendAnyway')}
                 </button>
                 <button
                   type="button"
                   onClick={() => { setSlashConfirm(null); }}
-                  className="rounded-full border border-transparent px-2 py-0.5 text-[10.5px] text-amber-ink/80 underline transition-colors hover:bg-amber-ink/10"
+                  className="rounded-full border border-transparent px-2 py-0.5 text-[11px] text-amber-ink underline transition-colors hover:bg-amber-ink/10"
                 >
                   {t('composer.slash.cancelSend')}
                 </button>
@@ -1761,13 +1915,13 @@ export function Composer({
             </div>
           ) : null}
 
-          <div className="relative px-3.5 pt-1.5">
+          <div className="relative px-3.5 pt-3">
             {menu !== null ? (
               <div
                 data-composer-menu
                 role="listbox"
                 aria-label={menu.kind === 'slash' ? t('composer.slashAria') : t('composer.filesAria')}
-                className="anim-enter absolute right-0 bottom-full left-0 z-30 mb-1 max-h-72 overflow-y-auto rounded-xl border border-hairline bg-panel p-1 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+                className={`anim-enter absolute right-0 bottom-full left-0 z-30 mb-1.5 max-h-72 overflow-y-auto p-1 ${POPOVER_SURFACE_CLASS}`}
                 // Keep textarea focus while rows are clicked.
                 onMouseDown={(event) => { event.preventDefault(); }}
                 onMouseLeave={() => { setSlashHoverIndex(null); }}
@@ -1845,138 +1999,80 @@ export function Composer({
                     ? (busyPlaceholder ?? t('composer.placeholderBusy'))
                     : t('composer.placeholder')
               }
-              className="max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14px] leading-relaxed text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
+              // The card's focus-within border is the focus indicator; the
+              // global :focus-visible ring would draw a box inside the card.
+              className="max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
             />
           </div>
 
-          {/* Bottom toolbar: one control per concern on the left — attach,
-              permission mode, plan/swarm/goal, agent profile, model+effort —
-              on one line while the width allows, wrapping below it; the send
-              cluster pins right. The input above is the surface's subject. */}
+          {/* Bottom row: attach on the left edge, one quiet status line in the
+              middle (each segment opens its own picker), meter + send on the
+              right edge. The segments are an ordered list (statusSegments)
+              so regrouping them stays a local change. */}
           <div
             data-composer-toolbar
-            className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1.5 rounded-b-2xl border-t border-hairline bg-paper/60 px-2.5 py-2"
+            className="@container/toolbar flex items-center gap-0.5 px-2 pt-1 pb-2"
           >
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                disabled={disabled || queueEditing}
-                onChange={(event) => {
-                  const files = [...(event.target.files ?? [])];
-                  // Reset so re-picking the same file fires change again.
-                  event.target.value = '';
-                  if (files.length > 0) addFiles(readyAttachmentFiles(files));
-                }}
-              />
-              <button
-                type="button"
-                data-attach-button
-                onClick={openAttachPicker}
-                disabled={disabled || queueEditing}
-                aria-label={t('composer.attachAria')}
-                title={t('composer.attachTitle')}
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-hairline bg-panel text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
-              >
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
-                  <path d="M6 2.5v7M2.5 6h7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </button>
-              {variant !== 'subagent' ? (
-                <>
-                  <ModeSelect
-                    open={modeOpen}
-                    onOpenChange={setModeOpen}
-                    value={permissionMode}
-                    onChange={onChangePermissionMode}
-                  />
-                  <PlanSelect
-                    open={planOpen}
-                    onOpenChange={setPlanOpen}
-                    planMode={planMode}
-                    onChangePlanMode={onChangePlanMode}
-                    planGate={planGate}
-                    onChangePlanGate={onChangePlanGate}
-                    swarmMode={swarmMode}
-                    onChangeSwarmMode={onChangeSwarmMode}
-                    goalObjective={goalObjective}
-                    onChangeGoalObjective={onChangeGoalObjective}
-                    goalOpen={goalOpen}
-                    onGoalOpenChange={setGoalOpen}
-                  />
-                  {onChangeGoalMode !== undefined ? (
-                    <button
-                      type="button"
-                      data-goal-mode-toggle
-                      aria-pressed={goalMode}
-                      aria-label={t('composer.goalArmedAria')}
-                      title={t('composer.goalModeTitle')}
-                      onClick={() => { onChangeGoalMode(!goalMode); }}
-                      className={`flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
-                        goalMode
-                          ? 'border-accent bg-accent-soft text-accent'
-                          : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
-                      }`}
-                    >
-                      <span aria-hidden className="text-[10px]">◎</span>
-                      {t('composer.goal')}
-                    </button>
-                  ) : null}
-                </>
-              ) : null}
-              {onChangeAgentProfile !== undefined && agentProfile !== undefined ? (
-                <div className="min-w-0">
-                  <SearchableSelect
-                    id="composer-agent-profile-select"
-                    options={profileSelectOptions}
-                    value={agentProfile ?? DEFAULT_AGENT_PROFILE}
-                    onChange={(value) => {
-                      if (value === REBUILD_CONTEXT_OPTION) {
-                        setContextRebuildConfirm(true);
-                        return;
-                      }
-                      onChangeAgentProfile(value);
-                    }}
-                    disabled={busy}
-                    title={
-                      busy
-                        ? t('profile.rebuildBusy')
-                        : agentProfilePending
-                          ? t('composer.agentProfilePendingTitle')
-                          : t('composer.agentProfileTitle')
-                    }
-                    ariaLabel={t('composer.agentProfileAria')}
-                    emptyText={t('composer.noAgentProfiles')}
-                    searchPlaceholder={t('composer.profileSearchPlaceholder')}
-                    placement="above"
-                    panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1.5 w-96 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
-                    buttonClassName={`flex max-w-44 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/30 ${
-                      agentProfilePending
-                        ? 'border-accent bg-accent-soft text-accent'
-                        : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
-                    }`}
-                  />
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              disabled={disabled || queueEditing}
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])];
+                // Reset so re-picking the same file fires change again.
+                event.target.value = '';
+                if (files.length > 0) addFiles(readyAttachmentFiles(files));
+              }}
+            />
+            <AddMenu
+              view={addView}
+              onViewChange={setAddView}
+              attachDisabled={disabled || queueEditing}
+              onAttach={openAttachPicker}
+              onRebuild={onRebuildContext === undefined ? undefined : () => { setContextRebuildConfirm(true); }}
+              rebuildDisabled={busy || contextRebuildBusy}
+              runMode={variant === 'subagent' ? undefined : runModeControls}
+            />
+            <div
+              data-composer-status
+              className="flex min-w-0 flex-1 items-center gap-0.5"
+            >
+              {/* One row at every width. No separator glyphs: each segment is
+                  its own hover target led by a kind icon, so the gaps and the
+                  icons do the separating. Who answers (mode, agent, model)
+                  sits on the left; what it may do (approvals) is pushed right,
+                  next to the meter. Agent and model truncate first. */}
+              {statusSegments.map((segment) => (
+                <div
+                  key={segment.key}
+                  data-status-segment={segment.key}
+                  className={`flex min-w-0 items-center [&>div]:flex [&>div]:min-w-0 ${
+                    segment.key === 'permission'
+                      ? 'ml-auto shrink-0 pl-1'
+                      : segment.key === 'run-mode'
+                        ? 'mr-1 shrink-0'
+                        : segment.key === 'agent'
+                          ? 'min-w-[2.75rem] @max-[24rem]/toolbar:min-w-0 @max-[24rem]/toolbar:shrink-0'
+                          : 'min-w-[3.5rem]'
+                  }`}
+                >
+                  {segment.node}
                 </div>
-              ) : null}
-              <div className="min-w-0">
-                <ModelChip
-                  modelOptions={modelOptions}
-                  hasCatalog={models.length > 0}
-                  model={model}
-                  resolvedModelKey={resolvedModelKey}
-                  effectiveModel={effectiveModel}
-                  modelSource={modelSource}
-                  disabled={variant === 'subagent' && disabled}
-                  onChangeModel={onChangeModel}
-                  efforts={efforts}
-                  effort={effort}
-                  onChangeEffort={onChangeEffort}
-                />
-              </div>
+              ))}
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="ml-1 flex shrink-0 items-center gap-1 self-start">
+              {contextUsage !== undefined ? (
+                <ContextMeter
+                  used={contextUsage.used}
+                  limit={contextUsage.limit}
+                  usage={sessionUsage}
+                  usageScope={variant === 'subagent' ? 'agent' : 'session'}
+                  sessionId={sessionId}
+                  onCompact={onCompactContext}
+                />
+              ) : null}
               {queueEditing && onQueueEditRemove !== undefined ? (
                 // Queue-edit mode: the stop button becomes the remove control
                 // for the queued message being edited (two-step: arm, then
@@ -2039,7 +2135,7 @@ export function Composer({
                   aria-label={abortPending === true ? t('tasks.stopping') : t('composer.abortTitle')}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <span aria-hidden className="text-[11px] font-bold">■</span>
+                  <Icon name="stop" size={12} />
                 </button>
               ) : null}
               {/* While busy, Send stays mounted beside Stop so a queued prompt
@@ -2058,7 +2154,14 @@ export function Composer({
                         : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
                 }
                 aria-label={queueEditing ? t('composer.queueEditConfirm') : busy ? t('composer.queueAria') : t('composer.sendAria')}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+                data-send-ready={canSend ? '' : undefined}
+                // Filled accent only once there is something to send; at rest
+                // the button is a quiet ink glyph on paper.
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10 ${
+                  canSend
+                    ? 'bg-accent text-primary-foreground hover:bg-accent-deep'
+                    : 'bg-paper text-ink-faint'
+                }`}
               >
                 {queueEditing ? (
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -2085,28 +2188,19 @@ export function Composer({
             </div>
           </div>
         </div>
-        {/* The hint line teaches an empty draft and then gets out of the way;
-            the min-height keeps the meter from hopping as it appears. */}
-        <div className="mt-1.5 flex items-center gap-3">
-          <div className="min-h-4 min-w-0 flex-1">
-            {text.trim() === '' && !busy ? (
-              <p data-composer-hints className="text-center text-[10.5px] text-ink-faint">
-                {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
-                {t(skillCatalogReady ? 'composer.footerSkills' : 'composer.footerShortcuts')}
-                {fsSearch !== undefined ? t('composer.footerFiles') : ''}
-                {inputHistory.length > 0 ? t('composer.footerHistory') : ''}
-              </p>
-            ) : null}
-          </div>
-          {contextUsage !== undefined ? (
-            <ContextMeter
-              used={contextUsage.used}
-              limit={contextUsage.limit}
-              usage={sessionUsage}
-              usageScope={variant === 'subagent' ? 'agent' : 'session'}
-              sessionId={sessionId}
-              onCompact={onCompactContext}
-            />
+        {/* Key hints teach an empty draft only while the composer holds
+            focus; the fixed-height row keeps the card from hopping. */}
+        <div className="mt-1.5 h-4 min-w-0">
+          {text.trim() === '' && !busy ? (
+            <p
+              data-composer-hints
+              className="truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-150 group-focus-within/composer:opacity-100 motion-reduce:transition-none"
+            >
+              {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
+              {t(skillCatalogReady ? 'composer.footerSkills' : 'composer.footerShortcuts')}
+              {fsSearch !== undefined ? t('composer.footerFiles') : ''}
+              {inputHistory.length > 0 ? t('composer.footerHistory') : ''}
+            </p>
           ) : null}
         </div>
       </div>
@@ -2149,23 +2243,23 @@ function SlashMenuBody({
         onMouseEnter={() => { onHoverRow(index); }}
         className={`flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
           item.disabled === true ? 'opacity-50' : ''
-        } ${active ? 'bg-accent-soft' : 'hover:bg-paper'}`}
+        } ${active ? 'bg-paper' : 'hover:bg-paper'}`}
       >
-        <span className="shrink-0 font-mono text-[12px] font-medium text-accent">
+        <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-accent' : 'text-ink'}`}>
           /{item.name}
         </span>
         {item.skill?.argument_hint !== undefined ? (
-          <span className="max-w-32 truncate font-mono text-[10px] text-ink-faint">{item.skill.argument_hint}</span>
+          <span className="max-w-32 truncate font-mono text-[11px] text-ink-faint">{item.skill.argument_hint}</span>
         ) : null}
-        <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-soft">
+        <span className="min-w-0 flex-1 truncate text-[13px] text-ink-soft">
           {item.kind === 'action' && item.action !== undefined
             ? t(SLASH_ACTION_DESCRIPTIONS[item.action])
             : item.description}
         </span>
         {item.disabled === true ? (
-          <span className="shrink-0 text-[9.5px] text-ink-faint">{t('composer.slash.notActivatable')}</span>
+          <span className="shrink-0 text-[12px] text-ink-faint">{t('composer.slash.notActivatable')}</span>
         ) : item.kind === 'skill' ? (
-          <span title={item.skill?.path} className="shrink-0 text-[9.5px] text-ink-faint">{item.skill?.source}</span>
+          <span title={item.skill?.path} className="shrink-0 text-[12px] text-ink-faint">{item.skill?.source}</span>
         ) : null}
       </button>
     );
@@ -2174,7 +2268,7 @@ function SlashMenuBody({
     <>
       {skills.length > 0 ? (
         <>
-          <p className="px-2.5 pt-1 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+          <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
             {t('composer.slash.skills')}
           </p>
           {skills.map(renderRow)}
@@ -2182,19 +2276,19 @@ function SlashMenuBody({
       ) : null}
       {actions.length > 0 ? (
         <>
-          <p className="px-2.5 pt-1 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+          <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
             {t('composer.slash.shortcuts')}
           </p>
           {actions.map(renderRow)}
         </>
       ) : null}
       {items.length === 0 ? (
-        <p className="px-2.5 py-2 text-[11.5px] text-ink-faint">
+        <p className="px-2.5 py-2 text-[13px] text-ink-faint">
           {t('composer.slash.empty')}
         </p>
       ) : null}
       {skillsFailed && hasSession ? (
-        <p className="border-t border-hairline px-2.5 py-1 font-mono text-[9.5px] text-ink-faint">
+        <p className="border-t border-hairline px-2.5 py-1 text-[12px] text-ink-faint">
           {t('composer.slash.skillsFailed')}
         </p>
       ) : null}
@@ -2217,19 +2311,19 @@ function SkillPreviewCard({ item }: { item: SlashItem }) {
       data-skill-preview
       role="tooltip"
       aria-label={t('composer.slash.previewAria')}
-      className="anim-enter pointer-events-none absolute right-0 bottom-full z-40 mb-1 hidden w-72 translate-x-[calc(100%+0.5rem)] rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] min-[1360px]:block"
+      className="anim-enter pointer-events-none absolute right-0 bottom-full z-40 mb-1 hidden w-72 translate-x-[calc(100%+0.5rem)] rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] min-[1360px]:block"
     >
       <div className="flex items-baseline gap-2">
-        <span className="shrink-0 font-mono text-[12px] font-medium text-accent">
+        <span className="shrink-0 font-mono text-[12px] font-medium text-accent-ink">
           /{item.name}
         </span>
         {skill !== undefined ? (
-          <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[9.5px] text-ink-faint">
+          <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[11px] text-ink-faint">
             {skill.source}
           </span>
         ) : null}
         {item.disabled === true ? (
-          <span className="shrink-0 text-[9.5px] text-ink-faint">
+          <span className="shrink-0 text-[11px] text-ink-faint">
             {t('composer.slash.notActivatable')}
           </span>
         ) : null}
@@ -2238,7 +2332,7 @@ function SkillPreviewCard({ item }: { item: SlashItem }) {
         {item.description}
       </p>
       {skill !== undefined ? (
-        <p title={skill.path} className="mt-2 truncate font-mono text-[9.5px] text-ink-faint">
+        <p title={skill.path} className="mt-2 truncate font-mono text-[11px] text-ink-faint">
           {skill.path}
         </p>
       ) : null}
@@ -2264,7 +2358,7 @@ function MentionMenuBody({
   const { t } = useI18n();
   if (failed) {
     return (
-      <p className="px-2.5 py-2 font-mono text-[10.5px] text-danger">
+      <p className="px-2.5 py-2 text-[12px] text-danger">
         {t('composer.filesFailed')}
       </p>
     );
@@ -2282,7 +2376,7 @@ function MentionMenuBody({
   }
   return (
     <>
-      <p className="px-2.5 pt-1 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+      <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
         {t('composer.filesHeader')}
       </p>
       {items.map((item, index) => {
@@ -2295,389 +2389,22 @@ function MentionMenuBody({
             role="option"
             aria-selected={active}
             onClick={() => { onAccept(item); }}
-            className={`flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
-              active ? 'bg-accent-soft' : 'hover:bg-paper'
+            className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
+              active ? 'bg-paper' : 'hover:bg-paper'
             }`}
           >
-            <span className="shrink-0 text-[11px]">{isDir ? '📁' : '📄'}</span>
-            <span className="shrink-0 font-mono text-[12px] font-medium text-ink">
+            <FileGlyph dir={isDir} />
+            <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-accent' : 'text-ink'}`}>
               {item.name}
               {isDir ? '/' : ''}
             </span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-faint">
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
               {item.path}
             </span>
           </button>
         );
       })}
     </>
-  );
-}
-
-/**
- * ModeSelect — the approval policy for the next prompt, behind one trigger:
- * the three permission modes, nothing else. The trigger names the current
- * mode, so the toolbar carries the state without carrying the panel.
- *
- * Keyboard/overlay contract: the trigger carries aria-haspopup/aria-expanded;
- * opening moves focus to the current mode, ↑/↓ cycles the panel rows,
- * Enter/Space picks natively, Escape closes and refocuses the trigger, and a
- * pointerdown anywhere outside dismisses. While open the panel registers as
- * an overlay so the global Escape handler never aborts the turn out from
- * under it. Picking a mode closes the panel.
- */
-function ModeSelect({
-  open,
-  onOpenChange,
-  value,
-  onChange,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  value: PermissionMode;
-  onChange: (mode: PermissionMode) => void;
-}) {
-  const { t } = useI18n();
-  const setOpen = onOpenChange;
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const current = MODES.find((mode) => mode.id === value) ?? MODES[0]!;
-
-  const close = (refocus = false) => {
-    setOpen(false);
-    if (refocus) triggerRef.current?.focus();
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    const release = registerOverlay('composer-mode');
-    const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) {
-        close();
-      }
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    return () => {
-      release();
-      document.removeEventListener('pointerdown', onPointerDown);
-    };
-  }, [open]);
-
-  // Opening moves focus to the current mode's row so arrowing starts there.
-  useEffect(() => {
-    if (!open) return;
-    rootRef.current
-      ?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')
-      ?.focus();
-  }, [open]);
-
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!open) return;
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      close(true);
-      return;
-    }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const rows = [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-mode-row]') ?? [])];
-      if (rows.length === 0) return;
-      const index = rows.findIndex((row) => row === document.activeElement);
-      const delta = event.key === 'ArrowDown' ? 1 : -1;
-      rows[(index + delta + rows.length) % rows.length]?.focus();
-    }
-  };
-
-  return (
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape/arrow handling for the open panel
-    <div ref={rootRef} className="relative" data-mode-select onKeyDown={onKeyDown}>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={t('composer.modeAria')}
-        title={t(current.hintKey)}
-        onClick={() => { setOpen(!open); }}
-        className={`flex max-w-56 shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-          open
-            ? 'border-accent bg-accent-soft text-accent'
-            : 'border-accent/70 bg-accent-soft/60 text-accent hover:border-accent'
-        }`}
-      >
-        <span className="min-w-0 truncate">{t(current.labelKey)}</span>
-        <svg
-          width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden
-          className={`shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`}
-        >
-          <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-      {open ? (
-        <div className="anim-enter absolute bottom-full left-0 z-30 mb-1.5 w-64 max-w-[calc(100vw-48px)] rounded-xl border border-hairline bg-panel p-1.5 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]">
-          <p className="px-2.5 pt-0.5 pb-1 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-            {t('composer.modePermissionHeading')}
-          </p>
-          <div role="listbox" aria-label={t('composer.modePermissionHeading')}>
-            {MODES.map((mode) => {
-              const isCurrent = mode.id === value;
-              return (
-                <button
-                  key={mode.id}
-                  type="button"
-                  role="option"
-                  data-mode-row
-                  aria-selected={isCurrent}
-                  onClick={() => {
-                    onChange(mode.id);
-                    close(true);
-                  }}
-                  className={`flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
-                    isCurrent ? 'bg-accent-soft' : 'hover:bg-paper'
-                  }`}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className={`block text-[12px] font-medium ${isCurrent ? 'text-accent' : 'text-ink'}`}>
-                      {t(mode.labelKey)}
-                    </span>
-                    <span className="mt-0.5 block text-[10.5px] leading-snug text-ink-faint">
-                      {t(mode.hintKey)}
-                    </span>
-                  </span>
-                  {isCurrent ? (
-                    <span aria-hidden className="shrink-0 text-[11px] leading-5 text-accent">✓</span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * PlanSelect — the run-shape settings for the next prompt, behind their own
- * trigger next to the approval mode: the plan and swarm switches, the plan
- * gate switch (auto = free in/out, off = approval-gated), and the goal
- * objective. The trigger spells the active combination (`plan · swarm`); with
- * nothing active it rests on the plain `plan` label in the neutral style, and
- * a filled objective or a live goal tints it accent.
- *
- * Open state is owned by the parent because `/goal` has to open this panel
- * with the objective field already expanded. Same keyboard/overlay contract
- * as ModeSelect, except that toggling a switch keeps the panel open —
- * switches come in combinations.
- */
-function PlanSelect({
-  open,
-  onOpenChange,
-  planMode,
-  onChangePlanMode,
-  planGate,
-  onChangePlanGate,
-  swarmMode,
-  onChangeSwarmMode,
-  goalObjective,
-  onChangeGoalObjective,
-  goalOpen,
-  onGoalOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  planMode: boolean;
-  onChangePlanMode: (on: boolean) => void;
-  /** Effective gate + session override handler; the gate row hides without them. */
-  planGate?: PromptPlanGate;
-  onChangePlanGate?: (gate: PromptPlanGate) => void;
-  swarmMode: boolean;
-  onChangeSwarmMode: (on: boolean) => void;
-  goalObjective: string;
-  onChangeGoalObjective?: (objective: string) => void;
-  goalOpen: boolean;
-  onGoalOpenChange: (open: boolean) => void;
-}) {
-  const { t } = useI18n();
-  const setOpen = onOpenChange;
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const segments = [
-    ...(planMode ? [t('composer.plan')] : []),
-    ...(swarmMode ? [t('composer.swarm')] : []),
-  ];
-  const label =
-    segments.length > 0 ? segments.join(t('composer.modeSegmentSeparator')) : t('composer.plan');
-  const active = planMode || swarmMode ||
-    (onChangeGoalObjective !== undefined && goalObjective !== '');
-
-  const close = (refocus = false) => {
-    setOpen(false);
-    if (onChangeGoalObjective !== undefined && goalObjective === '') onGoalOpenChange(false);
-    if (refocus) triggerRef.current?.focus();
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    const release = registerOverlay('composer-plan');
-    const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) {
-        close();
-      }
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    return () => {
-      release();
-      document.removeEventListener('pointerdown', onPointerDown);
-    };
-  }, [open]);
-
-  // Opening moves focus to the plan row — unless `/goal` asked for the
-  // objective field, which is the point of that shortcut.
-  useEffect(() => {
-    if (!open) return;
-    const root = rootRef.current;
-    if (root === null) return;
-    const goalField = goalOpen && onChangeGoalObjective !== undefined
-      ? root.querySelector<HTMLElement>('[data-goal-objective]')
-      : null;
-    (goalField ?? root.querySelector<HTMLElement>('[data-mode-row]'))?.focus();
-  }, [open, goalOpen]);
-
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!open) return;
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      close(true);
-      return;
-    }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      // The objective field owns its own arrow keys (caret movement).
-      if ((event.target as HTMLElement).tagName === 'INPUT') return;
-      event.preventDefault();
-      const rows = [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-mode-row]') ?? [])];
-      if (rows.length === 0) return;
-      const index = rows.findIndex((row) => row === document.activeElement);
-      const delta = event.key === 'ArrowDown' ? 1 : -1;
-      rows[(index + delta + rows.length) % rows.length]?.focus();
-    }
-  };
-
-  return (
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape/arrow handling for the open panel
-    <div ref={rootRef} className="relative" data-plan-select onKeyDown={onKeyDown}>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-label={t('composer.planAria')}
-        title={t('composer.planHint')}
-        onClick={() => { setOpen(!open); }}
-        className={`flex max-w-56 shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-          open || active
-            ? 'border-accent bg-accent-soft text-accent'
-            : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
-        }`}
-      >
-        <span className="min-w-0 truncate">{label}</span>
-        <svg
-          width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden
-          className={`shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`}
-        >
-          <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-      {open ? (
-        <div className="anim-enter absolute bottom-full left-0 z-30 mb-1.5 w-64 max-w-[calc(100vw-48px)] rounded-xl border border-hairline bg-panel p-1.5 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]">
-          {(
-            [
-              ['plan', planMode, onChangePlanMode, 'composer.plan', 'composer.planHint'],
-              // The gate switch sits between the two mode switches: on = free
-              // (plan mode opens/closes without asking), off = gated.
-              ...(planGate !== undefined && onChangePlanGate !== undefined
-                ? [
-                    [
-                      'planGate',
-                      planGate === 'free',
-                      (on: boolean) => { onChangePlanGate(on ? 'free' : 'gated'); },
-                      'composer.planAuto',
-                      'composer.planAutoHint',
-                    ] as const,
-                  ]
-                : []),
-              ['swarm', swarmMode, onChangeSwarmMode, 'composer.swarm', 'composer.swarmHint'],
-            ] as const
-          ).map(([id, on, onToggle, labelKey, hintKey]) => (
-            <button
-              key={id}
-              type="button"
-              data-mode-row
-              data-mode-switch={id}
-              aria-pressed={on}
-              title={t(hintKey)}
-              onClick={() => { onToggle(!on); }}
-              className="flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors outline-none hover:bg-paper focus-visible:ring-2 focus-visible:ring-accent/40"
-            >
-              <span
-                aria-hidden
-                className={`mt-px shrink-0 text-[11px] leading-4 ${on ? 'text-accent' : 'text-ink-faint'}`}
-              >
-                {on ? '☑' : '☐'}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className={`block text-[12px] font-medium ${on ? 'text-accent' : 'text-ink'}`}>
-                  {t(labelKey)}
-                </span>
-                <span className="mt-0.5 block text-[10.5px] leading-snug text-ink-faint">
-                  {t(hintKey)}
-                </span>
-              </span>
-            </button>
-          ))}
-          {onChangeGoalObjective !== undefined ? goalOpen ? (
-            <div className="mt-1 border-t border-hairline px-2.5 pt-1 pb-0.5">
-              <label
-                htmlFor="composer-goal-objective"
-                className="text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase"
-              >
-                {t('composer.goalObjective')}
-              </label>
-              <input
-                id="composer-goal-objective"
-                data-goal-objective
-                value={goalObjective}
-                onChange={(event) => { onChangeGoalObjective(event.target.value); }}
-                placeholder={t('composer.goalObjectivePlaceholder')}
-                className="mt-1 w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-              />
-              <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-faint">
-                {t('composer.goalNoteBefore')}
-                <span className="font-mono">goal_objective</span>
-                {t('composer.goalNoteAfter')}
-              </p>
-            </div>
-          ) : (
-            <button
-              type="button"
-              data-mode-row
-              data-goal-open
-              aria-expanded={false}
-              onClick={() => { onGoalOpenChange(true); }}
-              className={`mt-1 flex w-full items-center gap-2 rounded-lg border-t border-hairline px-2.5 py-1.5 text-left text-[12px] font-medium transition-colors outline-none hover:bg-paper focus-visible:ring-2 focus-visible:ring-accent/40 ${
-                goalObjective === '' ? 'text-ink' : 'text-accent'
-              }`}
-            >
-              <span className="min-w-0 flex-1 truncate">
-                {goalObjective === '' ? t('composer.goalOpen') : goalObjective}
-              </span>
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -2697,6 +2424,7 @@ function ModelChip({
   model,
   resolvedModelKey,
   effectiveModel,
+  shortLabel,
   modelSource,
   disabled = false,
   onChangeModel,
@@ -2711,6 +2439,8 @@ function ModelChip({
   /** The catalog key `model` resolves to (bare aliases land on a provider row). */
   readonly resolvedModelKey: string | undefined;
   readonly effectiveModel: string | undefined;
+  /** Short trigger label (the model's display name); the panel rows keep the full labels. */
+  readonly shortLabel?: string;
   readonly modelSource: ComposerModelSource;
   readonly disabled?: boolean;
   readonly onChangeModel: (model: string | undefined) => void | Promise<void>;
@@ -2720,15 +2450,18 @@ function ModelChip({
 }) {
   const { t } = useI18n();
   const showEffort = efforts !== undefined && efforts.length > 0 && effort !== undefined;
-  const title = t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) });
+  const sourceTitle = t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) });
+  // The trigger shows only the display name + effort; the tooltip carries the
+  // full picture (raw id and where the choice came from).
+  const title = effectiveModel !== undefined ? `${effectiveModel} — ${sourceTitle}` : sourceTitle;
 
   if (!hasCatalog && !showEffort) {
     return (
       <span
-        className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft"
+        className="flex h-7 max-w-56 min-w-0 items-center truncate px-1.5 text-[13px] text-ink-soft"
         title={title}
       >
-        {effectiveModel ?? t('composer.inheritDefault')}
+        {shortLabel ?? effectiveModel ?? t('composer.inheritDefault')}
       </span>
     );
   }
@@ -2762,23 +2495,51 @@ function ModelChip({
       emptyText={t('composer.inheritDefault')}
       searchPlaceholder={t('composer.modelSearchPlaceholder')}
       placement="above"
-      panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1.5 w-96 max-w-[calc(100vw-48px)] rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
-      buttonClassName="flex min-w-0 items-center gap-1 rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent focus:ring-2 focus:ring-accent/30"
+      hideChevron
+      panelClassName={`anim-enter absolute z-40 bottom-full left-0 mb-1.5 w-96 max-w-[calc(100vw-48px)] ${POPOVER_SURFACE_CLASS}`}
+      buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${
+        modelSource === 'override' ? STATUS_SEGMENT_SET : ''
+      } disabled:cursor-not-allowed disabled:opacity-60`}
+      triggerIcon={<EffortGauge efforts={efforts} effort={showEffort ? effort : undefined} />}
+      triggerLabel={shortLabel}
       triggerSuffix={
         showEffort ? (
-          <span className="shrink-0 text-ink-faint"> · {effort}</span>
+          // Same segment, same quiet gap: the gauge already draws the depth,
+          // the word names it. Narrow composers drop the word first.
+          <span data-effort-label className="shrink-0 text-ink-faint capitalize @max-[24rem]/toolbar:hidden">
+            {effort}
+          </span>
         ) : null
+      }
+      // Provenance lives in the panel, not on the chip: where the current
+      // model came from, plus a way back to the inherited default.
+      panelHeader={
+        <div data-model-provenance className="flex items-center gap-2 border-b border-hairline px-3 py-2">
+          <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink-faint">
+            {t(`composer.modelProvenance.${modelSource}`)}
+          </span>
+          {model !== undefined && hasCatalog && !disabled ? (
+            <button
+              type="button"
+              data-model-reset
+              onClick={() => { void Promise.resolve(onChangeModel(undefined)).catch(() => undefined); }}
+              className="shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+            >
+              {t('composer.modelResetDefault')}
+            </button>
+          ) : null}
+        </div>
       }
       panelFooter={
         showEffort ? (
-          <div className="flex items-center gap-2 border-t border-hairline px-3 py-2.5">
-            <span className="shrink-0 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+          <div className="flex items-center gap-2 border-t border-hairline px-3 py-2">
+            <span className="shrink-0 text-[12px] font-medium text-ink-faint">
               {t('composer.effortHeading')}
             </span>
             <div
               role="radiogroup"
               aria-label={t('composer.effortTitle')}
-              className="ml-auto flex items-center gap-0.5 rounded-full border border-hairline bg-paper p-0.5"
+              className="ml-auto flex items-center gap-0.5 rounded-md bg-paper p-0.5"
             >
               {efforts.map((level) => (
                 <button
@@ -2789,13 +2550,13 @@ function ModelChip({
                   data-effort={level}
                   disabled={disabled}
                   onClick={() => { onChangeEffort(level); }}
-                  className={`rounded-full px-2 py-0.5 font-mono text-[10.5px] transition-colors ${
+                  className={`rounded-[5px] px-2 py-0.5 text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
                     level === effort
-                      ? 'bg-accent text-white'
-                      : 'text-ink-soft hover:bg-hairline/60'
+                      ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                      : 'text-ink-soft hover:text-ink'
                   }`}
                 >
-                  {level}
+                  <span className="capitalize">{level}</span>
                 </button>
               ))}
             </div>
@@ -2803,5 +2564,56 @@ function ModelChip({
         ) : null
       }
     />
+  );
+}
+
+/**
+ * The model segment's lead mark: three rising bars, filled up to the current
+ * thinking depth. It says "this is the model and how hard it thinks" before a
+ * word is read, and moving the effort visibly moves the mark. Without an
+ * effort (no levels offered) every bar rests faint.
+ */
+function EffortGauge({
+  efforts,
+  effort,
+}: {
+  readonly efforts: readonly string[] | undefined;
+  readonly effort: string | undefined;
+}) {
+  const index = effort === undefined || efforts === undefined ? -1 : efforts.indexOf(effort);
+  const lit = index < 0 || efforts === undefined ? 0 : Math.max(1, Math.round(((index + 1) / efforts.length) * 3));
+  return (
+    <svg
+      aria-hidden
+      data-effort-gauge={lit}
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${STATUS_SEGMENT_ICON_CLASS}`}
+    >
+      {[5, 8, 11].map((height, bar) => (
+        <rect
+          key={height}
+          x={2.6 + bar * 4}
+          y={13.2 - height}
+          width={2.6}
+          height={height}
+          rx={1.1}
+          fill="currentColor"
+          opacity={bar < lit ? 1 : 0.28}
+        />
+      ))}
+    </svg>
+  );
+}
+
+/** Small line glyph for file / folder chips and mention rows (no emoji). */
+function FileGlyph({ dir }: { dir: boolean }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden className="shrink-0 text-ink-faint">
+      {dir ? (
+        <path d="M1.5 3.5a1 1 0 0 1 1-1h2.2l1 1.2h3.8a1 1 0 0 1 1 1V9a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V3.5Z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
+      ) : (
+        <path d="M3 1.5h3.8L9.5 4.2V10a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5ZM6.6 1.6v2.8h2.8" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
+      )}
+    </svg>
   );
 }

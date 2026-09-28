@@ -49,6 +49,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { previewThumbnail } from './imageThumbnail';
 import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
+import { Icon } from './icons';
 
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly (string | PreviewTabModel)[];
@@ -328,7 +329,7 @@ export function PreviewWorkspace({
           data-preview-fullscreen-toggle
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-7 lg:w-7"
         >
-          {isFullscreen ? '⤢' : '⛶'}
+          <Icon name={isFullscreen ? 'collapse' : 'expand'} />
         </button>
         <button
           type="button"
@@ -602,7 +603,7 @@ function PreviewFileTab({
           active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
         }`}
       >
-        ×
+        <Icon name="close" size={12} />
       </button>
     </div>
   );
@@ -659,7 +660,7 @@ function PreviewSkillTab({
       }`}
     >
       <span className="min-w-0 truncate">SKILL.md</span>
-      <span className="min-w-0 truncate text-[10px] text-ink-faint">{name}</span>
+      <span className="min-w-0 truncate text-[11px] text-ink-faint">{name}</span>
       <button
         type="button"
         aria-label={`${t('common.close')} ${name} SKILL.md`}
@@ -668,7 +669,7 @@ function PreviewSkillTab({
           active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
         }`}
       >
-        ×
+        <Icon name="close" size={12} />
       </button>
     </div>
   );
@@ -757,7 +758,7 @@ function PreviewPanelTab({
           active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
         }`}
       >
-        ×
+        <Icon name="close" size={12} />
       </button>
     </div>
   );
@@ -822,7 +823,7 @@ function TabContextMenu({
     <div
       data-preview-tab-menu
       role="menu"
-      className="anim-enter fixed z-50 w-52 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]"
+      className="anim-enter fixed z-50 w-52 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: menu.x, top: menu.y }}
     >
       <button type="button" role="menuitem" className={itemClass} onClick={() => { pick(onCloseTab); }}>
@@ -985,19 +986,19 @@ function PreviewSkillView({
       data-preview-tabpanel={tabKey}
     >
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-faint">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
           {t('cap.source.builtin')} · {name} / SKILL.md
         </span>
-        <span className="shrink-0 text-[10.5px] text-ink-faint">{t('preview.builtinSkillReadOnly')}</span>
-        <span className="flex shrink-0 overflow-hidden rounded-full border border-hairline text-[10.5px]">
+        <span className="shrink-0 text-[11px] text-ink-faint">{t('preview.builtinSkillReadOnly')}</span>
+        <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
           {(['rendered', 'source'] as const).map((option) => (
             <button
               key={option}
               type="button"
               data-md-mode={option}
               onClick={() => { setMode(option); }}
-              className={`px-2 py-0.5 transition-colors ${
-                mode === option ? 'bg-accent-soft font-medium text-accent' : 'text-ink-faint hover:text-ink-soft'
+              className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
+                mode === option ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
               }`}
             >
               {t(option === 'rendered' ? 'preview.rendered' : 'preview.source')}
@@ -1059,7 +1060,7 @@ function PreviewTabView({
 
 function TabPathCaption({ path }: { readonly path: string }) {
   return (
-    <p className="truncate border-b border-hairline px-3 py-1.5 font-mono text-[10.5px] text-ink-faint" title={path}>
+    <p className="truncate border-b border-hairline px-3 py-1.5 font-mono text-[11px] text-ink-faint" title={path}>
       {path}
     </p>
   );
@@ -1136,7 +1137,7 @@ function ImageTabView({
               alt={name}
               className="max-h-[70vh] rounded-lg border border-hairline object-contain"
             />
-            <span className="mt-1 block font-mono text-[10.5px] text-ink-faint">
+            <span className="mt-1 block font-mono text-[11px] text-ink-faint">
               {formatBytes(state.size)}
             </span>
           </button>
@@ -1162,7 +1163,7 @@ function BinaryTabView({ path }: { readonly path: string }) {
             const client = connection?.client;
             if (client !== undefined) void downloadHostFile(host, client, path, name);
           }}
-          className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-accent-deep"
+          className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
         >
           {t('media.download')}
         </button>
@@ -1285,20 +1286,20 @@ function TextTabView({
   return (
     <>
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-faint" title={path}>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
           {path}
         </span>
         {markdown ? (
-          <span className="flex shrink-0 overflow-hidden rounded-full border border-hairline text-[10.5px]">
+          <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
             {(['rendered', 'source'] as const).map((option) => (
               <button
                 key={option}
                 type="button"
                 data-md-mode={option}
                 onClick={() => { setMode(option); }}
-                className={`px-2 py-0.5 transition-colors ${
+                className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
                   mode === option
-                    ? 'bg-accent-soft font-medium text-accent'
+                    ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
                     : 'text-ink-faint hover:text-ink-soft'
                 }`}
               >
@@ -1308,13 +1309,13 @@ function TextTabView({
           </span>
         ) : null}
         {snap.status === 'ready' ? (
-          <span className="shrink-0 text-[10.5px] text-ink-faint" data-save-status>
+          <span className="shrink-0 text-[11px] text-ink-faint" data-save-status>
             {snap.saving
               ? t('preview.saving')
               : snap.dirty
-                ? `● ${t('preview.unsaved')}`
+                ? <span className="inline-flex items-center gap-1"><Icon name="dot" size={12} className="text-amber-rule" />{t('preview.unsaved')}</span>
                 : snap.lastSavedAt !== undefined
-                  ? `✓ ${t('preview.saved')}`
+                  ? t('preview.saved')
                   : ''}
           </span>
         ) : null}
@@ -1324,7 +1325,7 @@ function TextTabView({
             data-save-button
             disabled={!snap.dirty || snap.saving}
             onClick={() => { void controller?.saveNow(); }}
-            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
+            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
           >
             {t('preview.save')}
           </button>
@@ -1337,9 +1338,9 @@ function TextTabView({
               void downloadHostFile(host, clientForDownload, path, name);
             }
           }}
-          className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[10.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+          className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
         >
-          ↓
+          <Icon name="arrowDown" size={12} />
         </button>
       </div>
       {snap.conflict ? (
@@ -1382,7 +1383,7 @@ function TextTabView({
             aria-label={t('common.close')}
             className="shrink-0"
           >
-            ×
+            <Icon name="close" size={12} />
           </button>
         </div>
       ) : null}

@@ -39,6 +39,7 @@ import type { AgentWorkspaceNavigation } from './agent-workspace';
 import { useOptionalConversationShell } from './ConversationShell';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
+import { Icon } from './icons';
 import { previewThumbnail } from './imageThumbnail';
 import { MediaLightbox } from './MediaLightbox';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -352,12 +353,16 @@ export function PreviewToggleButton({ className }: { className?: string }) {
       aria-label={t('preview.toggleAria')}
       aria-expanded={preview.previewPanelOpen}
       data-preview-toggle
-      className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] transition-colors ${
+      className={`flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-8 ${
         preview.previewPanelOpen
-          ? 'border-accent bg-accent-soft text-accent'
-          : 'border-hairline text-ink-soft hover:border-hairline-strong'
+          ? 'bg-canvas text-ink'
+          : 'text-ink-faint hover:bg-canvas hover:text-ink'
       } ${className ?? ''}`}
     >
+      <svg aria-hidden viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" className="h-[14px] w-[14px] shrink-0">
+        <path d="M4.5 2.5h4.8l2.7 2.7v7.3a1 1 0 0 1-1 1H4.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z" />
+        <path d="M9 2.5v3h3" />
+      </svg>
       {t('preview.toggle')}
     </button>
   );
@@ -524,13 +529,13 @@ function AttachmentPreviewDialog({
       ariaLabel={title}
       overlayId="session-attachment-preview"
       overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/55 p-4"
-      panelClassName="anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-4 shadow-[0_20px_60px_-20px_rgba(28,25,23,0.45)]"
+      panelClassName="anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-4 shadow-[0_20px_60px_-20px_rgb(var(--kiki-shadow-ink)/0.45)]"
     >
       <header className="mb-3 flex shrink-0 items-center gap-3">
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-sm font-semibold text-ink">{name}</h2>
           {load.status === 'ready' ? (
-            <p className="truncate font-mono text-[10px] text-ink-faint">{load.mime} · {formatBytes(load.bytes.byteLength)}</p>
+            <p className="truncate font-mono text-[11px] text-ink-faint">{load.mime} · {formatBytes(load.bytes.byteLength)}</p>
           ) : null}
         </div>
         {load.status === 'ready' ? (
@@ -547,9 +552,9 @@ function AttachmentPreviewDialog({
           data-autofocus
           onClick={onClose}
           aria-label={t('common.close')}
-          className="rounded-lg border border-hairline px-2.5 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
         >
-          ×
+          <Icon name="close" />
         </button>
       </header>
       <div data-attachment-preview className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
@@ -607,12 +612,10 @@ function FileChip({ item }: { item: MediaRef }) {
   }`;
   const body = (
     <>
-      <span aria-hidden className="shrink-0 text-[11px] text-ink-faint">
-        ◧
-      </span>
-      <span className="min-w-0 truncate font-mono text-[11.5px] text-ink">{label}</span>
+      <Icon name="file" className="h-3.5 w-3.5 text-ink-faint" />
+      <span className="min-w-0 truncate font-mono text-[12px] text-ink">{label}</span>
       {detail !== undefined && detail !== '' ? (
-        <span className="shrink-0 font-mono text-[10px] text-ink-faint">{detail}</span>
+        <span className="shrink-0 font-mono text-[11px] text-ink-faint">{detail}</span>
       ) : null}
     </>
   );
@@ -738,7 +741,7 @@ function MediaPart({ item, agentId }: { item: MediaRef; agentId?: string }) {
           type="button"
           title={name}
           onClick={() => { preview.openImage(url, item.name); }}
-          className="overflow-hidden rounded-lg transition-shadow hover:shadow-[0_4px_16px_-8px_rgba(28,25,23,0.4)]"
+          className="overflow-hidden rounded-lg transition-shadow hover:shadow-[0_4px_16px_-8px_rgb(var(--kiki-shadow-ink)/0.4)]"
         >
           {image}
         </button>
@@ -834,7 +837,10 @@ export function FilePathLink({ path, className }: { path: string; className?: st
             preview.openFile(path);
           }
         }}
-        className={`cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent ${className ?? ''}`}
+        // Quiet at rest: the link affordance (underline, ink) appears only
+        // under the pointer or keyboard focus, so a screen of paths is not a
+        // screen of dotted lines.
+        className={`cursor-pointer rounded-[2px] underline-offset-2 decoration-ink-faint hover:text-ink hover:underline focus-visible:text-ink focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${className ?? ''}`}
       >
         {path}
       </span>

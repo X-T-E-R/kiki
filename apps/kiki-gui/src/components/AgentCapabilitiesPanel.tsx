@@ -12,6 +12,7 @@ import {
 } from './agent-panel/mapCapabilities';
 import { ProfileDetailSections } from './agent-panel/ProfileDetailSections';
 import { ToolChipList, toolCategoryLabel } from './agent-panel/ToolChipList';
+import { DisclosureChevron } from './icons';
 
 export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuery }) {
   const { klient } = useConnection();
@@ -53,21 +54,21 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
           : 'border-hairline bg-paper text-ink-faint';
     return (
       <span data-recommendation-status={status ?? 'unknown'}
-        className={`rounded-full border px-1.5 py-px font-mono text-[9.5px] ${className}`}>
+        className={`rounded-full border px-1.5 py-px text-[11px] ${className}`}>
         {label}
       </span>
     );
   };
 
   return (
-    <section data-agent-capabilities className="min-w-0 text-left text-[11.5px]">
+    <section data-agent-capabilities className="min-w-0 text-left text-[12px]">
       <button type="button" aria-expanded={open} onClick={() => { setOpen(!open); }}
-        className="flex items-center gap-1.5 rounded-md px-1 py-1 text-ink-soft transition-colors hover:text-accent">
-        <span aria-hidden className="text-[9px]">{open ? '▾' : '▸'}</span>{t('diagnostics.title')}
+        className="flex min-h-7 items-center gap-1.5 rounded-md px-1 py-1 text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none">
+        <DisclosureChevron open={open} className="text-current" />{t('diagnostics.title')}
       </button>
       {open ? <div className="mt-1 max-h-60 space-y-2 overflow-y-auto rounded-lg border border-hairline bg-paper p-2.5 sm:max-h-80" data-capability-context={live ? 'live' : 'draft'}>
         <p className="font-medium text-ink">{t(live ? 'diagnostics.live' : 'diagnostics.draft')}</p>
-        <p className="break-all font-mono text-[10px] text-ink-faint">{scope}</p>
+        <p className="break-all font-mono text-[11px] text-ink-faint">{scope}</p>
         {capabilities.isPending ? <p role="status" className="text-ink-soft">{t('diagnostics.loading')}</p> : null}
         {capabilities.isError ? <div role="alert" className="text-danger">
           <p>{t('diagnostics.error')} · {agentCapabilitiesErrorText(capabilities.error, t)}</p>
@@ -76,7 +77,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
         {!capabilities.isError && data !== undefined ? <>
           {data.owner.profile !== undefined ? <p className="break-all text-ink-soft">{t('agentPanel.profileDetail')} · {data.owner.profile}</p> : null}
           {data.profile !== undefined ? <details data-profile-details className="rounded border border-hairline bg-panel p-2">
-            <summary className="cursor-pointer font-medium text-ink hover:text-accent">{t('agentPanel.profileDetail')} · {t('diagnostics.source')}</summary>
+            <summary className="cursor-pointer font-medium text-ink hover:text-ink-soft">{t('agentPanel.profileDetail')} · {t('diagnostics.source')}</summary>
             <div className="mt-2">
               <ProfileDetailSections
                 profile={data.profile}
@@ -135,9 +136,9 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
               {target.description !== undefined ? <p className="break-words text-ink-soft">{target.description}</p> : null}
               <p className="break-all text-ink-soft">{t('diagnostics.executor')} · {target.executor}</p>
               <p className="break-all text-ink">{t('diagnostics.model')} · {target.model_alias ?? t('diagnostics.unknown')}</p>
-              <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.model_source)}</p>
+              <p className="text-[11px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.model_source)}</p>
               <p className="break-all text-ink">{t('diagnostics.effort')} · {target.thinking_effort ?? t('diagnostics.unknown')}</p>
-              <p className="text-[10.5px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.effort_source)}</p>
+              <p className="text-[11px] text-ink-faint">{t('diagnostics.source')} · {sourceLabel(target.effort_source)}</p>
               <p className={target.defaults_available ? 'text-success' : 'text-danger'}>{t(target.defaults_available ? 'diagnostics.defaultsReady' : 'diagnostics.defaultsMissing')}</p>
               {unavailableReason !== undefined ? <p className="break-words text-danger">{unavailableReason}</p> : null}
               {live && data.context === 'live' ? <>

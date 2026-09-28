@@ -7,6 +7,8 @@
 
 import type { ReactNode } from 'react';
 
+import { Icon } from '../icons';
+
 export function CapabilityGroup({
   id,
   title,
@@ -25,28 +27,28 @@ export function CapabilityGroup({
   return (
     <section
       data-capability-group={id}
-      className="rounded-2xl border border-hairline bg-panel shadow-[0_2px_4px_rgba(28,25,23,0.03)]"
+      className="rounded-2xl border border-hairline bg-panel shadow-[0_2px_4px_rgb(var(--kiki-shadow-ink)/0.03)]"
     >
       <button
         type="button"
         aria-expanded={open}
         aria-controls={`cap-group-body-${id}`}
         onClick={onToggle}
-        className="flex w-full items-center gap-2 rounded-2xl px-4 py-3 text-left transition-colors hover:bg-paper/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+        className="flex w-full items-center gap-1.5 rounded-2xl px-4 py-3 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
       >
-        <span className="min-w-0 flex-1 truncate font-display text-[14px] font-semibold text-ink">
+        <span className="min-w-0 truncate text-[13px] font-medium text-ink">
           {title}
         </span>
-        <span className="shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[10px] text-ink-faint tabular-nums">
+        <span className="mr-auto shrink-0 text-[12px] text-ink-faint tabular-nums">
           {count}
         </span>
         <span
           aria-hidden
-          className={`shrink-0 text-[11px] text-ink-faint transition-transform duration-150 ${
+          className={`flex shrink-0 text-ink-faint transition-transform duration-150 motion-reduce:transition-none ${
             open ? 'rotate-180' : ''
           }`}
         >
-          ▾
+          <Icon name="chevron" size={12} className="rotate-90" />
         </span>
       </button>
       <div

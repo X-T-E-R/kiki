@@ -1,23 +1,20 @@
 /**
- * GlobalCronPanel — the cross-workspace scheduled-task panel (`GET /api/cron`).
+ * /cron — the one scheduled-tasks page (`GET /api/cron`, every workspace).
  *
- * Mirrors the GlobalTaskBoard mounting pattern: always rendered by the app
- * shell, its launcher portals into the session rail (`[data-session-rail]`)
- * as a second full-width bar directly under the task-board entry, and the
- * panel itself is a Dialog. Pages without a rail get no entry, by design.
+ * Workspace is a client-side filter: `?workspace=<id>` (pre-filled when the
+ * sidebar nav or the inspector link opens it from a session) narrows the
+ * list; the scope bar under the title widens back to all workspaces. Every row
+ * keeps its workspace tag either way. Rows split into Active / Paused
+ * sections on the server's paused-last order, next fire time leading.
  *
  * Row actions ride the per-task routes (`:pause` / `:resume` / `:run` /
  * DELETE); the list's `session_id` always travels back as the disambiguating
  * query so a shared id never trips 40001. Pause/resume patch the row from the
  * returned task and invalidate, so the server's paused-last ordering settles
- * on the same pass. Delete goes through a ConfirmDialog; while it is open the
- * panel's close request (Esc/backdrop) cancels the confirm instead of
- * closing the panel, because Dialog's capture-phase Esc listener is
- * registered first and would otherwise swallow the confirm's own Esc.
+ * on the same pass. Delete goes through a ConfirmDialog.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useCallback, useMemo, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import type { Session, Workspace } from '@kiki/protocol';
 import { ErrorCode } from '@kiki/protocol';
@@ -30,16 +27,26 @@ import { ApiError, type CronTask, type ListCronTasksResponse } from '../lib/clie
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
-import { Dialog, DIALOG_PANEL_SIZES } from './Dialog';
+import { PageHeader, useWorkspaceScope } from './PageChrome';
 import { useNow } from './RelativeTime';
 import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
+import { WorkspaceScopeControl } from './WorkspaceScopeControl';
 
-const CRON_TASKS_QUERY_KEY = ['cron-tasks'] as const;
+export const CRON_TASKS_QUERY_KEY = ['cron-tasks'] as const;
 
-export interface GlobalCronPanelProps {
+export interface CronPageProps {
   readonly sessions: readonly Session[];
   readonly workspaceOptions: readonly Workspace[];
   readonly onNavigate: (target: To) => void;
+  readonly onToggleSidebar: () => void;
+}
+
+/** Client-side workspace scope for the cross-workspace list. */
+export function filterCronTasks<T extends { readonly workspace_id: string }>(
+  tasks: readonly T[],
+  workspaceId: string | undefined,
+): T[] {
+  return workspaceId === undefined ? [...tasks] : tasks.filter((task) => task.workspace_id === workspaceId);
 }
 
 type Translate = (key: I18nKey, params?: I18nParams) => string;
@@ -93,19 +100,19 @@ function LastFire({ at }: { readonly at: string | null }) {
 }
 
 const CHIP_BASE =
-  'shrink-0 rounded-sm border px-1.5 py-0.5 font-mono text-[10px] font-semibold';
+  'shrink-0 rounded-sm border border-transparent px-1.5 py-px text-[12px] font-medium';
 
 function StatusChip({ task }: { readonly task: CronTask }) {
   const { t } = useI18n();
   if (task.paused) {
     return (
-      <span data-cron-status="paused" className={`${CHIP_BASE} border-hairline bg-paper text-ink-faint`}>
+      <span data-cron-status="paused" className={`${CHIP_BASE} bg-panel text-ink-faint`}>
         {t('cron.status.paused')}
       </span>
     );
   }
   return (
-    <span data-cron-status="running" className={`${CHIP_BASE} border-success/25 bg-success/10 text-success`}>
+    <span data-cron-status="running" className={`${CHIP_BASE} bg-success/10 text-success`}>
       {t('cron.status.running')}
     </span>
   );
@@ -138,121 +145,108 @@ function CronTaskRow({
     <li
       data-cron-task={task.id}
       aria-busy={pending}
-      className={`rounded-xl border border-hairline bg-panel p-3.5 shadow-xs transition-opacity ${pending ? 'opacity-60' : ''}`}
+      className={`group grid grid-cols-1 gap-x-6 gap-y-3 px-4 py-4 transition-opacity lg:grid-cols-[9.5rem_minmax(0,1fr)_auto] lg:px-5 ${pending ? 'opacity-60' : ''}`}
     >
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
-        <div className="min-w-0 flex-1 basis-60">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <StatusChip task={task} />
-            <span className={`${CHIP_BASE} border-hairline bg-paper text-ink-faint`}>
-              {task.recurring ? t('cron.kind.recurring') : t('cron.kind.oneShot')}
+      {/* When: the next fire is the fact a scheduler page is read for. */}
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 lg:flex-col lg:gap-0.5">
+        {task.next_fire_at !== null ? (
+          <>
+            <span className="text-[11px] text-ink-faint">{t('cron.nextFire')}</span>
+            <span className="font-display text-[18px] leading-tight font-semibold text-ink">
+              <NextFire at={task.next_fire_at} />
             </span>
-            {task.stale ? (
-              <span
-                data-cron-status="stale"
-                className={`${CHIP_BASE} border-amber-rule/40 bg-amber-card text-amber-ink`}
-              >
-                {t('cron.status.stale')}
-              </span>
-            ) : null}
-            <span className="min-w-0 truncate text-[13px] font-semibold text-ink">
-              {task.human_schedule}
+          </>
+        ) : (
+          <StatusChip task={task} />
+        )}
+        <span className="text-[11.5px] text-ink-faint lg:mt-1">
+          {t('cron.lastFire')}: <LastFire at={task.last_fired_at} />
+        </span>
+      </div>
+
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="min-w-0 truncate text-[14px] font-medium text-ink">
+            {task.human_schedule}
+          </span>
+          {task.next_fire_at !== null ? <StatusChip task={task} /> : null}
+          <span className={`${CHIP_BASE} border-hairline bg-paper text-ink-faint`}>
+            {task.recurring ? t('cron.kind.recurring') : t('cron.kind.oneShot')}
+          </span>
+          {task.stale ? (
+            <span data-cron-status="stale" className={`${CHIP_BASE} bg-amber-card text-amber-ink`}>
+              {t('cron.status.stale')}
             </span>
-          </div>
-          <p className="mt-1.5 line-clamp-2 text-[12px] leading-relaxed text-ink-soft">
-            {task.prompt_preview}
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint">
-            <span className="font-mono">{task.cron}</span>
-            {sessionId !== null ? (
-              sessionTitle !== undefined ? (
-                <button
-                  type="button"
-                  data-cron-session={sessionId}
-                  onClick={() => { onOpenSession(sessionId); }}
-                  className="max-w-48 truncate font-medium text-ink-soft transition-colors hover:text-accent hover:underline"
-                  title={sessionTitle}
-                >
-                  {sessionTitle}
-                </button>
-              ) : (
-                <span className="max-w-48 truncate font-mono" title={sessionId}>
-                  {sessionId}
-                </span>
-              )
-            ) : null}
-            {workspaceName !== undefined ? (
-              <span className="max-w-40 truncate" title={task.workspace_id}>{workspaceName}</span>
-            ) : (
-              <span className="max-w-40 truncate font-mono" title={task.workspace_id}>
-                {task.workspace_id}
-              </span>
-            )}
-            <span>
-              {t('cron.lastFire')}: <LastFire at={task.last_fired_at} />
-            </span>
-          </div>
-        </div>
-        <div className="flex grow flex-col items-end gap-2">
-          {task.next_fire_at !== null ? (
-            <div className="text-right text-[11px] text-ink-faint">
-              {t('cron.nextFire')} <NextFire at={task.next_fire_at} />
-            </div>
           ) : null}
-          <div className="flex flex-wrap items-center justify-end gap-1.5">
-            <button
-              type="button"
-              data-cron-action="run"
-              disabled={pending}
-              onClick={() => { onRun(task); }}
-              className={PRIMARY_BUTTON}
-            >
-              {t('cron.action.run')}
-            </button>
-            <button
-              type="button"
-              data-cron-action={task.paused ? 'resume' : 'pause'}
-              disabled={pending}
-              onClick={() => { onPauseResume(task, !task.paused); }}
-              className={SECONDARY_BUTTON}
-            >
-              {task.paused ? t('cron.action.resume') : t('cron.action.pause')}
-            </button>
-            <button
-              type="button"
-              data-cron-action="delete"
-              disabled={pending}
-              onClick={() => { onDelete(task); }}
-              className={DANGER_GHOST_BUTTON}
-            >
-              {t('cron.action.delete')}
-            </button>
-          </div>
         </div>
+        <p className="mt-1 line-clamp-2 text-[13px] leading-relaxed text-ink-soft">
+          {task.prompt_preview}
+        </p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-faint">
+          <span className="font-mono text-[11.5px]">{task.cron}</span>
+          <span data-cron-workspace className="inline-flex max-w-44 items-center gap-1 truncate" title={task.workspace_id}>
+            <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-hairline-strong" />
+            <span className={`truncate ${workspaceName === undefined ? 'font-mono' : ''}`}>{workspaceName ?? task.workspace_id}</span>
+          </span>
+          {sessionId !== null ? (
+            sessionTitle !== undefined ? (
+              <button
+                type="button"
+                data-cron-session={sessionId}
+                onClick={() => { onOpenSession(sessionId); }}
+                className="max-w-56 truncate font-medium text-ink-soft underline-offset-2 transition-colors hover:text-accent hover:underline"
+                title={sessionTitle}
+              >
+                {sessionTitle}
+              </button>
+            ) : (
+              <span className="max-w-48 truncate font-mono" title={sessionId}>
+                {sessionId}
+              </span>
+            )
+          ) : null}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-start justify-start gap-1.5 lg:justify-end">
+        <button
+          type="button"
+          data-cron-action="run"
+          disabled={pending}
+          onClick={() => { onRun(task); }}
+          className={SECONDARY_BUTTON}
+        >
+          {t('cron.action.run')}
+        </button>
+        <button
+          type="button"
+          data-cron-action={task.paused ? 'resume' : 'pause'}
+          disabled={pending}
+          onClick={() => { onPauseResume(task, !task.paused); }}
+          className={task.paused ? PRIMARY_BUTTON : SECONDARY_BUTTON}
+        >
+          {task.paused ? t('cron.action.resume') : t('cron.action.pause')}
+        </button>
+        <button
+          type="button"
+          data-cron-action="delete"
+          disabled={pending}
+          onClick={() => { onDelete(task); }}
+          className={DANGER_GHOST_BUTTON}
+        >
+          {t('cron.action.delete')}
+        </button>
       </div>
     </li>
   );
 }
 
-interface CronPanelBodyProps {
-  readonly sessions: readonly Session[];
-  readonly workspaceOptions: readonly Workspace[];
-  readonly onNavigate: (target: To) => void;
-  readonly onCloseRequest: () => void;
-  readonly registerCloseGuard: (guard: () => boolean) => void;
-}
-
-function CronPanelBody({
-  sessions,
-  workspaceOptions,
-  onNavigate,
-  onCloseRequest,
-  registerCloseGuard,
-}: CronPanelBodyProps) {
+export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSidebar }: CronPageProps) {
   const { client } = useConnection();
   const { t, tp } = useI18n();
   const queryClient = useQueryClient();
   const [pendingDelete, setPendingDelete] = useState<CronTask | null>(null);
+  const { scope, setScope } = useWorkspaceScope(workspaceOptions);
 
   const tasksQuery = useInfiniteQuery({
     queryKey: CRON_TASKS_QUERY_KEY,
@@ -260,17 +254,6 @@ function CronPanelBody({
     initialPageParam: 0,
     getNextPageParam: (lastPage) => lastPage.next_offset,
   });
-
-  // While the delete confirm is up, the panel's Esc/backdrop close cancels the
-  // confirm instead of closing the panel (Dialog's Esc listener wins the
-  // capture race, so the confirm routes through the panel's close request).
-  useEffect(() => {
-    registerCloseGuard(() => {
-      if (pendingDelete === null) return false;
-      setPendingDelete(null);
-      return true;
-    });
-  }, [pendingDelete, registerCloseGuard]);
 
   const sessionsById = useMemo(
     () => new Map(sessions.map((session) => [session.id, session])),
@@ -356,43 +339,65 @@ function CronPanelBody({
   const openSession = useCallback(
     (sessionId: string) => {
       onNavigate(`/s/${sessionId}`);
-      onCloseRequest();
     },
-    [onNavigate, onCloseRequest],
+    [onNavigate],
   );
 
-  const tasks = tasksQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const allTasks = tasksQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const tasks = filterCronTasks(allTasks, scope);
+  // The server already orders paused plans last; split on that boundary so the
+  // "what will run next" list is never interleaved with dormant ones.
+  const activeTasks = tasks.filter((task) => !task.paused);
+  const pausedTasks = tasks.filter((task) => task.paused);
+  const renderRow = (task: CronTask) => (
+    <CronTaskRow
+      key={`${task.workspace_id}:${task.id}`}
+      task={task}
+      sessionTitle={task.session_id === null ? undefined : sessionsById.get(task.session_id)?.title}
+      workspaceName={workspacesById.get(task.workspace_id)?.name}
+      pending={busyTaskId === task.id}
+      onOpenSession={openSession}
+      onPauseResume={(target, pause) => { pauseResumeMutation.mutate({ task: target, pause }); }}
+      onRun={(target) => { runMutation.mutate(target); }}
+      onDelete={(target) => { setPendingDelete(target); }}
+    />
+  );
+  const section = (key: 'active' | 'paused', rows: readonly CronTask[]) => (rows.length === 0 ? null : (
+    <section data-cron-section={key} aria-labelledby={`cron-section-${key}`}>
+      <h2 id={`cron-section-${key}`} className="mb-2 flex items-baseline gap-2 px-1 text-[12px] font-medium text-ink-soft">
+        {t(key === 'active' ? 'cron.section.active' : 'cron.section.paused')}
+        <span className="text-ink-faint tabular-nums">{rows.length}</span>
+      </h2>
+      <ul className="divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-panel">
+        {rows.map(renderRow)}
+      </ul>
+    </section>
+  ));
 
   return (
-    <>
-      <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline bg-panel px-5 py-3.5">
-        <h2 className="font-display text-[19px] font-semibold leading-none text-ink">
-          {t('cron.panel.title')}
-        </h2>
+    <div data-cron-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
+      <PageHeader title={t('cron.panel.title')} onToggleSidebar={onToggleSidebar}>
+        <button
+          type="button"
+          data-cron-refresh
+          disabled={tasksQuery.isFetching}
+          onClick={() => { void tasksQuery.refetch(); }}
+          className="h-8 rounded-md border border-hairline px-3 text-[13px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {t('cron.panel.refresh')}
+        </button>
+      </PageHeader>
+      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline px-4 py-2.5 lg:px-6">
+        <WorkspaceScopeControl workspaces={workspaceOptions} value={scope} onChange={setScope} />
         {tasksQuery.data !== undefined ? (
-          <span className="font-mono text-[11px] text-ink-faint">{tp('cron.panel.count', tasks.length)}</span>
+          <p data-cron-summary className="ml-auto text-[12px] text-ink-faint tabular-nums">
+            {tp('cron.panel.count', tasks.length)}
+            {tasks.length > 0 ? ` · ${tp('cron.summary.active', activeTasks.length)} · ${tp('cron.summary.paused', pausedTasks.length)}` : ''}
+          </p>
         ) : null}
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            data-cron-refresh
-            disabled={tasksQuery.isFetching}
-            onClick={() => { void tasksQuery.refetch(); }}
-            className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {t('cron.panel.refresh')}
-          </button>
-          <button
-            type="button"
-            onClick={onCloseRequest}
-            className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
-          >
-            {t('common.close')}
-          </button>
-        </div>
-      </header>
+      </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5" data-cron-panel-body>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-5 pb-8 lg:px-6" data-cron-panel-body>
         {tasksQuery.isPending ? (
           <div
             role="status"
@@ -415,6 +420,13 @@ function CronPanelBody({
               {t('common.retry')}
             </button>
           </div>
+        ) : tasks.length === 0 && scope !== undefined && allTasks.length > 0 ? (
+          <div data-cron-scope-empty className="mx-auto max-w-[960px] py-10">
+            <p className="text-[13px] text-ink-soft">{t('cron.scope.empty')}</p>
+            <button type="button" onClick={() => { setScope(undefined); }} className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2">
+              {t('cron.scope.showAll')}
+            </button>
+          </div>
         ) : tasks.length === 0 ? (
           <div
             data-cron-empty
@@ -430,25 +442,14 @@ function CronPanelBody({
           </div>
         ) : (
           <>
-            <ul className="space-y-3" data-cron-list>
-              {tasks.map((task) => (
-                <CronTaskRow
-                  key={`${task.workspace_id}:${task.id}`}
-                  task={task}
-                  sessionTitle={task.session_id === null ? undefined : sessionsById.get(task.session_id)?.title}
-                  workspaceName={workspacesById.get(task.workspace_id)?.name}
-                  pending={busyTaskId === task.id}
-                  onOpenSession={openSession}
-                  onPauseResume={(target, pause) => { pauseResumeMutation.mutate({ task: target, pause }); }}
-                  onRun={(target) => { runMutation.mutate(target); }}
-                  onDelete={(target) => { setPendingDelete(target); }}
-                />
-              ))}
-            </ul>
+            <div className="mx-auto max-w-[960px] space-y-6" data-cron-list>
+              {section('active', activeTasks)}
+              {section('paused', pausedTasks)}
+            </div>
             {tasksQuery.hasNextPage ? (
               <button type="button" disabled={tasksQuery.isFetchingNextPage}
                 onClick={() => { void tasksQuery.fetchNextPage(); }}
-                className="mt-4 rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft disabled:opacity-50">
+                className="mx-auto mt-4 block h-8 rounded-md border border-hairline px-3 text-[13px] text-ink-soft disabled:opacity-50">
                 {t('cron.panel.loadMore')}
               </button>
             ) : null}
@@ -471,74 +472,6 @@ function CronPanelBody({
           if (pendingDelete !== null) deleteMutation.mutate(pendingDelete);
         }}
       />
-    </>
-  );
-}
-
-export function GlobalCronPanel({ sessions, workspaceOptions, onNavigate }: GlobalCronPanelProps) {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const [railTarget, setRailTarget] = useState<HTMLElement | null>(null);
-  // Set by the panel body: returns true when it consumed the close request
-  // (cancelling the delete confirm instead of closing the panel).
-  const closeGuardRef = useRef<() => boolean>(() => false);
-
-  // Same rail mount discovery as the task board launcher.
-  useEffect(() => {
-    const update = () => {
-      setRailTarget(document.querySelector<HTMLElement>('[data-session-rail]'));
-    };
-    update();
-    const observer = new MutationObserver(update);
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
-
-  const close = useCallback(() => {
-    if (closeGuardRef.current()) return;
-    setOpen(false);
-  }, []);
-
-  const registerCloseGuard = useCallback((guard: () => boolean) => {
-    closeGuardRef.current = guard;
-  }, []);
-
-  const launcher = (
-    <button
-      type="button"
-      data-session-cron-panel
-      aria-haspopup="dialog"
-      aria-expanded={open}
-      aria-label={t('cron.panel.title')}
-      onClick={() => { setOpen(true); }}
-      className="app-rail__cron-launcher flex min-h-12 shrink-0 items-center justify-between gap-2 border-t border-hairline bg-panel px-4 py-2 text-left text-[12px] font-medium text-ink-soft transition-colors hover:bg-accent-soft hover:text-accent"
-    >
-      <span>{t('cron.panel.title')}</span>
-      <span aria-hidden className="text-[16px] leading-none">↗</span>
-    </button>
-  );
-
-  return (
-    <>
-      {railTarget ? createPortal(launcher, railTarget) : null}
-      {open ? (
-        <Dialog
-          onClose={close}
-          ariaLabel={t('cron.panel.title')}
-          overlayId="global-cron-panel"
-          panelClassName={`anim-enter flex h-[min(85vh,720px)] w-full ${DIALOG_PANEL_SIZES.xl} flex-col overflow-hidden rounded-2xl border border-hairline bg-paper p-0 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]`}
-        >
-          <CronPanelBody
-            sessions={sessions}
-            workspaceOptions={workspaceOptions}
-            onNavigate={onNavigate}
-            onCloseRequest={close}
-            registerCloseGuard={registerCloseGuard}
-          />
-        </Dialog>
-      ) : null}
-    </>
+    </div>
   );
 }

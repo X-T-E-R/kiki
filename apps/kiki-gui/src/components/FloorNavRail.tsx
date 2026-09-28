@@ -3,7 +3,7 @@
  * at the transcript's right edge, one tick per user message ("floor"). It
  * reveals while the log is being scrolled or while hovered/focused and fades
  * back out after ~1.4s idle; the tick owning the viewport stays highlighted.
- * Clicking a tick smooth-scrolls the row into view.
+ * Clicking a tick jumps the row to the top of the viewport.
  */
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -129,13 +129,14 @@ export function FloorNavRail({
             aria-label={t('transcript.floorTickAria', { index: index + 1, preview: entry.preview })}
             onClick={() => {
               setActiveId(entry.blockId);
-              virtualizer.scrollToIndex(nodeIndexes.get(entry.blockId)!, {
-                align: 'start',
-                behavior: 'smooth',
-              });
+              // Instant, not smooth: virtual-core drops ResizeObserver
+              // measurements outside the target window during a smooth
+              // scroll and never re-reads them, so rows the animation sweeps
+              // past keep estimated heights and paint over their neighbours.
+              virtualizer.scrollToIndex(nodeIndexes.get(entry.blockId)!, { align: 'start' });
             }}
-            className={`h-[3px] rounded-full transition-all duration-150 ${
-              active ? 'w-[18px] bg-accent' : 'w-[10px] bg-ink-faint/40 hover:bg-ink-faint/70'
+            className={`h-[2px] rounded-full transition-[width,background-color] duration-150 motion-reduce:transition-none ${
+              active ? 'w-4 bg-accent' : 'w-2 bg-ink-faint/25 group-hover/floor:w-2.5 group-hover/floor:bg-ink-faint/45 hover:!w-3.5 hover:!bg-ink-soft'
             }`}
           />
         );
@@ -146,16 +147,20 @@ export function FloorNavRail({
 
   if (entries.length < 2) return null;
   const visible = revealed || hovering;
+  // Weight follows intent: hidden at rest, a whisper while the log scrolls,
+  // full contrast only under the pointer or keyboard focus. The hit strip is
+  // wider than the ticks so hovering never needs pixel aim.
   return (
     <nav
       aria-label={t('transcript.floorsAria')}
       data-floor-nav
+      data-floor-hover={hovering || undefined}
       onMouseEnter={() => { setHovering(true); }}
       onMouseLeave={() => { setHovering(false); }}
       onFocus={() => { setHovering(true); }}
       onBlur={() => { setHovering(false); }}
-      className={`absolute top-1/2 right-1.5 z-10 flex -translate-y-1/2 flex-col items-end gap-[7px] transition-opacity duration-200 ${
-        visible ? 'opacity-100' : 'pointer-events-none opacity-0'
+      className={`group/floor absolute top-1/2 right-0.5 z-10 flex -translate-y-1/2 flex-col items-end gap-[6px] rounded-l-md py-2 pr-1 pl-3 transition-opacity duration-200 motion-reduce:transition-none ${
+        hovering ? 'opacity-100' : visible ? 'opacity-60' : 'pointer-events-none opacity-0'
       }`}
     >
       {ticks}

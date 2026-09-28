@@ -14,6 +14,7 @@ import {
   type AgentTreeNode,
 } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
+import { DisclosureChevron } from './icons';
 
 const STATUS_I18N: Record<AgentStatus, I18nKey> = {
   unknown: 'subagent.status.unknown',
@@ -116,11 +117,9 @@ const AgentTreeRow = memo(function AgentTreeRow({
                   if (onToggle !== undefined) onToggle();
                   else setLocalExpanded((value) => !value);
                 }}
-                className="flex h-6 w-5 shrink-0 items-center justify-center text-[9px] text-ink-faint transition-colors hover:text-ink"
+                className="flex h-6 w-5 shrink-0 items-center justify-center text-ink-faint transition-colors hover:text-ink"
               >
-                <span aria-hidden className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>
-                  ▶
-                </span>
+                <DisclosureChevron open={expanded} className="text-current" />
               </button>
             ) : (
               <span className="w-5 shrink-0" />
@@ -135,10 +134,10 @@ const AgentTreeRow = memo(function AgentTreeRow({
               onClick={() => {
                 onOpen(node.agentId);
               }}
-              className={`flex min-w-0 flex-1 items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition-colors ${
+              className={`agent-tree-row flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
                 selected
-                  ? 'border-accent/50 bg-accent-soft/40'
-                  : 'border-hairline bg-panel hover:border-accent/50 hover:bg-accent-soft/30'
+                  ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
+                  : 'hover:bg-ink/[0.04]'
               }`}
             >
               <span

@@ -11,6 +11,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
+import { DisclosureChevron } from './icons';
 import type { ConnectionConfig, SshProfile } from '../state/connectionConfig';
 import type { DesktopBootStatus, DesktopFailureInfo } from '../state/desktopConnection';
 import { Wordmark } from './Wordmark';
@@ -194,7 +195,7 @@ function DesktopFailureCard({
         <button
           type="button"
           onClick={onSwitchLocal ?? onRetry}
-          className="flex-1 rounded-lg bg-accent px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-accent-deep"
+          className="flex-1 rounded-lg bg-accent px-3 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
         >
           {t(onSwitchLocal === undefined ? 'connect.desktopRetry' : 'connect.switchLocal')}
         </button>
@@ -228,6 +229,12 @@ function BrowserConnectForm({
   const [url, setUrl] = useState(initial.url);
   const [token, setToken] = useState(initial.token);
   const [showToken, setShowToken] = useState(false);
+  // Manual URL + token are for connecting elsewhere; a saved manual
+  // connection (or a failed attempt) keeps the fields open.
+  const [manualOpen, setManualOpen] = useState(
+    initial.url !== '' || initial.token !== '' || error !== null,
+  );
+  useEffect(() => { if (error !== null) setManualOpen(true); }, [error]);
   const [detecting, setDetecting] = useState(false);
   const [detectNote, setDetectNote] = useState<string | null>(null);
 
@@ -262,7 +269,7 @@ function BrowserConnectForm({
   return (
     <div className="px-7 pt-6 pb-7">
       <Wordmark size="lg" />
-      <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">
+      <p className="mt-3 font-display text-[18px] leading-snug text-ink-soft">
         {t('connect.tagline')}
       </p>
 
@@ -271,13 +278,25 @@ function BrowserConnectForm({
           type="button"
           onClick={() => { void detect(); }}
           disabled={detecting || connecting}
-          className="mb-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
+          className="w-full rounded-md bg-accent px-3 py-2.5 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none disabled:opacity-60"
         >
           {detecting ? t('connect.detecting') : t('connect.detect')}
         </button>
         {detectNote !== null ? (
-          <p className="mb-4 -mt-2 text-[12px] text-ink-soft">{detectNote}</p>
+          <p role="status" className="mt-2 text-[13px] leading-relaxed text-ink-soft">{detectNote}</p>
         ) : null}
+
+        <button
+          type="button"
+          aria-expanded={manualOpen}
+          aria-controls="connect-manual"
+          onClick={() => { setManualOpen((open) => !open); }}
+          className="mt-5 flex items-center gap-1.5 rounded-md py-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+        >
+          <DisclosureChevron open={manualOpen} className="text-current" />
+          {t('connect.otherMachine')}
+        </button>
+        <div id="connect-manual" hidden={!manualOpen} className="mt-3">
 
         <label htmlFor="connect-server-url" className="mb-1 block text-[12px] font-medium text-ink-soft">
           {t('connect.serverUrl')}
@@ -291,14 +310,17 @@ function BrowserConnectForm({
           spellCheck={false}
         />
 
-        <label htmlFor="connect-token" className="mb-1 block text-[12px] font-medium text-ink-soft">
-          {t('connect.token')}
+        <label htmlFor="connect-token" className="mb-1 flex items-baseline justify-between gap-2 text-[12px] font-medium text-ink-soft">
+          {t('connect.accessToken')}
+          <span title={t('connect.accessTokenHelp')} className="cursor-help text-[12px] font-normal text-ink-faint underline decoration-dotted underline-offset-2">
+            {t('connect.accessTokenWhere')}
+          </span>
         </label>
         <div className="mb-5 flex gap-2">
           <input
             id="connect-token"
             className="min-w-0 flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
-            placeholder="~/.kiki/server.token"
+            aria-describedby="connect-token-help"
             value={token}
             onChange={(event) => { setToken(event.target.value); }}
             spellCheck={false}
@@ -313,9 +335,10 @@ function BrowserConnectForm({
             {t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')}
           </button>
         </div>
+        <p id="connect-token-help" className="sr-only">{t('connect.accessTokenHelp')}</p>
 
         {error !== null ? (
-          <div className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] text-danger">
+          <div role="alert" className="mb-4 rounded-md border-l-2 border-danger bg-danger/5 px-3 py-2 text-[13px] text-danger">
             {error}
           </div>
         ) : null}
@@ -323,10 +346,11 @@ function BrowserConnectForm({
         <button
           type="submit"
           disabled={connecting}
-          className="w-full rounded-lg bg-accent px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
+          className="w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none disabled:opacity-60"
         >
           {connecting ? t('connect.connecting') : t('connect.connect')}
         </button>
+        </div>
         {onBack !== undefined ? (
           <button
             type="button"
@@ -338,13 +362,6 @@ function BrowserConnectForm({
         ) : null}
       </form>
 
-      <p className="mt-5 border-t border-hairline pt-4 text-[11px] leading-relaxed text-ink-faint">
-        {t('connect.deepLinkBefore')}
-        <span className="font-mono">?server=…&token=…</span>
-        {t('connect.deepLinkOr')}
-        <span className="font-mono">#token=…</span>
-        {t('connect.deepLinkAfter')}
-      </p>
     </div>
   );
 }

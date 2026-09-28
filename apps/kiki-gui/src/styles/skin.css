@@ -1,0 +1,49 @@
+/* ---- skin layer ----
+ * The palette contract every component reads. `index.css` owns the base
+ * values (its `@theme` block and `[data-theme='dark']` dual); this file adds
+ * only the tokens the skin system needs on top, and never redefines a base
+ * token.
+ *
+ * A skin is applied as inline custom properties on `<html>` at runtime
+ * (`lib/skins/apply.ts`), so it wins over both stylesheet layers without a
+ * cascade fight and reverts exactly. Nothing here is skin-specific: the
+ * declarations below are the fallbacks that hold when no skin is applied.
+ */
+
+@theme {
+  /* Text that sits ON a filled accent or danger surface. Previously these
+   * were a literal `text-white`, which holds on the light accent (5.2:1) but
+   * fails badly on the lifted dark accent (2.5:1). Making it a token lets the
+   * dark dual and every skin state its own answer. */
+  --color-on-accent: #ffffff;
+  --color-on-danger: #ffffff;
+
+  /* Hairlines and hover washes inside the always-dark shell (terminal chrome,
+   * tool-output wells). These were `border-white/15` and `bg-white/10`, which
+   * no skin could reach. */
+  --color-shell-hairline: #332d24;
+  --color-shell-hover: #2a251d;
+}
+
+/* The dark dual for the tokens this file introduces. Kept in the same shape
+ * as index.css's dual so both read as one system. */
+[data-theme='dark'] {
+  /* The dark accent is a light orange; white on it is 2.5:1, so the label
+   * goes dark instead. */
+  --color-on-accent: #2a1408;
+  --color-on-danger: #2b0603;
+  --color-shell-hairline: #2a251d;
+  --color-shell-hover: #221e18;
+}
+
+/* A skin may set `--spacing` (the density dial). Tailwind v4 derives every
+ * spacing utility from it, so this needs no further wiring — the declaration
+ * exists here only to document that the variable is part of the contract. */
+
+/* Assistant prose face (Settings → Appearance). Serif Newsreader is the
+ * default set in index.css; `sans` swaps the prose stack for the UI sans so
+ * long answers read in the same face as the chrome. Only the family moves —
+ * size, measure and code inside prose keep their own rules. */
+:root[data-kiki-prose='sans'] :is(.kiki-prose, .thinking-row) {
+  --kiki-prose-font: var(--font-sans);
+}

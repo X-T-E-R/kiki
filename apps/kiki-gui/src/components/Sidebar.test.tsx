@@ -9,13 +9,20 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Session, Workspace } from '@kiki/protocol';
 
 import {
-  SEARCH_DEBOUNCE_MS,
+  CONTENT_SEARCH_DEBOUNCE_MS,
   SESSION_PIN_META_KEY,
   type SessionGroup,
 } from '@kiki/session-core/sessions';
+import {
+  DEFAULT_SESSION_LIST_FILTERS,
+  markSessionSeen,
+  resetSessionSeen,
+} from '@kiki/session-core/settings';
 import { HostProvider, browserHost, type HostAdapter } from '../host';
 import { I18nProvider } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
+import { nestSessionThreads, sessionRelationOf } from '../lib/sessionThreads';
+import { requestSessionSearch } from '../lib/sidebarSearch';
 import {
   mergeSearchPages,
   searchNextPageParam,
@@ -130,6 +137,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const container of containers.splice(0)) container.remove();
+  resetSessionSeen();
 });
 
 afterAll(() => {
@@ -173,10 +181,8 @@ async function mount(
                   fetchNextPage: async () => {},
                 }}
                 workspaceOptions={[]}
-                workspaceFilter={undefined}
-                onWorkspaceFilter={() => {}}
-                showArchived={false}
-                onToggleArchived={() => {}}
+                filters={DEFAULT_SESSION_LIST_FILTERS}
+                onFiltersChange={() => {}}
                 onNewSession={() => {}}
                 groupBy="time"
                 onGroupBy={() => {}}
@@ -218,14 +224,31 @@ async function openViewMenu(container: HTMLDivElement): Promise<HTMLElement> {
   return menu;
 }
 
+async function openFilterMenu(container: HTMLDivElement): Promise<HTMLElement> {
+  const toggle = container.querySelector<HTMLButtonElement>('[data-filter-menu-toggle]');
+  if (toggle === null) throw new Error('filter menu trigger not rendered');
+  await act(async () => {
+    toggle.click();
+  });
+  const menu = container.querySelector<HTMLElement>('[data-filter-menu]');
+  if (menu === null) throw new Error('filter menu did not open');
+  return menu;
+}
+
 async function typeQuery(container: HTMLDivElement, text: string): Promise<void> {
+  // The field lives behind the header's search icon; open it first.
+  if (container.querySelector('[data-search-box]') === null) {
+    const toggle = container.querySelector<HTMLButtonElement>('[data-search-toggle]');
+    if (toggle === null) throw new Error('search toggle not rendered');
+    await act(async () => { toggle.click(); });
+  }
   const input = container.querySelector<HTMLInputElement>('[data-search-box]');
   if (input === null) throw new Error('search box not rendered');
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
   await act(async () => {
     setter?.call(input, text);
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS + 20));
+    await new Promise((resolve) => setTimeout(resolve, CONTENT_SEARCH_DEBOUNCE_MS + 20));
   });
 }
 
@@ -423,15 +446,90 @@ describe('Sidebar global search pagination', () => {
     });
     await waitForText(container, 'alpha three');
 
-    expect(container.textContent ?? '').toContain('Results may be incomplete');
+    expect(container.querySelector('[data-search-incomplete]')?.textContent).toBe('Partial results — the search hit its time limit.');
+  });
+});
+
+describe('Sidebar header controls', () => {
+  it('keeps search and activity as two icons, with the field behind the search one', async () => {
+    const { container } = await mount();
+    // No standing search field: that vertical space belongs to the list.
+    expect(container.querySelector('[data-search-box]')).toBeNull();
+    const toggle = container.querySelector<HTMLButtonElement>('[data-search-toggle]');
+    expect(toggle?.getAttribute('aria-label')).toBe('Search sessions');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => { toggle?.click(); });
+    expect(container.querySelector('[data-search-box]')).not.toBeNull();
+    // Closing it again clears the query so the list is never silently filtered.
+    await act(async () => { toggle?.click(); });
+    expect(container.querySelector('[data-search-box]')).toBeNull();
+  });
+
+  it('badges the activity entry only while something is waiting', async () => {
+    const quiet = await mount();
+    const bell = quiet.container.querySelector<HTMLButtonElement>('[data-nav-activity]');
+    expect(bell?.getAttribute('aria-label')).toBe('Activity');
+    expect(quiet.container.querySelector('[data-activity-badge]')).toBeNull();
+
+    const blocked = { ...session('s-blocked'), pending_interaction: 'approval' as const, last_seq: 4 };
+    const { container } = await mount({
+      sessions: [blocked],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [blocked] }],
+    });
+    expect(container.querySelector('[data-activity-badge]')).not.toBeNull();
+    expect(container.querySelector('[data-nav-activity]')?.getAttribute('aria-label'))
+      .toBe('1 item needs you');
+  });
+});
+
+describe('Sidebar session row states', () => {
+  it('separates blocked, running, unread and caught-up rows', async () => {
+    resetSessionSeen();
+    const blocked = { ...session('s-blocked'), pending_interaction: 'question' as const, last_seq: 4 };
+    const running = { ...session('s-running'), busy: true, last_seq: 4 };
+    const unread = { ...session('s-unread'), last_seq: 4 };
+    const caughtUp = { ...session('s-read'), last_seq: 4 };
+    markSessionSeen('s-read', 4);
+    const items = [blocked, running, unread, caughtUp];
+    const { container } = await mount({
+      sessions: items,
+      sessionGroups: [{ key: 'today', label: 'Today', items }],
+    });
+    const stateOf = (id: string) =>
+      container.querySelector(`[data-session-row="${id}"]`)?.getAttribute('data-session-row-state');
+    expect(stateOf('s-blocked')).toBe('needs-me');
+    expect(stateOf('s-running')).toBe('running');
+    expect(stateOf('s-unread')).toBe('unread');
+    expect(stateOf('s-read')).toBe('read');
+    // Each state carries its own marker; only the caught-up row has none.
+    const markOf = (id: string) =>
+      container.querySelector(`[data-session-row="${id}"] [data-session-status]`)?.getAttribute('data-session-status');
+    expect(markOf('s-unread')).toBe('unread');
+    expect(markOf('s-read')).toBe('idle');
+    // Blocking beats running on the same row.
+    const both = { ...session('s-both'), busy: true, pending_interaction: 'approval' as const, last_seq: 4 };
+    const mixed = await mount({
+      sessions: [both],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [both] }],
+    });
+    expect(mixed.container.querySelector('[data-session-row="s-both"]')?.getAttribute('data-session-row-state'))
+      .toBe('needs-me');
   });
 });
 
 describe('Sidebar entry distribution', () => {
-  it('puts usage on the wordmark row (capabilities moved into settings)', async () => {
+  it('lists the five tool pages in the primary nav, in order', async () => {
     const { container } = await mount();
-    expect(container.querySelector('[data-nav-capabilities]')).toBeNull();
-    expect(container.querySelector('[data-nav-usage]')).not.toBeNull();
+    const nav = container.querySelector('[data-primary-nav]');
+    expect(nav?.getAttribute('aria-label')).toBe('Workspace tools');
+    const labels = [...(nav?.querySelectorAll('button') ?? [])].map((button) => button.textContent);
+    expect(labels).toEqual(['Task board', 'Scheduled tasks', 'Memory', 'Usage', 'Capabilities']);
+    expect(nav?.querySelector('[data-nav-usage]')).not.toBeNull();
+    expect(nav?.querySelector('[data-nav-board]')).not.toBeNull();
+    expect(nav?.querySelector('[data-nav-cron]')).not.toBeNull();
+    // Memory is permanent, on or off: switched off the page is the turn-on guide.
+    expect(nav?.querySelector('[data-nav-memory]')).not.toBeNull();
+    expect(nav?.querySelector('[data-nav-capabilities]')).not.toBeNull();
   });
 
   it('keeps only settings and the connection status dot in the footer', async () => {
@@ -503,16 +601,30 @@ describe('Sidebar semantic structure', () => {
     expect(otherRow?.getAttribute('aria-current')).toBeNull();
   });
 
-  it('exposes the search results as a named region while a query is active', async () => {
+  it('replaces the list with a labelled listbox the search box drives with ↑↓ / Enter', async () => {
     searchMessages.mockResolvedValue(page([A1, A2], false));
-    const { container } = await mount();
+    const local = { ...session('alpha-local'), title: 'alpha notes' };
+    const { container } = await mount({
+      sessions: [local],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [local] }],
+    });
     await typeQuery(container, 'alpha');
     await waitForText(container, 'alpha one');
 
-    const regions = [...container.querySelectorAll<HTMLElement>('[role="region"][aria-label]')];
-    expect(regions.map((node) => node.getAttribute('aria-label'))).toEqual(['Search sessions']);
-    expect(regions[0]?.hasAttribute('data-search-results')).toBe(true);
+    const listbox = container.querySelector<HTMLElement>('[role="listbox"][data-search-results]');
+    expect(listbox?.getAttribute('aria-label')).toBe('Search sessions');
     expect(container.querySelector('[data-session-list]')).toBeNull();
+    // Groups in reading order: local sessions first, then server messages.
+    const groups = [...(listbox?.querySelectorAll('[role="group"]') ?? [])].map((group) => group.getAttribute('aria-label'));
+    expect(groups).toEqual(['Sessions', 'Messages']);
+    const input = container.querySelector<HTMLInputElement>('[data-search-box]')!;
+    expect(input.getAttribute('aria-activedescendant')).toBe('sidebar-result-s:alpha-local');
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    expect(input.getAttribute('aria-activedescendant')).toBe('sidebar-result-h:0');
+    // The matched term is highlighted inside the snippet.
+    expect(listbox?.querySelector('[data-search-result="h:0"] mark')?.textContent).toBe('alpha');
   });
 
   it('renders a retry button when initial search fails and allows refetching', async () => {
@@ -534,8 +646,6 @@ describe('Sidebar semantic structure', () => {
 });
 
 describe('Sidebar view menu', () => {
-  const wsA = workspace('wd_a_000000000000', 'workshop', true);
-  const wsB = workspace('wd_b_000000000000', 'another-ws');
   const listed = (): { sessions: Session[]; sessionGroups: SessionGroup[] } => {
     const one = session('one');
     return {
@@ -544,160 +654,177 @@ describe('Sidebar view menu', () => {
     };
   };
 
-  it('leaves no select element anywhere in the sidebar', async () => {
-    const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
-    expect(container.querySelectorAll('select')).toHaveLength(0);
-    await openViewMenu(container);
-    expect(container.querySelectorAll('select')).toHaveLength(0);
-  });
-
-  it('keeps the default chrome down to six controls with the view options collapsed', async () => {
-    const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
-    // Chrome only: the session rows and their hover affordances live in the
-    // scroller, which this filter drops.
-    const chrome = [...container.querySelectorAll<HTMLElement>('button, input, select, textarea')].filter(
-      (element) => element.closest('[data-session-list]') === null,
-    );
-    expect(chrome).toHaveLength(6);
-    expect(container.querySelector('[data-nav-usage]')).not.toBeNull();
-    expect(container.querySelector('[data-search-box]')).not.toBeNull();
-    expect(container.querySelector('[data-view-menu-toggle]')).not.toBeNull();
-    expect(container.querySelector('[data-connection-status]')).not.toBeNull();
-    // Grouping, sorting and scope are no longer resident.
-    expect(container.querySelector('[data-group-by]')).toBeNull();
-    expect(container.querySelector('[data-sort-by]')).toBeNull();
-    expect(container.querySelector('[data-workspace-filter]')).toBeNull();
-  });
-
-  it('drops the list-bottom archived toggle in favour of the menu entry', async () => {
+  it('keeps arrangement (group + sort) apart from filtering', async () => {
     const { container } = await mount(listed());
-    expect(container.querySelector('[data-session-list]')?.textContent ?? '').not.toContain('Show archived');
-    const menu = await openViewMenu(container);
-    expect(menu.querySelector('[data-show-archived]')).not.toBeNull();
+    const view = await openViewMenu(container);
+    expect(view.querySelectorAll('[data-group-by]')).toHaveLength(3);
+    expect([...view.querySelectorAll('[data-sort-by]')].map((node) => node.getAttribute('data-sort-by')))
+      .toEqual(['updated-desc', 'created-desc', 'title']);
+    // Nothing in the View menu hides a session.
+    expect(view.querySelector('[data-workspace-filter], [data-status-filter], [data-archived-filter]')).toBeNull();
   });
 
-  it('reports the current selection and writes grouping, sorting and archived through', async () => {
+  it('reports the current selection and writes grouping and sorting through', async () => {
     const onGroupBy = vi.fn();
     const onSortBy = vi.fn();
-    const onToggleArchived = vi.fn();
-    const { container } = await mount({
-      ...listed(),
-      groupBy: 'time',
-      sortBy: 'updated-desc',
-      onGroupBy,
-      onSortBy,
-      onToggleArchived,
-    });
+    const { container } = await mount({ ...listed(), groupBy: 'time', sortBy: 'updated-desc', onGroupBy, onSortBy });
     const menu = await openViewMenu(container);
     expect(menu.querySelector('[data-group-by="time"]')?.getAttribute('aria-checked')).toBe('true');
     expect(menu.querySelector('[data-sort-by="updated-desc"]')?.getAttribute('aria-checked')).toBe('true');
-    expect(menu.querySelector('[data-show-archived]')?.getAttribute('aria-checked')).toBe('false');
-
     await act(async () => {
-      menu.querySelector<HTMLButtonElement>('[data-group-by="workspace"]')?.click();
-      menu.querySelector<HTMLButtonElement>('[data-sort-by="title"]')?.click();
-      menu.querySelector<HTMLButtonElement>('[data-show-archived]')?.click();
+      menu.querySelector<HTMLButtonElement>('[data-group-by="none"]')?.click();
+      menu.querySelector<HTMLButtonElement>('[data-sort-by="created-desc"]')?.click();
     });
-    expect(onGroupBy).toHaveBeenCalledWith('workspace');
-    expect(onSortBy).toHaveBeenCalledWith('title');
-    expect(onToggleArchived).toHaveBeenCalledTimes(1);
-    // View preferences do not dismiss the panel; the list rearranges behind it.
+    expect(onGroupBy).toHaveBeenCalledWith('none');
+    expect(onSortBy).toHaveBeenCalledWith('created-desc');
+    // Preferences do not dismiss the panel; the list rearranges behind it.
     expect(container.querySelector('[data-view-menu]')).not.toBeNull();
   });
 
-  it('scopes the list to one workspace and back to all from the same section', async () => {
-    const onWorkspaceFilter = vi.fn();
+  it('collapses a workspace group and previews at most eight sessions before "Show N more"', async () => {
+    const many = Array.from({ length: 11 }, (_, index) => session(`w${index}`));
     const { container } = await mount({
-      ...listed(),
-      workspaceOptions: [wsA, wsB],
-      workspaceFilter: wsA.id,
-      onWorkspaceFilter,
+      sessions: many,
+      groupBy: 'workspace',
+      sessionGroups: [{ key: 'ws_test', label: 'workshop', items: many }],
     });
-    const menu = await openViewMenu(container);
-    expect(menu.querySelector(`[data-workspace-filter="${wsA.id}"]`)?.getAttribute('aria-checked')).toBe('true');
-    expect(menu.querySelector('[data-workspace-filter=""]')?.getAttribute('aria-checked')).toBe('false');
-    await act(async () => {
-      menu.querySelector<HTMLButtonElement>(`[data-workspace-filter="${wsB.id}"]`)?.click();
-    });
-    expect(onWorkspaceFilter).toHaveBeenCalledWith(wsB.id);
-    await act(async () => {
-      menu.querySelector<HTMLButtonElement>('[data-workspace-filter=""]')?.click();
-    });
-    expect(onWorkspaceFilter).toHaveBeenLastCalledWith(undefined);
-    expect(menu.querySelector('[data-manage-workspaces]')).not.toBeNull();
-  });
-
-  it('carries the per-row workspace pin toggle into the menu', async () => {
-    const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
-    const menu = await openViewMenu(container);
-    const pins = [...menu.querySelectorAll<HTMLButtonElement>('[data-workspace-pin-toggle]')];
-    expect(pins).toHaveLength(2);
-    expect(pins[0]?.getAttribute('aria-label')).toBe('Unpin the workspace workshop');
-    expect(pins[1]?.getAttribute('aria-label')).toBe('Pin the workspace another-ws to the top');
-    await act(async () => {
-      pins[1]?.click();
-    });
-    expect(setWorkspacePinned).toHaveBeenCalledWith(wsB.id, true);
-  });
-
-  it('hides the workspace section when the server reports none', async () => {
-    const { container } = await mount({ ...listed(), workspaceOptions: [] });
-    const menu = await openViewMenu(container);
-    expect(menu.querySelector('[data-workspace-filter]')).toBeNull();
-    expect(menu.querySelector('[data-group-by="time"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-session-row]')).toHaveLength(8);
+    const more = container.querySelector<HTMLButtonElement>('[data-session-group-more="ws_test"]');
+    expect(more?.textContent).toBe('Show 3 more');
+    await act(async () => { more?.click(); });
+    expect(container.querySelectorAll('[data-session-row]')).toHaveLength(11);
+    const header = container.querySelector<HTMLButtonElement>('[data-session-group="ws_test"]');
+    expect(header?.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { header?.click(); });
+    expect(container.querySelectorAll('[data-session-row]')).toHaveLength(0);
   });
 });
 
-describe('Sidebar filter chips', () => {
+describe('Sidebar filters', () => {
   const wsA = workspace('wd_a_000000000000', 'workshop', true);
+  const wsB = workspace('wd_b_000000000000', 'another-ws');
   const listed = (): { sessions: Session[]; sessionGroups: SessionGroup[] } => {
     const one = session('one');
     return { sessions: [one], sessionGroups: [{ key: 'today', label: 'Today', items: [one] }] };
   };
 
-  it('renders nothing while both filters sit at their defaults', async () => {
+  it('leaves no select element anywhere in the sidebar', async () => {
+    const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
+    expect(container.querySelectorAll('select')).toHaveLength(0);
+    await openFilterMenu(container);
+    expect(container.querySelectorAll('select')).toHaveLength(0);
+  });
+
+  it('composes status, workspaces (multi-select) and archived through one callback', async () => {
+    const onFiltersChange = vi.fn();
+    const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB], onFiltersChange });
+    const menu = await openFilterMenu(container);
+    await act(async () => {
+      menu.querySelector<HTMLButtonElement>('[data-status-filter="running"]')?.click();
+    });
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ status: ['running'], workspaces: [], archived: 'hide' });
+    await act(async () => {
+      menu.querySelector<HTMLButtonElement>(`[data-workspace-filter="${wsB.id}"]`)?.click();
+    });
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ status: [], workspaces: [wsB.id], archived: 'hide' });
+    await act(async () => {
+      menu.querySelector<HTMLButtonElement>('[data-archived-filter="only"]')?.click();
+    });
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ status: [], workspaces: [], archived: 'only' });
+    expect(menu.querySelector('[data-manage-workspaces]')).not.toBeNull();
+  });
+
+  it('adds a second workspace instead of replacing the first', async () => {
+    const onFiltersChange = vi.fn();
+    const { container } = await mount({
+      ...listed(),
+      workspaceOptions: [wsA, wsB],
+      filters: { status: [], workspaces: [wsA.id], archived: 'hide' },
+      onFiltersChange,
+    });
+    const menu = await openFilterMenu(container);
+    expect(menu.querySelector(`[data-workspace-filter="${wsA.id}"]`)?.getAttribute('aria-checked')).toBe('true');
+    await act(async () => {
+      menu.querySelector<HTMLButtonElement>(`[data-workspace-filter="${wsB.id}"]`)?.click();
+    });
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ status: [], workspaces: [wsA.id, wsB.id], archived: 'hide' });
+  });
+
+  it('carries the per-row workspace pin toggle into the filter menu', async () => {
+    const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
+    const menu = await openFilterMenu(container);
+    const pins = [...menu.querySelectorAll<HTMLButtonElement>('[data-workspace-pin-toggle]')];
+    expect(pins).toHaveLength(2);
+    expect(pins[0]?.getAttribute('aria-label')).toBe('Unpin the workspace workshop');
+    expect(pins[1]?.getAttribute('aria-label')).toBe('Pin the workspace another-ws to the top');
+    await act(async () => { pins[1]?.click(); });
+    expect(setWorkspacePinned).toHaveBeenCalledWith(wsB.id, true);
+  });
+
+  it('hides the workspace section when the server reports none', async () => {
+    const { container } = await mount({ ...listed(), workspaceOptions: [] });
+    const menu = await openFilterMenu(container);
+    expect(menu.querySelector('[data-workspace-filter]')).toBeNull();
+    expect(menu.querySelector('[data-status-filter="running"]')).not.toBeNull();
+  });
+
+  it('renders no chip row while every filter sits at its default', async () => {
     const { container } = await mount({ ...listed(), workspaceOptions: [wsA] });
     expect(container.querySelector('[data-sidebar-filters]')).toBeNull();
   });
 
-  it('traces an active workspace scope and resets it from the chip', async () => {
-    const onWorkspaceFilter = vi.fn();
+  it('shows one removable chip per active filter and clears each on its own', async () => {
+    const onFiltersChange = vi.fn();
+    const filters = { status: ['needs-me'] as const, workspaces: [wsA.id], archived: 'include' as const };
+    const { container } = await mount({ ...listed(), workspaceOptions: [wsA], filters: { ...filters, status: [...filters.status] }, onFiltersChange });
+    const chips = [...container.querySelectorAll<HTMLElement>('[data-sidebar-filter-chip]')].map((chip) => chip.textContent);
+    // The clear control is an icon; its name lives in the aria-label.
+    expect(chips).toEqual(['Needs me', 'workshop', 'Including archived']);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-sidebar-filter-clear="ws"]')?.click();
+    });
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ status: ['needs-me'], workspaces: [], archived: 'include' });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-sidebar-filters-clear-all]')?.click();
+    });
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ status: [], workspaces: [], archived: 'hide' });
+  });
+
+  it('keeps the chips visible while a search runs, and scopes the content search to one workspace', async () => {
+    searchMessages.mockResolvedValue(page([{ ...A1, workspace_id: wsA.id }], false));
     const { container } = await mount({
       ...listed(),
       workspaceOptions: [wsA],
-      workspaceFilter: wsA.id,
-      onWorkspaceFilter,
+      filters: { status: [], workspaces: [wsA.id], archived: 'hide' },
     });
-    const chip = container.querySelector<HTMLElement>('[data-sidebar-filter-chip="workspace"]');
-    expect(chip?.textContent).toContain('workshop');
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-sidebar-filter-clear="workspace"]')?.click();
-    });
-    expect(onWorkspaceFilter).toHaveBeenCalledWith(undefined);
+    await typeQuery(container, 'alpha');
+    await waitForText(container, 'alpha one');
+    expect(container.querySelector('[data-sidebar-filters]')).not.toBeNull();
+    expect(container.querySelector('[data-search-scope]')).not.toBeNull();
+    expect(searchMessages.mock.calls.at(-1)?.[0]).toMatchObject({ query: 'alpha', workspace_id: wsA.id });
   });
 
-  it('traces archived visibility and reopens the menu from the chip body', async () => {
-    const onToggleArchived = vi.fn();
-    const { container } = await mount({ ...listed(), showArchived: true, onToggleArchived });
-    const chip = container.querySelector<HTMLElement>('[data-sidebar-filter-chip="archived"]');
-    expect(chip?.textContent).toContain('Including archived');
-    await act(async () => {
-      chip?.querySelector<HTMLButtonElement>('button')?.click();
+  it('offers to clear filters (not show archived) when the filters leave nothing', async () => {
+    const { container } = await mount({
+      sessions: [session('one')],
+      sessionGroups: [],
+      filters: { status: ['running'], workspaces: [], archived: 'hide' },
     });
-    expect(container.querySelector('[data-view-menu]')).not.toBeNull();
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-sidebar-filter-clear="archived"]')?.click();
-    });
-    expect(onToggleArchived).toHaveBeenCalledTimes(1);
+    const empty = container.querySelector('[data-sidebar-empty]');
+    expect(empty?.textContent).toContain('No sessions match these filters.');
+    expect(empty?.textContent).toContain('Clear filters');
   });
 
-  it('keeps exactly one archived entry on the empty state', async () => {
-    const { container } = await mount({ sessions: [], sessionGroups: [] });
+  it('keeps exactly one archived entry on the unfiltered empty state', async () => {
+    const onFiltersChange = vi.fn();
+    const { container } = await mount({ sessions: [], sessionGroups: [], onFiltersChange });
     const entries = [...container.querySelectorAll('button')].filter((element) =>
       (element.textContent ?? '').includes('archived'),
     );
     expect(entries).toHaveLength(1);
     expect(entries[0]?.closest('[data-sidebar-empty]')).not.toBeNull();
+    await act(async () => { (entries[0] as HTMLButtonElement).click(); });
+    expect(onFiltersChange).toHaveBeenCalledWith({ status: [], workspaces: [], archived: 'include' });
   });
 });
 
@@ -834,5 +961,196 @@ describe('searchNextPageParam', () => {
   it('forwards the cursor while has_more and returns undefined on the final page', () => {
     expect(searchNextPageParam(page([A1], true, 'tok1'))).toBe('tok1');
     expect(searchNextPageParam(page([A1], false))).toBeUndefined();
+  });
+});
+
+describe('session thread relations', () => {
+  const related = (id: string, metadata: Record<string, unknown>): Session => ({
+    ...session(id),
+    metadata: { cwd: 'C:/tmp', ...metadata } as Session['metadata'],
+  });
+  const thread = (id: string, parentId: string) =>
+    related(id, { created_by_session_id: parentId, created_by_agent_id: 'main' });
+  const branch = (id: string, parentId: string) =>
+    related(id, { parent_session_id: parentId, child_session_kind: 'child' });
+  const group = (key: string, items: Session[]) => ({ key, label: key, items });
+
+  it('reads both relation shapes and ignores unrelated sessions', () => {
+    expect(sessionRelationOf(session('plain'))).toBeUndefined();
+    expect(sessionRelationOf(thread('t', 'root'))).toEqual({ kind: 'thread', parentId: 'root', agentId: 'main' });
+    expect(sessionRelationOf(branch('b', 'root'))).toEqual({ kind: 'branch', parentId: 'root' });
+    // A session pointing at itself is not a relation.
+    expect(sessionRelationOf(thread('self', 'self'))).toBeUndefined();
+    // parent_session_id without the child kind is a fork lineage, not a nesting.
+    expect(sessionRelationOf(related('f', { parent_session_id: 'root' }))).toBeUndefined();
+  });
+
+  it('nests threads and branches under their creator, one level deep', () => {
+    const root = session('root');
+    const nested = nestSessionThreads(
+      [group('all', [root, thread('t1', 'root'), branch('b1', 'root'), thread('t2', 't1')])],
+      { crossGroups: true },
+    );
+    expect(nested).toHaveLength(1);
+    expect(nested[0]!.nodes.map((node) => node.session.id)).toEqual(['root']);
+    // Deeper descendants flatten onto the visible root instead of indenting twice.
+    expect(nested[0]!.nodes[0]!.children.map((node) => node.session.id)).toEqual(['t1', 'b1', 't2']);
+    expect(nested[0]!.total).toBe(4);
+  });
+
+  it('keeps a row top-level when its creator is not loaded', () => {
+    const nested = nestSessionThreads([group('all', [thread('orphan', 'missing')])], { crossGroups: true });
+    expect(nested[0]!.nodes.map((node) => node.session.id)).toEqual(['orphan']);
+    // The relation still travels, so the row can name where it came from.
+    expect(nested[0]!.nodes[0]!.relation?.parentId).toBe('missing');
+  });
+
+  it('nests across time buckets but never across workspace buckets', () => {
+    const groups = [group('today', [session('root')]), group('week', [thread('t1', 'root')])];
+    const crossing = nestSessionThreads(groups, { crossGroups: true });
+    expect(crossing).toHaveLength(1);
+    expect(crossing[0]!.nodes[0]!.children.map((node) => node.session.id)).toEqual(['t1']);
+    const contained = nestSessionThreads(groups, { crossGroups: false });
+    expect(contained.map((entry) => entry.key)).toEqual(['today', 'week']);
+    expect(contained[1]!.nodes.map((node) => node.session.id)).toEqual(['t1']);
+  });
+
+  it('leaves a pinned thread in the pinned bucket', () => {
+    const pinnedThread = {
+      ...thread('t1', 'root'),
+      metadata: { cwd: 'C:/tmp', created_by_session_id: 'root', [SESSION_PIN_META_KEY]: true } as Session['metadata'],
+    };
+    const nested = nestSessionThreads(
+      [group('pinned', [pinnedThread]), group('today', [session('root')])],
+      { crossGroups: true },
+    );
+    expect(nested.map((entry) => entry.key)).toEqual(['pinned', 'today']);
+    expect(nested[0]!.nodes.map((node) => node.session.id)).toEqual(['t1']);
+    expect(nested[1]!.nodes[0]!.children).toHaveLength(0);
+  });
+
+  it('survives a metadata cycle without losing a row', () => {
+    const nested = nestSessionThreads(
+      [group('all', [thread('a', 'b'), thread('b', 'a')])],
+      { crossGroups: true },
+    );
+    const ids = nested.flatMap((entry) => entry.nodes.flatMap((node) => [node.session.id, ...node.children.map((child) => child.session.id)]));
+    expect(ids.toSorted()).toEqual(['a', 'b']);
+  });
+
+  it('renders children as single indented rows with no spine, fold bar or thread glyph', async () => {
+    const root = session('root');
+    const started = thread('t1', 'root');
+    const forked = branch('b1', 'root');
+    const items = [root, started, forked];
+    const { container } = await mount({ sessions: items, sessionGroups: [group('today', items)] });
+    const children = container.querySelector('[data-session-threads="root"]');
+    expect(children?.querySelectorAll('[data-session-row]')).toHaveLength(2);
+    expect(container.querySelector('[data-session-threads-toggle]')).toBeNull();
+    // Only the fork carries a kind glyph; the started session is just indented.
+    expect(container.querySelector('[data-session-row="t1"] [data-session-relation]')).toBeNull();
+    expect(container.querySelector('[data-session-row="b1"] [data-session-relation="branch"]')).not.toBeNull();
+    // Nested rows are one line: no second-line fact at all.
+    expect(container.querySelector('[data-session-row="t1"] [data-session-location]')).toBeNull();
+    // The relation lives in the accessible name, in two distinct phrasings.
+    expect(container.querySelector('[data-session-row="t1"] button')?.getAttribute('aria-label'))
+      .toBe('t1, started by root');
+    expect(container.querySelector('[data-session-row="b1"] button')?.getAttribute('aria-label'))
+      .toBe('b1, a branch of root');
+  });
+
+  it('keeps an orphan top-level and names who started it', async () => {
+    const orphan = thread('orphan', 'missing');
+    const { container } = await mount({ sessions: [orphan], sessionGroups: [group('today', [orphan])] });
+    expect(container.querySelector('[data-session-row="orphan"] [data-session-relation-note="thread"]')?.textContent)
+      .toBe('Started by another session');
+  });
+});
+
+describe('Sidebar grouping', () => {
+  it('uses one header rule, counts only workspace buckets, and drops the path inside them', async () => {
+    const a = { ...session('a'), metadata: { cwd: 'C:/work/app' } as Session['metadata'] };
+    const time = await mount({ sessions: [a], sessionGroups: [{ key: 'today', label: 'Today', items: [a] }] });
+    expect(time.container.querySelector('[data-session-group="today"] [data-session-group-count]')).toBeNull();
+    expect(time.container.querySelector('[data-session-row="a"] [data-session-location]')).not.toBeNull();
+
+    const ws = await mount({
+      sessions: [a],
+      groupBy: 'workspace',
+      sessionGroups: [{ key: 'ws_test', label: 'app', items: [a] }],
+    });
+    const header = ws.container.querySelector('[data-session-group="ws_test"]');
+    // The count sits right after the label, inside the header, not in the row-actions column.
+    expect(header?.querySelector('[data-session-group-count]')?.textContent).toBe('1');
+    expect(ws.container.querySelector('[data-session-row="a"] [data-session-location]')).toBeNull();
+  });
+
+  it('shows the time at the end of the row and needs-you once, on the bell', async () => {
+    const blocked = { ...session('blocked'), pending_interaction: 'approval' as const, last_seq: 3 };
+    const { container } = await mount({ sessions: [blocked], sessionGroups: [{ key: 'today', label: 'Today', items: [blocked] }] });
+    expect(container.querySelector('[data-session-row="blocked"] [data-session-time]')).not.toBeNull();
+    expect(container.querySelector('[data-status-shortcut="needs-me"]')).toBeNull();
+    expect(container.querySelector('[data-activity-badge]')).not.toBeNull();
+    expect(container.querySelector('[data-session-row="blocked"] [data-session-needs-you]')?.textContent).toBe('Awaiting approval');
+  });
+
+  it('keeps row dots still and draws nothing for a caught-up row', async () => {
+    resetSessionSeen();
+    const running = { ...session('run'), busy: true, last_seq: 2 };
+    const read = { ...session('read'), last_seq: 2 };
+    markSessionSeen('read', 2);
+    const items = [running, read];
+    const { container } = await mount({ sessions: items, sessionGroups: [{ key: 'today', label: 'Today', items }] });
+    const runDot = container.querySelector('[data-session-row="run"] [data-life]');
+    expect(runDot?.getAttribute('data-life')).toBe('working');
+    expect(runDot?.hasAttribute('data-life-still')).toBe(true);
+    expect(container.querySelector('[data-session-row="read"] [data-life]')).toBeNull();
+    // The header's running count is the one mark allowed to breathe.
+    expect(container.querySelector('[data-activity-summary] [data-life]')?.hasAttribute('data-life-still')).toBe(false);
+  });
+
+  it('says an unseen failure in words and marks it with a square, not only a colour', async () => {
+    resetSessionSeen();
+    const failed = { ...session('fail'), last_turn_reason: 'failed' as const, last_seq: 4 };
+    const stopped = { ...session('stop'), last_turn_reason: 'cancelled' as const, last_seq: 4 };
+    const items = [failed, stopped];
+    const { container } = await mount({ sessions: items, sessionGroups: [{ key: 'today', label: 'Today', items }] });
+    expect(container.querySelector('[data-session-row="fail"] [data-session-failed]')?.textContent).toBe('Failed');
+    expect(container.querySelector('[data-session-row="stop"] [data-session-failed]')?.textContent).toBe('Stopped');
+    const mark = container.querySelector('[data-session-row="fail"] [data-life="failed"]');
+    expect(mark?.className).toContain('rounded-[1.5px]!');
+  });
+
+  it('opens and focuses its search when another surface asks for the session list', async () => {
+    const { container } = await mount();
+    expect(container.querySelector('[data-search-box]')).toBeNull();
+    await act(async () => {
+      requestSessionSearch();
+    });
+    // The input mounts on the state change, then takes focus on the next tick.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    const box = container.querySelector<HTMLInputElement>('[data-search-box]');
+    expect(box).not.toBeNull();
+    expect(document.activeElement).toBe(box);
+  });
+
+  it('keeps a folded workspace honest: it still marks a session that needs you', async () => {
+    const blocked = { ...session('blocked'), pending_interaction: 'approval' as const, last_seq: 3 };
+    const { container } = await mount({
+      sessions: [blocked],
+      groupBy: 'workspace',
+      sessionGroups: [{ key: 'ws_test', label: 'app', items: [blocked] }],
+    });
+    const header = container.querySelector<HTMLButtonElement>('[data-session-group="ws_test"]')!;
+    expect(header.querySelector('[data-session-group-life]')).toBeNull();
+    await act(async () => { header.click(); });
+    expect(header.querySelector('[data-session-group-life]')?.getAttribute('data-session-group-life')).toBe('waiting');
+  });
+
+  it('counts a nav badge as plain accent-ink text, with no filled chip', async () => {
+    const { container } = await mount({ navBadges: { cron: { count: 2, label: '2 stale' } } });
+    const badge = container.querySelector('[data-nav-badge="cron"]');
+    expect(badge?.className).toContain('text-accent-ink');
+    expect(badge?.className).not.toContain('bg-accent-soft');
   });
 });

@@ -12,7 +12,8 @@ import { RightRail, type SubagentRailContext } from './RightRail';
 import { PreviewFocusBridge } from './SessionView';
 
 vi.mock('./AgentPanelContainer', () => ({
-  AgentPanelContainer: () => <div data-panel-props />,
+  AgentPanelContainer: ({ part = 'all', agentId }: { part?: string; agentId: string }) =>
+    <div data-panel-props={part} data-panel-agent={agentId} />,
 }));
 
 const forest = buildAgentForest([], [
@@ -41,7 +42,7 @@ const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONM
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
-    return this.hasAttribute('data-subagent-scroll') || this.hasAttribute('data-subagents-all-scroll') || this.hasAttribute('data-agent-children-nav') ? 320 : 0;
+    return this.hasAttribute('data-subagent-scroll') || this.hasAttribute('data-subagents-all-scroll') ? 320 : 0;
   });
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(320);
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
@@ -65,11 +66,15 @@ async function renderRail({
   ownerAgentId,
   agentForest,
   onClose,
+  onInspectMain,
+  onOpenSubagent,
 }: {
   subagent?: SubagentRailContext;
   empty?: boolean;
   agentForest?: ReturnType<typeof buildAgentForest>;
   onClose?: () => void;
+  onInspectMain?: () => void;
+  onOpenSubagent?: (agentId: string) => void;
   /** Main-session tasks; the child-only set arrives via `subagent`'s tasks. */
   stateTasks?: readonly Task[];
   /** Rail cancel/detail owner scope (the focused agent's task service). */
@@ -91,8 +96,9 @@ async function renderRail({
             taskOwnerAgentId={ownerAgentId}
             onCancelTask={() => {}}
             onStopAgentTask={async () => {}}
-            onOpenSubagent={() => {}}
+            onOpenSubagent={onOpenSubagent ?? (() => {})}
             onClose={onClose}
+            onInspectMain={onInspectMain}
           />
         </I18nProvider>
       </MemoryRouter>,
@@ -101,10 +107,11 @@ async function renderRail({
   return container;
 }
 
+/** Data-driven chapters (the always-present setup / session chapters excluded). */
 function sharedChapters(container: Element) {
-  return [...container.querySelectorAll<HTMLElement>('[data-agent-panel-scroll] > section:not([data-subagent-context])')]
+  return [...container.querySelectorAll<HTMLElement>('[data-agent-panel-scroll] > section:not([data-subagent-context]):not([data-inspector-setup]):not([data-inspector-session])')]
     .map((section) => ({
-      title: section.querySelector(':scope > div > button > span:last-child')?.textContent,
+      title: section.querySelector(':scope > div > button > span:first-child')?.textContent,
       className: section.className,
     }));
 }
@@ -121,11 +128,14 @@ describe('RightRail shared chapters', () => {
     });
     try {
       const rail = await renderRail();
-      expect(rail.querySelector('[data-panel-props]')).toBeNull();
+      // Todo / plan read live state only and mount at once; the usage slice
+      // (which starts a capability read) waits for its slot to scroll in.
+      expect(rail.querySelector('[data-panel-props="work"]')).not.toBeNull();
+      expect(rail.querySelector('[data-panel-props="usage"]')).toBeNull();
       await act(async () => {
         notify?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
       });
-      expect(rail.querySelector('[data-panel-props]')).not.toBeNull();
+      expect(rail.querySelector('[data-panel-props="usage"]')).not.toBeNull();
       const mounted = mounts[0];
       await act(async () => { mounted?.root.unmount(); });
       mounts.shift();
@@ -207,7 +217,7 @@ describe('RightRail shared chapters', () => {
 
     expect(sharedChapters(main)).toEqual(sharedChapters(child));
     expect(sharedChapters(child).map((chapter) => chapter.title)).toEqual([
-      'Subagents', 'Background tasks', 'Session',
+      'Subagents', 'Background tasks',
     ]);
     for (const rail of [main, child]) {
       expect(rail.querySelector('[data-agent-tree] [data-agent-id="agent-1"]')).not.toBeNull();
@@ -219,19 +229,83 @@ describe('RightRail shared chapters', () => {
     }
     expect(main.querySelector('[data-subagent-context]')).toBeNull();
     const highlight = child.querySelector('[data-subagent-context]');
-    expect(highlight?.className).toContain('border-accent/40');
+    expect(highlight).not.toBeNull();
     expect(highlight?.textContent).toContain('Subagent task');
-    expect(highlight?.textContent).toContain('Navigate');
     expect(highlight?.querySelector('[data-needs-input]')?.textContent).toContain('1');
-    expect(child.querySelector('[data-tasks-scroll]')?.closest('section')?.nextElementSibling).toBe(highlight);
-    expect(highlight?.nextElementSibling?.matches('[data-rail-agent-panel-slot]')).toBe(true);
-    expect(highlight?.nextElementSibling?.querySelector('[data-panel-props]')).not.toBeNull();
+    // Reading order: the focused subagent's own brief comes before its work
+    // slice (todo / plan), which comes before the shared tree and tasks.
+    const scroll = child.querySelector('[data-agent-panel-scroll]')!;
+    const order = [
+      highlight,
+      scroll.querySelector('[data-panel-props="work"]'),
+      scroll.querySelector('[data-agent-tree]'),
+      scroll.querySelector('[data-tasks-scroll]'),
+      scroll.querySelector('[data-rail-agent-panel-slot]'),
+      scroll.querySelector('[data-inspector-setup]'),
+      scroll.querySelector('[data-inspector-session]') ?? scroll.querySelector('[data-inspector-setup]'),
+    ];
+    for (let index = 1; index < order.length; index += 1) {
+      const before = order[index - 1]!;
+      const after = order[index]!;
+      expect(before === after || (before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
+    }
+    // Every slice describes the focused agent.
+    for (const slice of child.querySelectorAll('[data-panel-props]')) {
+      expect(slice.getAttribute('data-panel-agent')).toBe('agent-1');
+    }
+  });
+
+  it('names the focused agent in the heading and offers one step back to main', async () => {
+    const onInspectMain = vi.fn();
+    const main = await renderRail();
+    expect(main.querySelector('[data-inspect-main]')).toBeNull();
+    const child = await renderRail({ subagent: context, onInspectMain });
+    const back = child.querySelector<HTMLButtonElement>('[data-rail-owner] [data-inspect-main]');
+    expect(back?.getAttribute('aria-label')).toBe('Inspect the main agent');
+    await act(async () => { back?.click(); });
+    expect(onInspectMain).toHaveBeenCalledTimes(1);
+    expect(child.querySelector('[data-session-rail]')?.getAttribute('data-inspector-agent')).toBe('agent-1');
+  });
+
+  it('keeps a way up for a nested agent: a spawning-parent crumb beside main', async () => {
+    const deep = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'running' },
+      { agentId: 'agent-1a', parentAgentId: 'agent-1', name: 'Reader', status: 'running' },
+    ]);
+    const opened: string[] = [];
+    const rail = await renderRail({
+      agentForest: deep,
+      onInspectMain: () => {},
+      onOpenSubagent: (agentId) => { opened.push(agentId); },
+      subagent: { agentId: 'agent-1a', block: undefined, pendingInteractionCount: 0, onJumpToSpawn: undefined },
+    });
+    const owner = rail.querySelector('[data-rail-owner]')!;
+    // Main first, then the direct parent, then the agent in focus.
+    expect(owner.textContent).toContain('Main agent');
+    const crumb = owner.querySelector<HTMLButtonElement>('[data-inspect-parent]');
+    expect(crumb?.textContent).toBe('Researcher');
+    await act(async () => { crumb?.click(); });
+    expect(opened).toEqual(['agent-1']);
+    // A direct child of main needs no extra crumb: main already is the step up.
+    const shallow = await renderRail({ subagent: context, onInspectMain: () => {} });
+    expect(shallow.querySelector('[data-inspect-parent]')).toBeNull();
+  });
+
+  it('keeps the setup chapter collapsed so its capability read never starts unasked', async () => {
+    const rail = await renderRail();
+    const setup = rail.querySelector('[data-inspector-setup]');
+    const toggle = setup?.querySelector<HTMLButtonElement>(':scope > div > button');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    expect(setup?.querySelector('[data-panel-props="setup"]')).toBeNull();
+    await act(async () => { toggle?.click(); });
+    expect(setup?.querySelector('[data-panel-props="setup"]')).not.toBeNull();
   });
 
   it('keeps empty chapters hidden and retains collapsible chapter behavior in both modes', async () => {
     for (const subagent of [undefined, context]) {
       const empty = await renderRail({ subagent, empty: true });
-      expect(sharedChapters(empty).map((chapter) => chapter.title)).toEqual(['Session']);
+      expect(sharedChapters(empty).map((chapter) => chapter.title)).toEqual([]);
       expect(empty.querySelector('[data-subagent-context]') !== null).toBe(subagent !== undefined);
 
       const populated = await renderRail({ subagent });
@@ -272,13 +346,6 @@ describe('RightRail shared chapters', () => {
     const dialogRows = document.querySelectorAll('[data-subagents-all-scroll] [data-agent-id]');
     expect(dialogRows.length).toBeGreaterThan(0);
     expect(dialogRows.length).toBeLessThan(35);
-    const focused = await renderRail({
-      agentForest: large,
-      subagent: { agentId: 'main', block: undefined, pendingInteractionCount: 0, onJumpToSpawn: undefined },
-    });
-    const childRows = focused.querySelectorAll('[data-agent-children-nav] [data-agent-id]');
-    expect(childRows.length).toBeGreaterThan(0);
-    expect(childRows.length).toBeLessThan(25);
   });
 
   it('does not remeasure every task row when opening the tree dialog', async () => {
@@ -338,5 +405,41 @@ describe('preview focus bridge', () => {
     expect(seen.at(-1)).toBeUndefined();
     await act(async () => { backRoot.unmount(); });
     back.remove();
+  });
+});
+
+describe('inspector focus resolution', () => {
+  function tree(html: string): HTMLElement {
+    const host = document.createElement('div');
+    host.innerHTML = html;
+    document.body.append(host);
+    return host;
+  }
+
+  it('maps each agent surface to its agent and leaves unrelated targets alone', async () => {
+    const { resolveInspectorTarget } = await import('./inspectorFocus');
+    const host = tree(`
+      <div class="conversation-center">
+        <header><button id="title">t</button></header>
+        <div data-agent-workspace-target="main"><p id="prose">p</p>
+          <div data-subagent-id="agent-1"><button id="card">c</button></div>
+        </div>
+      </div>
+      <aside data-preview-workspace><section data-preview-tabpanel="panel:agent-2">
+        <div data-agent-workspace-target="agent-2"><p id="pane">x</p></div>
+      </section><section data-preview-tabpanel="C:/f.ts"><p id="file">f</p></section></aside>
+      <aside data-session-rail><button data-agent-id="agent-3" id="node">n</button><p id="railtext">r</p></aside>
+    `);
+    const at = (id: string) => host.querySelector(`#${id}`);
+    expect(resolveInspectorTarget(at('title'))).toBe('main');
+    expect(resolveInspectorTarget(at('prose'))).toBe('main');
+    expect(resolveInspectorTarget(at('card'))).toBe('agent-1');
+    expect(resolveInspectorTarget(at('pane'))).toBe('agent-2');
+    expect(resolveInspectorTarget(at('node'))).toBe('agent-3');
+    // File previews and the inspector's own prose keep the current pin.
+    expect(resolveInspectorTarget(at('file'))).toBeNull();
+    expect(resolveInspectorTarget(at('railtext'))).toBeNull();
+    expect(resolveInspectorTarget(document.body)).toBeNull();
+    host.remove();
   });
 });

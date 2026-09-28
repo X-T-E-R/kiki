@@ -1,5 +1,6 @@
 import { memo, useState, useMemo } from 'react';
 import { useI18n } from '../../i18n';
+import { DisclosureChevron } from '../icons';
 import type {
   AgentToolCapability,
   AgentSkillCapability,
@@ -53,44 +54,35 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   return (
     <div
       data-agent-capabilities-section
-      className="space-y-2 rounded-xl border border-hairline bg-panel p-3 shadow-xs text-[11.5px]"
+      className="space-y-1 text-[13px]"
     >
-      <div className="font-mono text-[10.5px] font-semibold tracking-wider text-ink-faint uppercase">
-        {t('agentPanel.capabilitiesTitle')}
-      </div>
+      <p className="text-[12px] font-medium text-ink-faint">{t('inspector.capabilities')}</p>
 
       {/* 1. Real Tools (Default Collapsed, Grouped by Category) */}
-      <div className="rounded-lg border border-hairline bg-paper/40 p-2">
+      <div>
         <button
           type="button"
           aria-expanded={toolsOpen}
           onClick={() => setToolsOpen(!toolsOpen)}
-          className="flex w-full items-center justify-between font-medium text-ink hover:text-accent transition-colors cursor-pointer"
+          className="flex h-8 w-full items-center justify-between text-ink transition-colors hover:text-ink-soft"
         >
           <span className="flex items-center gap-1.5">
-            <span
-              aria-hidden
-              className={`inline-block text-[8px] transition-transform ${
-                toolsOpen ? 'rotate-90' : ''
-              }`}
-            >
-              ▶
-            </span>
+            <DisclosureChevron open={toolsOpen} className="text-current" />
             <span>{t('agentPanel.registeredTools')}</span>
           </span>
-          <span className="font-mono text-[10px] text-ink-faint">
+          <span className="text-[12px] text-ink-faint tabular-nums">
             {t('agentPanel.enabledOfTotal', { enabled: enabledToolCount, total: tools.length })}
           </span>
         </button>
 
         {toolsOpen ? (
-          <div className="mt-2 space-y-2.5 pt-1.5 border-t border-hairline">
+          <div className="mt-2 space-y-2.5 pl-4">
             {tools.length === 0 ? (
               <p className="text-ink-faint text-[11px]">{t('agentPanel.noRegisteredTools')}</p>
             ) : (
               Object.entries(toolsByCategory).map(([category, catTools]) => (
                 <div key={category} className="space-y-1">
-                  <div className="font-mono text-[9.5px] font-semibold text-ink-faint uppercase tracking-wider">
+                  <div className="text-[12px] text-ink-faint">
                     {toolCategoryLabel(t, category)} ({catTools.length})
                   </div>
                   <ToolChipList
@@ -113,25 +105,18 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
       </div>
 
       {/* 2. Skills: Workspace-specific vs Global (Default Collapsed) */}
-      <div className="rounded-lg border border-hairline bg-paper/40 p-2">
+      <div>
         <button
           type="button"
           aria-expanded={skillsOpen}
           onClick={() => setSkillsOpen(!skillsOpen)}
-          className="flex w-full items-center justify-between font-medium text-ink hover:text-accent transition-colors cursor-pointer"
+          className="flex h-8 w-full items-center justify-between text-ink transition-colors hover:text-ink-soft"
         >
           <span className="flex items-center gap-1.5">
-            <span
-              aria-hidden
-              className={`inline-block text-[8px] transition-transform ${
-                skillsOpen ? 'rotate-90' : ''
-              }`}
-            >
-              ▶
-            </span>
+            <DisclosureChevron open={skillsOpen} className="text-current" />
             <span>{t('agentPanel.skills')}</span>
           </span>
-          <span className="font-mono text-[10px] text-ink-faint">
+          <span className="text-[12px] text-ink-faint tabular-nums">
             {t('agentPanel.skillsCount', { workspace: workspaceSkills.length, global: globalSkills.length })}
           </span>
         </button>
@@ -159,7 +144,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
         {skillsOpen ? (
           <div className="mt-2 space-y-2 border-t border-hairline pt-1.5">
             <div>
-              <div className="font-mono text-[9.5px] font-semibold uppercase text-accent">
+              <div className="text-[12px] text-ink-soft">
                 {t('agentPanel.workspaceSkills', { count: workspaceSkills.length })}
               </div>
               {workspaceSkills.length === 0 ? (
@@ -182,7 +167,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
             </div>
 
             <div className="border-t border-hairline/60 pt-1.5">
-              <div className="font-mono text-[9.5px] font-semibold uppercase text-ink-faint">
+              <div className="text-[12px] text-ink-faint">
                 {t('agentPanel.globalSkills', { count: globalSkills.length })}
               </div>
               {globalSkills.length === 0 ? (
@@ -208,25 +193,18 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
       </div>
 
       {/* 3. Dispatchable Subagents & Admission Reasons */}
-      <div className="rounded-lg border border-hairline bg-paper/40 p-2">
+      <div>
         <button
           type="button"
           aria-expanded={subagentsOpen}
           onClick={() => setSubagentsOpen(!subagentsOpen)}
-          className="flex w-full items-center justify-between font-medium text-ink hover:text-accent transition-colors cursor-pointer"
+          className="flex h-8 w-full items-center justify-between text-ink transition-colors hover:text-ink-soft"
         >
           <span className="flex items-center gap-1.5">
-            <span
-              aria-hidden
-              className={`inline-block text-[8px] transition-transform ${
-                subagentsOpen ? 'rotate-90' : ''
-              }`}
-            >
-              ▶
-            </span>
+            <DisclosureChevron open={subagentsOpen} className="text-current" />
             <span>{t('agentPanel.subagents')}</span>
           </span>
-          <span className="font-mono text-[10px] text-ink-faint">
+          <span className="text-[12px] text-ink-faint tabular-nums">
             {t('agentPanel.allowedCount', {
               allowed: subagentTargets.filter((t) => t.launchAllowed !== false && t.defaultsAvailable).length,
               total: subagentTargets.length,
@@ -235,7 +213,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
         </button>
 
         {subagentsOpen ? (
-          <div className="mt-2 space-y-1.5 pt-1.5 border-t border-hairline">
+          <div className="mt-2 space-y-1.5 pl-4">
             {subagentTargets.length === 0 ? (
               <p className="text-ink-faint text-[11px]">{t('agentPanel.noSubagents')}</p>
             ) : (

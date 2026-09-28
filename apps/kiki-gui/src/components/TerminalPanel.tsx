@@ -24,6 +24,7 @@ import { clampTerminalPanelHeight } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { runToastAction } from '../lib/toasts';
 import { onThemeChange } from '../lib/theme';
@@ -306,10 +307,10 @@ export function TerminalPanel({
         onPointerUp={onDragEnd}
         onPointerCancel={onDragEnd}
       >
-        <div className="mx-auto mt-0.5 h-0.5 w-10 rounded-full bg-white/15 transition-colors group-hover:bg-accent" />
+        <div className="mx-auto mt-0.5 h-0.5 w-10 rounded-full bg-shell-hover transition-colors group-hover:bg-accent" />
       </div>
 
-      <header className="flex h-9 shrink-0 items-center gap-1 border-b border-white/10 pr-2 pl-3">
+      <header className="flex h-9 shrink-0 items-center gap-1 border-b border-shell-hairline pr-2 pl-3">
         <span className="mr-1 font-mono text-[11px] tracking-wide text-shell-ink-soft select-none">
           &gt;_
         </span>
@@ -320,7 +321,7 @@ export function TerminalPanel({
               <div
                 key={tab.id}
                 className={`flex shrink-0 items-center gap-1.5 rounded-md py-0.5 pr-1 pl-2 font-mono text-[11.5px] transition-colors ${
-                  isActive ? 'bg-white/10 text-shell-ink-strong' : 'text-shell-ink-soft hover:text-shell-ink'
+                  isActive ? 'bg-shell-hover text-shell-ink-strong' : 'text-shell-ink-soft hover:text-shell-ink'
                 }`}
               >
                 <button
@@ -342,11 +343,11 @@ export function TerminalPanel({
                   onClick={() => { killTab(tab.id); }}
                   className={`rounded px-0.5 text-[10px] transition-colors ${
                     confirmKillId === tab.id
-                      ? 'bg-danger/80 font-semibold text-white'
-                      : 'text-shell-ink-soft hover:bg-white/10 hover:text-shell-ink-strong'
+                      ? 'bg-danger/80 font-semibold text-on-danger'
+                      : 'text-shell-ink-soft hover:bg-shell-hover hover:text-shell-ink-strong'
                   }`}
                 >
-                  {confirmKillId === tab.id ? t('term.killConfirm') : '✕'}
+                  {confirmKillId === tab.id ? t('term.killConfirm') : <Icon name="close" size={12} />}
                 </button>
               </div>
             );
@@ -363,7 +364,7 @@ export function TerminalPanel({
           title={t('term.new')}
           aria-label={t('term.new')}
           data-terminal-new
-          className="shrink-0 rounded-md border border-white/15 px-2 py-0.5 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
+          className="shrink-0 rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
         >
           +
         </button>
@@ -372,9 +373,9 @@ export function TerminalPanel({
           onClick={onClose}
           title={t('term.closePanel')}
           aria-label={t('term.closePanel')}
-          className="shrink-0 rounded-md px-1.5 py-0.5 text-shell-ink-soft transition-colors hover:bg-white/10 hover:text-shell-ink-strong"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-shell-ink-soft transition-colors hover:bg-shell-hover hover:text-shell-ink-strong"
         >
-          ✕
+          <Icon name="close" />
         </button>
       </header>
 
@@ -405,7 +406,7 @@ export function TerminalPanel({
               onClick={() =>
                 void (state.errorKey === 'term.loadFailed' ? manager.open() : manager.create())
               }
-              className="rounded-md border border-white/15 px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
+              className="rounded-md border border-shell-hairline px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
             >
               {t('common.retry')}
             </button>
@@ -427,7 +428,7 @@ export function TerminalPanel({
               type="button"
               onClick={() => void manager.create()}
               data-terminal-new-empty
-              className="rounded-md border border-accent/60 px-3 py-1.5 font-mono text-[11.5px] text-accent transition-colors hover:bg-accent hover:text-white"
+              className="rounded-md border border-accent/60 px-3 py-1.5 font-mono text-[11.5px] text-accent transition-colors hover:bg-accent hover:text-on-accent"
             >
               {t('term.new')}
             </button>
@@ -461,7 +462,7 @@ export function TerminalPanel({
               type="button"
               onClick={() => void manager.restart(activeTab.id)}
               data-terminal-restart
-              className="rounded-md border border-accent/60 px-3 py-1.5 font-mono text-[11.5px] text-accent transition-colors hover:bg-accent hover:text-white"
+              className="rounded-md border border-accent/60 px-3 py-1.5 font-mono text-[11.5px] text-accent transition-colors hover:bg-accent hover:text-on-accent"
             >
               {t('term.restart')}
             </button>
@@ -477,7 +478,7 @@ export function TerminalPanel({
               type="button"
               onClick={() => { manager.retryAttach(activeTab.id); }}
               data-terminal-retry
-              className="rounded-md border border-white/15 px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
+              className="rounded-md border border-shell-hairline px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
             >
               {t('common.retry')}
             </button>

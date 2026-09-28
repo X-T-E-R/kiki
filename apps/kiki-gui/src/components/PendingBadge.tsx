@@ -54,16 +54,16 @@ export function PendingBadge({ sessions }: { sessions: readonly Session[] }) {
         onClick={() => { setOpen((value) => !value); }}
         aria-expanded={open}
         title={t('pending.badgeTitle')}
-        className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[11.5px] font-medium transition-colors ${
+        className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[12px] font-medium transition-colors ${
           open ? 'bg-amber-card text-amber-ink' : 'text-amber-ink hover:bg-amber-card/70'
         }`}
       >
-        <span className="block h-2 w-2 shrink-0 rounded-full bg-amber-rule shadow-[0_0_0_2px_rgba(232,176,75,0.25)]" />
+        <span className="block h-2 w-2 shrink-0 rounded-full bg-amber-rule shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-amber-rule)_25%,transparent)]" />
         {tp('pending.count', pending.length)}
       </button>
       {open ? (
-        <div className="anim-enter absolute bottom-full left-0 z-50 mb-1 w-max min-w-[200px] max-w-[280px] rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
-          <p className="px-2.5 pt-1 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+        <div className="anim-enter absolute bottom-full left-0 z-50 mb-1 w-max min-w-[200px] max-w-[280px] rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]">
+          <p className="px-2.5 pt-1 pb-0.5 text-[12px] font-medium text-ink-faint">
             {t('pending.popoverTitle')}
           </p>
           {pending.map((session) => (
@@ -76,7 +76,7 @@ export function PendingBadge({ sessions }: { sessions: readonly Session[] }) {
               }}
               className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-paper"
             >
-              <span className="shrink-0 rounded-full border border-amber-rule/40 bg-amber-card px-1.5 py-px text-[9.5px] font-medium text-amber-ink">
+              <span className="shrink-0 text-[11px] font-medium text-amber-ink">
                 {session.pending_interaction === 'approval'
                   ? t('pending.kind.approval')
                   : t('pending.kind.question')}

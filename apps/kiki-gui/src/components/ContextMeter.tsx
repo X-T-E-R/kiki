@@ -160,16 +160,18 @@ export function ContextMeter({
         aria-label={title}
         aria-expanded={open}
         aria-controls={detailsId}
-        className={`flex items-center gap-1.5 rounded-full border py-0.5 pr-2 pl-1 transition-colors ${
+        // Quiet at rest: a bare ring inside the composer card; the percent
+        // label and a tint only appear once the window deserves attention.
+        className={`flex h-7 items-center gap-1 rounded-md px-1 transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 pointer-coarse:h-10 ${
           level === 'danger'
-            ? 'border-danger/50 bg-danger/10 text-danger hover:border-danger'
+            ? 'text-danger hover:bg-danger/10'
             : warn
-              ? 'border-amber-rule/50 bg-amber-card text-amber-ink hover:border-amber-rule'
-              : 'border-hairline text-ink-faint hover:border-hairline-strong hover:text-ink-soft'
+              ? 'text-amber-ink hover:bg-amber-card'
+              : 'text-ink-faint hover:bg-paper hover:text-ink-soft'
         }`}
       >
-        <span aria-hidden className="relative flex h-6 w-6 items-center justify-center">
-          <svg viewBox="0 0 24 24" className="h-6 w-6 -rotate-90">
+        <span aria-hidden className="relative flex h-5 w-5 items-center justify-center">
+          <svg viewBox="0 0 24 24" className="h-5 w-5 -rotate-90">
             <circle
               cx="12"
               cy="12"
@@ -192,12 +194,11 @@ export function ContextMeter({
               className="transition-[stroke-dashoffset,stroke] duration-300"
             />
           </svg>
-          <span className="absolute font-mono text-[7px] leading-none font-semibold tabular-nums">
-            {percent}
-          </span>
         </span>
-        <span className="font-mono text-[9.5px]">{label}</span>
-        {warn ? <span className="text-[9.5px] font-medium">{t('context.detailsHint')}</span> : null}
+        {/* On a narrow composer the calm ring alone carries "ok"; the percent
+            stays readable to screen readers and returns once it warns. */}
+        <span className={`text-[12px] tabular-nums ${warn ? 'font-medium' : '@max-[22rem]/toolbar:sr-only'}`}>{label}</span>
+        {warn ? <span className="sr-only">{t('context.detailsHint')}</span> : null}
       </button>
       {open ? (
         <div
@@ -205,19 +206,19 @@ export function ContextMeter({
           data-context-details
           role="dialog"
           aria-label={t('context.detailsTitle')}
-          className={`anim-enter absolute right-0 z-30 w-72 max-w-[calc(100vw-48px)] rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] ${
+          className={`anim-enter absolute right-0 z-30 w-72 max-w-[calc(100vw-48px)] rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] ${
             placement === 'below' ? 'top-full mt-2' : 'bottom-full mb-2'
           }`}
         >
           <div className="flex items-baseline justify-between gap-3">
-            <p className="text-[11px] font-semibold text-ink">{t('context.detailsTitle')}</p>
-            <span className="font-mono text-[11px] text-ink-soft">{label}</span>
+            <p className="font-display text-[15px] font-semibold text-ink">{t('context.detailsTitle')}</p>
+            <span className="text-[12px] text-ink-soft tabular-nums">{label}</span>
           </div>
           {/* §9.5 split: the ring answers "how much context is left right now";
               the cumulative block below answers "what has this session spent". */}
           <div className="mt-2 flex items-baseline justify-between gap-3">
-            <p className="text-[10.5px] font-medium text-ink-soft">{t('context.windowTitle')}</p>
-            <span className="text-[9.5px] text-ink-faint">{t('context.windowHint')}</span>
+            <p className="text-[12px] font-medium text-ink-soft">{t('context.windowTitle')}</p>
+            <span className="text-[12px] text-ink-faint">{t('context.windowHint')}</span>
           </div>
           <div className="mt-1.5 flex items-center gap-3">
             <span aria-hidden className="relative flex h-10 w-10 shrink-0 items-center justify-center">
@@ -248,7 +249,7 @@ export function ContextMeter({
                 {percent}
               </span>
             </span>
-            <dl className="min-w-0 flex-1 space-y-1 text-[11px]">
+            <dl className="min-w-0 flex-1 space-y-1 text-[12px]">
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-ink-faint">{t('context.used')}</dt>
                 <dd className="font-mono text-ink tabular-nums">{time.formatTokens(used)}</dd>
@@ -267,13 +268,13 @@ export function ContextMeter({
           {usage !== undefined ? (
             <dl
               data-context-usage
-              className="mt-3 space-y-1.5 border-t border-hairline pt-2.5 text-[11px]"
+              className="mt-3 space-y-1.5 border-t border-hairline pt-2.5 text-[12px]"
             >
               <div className="flex items-baseline justify-between gap-3">
-                <p className="text-[10.5px] font-medium text-ink-soft">
+                <p className="text-[12px] font-medium text-ink-soft">
                   {t(usageScope === 'agent' ? 'context.agentUsage' : 'context.sessionUsage')}
                 </p>
-                <span className="text-[9.5px] text-ink-faint">{t('context.sessionUsageHint')}</span>
+                <span className="text-[12px] text-ink-faint">{t('context.sessionUsageHint')}</span>
               </div>
               <TokenRow label={t('usage.tokens.input')} value={usage.input_tokens} title={String(usage.input_tokens)} />
               <TokenRow label={t('usage.tokens.output')} value={usage.output_tokens} title={String(usage.output_tokens)} />
@@ -302,7 +303,7 @@ export function ContextMeter({
                   data-context-usage-link
                   to={usageSessionDeepLink(sessionId)}
                   onClick={() => { setOpen(false); }}
-                  className="block pt-1 text-[10.5px] font-medium text-accent hover:underline"
+                  className="block pt-1 text-[12px] font-medium text-ink underline decoration-hairline-strong underline-offset-2 hover:decoration-ink"
                 >
                   {t('context.viewInUsage')}
                 </Link>
@@ -313,10 +314,10 @@ export function ContextMeter({
           {breakdown !== undefined ? (
             <div data-context-breakdown className="mt-3 border-t border-hairline pt-2.5">
               <div className="flex items-baseline justify-between gap-3">
-                <p className="text-[10.5px] font-medium text-ink-soft">{t('context.breakdownTitle')}</p>
-                <span className="text-[9.5px] text-ink-faint">{t('context.breakdownEstimated')}</span>
+                <p className="text-[12px] font-medium text-ink-soft">{t('context.breakdownTitle')}</p>
+                <span className="text-[12px] text-ink-faint">{t('context.breakdownEstimated')}</span>
               </div>
-              <dl className="mt-2 space-y-1.5 text-[11px]">
+              <dl className="mt-2 space-y-1.5 text-[12px]">
                 <TokenRow label={t('context.system')} value={breakdown.systemTokens} title={String(breakdown.systemTokens)} />
                 <TokenRow label={t('context.tools')} value={breakdown.toolsTokens} title={String(breakdown.toolsTokens)} />
                 <TokenRow label={t('context.messages')} value={breakdown.messagesTokens} title={String(breakdown.messagesTokens)} />
@@ -332,7 +333,7 @@ export function ContextMeter({
                 setOpen(false);
                 onCompact();
               }}
-              className="mt-3 w-full rounded-lg border border-amber-rule/50 bg-amber-card px-2.5 py-1.5 text-[11px] font-medium text-amber-ink transition-colors hover:border-amber-rule"
+              className="mt-3 w-full rounded-md bg-amber-card px-2.5 py-1.5 text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none"
             >
               {t('context.compactAction')}
             </button>

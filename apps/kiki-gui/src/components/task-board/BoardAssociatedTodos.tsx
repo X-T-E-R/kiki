@@ -5,6 +5,7 @@ import type { AgentForest, SessionViewState } from '@kiki/session-core/session';
 import { SessionController } from '@kiki/session-core/session';
 import type { SessionTransport } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
+import { Icon, type IconName } from '../icons';
 
 export interface BoardTodoController {
   readonly sessionId: string;
@@ -249,10 +250,13 @@ function uniqueSessionIds(sessionIds: readonly string[]): readonly string[] {
   return [...new Set(sessionIds.filter((sessionId) => sessionId !== ''))];
 }
 
-function todoTone(status: string): { readonly icon: string; readonly className: string } {
-  if (status === 'done') return { icon: '✓', className: 'border-success/40 bg-success/10 text-success' };
-  if (status === 'in_progress') return { icon: '●', className: 'border-accent/60 bg-accent-soft text-accent' };
-  return { icon: '', className: 'border-hairline-strong bg-panel text-transparent' };
+// A ticked todo is a settled fact, so it reads neutral (success is reserved
+// for "just finished, you should know"); in-progress keeps the accent because
+// the board uses orange for work that is moving.
+function todoTone(status: string): { readonly icon: IconName | null; readonly className: string } {
+  if (status === 'done') return { icon: 'check', className: 'border-transparent bg-ink/[0.08] text-ink-soft' };
+  if (status === 'in_progress') return { icon: 'dot', className: 'border-accent/60 bg-transparent text-accent' };
+  return { icon: null, className: 'border-hairline-strong bg-panel text-transparent' };
 }
 
 function agentLabel(
@@ -281,8 +285,8 @@ function TodoItems({ todos }: { readonly todos: SessionViewState['todos'] }) {
             const tone = todoTone(todo.status);
             return (
               <li key={`${index}:${todo.title}`} className="flex items-start gap-2 text-[12px] leading-snug">
-                <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border text-[10px] font-bold ${tone.className}`} aria-hidden>
-                  {tone.icon}
+                <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border ${tone.className}`} aria-hidden>
+                  {tone.icon === null ? null : <Icon name={tone.icon} size={12} />}
                 </span>
                 <input
                   type="checkbox"
@@ -362,20 +366,20 @@ export const BoardAssociatedTodos = memo(function BoardAssociatedTodos({
   return (
     <div
       data-board-associated-todos
-      className="mt-2 border-t border-hairline pt-2"
+      className="mt-2"
       onClick={(event) => { event.stopPropagation(); }}
     >
       <button
         type="button"
         aria-expanded={expanded}
         onClick={() => { setExpanded((value) => !value); }}
-        className="flex w-full items-center justify-between gap-2 text-left text-[11px] font-semibold tracking-[0.06em] text-ink-faint uppercase transition-colors hover:text-ink"
+        className="flex min-h-8 w-full items-center justify-between gap-2 rounded-md text-left text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
       >
         <span className="flex min-w-0 items-center gap-1.5">
-          <span aria-hidden className={`shrink-0 text-[8px] transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}>▶</span>
+          <svg aria-hidden viewBox="0 0 16 16" className={`h-3 w-3 shrink-0 text-ink-faint transition-transform duration-150 motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="m6 4 4 4-4 4" /></svg>
           <span className="truncate">{t('agentPanel.todoTitle')}</span>
         </span>
-        <span className="shrink-0 font-mono text-[10px] text-ink-faint">
+        <span className="shrink-0 text-[11.5px] text-ink-faint tabular-nums">
           {doneCount}/{todoCount}
         </span>
       </button>

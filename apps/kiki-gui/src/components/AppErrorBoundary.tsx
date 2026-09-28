@@ -33,7 +33,7 @@ class AppErrorBoundaryView extends Component<BoundaryProps, BoundaryState> {
       <main className="flex h-full min-h-screen items-center justify-center bg-paper px-4 text-ink">
         <section
           role="alert"
-          className="w-full max-w-[520px] rounded-xl border border-hairline bg-panel px-7 py-6 shadow-[0_1px_2px_rgba(28,25,23,0.04),0_12px_32px_-16px_rgba(28,25,23,0.12)]"
+          className="w-full max-w-[520px] rounded-xl border border-hairline bg-panel px-7 py-6 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.04),0_12px_32px_-16px_rgb(var(--kiki-shadow-ink)/0.12)]"
         >
           <h1 className="font-display text-xl font-semibold tracking-tight text-ink">
             {this.props.title}
@@ -44,7 +44,7 @@ class AppErrorBoundaryView extends Component<BoundaryProps, BoundaryState> {
           <button
             type="button"
             onClick={() => { window.location.reload(); }}
-            className="mt-5 rounded-lg bg-accent px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-accent-deep"
+            className="mt-5 rounded-lg bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
           >
             {this.props.reloadLabel}
           </button>

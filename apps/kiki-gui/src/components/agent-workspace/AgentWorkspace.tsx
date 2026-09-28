@@ -47,27 +47,16 @@ import {
 } from '../ConversationShell';
 import { Composer } from '../Composer';
 import type { ContextMeterUsage } from '../ContextMeter';
+import { Icon } from '../icons';
 import { MediaPreviewProvider, PreviewToggleButton } from '../mediaPreview';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { RightRail } from '../RightRail';
 import { Transcript } from '../Transcript';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
 
+/** Inspector toggle mark, drawn from the shared icon family at header size. */
 export function PanelIcon({ className = '' }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <rect x="2" y="3" width="12" height="10" rx="1.6" />
-      <path d="M10 3v10" />
-    </svg>
-  );
+  return <Icon name="panel" size={16} className={className} />;
 }
 
 /** The agent identity a workspace renders; always resolved by the shell. */
@@ -168,7 +157,11 @@ function WorkspaceSurface({
     <>
       {slots.header !== null ? createPortal(header, slots.header) : null}
       <div ref={timelineRef} className="contents" data-agent-workspace-target={target.agentId}>
-        <Transcript {...timeline} />
+        {/* One list instance per agent. Child row ids are turn-scoped
+            (`agent-turn-t1-prompt`), so two agents share row keys; a reused
+            virtualizer would carry one agent's measured sizes, scroll anchor
+            and initial-scroll state into the other. */}
+        <Transcript key={`${target.sessionId}:${target.agentId}`} {...timeline} />
       </div>
       {timelineOverlay}
       {slots.dock !== null ? createPortal(dock, slots.dock) : null}
@@ -207,14 +200,22 @@ export function resolveRunningSubagentTask(input: {
 const emptyAgentView = createViewState('');
 
 export function WorkspaceHeader({ children, main = false }: { children: ReactNode; main?: boolean }) {
+  // A quiet bar on the sheet's own ground: no rule under it — the sheet edge
+  // and the transcript's top padding carry the separation.
   return (
     <header className={main
-      ? 'flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4'
-      : 'flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-hairline bg-panel px-4 py-2'}>
+      ? 'flex h-12 shrink-0 items-center gap-1 bg-paper pr-2 pl-4 lg:pl-5'
+      : 'flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 bg-paper py-2 pr-2 pl-4 lg:pl-5'}>
       {children}
     </header>
   );
 }
+
+/** One control shape for every header icon action: 32px ghost square
+ * (44px touch target below lg), ink-faint at rest, a paper-deep wash on
+ * hover, and the pressed state reads as a filled wash rather than accent. */
+export const HEADER_ICON_BUTTON =
+  'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors duration-150 hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent lg:h-8 lg:w-8';
 
 function AgentWorkspaceHeader({
   target,
@@ -249,7 +250,7 @@ function AgentWorkspaceHeader({
   return (
     <>
       <WorkspaceHeader>
-        <div className="min-w-24 flex-1">
+        <div className="min-w-24 flex-1" title={`${t('sv.subagentNote')} · ${t('sv.agentActionsNote')}`}>
           {showBreadcrumb ? (
             <AgentBreadcrumb
               crumbs={crumbs}
@@ -257,28 +258,22 @@ function AgentWorkspaceHeader({
               onOpenAgent={navigation.openAgent}
             />
           ) : null}
-          <h1 className="truncate font-display text-[15px] font-semibold text-ink">
+          {/* Name in the display serif; model · effort as one quiet line
+              beneath it. The scope notes ride the tooltip — they explain,
+              they do not change what to do next. */}
+          <h1 className="truncate font-display text-[16px] leading-tight font-semibold tracking-tight text-ink">
             {name}
           </h1>
-          <p className="truncate text-[10.5px] text-ink-faint">
-            {t('sv.subagentNote')}
-            {' · '}
-            {t('sv.agentActionsNote')}
-          </p>
+          {model !== undefined || effort !== undefined ? (
+            <p className="flex min-w-0 items-center gap-1.5 truncate text-[12px] text-ink-faint">
+              {model !== undefined ? <span className="truncate">{model}</span> : null}
+              {model !== undefined && effort !== undefined ? <span aria-hidden>·</span> : null}
+              {effort !== undefined ? (
+                <span data-agent-effort className="shrink-0">{t('subagent.effort', { effort })}</span>
+              ) : null}
+            </p>
+          ) : null}
         </div>
-        {model !== undefined ? (
-          <span className="rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft">
-            {model}
-          </span>
-        ) : null}
-        {effort !== undefined ? (
-          <span
-            data-agent-effort
-            className="rounded-full border border-hairline bg-paper px-2 py-0.5 text-[10.5px] text-ink-soft"
-          >
-            {t('subagent.effort', { effort })}
-          </span>
-        ) : null}
 
         {showPreviewToggle ? <PreviewToggleButton /> : null}
         {/* Pure open-rail entry: renders only while the shared rail is
@@ -292,13 +287,13 @@ function AgentWorkspaceHeader({
             aria-label={t('sv.togglePanelAria')}
             aria-expanded={false}
             data-agent-rail-toggle
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent lg:h-7 lg:w-7"
+            className={HEADER_ICON_BUTTON}
           >
-            <PanelIcon className="h-[13px] w-[13px]" />
+            <PanelIcon />
           </button>
         ) : null}
       </WorkspaceHeader>
-      <div className="shrink-0 border-b border-hairline px-4 py-2 text-[11px]">
+      <div className="shrink-0 bg-paper px-4 pb-2 text-[12px] lg:px-5">
         <AgentRelations
           key={target.agentId}
           forest={forest}
@@ -706,18 +701,18 @@ function ChildAgentWorkspace({
           </p>
         ) : null}
         <Composer
-          variant="subagent" busy={headerBusy} disabled={composerDisabled}
+          variant="subagent" replyingTo={displayName} busy={headerBusy} disabled={composerDisabled}
           disabledPlaceholder={t('subagent.composerUnavailable')}
           value={draft} onChange={handleDraftChange}
           model={displayModel} defaultModel={displayModel} serverDefaultModel={displayModel}
           modelSource="session" permissionMode={agentLiveState.permissionMode ?? ('manual' as PermissionMode)}
-          planMode={false} swarmMode={false} efforts={supportedEfforts} effort={displayEffort}
+          planMode={false} efforts={supportedEfforts} effort={displayEffort}
           contextUsage={displayContextTokens !== undefined && displayMaxContextTokens !== undefined
             ? { used: displayContextTokens, limit: displayMaxContextTokens } : undefined}
           sessionUsage={composerUsage} sessionId={sessionId} agentProfileCatalogMode={{ mode: 'disabled' }}
           attachments={attachments} onChangeAttachments={handleAttachmentsChange}
           onChangeModel={handleChangeAgentModel} onChangePermissionMode={() => {}}
-          onChangePlanMode={() => {}} onChangeSwarmMode={() => {}}
+          onChangePlanMode={() => {}}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
           onSend={handleComposerSend}
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}

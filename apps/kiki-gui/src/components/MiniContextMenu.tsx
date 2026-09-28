@@ -90,7 +90,7 @@ export function MiniContextMenu({
       {...containerProps}
       role="menu"
       aria-label={ariaLabel}
-      className="anim-enter fixed z-50 w-52 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]"
+      className="anim-enter fixed z-50 w-52 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
       style={{ left: position.left, top: position.top }}
     >
       {entries.map((entry, index) =>

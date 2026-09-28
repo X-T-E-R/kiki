@@ -1,5 +1,7 @@
 import { memo, useState } from 'react';
 import { useI18n } from '../../i18n';
+import { Icon, type IconName } from '../icons';
+import { InspectorChevron } from './InspectorSection';
 import type { AgentPanelTodo } from './types';
 
 export interface AgentTodoSectionProps {
@@ -8,15 +10,17 @@ export interface AgentTodoSectionProps {
   readonly onNewTodo?: () => void;
 }
 
-function todoTone(status: AgentPanelTodo['status']): { icon: string; className: string } {
+// A ticked todo is a settled fact: neutral, not the success tone (that is
+// reserved for "just finished, you should know").
+function todoTone(status: AgentPanelTodo['status']): { icon: IconName | null; className: string } {
   switch (status) {
     case 'done':
-      return { icon: '✓', className: 'border-success/50 bg-success/15 text-success' };
+      return { icon: 'check', className: 'border-transparent bg-ink/[0.08] text-ink-soft' };
     case 'in_progress':
-      return { icon: '●', className: 'border-accent/60 bg-accent-soft text-accent' };
+      return { icon: 'dot', className: 'border-ink-soft bg-transparent text-ink-soft' };
     case 'pending':
     default:
-      return { icon: '', className: 'border-hairline-strong bg-panel text-transparent' };
+      return { icon: null, className: 'border-hairline-strong bg-panel text-transparent' };
   }
 }
 
@@ -30,35 +34,28 @@ export const AgentTodoSection = memo(function AgentTodoSection({
 
   const doneCount = todos.filter((t) => t.status === 'done').length;
   return (
-    <div data-agent-todo-section className="border-y border-hairline py-2.5">
-      <div className="flex items-center justify-between">
+    <section data-agent-todo-section>
+      <div className="flex min-h-8 items-center justify-between gap-1">
         <button
           type="button"
           aria-expanded={!collapsed}
           onClick={() => setCollapsed(!collapsed)}
-          className="flex items-center gap-1.5 text-left group"
+          className="group -ml-1.5 flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
         >
-          <span
-            aria-hidden
-            className={`inline-block shrink-0 text-[8px] text-ink-faint transition-transform duration-150 ${
-              collapsed ? '' : 'rotate-90'
-            }`}
-          >
-            ▶
+          <span className="text-[12px] font-medium text-ink-soft transition-colors group-hover:text-ink">
+            {t('inspector.todos')}
           </span>
-          <span className="font-mono text-[10.5px] font-semibold tracking-wider text-ink-faint group-hover:text-ink uppercase transition-colors">
-            {t('agentPanel.todoTitle')}
-          </span>
-          <span className="rounded-full bg-paper border border-hairline px-1.5 py-0.2 font-mono text-[9.5px] text-ink-faint">
+          <span className="text-[12px] text-ink-faint tabular-nums">
             {doneCount}/{todos.length}
           </span>
+          <InspectorChevron open={!collapsed} />
         </button>
 
         {onNewTodo ? (
           <button
             type="button"
             onClick={onNewTodo}
-            className="text-[10.5px] text-accent hover:text-accent-deep transition-colors font-mono"
+            className="h-7 rounded-md px-1.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
           >
             {t('agentPanel.newTodo')}
           </button>
@@ -66,9 +63,9 @@ export const AgentTodoSection = memo(function AgentTodoSection({
       </div>
 
       {!collapsed ? (
-        <div className="mt-2 space-y-1.5">
+        <div className="pt-1">
           {todos.length === 0 ? (
-            <p className="py-2 text-center text-[11.5px] text-ink-faint">
+            <p className="text-[13px] text-ink-faint">
               {t('agentPanel.noTodos')}
             </p>
           ) : (
@@ -78,21 +75,21 @@ export const AgentTodoSection = memo(function AgentTodoSection({
                 return (
                   <li
                     key={todo.id}
-                    className="flex items-start gap-2 rounded-md p-1 hover:bg-paper/80 transition-colors"
+                    className="flex items-start gap-2 py-0.5"
                   >
                     <button
                       type="button"
                       onClick={() => onToggleTodo?.(todo.id)}
                       disabled={!onToggleTodo}
                       aria-label={t('agentPanel.markTodo', { title: todo.title })}
-                      className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border text-[9px] font-bold ${
+                      className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border ${
                         tone.className
                       } ${onToggleTodo ? 'cursor-pointer' : 'cursor-default'}`}
                     >
-                      {tone.icon}
+                      {tone.icon === null ? null : <Icon name={tone.icon} size={12} />}
                     </button>
                     <span
-                      className={`text-[12px] leading-snug break-words ${
+                      className={`text-[13px] leading-snug break-words ${
                         todo.status === 'done'
                           ? 'text-ink-faint line-through'
                           : todo.status === 'in_progress'
@@ -109,6 +106,6 @@ export const AgentTodoSection = memo(function AgentTodoSection({
           )}
         </div>
       ) : null}
-    </div>
+    </section>
   );
 });

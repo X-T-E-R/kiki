@@ -7,6 +7,9 @@
  *   /s/:id           → live session view
  *   /s/:id/tasks     → session background-task browser
  *   /settings/:section? → settings panel
+ *   /board, /cron    → task board / scheduled tasks (`?workspace=` scopes them)
+ *   /memory          → memory console, or its turn-on guide while memory is off
+ *   /usage           → usage dashboard
  *
  * Global actions: Ctrl+N / the sidebar button navigate to the /new draft page
  * from any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab jumps to the most
@@ -32,8 +35,8 @@ import {
 } from 'react-router-dom';
 
 import { ConfirmDialog } from './components/ConfirmDialog';
-import { GlobalCronPanel } from './components/GlobalCronPanel';
-import { GlobalTaskBoard } from './components/GlobalTaskBoard';
+import { CronPage } from './components/GlobalCronPanel';
+import { TaskBoardPage } from './components/GlobalTaskBoard';
 import { DirtyGuardContext, shouldGuardNavigation } from './components/dirtyGuard';
 import { NewSessionPage } from './components/NewSessionPage';
 import {
@@ -41,8 +44,10 @@ import {
   shouldOfferOnboarding,
   subscribeOnboardingOpenRequests,
 } from './components/OnboardingWizard';
+import { ActivityPage } from './components/ActivityPage';
 import { CapabilitiesShim } from './components/CapabilitiesShim';
 import { ConversationShell } from './components/ConversationShell';
+import { MemoryPage } from './components/MemoryPage';
 import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
 import { SessionRouteView } from './components/SessionView';
@@ -56,6 +61,7 @@ import { useHost, type DesktopUpdate } from './host';
 import {
   arrangePinnedFirst,
   dedupeSessions,
+  filterSessions,
   groupSessionsByTime,
   groupSessionsByWorkspace,
   mergeSessionFirstPage,
@@ -74,6 +80,7 @@ import {
 } from '@kiki/session-core/settings';
 import { isSessionIndexBuildingError } from './lib/client';
 import { useLayoutPreferences } from './lib/layoutHooks';
+import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
 import { anyOverlayOpen } from './lib/uiBusy';
 import { startVisiblePoll } from './lib/visiblePoll';
@@ -140,10 +147,18 @@ export function App() {
   const rawNavigate = useNavigate();
   const location = useLocation();
   const desktop = host.kind === 'tauri';
+  // User skin files live on the server, so the catalog loads app-wide: a skin
+  // chosen from the themes folder must paint on every route, not only after a
+  // visit to Settings → Appearance.
+  useUserSkins();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
-  const [workspaceFilter, setWorkspaceFilter] = useState<string | undefined>(undefined);
   const layoutPrefs = useLayoutPreferences();
+  // Sidebar filters persist in layoutPrefs. The fetch mirrors the two
+  // server-side narrowings (archived visibility, exactly one workspace); the
+  // remaining dimensions filter the loaded list client-side.
+  const listFilters = layoutPrefs.filters;
+  const showArchived = listFilters.archived !== 'hide';
+  const workspaceFilter = listFilters.workspaces.length === 1 ? listFilters.workspaces[0] : undefined;
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -186,6 +201,7 @@ export function App() {
     readonly target: To;
     readonly options?: NavigateOptions;
   } | null>(null);
+  const [pendingDraftSwitch, setPendingDraftSwitch] = useState<{ id: string; action: () => void } | null>(null);
 
   const reportDirty = useCallback((id: string, dirty: boolean) => {
     setDirtyIds((current) => {
@@ -201,15 +217,26 @@ export function App() {
     }
     void rawNavigate(target, options);
   }, [dirtyIds.length, location, rawNavigate]);
+  const confirmDiscard = useCallback((id: string, action: () => void) => {
+    if (dirtyIds.includes(id)) setPendingDraftSwitch({ id, action });
+    else action();
+  }, [dirtyIds]);
   const dirtyGuardValue = useMemo(
-    () => ({ dirty: dirtyIds.length > 0, reportDirty, navigate }),
-    [dirtyIds.length, navigate, reportDirty],
+    () => ({ dirty: dirtyIds.length > 0, reportDirty, navigate, confirmDiscard }),
+    [dirtyIds.length, navigate, reportDirty, confirmDiscard],
   );
   const confirmNavigation = () => {
     const pending = pendingNavigation;
+    const draftSwitch = pendingDraftSwitch;
     setPendingNavigation(null);
-    setDirtyIds([]);
-    if (pending !== null) void rawNavigate(pending.target, pending.options);
+    setPendingDraftSwitch(null);
+    if (draftSwitch !== null) {
+      setDirtyIds((current) => current.filter((id) => id !== draftSwitch.id));
+      draftSwitch.action();
+    } else if (pending !== null) {
+      setDirtyIds([]);
+      void rawNavigate(pending.target, pending.options);
+    }
   };
 
   // Sync native desktop prefs into localStorage on boot; listen for tray
@@ -255,6 +282,10 @@ export function App() {
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
+  const isBoardRoute = useMatch('/board') !== null;
+  const isCronRoute = useMatch('/cron') !== null;
+  const isMemoryRoute = useMatch('/memory') !== null;
+  const isActivityRoute = useMatch('/activity') !== null;
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions', showArchived, workspaceFilter],
@@ -312,8 +343,11 @@ export function App() {
     [sessionsQuery.data],
   );
   const sessionGroups = useMemo<readonly SessionGroup[]>(() => {
-    const sorted = sortSessionItems(sessions, layoutPrefs.sortBy);
+    const sorted = sortSessionItems(filterSessions(sessions, listFilters), layoutPrefs.sortBy);
     const nowMs = Date.now();
+    if (layoutPrefs.groupBy === 'none') {
+      return sorted.length === 0 ? [] : [{ key: 'all', label: t('sidebar.groupByNone'), items: sorted }];
+    }
     if (layoutPrefs.groupBy === 'workspace') {
       // Pinned rows keep a global leading bucket here too: a per-workspace
       // bucket would bury the sessions the user asked to keep on top.
@@ -337,7 +371,7 @@ export function App() {
         older: t('sidebar.groupOlder'),
       },
     );
-  }, [sessions, workspaceOptions, layoutPrefs.groupBy, layoutPrefs.sortBy, t]);
+  }, [sessions, listFilters, workspaceOptions, layoutPrefs.groupBy, layoutPrefs.sortBy, t]);
 
   // document.title follows the route: session title, page name, or bare Kiki.
   useEffect(() => {
@@ -449,7 +483,7 @@ export function App() {
   // Close mobile sidebar on route change.
   useEffect(() => {
     setSidebarOpen(false);
-  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isBoardRoute, isCronRoute, isMemoryRoute, isActivityRoute]);
 
   // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
   // events, so the key must be handled globally while it is open).
@@ -464,7 +498,7 @@ export function App() {
 
   return (
     <DirtyGuardContext.Provider value={dirtyGuardValue}>
-      <div className="flex h-full overflow-hidden bg-paper">
+      <div className="flex h-full overflow-hidden bg-canvas">
       <Sidebar
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
         activeSessionId={activeSessionId}
@@ -472,10 +506,8 @@ export function App() {
         sessionGroups={sessionGroups}
         sessionsQuery={sessionsQuery}
         workspaceOptions={workspaceOptions}
-        workspaceFilter={workspaceFilter}
-        onWorkspaceFilter={setWorkspaceFilter}
-        showArchived={showArchived}
-        onToggleArchived={() => { setShowArchived((value) => !value); }}
+        filters={listFilters}
+        onFiltersChange={(filters) => { writeLayoutPreferences({ filters }); }}
         groupBy={layoutPrefs.groupBy}
         onGroupBy={(groupBy) => { writeLayoutPreferences({ groupBy }); }}
         sortBy={layoutPrefs.sortBy}
@@ -483,9 +515,11 @@ export function App() {
         onNewSession={() => { navigate('/new'); }}
       />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* Stage: the canvas-side frame; the routed page floats on it as one
+          raised sheet (the conversation route splits into its own sheets). */}
+      <div className="app-stage">
         {wsStatus !== 'open' && !isSettingsRoute ? (
-          <div className="shrink-0 border-b border-amber-rule/40 bg-amber-card px-4 py-1.5 text-center text-[12px] font-medium text-amber-ink">
+          <div data-app-banner className="shrink-0 border-b border-amber-rule/40 bg-amber-card px-4 py-1.5 text-center text-[12px] font-medium text-amber-ink">
             <span>{wsStatus === 'connecting' ? t('app.reconnecting') : t('app.disconnected')}</span>
             {wsStatus === 'closed' ? (
               <>
@@ -504,6 +538,7 @@ export function App() {
           </div>
         ) : null}
         <RestartBanner />
+        <div className="app-sheet">
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           {/* The conversation shell owns the composer mount across /new and
@@ -533,6 +568,50 @@ export function App() {
             element={<UsagePage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           <Route
+            path="/activity"
+            element={
+              <ActivityPage
+                sessions={sessions}
+                workspaceOptions={workspaceOptions}
+                onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
+              />
+            }
+          />
+          <Route
+            path="/board"
+            element={
+              <TaskBoardPage
+                originSessionId={readLastSessionId()}
+                sessions={sessions}
+                workspaceOptions={workspaceOptions}
+                workspacesLoading={workspacesQuery.isPending}
+                onNavigate={navigate}
+                onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
+              />
+            }
+          />
+          <Route
+            path="/cron"
+            element={
+              <CronPage
+                sessions={sessions}
+                workspaceOptions={workspaceOptions}
+                onNavigate={navigate}
+                onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
+              />
+            }
+          />
+          <Route
+            path="/memory"
+            element={
+              <MemoryPage
+                workspaceOptions={workspaceOptions}
+                onNavigate={navigate}
+                onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
+              />
+            }
+          />
+          <Route
             path="/capabilities"
             element={<CapabilitiesShim />}
           />
@@ -544,20 +623,9 @@ export function App() {
           />
           <Route path="*" element={<RootRedirect />} />
         </Routes>
+        </div>
       </div>
 
-      <GlobalTaskBoard
-        activeSessionId={activeSessionId}
-        sessions={sessions}
-        workspaceOptions={workspaceOptions}
-        workspacesLoading={workspacesQuery.isPending}
-        onNavigate={navigate}
-      />
-      <GlobalCronPanel
-        sessions={sessions}
-        workspaceOptions={workspaceOptions}
-        onNavigate={navigate}
-      />
 
       {sidebarOpen ? (
         <div
@@ -573,7 +641,7 @@ export function App() {
       ) : null}
 
       {quickSwitcherOpen ? (
-        <QuickSwitcher sessions={sessions} onClose={() => { setQuickSwitcherOpen(false); }} />
+        <QuickSwitcher sessions={sessions} workspaces={workspaceOptions} onClose={() => { setQuickSwitcherOpen(false); }} />
       ) : null}
         {shortcutsOpen ? <ShortcutsOverlay onClose={() => { setShortcutsOpen(false); }} /> : null}
         {onboardingOpen ? (
@@ -582,13 +650,13 @@ export function App() {
         <Toasts />
       </div>
       <ConfirmDialog
-        open={pendingNavigation !== null}
+        open={pendingNavigation !== null || pendingDraftSwitch !== null}
         title={t('st.dirty.leaveTitle')}
         body={t('st.dirty.leaveBody')}
         confirmLabel={t('st.dirty.leaveConfirm')}
         cancelLabel={t('st.dirty.stay')}
         onConfirm={confirmNavigation}
-        onCancel={() => { setPendingNavigation(null); }}
+        onCancel={() => { setPendingNavigation(null); setPendingDraftSwitch(null); }}
       />
     </DirtyGuardContext.Provider>
   );

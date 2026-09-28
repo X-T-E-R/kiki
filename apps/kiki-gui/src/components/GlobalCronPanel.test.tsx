@@ -10,7 +10,8 @@ import type { Session, Workspace } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import { ApiError, type CronTask } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
-import { GlobalCronPanel } from './GlobalCronPanel';
+import { MemoryRouter } from 'react-router-dom';
+import { CronPage, filterCronTasks } from './GlobalCronPanel';
 
 const listCronTasks = vi.fn();
 const pauseCronTask = vi.fn();
@@ -63,7 +64,6 @@ const reactActEnvironment = globalThis as typeof globalThis & {
 };
 
 let container: HTMLDivElement;
-let rail: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
 
@@ -110,16 +110,12 @@ beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement('div');
   document.body.append(container);
-  rail = document.createElement('div');
-  rail.setAttribute('data-session-rail', '');
-  document.body.append(rail);
   root = createRoot(container);
 });
 
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
-  rail.remove();
   document.querySelectorAll('[role="dialog"], [role="alertdialog"]').forEach((node) => node.remove());
 });
 
@@ -134,29 +130,28 @@ async function flush(turns = 6): Promise<void> {
   }
 }
 
-async function mount(): Promise<void> {
+async function mount(entry = '/cron', onNavigate: (target: unknown) => void = () => undefined): Promise<void> {
   await act(async () => {
     root.render(
-      <QueryClientProvider client={queryClient}>
-        <I18nProvider>
-          <GlobalCronPanel sessions={sessions} workspaceOptions={workspaceOptions} onNavigate={() => undefined} />
-        </I18nProvider>
-      </QueryClientProvider>,
+      <MemoryRouter initialEntries={[entry]}>
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <CronPage sessions={sessions} workspaceOptions={workspaceOptions} onNavigate={onNavigate} onToggleSidebar={() => undefined} />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
   });
 }
 
 async function openPanel(): Promise<HTMLElement> {
-  const launcher = rail.querySelector<HTMLButtonElement>('[data-session-cron-panel]');
-  expect(launcher).not.toBeNull();
-  await act(async () => { launcher!.click(); });
   await flush();
-  const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
-  expect(dialog).not.toBeNull();
-  return dialog!;
+  const page = container.querySelector<HTMLElement>('[data-cron-page]');
+  expect(page).not.toBeNull();
+  return page!;
 }
 
-describe('GlobalCronPanel', () => {
+describe('CronPage', () => {
   it('loads subsequent scheduled-task pages on demand', async () => {
     seedTasks(Array.from({ length: 101 }, (_, index) => makeCronTask({ id: `task-${index}` })));
     await mount();
@@ -169,7 +164,7 @@ describe('GlobalCronPanel', () => {
     expect(dialog.querySelectorAll('[data-cron-task]')).toHaveLength(101);
   });
 
-  it('opens from the rail launcher and renders rows with status, schedule, prompt, and ownership', async () => {
+  it('renders rows with status, schedule, prompt, and ownership', async () => {
     seedTasks([
       makeCronTask({ id: 'task-1' }),
       makeCronTask({
@@ -333,24 +328,51 @@ describe('GlobalCronPanel', () => {
     expect(listCronTasks.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('navigates to the owning session from the row link and closes the panel', async () => {
+  it('navigates to the owning session from the row link', async () => {
     seedTasks([makeCronTask({ id: 'task-1' })]);
     const onNavigate = vi.fn();
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <I18nProvider>
-            <GlobalCronPanel sessions={sessions} workspaceOptions={workspaceOptions} onNavigate={onNavigate} />
-          </I18nProvider>
-        </QueryClientProvider>,
-      );
-    });
-    await openPanel();
+    await mount('/cron', onNavigate);
+    const page = await openPanel();
 
-    const sessionLink = document.querySelector<HTMLButtonElement>('[data-cron-session="sess-1"]');
+    const sessionLink = page.querySelector<HTMLButtonElement>('[data-cron-session="sess-1"]');
     await act(async () => { sessionLink!.click(); });
 
     expect(onNavigate).toHaveBeenCalledWith('/s/sess-1');
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('filters rows client-side to the workspace carried in the URL and keeps the workspace tag', async () => {
+    seedTasks([
+      makeCronTask({ id: 'task-1' }),
+      makeCronTask({ id: 'task-2', session_id: null, workspace_id: 'ws-b' }),
+    ]);
+    await mount('/cron?workspace=ws-b');
+    const page = await openPanel();
+
+    expect(listCronTasks).toHaveBeenCalledWith({ page_size: 100, offset: 0 });
+    const rows = [...page.querySelectorAll<HTMLElement>('[data-cron-task]')];
+    expect(rows.map((row) => row.dataset['cronTask'])).toEqual(['task-2']);
+    expect(rows[0]!.textContent).toContain('Beta');
+    expect(page.querySelector('[data-workspace-scope]')?.getAttribute('data-workspace-scope')).toBe('ws-b');
+    expect(page.querySelector('[data-scope-option="ws-b"]')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('offers a way back to all workspaces when the scoped workspace has no tasks', async () => {
+    seedTasks([makeCronTask({ id: 'task-1' })]);
+    await mount('/cron?workspace=ws-b');
+    const page = await openPanel();
+
+    expect(page.querySelector('[data-cron-scope-empty]')).not.toBeNull();
+    const showAll = page.querySelector<HTMLButtonElement>('[data-cron-scope-empty] button')!;
+    await act(async () => { showAll.click(); });
+    expect(page.querySelectorAll('[data-cron-task]')).toHaveLength(1);
+  });
+});
+
+describe('filterCronTasks', () => {
+  it('returns every task without a scope and only matching ones with it', () => {
+    const tasks = [{ workspace_id: 'a' }, { workspace_id: 'b' }];
+    expect(filterCronTasks(tasks, undefined)).toEqual(tasks);
+    expect(filterCronTasks(tasks, 'b')).toEqual([{ workspace_id: 'b' }]);
   });
 });

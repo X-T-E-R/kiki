@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@kiki/protocol';
@@ -126,8 +127,9 @@ describe('QueueStrip', () => {
     );
     expect(html).toContain('data-queue-strip');
     expect(html).toContain('2 prompts queued');
-    expect(html).toContain('#1');
-    expect(html).toContain('#2');
+    // Drain order reads as plain numbers (no # prefix).
+    expect(html).toMatch(/>1<\/span>/);
+    expect(html).toMatch(/>2<\/span>/);
     expect(html).toContain('first parked prompt');
     expect(html).toContain('second parked prompt');
     expect(html).toContain('Send now');
@@ -452,7 +454,6 @@ describe('parseSessionCreateHandoff', () => {
       thinking: undefined,
       permissionMode: 'auto',
       planMode: undefined,
-      swarmMode: undefined,
       goalObjective: undefined,
     });
   });
@@ -1147,15 +1148,14 @@ describe('ContextMeter', () => {
   it('shows the rounded percentage without a warning below 50%', () => {
     const html = renderMeter(40_000, 100_000);
     expect(html).toContain('40%');
-    expect(html).not.toContain('details</span>');
-    expect(html).not.toContain('amber-card');
+    expect(html).toContain('data-context-level="ok"');
   });
 
   it('turns amber and points to details at exactly 50%', () => {
     const html = renderMeter(50_000, 100_000);
     expect(html).toContain('50%');
+    expect(html).toContain('data-context-level="warn"');
     expect(html).toContain('details</span>');
-    expect(html).toContain('amber-card');
   });
 
   it('clamps the display at 100% when usage overruns the limit', () => {
@@ -1229,7 +1229,7 @@ describe('PendingBadge', () => {
       sessionFixture('s3', 'none'),
     ]);
     expect(html).toContain('data-pending-badge');
-    expect(html).toContain('2 sessions waiting on you');
+    expect(html).toContain('2 sessions need you');
   });
 });
 
@@ -1448,7 +1448,7 @@ describe('agent tree chrome', () => {
     expect(html).toContain('overflow-y-auto');
   });
 
-  it('adds subagent context to the shared rail: own task, needs-input badge, parent and sibling nav', async () => {
+  it('adds subagent context to the shared rail: own task, needs-input badge, tree as the switch surface', async () => {
     const railForest = buildAgentForest(
       [],
       [
@@ -1516,11 +1516,11 @@ describe('agent tree chrome', () => {
     expect(html).not.toContain('30.0s');
     // Needs-input badge with the pending count.
     expect(html).toContain('data-needs-input');
-    expect(html).toContain('Needs input');
-    // Navigation: parent jump-back plus chronological sibling steppers.
-    expect(html).toContain('data-jump-to-spawn');
-    expect(html).toContain('data-sibling-prev');
-    expect(html).toContain('data-sibling-next');
+    expect(html).toContain('Needs you');
+    // Switching agents goes through the tree, not a separate nav block.
+    expect(html).not.toContain('data-jump-to-spawn');
+    expect(html).not.toContain('data-sibling-prev');
+    expect(html).not.toContain('data-sibling-next');
     expect(html).toContain('Researcher');
     expect(html).toContain('Scribe');
     // The agent's own todos, not the main agent's.
@@ -1563,8 +1563,8 @@ describe('agent tree chrome', () => {
       </MemoryRouter>,
     );
     expect(html).not.toContain('data-needs-input');
-    expect(html).not.toContain('data-jump-to-spawn');
     expect(html).not.toContain('data-sibling-prev');
+    expect(html).not.toContain('data-sibling-next');
   });
 
   it('shows the failure reason inline for a failed subagent', () => {
@@ -1655,17 +1655,19 @@ describe('agent tree chrome', () => {
       ],
     };
     const html = renderToStaticMarkup(
-      <MemoryRouter>
-        <I18nProvider>
-          <RightRail
-            state={state as never}
-            forest={railForest}
-            onCancelTask={() => {}}
-            onStopAgentTask={() => Promise.resolve()}
-            onOpenSubagent={() => {}}
-          />
-        </I18nProvider>
-      </MemoryRouter>,
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <I18nProvider>
+            <RightRail
+              state={state as never}
+              forest={railForest}
+              onCancelTask={() => {}}
+              onStopAgentTask={() => Promise.resolve()}
+              onOpenSubagent={() => {}}
+            />
+          </I18nProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
     expect(html).toContain('data-subagents-view-all');
     expect(html).toContain('data-task-open="t1"');

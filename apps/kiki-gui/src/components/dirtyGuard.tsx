@@ -1,5 +1,5 @@
 /**
- * Dirty-draft guard for provider editors. The app shell owns the dirty set so
+ * Dirty-draft guard for settings editors. The app shell owns the dirty set so
  * every in-app navigation path (settings nav, sidebar, switcher, shortcuts)
  * can ask before unmounting an unsaved editor.
  */
@@ -13,6 +13,8 @@ export interface DirtyGuardValue {
   readonly dirty: boolean;
   readonly reportDirty: (id: string, dirty: boolean) => void;
   readonly navigate: GuardedNavigate;
+  /** Prompt before replacing a draft without changing routes (entity/workspace). */
+  readonly confirmDiscard?: (id: string, action: () => void) => void;
 }
 
 export const DirtyGuardContext = createContext<DirtyGuardValue | null>(null);

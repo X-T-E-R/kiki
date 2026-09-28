@@ -55,6 +55,27 @@ export function capabilityReasonText(
   return key === undefined ? rawReason : t(key);
 }
 
+function errorCodeOf(error: unknown): number | undefined {
+  if (error instanceof ApiError) return error.code;
+  if (typeof error === 'object' && error !== null) {
+    const code = (error as { readonly code?: unknown }).code;
+    if (typeof code === 'number') return code;
+  }
+  return undefined;
+}
+
+/**
+ * The server (or a fixture) answered "this procedure/scope is not offered
+ * here" — a capability gap, not a failure. Panels render it as absent/quiet
+ * instead of a red retryable error.
+ */
+export function isCapabilityUnsupportedError(error: unknown): boolean {
+  const code = errorCodeOf(error);
+  if (code === ErrorCode.CAPABILITY_UNSUPPORTED) return true;
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return /unsupported.*(?:procedure|scope)|unknown service/i.test(message);
+}
+
 /** Localize the capability query's known API errors while preserving unknown messages. */
 export function agentCapabilitiesErrorText(error: unknown, t: Translate): string {
   const code = error instanceof ApiError

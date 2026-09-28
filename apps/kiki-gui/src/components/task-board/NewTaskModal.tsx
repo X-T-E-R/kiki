@@ -2,6 +2,7 @@ import { memo, useRef, useState } from 'react';
 import { errorText, LocalizedError, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { Dialog, DIALOG_PANEL_SIZES } from '../Dialog';
+import { Icon } from '../icons';
 import type { NewTaskFormData, TaskPriority, BoardWorkspaceOption, BoardSessionOption } from './types';
 
 export interface NewTaskModalProps {
@@ -88,7 +89,7 @@ export const NewTaskModal = memo(function NewTaskModal({
             aria-label={t('taskBoard.new.close')}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink"
           >
-            ✕
+            <Icon name="close" />
           </button>
         </div>
 

@@ -69,6 +69,7 @@ import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
 import { ToolCard } from './ToolCard';
 import {
+  mergeSubagentRows,
   splitPrefixSegments,
   splitStreamingText,
   subagentAutoForm,
@@ -1094,7 +1095,7 @@ describe('explicit unknown timing', () => {
     };
   }
 
-  it('shows an explicit dash instead of 0ms when a subagent start or end is unknown', async () => {
+  it('leaves the duration empty instead of 0ms or a dash when a subagent start or end is unknown', async () => {
     const container = await renderTranscript([
       subagentBlock({ subagentId: 'agent-no-times' }),
       // Adjacent compact cards fold into a history run; a non-compact entry
@@ -1108,7 +1109,7 @@ describe('explicit unknown timing', () => {
     for (const id of ['agent-no-times', 'agent-no-end']) {
       const card = container.querySelector(`[data-subagent-id="${id}"]`);
       expect(card, id).not.toBeNull();
-      expect(card?.textContent, id).toContain('—');
+      expect(card?.textContent, id).not.toContain('—');
       expect(card?.textContent, id).not.toContain('0ms');
     }
   });
@@ -1193,23 +1194,36 @@ describe('explicit unknown timing', () => {
     expect(container.textContent).toContain('permission denied');
   });
 
-  it('marks a settled tool duration as unknown instead of showing the turn-level fallback', async () => {
+  it('keeps a successful tool with unknown timing silent instead of showing the turn-level fallback', async () => {
     // The projection falls back to the TURN's durationMs when frame-level
     // timing is missing (startedAt undefined / legacy 0 sentinel) — the card
-    // must not present that as this tool's own runtime.
+    // must not present that as this tool's own runtime. A success with no
+    // real duration shows nothing at all (silent success), not a "—".
     const container = await renderToolCard(
       toolBlock({ toolCallId: 't-unknown', durationMs: 5_000 }),
     );
-    expect(container.textContent).toContain('—');
+    expect(container.textContent).not.toContain('—');
     expect(container.textContent).not.toContain('5.0s');
-    expect(container.querySelector('[title="duration unknown"]')).not.toBeNull();
+    expect(container.querySelector('[title="duration unknown"]')).toBeNull();
   });
 
-  it('marks the legacy 0-start sentinel as unknown even when a duration rides along', async () => {
+  it('leaves a failed tool with unknown timing without a duration — never the turn fallback', async () => {
+    // The failure is carried by the tone, the error text and the cross mark;
+    // an unexplained dash beside them was a second symbol to decode.
+    const container = await renderToolCard(
+      toolBlock({ toolCallId: 't-unknown-fail', status: 'error', isError: true, output: 'boom', durationMs: 5_000 }),
+    );
+    expect(container.textContent).toContain('boom');
+    expect(container.textContent).not.toContain('—');
+    expect(container.textContent).not.toContain('5.0s');
+    expect(container.querySelector('[data-outcome="failed"]')).not.toBeNull();
+  });
+
+  it('never shows the legacy 0-start sentinel duration as runtime', async () => {
     const container = await renderToolCard(
       toolBlock({ toolCallId: 't-zero', startedAt: 0, durationMs: 5_000 }),
     );
-    expect(container.textContent).toContain('—');
+    expect(container.textContent).not.toContain('—');
     expect(container.textContent).not.toContain('5.0s');
   });
 
@@ -1221,7 +1235,7 @@ describe('explicit unknown timing', () => {
     expect(container.textContent).not.toContain('—');
   });
 
-  it('marks a turn-level fallback as unknown when only the frame start exists', async () => {
+  it('never shows a turn-level fallback as runtime when only the frame start exists', async () => {
     // Half a frame timestamp pair: the start is real, the end is missing, so
     // the projected durationMs is the enclosing turn's — never this tool's.
     const container = await renderToolCard(
@@ -1232,8 +1246,8 @@ describe('explicit unknown timing', () => {
         durationSource: 'turn',
       }),
     );
-    expect(container.textContent).toContain('—');
     expect(container.textContent).not.toContain('9.0s');
+    expect(container.textContent).not.toContain('—');
   });
 
   it('shows no duration marker at all on a still-running tool', async () => {
@@ -2629,28 +2643,73 @@ describe('subagent timeline dual form (G-4)', () => {
     return container;
   }
 
-  it('folds consecutive lifecycle rows into a history run that expands in place', async () => {
+  it('keeps consecutive lifecycle rows inline and individually clickable', async () => {
     const opened: string[] = [];
     const container = await renderWithAgents(
       [eventBlock('agent-1', 'sent'), eventBlock('agent-1', 'completed')],
       opened,
     );
-    // Two consecutive terminal events collapse behind one summary row…
-    expect(container.querySelectorAll('[data-subagent-event]')).toHaveLength(0);
-    const runToggle = container.querySelector('[data-history-run] > button');
-    expect(runToggle?.textContent).toContain('2');
-    await act(async () => {
-      flushSync(() => { click(runToggle!); });
-    });
-    // …and expand back to the individual rows, in order, still clickable.
+    // Settled events are NOT folded behind a counter: both stay on screen in
+    // order, so the reader never has to open a summary to learn what happened.
+    expect(container.querySelector('[data-history-run]')).toBeNull();
     const rows = [...container.querySelectorAll('[data-subagent-event]')];
     expect(rows).toHaveLength(2);
     expect(rows[0]?.textContent).toContain('Input sent');
     expect(rows[1]?.textContent).toContain('Completed');
     await act(async () => {
-      flushSync(() => { click(rows[0]!); });
+      flushSync(() => { click(rows[0]!.querySelector('button')!); });
     });
     expect(opened).toEqual(['agent-1']);
+  });
+
+  it('renders one subagent as one line: the card absorbs its lifecycle rows and dispatch call', async () => {
+    const dispatch: Block = {
+      kind: 'tool',
+      id: 'tool-call-agent-1',
+      toolCallId: 'call-agent-1',
+      name: 'Agent',
+      argsText: '',
+      args: undefined,
+      display: undefined,
+      description: undefined,
+      status: 'done',
+      output: undefined,
+      isError: undefined,
+      startedAt: undefined,
+      durationMs: undefined,
+      progressText: undefined,
+    };
+    const container = await renderWithAgents(
+      [
+        dispatch,
+        lifecycleSubagentBlock('agent-1', { name: 'Researcher', summary: 'Mapped it.' }),
+        eventBlock('agent-1', 'spawned'),
+        eventBlock('agent-1', 'sent'),
+        eventBlock('agent-1', 'completed'),
+      ],
+      [],
+    );
+    expect(container.querySelectorAll('[data-subagent-id="agent-1"]')).toHaveLength(1);
+    expect(container.querySelector('[data-tool-id="call-agent-1"]')).toBeNull();
+    // A delivery carries its own message, so it stays; restated states go.
+    const events = [...container.querySelectorAll('[data-subagent-event]')].map((row) => row.getAttribute('data-agent-event'));
+    expect(events).toEqual(['sent']);
+    const card = container.querySelector('[data-subagent-id="agent-1"]');
+    expect(card?.textContent).toContain('Researcher');
+    expect(card?.textContent).toContain('Completed');
+    expect(card?.textContent).not.toContain('completed ');
+  });
+
+  it('keeps a failed dispatch call visible next to its card', () => {
+    const failedCall: Block = {
+      kind: 'tool', id: 'tool-call-agent-1', toolCallId: 'call-agent-1', name: 'Agent', argsText: '',
+      args: undefined, display: undefined, description: undefined, status: 'error', output: 'quota',
+      isError: true, startedAt: undefined, durationMs: undefined, progressText: undefined,
+    };
+    const card = lifecycleSubagentBlock('agent-1');
+    expect(mergeSubagentRows([failedCall, card])).toEqual([failedCall, card]);
+    const plain = [eventBlock('agent-2', 'completed')];
+    expect(mergeSubagentRows(plain)).toBe(plain);
   });
 
   it('keeps failed and cancelled lifecycle events out of the fold', async () => {
@@ -2762,7 +2821,7 @@ describe('subagent timeline dual form (G-4)', () => {
     expect(byId.get('agent-parent')?.getAttribute('data-card-form')).toBe('compact');
   });
 
-  it('folds consecutive compact cards but leaves a failed card individually visible', async () => {
+  it('keeps every settled card visible in order and marks the failed one', async () => {
     const container = await renderWithAgents(
       [
         lifecycleSubagentBlock('agent-a', { name: 'Alpha' }),
@@ -2775,24 +2834,21 @@ describe('subagent timeline dual form (G-4)', () => {
       ],
       [],
     );
-    // Alpha + Beta fold; the failed Gamma card stays on the timeline.
+    // All three stay on the timeline in time order — no counter swallows the
+    // two that happened to succeed.
     const visible = [...container.querySelectorAll('[data-card-form]')];
-    expect(visible.map((card) => card.getAttribute('data-subagent-id'))).toEqual(['agent-c']);
-    expect(visible[0]?.textContent).toContain('model request failed');
-    const runToggle = container.querySelector('[data-history-run] > button');
-    expect(runToggle?.textContent).toContain('2');
-    await act(async () => {
-      flushSync(() => { click(runToggle!); });
-    });
-    const expanded = [...container.querySelectorAll('[data-card-form]')];
-    expect(expanded.map((card) => card.getAttribute('data-subagent-id'))).toEqual([
+    expect(visible.map((card) => card.getAttribute('data-subagent-id'))).toEqual([
       'agent-a',
       'agent-b',
       'agent-c',
     ]);
+    // The failure carries its reason and a danger wash the others do not.
+    expect(visible[2]?.textContent).toContain('model request failed');
+    expect(visible[2]?.querySelector('button')?.className).toContain('bg-danger');
+    expect(visible[0]?.querySelector('button')?.className).not.toContain('bg-danger');
   });
 
-  it('shows "not reported" when neither task nor roster ever reported a tool count', async () => {
+  it('leaves the tool count empty when neither task nor roster ever reported one', async () => {
     const container = await renderWithAgents(
       [
         lifecycleSubagentBlock('agent-live', {
@@ -2806,7 +2862,7 @@ describe('subagent timeline dual form (G-4)', () => {
     );
     const card = container.querySelector('[data-subagent-id="agent-live"]');
     expect(card?.getAttribute('data-card-form')).toBe('full');
-    expect(card?.textContent).toContain('Not reported');
+    expect(card?.textContent).not.toContain('Not reported');
     expect(card?.textContent).not.toContain('0 tool');
   });
 
@@ -2888,7 +2944,7 @@ describe('subagent timeline dual form (G-4)', () => {
     expect(card?.textContent).not.toContain('0ms');
   });
 
-  it('shows "not reported" when the authoritative node withdraws known-ness', async () => {
+  it('leaves the tool count empty when the authoritative node withdraws known-ness', async () => {
     const forest = buildAgentForest(
       [],
       [
@@ -2917,7 +2973,7 @@ describe('subagent timeline dual form (G-4)', () => {
       forest,
     );
     const card = container.querySelector('[data-subagent-id="agent-live"]');
-    expect(card?.textContent).toContain('Not reported');
+    expect(card?.textContent).not.toContain('Not reported');
     expect(card?.textContent).not.toContain('17 tool');
   });
 
@@ -2954,7 +3010,7 @@ describe('subagent timeline dual form (G-4)', () => {
     expect(resolveSubagentToolCalls(undefined, undefined)).toEqual({ count: 0, known: true });
   });
 
-  it('jump-to-spawn reveals a card folded inside a collapsed history run', async () => {
+  it('jump-to-spawn finds a settled card directly, with no fold to open first', async () => {
     const scrollIntoView = vi.fn();
     const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = scrollIntoView;
@@ -2966,18 +3022,10 @@ describe('subagent timeline dual form (G-4)', () => {
         ],
         [],
       );
-      // Both compact cards fold behind the run; neither card is mounted.
-      expect(container.querySelector('[data-subagent-id]')).toBeNull();
-      expect(container.querySelector('[data-history-run]')).not.toBeNull();
-      let found = true;
-      await act(async () => {
-        flushSync(() => {
-          found = revealSubagentCard('agent-jump-b');
-        });
-      });
-      // First pass only expands the run; the card mounts on the re-render.
-      expect(found).toBe(false);
+      // Both cards are mounted in place, so the jump succeeds on the FIRST
+      // pass — the old two-phase expand-then-find round trip is gone.
       expect(container.querySelector('[data-subagent-id="agent-jump-b"]')).not.toBeNull();
+      let found = false;
       await act(async () => {
         flushSync(() => {
           found = revealSubagentCard('agent-jump-b');
@@ -3037,7 +3085,7 @@ describe('background task notification folding (TUI-01)', () => {
     };
   }
 
-  it('folds consecutive successful notifications and breaks the run on user input', async () => {
+  it('keeps every background notification inline, including successes', async () => {
     const blocks = agentTranscriptToBlocks({
       agent_id: 'main',
       items: [
@@ -3051,20 +3099,13 @@ describe('background task notification folding (TUI-01)', () => {
       blocks.filter((block) => block.kind === 'system' && block.variant === 'task'),
     ).toHaveLength(3);
     const container = await renderTranscript(blocks);
-    const runToggle = container.querySelector('[data-history-run] > button');
-    expect(runToggle?.textContent).toContain('2');
-    // The user message broke the group, so the third success stays individual.
-    expect(container.querySelectorAll('[data-system="task"]')).toHaveLength(1);
-    expect(container.textContent).toContain('break the run here');
-    await act(async () => {
-      flushSync(() => {
-        click(runToggle!);
-      });
-    });
+    // All three notifications are on screen at once; none is behind a counter.
+    expect(container.querySelector('[data-history-run]')).toBeNull();
     expect(container.querySelectorAll('[data-system="task"]')).toHaveLength(3);
+    expect(container.textContent).toContain('break the run here');
   });
 
-  it('keeps failed and timed-out notifications individually visible', async () => {
+  it('washes a failed or timed-out notification in danger and leaves successes quiet', async () => {
     const blocks = agentTranscriptToBlocks({
       agent_id: 'main',
       items: [
@@ -3075,8 +3116,28 @@ describe('background task notification folding (TUI-01)', () => {
       ],
     });
     const container = await renderTranscript(blocks);
-    expect(container.querySelector('[data-history-run]')).toBeNull();
-    expect(container.querySelectorAll('[data-system="task"]')).toHaveLength(3);
+    const rows = [...container.querySelectorAll('[data-system="task"]')];
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.querySelector('button')?.className).toContain('bg-danger');
+    expect(rows[1]?.querySelector('button')?.className).toContain('bg-danger');
+    expect(rows[2]?.querySelector('button')?.className).not.toContain('bg-danger');
+  });
+
+  it('names each notification by its headline so a settled row is never a bare "Task"', async () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [
+        taskNotificationItem('t-h1', 1, 'Title: Background agent timed_out\nSeverity: warning\nDeadline exceeded.'),
+        taskNotificationItem('t-h2', 2, 'Background agent completed\nIndex rebuild completed.'),
+      ],
+    });
+    const container = await renderTranscript(blocks);
+    const rows = [...container.querySelectorAll('[data-system="task"]')];
+    expect(rows[0]?.textContent).toContain('Background agent timed_out');
+    expect(rows[0]?.textContent).not.toContain('Title:');
+    expect(rows[1]?.textContent).toContain('Background agent completed');
+    // The body stays folded until the row is opened.
+    expect(rows[1]?.textContent).not.toContain('Index rebuild completed.');
   });
 });
 
@@ -3148,7 +3209,7 @@ describe('terminal pile-up folding (timeline tail)', () => {
     tokensPerSecond: undefined,
   } as const;
 
-  it('folds the answered-question + aborted-divider pile at the timeline tail', async () => {
+  it('keeps the answered-question + aborted-divider pile readable in place', async () => {
     const container = await renderTranscript([
       userBlock({ id: 'u1', text: 'kick off' }),
       assistantBlock('a1', 'done with the first pass'),
@@ -3157,28 +3218,20 @@ describe('terminal pile-up folding (timeline tail)', () => {
       answeredQuestionBlock('question-q2', 'Ship the second part?'),
       abortedNoticeBlock('prompt-2'),
     ]);
-    const run = container.querySelector('[data-history-run]');
-    expect(run?.getAttribute('data-history-run-member-ids')?.split(' ')).toEqual([
-      'question-q1',
-      'notice-aborted-prompt-1',
-      'question-q2',
-      'notice-aborted-prompt-2',
-    ]);
-    expect(container.querySelectorAll('[data-history-line]')).toHaveLength(0);
-    expect(container.textContent).not.toContain('Prompt aborted');
-    await act(async () => {
-      flushSync(() => {
-        click(run!.querySelector('button')!);
-      });
-    });
-    expect(container.querySelectorAll('[data-history-run-members] > div')).toHaveLength(4);
+    // No fold: both answered questions keep their own line, and both aborted
+    // dividers are readable without a click.
+    expect(container.querySelector('[data-history-run]')).toBeNull();
     expect(container.querySelectorAll('[data-history-line]')).toHaveLength(2);
+    expect(container.textContent).toContain('Continue with the plan?');
+    expect(container.textContent).toContain('Ship the second part?');
     expect(container.textContent).toContain('Prompt aborted');
   });
 
-  it('folds the full historical failure pile behind a danger summary and keeps the latest tail', async () => {
-    const before = Array.from({ length: 4 }, (_, index) => markerNoticeBlock(`before-${index}`));
-    const after = Array.from({ length: 12 }, (_, index) => markerNoticeBlock(`after-${index}`));
+  it('shows every historical failure inline and still renders the latest tail', async () => {
+    // Kept inside the virtual window: the point is that the failures are
+    // inline, not that they survive being scrolled off screen.
+    const before = Array.from({ length: 2 }, (_, index) => markerNoticeBlock(`before-${index}`));
+    const after = Array.from({ length: 2 }, (_, index) => markerNoticeBlock(`after-${index}`));
     const container = await renderTranscript(
       [
         userBlock({ id: 'u-pile', text: 'run the old work', turnId: 't-old' }),
@@ -3196,24 +3249,14 @@ describe('terminal pile-up folding (timeline tail)', () => {
       { turnTail: stoppedTail },
     );
 
-    const run = container.querySelector('[data-history-run]');
-    expect(run?.getAttribute('data-history-run-member-ids')?.split(' ')).toHaveLength(22);
-    expect(run?.getAttribute('data-history-run-failures')).toBe('4');
-    expect(run?.textContent).toContain('4 failed');
-    expect(container.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(0);
-    expect(container.textContent).not.toContain('Prompt failed');
-    expect(container.textContent).not.toContain('Prompt aborted');
-    expect(container.querySelector('[data-turn-tail-state="cancelled"]')).not.toBeNull();
-
-    await act(async () => {
-      flushSync(() => {
-        click(run!.querySelector('button')!);
-      });
-    });
+    // Every one of the four failures is countable ON SCREEN rather than as a
+    // number in a summary the reader has to trust and then open.
+    expect(container.querySelector('[data-history-run]')).toBeNull();
     expect(container.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(4);
     expect(container.textContent).toContain('Prompt failed');
     expect(container.textContent).toContain('Prompt aborted');
     expect(container.textContent).toContain('You stopped this turn');
+    // The stopped tail still owns the latest outcome line.
     expect(container.querySelector('[data-turn-tail-state="cancelled"]')).not.toBeNull();
   });
 
@@ -3243,7 +3286,7 @@ describe('terminal pile-up folding (timeline tail)', () => {
     expect(container.querySelector('[data-turn-tail-state="failed"]')).not.toBeNull();
   });
 
-  it('keeps a lone aborted divider as a single line (fold threshold is two)', async () => {
+  it('keeps a lone aborted divider as a single line', async () => {
     const container = await renderTranscript([
       assistantBlock('a1', 'final answer'),
       abortedNoticeBlock('prompt-1'),
@@ -3252,20 +3295,23 @@ describe('terminal pile-up folding (timeline tail)', () => {
     expect(container.textContent).toContain('Prompt aborted');
   });
 
-  it('keeps the pending question card in place while terminal neighbours fold', async () => {
+  it('keeps a pending question in the conversation lane while settled neighbours sit in the activity lane', async () => {
     const container = await renderTranscript([
       assistantBlock('a1', 'working through it'),
       answeredQuestionBlock('question-q1', 'First pick?'),
       abortedNoticeBlock('prompt-1'),
       virtualQuestionBlock('question-pending'),
     ]);
-    const run = container.querySelector('[data-history-run]');
-    expect(run?.getAttribute('data-history-run-member-ids')?.split(' ')).toEqual([
-      'question-q1',
-      'notice-aborted-prompt-1',
-    ]);
+    // The pending question is still the current turn, so it keeps the full
+    // card in the conversation lane; the answered one became a settled record.
+    const lane = (blockId: string) =>
+      container.querySelector(`[data-block-id="${blockId}"]`)?.getAttribute('data-timeline-lane');
+    expect(lane('question-pending')).toBe('conversation');
+    expect(lane('question-q1')).toBe('activity');
     expect(container.textContent).toContain('Pick one');
-    expect(container.querySelector('[data-history-line]')).toBeNull();
+    // And the settled record is visible, not folded away.
+    expect(container.querySelector('[data-history-line]')).not.toBeNull();
+    expect(container.textContent).toContain('First pick?');
   });
 
   it('projects a cron injection once at its turn anchor without leaking the envelope', async () => {
@@ -3320,7 +3366,7 @@ describe('terminal pile-up folding (timeline tail)', () => {
   });
 });
 
-describe('step folding (fold-steps)', () => {
+describe('read-run folding (fold-steps)', () => {
   function stepTool(toolCallId: string, overrides: Partial<Extract<Block, { kind: 'tool' }>> = {}): Block {
     return {
       kind: 'tool',
@@ -3328,7 +3374,7 @@ describe('step folding (fold-steps)', () => {
       toolCallId,
       name: 'Read',
       argsText: '',
-      args: undefined,
+      args: { file_path: `C:/w/${toolCallId}.ts` },
       display: undefined,
       description: undefined,
       status: 'done',
@@ -3354,156 +3400,98 @@ describe('step folding (fold-steps)', () => {
     };
   }
 
-  function stepThinking(id: string, overrides: Partial<Extract<Block, { kind: 'thinking' }>> = {}): Block {
-    return {
-      kind: 'thinking',
-      id,
-      text: 'pondering',
-      streaming: false,
-      createdAt: undefined,
-      ...overrides,
-    };
-  }
-
-  async function renderSteps(blocks: Block[]): Promise<HTMLDivElement> {
-    return renderTranscript(blocks);
-  }
-
-  it('folds runs of steps into one summary row and expands in original order', async () => {
-    const read = stepTool('t-read', { name: 'Read' });
-    const bash = stepShell('shell-1');
-    const ponder = stepThinking('think-1');
-    const edit = stepTool('t-edit', { name: 'Edit' });
-    const container = await renderSteps([read, bash, ponder, edit]);
-
-    // Collapsed by default: one group summary, no bare step rows.
-    const summary = container.querySelector('[aria-label*="expand"]');
-    expect(summary).not.toBeNull();
-    expect(container.textContent).toContain('4');
-    expect(container.querySelectorAll('[data-shell]')).toHaveLength(0);
-    expect(container.querySelectorAll('.thinking-row')).toHaveLength(0);
-
-    // Expand: members appear in ORIGINAL occurrence order — Read, shell,
-    // thinking, Edit — never the per-kind buckets.
-    await act(async () => {
-      click(summary!);
-    });
-    // DEBUG
-    const order = [
-      ...container.querySelectorAll('[data-tool-id], [data-shell], .thinking-row'),
-    ].map(
-      (el) =>
-        el.getAttribute('data-tool-id') ??
-        (el.hasAttribute('data-shell') ? 'shell' : 'thinking'),
+  function renderTranscriptInto(root: Root, blocks: Block[]): Promise<void> {
+    return renderSettled(
+      root,
+      <Transcript
+        state={transcriptState(blocks)}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+      />,
     );
-    expect(order).toEqual(['t-read', 'shell', 'thinking', 't-edit']);
-  });
+  }
 
-  it('keeps single steps bare and non-step blocks unfolded', async () => {
-    const container = await renderSteps([
-      stepTool('t-only'),
-      assistantBlock('a-after', 'here is the summary'),
-    ]);
-    // A single tool after an assistant message stays a bare ToolCard.
-    expect(container.querySelectorAll('[data-shell]')).toHaveLength(0);
-    expect(container.textContent).not.toContain('Steps ·');
-  });
-
-  it('applies the fold-steps toggle instantly — off renders raw steps', async () => {
-    const probe = makeRoot();
-    const blocks = [stepTool('t-read', { name: 'Read' }), stepShell('shell-1')];
-    const render = async () => {
-      await renderSettled(
-        probe.root,
-        <Transcript
-          state={transcriptState(blocks)}
-          onLoadOlder={() => Promise.resolve(false)}
-          onResolveApproval={() => noopActions()}
-          onAnswerQuestion={() => noopActions()}
-          onDismissQuestion={() => noopActions()}
-        />,
-      );
-    };
-    await render();
-    // Folded by default.
-    expect(probe.container.textContent).toContain('Steps ·');
-    expect(probe.container.querySelectorAll('[data-shell]')).toHaveLength(0);
+  async function withFold<T>(on: boolean, run: () => Promise<T>): Promise<T> {
+    writeSettings({ foldSteps: on });
     try {
-      // Flipping the setting re-groups on the next render without a remount.
-      await act(async () => {
-        writeSettings({ foldSteps: false });
-      });
-      expect(probe.container.textContent).not.toContain('Steps ·');
-      expect(probe.container.querySelectorAll('[data-shell]')).toHaveLength(1);
-      // Back on: the steps fold again.
-      await act(async () => {
-        writeSettings({ foldSteps: true });
-      });
-      expect(probe.container.textContent).toContain('Steps ·');
-      expect(probe.container.querySelectorAll('[data-shell]')).toHaveLength(0);
+      return await run();
     } finally {
-      writeSettings({ foldSteps: true });
+      writeSettings({ foldSteps: false });
     }
+  }
+
+  const reads = () => [
+    stepTool('plan', { name: 'Read' }),
+    stepTool('notes', { name: 'Read' }),
+    stepTool('grep', { name: 'Grep', args: { pattern: 'TODO' } }),
+  ];
+
+  it('is off by default: every settled action stays in place in the timeline', async () => {
+    const container = await renderTranscript([...reads(), stepShell('shell-1')]);
+    expect(container.querySelector('[data-read-run]')).toBeNull();
+    expect(container.querySelectorAll('[data-tool-id]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-shell]')).toHaveLength(1);
   });
 
-  it('refreshes the summary and expanded rows when a member turns failed', async () => {
-    const probe = makeRoot();
-    const render = async (blocks: Block[]) => {
-      await renderSettled(
-        probe.root,
-        <Transcript
-          state={transcriptState(blocks)}
-          onLoadOlder={() => Promise.resolve(false)}
-          onResolveApproval={() => noopActions()}
-          onAnswerQuestion={() => noopActions()}
-          onDismissQuestion={() => noopActions()}
-        />,
-      );
-    };
-    const runningShell = stepShell('shell-1', { done: false });
-    const tool = stepTool('t-read', { name: 'Read' });
-    await renderSteps([tool, runningShell]);
-    await render([tool, runningShell]);
-    // Running: the group summary shows the spinner, not the error glyph.
-    let summary = probe.container.querySelector('[aria-label*="expand"]')!;
-    expect(summary.querySelector('.spinner')).not.toBeNull();
-
-    const failedShell = stepShell('shell-1', { done: true, isError: true });
-    await render([tool, failedShell]);
-    summary = probe.container.querySelector('[aria-label*="expand"]')!;
-    // Auto-expanded on error: the failed shell's danger state is visible.
-    expect(probe.container.querySelectorAll('[data-shell]')).toHaveLength(1);
-    expect(probe.container.textContent).toContain('failed');
-    expect(summary.querySelector('.spinner')).toBeNull();
+  it('when on, folds ≥3 pure reads into one line that names every object', async () => {
+    await withFold(true, async () => {
+      const container = await renderTranscript(reads());
+      const run = container.querySelector('[data-read-run]');
+      expect(run?.getAttribute('data-read-run')).toBe('3');
+      expect(run?.textContent).toContain('read plan.ts, notes.ts');
+      expect(run?.textContent).toContain('searched TODO');
+      expect(container.querySelectorAll('[data-tool-id]')).toHaveLength(0);
+      // Expand: the members hang in original order on the nested spine.
+      await act(async () => { click(run!.querySelector('button')!); });
+      const order = [...container.querySelectorAll('[data-tool-id]')].map((el) => el.getAttribute('data-tool-id'));
+      expect(order).toEqual(['plan', 'notes', 'grep']);
+      const nestedShell = container.querySelector('[data-tool-id="plan"] [data-activity-toggle]')!;
+      expect(nestedShell.className).toContain('-ml-[17px]');
+      expect(nestedShell.className).not.toContain('-ml-[34px]');
+    });
   });
 
-  it('refreshes expanded thinking content while it streams', async () => {
-    const probe = makeRoot();
-    const render = async (blocks: Block[]) => {
-      await renderSettled(
-        probe.root,
-        <Transcript
-          state={transcriptState(blocks)}
-          onLoadOlder={() => Promise.resolve(false)}
-          onResolveApproval={() => noopActions()}
-          onAnswerQuestion={() => noopActions()}
-          onDismissQuestion={() => noopActions()}
-        />,
-      );
-    };
-    const tool = stepTool('t-read', { name: 'Read' });
-    const idle = stepThinking('think-1', { text: 'first pass' });
-    await render([tool, idle]);
-    await act(async () => {
-      click(probe.container.querySelector('[aria-label*="expand"]')!);
+  it('when on, never folds edits, shells, or runs shorter than three', async () => {
+    await withFold(true, async () => {
+      const container = await renderTranscript([
+        stepTool('a'),
+        stepTool('b'),
+        stepTool('edit', { name: 'Edit' }),
+        stepTool('c'),
+        stepShell('shell-1'),
+        stepTool('d'),
+      ]);
+      expect(container.querySelector('[data-read-run]')).toBeNull();
+      expect(container.querySelectorAll('[data-tool-id]')).toHaveLength(5);
     });
-    expect(probe.container.textContent).toContain('first pass');
+  });
 
-    const streaming = stepThinking('think-1', {
-      text: 'first pass — deeper consideration',
-      streaming: true,
+  it('applies the toggle instantly', async () => {
+    const probe = makeRoot();
+    await renderTranscriptInto(probe.root, reads());
+    expect(probe.container.querySelector('[data-read-run]')).toBeNull();
+    await withFold(true, async () => {
+      await act(async () => { writeSettings({ foldSteps: true }); });
+      expect(probe.container.querySelector('[data-read-run]')).not.toBeNull();
+      await act(async () => { writeSettings({ foldSteps: false }); });
+      expect(probe.container.querySelector('[data-read-run]')).toBeNull();
     });
-    await render([tool, streaming]);
-    expect(probe.container.textContent).toContain('deeper consideration');
+  });
+
+  it('spins while a member runs and auto-expands when one fails', async () => {
+    await withFold(true, async () => {
+      const probe = makeRoot();
+      const [plan, notes] = reads();
+      await renderTranscriptInto(probe.root, [plan!, notes!, stepTool('last', { status: 'running' })]);
+      let run = probe.container.querySelector('[data-read-run]')!;
+      expect(run.querySelector('.spinner')).not.toBeNull();
+      await renderTranscriptInto(probe.root, [plan!, notes!, stepTool('last', { status: 'error', isError: true, output: 'boom' })]);
+      run = probe.container.querySelector('[data-read-run]')!;
+      expect(run.querySelector('.spinner')).toBeNull();
+      expect(probe.container.querySelector('[data-tool-id="last"]')).not.toBeNull();
+      expect(probe.container.textContent).toContain('boom');
+    });
   });
 });

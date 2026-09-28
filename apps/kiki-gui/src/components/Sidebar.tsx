@@ -1,16 +1,20 @@
 /**
- * Session sidebar — wordmark header, new-session shortcut, global search,
- * settings entry, and the session list (polled every 5s).
+ * Session sidebar — session-first and quiet.
  *
- * Entry distribution follows the desktop convention: the wordmark row carries
- * the browse-only usage destination and the footer keeps just the settings
- * entry plus a connection status dot that deep-links to
- * settings → connection. Disconnect lives in that settings section.
+ * Top to bottom: the wordmark, New session (the surface's one primary) and
+ * search, a short primary nav (task board, scheduled tasks, usage,
+ * capabilities), the filter chip row, then the session list. The footer keeps
+ * settings, the "waiting on you" badge and the connection dot on one line.
  *
- * The search box queries `POST /search` (global full-text index); results
- * stand in for the session list while a query is active, and "load more"
- * appends later pages to the current results. Hits carry no message id —
- * only session_id + turn — so navigation opens the session.
+ * Organize: one View menu (group by time / workspace / none, sort by updated
+ * / created / title) and one Filter menu (status, workspaces, archived); both
+ * persist in layoutPrefs. Active filters stay visible as removable chips and
+ * keep scoping the list while a search is running.
+ *
+ * Search is two-layer (useSessionSearch): an instant local match over loaded
+ * titles, workspace names/roots and cwd, plus the debounced server content
+ * search. ↑↓ moves across every result group, Enter opens, Esc clears; `/`
+ * focuses the box from anywhere outside an editable surface.
  *
  * The session row menu opens from the hover ⋯ button or a right-click
  * anywhere on the row; the undo confirmation and rename dialog build on the
@@ -18,7 +22,8 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
+import { useLocation } from 'react-router-dom';
 
 import type { Session, Workspace } from '@kiki/protocol';
 
@@ -31,13 +36,22 @@ import {
   type SessionActionContext,
 } from '@kiki/session-core/commands';
 import {
-  groupSearchHits,
+  formatElapsedClock,
+  hasActiveSessionFilters,
+  highlightTerms,
   isPinnedSession,
   isSearchable,
   pinMetadataPatch,
-  SEARCH_DEBOUNCE_MS,
+  buildInboxModel,
+  sessionRowState,
+  type SessionRowState,
+  SESSION_SORT_ORDERS,
+  sessionStatusOf,
   shortCwd,
+  splitByRanges,
   togglePinned,
+  type ActivityEntry,
+  type MatchRange,
   type SessionGroup,
   type SessionSortOrder,
 } from '@kiki/session-core/sessions';
@@ -46,91 +60,58 @@ import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
   writeLayoutPreferences,
+  type SessionArchivedFilter,
+  type SessionSeenMap,
+  type SessionListFilters,
+  type SessionStatusFilter,
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { useLayoutPreferences, usePaneResize } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
+import { useSessionSearch, type SessionSearchState } from '../lib/sessionSearch';
+import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
+import { lifeOf, type LifeState } from '../lib/motion';
+import { nestSessionThreads, type SessionRelation, type SessionTreeNode } from '../lib/sessionThreads';
 import { runToastAction } from '../lib/toasts';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
 import { RelativeTime } from './RelativeTime';
-import { ActivityPanel } from './ActivityPanel';
+import { useSessionSeen } from './ActivityPage';
+import { useSessionActivity } from './ActivityPanel';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
-import { PendingBadge } from './PendingBadge';
+import { LifeMark } from './LifeMark';
+import { DisclosureChevron, Icon } from './icons';
 import { Wordmark } from './Wordmark';
 
-/** Wordmark-row icon buttons (usage): glyph-only, ink-faint at rest so the
- * header stays quiet next to the wordmark. */
-const HEADER_ICON_BUTTON =
-  'flex h-6 w-6 items-center justify-center rounded-md text-[12.5px] leading-none text-ink-faint transition-colors hover:bg-paper hover:text-ink';
+// Re-exported for callers and tests that paged the old in-component search.
+export { mergeSearchPages, searchNextPageParam } from '../lib/sessionSearch';
 
-/** Slider glyph for the view-options menu (grouping / sorting / scope). */
-function SlidersIcon({ className = '' }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      className={className}
-    >
-      <path d="M2 4.5h9M13.5 4.5h.5M2 8h3M7.5 8h6.5M2 11.5h8M12.5 11.5h1.5" />
-      <circle cx="12" cy="4.5" r="1.4" fill="currentColor" stroke="none" />
-      <circle cx="6" cy="8" r="1.4" fill="currentColor" stroke="none" />
-      <circle cx="11" cy="11.5" r="1.4" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
+/** How many sessions a workspace group shows before "Show N more". */
+export const WORKSPACE_GROUP_PREVIEW = 8;
 
-/** Pin glyph for a pinned session row and the hover pin/unpin toggle. */
+// Nav icons all come from the shared family (components/icons.tsx).
+const ICON = 'h-4 w-4 shrink-0';
+/** Quiet square control for the wordmark row (search, activity). */
+const HEADER_ICON =
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent';
+
+const BoardIcon = () => <Icon name="board" size={16} />;
+const ClockIcon = () => <Icon name="clock" size={16} />;
+const UsageIcon = () => <Icon name="usage" size={16} />;
+/** Memory is a kept leaf of notes (a place), not the timeline's spark. */
+const MemoryIcon = () => <Icon name="notes" size={16} />;
+const CapabilitiesIcon = () => <Icon name="star" size={16} />
+
 function PinIcon({ className = '' }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M9.6 1.9l4.5 4.5-1.6 1.6-1-.3-3 3 .5 3.4-1.1 1.1-2.6-3.7-3.2 2.4 5-5.7-.3-1 3-3-.3-1z" />
-    </svg>
-  );
+  return <Icon name="pin" size={12} className={className} />;
 }
 
-function StatusDot({ session }: { session: Session }) {
-  const { t } = useI18n();
-  const pending = session.pending_interaction ?? 'none';
-  if (pending === 'approval' || pending === 'question') {
-    return (
-      <span
-        title={pending === 'approval' ? t('sidebar.status.approval') : t('sidebar.status.question')}
-        className="block h-2 w-2 shrink-0 rounded-full bg-amber-rule shadow-[0_0_0_2px_rgba(232,176,75,0.25)]"
-      />
-    );
-  }
-  if (session.busy) {
-    return (
-      <span
-        title={t('sidebar.status.working')}
-        className="status-dot-busy block h-2 w-2 shrink-0 rounded-full bg-accent"
-      />
-    );
-  }
-  return (
-    <span
-      title={t('sidebar.status.idle')}
-      className="block h-2 w-2 shrink-0 rounded-full border border-hairline-strong bg-panel"
-    />
-  );
+function isTypingTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement
+    && (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]') !== null);
 }
 
 function sessionLabel(session: Session, untitled: string): string {
@@ -141,26 +122,157 @@ function sessionLabel(session: Session, untitled: string): string {
   return untitled;
 }
 
-/** Concatenate pages in server order, keeping every page's `items` verbatim —
- * duplicates re-ranked across a page boundary are kept, never collapsed.
- * Later pages append; they never replace. */
-export function mergeSearchPages(
-  pages: readonly SearchMessagesResponse[],
-): SearchMessageHit[] {
-  const hits: SearchMessageHit[] = [];
-  for (const page of pages) {
-    for (const hit of page.items) {
-      hits.push(hit);
-    }
-  }
-  return hits;
+/** Text with highlighted ranges (search matches). */
+function Highlighted({ text, ranges }: { text: string; ranges: readonly MatchRange[] }) {
+  if (ranges.length === 0) return <>{text}</>;
+  return (
+    <>
+      {splitByRanges(text, ranges).map((part, index) =>
+        part.hit ? (
+          <mark key={index} className="rounded-[2px] bg-accent-soft px-px text-ink">{part.text}</mark>
+        ) : (
+          <span key={index}>{part.text}</span>
+        ),
+      )}
+    </>
+  );
 }
 
-/** Next-page cursor; the server omits `page_token` on the final page. */
-export function searchNextPageParam(
-  lastPage: SearchMessagesResponse,
-): string | undefined {
-  return lastPage.has_more ? lastPage.page_token : undefined;
+/**
+ * Row status slot: a fixed 7px column every row shares, holding the shared
+ * life mark (`lifeOf`). "A dot means something is going on", and each state
+ * has its own shape: waiting is the accent dot with its ring, working a still
+ * solid ink dot (rows never breathe — the header count carries the pulse), a
+ * finished-unseen row a hollow ring that settles once when it lands, a failed
+ * unseen run a danger square that also says so on the second line. A
+ * caught-up row leaves the slot empty.
+ */
+function rowLife(session: Session, state: SessionRowState): LifeState {
+  if (state === 'needs-me') return 'waiting';
+  if (state === 'running') return 'working';
+  if (state === 'read') return 'idle';
+  // Unread: the run's outcome decides the tone; an old finish still reads as
+  // "done", because unseen is the fact, not recency.
+  const life = lifeOf(session);
+  return life === 'failed' ? 'failed' : 'done';
+}
+
+/**
+ * What a folded group is hiding that you would want to know: a session that
+ * needs you, else one still running. Finished and failed rows stay behind the
+ * fold (the bell counts them).
+ */
+function foldedGroupLife(nodes: readonly SessionTreeNode[], seen: SessionSeenMap): LifeState {
+  const states: SessionRowState[] = [];
+  const visit = (node: SessionTreeNode) => {
+    states.push(sessionRowState(node.session, seen));
+    node.children.forEach(visit);
+  };
+  nodes.forEach(visit);
+  return states.includes('needs-me') ? 'waiting' : states.includes('running') ? 'working' : 'idle';
+}
+
+/** The word for an unseen run that did not complete: failed, or stopped. */
+function failedLabel(session: Session, t: ReturnType<typeof useI18n>['t']): string {
+  return session.last_turn_reason === 'cancelled' ? t('sidebar.rowState.stopped') : t('sidebar.rowState.failed');
+}
+
+function StatusMark({ session, state }: { session: Session; state: SessionRowState }) {
+  const { t } = useI18n();
+  const life = rowLife(session, state);
+  const title =
+    state === 'needs-me'
+      ? (session.pending_interaction === 'question' ? t('sidebar.status.question') : t('sidebar.status.approval'))
+      : state === 'running'
+        ? t('sidebar.status.working')
+        : life === 'failed'
+          ? failedLabel(session, t)
+          : state === 'unread'
+            ? t('sidebar.rowState.unread')
+            : undefined;
+  return (
+    <span data-session-status={state === 'read' ? 'idle' : state} className="flex h-[7px] w-[7px]">
+      <LifeMark
+        markId={`row:${session.id}`}
+        life={life}
+        still
+        title={title}
+        // A stop you asked for is amber, not danger (same rule as /activity).
+        tone={life === 'failed' && session.last_turn_reason === 'cancelled' ? 'bg-amber-rule' : undefined}
+      />
+    </span>
+  );
+}
+
+type NavKey = 'board' | 'cron' | 'memory' | 'usage' | 'capabilities';
+
+const NAV_ITEMS: readonly { key: NavKey; route: string; hook: Record<string, string>; icon: () => React.ReactNode }[] = [
+  { key: 'board', route: '/board', hook: { 'data-nav-board': '' }, icon: BoardIcon },
+  { key: 'cron', route: '/cron', hook: { 'data-nav-cron': '' }, icon: ClockIcon },
+  // Always present, on or off: switched off it opens the turn-on guide, so
+  // "what does Kiki remember" has one stable address either way.
+  { key: 'memory', route: '/memory', hook: { 'data-nav-memory': '' }, icon: MemoryIcon },
+  { key: 'usage', route: '/usage', hook: { 'data-nav-usage': '' }, icon: UsageIcon },
+  { key: 'capabilities', route: '/capabilities', hook: { 'data-nav-capabilities': '' }, icon: CapabilitiesIcon },
+];
+
+const WORKSPACE_SCOPED_ROUTES: readonly string[] = ['/board', '/cron', '/memory'];
+
+/** Workspace-scoped pages open pre-filtered to the active session's
+ * workspace; the page's own switcher widens to all workspaces. */
+function scopedRoute(route: string, workspaceId: string | undefined): string {
+  if (workspaceId === undefined || !WORKSPACE_SCOPED_ROUTES.includes(route)) return route;
+  return `${route}?workspace=${encodeURIComponent(workspaceId)}`;
+}
+
+function PrimaryNav({
+  activeWorkspaceId,
+  badges,
+}: {
+  activeWorkspaceId: string | undefined;
+  badges?: Partial<Record<NavKey, { count: number; label: string }>>;
+}) {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  const location = useLocation();
+  return (
+    <nav aria-label={t('nav.aria')} data-primary-nav className="px-2 pb-2">
+      <ul className="space-y-px">
+        {NAV_ITEMS.map((item) => {
+          const current = location.pathname === item.route
+            || (item.key === 'capabilities' && location.pathname.startsWith('/settings/skills'));
+          const badge = badges?.[item.key];
+          const Icon = item.icon;
+          return (
+            <li key={item.key}>
+              <button
+                type="button"
+                {...item.hook}
+                aria-current={current ? 'page' : undefined}
+                onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
+                className={`flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[13px] transition-colors duration-150 ${
+                  current ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+                }`}
+              >
+                <span className={current ? 'text-ink' : 'text-ink-faint'}><Icon /></span>
+                <span className="min-w-0 flex-1 truncate">{t(`nav.${item.key}`)}</span>
+                {badge !== undefined && badge.count > 0 ? (
+                  <span
+                    data-nav-badge={item.key}
+                    title={badge.label}
+                    aria-label={badge.label}
+                    className="shrink-0 px-0.5 text-[12px] leading-4 font-medium text-accent-ink tabular-nums"
+                  >
+                    {badge.count}
+                  </span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
+  );
 }
 
 export function Sidebar({
@@ -169,19 +281,20 @@ export function Sidebar({
   sessionGroups,
   sessionsQuery,
   workspaceOptions,
-  workspaceFilter,
-  onWorkspaceFilter,
-  showArchived,
-  onToggleArchived,
+  filters,
+  onFiltersChange,
   onNewSession,
   groupBy,
   onGroupBy,
   sortBy,
   onSortBy,
+  navBadges,
   className,
 }: {
   activeSessionId: string | undefined;
+  /** Every loaded session (unfiltered); the pending badge and search read it. */
   sessions: readonly Session[];
+  /** Filtered, sorted, grouped rows for the list. */
   sessionGroups: readonly SessionGroup[];
   sessionsQuery: {
     isLoading: boolean;
@@ -192,22 +305,22 @@ export function Sidebar({
     fetchNextPage?: () => Promise<unknown>;
   };
   workspaceOptions: readonly Workspace[];
-  workspaceFilter: string | undefined;
-  onWorkspaceFilter: (workspaceId: string | undefined) => void;
-  showArchived: boolean;
-  onToggleArchived: () => void;
-  groupBy: 'time' | 'workspace';
-  onGroupBy: (groupBy: 'time' | 'workspace') => void;
+  filters: SessionListFilters;
+  onFiltersChange: (filters: SessionListFilters) => void;
+  groupBy: 'time' | 'workspace' | 'none';
+  onGroupBy: (groupBy: 'time' | 'workspace' | 'none') => void;
   sortBy: SessionSortOrder;
   onSortBy: (sortBy: SessionSortOrder) => void;
-  /** Opens the new-session dialog (the /new page stays the no-session landing). */
+  /** Attention counts for the primary nav (e.g. stale scheduled tasks). */
+  navBadges?: Partial<Record<NavKey, { count: number; label: string }>>;
+  /** Opens the new-session draft (the /new page stays the no-session landing). */
   onNewSession: () => void;
   className?: string;
 }) {
   const host = useHost();
   const navigate = useGuardedNavigate();
   const { client, meta, wsStatus, scopeId } = useConnection();
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
   const [menu, setMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
@@ -216,20 +329,32 @@ export function Sidebar({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [workspacePinBusy, setWorkspacePinBusy] = useState(false);
-  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<'view' | 'filter' | null>(null);
   const viewMenuButtonRef = useRef<HTMLButtonElement>(null);
-
+  const filterMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [searchInput, setSearchInput] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
+  // Search is a header icon (Codex-style): the field only takes vertical space
+  // while it is in use, and `/` opens it from anywhere. Closing clears the
+  // query so the list is never left silently filtered behind a collapsed box.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [activeResult, setActiveResult] = useState(0);
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
 
-  // Local panel-layout prefs: the sidebar owns its own width (screen readers
-  // prefer explicit resize handles as buttons, but we keep the drag-only
-  // interaction consistent with the preview workbench) and mirrors the
-  // persisted grouping/sorting selection through the parent's controlled state.
+  const activity = useSessionActivity(sessions);
+  // Read-state marks drive both the activity badge and the row states below.
+  const seen = useSessionSeen();
+  const inbox = useMemo(() => buildInboxModel(sessions, seen), [sessions, seen]);
+  const activityLabel = inbox.total > 0
+    ? tp('sidebar.activityCount', inbox.total)
+    : t('sidebar.activityAria');
+  const activeWorkspaceId = sessions.find((session) => session.id === activeSessionId)?.workspace_id;
+
+  // Local panel-layout prefs: the sidebar owns its own width. Local live
+  // width drives the inline CSS var during a drag; the persisted pref is
+  // only written on pointer-up.
   const layoutPrefs = useLayoutPreferences();
-  // Local live width drives the inline CSS var during a drag so the panel
-  // resizes on every pointer-move; the persisted pref is only written on
-  // pointer-up. Cross-document changes (storage event) re-sync the local copy.
   const [sidebarWidthValue, setSidebarWidthValue] = useState(layoutPrefs.sidebarWidth);
   useEffect(() => {
     setSidebarWidthValue(layoutPrefs.sidebarWidth);
@@ -252,62 +377,74 @@ export function Sidebar({
     () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
     [queryClient],
   );
-
   const actionContext: SessionActionContext = useMemo(
     () => ({ client, host, refreshSessions, navigate }),
     [client, host, refreshSessions, navigate],
   );
 
-  // Debounced global search; react-query cancels superseded requests.
-  useEffect(() => {
-    const timer = setTimeout(() => { setSearchQuery(searchInput.trim()); }, SEARCH_DEBOUNCE_MS);
-    return () => { clearTimeout(timer); };
-  }, [searchInput]);
-  const searchActive = isSearchable(searchQuery);
-  // `useInfiniteQuery` accumulates pages under one key, so loading more
-  // appends to the current results instead of replacing them; a changed
-  // `searchQuery` swaps the key and starts again from the first page.
-  const searchResultsQuery = useInfiniteQuery({
-    queryKey: ['global-search', searchQuery],
-    queryFn: ({ signal, pageParam }) =>
-      client.searchMessages(
-        { query: searchQuery, page_size: 30, sort: 'score', page_token: pageParam },
-        signal,
-      ),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: searchNextPageParam,
-    enabled: searchActive,
-    staleTime: 15_000,
+  // Search scopes to the active filters: the workspace chips narrow both
+  // layers; status/archived narrow content hits to the visible sessions.
+  const visibleSessions = useMemo(() => sessionGroups.flatMap((group) => group.items), [sessionGroups]);
+  const narrowsBeyondWorkspace = filters.status.length > 0 || filters.archived !== 'hide';
+  const allowedSessionIds = useMemo(
+    () => (narrowsBeyondWorkspace ? new Set(visibleSessions.map((session) => session.id)) : undefined),
+    [narrowsBeyondWorkspace, visibleSessions],
+  );
+  const searchableSessions = useMemo(
+    () => (narrowsBeyondWorkspace ? visibleSessions : sessions.filter((session) => session.archived !== true)),
+    [narrowsBeyondWorkspace, visibleSessions, sessions],
+  );
+  const search = useSessionSearch({
+    text: searchInput,
+    sessions: searchableSessions,
+    workspaces: workspaceOptions,
+    untitled,
+    workspaceScope: filters.workspaces,
+    allowedSessionIds,
   });
-  const searchHits = useMemo(
-    () => mergeSearchPages(searchResultsQuery.data?.pages ?? []),
-    [searchResultsQuery.data],
-  );
-  const searchGroups = useMemo(
-    () => groupSearchHits(searchHits),
-    [searchHits],
-  );
-  // Only the initial fetch (no successful page yet) warrants the full-screen
-  // error card; a failed "load more" keeps the pages already rendered and the
-  // retry affordance below the list.
-  const searchHasNoPages = searchResultsQuery.data === undefined;
-  const searchInitialError = searchResultsQuery.isError && searchHasNoPages;
-  const searchAppendError = searchResultsQuery.isFetchNextPageError;
-  // A shortfall on any loaded page keeps the warning visible; `building` wins
-  // the copy so the indexed-count line stays meaningful for the whole query.
-  const searchBuildingPage =
-    searchResultsQuery.data?.pages.findLast(
-      (page) => page.index_state.state === 'building',
-    );
-  const searchIncomplete =
-    searchResultsQuery.data?.pages.some(
-      (page) => page.incomplete !== undefined,
-    ) === true;
-  const searchIndexNotice = searchBuildingPage !== undefined || searchIncomplete;
 
-  // Workspace pin: one toggle per row inside the view menu. It writes the
-  // server-side `pinned` field, so the order it produces is shared by every
-  // client.
+  // `/` focuses search from anywhere that is not typing somewhere else; other
+  // surfaces ask for the same thing through `requestSessionSearch()`.
+  useEffect(() => {
+    const openSearch = () => {
+      setSearchOpen(true);
+      // The input mounts with this state change; focus after that commit.
+      window.setTimeout(() => { searchRef.current?.focus(); }, 0);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isTypingTarget(event.target)) return;
+      event.preventDefault();
+      openSearch();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener(SESSION_SEARCH_EVENT, openSearch);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener(SESSION_SEARCH_EVENT, openSearch);
+    };
+  }, []);
+
+  const setFilters = (patch: Partial<SessionListFilters>) => {
+    onFiltersChange({ ...filters, ...patch });
+  };
+  const toggleStatus = (status: SessionStatusFilter) => {
+    setFilters({
+      status: filters.status.includes(status)
+        ? filters.status.filter((entry) => entry !== status)
+        : [...filters.status, status],
+    });
+  };
+  const toggleWorkspace = (workspaceId: string) => {
+    setFilters({
+      workspaces: filters.workspaces.includes(workspaceId)
+        ? filters.workspaces.filter((entry) => entry !== workspaceId)
+        : [...filters.workspaces, workspaceId],
+    });
+  };
+
+  // Workspace pin: one toggle per row inside the filter menu. It writes the
+  // server-side `pinned` field, so the order it produces is shared by every client.
   const toggleWorkspacePin = (workspace: Workspace) => {
     setWorkspacePinBusy(true);
     setActionError(null);
@@ -339,10 +476,7 @@ export function Sidebar({
     return () => { clearTimeout(timer); };
   }, [actionNotice]);
 
-  const runAction = (
-    session: Session,
-    action: 'fork' | 'undo' | 'compact' | 'export',
-  ) => {
+  const runAction = (session: Session, action: 'fork' | 'undo' | 'compact' | 'export') => {
     setMenu(null);
     if (action === 'undo') {
       setConfirmUndo(session);
@@ -368,9 +502,7 @@ export function Sidebar({
           setActionNotice(t('action.compactRequested', { title: sessionLabel(session, untitled) }));
         })
         .catch((error: unknown) => {
-          setActionError(
-            t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }),
-          );
+          setActionError(t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }));
         });
     }
   };
@@ -397,6 +529,116 @@ export function Sidebar({
       });
   };
 
+  // One flat list across the result groups so ↑↓ never has to know where a
+  // group boundary is; each entry knows how to open itself.
+  const results = useMemo(() => {
+    const items: { key: string; open: () => void }[] = [];
+    for (const match of search.local.workspaces) {
+      items.push({
+        key: `ws:${match.workspace.id}`,
+        open: () => {
+          if (!filters.workspaces.includes(match.workspace.id)) {
+            setFilters({ workspaces: [...filters.workspaces, match.workspace.id] });
+          }
+          setSearchInput('');
+        },
+      });
+    }
+    for (const match of search.local.sessions) {
+      items.push({ key: `s:${match.session.id}`, open: () => { setSearchInput(''); navigate(`/s/${match.session.id}`); } });
+    }
+    search.hits.forEach((hit, index) => {
+      items.push({
+        key: `h:${index}`,
+        open: () => {
+          setSearchInput('');
+          navigate(hit.turn === undefined ? `/s/${hit.session_id}` : `/s/${hit.session_id}?turn=${hit.turn}`);
+        },
+      });
+    });
+    return items;
+    // setFilters closes over the latest filters; recompute with them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search.local, search.hits, filters, navigate]);
+  useEffect(() => { setActiveResult(0); }, [searchInput]);
+  const activeKey = search.active ? results[Math.min(activeResult, results.length - 1)]?.key : undefined;
+  useEffect(() => {
+    if (activeKey === undefined) return;
+    const node = document.getElementById(`sidebar-result-${activeKey}`);
+    if (typeof node?.scrollIntoView === 'function') node.scrollIntoView({ block: 'nearest' });
+  }, [activeKey]);
+
+  const onSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') {
+      if (searchInput === '') event.currentTarget.blur();
+      setSearchInput('');
+      return;
+    }
+    if (!search.active || results.length === 0) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActiveResult((index) => (index + 1) % results.length);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveResult((index) => (index - 1 + results.length) % results.length);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      results[Math.min(activeResult, results.length - 1)]?.open();
+    }
+  };
+
+  const filterChips: { key: string; label: string; clear: () => void }[] = [
+    ...filters.status.map((status) => ({
+      key: `status:${status}`,
+      label: t(status === 'running' ? 'sidebar.statusRunning' : status === 'needs-me' ? 'sidebar.statusNeedsMe' : 'sidebar.statusIdle'),
+      clear: () => { toggleStatus(status); },
+    })),
+    ...filters.workspaces.map((id) => ({
+      key: `ws:${id}`,
+      label: workspaceOptions.find((workspace) => workspace.id === id)?.name ?? id,
+      clear: () => { toggleWorkspace(id); },
+    })),
+    ...(filters.archived === 'hide'
+      ? []
+      : [{
+          key: 'archived',
+          label: filters.archived === 'only' ? t('sidebar.filterArchivedOnly') : t('sidebar.filterArchived'),
+          clear: () => { setFilters({ archived: 'hide' }); },
+        }]),
+  ];
+  const filtersActive = hasActiveSessionFilters(filters);
+  const counts = { running: activity.model.running.length };
+
+  const toggleGroupCollapsed = (key: string) => {
+    setCollapsedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const toggleGroupExpanded = (key: string) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // Threads a session started (ThreadCreate) and branches forked off it nest
+  // under it. Time buckets are not meaningful for a thread — it belongs with
+  // its creator — so there a child follows its parent across buckets; the
+  // workspace and pinned buckets are meaningful, so nesting stays inside one.
+  const sessionTree = useMemo(
+    () => nestSessionThreads(sessionGroups, { crossGroups: groupBy !== 'workspace' }),
+    [sessionGroups, groupBy],
+  );
+  const titleOf = useMemo(
+    () => new Map(sessions.map((session) => [session.id, sessionLabel(session, untitled)])),
+    [sessions, untitled],
+  );
+
   return (
     <aside
       className={className ?? 'app-sidebar'}
@@ -412,372 +654,376 @@ export function Sidebar({
         onPointerDown={startResize}
         onDoubleClick={reset}
       />
-      <div className="flex items-center justify-between px-4 pt-4 pb-3">
-        <Wordmark />
-        <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            data-nav-usage
-            onClick={() => navigate('/usage')}
-            aria-label={t('usage.navAria')}
-            title={t('usage.nav')}
-            className={HEADER_ICON_BUTTON}
-          >
-            <span aria-hidden>$</span>
-          </button>
-        </div>
-      </div>
-
-      <div className="px-3 pb-2">
+      {/* Wordmark row doubles as the utility row: search and activity are two
+          quiet icons, so the vertical space a permanent search field used to
+          take belongs to the session list. */}
+      <div className="flex h-12 shrink-0 items-center gap-1 pr-2 pl-4">
+        <div className="min-w-0 flex-1"><Wordmark /></div>
         <button
           type="button"
-          onClick={onNewSession}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-hairline-strong bg-paper px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+          data-search-toggle
+          aria-expanded={searchOpen}
+          aria-label={t('sidebar.searchAria')}
+          title={t('sidebar.searchHint')}
+          onClick={() => {
+            const next = !searchOpen;
+            setSearchOpen(next);
+            if (next) window.setTimeout(() => { searchRef.current?.focus(); }, 0);
+            else setSearchInput('');
+          }}
+          className={HEADER_ICON}
         >
-          <span aria-hidden className="text-[14px] leading-none">＋</span> {t('sidebar.newSession')}
+          <Icon name="search" size={16} />
         </button>
-        {/* Search owns this row; every view preference (grouping, sorting,
-          * scope, archived) sits behind the one glyph beside it. */}
-        <div className="mt-2 flex items-center gap-1.5">
-          <div className="relative min-w-0 flex-1">
-            <input
-              type="text"
-              value={searchInput}
-              data-search-box
-              onChange={(event) => { setSearchInput(event.target.value); }}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') {
-                  setSearchInput('');
-                  event.currentTarget.blur();
-                }
-              }}
-              placeholder={t('sidebar.searchPlaceholder')}
-              aria-label={t('sidebar.searchAria')}
-              className="w-full rounded-lg bg-paper px-2.5 py-1.5 pr-7 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:ring-2 focus:ring-accent/40"
-            />
-            {searchInput === '' ? null : (
-              <button
-                type="button"
-                aria-label={t('sidebar.clearSearch')}
-                onClick={() => { setSearchInput(''); }}
-                className="absolute top-1/2 right-1.5 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <button
-            type="button"
-            ref={viewMenuButtonRef}
-            data-view-menu-toggle
-            aria-haspopup="menu"
-            aria-expanded={viewMenuOpen}
-            aria-label={t('sidebar.viewMenu')}
-            title={t('sidebar.viewMenu')}
-            onClick={() => { setViewMenuOpen((open) => !open); }}
-            className="flex h-[27px] w-[27px] shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink aria-expanded:bg-paper aria-expanded:text-ink"
-          >
-            <SlidersIcon className="h-[13px] w-[13px]" />
-          </button>
-        </div>
-      </div>
-
-      <ActivityPanel sessions={sessions} />
-
-      {/* Filters change WHICH sessions are visible, so they leave a revocable
-        * trace here; grouping and sorting only rearrange and stay in the menu. */}
-      {!searchActive && (workspaceFilter !== undefined || showArchived) ? (
-        <div
-          data-sidebar-filters
-          aria-label={t('sidebar.filtersAria')}
-          className="flex flex-wrap items-center gap-1 px-3 pb-1.5"
+        <button
+          type="button"
+          data-nav-activity
+          aria-label={activityLabel}
+          aria-current={location.pathname === '/activity' ? 'page' : undefined}
+          title={activityLabel}
+          onClick={() => { void navigate('/activity'); }}
+          className={`relative ${HEADER_ICON}`}
         >
-          {workspaceFilter !== undefined ? (
-            <FilterChip
-              kind="workspace"
-              label={
-                workspaceOptions.find((workspace) => workspace.id === workspaceFilter)?.name
-                ?? workspaceFilter
-              }
-              clearLabel={t('sidebar.clearWorkspaceFilter')}
-              onOpen={() => { setViewMenuOpen(true); }}
-              onClear={() => { onWorkspaceFilter(undefined); }}
-              openLabel={t('sidebar.viewMenu')}
+          <Icon name="bell" size={16} />
+          {inbox.total > 0 ? (
+            <span
+              data-activity-badge
+              className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-accent"
             />
           ) : null}
-          {showArchived ? (
+        </button>
+      </div>
+
+      <div className="space-y-1 px-2 pb-3">
+        {/* The surface's one primary action, set as a raised paper chip — the
+            same lift as the content sheet — so it reads as the first thing to
+            reach for without an ink block competing with the wordmark. */}
+        <button
+          type="button"
+          data-new-session
+          onClick={onNewSession}
+          className="flex h-8 w-full items-center gap-2.5 rounded-lg bg-paper px-2 text-left text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] transition-colors duration-150 hover:bg-panel"
+        >
+          <span className="text-accent"><Icon name="plus" size={14} /></span>
+          <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
+        </button>
+        {searchOpen ? (
+        <div className="relative">
+          <span className="pointer-events-none absolute top-1/2 left-2 -translate-y-1/2 text-ink-faint">
+            <Icon name="search" size={14} />
+          </span>
+          <input
+            ref={searchRef}
+            type="text"
+            value={searchInput}
+            data-search-box
+            role="combobox"
+            aria-expanded={search.active}
+            aria-controls="sidebar-search-results"
+            aria-activedescendant={activeKey === undefined ? undefined : `sidebar-result-${activeKey}`}
+            onChange={(event) => { setSearchInput(event.target.value); }}
+            onKeyDown={(event) => {
+              // Escape collapses the field again, back to the icon.
+              if (event.key === 'Escape' && searchInput === '') {
+                setSearchOpen(false);
+                return;
+              }
+              onSearchKeyDown(event);
+            }}
+            placeholder={t('sidebar.searchPlaceholder')}
+            title={t('sidebar.searchHint')}
+            aria-label={t('sidebar.searchAria')}
+            className="h-8 w-full rounded-lg border border-transparent bg-transparent pr-7 pl-7 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.04] focus:border-hairline-strong focus:bg-paper focus-visible:outline-none"
+          />
+          {searchInput === '' ? (
+            <kbd aria-hidden className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-hairline px-1 font-sans text-[11px] leading-4 text-ink-faint">/</kbd>
+          ) : (
+            <button
+              type="button"
+              aria-label={t('sidebar.clearSearch')}
+              onClick={() => { setSearchInput(''); searchRef.current?.focus(); }}
+              className="absolute top-1/2 right-1 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+            >
+              <Icon name="close" size={12} />
+            </button>
+          )}
+        </div>
+        ) : null}
+      </div>
+
+      <PrimaryNav activeWorkspaceId={activeWorkspaceId} badges={navBadges} />
+
+      <div className="flex items-center gap-0.5 pt-3 pr-2 pb-0.5 pl-4">
+        {/* The section label never gives way: it is T5, unshrinkable and
+            single-line; the shortcuts beside it are what yield when the
+            sidebar is dragged narrow. "Needs you" is counted once, on the
+            bell above — here only the aggregate running mark remains. */}
+        <h2 className="shrink-0 text-[12px] leading-4 font-medium whitespace-nowrap text-ink-soft">{t('sidebar.results.sessions')}</h2>
+        <span className="min-w-0 flex-1" />
+        {counts.running > 0 ? (
+          <button
+            type="button"
+            data-status-shortcut="running"
+            data-activity-summary
+            aria-pressed={filters.status.includes('running')}
+            aria-label={tp('sidebar.runningCount', counts.running)}
+            title={tp('sidebar.runningCount', counts.running)}
+            onClick={() => { toggleStatus('running'); }}
+            className="flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+          >
+            {/* The one breathing mark in the list: rows stay still. */}
+            <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
+            {counts.running}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          ref={filterMenuButtonRef}
+          data-filter-menu-toggle
+          aria-haspopup="menu"
+          aria-expanded={openMenu === 'filter'}
+          aria-label={t('sidebar.filterMenu')}
+          title={t('sidebar.filterMenu')}
+          onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-accent-ink' : 'text-ink-faint'}`}
+        >
+          <Icon name="filter" size={14} />
+        </button>
+        <button
+          type="button"
+          ref={viewMenuButtonRef}
+          data-view-menu-toggle
+          aria-haspopup="menu"
+          aria-expanded={openMenu === 'view'}
+          aria-label={t('sidebar.viewMenu')}
+          title={t('sidebar.viewMenu')}
+          onClick={() => { setOpenMenu((open) => (open === 'view' ? null : 'view')); }}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
+        >
+          <Icon name="sliders" size={14} />
+        </button>
+      </div>
+
+      {filterChips.length > 0 ? (
+        <div data-sidebar-filters aria-label={t('sidebar.filtersAria')} className="flex flex-wrap items-center gap-1 px-3 pb-1.5">
+          {filterChips.map((chip) => (
             <FilterChip
-              kind="archived"
-              label={t('sidebar.filterArchived')}
-              clearLabel={t('sidebar.clearArchivedFilter')}
-              onOpen={() => { setViewMenuOpen(true); }}
-              onClear={onToggleArchived}
-              openLabel={t('sidebar.viewMenu')}
+              key={chip.key}
+              kind={chip.key.split(':')[0] ?? chip.key}
+              label={chip.label}
+              clearLabel={t('sidebar.clearFilter', { label: chip.label })}
+              openLabel={t('sidebar.filterMenu')}
+              onOpen={() => { setOpenMenu('filter'); }}
+              onClear={chip.clear}
             />
+          ))}
+          {filterChips.length > 1 ? (
+            <button
+              type="button"
+              data-sidebar-filters-clear-all
+              onClick={() => { onFiltersChange({ status: [], workspaces: [], archived: 'hide' }); }}
+              className="h-6 rounded px-1 text-[11.5px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline"
+            >
+              {t('sidebar.clearAllFilters')}
+            </button>
           ) : null}
         </div>
       ) : null}
 
-      {searchActive ? (
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-search-results role="region" aria-label={t('sidebar.searchAria')}>
-          {searchResultsQuery.isPending ? (
-            <div className="flex items-center justify-center gap-2 px-2 pt-6 text-[12px] text-ink-faint">
-              <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-              {t('sidebar.searching')}
-            </div>
-          ) : searchInitialError ? (
-            <div className="mx-1 mt-2 rounded-md border border-danger/30 bg-danger/5 p-2">
-              <p className="text-[11.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
-              <p className="font-mono text-[10px] text-danger/80">
-                {searchResultsQuery.error instanceof Error
-                  ? searchResultsQuery.error.message
-                  : t('common.unknownError')}
-              </p>
-              <button
-                type="button"
-                data-search-initial-retry
-                onClick={() => { void searchResultsQuery.refetch(); }}
-                className="mt-1.5 text-[11px] font-medium text-danger underline"
-              >
-                {t('common.retry')}
-              </button>
-            </div>
-          ) : searchGroups.length === 0 ? (
-            <p className="px-2 pt-6 text-center text-[12px] text-ink-faint">
-              {t('sidebar.noMatches', { query: searchQuery })}
-            </p>
-          ) : (
-            <>
-              {searchGroups.map((group) => (
-                <div key={group.sessionId} className="mb-2" role="group" aria-label={group.title.trim() !== '' ? group.title : untitled}>
-                  <p className="truncate px-2 pt-1 pb-0.5 text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
-                    {group.title.trim() !== '' ? group.title : untitled}
-                  </p>
-                  {group.hits.map((hit, index) => (
-                    <button
-                      key={`${hit.session_id}-${hit.turn ?? 'x'}-${hit.role}-${index}`}
-                      type="button"
-                      onClick={() => {
-                        setSearchInput('');
-                        navigate(`/s/${hit.session_id}`);
-                      }}
-                      className="flex w-full flex-col gap-0.5 rounded-lg border border-transparent px-2.5 py-1.5 text-left transition-colors hover:bg-paper"
-                    >
-                      <span className="line-clamp-2 text-[11.5px] leading-snug text-ink">
-                        {hit.snippet}
-                      </span>
-                      <span className="flex items-center gap-1.5 text-[9.5px] text-ink-faint">
-                        <span className="rounded border border-hairline px-1 font-mono">
-                          {hit.role}
-                        </span>
-                        <span><RelativeTime at={new Date(hit.time).toISOString()} /></span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ))}
-              {searchIndexNotice ? (
-                <p className="px-2 pt-1 text-center font-mono text-[9.5px] text-ink-faint">
-                  {searchBuildingPage !== undefined
-                    ? t('sidebar.indexBuilding', {
-                        indexed: searchBuildingPage.index_state.indexed_sessions,
-                        total: searchBuildingPage.index_state.total_sessions,
-                      })
-                    : t('sidebar.indexIncomplete')}
-                </p>
-              ) : null}
-              {searchResultsQuery.hasNextPage ? (
-                <button
-                  type="button"
-                  data-search-load-more
-                  disabled={searchResultsQuery.isFetchingNextPage || searchResultsQuery.isFetching}
-                  onClick={() => { void searchResultsQuery.fetchNextPage(); }}
-                  className="mt-2 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-center text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-60"
-                >
-                  {searchResultsQuery.isFetchingNextPage
-                    ? t('sidebar.loadingMore')
-                    : t('sidebar.searchLoadMore')}
-                </button>
-              ) : null}
-              {searchAppendError ? (
-                <div className="mx-1 mt-2 rounded-md border border-danger/30 bg-danger/5 p-2">
-                  <p className="text-[11.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
-                  <button
-                    type="button"
-                    data-search-retry
-                    disabled={searchResultsQuery.isFetchingNextPage}
-                    onClick={() => { void searchResultsQuery.fetchNextPage(); }}
-                    className="mt-1.5 text-[11px] font-medium text-danger underline"
-                  >
-                    {t('common.retry')}
-                  </button>
-                </div>
-              ) : null}
-            </>
-          )}
-        </div>
+      {search.active ? (
+        <SearchResults
+          search={search}
+          filtersActive={filtersActive}
+          activeKey={activeKey}
+          onHover={(key) => {
+            const index = results.findIndex((entry) => entry.key === key);
+            if (index >= 0) setActiveResult(index);
+          }}
+          onOpen={(key) => { results.find((entry) => entry.key === key)?.open(); }}
+          workspaceNames={new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name]))}
+        />
       ) : (
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
         {sessionsQuery.isLoading && sessions.length === 0 ? (
-          <div className="flex items-center justify-center gap-2 px-2 pt-6 text-[12px] text-ink-faint">
-            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+          <div className="flex items-center gap-2 px-2 pt-4 text-[12.5px] text-ink-faint">
+            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-faint" />
             {t('sidebar.loadingSessions')}
           </div>
         ) : null}
         {sessionsQuery.isError ? (
-          <div className="mx-1 mt-2 rounded-md border border-danger/30 bg-danger/5 p-2">
-            <p className="text-[11.5px] font-medium text-danger">{t('sidebar.loadFailed')}</p>
-            <p className="font-mono text-[10px] text-danger/80">
+          <div className="mx-1 mt-2 border-l-2 border-danger py-1 pl-2.5">
+            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.loadFailed')}</p>
+            <p className="mt-0.5 text-[12px] text-ink-soft">
               {sessionsQuery.error?.message ?? t('common.unknownError')}
             </p>
             <button
               type="button"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['sessions'] })}
-              className="mt-1.5 text-[11px] font-medium text-danger underline"
+              className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
             >
               {t('common.retry')}
             </button>
           </div>
         ) : null}
-        {sessions.length === 0 && !sessionsQuery.isLoading && !sessionsQuery.isError ? (
-          <div className="mx-1 mt-2 rounded-lg border border-hairline bg-paper px-3 py-4 text-center" data-sidebar-empty>
-            <p className="text-[12px] text-ink-soft">{t('sidebar.noSessions')}</p>
-            {!showArchived ? (
+        {sessionGroups.length === 0 && !sessionsQuery.isLoading && !sessionsQuery.isError ? (
+          <div className="px-2 pt-4" data-sidebar-empty>
+            <p className="text-[12.5px] leading-relaxed text-ink-soft">
+              {filtersActive ? t('sidebar.noFilterMatches') : t('sidebar.noSessions')}
+            </p>
+            {filtersActive ? (
               <button
                 type="button"
-                onClick={onToggleArchived}
-                className="mt-1 text-[11px] font-medium text-accent underline underline-offset-2"
+                onClick={() => { onFiltersChange({ status: [], workspaces: [], archived: 'hide' }); }}
+                className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+              >
+                {t('sidebar.clearAllFilters')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { setFilters({ archived: 'include' }); }}
+                className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
               >
                 {t('sidebar.emptyShowArchived')}
               </button>
-            ) : null}
+            )}
           </div>
         ) : null}
         {actionError !== null ? (
-          <p className="mx-1 mb-1 rounded-md border border-danger/30 bg-danger/5 px-2 py-1 font-mono text-[10.5px] text-danger">
+          <p role="alert" className="mx-1 mb-1 border-l-2 border-danger py-0.5 pl-2 text-[12px] text-danger">
             {actionError}
           </p>
         ) : null}
         {actionNotice !== null ? (
-          <p className="mx-1 mb-1 rounded-md border border-success/30 bg-success/5 px-2 py-1 font-mono text-[10.5px] text-success">
+          <p role="status" className="mx-1 mb-1 border-l-2 border-success py-0.5 pl-2 text-[12px] text-ink-soft">
             {actionNotice}
           </p>
         ) : null}
-        {sessionGroups.map((group) => (
-          <div key={group.key} className="mb-1" role="group" aria-label={group.label}>
-            <p
-              data-session-group={group.key}
-              className="sticky top-0 z-[1] bg-[var(--color-panel)] px-2 py-1 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase"
-            >
-              {group.label}
-            </p>
-            {group.items.map((session) => {
-              const active = session.id === activeSessionId;
-              const archived = session.archived === true;
-              const pinned = isPinnedSession(session);
-              return (
-                <div
-                  key={session.id}
-                  className="group relative mb-0.5"
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setMenu({ session, x: event.clientX, y: event.clientY });
+        {sessionTree.map((group) => {
+          const collapsible = groupBy === 'workspace' && group.key !== 'pinned';
+          const collapsed = collapsible && collapsedGroups.has(group.key);
+          const expanded = expandedGroups.has(group.key);
+          const limit = collapsible && !expanded ? WORKSPACE_GROUP_PREVIEW : Infinity;
+          const shown = collapsed ? [] : group.nodes.slice(0, limit);
+          const hidden = collapsed ? 0 : group.nodes.length - shown.length;
+          const renderRow = (node: SessionTreeNode, nested: boolean) => {
+            const session = node.session;
+            const threads = node.children;
+            return (
+              <div key={session.id} data-session-node={nested ? 'thread' : 'root'}>
+                <SessionRow
+                  session={session}
+                  active={session.id === activeSessionId}
+                  menuOpen={menu?.session.id === session.id}
+                  untitled={untitled}
+                  activity={activity.byId.get(session.id)}
+                  elapsedFor={activity.elapsedFor}
+                  relation={node.relation}
+                  nested={nested}
+                  showLocation={groupBy !== 'workspace'}
+                  showPin={groupBy === 'none'}
+                  parentTitle={node.relation === undefined
+                    ? undefined
+                    : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
+                  onOpen={() => { navigate(`/s/${session.id}`); }}
+                  onMenu={(x, y, toggle) => {
+                    setMenu((current) =>
+                      toggle && current?.session.id === session.id ? null : { session, x, y });
                   }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/s/${session.id}`)}
-                    aria-current={active ? 'page' : undefined}
-                    className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
-                      active
-                        ? 'border-hairline bg-accent-soft'
-                        : 'border-transparent hover:bg-paper'
-                    } ${archived ? 'opacity-55' : ''}`}
-                  >
-                    <span className="flex w-2 shrink-0 justify-center pt-[7px]">
-                      <StatusDot session={session} />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span
-                        data-session-title
-                        className={`flex items-center gap-1 text-[12.5px] leading-snug ${
-                          active ? 'font-semibold text-ink' : 'font-medium text-ink'
-                        }`}
-                      >
-                        {pinned ? (
-                          <PinIcon
-                            className="h-[11px] w-[11px] shrink-0 text-accent"
-                          />
-                        ) : null}
-                        <span className="min-w-0 truncate">{sessionLabel(session, untitled)}</span>
-                      </span>
-                      <span className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-ink-faint">
-                        <span className="truncate font-mono">{shortCwd(session.metadata.cwd)}</span>
-                        <span className="shrink-0">· <RelativeTime at={session.updated_at} /></span>
-                        {archived ? <span className="shrink-0">· {t('sidebar.archived')}</span> : null}
-                      </span>
-                    </span>
-                  </button>
-                  {/* Hover/focus row affordances: quick pin toggle, then the
-                    * full action menu. Both stay reachable from the keyboard
-                    * through the row's `focus-within`. */}
-                  <div
-                    className={`absolute top-1.5 right-1.5 flex items-center gap-0.5 transition-opacity ${
-                      menu?.session.id === session.id
-                        ? 'opacity-100'
-                        : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100'
-                    }`}
-                  >
-                    {archived ? null : (
-                      <button
-                        type="button"
-                        data-session-pin-toggle
-                        aria-label={
-                          pinned
-                            ? t('sidebar.unpinSessionFor', { title: sessionLabel(session, untitled) })
-                            : t('sidebar.pinSessionFor', { title: sessionLabel(session, untitled) })
-                        }
-                        title={pinned ? t('menu.unpin') : t('menu.pin')}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          togglePin(session);
-                        }}
-                        className={`flex h-[18px] w-[18px] items-center justify-center rounded-md transition-colors hover:bg-panel focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:outline-none ${
-                          pinned ? 'text-accent' : 'text-ink-faint hover:text-ink'
-                        }`}
-                      >
-                        <PinIcon className="h-[11px] w-[11px]" />
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      aria-label={t('sidebar.sessionActionsFor', { title: sessionLabel(session, untitled) })}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        setMenu((current) =>
-                          current?.session.id === session.id
-                            ? null
-                            : { session, x: rect.right + 4, y: rect.top },
-                        );
-                      }}
-                      className="rounded-md px-1.5 py-0.5 text-[12px] leading-none text-ink-faint transition-colors hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:outline-none"
-                    >
-                      ⋯
-                    </button>
+                  onTogglePin={() => { togglePin(session); }}
+                  seen={seen}
+                />
+                {threads.length > 0 ? (
+                  // Children follow their parent directly: the indent lives in
+                  // the child row's own padding, so there is no spine and no
+                  // fold bar, and hover / selection stay full width.
+                  <div data-session-threads={session.id} className="mt-0.5 flex flex-col gap-0.5">
+                    {threads.map((child) => renderRow(child, true))}
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        ))}
+                ) : null}
+              </div>
+            );
+          };
+          // One header rule for pinned, time and workspace buckets: T5 label,
+          // 28px tall. In the workspace view every header reserves the rows'
+          // 7px state column (the fold chevron sits centred in it), so the
+          // label starts exactly on the row-title axis and a workspace reads
+          // as the head of its rows, not a line floating above them. The
+          // count rides right after the label, never in the row-actions
+          // column, and only workspace buckets show it (they fold and
+          // truncate). A folded workspace still says when something inside
+          // needs you or is running: one still mark after the count.
+          const headerClass = 'sticky top-0 z-[1] flex h-7 w-full items-center gap-2 bg-canvas px-2 text-left text-[12px] leading-4 font-medium text-ink-soft';
+          const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
+          const headerBody = (
+            <>
+              {groupBy === 'workspace' ? (
+                <span aria-hidden className="flex w-[7px] shrink-0 justify-center">
+                  {collapsible ? <DisclosureChevron open={!collapsed} /> : null}
+                </span>
+              ) : null}
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                <span className="min-w-0 truncate">{group.label}</span>
+                {collapsible ? (
+                  <span data-session-group-count className="shrink-0 font-normal text-ink-faint tabular-nums">{group.total}</span>
+                ) : null}
+              </span>
+              {foldedLife !== 'idle' ? (
+                <span data-session-group-life={foldedLife} className="flex shrink-0 items-center">
+                  <LifeMark markId={`group:${group.key}`} life={foldedLife} still />
+                </span>
+              ) : null}
+            </>
+          );
+          const workspaceRoot = collapsible ? workspaceOptions.find((workspace) => workspace.id === group.key)?.root : undefined;
+          return (
+            <div
+              key={group.key}
+              data-session-group-block={group.key}
+              // Workspaces are larger blocks than time buckets, so they take
+              // one more step of air between them (S5 vs S4).
+              className={`flex flex-col gap-0.5 ${groupBy === 'workspace' ? 'not-first:mt-4' : 'not-first:mt-3'}`}
+              role="group"
+              aria-label={group.label}
+            >
+              {groupBy === 'none' && group.key === 'all' ? null : collapsible ? (
+                <button
+                  type="button"
+                  data-session-group={group.key}
+                  aria-expanded={!collapsed}
+                  aria-label={collapsed ? t('sidebar.expandGroup', { label: group.label }) : t('sidebar.collapseGroup', { label: group.label })}
+                  title={workspaceRoot}
+                  onClick={() => { toggleGroupCollapsed(group.key); }}
+                  className={`${headerClass} rounded-md transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent`}
+                >
+                  {headerBody}
+                </button>
+              ) : (
+                <p data-session-group={group.key} className={headerClass}>
+                  {headerBody}
+                </p>
+              )}
+              {shown.map((node) => renderRow(node, false))}
+              {hidden > 0 || (collapsible && expanded && group.nodes.length > WORKSPACE_GROUP_PREVIEW) ? (
+                <button
+                  type="button"
+                  data-session-group-more={group.key}
+                  onClick={() => { toggleGroupExpanded(group.key); }}
+                  className="h-7 self-start rounded-md pr-2 pl-6 text-[12px] text-ink-faint transition-colors hover:text-ink"
+                >
+                  {hidden > 0 ? t('sidebar.showMoreInGroup', { count: hidden }) : t('sidebar.showLessInGroup')}
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
         {sessionsQuery.hasNextPage ? (
           <button
             type="button"
             data-session-load-more
             disabled={sessionsQuery.isFetchingNextPage}
             onClick={() => void sessionsQuery.fetchNextPage?.()}
-            className="mt-1.5 w-full rounded-md px-2 py-1 text-center text-[11px] text-ink-faint transition-colors hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:outline-none disabled:opacity-60"
+            className="mt-1 h-8 w-full rounded-lg px-2 text-center text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink-soft disabled:opacity-60"
           >
             {sessionsQuery.isFetchingNextPage ? t('sidebar.loadingMore') : t('sidebar.loadMore')}
           </button>
@@ -785,15 +1031,19 @@ export function Sidebar({
       </div>
       )}
 
-      <div className="flex items-center gap-1.5 border-t border-hairline px-3 py-2.5">
-        <PendingBadge sessions={sessions} />
+      <div className="flex h-12 shrink-0 items-center gap-1 px-2">
         <button
           type="button"
+          data-nav-settings
           onClick={() => navigate('/settings')}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
+          className="flex h-8 min-w-0 shrink items-center gap-2 rounded-lg px-2 text-left text-[13px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
         >
-          <span aria-hidden className="text-[13px]">⚙</span> {t('sidebar.settings')}
+          <span className="text-ink-faint"><Icon name="settings" size={16} className={ICON} /></span>
+          <span className="truncate">{t('sidebar.settings')}</span>
         </button>
+        <span className="flex-1" />
+        {/* "Waiting on you" lives in the header's activity entry now; a second
+            footer copy of the same count was three readings of one fact. */}
         <button
           type="button"
           data-connection-status
@@ -803,7 +1053,7 @@ export function Sidebar({
             version: meta.server_version,
             status: t(`sidebar.ws.${wsStatus}`),
           })}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-paper"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-ink/[0.05]"
         >
           <span
             className={`h-2 w-2 rounded-full ${
@@ -817,25 +1067,31 @@ export function Sidebar({
         </button>
       </div>
 
-      {viewMenuOpen ? (
+      {openMenu === 'view' ? (
         <SidebarViewMenu
           anchor={viewMenuButtonRef.current}
-          onClose={() => { setViewMenuOpen(false); }}
-          workspaceOptions={workspaceOptions}
-          workspaceFilter={workspaceFilter}
-          onWorkspaceFilter={onWorkspaceFilter}
-          workspacePinBusy={workspacePinBusy}
-          onToggleWorkspacePin={toggleWorkspacePin}
-          onManageWorkspaces={() => {
-            setViewMenuOpen(false);
-            navigate('/settings/workspaces');
-          }}
+          onClose={() => { setOpenMenu(null); }}
           groupBy={groupBy}
           onGroupBy={onGroupBy}
           sortBy={sortBy}
           onSortBy={onSortBy}
-          showArchived={showArchived}
-          onToggleArchived={onToggleArchived}
+        />
+      ) : null}
+      {openMenu === 'filter' ? (
+        <SidebarFilterMenu
+          anchor={filterMenuButtonRef.current}
+          onClose={() => { setOpenMenu(null); }}
+          filters={filters}
+          onToggleStatus={toggleStatus}
+          onToggleWorkspace={toggleWorkspace}
+          onArchived={(archived) => { setFilters({ archived }); }}
+          workspaceOptions={workspaceOptions}
+          workspacePinBusy={workspacePinBusy}
+          onToggleWorkspacePin={toggleWorkspacePin}
+          onManageWorkspaces={() => {
+            setOpenMenu(null);
+            navigate('/settings/workspaces');
+          }}
         />
       ) : null}
       {menu !== null ? (
@@ -871,15 +1127,15 @@ export function Sidebar({
           ariaLabel={t('undo.title')}
           overlayId="sidebar-confirm-undo"
         >
-          <h2 className="font-display text-[16px] font-semibold text-ink">{t('undo.title')}</h2>
-          <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
+          <h2 className="font-display text-[18px] font-semibold text-ink">{t('undo.title')}</h2>
+          <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">
             {t('undo.bodyNamed', { title: sessionLabel(confirmUndo, untitled) })}
           </p>
           <div className="mt-4 flex justify-end gap-2">
             <button
               type="button"
               onClick={() => { setConfirmUndo(null); }}
-              className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
+              className="rounded-md border border-hairline px-3 py-1.5 text-[13px] text-ink-soft transition-colors hover:text-ink"
             >
               {t('common.cancel')}
             </button>
@@ -891,17 +1147,13 @@ export function Sidebar({
                 setActionError(null);
                 void undoLastTurn(actionContext, session)
                   .then(() => {
-                    setActionNotice(
-                      t('action.undoDone', { title: sessionLabel(session, untitled) }),
-                    );
+                    setActionNotice(t('action.undoDone', { title: sessionLabel(session, untitled) }));
                   })
                   .catch((error: unknown) => {
-                    setActionError(
-                      t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }),
-                    );
+                    setActionError(t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }));
                   });
               }}
-              className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep"
+              className="rounded-md bg-danger px-3 py-1.5 text-[13px] font-medium text-on-danger transition-colors hover:bg-danger/90"
             >
               {t('undo.confirm')}
             </button>
@@ -912,9 +1164,226 @@ export function Sidebar({
   );
 }
 
-/** A revocable trace for one active filter: the body reopens the view menu,
- * the × resets that one filter. Two buttons side by side rather than nested,
- * so both stay reachable from the keyboard. */
+/**
+ * One session row = status slot + title + trailing time, then at most one
+ * quiet fact on a second line (root rows only). Nested rows are a single
+ * indented line. Weight is reserved for state (unread / needs you / active),
+ * never for hierarchy.
+ */
+function SessionRow({
+  session,
+  active,
+  menuOpen,
+  untitled,
+  activity,
+  elapsedFor,
+  relation,
+  nested = false,
+  showLocation = true,
+  showPin = false,
+  parentTitle,
+  onOpen,
+  onMenu,
+  onTogglePin,
+  seen,
+}: {
+  session: Session;
+  active: boolean;
+  menuOpen: boolean;
+  untitled: string;
+  activity: ActivityEntry | undefined;
+  elapsedFor: (entry: ActivityEntry) => number | undefined;
+  /** Where this session came from, when its metadata records a creator. */
+  relation?: SessionRelation;
+  /** True while the row sits indented under the session it came from. */
+  nested?: boolean;
+  /** False when the grouping already says where the session lives. */
+  showLocation?: boolean;
+  /** True only when no Pinned group exists to say it. */
+  showPin?: boolean;
+  parentTitle?: string;
+  onOpen: () => void;
+  onMenu: (x: number, y: number, toggle: boolean) => void;
+  onTogglePin: () => void;
+  /** Local read-state marks; drives the unread state. */
+  seen: SessionSeenMap;
+}) {
+  const { t, tp } = useI18n();
+  const archived = session.archived === true;
+  const pinned = isPinnedSession(session);
+  const status = sessionStatusOf(session);
+  // Four states share one row: blocked, running, finished-unseen, caught up.
+  // Weight and marker carry the difference; the active row still wins on lift.
+  const rowState = sessionRowState(session, seen);
+  const label = sessionLabel(session, untitled);
+  const elapsed = activity === undefined ? undefined : elapsedFor(activity);
+  // The second line holds one fact, the first that exists (nested rows have
+  // none: their position already says where they came from):
+  //   1. what the session waits for        2. countable live progress
+  //   3. where it came from (not nested)   4. where it lives (not in a workspace group)
+  const liveFacts = activity === undefined || status !== 'running'
+    ? []
+    : [
+        elapsed === undefined ? undefined : formatElapsedClock(elapsed),
+        activity.queuedCount > 0 ? tp('activity.queueChip', activity.queuedCount) : undefined,
+        activity.runningTaskCount > 0 ? tp('activity.taskChip', activity.runningTaskCount) : undefined,
+      ].filter((entry): entry is string => entry !== undefined);
+  const relationNote = relation !== undefined && parentTitle !== undefined
+    ? t(relation.kind === 'branch' ? 'sidebar.thread.branchedFrom' : 'sidebar.thread.from', { title: parentTitle })
+    : undefined;
+  const location = showLocation && session.metadata.cwd !== '' ? shortCwd(session.metadata.cwd) : undefined;
+  // An unseen run that did not complete says so in words, so failure never
+  // rests on the mark's colour alone.
+  const failedUnseen = rowState === 'unread' && lifeOf(session) === 'failed';
+  const fact: { kind: 'needs-you' | 'failed' | 'live' | 'relation' | 'location'; text: string } | undefined = nested
+    ? undefined
+    : status === 'needs-me'
+      ? { kind: 'needs-you', text: session.pending_interaction === 'question' ? t('sidebar.statusTag.question') : t('sidebar.statusTag.approval') }
+      : failedUnseen
+        ? { kind: 'failed', text: failedLabel(session, t) }
+      : liveFacts.length > 0
+        ? { kind: 'live', text: liveFacts.join(' · ') }
+        : relationNote !== undefined
+          ? { kind: 'relation', text: relationNote }
+          : location !== undefined
+            ? { kind: 'location', text: location }
+            : undefined;
+  // Nested rows carry the relation in their accessible name and tooltip,
+  // since on screen it is only the indent (plus the branch glyph).
+  const nestedName = nested && relation !== undefined
+    ? t(relation.kind === 'branch' ? 'sidebar.branch.rowAria' : 'sidebar.thread.rowAria', {
+        title: label,
+        parent: parentTitle ?? t('sidebar.thread.unknownParent'),
+      })
+    : undefined;
+  const emphasis = active || rowState === 'needs-me' || rowState === 'unread';
+  return (
+    <div
+      className="group relative"
+      data-session-row={session.id}
+      data-session-row-state={rowState}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onMenu(event.clientX, event.clientY, false);
+      }}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-current={active ? 'page' : undefined}
+        aria-label={nestedName}
+        title={nestedName}
+        className={`flex w-full gap-2 rounded-lg py-1.5 pr-2 text-left transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+          nested ? 'min-h-8 items-center pl-6' : 'items-start pl-2'
+        } ${active ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'}`}
+      >
+        <span className="flex h-[19px] w-[7px] shrink-0 items-center">
+          <StatusMark session={session} state={rowState} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span
+            data-session-title
+            className={`flex items-center gap-1 text-[13px] leading-[19px] ${
+              emphasis
+                ? 'font-medium text-ink'
+                : archived
+                  ? 'text-ink-faint'
+                  : rowState === 'running'
+                    ? 'text-ink'
+                    : 'text-ink-soft'
+            }`}
+          >
+            {/* Pinned is said by the Pinned group; only a list with no groups
+              * needs the glyph. */}
+            {pinned && showPin ? <PinIcon className="text-ink-faint" /> : null}
+            {/* The one kind glyph: a fork. Sessions a parent started carry none. */}
+            {nested && relation?.kind === 'branch' ? (
+              <span data-session-relation="branch" aria-hidden className="shrink-0 text-ink-faint">
+                <Icon name="branch" size={12} />
+              </span>
+            ) : null}
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+            {/* Trailing slot: the time, replaced by the row actions on hover /
+              * focus. Wide enough for the two 28px actions so the title never
+              * slides under them. */}
+            <span
+              data-session-time
+              className={`min-w-13 shrink-0 text-right text-[12px] leading-4 font-normal text-ink-faint tabular-nums ${
+                menuOpen ? 'invisible' : 'group-focus-within:invisible group-hover:invisible [@media(hover:none)]:invisible'
+              }`}
+            >
+              <RelativeTime at={session.updated_at} />
+            </span>
+          </span>
+          {fact !== undefined || archived ? (
+            <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
+              {fact === undefined ? null : fact.kind === 'needs-you' ? (
+                <span data-session-needs-you className="min-w-0 truncate font-medium text-accent-ink">{fact.text}</span>
+              ) : fact.kind === 'failed' ? (
+                <span
+                  data-session-failed
+                  className={`min-w-0 truncate ${session.last_turn_reason === 'cancelled' ? 'text-amber-ink' : 'text-danger'}`}
+                >
+                  {fact.text}
+                </span>
+              ) : fact.kind === 'live' ? (
+                <span data-session-live className="min-w-0 truncate text-ink-soft tabular-nums">{fact.text}</span>
+              ) : fact.kind === 'relation' ? (
+                // Could not nest (the creator is filtered out or not loaded).
+                <span data-session-relation-note={relation?.kind} className="min-w-0 truncate">{fact.text}</span>
+              ) : (
+                <span data-session-location className="min-w-0 truncate" title={session.metadata.cwd}>{fact.text}</span>
+              )}
+              {archived ? <span className="shrink-0">{fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
+            </span>
+          ) : null}
+        </span>
+      </button>
+
+      {/* Hover/focus affordances: quick pin toggle, then the full action
+        * menu. They take over the trailing time slot; both stay reachable
+        * from the keyboard via focus-within. */}
+      <div
+        className={`absolute top-0.5 right-1 flex items-center transition-opacity duration-150 ${
+          menuOpen ? 'opacity-100' : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100'
+        }`}
+      >
+        {archived ? null : (
+          <button
+            type="button"
+            data-session-pin-toggle
+            aria-label={pinned ? t('sidebar.unpinSessionFor', { title: label }) : t('sidebar.pinSessionFor', { title: label })}
+            title={pinned ? t('menu.unpin') : t('menu.pin')}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTogglePin();
+            }}
+            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] ${
+              pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
+            }`}
+          >
+            <Icon name="pin" size={14} />
+          </button>
+        )}
+        <button
+          type="button"
+          aria-label={t('sidebar.sessionActionsFor', { title: label })}
+          onClick={(event) => {
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            onMenu(rect.right + 4, rect.top, true);
+          }}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
+        >
+          <Icon name="more" size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** A revocable trace for one active filter: the body reopens the filter
+ * menu, the × resets that one filter. Two sibling buttons, not nested. */
 function FilterChip({
   kind,
   label,
@@ -923,7 +1392,7 @@ function FilterChip({
   onOpen,
   onClear,
 }: {
-  kind: 'workspace' | 'archived';
+  kind: string;
   label: string;
   clearLabel: string;
   openLabel: string;
@@ -933,14 +1402,9 @@ function FilterChip({
   return (
     <span
       data-sidebar-filter-chip={kind}
-      className="inline-flex max-w-full items-center gap-0.5 rounded-full bg-accent-soft pr-0.5 pl-1.5 text-[10.5px] text-accent"
+      className="inline-flex h-6 max-w-full items-center rounded-md bg-paper pr-0.5 pl-2 text-[12px] text-ink-soft shadow-[var(--kiki-sheet-shadow)]"
     >
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={openLabel}
-        className="min-w-0 truncate py-0.5 transition-opacity hover:opacity-75"
-      >
+      <button type="button" onClick={onOpen} aria-label={openLabel} className="min-w-0 truncate transition-colors hover:text-ink">
         {label}
       </button>
       <button
@@ -949,72 +1413,220 @@ function FilterChip({
         onClick={onClear}
         aria-label={clearLabel}
         title={clearLabel}
-        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full leading-none transition-colors hover:bg-accent/15"
+        className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded leading-none text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
       >
-        ×
+        <Icon name="close" size={12} />
       </button>
     </span>
   );
 }
 
-const VIEW_MENU_WIDTH = 224;
+const RESULT_ROW =
+  'flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-100';
+
+function ResultHeading({ children }: { children: React.ReactNode }) {
+  return <p className="px-2 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{children}</p>;
+}
+
+/**
+ * The search surface that stands in for the list while a query is typed:
+ * Workspaces (pick = filter to it) · Sessions (local, instant) · Messages
+ * (server content). Every row is a listbox option addressed by its key so
+ * the input's ↑↓ can drive it.
+ */
+function SearchResults({
+  search,
+  filtersActive,
+  activeKey,
+  onHover,
+  onOpen,
+  workspaceNames,
+}: {
+  search: SessionSearchState;
+  filtersActive: boolean;
+  activeKey: string | undefined;
+  onHover: (key: string) => void;
+  onOpen: (key: string) => void;
+  workspaceNames: ReadonlyMap<string, string>;
+}) {
+  const { t } = useI18n();
+  const seen = useSessionSeen();
+  const option = (key: string) => ({
+    id: `sidebar-result-${key}`,
+    role: 'option' as const,
+    'aria-selected': activeKey === key,
+    'data-search-result': key,
+    onMouseMove: () => { onHover(key); },
+    onClick: () => { onOpen(key); },
+    className: `${RESULT_ROW} ${activeKey === key ? 'bg-paper' : 'hover:bg-paper/70'}`,
+  });
+  const { local, parsed } = search;
+  const nothingLocal = local.workspaces.length === 0 && local.sessions.length === 0;
+  const contentSettledEmpty = search.contentActive && !search.contentPending && search.contentInitialError === null && search.hits.length === 0;
+  return (
+    <div
+      id="sidebar-search-results"
+      role="listbox"
+      aria-label={t('sidebar.searchAria')}
+      data-search-results
+      className="min-h-0 flex-1 overflow-y-auto px-2 pb-2"
+    >
+      {filtersActive || parsed.workspaceTerm !== undefined || parsed.role !== undefined ? (
+        <p data-search-scope className="flex flex-wrap items-center gap-1 px-2 pt-1 text-[12px] text-ink-faint">
+          <span>{t('sidebar.results.scoped')}</span>
+          {parsed.workspaceTerm !== undefined ? (
+            <span className="rounded bg-paper px-1.5 text-ink-soft">{t('sidebar.prefixWorkspace', { name: parsed.workspaceTerm })}</span>
+          ) : null}
+          {parsed.role !== undefined ? (
+            <span className="rounded bg-paper px-1.5 text-ink-soft">{t('sidebar.prefixRole', { role: parsed.role })}</span>
+          ) : null}
+        </p>
+      ) : null}
+
+      {local.workspaces.length > 0 ? (
+        <div role="group" aria-label={t('sidebar.results.workspaces')}>
+          <ResultHeading>{t('sidebar.results.workspaces')}</ResultHeading>
+          {local.workspaces.map((match) => (
+            <button key={match.workspace.id} type="button" {...option(`ws:${match.workspace.id}`)}>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] text-ink">
+                  <Highlighted text={match.workspace.name} ranges={match.nameRanges} />
+                </span>
+                <span className="block truncate font-mono text-[11.5px] text-ink-faint">{shortCwd(match.workspace.root)}</span>
+              </span>
+              <span className="shrink-0 pt-px text-[12px] text-ink-faint">{t('sidebar.results.filterTo', { name: '' }).trim()}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {local.sessions.length > 0 ? (
+        <div role="group" aria-label={t('sidebar.results.sessions')}>
+          <ResultHeading>{t('sidebar.results.sessions')}</ResultHeading>
+          {local.sessions.map((match) => (
+            <button key={match.session.id} type="button" {...option(`s:${match.session.id}`)}>
+              <span className="flex h-[19px] w-[7px] shrink-0 items-center">
+                <StatusMark session={match.session.source} state={sessionRowState(match.session.source, seen)} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] text-ink">
+                  <Highlighted text={match.session.title} ranges={match.titleRanges} />
+                </span>
+                <span className="block truncate text-[12px] text-ink-faint">
+                  {workspaceNames.get(match.session.workspace_id) ?? shortCwd(match.session.cwd)}
+                  {' · '}
+                  <RelativeTime at={match.session.updated_at} />
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <div role="group" aria-label={t('sidebar.results.messages')} data-search-messages>
+        {search.hits.length > 0 || search.contentPending || search.contentInitialError !== null ? (
+          <ResultHeading>{t('sidebar.results.messages')}</ResultHeading>
+        ) : null}
+        {!isSearchable(parsed.text) && parsed.text.trim() !== '' ? (
+          <p className="px-2 pt-2 text-[12px] text-ink-faint">{t('sidebar.results.typeMore')}</p>
+        ) : null}
+        {search.contentPending && search.hits.length === 0 ? (
+          <p role="status" className="flex items-center gap-2 px-2 py-1 text-[12px] text-ink-faint">
+            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-faint" />
+            {t('sidebar.searching')}
+          </p>
+        ) : null}
+        {search.contentInitialError !== null ? (
+          <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-2.5" data-search-error>
+            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+            <p className="text-[12px] text-ink-soft">{search.contentInitialError.message || t('common.unknownError')}</p>
+            <button type="button" data-search-initial-retry onClick={search.retry} className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2">
+              {t('common.retry')}
+            </button>
+          </div>
+        ) : null}
+        {search.hits.map((hit, index) => (
+          <button key={`${hit.session_id}-${hit.turn ?? 'x'}-${hit.role}-${index}`} type="button" {...option(`h:${index}`)}>
+            <span className="min-w-0 flex-1">
+              <span className="line-clamp-2 text-[13px] leading-snug text-ink-soft">
+                <Highlighted text={hit.snippet} ranges={highlightTerms(hit.snippet, search.contentQuery)} />
+              </span>
+              <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-ink-faint">
+                <span className="min-w-0 truncate text-ink-soft">{hit.session_title.trim() !== '' ? hit.session_title : t('sidebar.untitled')}</span>
+                <span className="shrink-0">· {t(`sidebar.results.role.${hit.role}`)}</span>
+                <span className="shrink-0">· <RelativeTime at={new Date(hit.time).toISOString()} /></span>
+              </span>
+            </span>
+          </button>
+        ))}
+        {search.building !== undefined ? (
+          <p data-search-building className="px-2 pt-1.5 text-[12px] text-ink-faint">
+            {t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })}
+          </p>
+        ) : search.incomplete ? (
+          <p data-search-incomplete className="px-2 pt-1.5 text-[12px] text-ink-faint">{t('sidebar.results.incomplete')}</p>
+        ) : null}
+        {search.hasNextPage ? (
+          <button
+            type="button"
+            data-search-load-more
+            disabled={search.isFetchingNextPage || search.isFetching}
+            onClick={search.fetchNextPage}
+            className="mt-1 h-8 w-full rounded-md text-center text-[12px] text-ink-soft transition-colors hover:bg-paper hover:text-ink disabled:opacity-60"
+          >
+            {search.isFetchingNextPage ? t('sidebar.loadingMore') : t('sidebar.searchLoadMore')}
+          </button>
+        ) : null}
+        {search.contentAppendError ? (
+          <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-2.5">
+            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+            <button
+              type="button"
+              data-search-retry
+              disabled={search.isFetchingNextPage}
+              onClick={search.fetchNextPage}
+              className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+            >
+              {t('common.retry')}
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      {nothingLocal && (contentSettledEmpty || !isSearchable(parsed.text)) && search.contentInitialError === null && !search.contentPending ? (
+        <p data-search-empty className="px-2 pt-3 text-[12.5px] text-ink-faint">
+          {t('sidebar.results.none', { query: search.parsed.text.trim() || searchQueryDisplay(search) })}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function searchQueryDisplay(search: SessionSearchState): string {
+  return [search.parsed.workspaceTerm === undefined ? '' : `in:${search.parsed.workspaceTerm}`, search.parsed.role === undefined ? '' : `role:${search.parsed.role}`]
+    .filter((part) => part !== '')
+    .join(' ');
+}
+
+const MENU_WIDTH = 232;
 /** Rows beyond this are reachable through "manage workspaces"; the menu is a
  * shortcut list, not a workspace browser. */
-const VIEW_MENU_WORKSPACE_ROWS = 6;
+const MENU_WORKSPACE_ROWS = 8;
+const MENU_HEADING = 'px-2.5 pt-2 pb-1 text-[12px] font-medium text-ink-faint';
+const MENU_ITEM =
+  'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 text-left text-[13px] text-ink transition-colors hover:bg-paper';
 
-const VIEW_MENU_HEADING =
-  'px-2.5 pt-2 pb-1 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase';
-const VIEW_MENU_ITEM =
-  'flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
-
-/** The selection column: reserved on every row so labels stay aligned whether
- * or not the row is the active one. */
-function ViewMenuMark({ on, glyph = '✓' }: { on: boolean; glyph?: string }) {
+/** The selection column: reserved on every row so labels stay aligned. */
+function MenuMark({ on }: { on: boolean }) {
   return (
-    <span aria-hidden className="w-3 shrink-0 text-[10px] text-accent">
-      {on ? glyph : ''}
+    <span aria-hidden className="flex w-3 shrink-0 text-ink">
+      {on ? <Icon name="check" size={12} /> : null}
     </span>
   );
 }
 
-/**
- * The sidebar's one view-preference surface: workspace scope, grouping,
- * sorting, and archived visibility. Every option writes through the same
- * callbacks the old inline selects used, so persistence is unchanged. The
- * panel stays open across option clicks — the list rearranges live behind it.
- */
-function SidebarViewMenu({
-  anchor,
-  onClose,
-  workspaceOptions,
-  workspaceFilter,
-  onWorkspaceFilter,
-  workspacePinBusy,
-  onToggleWorkspacePin,
-  onManageWorkspaces,
-  groupBy,
-  onGroupBy,
-  sortBy,
-  onSortBy,
-  showArchived,
-  onToggleArchived,
-}: {
-  anchor: HTMLElement | null;
-  onClose: () => void;
-  workspaceOptions: readonly Workspace[];
-  workspaceFilter: string | undefined;
-  onWorkspaceFilter: (workspaceId: string | undefined) => void;
-  workspacePinBusy: boolean;
-  onToggleWorkspacePin: (workspace: Workspace) => void;
-  onManageWorkspaces: () => void;
-  groupBy: 'time' | 'workspace';
-  onGroupBy: (groupBy: 'time' | 'workspace') => void;
-  sortBy: SessionSortOrder;
-  onSortBy: (sortBy: SessionSortOrder) => void;
-  showArchived: boolean;
-  onToggleArchived: () => void;
-}) {
-  const { t } = useI18n();
+/** Shared anchored-popover plumbing: measured clamp, Escape, outside click. */
+function useAnchoredMenu(anchor: HTMLElement | null, onClose: () => void, overlayId: string, selector: string) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
   useLayoutEffect(() => {
@@ -1022,19 +1634,13 @@ function SidebarViewMenu({
     if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
   }, []);
   useEffect(() => {
-    const unregister = registerOverlay('sidebar-view-menu');
+    const unregister = registerOverlay(overlayId);
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
     };
-    // The trigger is excluded so its own click can toggle the menu shut
-    // instead of this handler closing and the click reopening.
+    // The triggers are excluded so their own click can toggle the menu shut.
     const onPointerDown = (event: PointerEvent) => {
-      if (
-        !(event.target instanceof HTMLElement) ||
-        event.target.closest('[data-view-menu], [data-view-menu-toggle]') === null
-      ) {
-        onClose();
-      }
+      if (!(event.target instanceof HTMLElement) || event.target.closest(selector) === null) onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('pointerdown', onPointerDown, true);
@@ -1043,60 +1649,160 @@ function SidebarViewMenu({
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [onClose]);
-
+  }, [onClose, overlayId, selector]);
   const rect = anchor?.getBoundingClientRect();
   const position = clampOverlayPosition(
-    (rect?.right ?? VIEW_MENU_WIDTH) - VIEW_MENU_WIDTH,
+    (rect?.right ?? MENU_WIDTH) - MENU_WIDTH,
     (rect?.bottom ?? 0) + 4,
-    size ?? { width: VIEW_MENU_WIDTH, height: 0 },
+    size ?? { width: MENU_WIDTH, height: 0 },
     { width: window.innerWidth, height: window.innerHeight },
   );
+  return { menuRef, style: { left: position.left, top: position.top, width: MENU_WIDTH } };
+}
 
-  const head = workspaceOptions.slice(0, VIEW_MENU_WORKSPACE_ROWS);
-  const scoped = workspaceOptions.find((workspace) => workspace.id === workspaceFilter);
-  const rows = scoped !== undefined && !head.includes(scoped) ? [...head, scoped] : head;
+const MENU_PANEL =
+  'anim-enter fixed z-50 max-h-[min(72vh,480px)] overflow-y-auto rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]';
 
-  const sortOptions: readonly { value: SessionSortOrder; label: string }[] = [
-    { value: 'updated-desc', label: t('sidebar.sortUpdatedDesc') },
-    { value: 'updated-asc', label: t('sidebar.sortUpdatedAsc') },
-    { value: 'title', label: t('sidebar.sortTitle') },
+/** Arrangement only: grouping and sorting. Nothing here hides a session. */
+function SidebarViewMenu({
+  anchor,
+  onClose,
+  groupBy,
+  onGroupBy,
+  sortBy,
+  onSortBy,
+}: {
+  anchor: HTMLElement | null;
+  onClose: () => void;
+  groupBy: 'time' | 'workspace' | 'none';
+  onGroupBy: (groupBy: 'time' | 'workspace' | 'none') => void;
+  sortBy: SessionSortOrder;
+  onSortBy: (sortBy: SessionSortOrder) => void;
+}) {
+  const { t } = useI18n();
+  const { menuRef, style } = useAnchoredMenu(anchor, onClose, 'sidebar-view-menu', '[data-view-menu], [data-view-menu-toggle]');
+  const groups: readonly { value: 'time' | 'workspace' | 'none'; label: string }[] = [
+    { value: 'time', label: t('sidebar.groupByTime') },
+    { value: 'workspace', label: t('sidebar.groupByWorkspace') },
+    { value: 'none', label: t('sidebar.groupByNone') },
   ];
-
+  const sortLabel: Record<SessionSortOrder, string> = {
+    'updated-desc': t('sidebar.sortUpdatedDesc'),
+    'updated-asc': t('sidebar.sortUpdatedAsc'),
+    'created-desc': t('sidebar.sortCreated'),
+    title: t('sidebar.sortTitle'),
+  };
   return (
-    <div
-      ref={menuRef}
-      data-view-menu
-      role="menu"
-      aria-label={t('sidebar.viewMenu')}
-      style={{ left: position.left, top: position.top, width: VIEW_MENU_WIDTH }}
-      className="anim-enter fixed z-50 max-h-[min(70vh,440px)] overflow-y-auto rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
-    >
+    <div ref={menuRef} data-view-menu role="menu" aria-label={t('sidebar.viewMenu')} style={style} className={MENU_PANEL}>
+      <p className={MENU_HEADING}>{t('sidebar.viewGroupHeading')}</p>
+      {groups.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="menuitemradio"
+          aria-checked={groupBy === option.value}
+          data-group-by={option.value}
+          className={`${MENU_ITEM} w-full`}
+          onClick={() => { onGroupBy(option.value); }}
+        >
+          <MenuMark on={groupBy === option.value} />
+          <span className="truncate">{option.label}</span>
+        </button>
+      ))}
+      <div className="mx-1 my-1 border-t border-hairline" />
+      <p className={MENU_HEADING}>{t('sidebar.viewSortHeading')}</p>
+      {SESSION_SORT_ORDERS.map((value) => (
+        <button
+          key={value}
+          type="button"
+          role="menuitemradio"
+          aria-checked={sortBy === value}
+          data-sort-by={value}
+          className={`${MENU_ITEM} w-full`}
+          onClick={() => { onSortBy(value); }}
+        >
+          <MenuMark on={sortBy === value} />
+          <span className="truncate">{sortLabel[value]}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Everything that changes WHICH sessions are visible: status, workspaces
+ * (multi-select, with the server-side pin toggle per row) and archived.
+ * The panel stays open across clicks — the list rearranges live behind it.
+ */
+function SidebarFilterMenu({
+  anchor,
+  onClose,
+  filters,
+  onToggleStatus,
+  onToggleWorkspace,
+  onArchived,
+  workspaceOptions,
+  workspacePinBusy,
+  onToggleWorkspacePin,
+  onManageWorkspaces,
+}: {
+  anchor: HTMLElement | null;
+  onClose: () => void;
+  filters: SessionListFilters;
+  onToggleStatus: (status: SessionStatusFilter) => void;
+  onToggleWorkspace: (workspaceId: string) => void;
+  onArchived: (archived: SessionArchivedFilter) => void;
+  workspaceOptions: readonly Workspace[];
+  workspacePinBusy: boolean;
+  onToggleWorkspacePin: (workspace: Workspace) => void;
+  onManageWorkspaces: () => void;
+}) {
+  const { t } = useI18n();
+  const { menuRef, style } = useAnchoredMenu(anchor, onClose, 'sidebar-filter-menu', '[data-filter-menu], [data-filter-menu-toggle]');
+  const statuses: readonly { value: SessionStatusFilter; label: string }[] = [
+    { value: 'running', label: t('sidebar.statusRunning') },
+    { value: 'needs-me', label: t('sidebar.statusNeedsMe') },
+    { value: 'idle', label: t('sidebar.statusIdle') },
+  ];
+  const head = workspaceOptions.slice(0, MENU_WORKSPACE_ROWS);
+  const extra = workspaceOptions.filter((workspace) => filters.workspaces.includes(workspace.id) && !head.includes(workspace));
+  const archivedOptions: readonly { value: SessionArchivedFilter; label: string }[] = [
+    { value: 'hide', label: t('sidebar.archivedHide') },
+    { value: 'include', label: t('sidebar.archivedInclude') },
+    { value: 'only', label: t('sidebar.archivedOnly') },
+  ];
+  return (
+    <div ref={menuRef} data-filter-menu data-view-menu-filters role="menu" aria-label={t('sidebar.filterMenu')} style={style} className={MENU_PANEL}>
+      <p className={MENU_HEADING}>{t('sidebar.filterStatusHeading')}</p>
+      {statuses.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked={filters.status.includes(option.value)}
+          data-status-filter={option.value}
+          className={`${MENU_ITEM} w-full`}
+          onClick={() => { onToggleStatus(option.value); }}
+        >
+          <MenuMark on={filters.status.includes(option.value)} />
+          <span className="truncate">{option.label}</span>
+        </button>
+      ))}
       {workspaceOptions.length > 0 ? (
         <>
-          <p className={VIEW_MENU_HEADING}>{t('sidebar.viewWorkspaceHeading')}</p>
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={workspaceFilter === undefined}
-            data-workspace-filter=""
-            className={VIEW_MENU_ITEM}
-            onClick={() => { onWorkspaceFilter(undefined); }}
-          >
-            <ViewMenuMark on={workspaceFilter === undefined} />
-            <span className="truncate">{t('sidebar.workspaceAll')}</span>
-          </button>
-          {rows.map((workspace) => (
+          <div className="mx-1 my-1 border-t border-hairline" />
+          <p className={MENU_HEADING}>{t('sidebar.viewWorkspaceHeading')}</p>
+          {[...head, ...extra].map((workspace) => (
             <div key={workspace.id} className="group flex items-center">
               <button
                 type="button"
-                role="menuitemradio"
-                aria-checked={workspaceFilter === workspace.id}
+                role="menuitemcheckbox"
+                aria-checked={filters.workspaces.includes(workspace.id)}
                 data-workspace-filter={workspace.id}
-                className={VIEW_MENU_ITEM}
-                onClick={() => { onWorkspaceFilter(workspace.id); }}
+                className={MENU_ITEM}
+                onClick={() => { onToggleWorkspace(workspace.id); }}
               >
-                <ViewMenuMark on={workspaceFilter === workspace.id} />
+                <MenuMark on={filters.workspaces.includes(workspace.id)} />
                 <span className="truncate">{workspace.name}</span>
               </button>
               <button
@@ -1112,82 +1818,39 @@ function SidebarViewMenu({
                 }
                 title={workspace.pinned ? t('sidebar.unpinWorkspace') : t('sidebar.pinWorkspace')}
                 onClick={() => { onToggleWorkspacePin(workspace); }}
-                className={`mr-0.5 flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-md transition-colors hover:bg-paper disabled:opacity-50 ${
+                className={`mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-paper disabled:opacity-50 ${
                   workspace.pinned
-                    ? 'text-accent'
+                    ? 'text-ink-soft'
                     : 'text-transparent group-focus-within:text-ink-faint group-hover:text-ink-faint hover:!text-ink'
                 }`}
               >
-                <PinIcon className="h-[11px] w-[11px]" />
+                <PinIcon />
               </button>
             </div>
           ))}
-          <button
-            type="button"
-            role="menuitem"
-            data-manage-workspaces
-            className={VIEW_MENU_ITEM}
-            onClick={onManageWorkspaces}
-          >
-            <ViewMenuMark on={false} />
+          <button type="button" role="menuitem" data-manage-workspaces className={`${MENU_ITEM} w-full`} onClick={onManageWorkspaces}>
+            <MenuMark on={false} />
             <span className="truncate text-ink-soft">{t('sidebar.manageWorkspaces')}</span>
           </button>
-          <div className="mx-1 mt-1 border-t border-hairline" />
         </>
       ) : null}
-
-      <p className={VIEW_MENU_HEADING}>{t('sidebar.viewGroupHeading')}</p>
-      <button
-        type="button"
-        role="menuitemradio"
-        aria-checked={groupBy === 'time'}
-        data-group-by="time"
-        className={VIEW_MENU_ITEM}
-        onClick={() => { onGroupBy('time'); }}
-      >
-        <ViewMenuMark on={groupBy === 'time'} />
-        <span className="truncate">{t('sidebar.groupByTime')}</span>
-      </button>
-      <button
-        type="button"
-        role="menuitemradio"
-        aria-checked={groupBy === 'workspace'}
-        data-group-by="workspace"
-        className={VIEW_MENU_ITEM}
-        onClick={() => { onGroupBy('workspace'); }}
-      >
-        <ViewMenuMark on={groupBy === 'workspace'} />
-        <span className="truncate">{t('sidebar.groupByWorkspace')}</span>
-      </button>
-
-      <p className={VIEW_MENU_HEADING}>{t('sidebar.viewSortHeading')}</p>
-      {sortOptions.map((option) => (
+      <div className="mx-1 my-1 border-t border-hairline" />
+      <p className={MENU_HEADING}>{t('sidebar.filterArchivedHeading')}</p>
+      {archivedOptions.map((option) => (
         <button
           key={option.value}
           type="button"
           role="menuitemradio"
-          aria-checked={sortBy === option.value}
-          data-sort-by={option.value}
-          className={VIEW_MENU_ITEM}
-          onClick={() => { onSortBy(option.value); }}
+          aria-checked={filters.archived === option.value}
+          data-archived-filter={option.value}
+          {...(option.value === 'include' ? { 'data-show-archived': '' } : {})}
+          className={`${MENU_ITEM} w-full`}
+          onClick={() => { onArchived(option.value); }}
         >
-          <ViewMenuMark on={sortBy === option.value} />
+          <MenuMark on={filters.archived === option.value} />
           <span className="truncate">{option.label}</span>
         </button>
       ))}
-
-      <div className="mx-1 mt-1 border-t border-hairline" />
-      <button
-        type="button"
-        role="menuitemcheckbox"
-        aria-checked={showArchived}
-        data-show-archived
-        className={`${VIEW_MENU_ITEM} mt-1`}
-        onClick={onToggleArchived}
-      >
-        <ViewMenuMark on={showArchived} />
-        <span className="truncate">{t('sidebar.showArchived')}</span>
-      </button>
     </div>
   );
 }
@@ -1277,7 +1940,7 @@ function SessionMenu({
       ref={menuRef}
       data-session-menu
       role="menu"
-      className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]"
+      className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: position.left, top: position.top }}
     >
       {archived ? (
@@ -1428,7 +2091,7 @@ function RenameDialog({
           type="button"
           disabled={busy || title.trim() === ''}
           onClick={submit}
-          className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-50"
+          className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:opacity-50"
         >
           {busy ? t('common.saving') : t('common.save')}
         </button>

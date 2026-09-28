@@ -12,8 +12,11 @@ import { DEFAULT_BOARD_COLUMNS } from './types';
 import type { BoardWorkspaceIssue } from './TaskBoardController';
 import { useI18n } from '../../i18n';
 import { TaskCard } from './TaskCard';
+import { StatusGlyph } from './glyphs';
 import { TaskDetailModal } from './TaskDetailModal';
 import { NewTaskModal } from './NewTaskModal';
+import { WorkspaceScopeControl } from '../WorkspaceScopeControl';
+import { Icon } from '../icons';
 
 const ISSUE_REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   BOARD_UNAVAILABLE: 'taskBoard.issueReason.BOARD_UNAVAILABLE',
@@ -61,6 +64,13 @@ export interface TaskBoardProps {
   readonly onCloseBoard?: () => void;
   readonly className?: string;
   readonly prototypeMode?: boolean;
+  /**
+   * `fixed` (default): lanes keep their 284–320px width and the board
+   * scrolls sideways. `fill`: from the `sm` breakpoint up, lanes share the
+   * container width (never narrower than 200px), so a full-page board shows
+   * every column without horizontal scroll. Narrow screens always snap-scroll.
+   */
+  readonly laneLayout?: 'fixed' | 'fill';
 }
 
 export const TaskBoard = memo(function TaskBoard({
@@ -92,6 +102,7 @@ export const TaskBoard = memo(function TaskBoard({
   onCloseBoard,
   className = '',
   prototypeMode = true,
+  laneLayout = 'fixed',
 }: TaskBoardProps) {
   const { t, tp, locale } = useI18n();
   const resolvedColumns = useMemo(
@@ -120,6 +131,7 @@ export const TaskBoard = memo(function TaskBoard({
   // Active modals
   const [selectedTask, setSelectedTask] = useState<BoardTask | null>(null);
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
+  const [dropTarget, setDropTarget] = useState<BoardTaskStatus | null>(null);
   const sessionLabels = useMemo(
     () => Object.fromEntries(sessions.map((session) => [session.id, session.title])),
     [sessions],
@@ -130,6 +142,11 @@ export const TaskBoard = memo(function TaskBoard({
     return (workspaceId: string | undefined): string =>
       workspaceId === undefined ? '' : (titles.get(workspaceId) ?? workspaceId);
   }, [workspaces]);
+  const scopeOptions = useMemo(
+    () => workspaces.map((entry) => ({ id: entry.id, name: entry.title })),
+    [workspaces],
+  );
+  const scopedWorkspaceName = workspaceFilterValue === 'all' ? undefined : workspaceTitle(workspaceFilterValue);
 
   const issueWorkspaceNames = useMemo(
     () =>
@@ -213,103 +230,96 @@ export const TaskBoard = memo(function TaskBoard({
         </div>
       ) : null}
 
-      {/* Header Bar */}
-      <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline bg-panel px-5 py-3.5">
-        <div className="flex min-w-0 shrink-0 items-center gap-3">
+      {/* Header: title row (identity + actions), then the scope/filter row. */}
+      <header className="flex shrink-0 flex-col gap-3 border-b border-hairline bg-panel px-5 pt-3.5 pb-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
           {onCloseBoard ? (
             <button
               type="button"
               onClick={onCloseBoard}
               aria-label={t('taskBoard.backToSession')}
-              className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink-soft hover:border-accent hover:text-accent transition-colors"
+              className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-1.5 text-[13px] font-medium text-ink-soft hover:border-hairline-strong hover:text-ink transition-colors"
             >
-              <span>‹</span>
+              <Icon name="chevron" size={12} className="rotate-180" />
               <span>{t('taskBoard.backToSession')}</span>
             </button>
           ) : null}
 
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="font-display text-[19px] font-semibold text-ink leading-none">
                 {t('taskBoard.title')}
               </h2>
               {loading ? (
-                <span className="font-mono text-[10.5px] text-accent animate-pulse">
+                <span role="status" className="text-[12px] text-ink-faint animate-pulse motion-reduce:animate-none">
                   {t('taskBoard.syncing')}
                 </span>
               ) : null}
             </div>
-            <span className="font-mono text-[11px] text-ink-faint">
+            <span data-task-board-summary className="mt-1 block truncate text-[12px] text-ink-faint tabular-nums">
+              {scopedWorkspaceName !== undefined ? `${scopedWorkspaceName} · ` : `${t('taskBoard.scope.all')} · `}
               {t('taskBoard.summary', { shown: filteredTasks.length, total: tasks.length })}
             </span>
           </div>
-        </div>
 
-        {/* Action Controls & Filters */}
-        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2.5">
-          {/* Search Box */}
-          <input
-            type="search"
-            placeholder={t('taskBoard.search.placeholder')}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-60 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-3 py-1.5 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden"
-          />
-
-          {/* Workspace scope (All / Specific Workspace) — drives the load scope when controlled */}
-          <select
-            data-task-board-scope
-            aria-label={t('taskBoard.scope.label')}
-            title={t('taskBoard.scope.label')}
-            value={workspaceFilterValue}
-            onChange={(e) => {
-              if (onScopeSelectionChange !== undefined) onScopeSelectionChange(e.target.value);
-              else setSelectedWorkspaceFilter(e.target.value);
-            }}
-            className="w-52 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink focus:border-accent focus:outline-hidden font-mono"
-          >
-            <option value="all">{t('taskBoard.scope.all')}</option>
-            {workspaces.map((ws) => (
-              <option key={ws.id} value={ws.id}>
-                📁 {ws.title}
-              </option>
-            ))}
-          </select>
-
-          {/* Session Association Filter */}
-          <select
-            value={selectedSessionFilter}
-            onChange={(e) => setSelectedSessionFilter(e.target.value)}
-            className="w-60 max-w-full min-w-0 rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink focus:border-accent focus:outline-hidden font-mono"
-          >
-            <option value="all">{t('taskBoard.sessionFilter.all')}</option>
-            {sessions.map((s) => (
-              <option key={s.id} value={s.id}>
-                ⌁ {s.title}
-              </option>
-            ))}
-          </select>
-
-          {onRefresh ? (
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {onRefresh ? (
+              <button
+                type="button"
+                data-task-board-refresh
+                disabled={refreshDisabled}
+                onClick={() => { void onRefresh(); }}
+                className="h-8 rounded-md border border-hairline px-3 text-[13px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {refreshLabel ?? t('taskBoard.refresh')}
+              </button>
+            ) : null}
             <button
               type="button"
-              data-task-board-refresh
-              disabled={refreshDisabled}
-              onClick={() => { void onRefresh(); }}
-              className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => setShowNewTaskModal(true)}
+              className="h-8 rounded-md bg-accent px-3.5 text-[13px] font-medium text-panel transition-colors hover:bg-accent-deep"
             >
-              {refreshLabel ?? t('taskBoard.refresh')}
+              + {t('taskBoard.newTask')}
             </button>
-          ) : null}
+          </div>
+        </div>
 
-          {/* New Task Button */}
-          <button
-            type="button"
-            onClick={() => setShowNewTaskModal(true)}
-            className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-medium text-panel hover:bg-accent-deep transition-colors shadow-xs"
-          >
-            + {t('taskBoard.newTask')}
-          </button>
+        {/* Scope first (it decides what loads), then the local view filters. */}
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+          <WorkspaceScopeControl
+            workspaces={scopeOptions}
+            value={workspaceFilterValue === 'all' ? undefined : workspaceFilterValue}
+            dataAttribute="data-task-board-scope"
+            onChange={(next) => {
+              const selection = next ?? 'all';
+              if (onScopeSelectionChange !== undefined) onScopeSelectionChange(selection);
+              else setSelectedWorkspaceFilter(selection);
+            }}
+          />
+          <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
+            <input
+              type="search"
+              aria-label={t('taskBoard.search.placeholder')}
+              placeholder={t('taskBoard.search.placeholder')}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-8 w-56 max-w-full min-w-0 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden"
+            />
+            <select
+              data-task-board-session-filter
+              aria-label={t('taskBoard.sessionFilter.all')}
+              value={selectedSessionFilter}
+              onChange={(e) => setSelectedSessionFilter(e.target.value)}
+              className="h-8 w-52 max-w-full min-w-0 rounded-md border border-hairline bg-paper px-2.5 text-[13px] text-ink focus:border-accent focus:outline-hidden"
+            >
+              <option value="all">{t('taskBoard.sessionFilter.all')}</option>
+              {sessions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.title}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </header>
 
@@ -353,7 +363,7 @@ export const TaskBoard = memo(function TaskBoard({
                 data-task-board-unavailable-retry
                 disabled={refreshDisabled}
                 onClick={() => { void onRefresh(); }}
-                className="rounded-lg border border-hairline px-3.5 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg border border-hairline px-3.5 py-2 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {t('common.retry')}
               </button>
@@ -362,7 +372,7 @@ export const TaskBoard = memo(function TaskBoard({
               <button
                 type="button"
                 onClick={onOpenSettings}
-                className="rounded-lg border border-hairline px-3.5 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
+                className="rounded-lg border border-hairline px-3.5 py-2 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
               >
                 {t('sidebar.manageWorkspaces')}
               </button>
@@ -370,24 +380,38 @@ export const TaskBoard = memo(function TaskBoard({
           </div>
         </div>
       ) : (
-      /* Kanban Columns Grid (Scrollable horizontally) */
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-contain p-5">
-        <div className="grid h-full min-h-0 min-w-max grid-flow-col auto-cols-[minmax(330px,400px)] gap-4">
+      /* Kanban lanes: tinted paper columns, cards lift off them. Scrolls
+       * horizontally; on narrow screens each lane snaps into view. */
+      <div className="flex min-h-0 min-w-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden overscroll-contain px-3 py-4 sm:snap-none sm:px-5">
+        <div
+          data-board-lanes={laneLayout}
+          className={`grid h-full min-h-0 min-w-max grid-flow-col auto-cols-[minmax(284px,320px)] gap-3 ${
+            laneLayout === 'fill' ? 'sm:min-w-min sm:flex-1 sm:auto-cols-[minmax(200px,1fr)]' : ''
+          }`}
+        >
           {resolvedColumns.map((col) => {
             const colTasks = filteredTasks.filter((t) => t.status === col.status);
             const isManualTarget = !prototypeMode || col.status === 'backlog' || col.status === 'todo';
+            const dropping = dropTarget === col.status;
 
             return (
               <section
                 key={col.status}
                 data-board-column={col.status}
+                data-board-drop-target={dropping ? '' : undefined}
+                aria-label={col.label}
                 onDragOver={(e) => {
                   if (isManualTarget) {
                     e.preventDefault();
                     e.dataTransfer.dropEffect = 'move';
+                    if (dropTarget !== col.status) setDropTarget(col.status);
                   }
                 }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget((current) => current === col.status ? null : current);
+                }}
                 onDrop={(e) => {
+                  setDropTarget(null);
                   if (isManualTarget) {
                     e.preventDefault();
                     const taskId = e.dataTransfer.getData('text/plain');
@@ -396,37 +420,23 @@ export const TaskBoard = memo(function TaskBoard({
                     }
                   }
                 }}
-                className="flex min-h-0 min-w-0 w-[min(400px,calc(100vw-2.5rem))] max-w-[400px] flex-col overflow-hidden rounded-2xl border border-hairline bg-paper/60 p-3.5"
+                className={`flex min-h-0 w-[min(320px,calc(100vw-1.5rem))] min-w-0 snap-start flex-col overflow-hidden rounded-xl bg-canvas/55 transition-shadow duration-150 ${laneLayout === 'fill' ? 'sm:w-auto' : ''} ${dropping ? 'shadow-[inset_0_0_0_1.5px_var(--color-hairline-strong)] bg-canvas/80' : ''}`}
               >
-                {/* Column Header */}
-                <div className="flex shrink-0 items-center justify-between gap-2 pb-2.5 mb-2.5 border-b border-hairline">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span
-                      className={`h-2 w-2 rounded-full ${
-                        col.status === 'running' || col.status === 'in_progress'
-                          ? 'bg-accent/60'
-                          : col.status === 'done'
-                            ? 'bg-success/60'
-                            : col.status === 'todo'
-                              ? 'bg-amber-rule'
-                              : col.status === 'failed'
-                                ? 'bg-danger/60'
-                                : 'bg-ink-faint'
-                      }`}
-                    />
-                    <h3 className="min-w-0 truncate font-mono text-[12.5px] font-semibold tracking-wider text-ink uppercase">
-                      {col.label}
-                    </h3>
-                  </div>
-                  <span className="shrink-0 rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-faint">
+                {/* Lane header: status mark, sentence-case label, count. */}
+                <div className="flex shrink-0 items-center gap-2 px-3.5 pt-3 pb-2">
+                  <StatusGlyph status={col.status} />
+                  <h3 className="min-w-0 truncate text-[13px] font-medium text-ink">
+                    {col.label}
+                  </h3>
+                  <span data-board-column-count className="text-[12px] text-ink-faint tabular-nums">
                     {colTasks.length}
                   </span>
                 </div>
 
                 {/* Column Cards Scrollable List */}
-                <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain pr-1">
+                <div className="min-h-0 min-w-0 flex-1 space-y-2 overflow-y-auto overscroll-y-contain px-2 pt-0.5 pb-3">
                   {colTasks.length === 0 ? (
-                    <div className="py-8 text-center text-[12px] text-ink-faint border border-dashed border-hairline rounded-xl">
+                    <div className="mx-1 rounded-lg border border-dashed border-hairline-strong/70 px-3 py-6 text-center text-[12px] text-ink-faint">
                       {t('taskBoard.column.empty')}
                     </div>
                   ) : (
@@ -436,6 +446,7 @@ export const TaskBoard = memo(function TaskBoard({
                         task={task}
                         pending={pendingTaskIds.includes(task.id)}
                         sessionLabels={sessionLabels}
+                        showWorkspace={workspaceFilterValue === 'all'}
                         onClick={(t) => {
                           setSelectedTask(t);
                           void Promise.resolve(onOpenTask?.(t.id)).catch(() => undefined);
@@ -462,6 +473,8 @@ export const TaskBoard = memo(function TaskBoard({
           sessionLabels={sessionLabels}
           statusOptions={resolvedColumns}
           showPrompt={prototypeMode}
+          pending={pendingTaskIds.includes(selectedTask.id)}
+          onMoveStatus={onMoveTaskStatus ? async (taskId, status) => { await onMoveTaskStatus(taskId, status); } : undefined}
           onClose={() => setSelectedTask(null)}
           onSave={onUpdateTask ? async (updated) => {
             await onUpdateTask(selectedTask.id, updated);

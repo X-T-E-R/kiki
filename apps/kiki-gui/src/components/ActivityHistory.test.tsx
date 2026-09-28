@@ -3,13 +3,8 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import type { ApprovalBlock, Block, DisplayNode, QuestionBlock } from '@kiki/session-core/session';
-import {
-  groupHistoryRuns,
-  HistoryLine,
-  HistoryRunRow,
-  isMarkerNotice,
-} from './ActivityHistory';
+import type { ApprovalBlock, Block, NoticeBlock, QuestionBlock } from '@kiki/session-core/session';
+import { HistoryLine, isMarkerNotice, revealSubagentCard } from './ActivityHistory';
 import { ResyncStatusBanner } from './agent-workspace';
 import { I18nProvider } from '../i18n';
 
@@ -59,38 +54,29 @@ const markerNotice: Block = {
   tone: 'neutral',
 };
 
-const compactable = (node: DisplayNode): boolean =>
-  (node.kind === 'approval' && node.resolution !== undefined) ||
-  (node.kind === 'question' && node.outcome !== undefined) ||
-  (node.kind === 'notice' && isMarkerNotice(node));
-
-describe('groupHistoryRuns', () => {
-  it('folds runs of consecutive compact entries and keeps singles individual', () => {
-    const second: Block = { kind: 'notice', id: 'agent-marker-plan', text: 'plan', tone: 'neutral' };
-    // A non-compact entry (here a danger notice; user/assistant blocks behave
-    // the same) breaks the run.
-    const breaker: Block = { kind: 'notice', id: 'error', text: 'A real error', tone: 'danger' };
-    const nodes = [markerNotice, second, resolvedApproval, breaker, answeredQuestion] as DisplayNode[];
-    const grouped = groupHistoryRuns(nodes, compactable);
-    expect(grouped.map((node) => node.kind)).toEqual(['history-run', 'notice', 'question']);
-    const run = grouped[0];
-    if (run?.kind !== 'history-run') throw new Error('expected a history run');
-    expect(run.id).toBe('history-run-agent-marker-goal');
-    expect(run.nodes.map((node) => node.id)).toEqual([
-      'agent-marker-goal',
-      'agent-marker-plan',
-      'approval-done',
-    ]);
-    // The breaker splits the pile: the trailing answered question stays a
-    // single line instead of joining across the boundary.
-    expect(grouped[2]).toBe(answeredQuestion);
+describe('settled history stays inline', () => {
+  it('marks only transcript-owned neutral markers, so notices are not mistaken for events', () => {
+    expect(isMarkerNotice(markerNotice as NoticeBlock)).toBe(true);
+    const danger: Block = { kind: 'notice', id: 'error', text: 'A real error', tone: 'danger' };
+    expect(isMarkerNotice(danger as NoticeBlock)).toBe(false);
   });
 
-  it('never folds entries the predicate rejects (failures, pending cards)', () => {
-    const pending: QuestionBlock = { ...answeredQuestion, id: 'question-pending', outcome: undefined };
-    const nodes = [markerNotice, pending, resolvedApproval] as DisplayNode[];
-    const grouped = groupHistoryRuns(nodes, compactable);
-    expect(grouped.map((node) => node.kind)).toEqual(['notice', 'question', 'approval']);
+  it('reveals a mounted subagent card without needing a fold to be expanded first', () => {
+    const host = document.createElement('div');
+    const card = document.createElement('div');
+    card.setAttribute('data-subagent-id', 'agent-7');
+    card.scrollIntoView = vi.fn();
+    host.append(card);
+    document.body.append(host);
+    try {
+      expect(revealSubagentCard('agent-7')).toBe(true);
+      expect(card.scrollIntoView).toHaveBeenCalled();
+      // Not mounted (outside the virtual window) reports false so the caller
+      // keeps retrying; it never silently claims success.
+      expect(revealSubagentCard('agent-missing')).toBe(false);
+    } finally {
+      host.remove();
+    }
   });
 });
 
@@ -125,25 +111,22 @@ describe('HistoryLine', () => {
   });
 });
 
-it('HistoryRunRow folds members behind a summary and expands on click', async () => {
+it('renders a settled decision as a plain line with no fold to open', async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  const run = groupHistoryRuns([markerNotice, resolvedApproval] as DisplayNode[], compactable)[0];
-  if (run?.kind !== 'history-run') throw new Error('expected a history run');
   const container = document.createElement('div');
   const root = createRoot(container);
   await act(async () =>
     root.render(
       <I18nProvider>
-        <HistoryRunRow run={run} renderMember={(node) => <p>{node.id}</p>} />
+        <HistoryLine node={resolvedApproval} />
       </I18nProvider>,
     ),
   );
-  expect(container.querySelector('[data-history-run-members]')).toBeNull();
-  const toggle = container.querySelector('button')!;
-  expect(toggle.getAttribute('aria-expanded')).toBe('false');
-  await act(async () => toggle.click());
-  expect(toggle.getAttribute('aria-expanded')).toBe('true');
-  expect(container.querySelector('[data-history-run-members]')?.textContent).toContain('approval-done');
+  // No disclosure control and no counter: the fact is already on screen.
+  expect(container.querySelector('button')).toBeNull();
+  expect(container.querySelector('[aria-expanded]')).toBeNull();
+  expect(container.textContent).toContain('Running: pnpm test');
+  expect(container.textContent).not.toMatch(/completed actions/);
   await act(async () => root.unmount());
 });
 

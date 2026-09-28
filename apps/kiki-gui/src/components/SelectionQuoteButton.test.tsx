@@ -169,6 +169,37 @@ describe('SelectionQuoteButton', () => {
     expect(quoteButton(container).textContent).toContain('Quote');
   });
 
+  it('keeps the pill Escape restored when a collapse is reported after it', async () => {
+    const { container } = await mount();
+    await selectSource(container);
+    await act(async () => { annotateButton(container).click(); });
+    await pressKey(annotateInput(container)!, 'Escape');
+    // Focusing the annotate input collapsed the document selection; a browser
+    // reports that collapse as an asynchronous selectionchange, which can be
+    // delivered after Escape already restored the two actions.
+    await act(async () => {
+      window.getSelection()!.removeAllRanges();
+      expect(window.getSelection()!.isCollapsed).toBe(true);
+      document.dispatchEvent(new Event('selectionchange'));
+    });
+    expect(quoteButton(container).textContent).toContain('Quote');
+    expect(annotateButton(container).textContent).toContain('Annotate');
+  });
+
+  it('still hides the pill when a fresh selection collapses after Escape', async () => {
+    const { container } = await mount();
+    await selectSource(container);
+    await act(async () => { annotateButton(container).click(); });
+    await pressKey(annotateInput(container)!, 'Escape');
+    await selectSource(container, '[data-source-secondary]');
+    expect(quoteButton(container).textContent).toContain('Quote');
+    await act(async () => {
+      window.getSelection()!.removeAllRanges();
+      document.dispatchEvent(new Event('selectionchange'));
+    });
+    expect(pill(container)).toBeNull();
+  });
+
   it('Enter with an empty comment commits nothing and keeps the input open', async () => {
     const onAnnotate = vi.fn();
     const { container } = await mount(vi.fn(), onAnnotate);

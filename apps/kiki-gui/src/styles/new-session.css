@@ -1,0 +1,111 @@
+/* ---- /new hero layout ----
+ * Page-owned geometry for the new-session surface. The shared hero rules (the
+ * stack, the glow, the seat mask) live in index.css and belong to the shell;
+ * this file only adjusts what the /new band itself introduces, so the two
+ * never fight over the same declarations. Scoped by the band's own marker:
+ * /s/:id heroes keep the shell's centred stack.
+ */
+
+/* Anchor, not centre. The page's one heavy object is the composer; the band
+ * under it is light T3/T4 text, so centring the whole stack leaves the
+ * composer riding high with a faint tail below. Instead the stack starts from
+ * the top at a height that puts the composer card's centre at ~43% of the
+ * sheet, and the band flows down from there (scrolling when the window is
+ * short). The middle region is a size container so the anchor follows the
+ * sheet, not the window. --kiki-new-lead is the distance from the stack top
+ * to the card's centre: chrome (wordmark row + target row + gaps) plus half
+ * the card. */
+.conversation-shell[data-phase='hero']:has([data-hero-starters]) {
+  --kiki-new-lead: 250px;
+}
+.conversation-shell[data-phase='hero']:has([data-hero-starters]) .conversation-middle {
+  container-type: size;
+  justify-content: flex-start;
+}
+.conversation-shell[data-phase='hero']:has([data-hero-starters]) .conversation-body {
+  padding-top: max(24px, calc(var(--kiki-new-anchor, 45cqh) - var(--kiki-new-lead)));
+}
+.conversation-shell[data-phase='hero']:has([data-hero-starters]) .conversation-seat {
+  padding-bottom: 40px;
+}
+
+/* Hero workspace chip: transparent at rest; fill only on hover / open. The
+ * chip sits on the same row as the pulse line, left-aligned with the
+ * composer card rather than centered under the wordmark. */
+.hero-workspace-chip[aria-expanded='true'] {
+  border-color: var(--color-hairline-strong);
+}
+
+/* Starters hang off the composer card (8px under it), so on /new they take
+ * the slot the composer's key-hint row and bottom padding normally hold
+ * (hidden whether or not the hint is showing, so typing never shifts the
+ * band). The hint is a focus-only teaching line; the docked composer on
+ * /s/:id still shows it. */
+.conversation-shell[data-phase='hero']:has([data-hero-starters]) [data-composer-variant] {
+  padding-bottom: 0;
+}
+.conversation-shell[data-phase='hero']:has([data-hero-starters]) [data-composer-card] + div {
+  display: none;
+}
+
+/* ---- the /new signature: the dot that answers ----
+ * The wordmark is the page's lead, and its accent dot is the one living
+ * thing on it. On arrival it drops into place once, with the settle's small
+ * overshoot; afterwards it gives one short nod each time you start typing
+ * again (Wordmark `echo`, throttled in NewSessionPage), as if listening. The
+ * nod lives on a wrapper so it composes with the dot's own state motion
+ * (breath / beckon / settle) instead of replacing it. Transform only; stops
+ * entirely under reduced motion. */
+@keyframes kiki-echo-arrive {
+  0% {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.6);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(1px) scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes kiki-echo-nod-a {
+  0%,
+  100% {
+    transform: none;
+  }
+  40% {
+    transform: translateY(-3px) scale(1.12);
+  }
+}
+/* Same curve under a second name, so consecutive nods restart. */
+@keyframes kiki-echo-nod-b {
+  0%,
+  100% {
+    transform: none;
+  }
+  40% {
+    transform: translateY(-3px) scale(1.12);
+  }
+}
+.kiki-wordmark-echo {
+  transform-origin: 50% 100%;
+}
+.kiki-wordmark-echo[data-echo='arrive'] {
+  animation: kiki-echo-arrive var(--kiki-motion-settle) var(--kiki-ease-out) 120ms both;
+}
+.kiki-wordmark-echo[data-echo='a'] {
+  animation: kiki-echo-nod-a var(--kiki-motion-slow) var(--kiki-ease-pop);
+}
+.kiki-wordmark-echo[data-echo='b'] {
+  animation: kiki-echo-nod-b var(--kiki-motion-slow) var(--kiki-ease-pop);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-kiki-motion='full']) .kiki-wordmark-echo {
+    animation: none !important;
+  }
+}
+:root[data-kiki-motion='reduce'] .kiki-wordmark-echo {
+  animation: none !important;
+}

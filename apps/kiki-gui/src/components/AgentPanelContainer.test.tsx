@@ -150,7 +150,9 @@ it('queries the selected identity, keeps missing billing unknown and does not re
   expect(element.textContent).not.toContain('main private todo');
   expect(element.textContent).not.toContain('routed agent todo');
   expect(element.textContent).toContain('researcher');
-  expect(element.textContent).toContain('未知');
+  // Missing billing stays unknown: the inspector hides the row rather than
+  // inventing a $0 figure.
+  expect(element.textContent).not.toContain('费用');
   expect(element.textContent).not.toContain('$0');
 });
 
@@ -396,9 +398,10 @@ it('does not label main-only persisted usage as a complete agent-tree total', as
       inputTokens: 100, cacheReadTokens: 68 } },
   });
   await render('main', { forest: forestOf(['main', 'child']) });
-  expect(element.querySelector('[data-tree-metrics]')?.textContent).toContain('整树总 Tokens:未知');
-  expect(element.querySelector('[data-tree-metrics]')?.textContent).not.toContain('整树缓存率:68%');
-  expect(element.textContent).toContain('缓存率:68%');
+  // Only main's usage is persisted, so no tree-wide total is claimed at all.
+  expect(element.querySelector('[data-tree-metrics]')?.textContent ?? '').not.toContain('整树总 Tokens');
+  expect(element.querySelector('[data-tree-metrics]')?.textContent ?? '').not.toContain('整树缓存率');
+  expect(element.textContent).toContain('缓存率68%');
 });
 
 it('renders cache hit rate percentage on single agent and aggregated on agent tree', async () => {
@@ -433,10 +436,10 @@ it('renders cache hit rate percentage on single agent and aggregated on agent tr
   await render('main', { forest: forestOf(['main', 'child']) });
 
   // Single agent cache rate: 68 / 100 = 68%
-  expect(element.textContent).toContain('缓存率:68%');
+  expect(element.textContent).toContain('缓存率68%');
 
   // Tree cache rate: (68 + 100) / (100 + 200) = 168 / 300 = 56%
   const treeMetrics = element.querySelector('[data-tree-metrics]');
   expect(treeMetrics).not.toBeNull();
-  expect(treeMetrics?.textContent).toContain('整树缓存率:56%');
+  expect(treeMetrics?.textContent).toContain('整树缓存率56%');
 });
