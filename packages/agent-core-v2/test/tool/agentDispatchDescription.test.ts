@@ -41,7 +41,7 @@ describe('AgentRun dispatch recommendations', () => {
 
   it('promotes preferred profiles while advisory callers still see nonpreferred targets', () => {
     const text = description('advisory');
-    expect(text).toContain('Preferred agent profiles: explore.');
+    expect(text).toContain('Available profiles (pass via profile; preferred first):');
     expect(text).toContain('- explore: Preferred explorer');
     expect(text).toContain('- worker: Other worker');
     expect(text.indexOf('- explore:')).toBeLessThan(text.indexOf('- worker:'));
@@ -49,7 +49,7 @@ describe('AgentRun dispatch recommendations', () => {
 
   it('never lists a blocked target to a strict caller', () => {
     const text = description('strict');
-    expect(text).toContain('Preferred agent profiles: explore.');
+    expect(text).toContain('Available profiles (pass via profile; preferred first):');
     expect(text).toContain('- explore: Preferred explorer');
     expect(text).not.toContain('- worker: Other worker');
   });
