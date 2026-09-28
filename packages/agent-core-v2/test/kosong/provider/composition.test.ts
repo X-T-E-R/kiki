@@ -1033,6 +1033,33 @@ function isStreaming(provider: ChatProvider): boolean {
   return (Reflect.get(provider, '_stream') as boolean | undefined) !== false;
 }
 
+async function* openAIChunkStreamWithUsage(usage: Record<string, unknown>): AsyncIterable<unknown> {
+  yield {
+    id: 'chatcmpl-probe',
+    choices: [{ index: 0, delta: { content: 'Hello' }, finish_reason: 'stop' }],
+  };
+  yield { id: 'chatcmpl-probe', choices: [], usage };
+}
+
+async function* anthropicEventStreamWithCacheUsage(): AsyncIterable<unknown> {
+  yield {
+    type: 'message_start',
+    message: {
+      id: 'msg_probe',
+      usage: {
+        input_tokens: 20,
+        output_tokens: 1,
+        cache_read_input_tokens: 80,
+        cache_creation_input_tokens: 5,
+      },
+    },
+  };
+  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
+  yield { type: 'content_block_stop', index: 0 };
+  yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } };
+}
+
 async function* openAIChunkStream(): AsyncIterable<unknown> {
   yield {
     id: 'chatcmpl-probe',
@@ -1085,6 +1112,18 @@ function anthropicMessageResponse(): Record<string, unknown> {
     content: [{ type: 'text', text: 'Hello' }],
     stop_reason: 'end_turn',
     usage: { input_tokens: 3, output_tokens: 1 },
+  };
+}
+
+function anthropicMessageResponseWithCacheUsage(): Record<string, unknown> {
+  return {
+    ...anthropicMessageResponse(),
+    usage: {
+      input_tokens: 20,
+      output_tokens: 1,
+      cache_read_input_tokens: 80,
+      cache_creation_input_tokens: 5,
+    },
   };
 }
 
@@ -1233,6 +1272,108 @@ describe('provider usage reporting', () => {
     await drain(stream);
 
     expect(stream.usage).toBeNull();
+  });
+
+  it('reads prompt_tokens_details.cached_tokens without double-counting it as input', async () => {
+    const provider = new OpenAILegacyChatProvider({
+      model: 'example-model',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test/v1',
+    });
+    const client = sdkClient(provider) as { chat: { completions: { create: unknown } } };
+    client.chat.completions.create = vi.fn().mockReturnValue({
+      withResponse: () => Promise.resolve({
+        data: openAIChunkStreamWithUsage({
+          prompt_tokens: 100,
+          completion_tokens: 10,
+          total_tokens: 110,
+          prompt_tokens_details: { cached_tokens: 80 },
+        }),
+        response: { headers: new Headers() },
+      }),
+    });
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.usage).toEqual({
+      inputOther: 20,
+      output: 10,
+      inputCacheRead: 80,
+      inputCacheCreation: 0,
+    });
+  });
+
+  it('reads the DeepSeek prompt_cache_hit_tokens field as cache read', async () => {
+    const provider = new OpenAILegacyChatProvider({
+      model: 'deepseek-chat',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test/v1',
+    });
+    const client = sdkClient(provider) as { chat: { completions: { create: unknown } } };
+    client.chat.completions.create = vi.fn().mockReturnValue({
+      withResponse: () => Promise.resolve({
+        data: openAIChunkStreamWithUsage({
+          prompt_tokens: 100,
+          completion_tokens: 10,
+          total_tokens: 110,
+          prompt_cache_hit_tokens: 80,
+          prompt_cache_miss_tokens: 20,
+        }),
+        response: { headers: new Headers() },
+      }),
+    });
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.usage).toEqual({
+      inputOther: 20,
+      output: 10,
+      inputCacheRead: 80,
+      inputCacheCreation: 0,
+    });
+  });
+
+  it('reports Anthropic cache_read_input_tokens and cache_creation_input_tokens from a stream', async () => {
+    const provider = new AnthropicChatProvider({
+      model: 'example-model',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+    });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicEventStreamWithCacheUsage());
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.usage).toEqual({
+      inputOther: 20,
+      output: 1,
+      inputCacheRead: 80,
+      inputCacheCreation: 5,
+    });
+  });
+
+  it('reports Anthropic cache tokens from a non-streaming response', async () => {
+    const provider = new AnthropicChatProvider({
+      model: 'example-model',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+      stream: false,
+    });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicMessageResponseWithCacheUsage());
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.usage).toEqual({
+      inputOther: 20,
+      output: 1,
+      inputCacheRead: 80,
+      inputCacheCreation: 5,
+    });
   });
 });
 

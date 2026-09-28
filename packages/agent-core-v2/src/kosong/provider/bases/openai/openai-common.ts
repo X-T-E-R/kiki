@@ -194,6 +194,8 @@ export function extractUsage(usage: unknown): TokenUsage | null {
     if (typeof details['cached_tokens'] === 'number') {
       cached = details['cached_tokens'];
     }
+  } else if (typeof u['prompt_cache_hit_tokens'] === 'number') {
+    cached = u['prompt_cache_hit_tokens'];
   }
 
   return {
