@@ -54,6 +54,7 @@ import {
   groupHasRunning,
   groupSummary,
   latestFinalAssistantBlockId,
+  MAIN_AGENT_ID,
   stabilizeAgentForest,
   type AgentForest,
   type AgentTreeNode,
@@ -1318,10 +1319,13 @@ const BlockView = memo(function BlockView({
   const placement = useInteractionPlacement();
   const originUnknown =
     (block.kind === 'approval' || block.kind === 'question') && block.originUnknown === true;
+  // Only a subagent origin is named (as its timeline row names it); the
+  // main agent's own asks carry no prefix.
   const originAgentName =
     !originUnknown &&
     (block.kind === 'approval' || block.kind === 'question') &&
-    block.originAgentId !== undefined
+    block.originAgentId !== undefined &&
+    block.originAgentId !== MAIN_AGENT_ID
       ? (agentNames?.get(block.originAgentId) ?? block.originAgentId)
       : undefined;
   // An unknown origin says nothing actionable: show no provenance at all

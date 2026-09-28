@@ -126,7 +126,7 @@ describe('board container and controlled forms (mock transport, no persistence c
     const client: BoardClient = { read, write };
     await act(async () => renderWithI18n(<TaskBoardContainer client={client} workspaceIds={['workspace-a']} currentWorkspaceId="workspace-a" workspaces={[{ id: 'workspace-a', title: 'Example' }]} sessions={[{ id: 'session-a', title: 'First' }, { id: 'session-b', title: 'Second' }]} />));
     expect(read.mock.calls.filter(([input]) => input.action === 'show')).toHaveLength(0);
-    await act(async () => button('+ New Requirement').click());
+    await act(async () => document.body.querySelector<HTMLButtonElement>('button[data-board-new-task]')!.click());
     const form = document.body.querySelector('[data-new-task-modal] form') as HTMLFormElement;
     const title = form.querySelector('input[type=text]') as HTMLInputElement;
     await act(async () => change(title, 'An idea'));

@@ -276,10 +276,12 @@ export const TaskBoard = memo(function TaskBoard({
             ) : null}
             <button
               type="button"
+              data-board-new-task
               onClick={() => setShowNewTaskModal(true)}
-              className="h-8 rounded-md bg-accent px-3.5 text-[13px] font-medium text-panel transition-colors hover:bg-accent-deep"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3.5 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
             >
-              + {t('taskBoard.newTask')}
+              <Icon name="plus" size={14} />
+              {t('taskBoard.newTask')}
             </button>
           </div>
         </div>

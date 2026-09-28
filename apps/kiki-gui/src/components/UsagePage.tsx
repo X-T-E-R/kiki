@@ -312,7 +312,7 @@ function FilterBar({
               }}
               className={dateInput}
             />
-            <span aria-hidden className="text-ink-faint">→</span>
+            <Icon name="arrowRight" size={12} className="text-ink-faint" />
             <input
               type="date"
               aria-label={t('usage.customRange.end')}

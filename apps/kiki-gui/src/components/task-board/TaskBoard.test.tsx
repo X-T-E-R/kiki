@@ -252,9 +252,8 @@ describe('TaskBoard Component Presentation', () => {
       );
     });
 
-    const newBtn = Array.from(document.body.querySelectorAll('button')).find((b) =>
-      b.textContent?.includes('+ New Requirement')
-    );
+    const newBtn = document.body.querySelector<HTMLButtonElement>('button[data-board-new-task]') ?? undefined;
+    expect(newBtn?.textContent).toBe('New Requirement');
     expect(newBtn).toBeDefined();
     await act(async () => {
       newBtn!.click();

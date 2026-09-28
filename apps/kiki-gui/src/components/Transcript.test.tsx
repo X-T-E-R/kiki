@@ -3227,6 +3227,24 @@ describe('terminal pile-up folding (timeline tail)', () => {
     expect(container.textContent).toContain('Prompt aborted');
   });
 
+  it('names only a subagent origin on a resolved approval line', async () => {
+    const resolved = (id: string, originAgentId: string): Block => ({
+      ...(virtualApprovalBlock(id) as Extract<Block, { kind: 'approval' }>),
+      originAgentId,
+      resolution: { decision: 'approved', resolvedAt: '2026-01-01T00:01:00.000Z' },
+    });
+    const container = await renderTranscript([
+      userBlock({ id: 'u1', text: 'kick off' }),
+      resolved('approval-main', 'main'),
+      resolved('approval-child', 'agent-writer'),
+    ]);
+    const lines = [...container.querySelectorAll('[data-history-line]')].map((line) => line.textContent ?? '');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).not.toContain('main');
+    expect(lines[0]).toContain('Bash · Run command');
+    expect(lines[1]).toContain('agent-writer · Bash · Run command');
+  });
+
   it('shows every historical failure inline and still renders the latest tail', async () => {
     // Kept inside the virtual window: the point is that the failures are
     // inline, not that they survive being scrolled off screen.
