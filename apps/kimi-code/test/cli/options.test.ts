@@ -560,6 +560,7 @@ describe('CLI options parsing', () => {
         'session',
         'provider',
         'acp',
+        'desktop',
         'web',
         'login',
         'doctor',
