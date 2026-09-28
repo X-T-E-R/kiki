@@ -364,7 +364,8 @@ describe('thread communication tools', () => {
     expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>)).toEqual([
       'title', 'cwd', 'profile', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt',
     ]);
-    expect(tool.description).toContain('Do not use this tool unless the user explicitly asks');
+    expect(tool.description).toContain('only when the user explicitly asks');
+    expect(tool.description).toContain('the new thread is user-owned, does not report its work back');
   });
 
   it('propagates binding validation errors from session creation without starting a prompt', async () => {
