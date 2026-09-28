@@ -34,7 +34,6 @@ function emptyState(patch: Partial<Parameters<typeof writeComposerState>[1]> = {
     permissionMode: undefined,
     planMode: undefined,
     planGate: undefined,
-    swarmMode: undefined,
     goalObjective: undefined,
     modelOverride: undefined,
     effortOverride: undefined,
@@ -122,9 +121,9 @@ describe('per-session composer state (memory-only)', () => {
     writeComposerState('s1', state);
     expect(readComposerState('s1')).toEqual(state);
 
-    writeComposerState('s2', emptyState({ swarmMode: true }));
+    writeComposerState('s2', emptyState({ planMode: true }));
     expect(readComposerState('s1').permissionMode).toBe('auto');
-    expect(readComposerState('s2').swarmMode).toBe(true);
+    expect(readComposerState('s2').planMode).toBe(true);
   });
 
   it('keeps unsent annotations when leaving and reopening a session, without leaking to another', () => {
@@ -171,7 +170,6 @@ describe('per-session composer state (memory-only)', () => {
       permissionMode: 'auto',
       planMode: true,
       planGate: 'gated',
-      swarmMode: true,
       goalObjective: 'dangerous target',
       modelOverride: 'kimi/k2',
       effortOverride: 'high',
@@ -189,7 +187,6 @@ describe('per-session composer state (memory-only)', () => {
     expect(restored.permissionMode).toBeUndefined();
     expect(restored.planMode).toBeUndefined();
     expect(restored.planGate).toBeUndefined();
-    expect(restored.swarmMode).toBeUndefined();
     expect(restored.goalObjective).toBeUndefined();
     expect(restored.attachments).toBeUndefined();
     expect(restored.annotations).toBeUndefined();

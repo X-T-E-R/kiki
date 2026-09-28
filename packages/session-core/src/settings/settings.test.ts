@@ -927,8 +927,8 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'plan mode').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-defaults')).toBe(true);
     expect(searchSettings(index, 'conversation titles').some((hit) => hit.section === 'general' && hit.cardId === 'st-card-session-title')).toBe(true);
     expect(searchSettings(index, 'denied subagent models').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
-    expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-subagent-profiles')).toBe(true);
-    expect(searchSettings(index, 'Main agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
+    expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
+    expect(searchSettings(index, 'Agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
     expect(searchSettings(index, 'subagent')[0]?.section).toBe('subagents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);
@@ -984,16 +984,13 @@ describe('settings search index', () => {
 });
 
 describe('settings nav groups (redesign batch 1)', () => {
-  it('matches the adjudicated topology: six groups plus an ungrouped About leaf', () => {
+  it('groups every leaf under the four top-level destinations', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
-    const leaves = SETTINGS_NAV_TREE.filter((node) => node.kind === 'leaf');
     expect(groups.map((group) => group.id))
-      .toEqual(['app', 'ai', 'agents', 'extensions', 'system', 'advanced']);
-    // Batch 3 filled the last empty group: every group now owns leaves.
+      .toEqual(['app', 'models-agents', 'tools-integrations', 'system-data']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
-    // "About & updates" is a clickable leaf outside all groups, not a group.
-    expect(leaves.map((leaf) => leaf.section)).toEqual(['about']);
-    expect(settingsGroupForSection('about')).toBeUndefined();
+    expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
+    expect(settingsGroupForSection('about')?.id).toBe('system-data');
   });
 
   it('places every section exactly once, high-frequency first', () => {
@@ -1001,23 +998,21 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect([...placed].toSorted()).toEqual(SETTINGS_SECTIONS.map((section) => section.id).toSorted());
     expect(new Set(placed).size).toBe(placed.length);
     expect(SETTINGS_NAV_TREE[0]).toMatchObject({ kind: 'group', id: 'app' });
-    expect(SETTINGS_NAV_TREE.at(-1)).toEqual({ kind: 'leaf', section: 'about' });
-    expect(settingsGroupForSection('ai')?.id).toBe('ai');
-    // The Plan & tasks leaf owns plan defaults, the task board, and the task
-    // policy/cron cards from the retired runtime leaf; the remaining engine
-    // knobs live under Data & advanced, identity under Agents.
-    expect(settingsGroupForSection('skills')?.id).toBe('extensions');
-    expect(settingsGroupForSection('mcp')?.id).toBe('extensions');
-    expect(settingsGroupForSection('plugins')?.id).toBe('extensions');
-    expect(settingsGroupForSection('automation')?.id).toBe('extensions');
-    expect(settingsGroupForSection('tasks')?.id).toBe('extensions');
-    expect(settingsGroupForSection('search')?.id).toBe('extensions');
-    expect(settingsGroupForSection('subagents')?.id).toBe('agents');
+    expect(SETTINGS_NAV_TREE).toHaveLength(4);
+    expect(settingsGroupForSection('ai')?.id).toBe('models-agents');
+    expect(settingsGroupForSection('tasks')?.id).toBe('models-agents');
+    expect(settingsGroupForSection('subagents')?.id).toBe('models-agents');
+    for (const leaf of ['skills', 'mcp', 'plugins', 'automation', 'search']) {
+      expect(settingsGroupForSection(leaf)?.id).toBe('tools-integrations');
+    }
+    for (const leaf of ['advanced', 'workspaces', 'about']) {
+      expect(settingsGroupForSection(leaf)?.id).toBe('system-data');
+    }
+    // This device: language and behaviour, look, and which server it uses.
+    expect((SETTINGS_NAV_TREE[0] as { sections: readonly string[] }).sections)
+      .toEqual(['general', 'appearance', 'connection']);
     expect(settingsGroupForSection('runtime')).toBeUndefined();
     expect(settingsGroupForSection('experimental')).toBeUndefined();
-    expect(settingsGroupForSection('advanced')?.id).toBe('advanced');
-    expect(settingsGroupForSection('workspaces')?.id).toBe('system');
-    expect(settingsGroupForSection('connection')?.id).toBe('system');
     expect(settingsGroupForSection('capabilities')).toBeUndefined();
     expect(settingsGroupForSection('nope')).toBeUndefined();
   });
@@ -1049,6 +1044,44 @@ describe('settings nav groups (redesign batch 1)', () => {
   });
 });
 
+describe('appearance leaf', () => {
+  it('owns the appearance cards and keeps the old General anchor working', () => {
+    expect(resolveSettingsRoute('general', '#st-card-appearance'))
+      .toMatchObject({ status: 'ok', section: 'appearance', cardId: 'st-card-appearance' });
+    expect(resolveSettingsRoute(undefined, '#st-card-appearance'))
+      .toMatchObject({ status: 'ok', section: 'appearance' });
+    expect(resolveSettingsRoute('theme', '')).toMatchObject({ status: 'ok', section: 'appearance' });
+    expect(resolveSettingsRoute('skins', '')).toMatchObject({ status: 'ok', section: 'appearance' });
+    // Queued-message timing is a device preference; it moved to General.
+    expect(resolveSettingsRoute('communication', '#st-card-append-timing'))
+      .toMatchObject({ status: 'ok', section: 'general', cardId: 'st-card-append-timing' });
+  });
+
+  it('finds appearance settings by everyday words in both locales', () => {
+    const en = buildSettingsSearchIndex({}, (key) => translate('en', key));
+    const zh = buildSettingsSearchIndex({}, (key) => translate('zh', key));
+    for (const [index, query, card] of [
+      [en, 'dark mode', 'st-card-appearance'],
+      [en, 'serif', 'st-card-appearance-type'],
+      [en, 'reduce motion', 'st-card-appearance-layout'],
+      [zh, '皮肤', 'st-card-appearance'],
+      [zh, '动效', 'st-card-appearance-layout'],
+    ] as const) {
+      expect(searchSettings(index, query).some((hit) => hit.cardId === card), `${query}`).toBe(true);
+    }
+  });
+
+  it('normalizes the stored motion and prose preferences', () => {
+    localStorage.setItem('kiki.settings', JSON.stringify({ motion: 'wild', proseFont: 'comic' }));
+    expect(readSettings().motion).toBe('system');
+    expect(readSettings().proseFont).toBe('serif');
+    localStorage.setItem('kiki.settings', JSON.stringify({ motion: 'reduce', proseFont: 'sans' }));
+    expect(readSettings().motion).toBe('reduce');
+    expect(readSettings().proseFont).toBe('sans');
+    localStorage.removeItem('kiki.settings');
+  });
+});
+
 describe('settings search breadcrumbs and synonyms', () => {
   const t = (key: I18nKey): string => translate('en', key);
   const tZh = (key: I18nKey): string => translate('zh', key);
@@ -1056,13 +1089,11 @@ describe('settings search breadcrumbs and synonyms', () => {
   it('carries the visual group into grouped hits for the group › leaf › card breadcrumb', () => {
     const index = buildSettingsSearchIndex({ general: 'General' }, t);
     const models = index.find((entry) => entry.cardId === 'st-card-models');
-    expect(models?.groupLabel).toBe('AI configuration');
-    // About is an ungrouped top-level leaf: its hits have no group crumb.
+    expect(models?.groupLabel).toBe('Models & agents');
     const about = index.find((entry) => entry.cardId === 'st-card-about');
-    expect(about?.groupLabel).toBe('');
-    expect(index.filter((entry) => entry.section !== 'about').every((entry) => entry.groupLabel !== '')).toBe(true);
-    // Group labels are indexed too, so "AI configuration" finds its leaves.
-    expect(searchSettings(index, 'AI configuration').some((hit) => hit.section === 'ai')).toBe(true);
+    expect(about?.groupLabel).toBe('System & data');
+    expect(index.every((entry) => entry.groupLabel !== '')).toBe(true);
+    expect(searchSettings(index, 'Models & agents').some((hit) => hit.section === 'ai')).toBe(true);
   });
 
   it.each([
@@ -1075,7 +1106,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     // composer card; the legacy terms keep finding it.
     ['transcript', 'st-card-composer'],
     ['timeline', 'st-card-composer'],
-    ['Profiles', 'st-card-subagent-profiles'],
+    ['Profiles', 'st-card-main-agents'],
     ['子 Agent', 'st-card-subagents'],
   ])('matches the legacy/synonym term %s in English', (term, cardId) => {
     const index = buildSettingsSearchIndex({}, t);
@@ -1179,18 +1210,18 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'automation', cardId: 'st-card-tools', tab: undefined });
     expect(resolveSettingsRoute('capabilities', '#st-card-caps'))
       .toEqual({ status: 'ok', section: 'skills', cardId: 'st-card-caps', tab: undefined });
-    // The dissolved sidecar card has no field-level hash, so its hand-written
-    // alias lands on the subagent timeout card (§10.3's adjudicated fallback).
+    // The duplicate timeout card was removed; legacy links land on its editor.
     expect(resolveSettingsRoute('agents', '#st-card-sidecar'))
-      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-timeout', tab: undefined });
+      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-limits', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-sidecar'))
-      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-timeout', tab: undefined });
+      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-limits', tab: undefined });
+    expect(resolveSettingsRoute('subagents', '#st-card-subagent-timeout'))
+      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-limits', tab: undefined });
   });
 
   it('redirects the retired runtime page to tasks and keeps dissolved card links precise', () => {
-    // Bare /settings/runtime lands on tasks, where its dominant content (task
-    // policy, cron) now lives; the dissolved st-card-runtime hash follows its
-    // hand-written alias to the task-policy card.
+    // Bare /settings/runtime lands on task policy; precise cron links follow
+    // the read-only diagnostics under System & data.
     expect(resolveSettingsRoute('runtime', ''))
       .toEqual({ status: 'ok', section: 'tasks', cardId: undefined, tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-runtime'))
@@ -1201,7 +1232,7 @@ describe('settings route resolver', () => {
     // the dissolved st-card-communication hash follows its hand-written alias
     // to the communication leaf's thread card.
     expect(resolveSettingsRoute('runtime', '#st-card-cron'))
-      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-cron', tab: undefined });
+      .toEqual({ status: 'ok', section: 'advanced', cardId: 'st-card-cron', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
       .toEqual({ status: 'ok', section: 'communication', cardId: 'st-card-thread-communication', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))

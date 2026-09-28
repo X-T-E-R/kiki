@@ -1,15 +1,16 @@
 /**
- * Step folding for the transcript (aionui's MessageToolGroupSummary
+ * Read-run folding for the transcript (aionui's MessageToolGroupSummary
  * pattern — https://github.com/AionUi/AionUi, Apache-2.0 — as a pure
- * reducer-side grouping): a step is a block that carries no assistant prose —
- * tool calls, shell runs, and thinking. Runs of ≥2 consecutive steps fold
- * into one "Steps · N" node; single steps and any other block stay bare.
- * Grouping is a render-time projection — the underlying block list (and its
- * reducer semantics) is untouched.
+ * reducer-side grouping). Opt-in (the `foldSteps` preference is off by
+ * default): settled actions stay in place in the timeline, and only a run of
+ * ≥3 consecutive PURE READS (read / list / search / fetch) folds into one
+ * summary line that still names every object it looked at.
  *
- * Never folded (they break a run by definition): user and assistant text,
- * subagent cards and lifecycle events, approvals, questions, notices,
- * system/skill blocks — anything the user must read or act on.
+ * Anything that changes the world or carries the agent's voice breaks a run:
+ * edits, writes, shell commands, thinking, assistant/user text, subagent
+ * cards and lifecycle events, approvals, questions, notices, system/skill
+ * blocks, and the memory tools. Grouping is a render-time projection — the
+ * underlying block list (and its reducer semantics) is untouched.
  */
 
 import type { Block, ShellBlock, ThinkingBlock, ToolBlock } from './transcript';
@@ -20,17 +21,16 @@ export interface ToolGroup {
   readonly id: string;
   /**
    * The run's steps in ORIGINAL occurrence order — the expanded view renders
-   * this, never the per-kind lists, so Read → shell → thinking → Edit stays
-   * in the order it happened.
+   * this, never the per-kind lists.
    */
   readonly members: readonly Block[];
   /** Tool calls in the run, in order (summary aggregation only). */
   readonly tools: readonly ToolBlock[];
-  /** Shell runs in the run, in order (summary aggregation only). */
+  /** Shell runs in the run (always empty for read runs; kept for the shape). */
   readonly shells: readonly ShellBlock[];
-  /** Thinking blocks in the run, in order (summary aggregation only). */
+  /** Thinking blocks in the run (always empty for read runs; kept for the shape). */
   readonly thinking: readonly ThinkingBlock[];
-  /** Total member count (tools + shells + thinking). */
+  /** Total member count. */
   readonly count: number;
   /** Epoch ms of the earliest member start; undefined when none is known. */
   readonly startedAt: number | undefined;
@@ -44,52 +44,155 @@ export interface ToolGroup {
 
 export type DisplayNode = Block | ToolGroup;
 
-/** A step: tool call, shell run, or thinking — no assistant prose. */
-function isStepBlock(block: Block): boolean {
-  return block.kind === 'tool' || block.kind === 'shell' || block.kind === 'thinking';
+/** Minimum run length that folds. Two reads are cheaper to show than to hide. */
+export const READ_RUN_MIN = 3;
+
+/**
+ * The memory tools. Their rows are already one quiet line and carry the
+ * write's own actions (view, undo), so folding them would hide an action
+ * behind an expand — the same reason approvals are never folded.
+ */
+const MEMORY_TOOL_NAMES: readonly string[] = ['MemoryWrite', 'MemoryRead', 'MemorySearch'];
+
+export function isMemoryToolName(name: string): boolean {
+  return MEMORY_TOOL_NAMES.includes(name);
+}
+
+/** What a step did to its object, in the summary's vocabulary. */
+export type StepVerb = 'read' | 'list' | 'search' | 'fetch' | 'edit' | 'create' | 'run' | 'other';
+
+const READ_VERBS: ReadonlySet<StepVerb> = new Set(['read', 'list', 'search', 'fetch']);
+
+export interface StepObject {
+  readonly verb: StepVerb;
+  /** Short human object: a file's basename, a pattern, a query, a host/path. */
+  readonly target: string | undefined;
+}
+
+function stringField(record: unknown, ...keys: readonly string[]): string | undefined {
+  if (typeof record !== 'object' || record === null) return undefined;
+  for (const key of keys) {
+    const value = (record as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value !== '') return value;
+  }
+  return undefined;
+}
+
+/** Last path segment; keeps glob patterns and bare names intact. */
+function basename(path: string): string {
+  if (/[*?[\]{}]/.test(path)) return path;
+  const trimmed = path.replace(/[\\/]+$/, '');
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  return cut === -1 ? trimmed : trimmed.slice(cut + 1);
+}
+
+function shortUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname === '/' ? '' : parsed.pathname;
+    return `${parsed.host}${path}`;
+  } catch {
+    return url;
+  }
+}
+
+function clip(text: string, limit = 48): string {
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+}
+
+function verbFromName(name: string): StepVerb {
+  const lower = name.toLowerCase();
+  if (/bash|shell|cmd|exec/.test(lower)) return 'run';
+  if (/multiedit|edit|str_replace|patch/.test(lower)) return 'edit';
+  if (/write|create/.test(lower)) return 'create';
+  if (/fetch|browse/.test(lower)) return 'fetch';
+  if (/grep|search/.test(lower)) return 'search';
+  if (/glob|^ls$|list/.test(lower)) return 'list';
+  if (/read|view|cat/.test(lower)) return 'read';
+  return 'other';
+}
+
+/** The verb + object a tool call acted on, from its display payload or args. */
+export function stepObject(block: ToolBlock): StepObject {
+  const display = block.display as { kind?: string } | undefined;
+  switch (display?.kind) {
+    case 'file_io': {
+      const d = display as { operation?: string; path?: string; before?: unknown };
+      const path = d.path === undefined ? undefined : basename(d.path);
+      const verb: StepVerb =
+        d.operation === 'read' ? 'read'
+          : d.operation === 'edit' ? 'edit'
+            : d.operation === 'write' ? (typeof d.before === 'string' ? 'edit' : 'create')
+              : d.operation === 'grep' ? 'search'
+                : 'list';
+      return { verb, target: path };
+    }
+    case 'diff':
+      return { verb: 'edit', target: stringField(display, 'path') === undefined ? undefined : basename(stringField(display, 'path')!) };
+    case 'search':
+      return { verb: 'search', target: stringField(display, 'query') === undefined ? undefined : clip(stringField(display, 'query')!) };
+    case 'url_fetch':
+      return { verb: 'fetch', target: stringField(display, 'url') === undefined ? undefined : clip(shortUrl(stringField(display, 'url')!)) };
+    case 'command':
+      return { verb: 'run', target: stringField(display, 'command') === undefined ? undefined : clip(stringField(display, 'command')!) };
+    case undefined:
+      break;
+    default:
+      return { verb: 'other', target: undefined };
+  }
+  const verb = verbFromName(block.name);
+  const path = stringField(block.args, 'file_path', 'path');
+  const query = stringField(block.args, 'pattern', 'query');
+  const url = stringField(block.args, 'url');
+  const command = stringField(block.args, 'command');
+  const target =
+    verb === 'run' ? (command === undefined ? undefined : clip(command))
+      : verb === 'fetch' ? (url === undefined ? undefined : clip(shortUrl(url)))
+        : verb === 'search' || verb === 'list' ? (query ?? (path === undefined ? undefined : basename(path)))
+          : path === undefined ? undefined : basename(path);
+  return { verb, target: target === undefined ? undefined : clip(target) };
+}
+
+/** A pure read: a non-memory tool call that only looks at the world. */
+export function isReadStep(block: Block): block is ToolBlock {
+  if (block.kind !== 'tool' || isMemoryToolName(block.name)) return false;
+  return READ_VERBS.has(stepObject(block).verb);
 }
 
 export function groupBlocks(blocks: readonly Block[]): DisplayNode[] {
   const nodes: DisplayNode[] = [];
-  let run: Block[] = [];
+  let run: ToolBlock[] = [];
 
   const flush = () => {
-    if (run.length >= 2) {
-      const tools = run.filter((block): block is ToolBlock => block.kind === 'tool');
-      const shells = run.filter((block): block is ShellBlock => block.kind === 'shell');
-      const thinking = run.filter((block): block is ThinkingBlock => block.kind === 'thinking');
+    if (run.length >= READ_RUN_MIN) {
       const starts = run
-        .map((block) => (block.kind === 'tool' || block.kind === 'shell' ? block.startedAt : undefined))
+        .map((block) => block.startedAt)
         .filter((start): start is number => start !== undefined);
       let duration: number | undefined;
-      let framed = false;
       for (const block of run) {
-        const own =
-          block.kind === 'tool' && block.durationSource === 'frame' ? block.durationMs : undefined;
-        if (own !== undefined) {
-          framed = true;
-          duration = (duration ?? 0) + own;
+        if (block.durationSource === 'frame' && block.durationMs !== undefined) {
+          duration = (duration ?? 0) + block.durationMs;
         }
       }
       nodes.push({
         kind: 'tool-group',
         id: `group-${run[0]!.id}`,
         members: run,
-        tools,
-        shells,
-        thinking,
+        tools: run,
+        shells: [],
+        thinking: [],
         count: run.length,
         startedAt: starts.length > 0 ? Math.min(...starts) : undefined,
-        durationMs: framed ? duration : undefined,
+        durationMs: duration,
       });
-    } else if (run.length === 1) {
-      nodes.push(run[0]!);
+    } else {
+      nodes.push(...run);
     }
     run = [];
   };
 
   for (const block of blocks) {
-    if (isStepBlock(block)) {
+    if (isReadStep(block)) {
       run.push(block);
     } else {
       flush();
@@ -114,10 +217,31 @@ export function groupHasError(group: ToolGroup): boolean {
   );
 }
 
-/** One-line names preview for the collapsed summary, e.g. "Read, Edit, Bash". */
-export function groupToolNames(group: ToolGroup, max = 4): string {
-  const names = group.tools.map((tool) => tool.name);
-  if (group.shells.length > 0) names.push('shell');
-  if (names.length <= max) return names.join(', ');
-  return `${names.slice(0, max).join(', ')} +${names.length - max}`;
+export interface StepSummaryPart {
+  readonly verb: StepVerb;
+  /** Distinct objects in first-seen order, capped. */
+  readonly targets: readonly string[];
+  /** Objects beyond the cap (rendered as "+N"). */
+  readonly more: number;
+}
+
+/**
+ * The folded line's object summary: consecutive steps with the same verb
+ * share one verb ("read plan.ts, notes.md · searched *.ts"), objects are
+ * de-duplicated, and each verb lists at most `maxTargets` objects.
+ */
+export function groupSummary(group: ToolGroup, maxTargets = 3): StepSummaryPart[] {
+  const parts: { verb: StepVerb; targets: string[]; more: number }[] = [];
+  for (const tool of group.tools) {
+    const { verb, target } = stepObject(tool);
+    let part = parts.at(-1);
+    if (part?.verb !== verb) {
+      part = { verb, targets: [], more: 0 };
+      parts.push(part);
+    }
+    if (target === undefined || part.targets.includes(target)) continue;
+    if (part.targets.length < maxTargets) part.targets.push(target);
+    else part.more += 1;
+  }
+  return parts;
 }

@@ -83,7 +83,15 @@ export function dedupeSessions(data: SessionListData | undefined): Session[] {
  * to the top of their bucket (newest-pinned first) regardless of this order
  * — the selected order only arranges the unpinned remainder.
  */
-export type SessionSortOrder = 'updated-desc' | 'updated-asc' | 'title';
+export type SessionSortOrder = 'updated-desc' | 'updated-asc' | 'created-desc' | 'title';
+
+/** Orders the View menu offers, in menu order. `updated-asc` stays readable
+ * for persisted prefs but is no longer offered. */
+export const SESSION_SORT_ORDERS: readonly SessionSortOrder[] = ['updated-desc', 'created-desc', 'title'];
+
+export function isSessionSortOrder(value: unknown): value is SessionSortOrder {
+  return value === 'updated-desc' || value === 'updated-asc' || value === 'created-desc' || value === 'title';
+}
 
 function byUpdatedDesc(a: Session, b: Session): number {
   return b.updated_at.localeCompare(a.updated_at);
@@ -91,6 +99,10 @@ function byUpdatedDesc(a: Session, b: Session): number {
 
 function byUpdatedAsc(a: Session, b: Session): number {
   return a.updated_at.localeCompare(b.updated_at);
+}
+
+function byCreatedDesc(a: Session, b: Session): number {
+  return b.created_at.localeCompare(a.created_at) || byUpdatedDesc(a, b);
 }
 
 function byTitle(a: Session, b: Session): number {
@@ -130,6 +142,7 @@ export function sortSessionItems(
   pinned.sort(byUpdatedDesc);
   if (order === 'title') rest.sort(byTitle);
   else if (order === 'updated-asc') rest.sort(byUpdatedAsc);
+  else if (order === 'created-desc') rest.sort(byCreatedDesc);
   else rest.sort(byUpdatedDesc);
   return [...pinned, ...rest];
 }
@@ -266,4 +279,40 @@ export function groupSessionsByWorkspace(
 
   const ordered = result.filter((group): group is SessionGroup => group !== undefined);
   return pinned !== undefined && pinned.items.length > 0 ? [pinned, ...ordered] : ordered;
+}
+
+/** Status buckets the filter chips read (mirrors the sidebar row dot). */
+export function sessionStatusOf(session: Session): 'running' | 'needs-me' | 'idle' {
+  const pending = session.pending_interaction;
+  if (pending === 'approval' || pending === 'question') return 'needs-me';
+  return session.busy ? 'running' : 'idle';
+}
+
+export interface SessionFilterInput {
+  readonly status: readonly ('running' | 'needs-me' | 'idle')[];
+  readonly workspaces: readonly string[];
+  readonly archived: 'hide' | 'include' | 'only';
+}
+
+/**
+ * Apply the composable sidebar filters client-side. Dimensions AND together;
+ * entries within one dimension OR. Archived `hide` also drops archived rows a
+ * caller may still hold from an earlier include fetch.
+ */
+export function filterSessions(sessions: readonly Session[], filters: SessionFilterInput): Session[] {
+  const status = new Set(filters.status);
+  const workspaces = new Set(filters.workspaces);
+  return sessions.filter((session) => {
+    const archived = session.archived === true;
+    if (filters.archived === 'hide' && archived) return false;
+    if (filters.archived === 'only' && !archived) return false;
+    if (workspaces.size > 0 && !workspaces.has(session.workspace_id)) return false;
+    if (status.size > 0 && !status.has(sessionStatusOf(session))) return false;
+    return true;
+  });
+}
+
+/** True when any filter narrows the list (drives the chip row + empty copy). */
+export function hasActiveSessionFilters(filters: SessionFilterInput): boolean {
+  return filters.status.length > 0 || filters.workspaces.length > 0 || filters.archived !== 'hide';
 }

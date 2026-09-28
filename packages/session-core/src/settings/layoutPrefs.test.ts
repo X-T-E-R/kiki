@@ -41,9 +41,27 @@ describe('readLayoutPreferences', () => {
     expect(prefs).toEqual({
       groupBy: 'time',
       sortBy: 'updated-desc',
+      filters: { status: [], workspaces: [], archived: 'hide' },
       sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
       railWidth: RAIL_DEFAULT_WIDTH,
     });
+  });
+
+  it('round-trips group/sort/filters and drops unknown filter entries', () => {
+    ls().setItem('kiki.layout', JSON.stringify({
+      groupBy: 'none',
+      sortBy: 'created-desc',
+      filters: { status: ['running', 'bogus'], workspaces: ['ws-a', 'ws-a', 3], archived: 'only' },
+    }));
+    const prefs = readLayoutPreferences();
+    expect(prefs.groupBy).toBe('none');
+    expect(prefs.sortBy).toBe('created-desc');
+    expect(prefs.filters).toEqual({ status: ['running'], workspaces: ['ws-a'], archived: 'only' });
+  });
+
+  it('falls back to default filters for a malformed value', () => {
+    ls().setItem('kiki.layout', JSON.stringify({ filters: 'nope' }));
+    expect(readLayoutPreferences().filters).toEqual({ status: [], workspaces: [], archived: 'hide' });
   });
 
   it('clamps out-of-range widths to the min/max bounds', () => {

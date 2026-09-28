@@ -2534,18 +2534,12 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       // One tool deriving several entries keeps their derivation order.
       expect(indexOf('subagent-event-agent-1-resume-call-resume-1')).toBe(resumeTool + 1);
       expect(indexOf('subagent-event-agent-2-resume-call-resume-1')).toBe(resumeTool + 2);
-      // The leading tool run still folds into one group — the anchored
-      // entries sit after their own tools instead of splitting the run.
+      // Folding is reserved for pure-read runs: an Edit or a dispatch is an
+      // action the reader must see, so this run stays unfolded and the
+      // anchored entries keep their place right after their own tools.
       const nodes = groupBlocks(projected.blocks);
-      const fold = nodes.find((node) => node.kind === 'tool-group');
-      expect(fold).toMatchObject({
-        kind: 'tool-group',
-        tools: [
-          { toolCallId: 'call-read-1' },
-          { toolCallId: 'call-edit-1' },
-          { toolCallId: 'call-spawn-1' },
-        ],
-      });
+      expect(nodes.some((node) => node.kind === 'tool-group')).toBe(false);
+      expect(nodes).toEqual(projected.blocks);
     });
 
     it('scopes compact entries to direct children when filtering a page', () => {

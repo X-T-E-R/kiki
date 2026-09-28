@@ -103,6 +103,12 @@ export function buildSwitcherItems(input: {
   actions?: readonly SwitcherAction[];
   /** Settings cards already filtered by the caller's settings search. */
   settings?: readonly SwitcherSettingItem[];
+  /**
+   * Local matches already ranked by the shared search engine
+   * (`searchLocal` via useSessionSearch). When given they replace the
+   * built-in substring match so both search surfaces rank alike.
+   */
+  localMatches?: readonly Session[];
 }): SwitcherItem[] {
   const ordered = sessionsByRecency(input.sessions);
   const query = input.query.trim().toLowerCase();
@@ -115,8 +121,7 @@ export function buildSwitcherItems(input: {
       ...ordered.slice(0, SWITCHER_RECENT_LIMIT).map((session) => toSessionItem(session, input.untitled)),
     ];
   }
-  const titleMatches = ordered
-    .filter((session) => matchesQuery(session, query, input.untitled))
+  const titleMatches = (input.localMatches ?? ordered.filter((session) => matchesQuery(session, query, input.untitled)))
     .slice(0, SWITCHER_TITLE_MATCH_LIMIT)
     .map((session) => toSessionItem(session, input.untitled));
   const hitItems: SwitcherHitItem[] = input.hits.slice(0, SWITCHER_HIT_LIMIT).map((hit) => ({

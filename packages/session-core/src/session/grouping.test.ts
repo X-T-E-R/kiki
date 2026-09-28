@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
-import { groupBlocks, groupHasError, groupHasRunning, groupToolNames, type ToolGroup } from './grouping';
+import {
+  groupBlocks,
+  groupHasError,
+  groupHasRunning,
+  groupSummary,
+  isMemoryToolName,
+  isReadStep,
+  stepObject,
+  type ToolGroup,
+} from './grouping';
 import type { AssistantBlock, ShellBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
 
 let counter = 0;
-function tool(name: string, status: ToolBlock['status'] = 'done'): ToolBlock {
+function tool(
+  name: string,
+  status: ToolBlock['status'] = 'done',
+  extra: Partial<ToolBlock> = {},
+): ToolBlock {
   counter += 1;
   return {
     kind: 'tool',
@@ -22,8 +35,12 @@ function tool(name: string, status: ToolBlock['status'] = 'done'): ToolBlock {
     durationMs: 12,
     durationSource: 'frame',
     progressText: undefined,
+    ...extra,
   };
 }
+
+const read = (path = 'C:/w/plan.ts', status: ToolBlock['status'] = 'done') =>
+  tool('Read', status, { args: { file_path: path } });
 
 function shell(): ShellBlock {
   counter += 1;
@@ -41,13 +58,7 @@ function shell(): ShellBlock {
 
 function thinking(): ThinkingBlock {
   counter += 1;
-  return {
-    kind: 'thinking',
-    id: `think-t${counter}`,
-    text: 'pondering',
-    streaming: false,
-    createdAt: undefined,
-  };
+  return { kind: 'thinking', id: `think-t${counter}`, text: 'pondering', streaming: false, createdAt: undefined };
 }
 
 function text(kind: 'user' | 'assistant'): UserBlock | AssistantBlock {
@@ -57,153 +68,118 @@ function text(kind: 'user' | 'assistant'): UserBlock | AssistantBlock {
     : { kind, id: `a${counter}`, text: 'hello', streaming: false, createdAt: undefined };
 }
 
+describe('stepObject', () => {
+  it('names the verb and the object from the display payload first', () => {
+    expect(stepObject(tool('Read', 'done', {
+      display: { kind: 'file_io', operation: 'read', path: 'C:/fixture/workshop/plan.ts' },
+    }))).toEqual({ verb: 'read', target: 'plan.ts' });
+    expect(stepObject(tool('Write', 'done', {
+      display: { kind: 'file_io', operation: 'write', path: '/w/notes.md', content: 'x' },
+    }))).toEqual({ verb: 'create', target: 'notes.md' });
+    expect(stepObject(tool('Glob', 'done', {
+      display: { kind: 'file_io', operation: 'glob', path: 'C:/w/src' },
+    }))).toEqual({ verb: 'list', target: 'src' });
+  });
+
+  it('falls back to the tool name and args', () => {
+    expect(stepObject(tool('Edit', 'done', { args: { file_path: '/w/a.ts' } }))).toEqual({ verb: 'edit', target: 'a.ts' });
+    expect(stepObject(tool('Grep', 'done', { args: { pattern: 'TODO' } }))).toEqual({ verb: 'search', target: 'TODO' });
+    expect(stepObject(tool('Glob', 'done', { args: { pattern: 'src/**/*.ts' } }))).toEqual({ verb: 'list', target: 'src/**/*.ts' });
+    expect(stepObject(tool('WebFetch', 'done', { args: { url: 'https://example.com/spec' } }))).toEqual({ verb: 'fetch', target: 'example.com/spec' });
+    expect(stepObject(tool('Bash', 'done', { args: { command: 'pnpm test' } }))).toEqual({ verb: 'run', target: 'pnpm test' });
+    expect(stepObject(tool('Mystery'))).toEqual({ verb: 'other', target: undefined });
+  });
+});
+
 describe('groupBlocks', () => {
-  it('folds runs of ≥2 consecutive tool blocks into one group', () => {
-    const nodes = groupBlocks([tool('Read'), tool('Edit'), tool('Bash')]);
+  it('folds a run of three or more pure reads into one group', () => {
+    const nodes = groupBlocks([read(), tool('Grep', 'done', { args: { pattern: 'x' } }), tool('Glob')]);
     expect(nodes).toHaveLength(1);
     const group = nodes[0] as ToolGroup;
     expect(group.kind).toBe('tool-group');
-    expect(group.tools.map((t) => t.name)).toEqual(['Read', 'Edit', 'Bash']);
+    expect(group.count).toBe(3);
   });
 
-  it('keeps a single tool block bare', () => {
-    const nodes = groupBlocks([tool('Read')]);
-    expect(nodes).toHaveLength(1);
-    expect(nodes[0]!.kind).toBe('tool');
+  it('leaves a run of two reads in place', () => {
+    const a = read();
+    const b = read('/w/b.ts');
+    expect(groupBlocks([a, b])).toEqual([a, b]);
   });
 
-  it('breaks runs at any non-tool block', () => {
-    const nodes = groupBlocks([
-      tool('Read'),
-      tool('Edit'),
-      text('assistant') as AssistantBlock,
-      tool('Bash'),
-      tool('Glob'),
-    ]);
-    expect(nodes.map((n) => n.kind)).toEqual(['tool-group', 'assistant', 'tool-group']);
-    expect((nodes[0] as ToolGroup).tools).toHaveLength(2);
-    expect((nodes[2] as ToolGroup).tools).toHaveLength(2);
+  it('never folds edits, writes, commands, shells or thinking — they break the run', () => {
+    const r1 = read();
+    const r2 = read('/w/b.ts');
+    const edit = tool('Edit', 'done', { args: { file_path: '/w/a.ts' } });
+    const r3 = read('/w/c.ts');
+    expect(groupBlocks([r1, r2, edit, r3])).toEqual([r1, r2, edit, r3]);
+    const blocks = [read(), shell(), read(), thinking(), read(), tool('Bash'), read()];
+    expect(groupBlocks(blocks)).toEqual(blocks);
   });
 
-  it('preserves order and identity around groups', () => {
+  it('breaks runs at conversation blocks and preserves identity around groups', () => {
     const first = text('user') as UserBlock;
-    const nodes = groupBlocks([first, tool('A'), tool('B'), text('assistant') as AssistantBlock]);
+    const reads = [read('/w/a.ts'), read('/w/b.ts'), read('/w/c.ts')];
+    const answer = text('assistant') as AssistantBlock;
+    const nodes = groupBlocks([first, ...reads, answer]);
     expect(nodes[0]).toBe(first);
-    expect(nodes[2]!.kind).toBe('assistant');
-    expect((nodes[1] as ToolGroup).id).toBe(`group-tool-t${counter - 2}`);
+    expect(nodes[2]).toBe(answer);
+    const group = nodes[1] as ToolGroup;
+    expect(group.id).toBe(`group-${reads[0]!.id}`);
+    expect(group.members).toEqual(reads);
+    expect(group.members[0]).toBe(reads[0]);
   });
 
   it('exposes running/error aggregation for the summary row', () => {
-    const group = groupBlocks([tool('A'), tool('B', 'error'), tool('C', 'running')])[0] as ToolGroup;
+    const group = groupBlocks([read(), read('/w/b', 'error'), read('/w/c', 'running')])[0] as ToolGroup;
     expect(groupHasError(group)).toBe(true);
     expect(groupHasRunning(group)).toBe(true);
-    const calm = groupBlocks([tool('A'), tool('B')])[0] as ToolGroup;
+    const calm = groupBlocks([read(), read(), read()])[0] as ToolGroup;
     expect(groupHasError(calm)).toBe(false);
     expect(groupHasRunning(calm)).toBe(false);
   });
 
-  it('summarizes tool names with a +N overflow', () => {
-    const group = groupBlocks([tool('A'), tool('B'), tool('C'), tool('D'), tool('E')])[0] as ToolGroup;
-    expect(groupToolNames(group)).toBe('A, B, C, D +1');
-  });
-
-  it('folds shell and thinking steps into the run — they carry no assistant prose', () => {
-    const nodes = groupBlocks([tool('Read'), shell(), thinking(), tool('Edit')]);
-    expect(nodes).toHaveLength(1);
-    const group = nodes[0] as ToolGroup;
-    expect(group.kind).toBe('tool-group');
-    expect(group.tools).toHaveLength(2);
-    expect(group.shells).toHaveLength(1);
-    expect(group.thinking).toHaveLength(1);
-    expect(group.count).toBe(4);
-    expect(groupToolNames(group)).toBe('Read, Edit, shell');
-  });
-
-  it('keeps a single isolated shell or thinking step bare', () => {
-    expect(groupBlocks([shell()])).toHaveLength(1);
-    expect(groupBlocks([shell()])[0]!.kind).toBe('shell');
-    expect(groupBlocks([thinking()])).toHaveLength(1);
-    expect(groupBlocks([thinking()])[0]!.kind).toBe('thinking');
-  });
-
-  it('never folds assistant text or subagent events — they break the run', () => {
-    const nodes = groupBlocks([
-      tool('Read'),
-      shell(),
-      text('assistant') as AssistantBlock,
-      shell(),
-      thinking(),
-    ]);
-    expect(nodes.map((n) => n.kind)).toEqual(['tool-group', 'assistant', 'tool-group']);
-    expect((nodes[0] as ToolGroup).count).toBe(2);
-    expect((nodes[2] as ToolGroup).count).toBe(2);
-  });
-
-  it('aggregates running shells and isError shells into the summary flags', () => {
-    counter += 1;
-    const runningShell: ShellBlock = {
-      kind: 'shell',
-      id: `shell-r${counter}`,
-      commandId: `cr${counter}`,
-      command: 'npm test',
-      output: '',
-      done: false,
-      isError: undefined,
-    };
-    counter += 1;
-    const failedShell: ShellBlock = {
-      kind: 'shell',
-      id: `shell-e${counter}`,
-      commandId: `ce${counter}`,
-      command: 'npm build',
-      output: '',
-      done: true,
-      isError: true,
-    };
-    const group = groupBlocks([runningShell, failedShell])[0] as ToolGroup;
-    expect(groupHasRunning(group)).toBe(true);
-    expect(groupHasError(group)).toBe(true);
-  });
-
   it('sums only real frame durations — turn fallbacks never fabricate a total', () => {
-    const framed = groupBlocks([tool('A'), tool('B')])[0] as ToolGroup;
-    expect(framed.durationMs).toBe(24);
-    counter += 1;
-    const fallback: ToolBlock = {
-      ...tool('C'),
-      durationSource: 'turn',
-      durationMs: 5000,
-    };
-    const mixed = groupBlocks([tool('A'), fallback])[0] as ToolGroup;
+    const framed = groupBlocks([read(), read(), read()])[0] as ToolGroup;
+    expect(framed.durationMs).toBe(36);
+    const fallback = { ...read(), durationSource: 'turn' as const, durationMs: 5000 };
+    const unknown = { ...read(), startedAt: undefined, durationMs: undefined };
+    const mixed = groupBlocks([read(), fallback, unknown])[0] as ToolGroup;
     expect(mixed.durationMs).toBe(12);
-    counter += 1;
-    const unknown: ToolBlock = { ...tool('D'), startedAt: undefined, durationMs: undefined };
-    const noTiming = groupBlocks([tool('A'), unknown])[0] as ToolGroup;
-    expect(noTiming.durationMs).toBe(12);
-    expect(noTiming.startedAt).toBe(0);
+    expect(mixed.startedAt).toBe(0);
   });
 
-  it('derives the group id from the first step, whatever its kind', () => {
-    counter += 1;
-    const first = shell();
-    const nodes = groupBlocks([first, tool('A')]);
-    expect((nodes[0] as ToolGroup).id).toBe(`group-${first.id}`);
+  it('never folds the memory tools — their rows carry view/undo actions', () => {
+    const memory = tool('MemoryRead');
+    const blocks = [read(), read(), memory, read()];
+    expect(groupBlocks(blocks)).toEqual(blocks);
+    expect(isReadStep(memory)).toBe(false);
   });
 
-  it('keeps the run in original occurrence order — never per-kind buckets', () => {
-    const read = tool('Read');
-    const bash = shell();
-    const ponder = thinking();
-    const edit = tool('Edit');
-    const group = groupBlocks([read, bash, ponder, edit])[0] as ToolGroup;
-    expect(group.members).toEqual([read, bash, ponder, edit]);
+  it('claims exactly the three memory tools', () => {
+    expect(isMemoryToolName('MemoryWrite')).toBe(true);
+    expect(isMemoryToolName('MemoryRead')).toBe(true);
+    expect(isMemoryToolName('MemorySearch')).toBe(true);
+    expect(isMemoryToolName('Write')).toBe(false);
+    expect(isMemoryToolName('Memory')).toBe(false);
   });
+});
 
-  it('preserves member identity for memo comparators', () => {
-    const read = tool('Read');
-    const bash = shell();
-    const group = groupBlocks([read, bash])[0] as ToolGroup;
-    expect(group.members[0]).toBe(read);
-    expect(group.members[1]).toBe(bash);
+describe('groupSummary', () => {
+  it('names objects per verb, de-duplicated and capped', () => {
+    const group = groupBlocks([
+      read('/w/plan.ts'),
+      read('/w/plan.ts'),
+      read('/w/notes.md'),
+      tool('Grep', 'done', { args: { pattern: 'TODO' } }),
+      read('/w/a.ts'),
+      read('/w/b.ts'),
+      read('/w/c.ts'),
+      read('/w/d.ts'),
+    ])[0] as ToolGroup;
+    expect(groupSummary(group)).toEqual([
+      { verb: 'read', targets: ['plan.ts', 'notes.md'], more: 0 },
+      { verb: 'search', targets: ['TODO'], more: 0 },
+      { verb: 'read', targets: ['a.ts', 'b.ts', 'c.ts'], more: 1 },
+    ]);
   });
 });

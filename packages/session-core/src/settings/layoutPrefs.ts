@@ -11,12 +11,33 @@
  * after a window resize.
  */
 
-import type { SessionSortOrder } from '../sessions/sessionList';
+import { isSessionSortOrder, type SessionSortOrder } from '../sessions/sessionList';
+
+/** Status filter chips: busy, waiting on the user, or neither. */
+export type SessionStatusFilter = 'running' | 'needs-me' | 'idle';
+/** Archived visibility: hidden (default), included, or archived only. */
+export type SessionArchivedFilter = 'hide' | 'include' | 'only';
+
+export interface SessionListFilters {
+  /** Empty = any status; several = OR within the dimension. */
+  status: readonly SessionStatusFilter[];
+  /** Empty = every workspace; several = OR within the dimension. */
+  workspaces: readonly string[];
+  archived: SessionArchivedFilter;
+}
+
+export const DEFAULT_SESSION_LIST_FILTERS: SessionListFilters = {
+  status: [],
+  workspaces: [],
+  archived: 'hide',
+};
 
 export interface SessionListPreferences {
-  /** `time` (four recency buckets) or `workspace` (one bucket per workspace). */
-  groupBy: 'time' | 'workspace';
+  /** `time` (recency buckets), `workspace` (one bucket per workspace) or
+   * `none` (one flat list in the chosen sort order). */
+  groupBy: 'time' | 'workspace' | 'none';
   sortBy: SessionSortOrder;
+  filters: SessionListFilters;
 }
 
 export interface LayoutPreferences extends SessionListPreferences {
@@ -39,6 +60,7 @@ const STORAGE_KEY = 'kiki.layout';
 export const DEFAULT_LAYOUT_PREFERENCES: LayoutPreferences = {
   groupBy: 'time',
   sortBy: 'updated-desc',
+  filters: DEFAULT_SESSION_LIST_FILTERS,
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   railWidth: RAIL_DEFAULT_WIDTH,
 };
@@ -49,11 +71,29 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function isGroupBy(value: unknown): value is LayoutPreferences['groupBy'] {
-  return value === 'time' || value === 'workspace';
+  return value === 'time' || value === 'workspace' || value === 'none';
 }
 
 function isSortBy(value: unknown): value is SessionSortOrder {
-  return value === 'updated-desc' || value === 'updated-asc' || value === 'title';
+  return isSessionSortOrder(value);
+}
+
+const STATUS_FILTERS: readonly SessionStatusFilter[] = ['running', 'needs-me', 'idle'];
+
+/** Tolerant filter read: unknown entries drop out instead of voiding the set. */
+export function parseSessionListFilters(value: unknown): SessionListFilters {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return DEFAULT_SESSION_LIST_FILTERS;
+  const record = value as Record<string, unknown>;
+  const status = Array.isArray(record['status'])
+    ? STATUS_FILTERS.filter((entry) => (record['status'] as unknown[]).includes(entry))
+    : [];
+  const workspaces = Array.isArray(record['workspaces'])
+    ? [...new Set((record['workspaces'] as unknown[]).filter((entry): entry is string => typeof entry === 'string' && entry !== ''))]
+    : [];
+  const archivedRaw = record['archived'];
+  const archived: SessionArchivedFilter =
+    archivedRaw === 'include' || archivedRaw === 'only' ? archivedRaw : 'hide';
+  return { status, workspaces, archived };
 }
 
 function readObject(key: string): Record<string, unknown> {
@@ -78,6 +118,7 @@ export function readLayoutPreferences(): LayoutPreferences {
   return {
     groupBy: isGroupBy(groupBy) ? groupBy : DEFAULT_LAYOUT_PREFERENCES.groupBy,
     sortBy: isSortBy(sortBy) ? sortBy : DEFAULT_LAYOUT_PREFERENCES.sortBy,
+    filters: parseSessionListFilters(stored['filters']),
     sidebarWidth: clamp(
       typeof sidebarWidth === 'number' ? sidebarWidth : DEFAULT_LAYOUT_PREFERENCES.sidebarWidth,
       SIDEBAR_MIN_WIDTH,

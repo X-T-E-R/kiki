@@ -2,6 +2,7 @@ import {
   imageMimeSchema,
   providerIdSchema,
   requestIdentityPolicySchema,
+  permissionConfigPatchSchema,
   type CreateModelRequest,
   type CreateProviderRequest,
   type GetModelResponse,
@@ -31,6 +32,17 @@ export function isDefaultAppendTiming(value: unknown): value is DefaultAppendTim
 /** `system` follows the OS; the other two pin the palette regardless. */
 export type ThemePreference = 'light' | 'dark' | 'system';
 
+/** Motion level; `system` follows `prefers-reduced-motion`. Mirrored onto
+ *  `<html data-kiki-motion>` so the motion stylesheet can honour it. */
+export type MotionPreference = 'system' | 'reduce' | 'full';
+
+export function isMotionPreference(value: unknown): value is MotionPreference {
+  return value === 'system' || value === 'reduce' || value === 'full';
+}
+
+/** Face for assistant prose; mirrored onto `<html data-kiki-prose>`. */
+export type ProseFontPreference = 'serif' | 'sans';
+
 export function isThemePreference(value: unknown): value is ThemePreference {
   return value === 'light' || value === 'dark' || value === 'system';
 }
@@ -42,7 +54,7 @@ export const MAX_REQUEST_TIMEOUT_SECONDS = 600;
 export type SubagentPanelOpenMode = 'tab' | 'fullscreen';
 
 export interface DesktopSettings {
-  defaultPermissionMode: 'manual' | 'auto' | 'yolo';
+  defaultPermissionMode: 'manual' | 'auto' | 'review' | 'yolo';
   defaultPlanMode: boolean;
   sendShortcut: SendShortcut;
   draftPersistence: boolean;
@@ -53,8 +65,10 @@ export interface DesktopSettings {
   requestTimeoutSeconds: number;
   subagentPanelOpenMode: SubagentPanelOpenMode;
   defaultAppendTiming: DefaultAppendTiming;
-  /** Fold runs of tool/shell/thinking steps into one collapsible summary. */
+  /** Fold runs of ≥3 consecutive pure reads into one summary line (off by default). */
   foldSteps: boolean;
+  motion: MotionPreference;
+  proseFont: ProseFontPreference;
 }
 
 export type UpdateChannel = 'stable' | 'beta';
@@ -260,7 +274,9 @@ const DEFAULTS: DesktopSettings = {
   requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
   subagentPanelOpenMode: 'tab',
   defaultAppendTiming: 'agent_idle',
-  foldSteps: true,
+  foldSteps: false,
+  motion: 'system',
+  proseFont: 'serif',
 };
 
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
@@ -337,6 +353,8 @@ export function readSettings(): DesktopSettings {
       : DEFAULTS.defaultAppendTiming,
     foldSteps:
       typeof stored.foldSteps === 'boolean' ? stored.foldSteps : DEFAULTS.foldSteps,
+    motion: isMotionPreference(stored.motion) ? stored.motion : DEFAULTS.motion,
+    proseFont: stored.proseFont === 'sans' ? 'sans' : DEFAULTS.proseFont,
   };
 }
 
@@ -633,7 +651,7 @@ export function parseExperimentalFlags(value: string): Record<string, boolean> {
 }
 
 export interface AdvancedServerConfigPatch {
-  permission?: unknown;
+  permission?: PatchConfigRequest['permission'];
   loop_control?: unknown;
   background?: unknown;
 }
@@ -660,8 +678,13 @@ export function parseAdvancedServerConfig(value: string): AdvancedServerConfigPa
   if (Object.keys(source).length === 0) {
     throw new LocalizedError({ key: 'val.advancedEmpty' });
   }
+  const permission = source['permission'] === undefined ? undefined
+    : permissionConfigPatchSchema.safeParse(source['permission']);
+  if (permission !== undefined && !permission.success) {
+    throw new LocalizedError({ key: 'val.advancedObject' });
+  }
   return {
-    permission: source['permission'],
+    permission: permission?.data,
     loop_control: source['loop_control'],
     background: source['background'],
   };
@@ -1660,6 +1683,8 @@ const AI_TAB_BY_CARD: Readonly<Record<string, AiSettingsTab>> = {
   'st-card-catalog-refresh': 'models',
   'st-card-model-migration': 'models',
   'st-card-global-defaults': 'defaults',
+  'st-card-permission-defaults': 'defaults',
+  'st-card-reviewer': 'defaults',
   'st-card-request-identity': 'defaults',
   'st-card-thinking': 'defaults',
 };
@@ -1735,6 +1760,8 @@ export interface SettingsSearchSpecEntry {
  * can label settings hits without importing the whole settings tree. */
 export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'general', labelKey: 'st.section.general' },
+  { id: 'appearance', labelKey: 'st.section.appearance' },
+  { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'ai', labelKey: 'st.section.ai' },
   { id: 'agents', labelKey: 'st.section.agents' },
   { id: 'subagents', labelKey: 'st.section.subagents' },
@@ -1746,7 +1773,6 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'tasks', labelKey: 'st.section.tasks' },
   { id: 'search', labelKey: 'st.section.search' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
-  { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'advanced', labelKey: 'st.section.advanced' },
   { id: 'about', labelKey: 'st.section.about' },
 ];
@@ -1754,16 +1780,10 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
 // ---- grouped navigation (settings redesign batch 1) ----
 
 /**
- * Candidate-A navigation model for the settings left rail. Six non-clickable
- * visual groups (they never own a page), plus top-level leaves that belong to
- * no group — "About & updates" is one, per the adjudicated tree.
- *
- * Capability settings stay with the capability they govern; the task board and
- * agent-local todo page therefore live under "Capabilities & extensions". The
- * retired runtime leaf was split across its semantic owners (task policy and
- * cron under Tasks, engine resource/communication knobs under Advanced,
- * identity and profile loading under Agents), leaving "Data & advanced" to
- * the remaining raw configuration.
+ * Four non-clickable groups keep every settings leaf reachable. Grouped by who
+ * the settings belong to, most-visited first: this device (language, look,
+ * which server it talks to), then what the agents do, then what they can
+ * reach, then server data and diagnostics.
  */
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
@@ -1780,13 +1800,10 @@ export interface SettingsNavLeafSpec {
 export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
-  { kind: 'group', id: 'app', labelKey: 'st.group.app', sections: ['general'] },
-  { kind: 'group', id: 'ai', labelKey: 'st.group.ai', sections: ['ai'] },
-  { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents', 'subagents', 'communication'] },
-  { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'automation', 'tasks', 'search'] },
-  { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection'] },
-  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['advanced'] },
-  { kind: 'leaf', section: 'about' },
+  { kind: 'group', id: 'app', labelKey: 'st.group.app', sections: ['general', 'appearance', 'connection'] },
+  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'agents', 'subagents', 'communication', 'tasks'] },
+  { kind: 'group', id: 'tools-integrations', labelKey: 'st.group.toolsIntegrations', sections: ['skills', 'mcp', 'plugins', 'automation', 'search'] },
+  { kind: 'group', id: 'system-data', labelKey: 'st.group.systemData', sections: ['workspaces', 'advanced', 'about'] },
 ];
 
 export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec | undefined {
@@ -1810,6 +1827,7 @@ export interface SettingsSectionMeta {
 
 export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>> = {
   general: { scopes: ['app', 'server'], purposeKey: 'st.purpose.general' },
+  appearance: { scopes: ['app'], purposeKey: 'st.purpose.appearance' },
   ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },
   agents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.agents' },
   subagents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.subagents' },
@@ -1827,7 +1845,6 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
 };
 
 export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
-  { section: 'tasks', cardId: 'st-card-agent-todo', titleKey: 'st.agentTodo.title', keywordKeys: ['st.agentTodo.hint'], synonyms: ['TodoList', 'todo'] },
   { section: 'tasks', cardId: 'st-card-defaults', titleKey: 'st.plan.title', keywordKeys: ['st.plan.hint', 'st.defaults.planMode', 'st.defaults.planGate', 'st.defaults.planGateTimeout'], synonyms: ['plan', 'plan mode', '计划', '计划模式'] },
   { section: 'tasks', cardId: 'st-card-agent-board', titleKey: 'st.agentBoard.title', keywordKeys: ['st.boardStorage.policy', 'st.boardStorage.noMove'], synonyms: ['board', '看板', 'storage'] },
   { section: 'subagents', cardId: 'st-card-subagent-default-target', titleKey: 'st.subagentDefault.title', keywordKeys: ['st.subagentDefault.label', 'st.subagentDefault.hint'], synonyms: ['default profile', '默认 profile', '默认子代理', 'general'] },
@@ -1836,8 +1853,12 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'subagents', cardId: 'st-card-subagent-tool-defaults', titleKey: 'st.subagentTools.title', keywordKeys: ['st.subagentTools.hint'], synonyms: ['subagent tools', '子代理工具', 'tool defaults', '工具权限', 'board', '看板'] },
   { section: 'subagents', cardId: 'st-card-subagent-dispatch-policies', titleKey: 'st.dispatchPolicies.title', keywordKeys: ['st.dispatchPolicies.hint', 'st.dispatchPolicies.mainLabel', 'st.dispatchPolicies.subLabel'], synonyms: ['dispatch policy', 'advisory', 'strict', '派遣策略', '建议', '严格'] },
   { section: 'general', cardId: 'st-card-language', titleKey: 'st.language.title', keywordKeys: ['st.language.hint'] },
-  { section: 'general', cardId: 'st-card-appearance', titleKey: 'st.appearance.title', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system'] },
-  { section: 'general', cardId: 'st-card-permission-defaults', titleKey: 'st.defaults.title', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.hint'] },
+  { section: 'appearance', cardId: 'st-card-appearance', titleKey: 'st.appearance.colorTitle', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system', 'st.skin.title', 'st.skin.hint', 'st.skin.accent'], synonyms: ['skin', '皮肤', '换肤', 'dark mode', '暗色模式', 'accent color', '强调色', 'color', '颜色'] },
+  { section: 'appearance', cardId: 'st-card-appearance-type', titleKey: 'st.appearance.typeTitle', keywordKeys: ['st.skin.font', 'st.skin.fontMono', 'st.appearance.prose'], synonyms: ['font', '字体', 'serif', '衬线', 'typeface'] },
+  { section: 'appearance', cardId: 'st-card-appearance-layout', titleKey: 'st.appearance.layoutTitle', keywordKeys: ['st.skin.radius', 'st.skin.density', 'st.appearance.motion'], synonyms: ['radius', '圆角', 'density', '密度', 'animation', '动画', 'reduce motion', '减少动态效果'] },
+  { section: 'appearance', cardId: 'st-card-skin-files', titleKey: 'st.skin.filesTitle', keywordKeys: ['st.skin.folder', 'st.skin.export'], synonyms: ['theme file', '主题文件', 'themes folder', '主题文件夹', 'export skin', '导出皮肤'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-permission-defaults', titleKey: 'st.defaults.title', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.hint'], synonyms: ['permission defaults', '权限默认值'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-reviewer', titleKey: 'st.reviewer.title', keywordKeys: ['st.reviewer.model', 'st.reviewer.categories'], synonyms: ['approve for me', '替我审批', 'TypeSafe', 'Jev'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts', 'st.transcript.foldSteps'], synonyms: ['timeline', '时间线', 'transcript', '会话记录', 'fold steps', '折叠', '工具步骤'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'general', cardId: 'st-card-session-title', titleKey: 'st.experimental.sessionTitle', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff', 'st.sessionTitleModel.hint', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型'] },
@@ -1857,22 +1878,21 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'skills', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs', 'st.sidecar.builtinSkills'], synonyms: ['能力', 'skills', '技能'] },
   { section: 'skills', cardId: 'st-card-skill-catalog', titleKey: 'st.skills.catalogTitle', keywordKeys: ['cap.filterPlaceholder'], synonyms: ['能力', 'capabilities', '技能目录', 'skill catalog'] },
   { section: 'tasks', cardId: 'st-card-task-policy', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.hint', 'st.taskPolicy.maxRunningTasks', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive'], synonyms: ['runtime', '运行时', 'background tasks', '后台任务'] },
-  { section: 'tasks', cardId: 'st-card-cron', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务'] },
+  { section: 'advanced', cardId: 'st-card-cron', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
   { section: 'communication', cardId: 'st-card-thread-communication', titleKey: 'st.communication.threadTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.threadHint'], synonyms: ['thread communication', '线程通信'] },
   { section: 'communication', cardId: 'st-card-notify-parent', titleKey: 'st.communication.notifyParentTitle', keywordKeys: ['st.communication.notifyParent', 'st.communication.notifyParentHint'], synonyms: ['notify parent', '通知父代理', 'AgentNotify'] },
   { section: 'communication', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.communication.tokenCountingHint'], synonyms: ['token counting', 'token 计数'] },
-  { section: 'communication', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },
+  { section: 'general', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },
   { section: 'advanced', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
   { section: 'agents', cardId: 'st-card-agent-runtime', titleKey: 'st.agentIdentity.title', keywordKeys: ['st.agentIdentity.identityName', 'st.agentIdentity.extraAgentDirs', 'st.agentIdentity.disabledProfiles'], synonyms: ['identity', '身份', 'agent dirs', 'disabled profiles', '禁用 profile'] },
   { section: 'advanced', cardId: 'st-card-performance-storage', titleKey: 'st.advanced.performanceTitle', keywordKeys: ['st.experimental.searchWorker', 'st.experimental.readModel', 'st.experimental.unknownFeature'], synonyms: ['experimental features', '实验特性', 'performance', 'storage'] },
   { section: 'advanced', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
   { section: 'subagents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'], synonyms: ['子 agent', '子代理'] },
-  { section: 'subagents', cardId: 'st-card-subagent-profiles', titleKey: 'st.subagentProfiles.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin', 'st.namedAgents.route'], synonyms: ['子 agent', '子代理', 'profiles', 'profile'] },
-  { section: 'subagents', cardId: 'st-card-subagent-timeout', titleKey: 'st.subagentTimeout.title', keywordKeys: ['st.sidecar.subagentTimeout', 'st.subagentLimits.hint'], synonyms: ['子 agent 超时', 'subagent timeout'] },
   { section: 'subagents', cardId: 'st-card-subagent-release-idle', titleKey: 'st.experimental.subagentIdle', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['release idle', '空闲实例'] },
   { section: 'automation', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: ['st.tools.allowlist', 'st.tools.followAgent'], synonyms: ['allowlist', '白名单'] },
-  { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.mainAgents.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin'], synonyms: ['主 agent'] },
+  { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.agentManager.title', keywordKeys: ['st.agentManager.subagent', 'st.agentManager.new', 'st.agentManager.instructions', 'st.namedAgents.modelPin'], synonyms: ['主 agent', '子 agent', '子智能体', 'profiles', 'profile'] },
   { section: 'agents', cardId: 'st-card-prompt-config', titleKey: 'st.prompt.title', keywordKeys: ['st.prompt.hint', 'st.prompt.variables', 'st.prompt.fields'], synonyms: ['prompt fields', '提示词字段', 'prompt variables', '提示变量'] },
+  { section: 'agents', cardId: 'st-card-memory', titleKey: 'st.memory.title', keywordKeys: ['st.memory.hint', 'memory.toggle', 'st.memory.open'], synonyms: ['memory', '记忆', 'remember', '长期记忆'] },
   { section: 'agents', cardId: 'st-card-agent-profile-routes', titleKey: 'st.experimental.agentRoutes', keywordKeys: ['st.experimental.effectiveOn', 'st.experimental.effectiveOff'], synonyms: ['profile routes', '配置路由'] },
   { section: 'automation', cardId: 'st-card-tool-experiments', titleKey: 'st.experimental.toolsTitle', keywordKeys: ['st.experimental.taskWait'], synonyms: ['tool-select', 'task_wait', 'TaskWait', '按需加载'] },
   { section: 'automation', cardId: 'st-card-hooks', titleKey: 'st.hooks.title', keywordKeys: ['st.hooks.hint'], synonyms: ['hooks', '钩子'] },
@@ -1957,7 +1977,7 @@ export function searchSettings(
 // ---- legacy / unknown settings route resolution ----
 
 export type SettingsRouteResolution =
-  | { readonly status: 'ok'; readonly section: string; readonly cardId?: string; readonly tab?: AiSettingsTab }
+  | { readonly status: 'ok'; readonly section: string; readonly cardId?: string; readonly tab?: SettingsTab }
   | { readonly status: 'unknown'; readonly section: string; readonly cardId?: string };
 
 /**
@@ -1975,18 +1995,16 @@ export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> =
   capabilities: 'skills',
   experimental: 'advanced',
   runtime: 'tasks',
+  theme: 'appearance',
+  skins: 'appearance',
 };
 
-/**
- * Cards that were dissolved rather than moved whole (redesign §10.3). The
- * sidecar card mixed subagent timeout, builtin skills, and agents toggles
- * with no field-level hash, so it cannot disambiguate — it lands on the
- * subagent timeout card, the field that dominated the card. The runtime card
- * was split across four leaves; its deep links land on the task-policy card,
- * the group that dominated it.
- */
+/** Dissolved cards keep a bookmark to their nearest active control. */
 export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: string; readonly cardId: string }>> = {
-  'st-card-sidecar': { section: 'subagents', cardId: 'st-card-subagent-timeout' },
+  'st-card-sidecar': { section: 'subagents', cardId: 'st-card-subagent-limits' },
+  'st-card-subagent-timeout': { section: 'subagents', cardId: 'st-card-subagent-limits' },
+  'st-card-subagent-profiles': { section: 'agents', cardId: 'st-card-main-agents' },
+  'st-card-agent-todo': { section: 'tasks', cardId: 'st-card-agent-board' },
   'st-card-experimental': { section: 'advanced', cardId: 'st-card-performance-storage' },
   'st-card-runtime': { section: 'tasks', cardId: 'st-card-task-policy' },
   'st-card-communication': { section: 'communication', cardId: 'st-card-thread-communication' },
@@ -2031,9 +2049,9 @@ export function resolveSettingsRoute(
   const cardSection = cardId === undefined
     ? undefined
     : (legacyCard?.section ?? settingsSectionForCard(cardId));
-  const cardTab = cardId === undefined ? undefined : aiTabForCard(cardId);
+  const cardTab = cardId === undefined ? undefined : (aiTabForCard(cardId) ?? searchTabForCard(cardId));
   if (sectionParam === undefined || sectionParam === '') {
-    return { status: 'ok', section: 'general', cardId };
+    return { status: 'ok', section: cardSection ?? 'general', cardId, ...(cardTab === undefined ? {} : { tab: cardTab }) };
   }
   const aliased = LEGACY_SETTINGS_SECTION_ALIASES[sectionParam] ?? sectionParam;
   if (SETTINGS_SECTIONS.some((candidate) => candidate.id === aliased)) {
@@ -2044,7 +2062,7 @@ export function resolveSettingsRoute(
       status: 'ok',
       section: aliased,
       cardId,
-      tab: aliased === 'ai' ? (cardTab ?? LEGACY_SECTION_TABS[sectionParam]) : undefined,
+      tab: cardTab ?? (aliased === 'ai' ? LEGACY_SECTION_TABS[sectionParam] : undefined),
     };
   }
   if (cardSection !== undefined) {
@@ -2096,7 +2114,7 @@ function isRequestIdentityPreset(value: RequestIdentityChoice): value is Request
 }
 
 function isPermissionMode(value: unknown): value is DesktopSettings['defaultPermissionMode'] {
-  return value === 'manual' || value === 'auto' || value === 'yolo';
+  return value === 'manual' || value === 'auto' || value === 'review' || value === 'yolo';
 }
 
 function isProviderWireType(value: string): value is ProviderWireType {

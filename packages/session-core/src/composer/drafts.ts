@@ -140,7 +140,6 @@ export interface ComposerSessionState {
    * this session until the user flips the switch again.
    */
   planGate: PromptPlanGate | undefined;
-  swarmMode: boolean | undefined;
   goalObjective: string | undefined;
   modelOverride: string | undefined;
   effortOverride: string | undefined;

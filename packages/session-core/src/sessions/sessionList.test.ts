@@ -5,7 +5,11 @@ import type { PageResponse, Session, Workspace } from '@kiki/protocol';
 import {
   arrangePinnedFirst,
   dedupeSessions,
+  filterSessions,
   groupSessionsByTime,
+  hasActiveSessionFilters,
+  isSessionSortOrder,
+  sessionStatusOf,
   groupSessionsByWorkspace,
   isPinnedSession,
   mergeSessionFirstPage,
@@ -285,5 +289,45 @@ describe('groupSessionsByTime', () => {
     const groups = groupSessionsByTime([session('today', iso(1))], now, { today: '今天' });
     expect(groups[0]!.label).toBe('今天');
     expect(groupSessionsByTime([session('today', iso(1))], now)[0]!.label).toBe('today');
+  });
+});
+
+describe('sessionStatusOf / filterSessions', () => {
+  const running = session('running', '2026-01-03T00:00:00.000Z', { busy: true, workspace_id: 'ws-a' });
+  const waiting = session('waiting', '2026-01-03T00:00:00.000Z', { busy: true, pending_interaction: 'approval', workspace_id: 'ws-b' } as Partial<Session>);
+  const idle = session('idle', '2026-01-02T00:00:00.000Z', { workspace_id: 'ws-a' });
+  const archived = session('archived', '2026-01-01T00:00:00.000Z', { archived: true, workspace_id: 'ws-b' } as Partial<Session>);
+  const all = [running, waiting, idle, archived];
+  const none = { status: [], workspaces: [], archived: 'hide' } as const;
+
+  it('reads a pending interaction as needs-me ahead of busy', () => {
+    expect([running, waiting, idle].map(sessionStatusOf)).toEqual(['running', 'needs-me', 'idle']);
+  });
+
+  it('hides archived rows by default, includes them, or shows only them', () => {
+    expect(filterSessions(all, none).map((s) => s.id)).toEqual(['running', 'waiting', 'idle']);
+    expect(filterSessions(all, { ...none, archived: 'include' })).toHaveLength(4);
+    expect(filterSessions(all, { ...none, archived: 'only' }).map((s) => s.id)).toEqual(['archived']);
+  });
+
+  it('ORs within a dimension and ANDs across dimensions', () => {
+    expect(filterSessions(all, { ...none, status: ['running', 'needs-me'] }).map((s) => s.id)).toEqual(['running', 'waiting']);
+    expect(filterSessions(all, { ...none, status: ['running', 'needs-me'], workspaces: ['ws-a'] }).map((s) => s.id)).toEqual(['running']);
+  });
+
+  it('reports whether any filter narrows the list', () => {
+    expect(hasActiveSessionFilters(none)).toBe(false);
+    expect(hasActiveSessionFilters({ ...none, archived: 'include' })).toBe(true);
+    expect(hasActiveSessionFilters({ ...none, workspaces: ['ws-a'] })).toBe(true);
+  });
+});
+
+describe('created sort order', () => {
+  it('sorts by creation time, newest first', () => {
+    const first = session('first', '2026-01-09T00:00:00.000Z', { created_at: '2026-01-01T00:00:00.000Z' });
+    const second = session('second', '2026-01-02T00:00:00.000Z', { created_at: '2026-01-05T00:00:00.000Z' });
+    expect(sortSessionItems([first, second], 'created-desc').map((s) => s.id)).toEqual(['second', 'first']);
+    expect(isSessionSortOrder('created-desc')).toBe(true);
+    expect(isSessionSortOrder('nope')).toBe(false);
   });
 });
