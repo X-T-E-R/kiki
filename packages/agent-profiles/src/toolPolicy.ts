@@ -1,6 +1,6 @@
 import picomatch from 'picomatch';
 
-export type ToolSource = 'builtin' | 'user' | 'mcp';
+export type ToolSource = 'builtin' | 'user' | 'mcp' | 'plugin';
 
 export interface ToolReference {
   readonly name: string;

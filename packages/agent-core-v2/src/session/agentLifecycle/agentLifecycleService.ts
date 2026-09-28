@@ -38,6 +38,7 @@ import { IAgentRuntimeBindingSeed, IAgentRuntimeBindingService } from '#/agent/r
 import '#/agent/runtimeBinding/runtimeBindingService';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
+import { IAgentPluginToolService } from '#/agent/userTool/pluginToolService';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { interactionKey } from '#/session/interaction/interactionOps';
 import { IWireService } from '#/wire/wire';
@@ -353,6 +354,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       const profile = handle.accessor.get(IAgentProfileService).data();
       if ((profile.executorId ?? 'native') === 'native') {
         await handle.accessor.get(IAgentToolActivationService).activate();
+        await handle.accessor.get(IAgentPluginToolService).ready();
       }
       const delegationPosition = resolveDelegationPosition(agentId, opts.delegator);
       this.assertCreateStillCurrent(agentId, slot, generation);
