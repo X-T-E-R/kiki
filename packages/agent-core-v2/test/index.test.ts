@@ -120,6 +120,7 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'executor.plan.update',
   'executor.plan.remove',
   'executor.runtime.update',
+  'auto_compact.override_changed',
 ]);
 
 describe('v1 wire vocabulary', () => {

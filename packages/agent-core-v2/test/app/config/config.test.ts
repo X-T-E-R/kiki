@@ -219,6 +219,7 @@ describe('Agent config', () => {
     expect(ctx.newEvents()).toMatchInlineSnapshot(`
       [wire] config.update            { "profileName": "test-profile", "systemPrompt": "Profile system prompt.", "environmentDisclosure": { "cwd": "<cwd>", "date": { "disclosed": false } }, "agentsMdPaths": [], "disallowedTools": [], "time": "<time>" }
       [emit] agent.status.updated     { "time": "<time>", "model": "mock-model", "maxContextTokens": 1000000 }
+      [emit] agent.status.updated     { "time": "<time>", "autoCompactTokens": 850000, "autoCompactSource": "legacy", "effectiveMaxContextTokens": 1000000, "reservedContextTokens": 50000 }
       [wire] tools.set_active_tools   { "names": [ "Read" ], "time": "<time>" }
     `);
   });
@@ -387,8 +388,7 @@ describe('Agent config', () => {
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 2, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] context.append_loop_event   { "time": "<time>", "event": { "type": "step.begin", "uuid": "<uuid-5>", "turnId": "0", "step": 2 } }
       [wire] context.append_loop_event   { "event": { "type": "step.begin", "uuid": "<uuid-5>", "turnId": "0", "step": 2 }, "time": "<time>" }
-      [wire] llm.tools_snapshot          { "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "tools": [], "time": "<time>" }
-      [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "systemPrompt": "You are a deterministic test agent.", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 3, "turnStep": "0.2", "time": "<time>" }
+      [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "systemPrompt": "You are a deterministic test agent.", "toolsHash": "3bfeb22e61431247933e79f6ab94e7ca14a127f899bc87e7bbd22594ba9cdb66", "messageCount": 3, "turnStep": "0.2", "time": "<time>" }
       [emit] assistant.delta             { "time": "<time>", "turnId": 0, "step": 2, "stepId": "<uuid-5>", "partId": "<uuid-6>", "delta": "Still using the original turn config." }
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 2, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 31, "output": 13, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "turnId": 0, "agentId": "main", "provider": "test-provider", "modelAlias": "mock-model", "executorId": "native", "usageKnown": true, "time": "<time>" }
@@ -405,7 +405,6 @@ describe('Agent config', () => {
       [emit] turn.ended                  { "time": "<time>", "turnId": 0, "reason": "completed" }
     `);
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
-      tools: []
       messages:
         <last>
         assistant: text "I will look it up."  calls call_lookup:Lookup { "query": "original" }
@@ -435,6 +434,7 @@ describe('Agent config', () => {
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 1, "origin": { "kind": "user" }, "phase": "running", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] context.append_loop_event   { "time": "<time>", "event": { "type": "step.begin", "uuid": "<uuid-8>", "turnId": "1", "step": 1 } }
       [wire] context.append_loop_event   { "event": { "type": "step.begin", "uuid": "<uuid-8>", "turnId": "1", "step": 1 }, "time": "<time>" }
+      [wire] llm.tools_snapshot          { "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "tools": [], "time": "<time>" }
       [wire] llm.request                 { "kind": "loop", "provider": "openai", "model": "changed-model", "modelAlias": "changed-model", "thinkingEffort": "off", "maxTokens": 1000000, "toolSelect": false, "systemPromptHash": "7617cb8b42659214c397a1d7505fce204b673b078a10de8bcccc697d88dcda56", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 5, "turnStep": "1.1", "time": "<time>" }
       [emit] assistant.delta             { "time": "<time>", "turnId": 1, "step": 1, "stepId": "<uuid-8>", "partId": "<uuid-9>", "delta": "Now the changed config is active." }
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 1, "origin": { "kind": "user" }, "phase": "streaming", "stream": "assistant", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
@@ -453,11 +453,59 @@ describe('Agent config', () => {
     `);
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
       system: "Changed system prompt."
+      tools: []
       messages:
         <last>
         assistant: text "Still using the original turn config."
         user: text "Start a fresh turn"
     `);
+  });
+
+  it('keeps the turn tool set frozen mid-turn and rebuilds it on the next user turn', async () => {
+    await ctx.dispose();
+    ctx = createTestAgent(permissionModeServices('manual'));
+    profile = ctx.get(IAgentProfileService);
+    const lookupCall: ToolCall = {
+      type: 'function',
+      id: 'call_lookup',
+      name: 'Lookup',
+      arguments: '{"query":"frozen"}',
+    };
+    profile.update({ activeToolNames: ['Lookup'] });
+    await ctx.rpc.registerTool({
+      name: 'Lookup',
+      description: 'Look up a short test value.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    });
+    ctx.newEvents();
+
+    ctx.mockNextResponse({ type: 'text', text: 'I will look it up.' }, lookupCall);
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Look up before the switch' }] });
+    await ctx.untilApproval(true);
+    expect(ctx.lastLlmInput().input.tools.map((tool) => tool.name)).toEqual(['Lookup']);
+
+    await ctx.rpc.setActiveTools({ names: [] });
+    expect(
+      ctx.allEvents.findLast((entry) => entry.event === 'tools.set_active_tools')?.args,
+    ).toMatchObject({ names: [] });
+
+    const toolCallEvents = ctx.untilToolCall({ content: 'frozen-result', output: 'frozen-result' });
+    ctx.mockNextResponse({ type: 'text', text: 'Still on the frozen tool set.' });
+    await toolCallEvents;
+    await ctx.untilTurnEnd();
+    expect(ctx.lastLlmInput().input.tools.map((tool) => tool.name)).toEqual(['Lookup']);
+
+    ctx.mockNextResponse({ type: 'text', text: 'The new tool set is active.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start a fresh turn' }] });
+    await ctx.untilTurnEnd();
+    expect(ctx.lastLlmInput().input.tools).toEqual([]);
   });
 });
 
