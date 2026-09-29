@@ -77,6 +77,7 @@ import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
 import { lifeOf, type LifeState } from '../lib/motion';
 import { nestSessionThreads, type SessionRelation, type SessionTreeNode } from '../lib/sessionThreads';
 import { runToastAction } from '../lib/toasts';
+import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/sidebarGroupMemory';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
 import { RelativeTime } from './RelativeTime';
@@ -347,8 +348,18 @@ export function Sidebar({
   // query so the list is never left silently filtered behind a collapsed box.
   const [searchOpen, setSearchOpen] = useState(false);
   const [activeResult, setActiveResult] = useState(0);
-  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
-  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
+  // Folded and fully shown workspace groups, plus the list's scroll position,
+  // survive a reload; they are per space and per connection (sidebarGroupMemory).
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set(readWorkspaceGroupMemory(scopeId).collapsed));
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set(readWorkspaceGroupMemory(scopeId).expanded));
+  const memoryScope = useRef(scopeId);
+  useEffect(() => {
+    if (memoryScope.current === scopeId) return;
+    memoryScope.current = scopeId;
+    const memory = readWorkspaceGroupMemory(scopeId);
+    setCollapsedGroups(new Set(memory.collapsed));
+    setExpandedGroups(new Set(memory.expanded));
+  }, [scopeId]);
 
   const activity = useSessionActivity(sessions);
   // Read-state marks drive both the activity badge and the row states below.
@@ -633,6 +644,7 @@ export function Sidebar({
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
+      writeWorkspaceGroupMemory(scopeId, { collapsed: [...next] });
       return next;
     });
   };
@@ -641,9 +653,35 @@ export function Sidebar({
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
+      writeWorkspaceGroupMemory(scopeId, { expanded: [...next] });
       return next;
     });
   };
+  const setAllGroupsCollapsed = (keys: readonly string[], collapse: boolean) => {
+    const next = new Set(collapse ? keys : []);
+    setCollapsedGroups(next);
+    writeWorkspaceGroupMemory(scopeId, { collapsed: [...next] });
+  };
+
+  // The list's scroll position is remembered with the folds: written after
+  // scrolling settles, restored once each time the list mounts with rows.
+  const listRef = useRef<HTMLDivElement>(null);
+  const scrollRestored = useRef(false);
+  const scrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const onListScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const top = event.currentTarget.scrollTop;
+    clearTimeout(scrollTimer.current);
+    scrollTimer.current = setTimeout(() => { writeWorkspaceGroupMemory(scopeId, { scrollTop: top }); }, 150);
+  };
+  useEffect(() => () => { clearTimeout(scrollTimer.current); }, []);
+  useEffect(() => { scrollRestored.current = false; }, [search.active, scopeId]);
+  useLayoutEffect(() => {
+    const node = listRef.current;
+    if (node === null || scrollRestored.current || sessionGroups.length === 0) return;
+    scrollRestored.current = true;
+    const top = readWorkspaceGroupMemory(scopeId).scrollTop;
+    if (top > 0) node.scrollTop = top;
+  });
 
   // Threads a session started (ThreadCreate) and branches forked off it nest
   // under it. Time buckets are not meaningful for a thread — it belongs with
@@ -662,6 +700,22 @@ export function Sidebar({
     refetchInterval: 15_000,
   });
   const ephemeralSessions = ephemeralQuery.data?.items ?? [];
+  // While a filter narrows the list, a workspace group shows what matched
+  // even if it is folded (the fold is kept for later), and its header counts
+  // the matches against everything loaded in that workspace.
+  const foldsSuspended = filtersActive;
+  const workspaceTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const session of sessions) {
+      if (session.archived === true) continue;
+      totals.set(session.workspace_id, (totals.get(session.workspace_id) ?? 0) + 1);
+    }
+    return totals;
+  }, [sessions]);
+  const workspaceGroupKeys = groupBy === 'workspace'
+    ? sessionTree.filter((group) => group.key !== 'pinned').map((group) => group.key)
+    : [];
+  const allFolded = workspaceGroupKeys.length > 0 && workspaceGroupKeys.every((key) => collapsedGroups.has(key));
   const titleOf = useMemo(
     () => new Map(sessions.map((session) => [session.id, sessionLabel(session, untitled)])),
     [sessions, untitled],
@@ -813,6 +867,18 @@ export function Sidebar({
             {counts.running}
           </button>
         ) : null}
+        {workspaceGroupKeys.length > 1 && !foldsSuspended && !search.active ? (
+          <button
+            type="button"
+            data-session-groups-fold-all={allFolded ? 'expand' : 'collapse'}
+            aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
+            title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
+            onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+          >
+            <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
+          </button>
+        ) : null}
         <button
           type="button"
           ref={filterMenuButtonRef}
@@ -880,7 +946,7 @@ export function Sidebar({
           workspaceNames={new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name]))}
         />
       ) : (
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
+      <div ref={listRef} onScroll={onListScroll} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
         {sessionsQuery.isLoading && sessions.length === 0 ? (
           <div className="flex items-center gap-2 px-2 pt-4 text-[12.5px] text-ink-faint">
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-faint" />
@@ -968,7 +1034,7 @@ export function Sidebar({
         ) : null}
         {sessionTree.map((group) => {
           const collapsible = groupBy === 'workspace' && group.key !== 'pinned';
-          const collapsed = collapsible && collapsedGroups.has(group.key);
+          const collapsed = collapsible && !foldsSuspended && collapsedGroups.has(group.key);
           const expanded = expandedGroups.has(group.key);
           const limit = collapsible && !expanded ? WORKSPACE_GROUP_PREVIEW : Infinity;
           const shown = collapsed ? [] : group.nodes.slice(0, limit);
@@ -1011,76 +1077,70 @@ export function Sidebar({
               </div>
             );
           };
-          // One header rule for pinned, time and workspace buckets: T5 label,
-          // 28px tall. In the workspace view every header reserves the rows'
-          // 7px state column (the fold chevron sits centred in it), so the
-          // label starts exactly on the row-title axis and a workspace reads
-          // as the head of its rows, not a line floating above them. The
-          // count rides right after the label, never in the row-actions
-          // column, and only workspace buckets show it (they fold and
-          // truncate). A folded workspace still says when something inside
-          // needs you or is running: one still mark after the count.
-          const headerClass = 'sticky top-0 z-[1] flex h-7 w-full items-center gap-2 bg-canvas px-2 text-left text-[12px] leading-4 font-medium text-section-ink';
+          // Workspace buckets get their own header (WorkspaceGroupHeader): fold,
+          // count, pin, the current-workspace mark. Pinned and time buckets keep
+          // the plain T5 label, 28px tall; in the workspace view the pinned
+          // label still reserves the rows' 7px state column, so every label
+          // starts on the row-title axis. A folded workspace still says when
+          // something inside needs you or is running.
           const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
-          const headerBody = (
-            <>
-              {groupBy === 'workspace' ? (
-                <span aria-hidden className="flex w-[7px] shrink-0 justify-center">
-                  {collapsible ? <DisclosureChevron open={!collapsed} /> : null}
-                </span>
-              ) : null}
-              <span className="flex min-w-0 items-baseline gap-1.5">
-                <span className="min-w-0 truncate">{group.label}</span>
-                {collapsible ? (
-                  <span data-session-group-count className="shrink-0 font-normal text-ink-faint tabular-nums">{group.total}</span>
+          if (collapsible) {
+            const workspace = workspaceOptions.find((entry) => entry.id === group.key);
+            return (
+              <div
+                key={group.key}
+                data-session-group-block={group.key}
+                data-session-group-folded={collapsed ? '' : undefined}
+                // Folded workspaces stack like a list of places; an open one
+                // takes a full step of air (S4) so its rows read as its own.
+                className={`flex flex-col gap-0.5 ${collapsed ? 'not-first:mt-0.5' : 'not-first:mt-3'}`}
+                role="group"
+                aria-label={group.label}
+              >
+                <WorkspaceGroupHeader
+                  groupKey={group.key}
+                  label={group.label}
+                  count={group.total}
+                  totalCount={filtersActive ? workspaceTotals.get(group.key) : undefined}
+                  collapsed={collapsed}
+                  foldable={!foldsSuspended}
+                  current={group.key === activeWorkspaceId}
+                  foldedLife={foldedLife}
+                  workspace={workspace}
+                  pinBusy={workspacePinBusy}
+                  onToggle={() => { toggleGroupCollapsed(group.key); }}
+                  onTogglePin={workspace === undefined ? undefined : () => { toggleWorkspacePin(workspace); }}
+                />
+                {shown.map((node) => renderRow(node, false))}
+                {hidden > 0 || (expanded && !collapsed && group.nodes.length > WORKSPACE_GROUP_PREVIEW) ? (
+                  <button
+                    type="button"
+                    data-session-group-more={group.key}
+                    onClick={() => { toggleGroupExpanded(group.key); }}
+                    className="row-interactive h-7 self-start pr-2 pl-[23px] text-[12px] text-ink-faint hover:text-ink"
+                  >
+                    {hidden > 0 ? t('sidebar.showMoreInGroup', { count: hidden }) : t('sidebar.showLessInGroup')}
+                  </button>
                 ) : null}
-              </span>
-              {foldedLife !== 'idle' ? (
-                <span data-session-group-life={foldedLife} className="flex shrink-0 items-center">
-                  <LifeMark markId={`group:${group.key}`} life={foldedLife} still />
-                </span>
-              ) : null}
-            </>
-          );
-          const workspaceRoot = collapsible ? workspaceOptions.find((workspace) => workspace.id === group.key)?.root : undefined;
+              </div>
+            );
+          }
+          const headerClass = 'sticky top-0 z-[1] flex h-7 w-full items-center gap-2 bg-canvas px-2 text-left text-[12px] leading-4 font-medium text-section-ink';
           return (
             <div
               key={group.key}
               data-session-group-block={group.key}
-              // Workspaces are larger blocks than time buckets, so they take
-              // one more step of air between them (S5 vs S4).
               className={`flex flex-col gap-0.5 ${groupBy === 'workspace' ? 'not-first:mt-4' : 'not-first:mt-3'}`}
               role="group"
               aria-label={group.label}
             >
-              {groupBy === 'none' && group.key === 'all' ? null : collapsible ? (
-                <button
-                  type="button"
-                  data-session-group={group.key}
-                  aria-expanded={!collapsed}
-                  aria-label={collapsed ? t('sidebar.expandGroup', { label: group.label }) : t('sidebar.collapseGroup', { label: group.label })}
-                  title={workspaceRoot}
-                  onClick={() => { toggleGroupCollapsed(group.key); }}
-                  className={`${headerClass} rounded-md transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent`}
-                >
-                  {headerBody}
-                </button>
-              ) : (
+              {groupBy === 'none' && group.key === 'all' ? null : (
                 <p data-session-group={group.key} className={headerClass}>
-                  {headerBody}
+                  {groupBy === 'workspace' ? <span aria-hidden className="w-[7px] shrink-0" /> : null}
+                  <span className="min-w-0 truncate">{group.label}</span>
                 </p>
               )}
               {shown.map((node) => renderRow(node, false))}
-              {hidden > 0 || (collapsible && expanded && group.nodes.length > WORKSPACE_GROUP_PREVIEW) ? (
-                <button
-                  type="button"
-                  data-session-group-more={group.key}
-                  onClick={() => { toggleGroupExpanded(group.key); }}
-                  className="h-7 self-start rounded-md pr-2 pl-6 text-[12px] text-ink-faint transition-colors hover:text-ink"
-                >
-                  {hidden > 0 ? t('sidebar.showMoreInGroup', { count: hidden }) : t('sidebar.showLessInGroup')}
-                </button>
-              ) : null}
             </div>
           );
         })}
@@ -1475,6 +1535,114 @@ function SessionRow({
           <Icon name="more" size={14} />
         </button>
       </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A workspace group's header: fold toggle (chevron in the rows' 7px state
+ * column), name, count, and the pin toggle in the trailing slot the rows use
+ * for their time. The workspace holding the open session says so; a folded
+ * one still marks what inside needs you or is running. Toggle and pin are
+ * sibling buttons, never nested.
+ */
+function WorkspaceGroupHeader({
+  groupKey,
+  label,
+  count,
+  totalCount,
+  collapsed,
+  foldable,
+  current,
+  foldedLife,
+  workspace,
+  pinBusy,
+  onToggle,
+  onTogglePin,
+}: {
+  groupKey: string;
+  label: string;
+  count: number;
+  /** Every session of the workspace, when a filter shows only some. */
+  totalCount: number | undefined;
+  collapsed: boolean;
+  foldable: boolean;
+  current: boolean;
+  foldedLife: LifeState;
+  workspace: Workspace | undefined;
+  pinBusy: boolean;
+  onToggle: () => void;
+  onTogglePin: (() => void) | undefined;
+}) {
+  const { t } = useI18n();
+  const pinned = workspace?.pinned === true;
+  const countText = totalCount !== undefined && totalCount > count
+    ? t('sidebar.groupCountOf', { count, total: totalCount })
+    : String(count);
+  const body = (
+    <>
+      <span aria-hidden className="flex w-[7px] shrink-0 justify-center">
+        {foldable ? <DisclosureChevron open={!collapsed} /> : null}
+      </span>
+      {/* The name takes the selected ink when it holds the open session, so
+          the fact reads before the word "Current" does. */}
+      <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        <span className={`min-w-0 truncate ${current ? 'text-selected-ink' : ''}`}>{label}</span>
+        <span data-session-group-count className="shrink-0 font-normal text-ink-faint tabular-nums">{countText}</span>
+        {current ? (
+          <span data-session-group-current className="shrink-0 text-[11px] font-normal text-selected-ink">{t('sidebar.currentWorkspace')}</span>
+        ) : null}
+      </span>
+      {foldedLife !== 'idle' ? (
+        <span data-session-group-life={foldedLife} className="flex shrink-0 items-center">
+          <LifeMark markId={`group:${groupKey}`} life={foldedLife} still />
+        </span>
+      ) : null}
+      {/* Trailing slot, as wide as the pin action: a kept pin mark, which
+          the action takes over on hover / focus. */}
+      <span
+        className={`flex w-7 shrink-0 items-center justify-center text-ink-faint ${
+          onTogglePin === undefined ? '' : 'group-focus-within/ws:invisible group-hover/ws:invisible [@media(hover:none)]:invisible'
+        }`}
+      >
+        {pinned ? <span data-session-group-pinned><PinIcon /></span> : null}
+      </span>
+    </>
+  );
+  const rowClass = 'flex h-7 w-full items-center gap-2 pr-1 pl-2 text-left text-[12px] leading-4 font-medium text-section-ink';
+  return (
+    <div className="group/ws sticky top-0 z-[1] bg-canvas" data-session-group-header={groupKey}>
+      {foldable ? (
+        <button
+          type="button"
+          data-session-group={groupKey}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? t('sidebar.expandGroup', { label }) : t('sidebar.collapseGroup', { label })}
+          title={workspace?.root}
+          onClick={onToggle}
+          className={`row-interactive ${rowClass} hover:text-ink`}
+        >
+          {body}
+        </button>
+      ) : (
+        <p data-session-group={groupKey} title={workspace?.root} className={rowClass}>{body}</p>
+      )}
+      {onTogglePin === undefined ? null : (
+        <button
+          type="button"
+          data-session-group-pin={groupKey}
+          disabled={pinBusy}
+          aria-pressed={pinned}
+          aria-label={pinned ? t('sidebar.unpinWorkspaceFor', { name: label }) : t('sidebar.pinWorkspaceFor', { name: label })}
+          title={pinned ? t('sidebar.unpinWorkspace') : t('sidebar.pinWorkspace')}
+          onClick={onTogglePin}
+          className={`absolute top-1/2 right-1 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md transition-[opacity,background-color,color] duration-150 hover:bg-ink/[0.06] hover:text-ink disabled:opacity-50 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+            pinned ? 'text-ink-soft' : 'text-ink-faint'
+          } opacity-0 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 [@media(hover:none)]:opacity-100`}
+        >
+          <Icon name="pin" size={14} />
+        </button>
       )}
     </div>
   );

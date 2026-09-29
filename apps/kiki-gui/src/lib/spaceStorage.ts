@@ -150,6 +150,7 @@ export const SPACE_SCOPED_STORAGE_KEYS = [
   'kiki.background',
   'kiki.usage.filters.v2',
   'kiki.nb_search.pinned_lanes',
+  'kiki.sidebar.workspaceGroups',
 ] as const;
 
 /** Key families whose suffix varies per workspace (`kiki.draft.new.<scopeId>`). */

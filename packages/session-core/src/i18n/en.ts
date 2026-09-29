@@ -5535,4 +5535,8 @@ export const en = {
   'activity.badgeCount.one': '{count} new item in Activity',
   'activity.badgeCount.other': '{count} new items in Activity',
   'activity.inWorkspace': 'in {workspace}',
+  'sidebar.currentWorkspace': 'Current',
+  'sidebar.groupCountOf': '{count} of {total}',
+  'sidebar.collapseAllGroups': 'Collapse all workspaces',
+  'sidebar.expandAllGroups': 'Expand all workspaces',
 } as const;

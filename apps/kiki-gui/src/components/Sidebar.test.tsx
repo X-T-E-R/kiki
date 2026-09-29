@@ -24,6 +24,8 @@ import { I18nProvider } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
 import { nestSessionThreads, sessionRelationOf } from '../lib/sessionThreads';
 import { requestSessionSearch } from '../lib/sidebarSearch';
+import { configureSpaceStorage } from '../lib/spaceStorage';
+import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/sidebarGroupMemory';
 import {
   mergeSearchPages,
   searchNextPageParam,
@@ -141,6 +143,9 @@ beforeEach(() => {
   listEphemeralSessions.mockReset();
   listEphemeralSessions.mockResolvedValue({ items: [] });
   connectionScope.id = 'local';
+  // Workspace folds and the list scroll persist across mounts.
+  localStorage.removeItem('kiki.sidebar.workspaceGroups');
+  configureSpaceStorage(null);
 });
 
 afterEach(() => {
@@ -1264,5 +1269,97 @@ describe('Sidebar grouping', () => {
     const badge = container.querySelector('[data-nav-badge="cron"]');
     expect(badge?.className).toContain('text-accent-ink');
     expect(badge?.className).not.toContain('bg-accent-soft');
+  });
+});
+
+describe('Sidebar workspace groups', () => {
+  const wsA = workspace('ws_a', 'alpha', true);
+  const wsB = workspace('ws_b', 'beta');
+  const inA = { ...session('a1'), workspace_id: 'ws_a' };
+  const inB = { ...session('b1'), workspace_id: 'ws_b' };
+  const grouped = (): Partial<SidebarProps> => ({
+    sessions: [inA, inB],
+    groupBy: 'workspace',
+    workspaceOptions: [wsA, wsB],
+    sessionGroups: [
+      { key: 'ws_a', label: 'alpha', items: [inA] },
+      { key: 'ws_b', label: 'beta', items: [inB] },
+    ],
+  });
+
+  it('marks the workspace of the open session, and only that one', async () => {
+    const { container } = await mount({ ...grouped(), activeSessionId: 'b1' });
+    expect(container.querySelector('[data-session-group-header="ws_b"] [data-session-group-current]')?.textContent).toBe('Current');
+    expect(container.querySelector('[data-session-group-header="ws_a"] [data-session-group-current]')).toBeNull();
+  });
+
+  it('pins a workspace from its header, as a sibling of the fold toggle', async () => {
+    const { container } = await mount(grouped());
+    const pin = container.querySelector<HTMLButtonElement>('[data-session-group-pin="ws_b"]')!;
+    expect(pin.closest('[data-session-group]')).toBeNull();
+    expect(pin.getAttribute('aria-label')).toBe('Pin the workspace beta to the top');
+    expect(container.querySelector('[data-session-group-header="ws_a"] [data-session-group-pinned]')).not.toBeNull();
+    await act(async () => { pin.click(); });
+    expect(setWorkspacePinned).toHaveBeenCalledWith('ws_b', true);
+    // Pinning does not fold the group.
+    expect(container.querySelector('[data-session-group="ws_b"]')?.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('remembers folds and "show all" per connection across remounts', async () => {
+    const first = await mount(grouped());
+    await act(async () => { first.container.querySelector<HTMLButtonElement>('[data-session-group="ws_a"]')!.click(); });
+    expect(readWorkspaceGroupMemory('local').collapsed).toEqual(['ws_a']);
+    act(() => { first.root.unmount(); });
+    const second = await mount(grouped());
+    expect(second.container.querySelector('[data-session-group="ws_a"]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(second.container.querySelector('[data-session-row="a1"]')).toBeNull();
+    act(() => { second.root.unmount(); });
+    connectionScope.id = 'remote';
+    const other = await mount(grouped());
+    expect(other.container.querySelector('[data-session-group="ws_a"]')?.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('keeps the memory inside the active space', () => {
+    writeWorkspaceGroupMemory('local', { collapsed: ['ws_a'] });
+    configureSpaceStorage({ homeId: 'work' });
+    expect(readWorkspaceGroupMemory('local').collapsed).toEqual([]);
+    writeWorkspaceGroupMemory('local', { collapsed: ['ws_b'] });
+    expect(localStorage.getItem('kiki.space.work.kiki.sidebar.workspaceGroups')).toContain('ws_b');
+    configureSpaceStorage(null);
+    expect(readWorkspaceGroupMemory('local').collapsed).toEqual(['ws_a']);
+  });
+
+  it('restores the remembered scroll position', async () => {
+    writeWorkspaceGroupMemory('local', { scrollTop: 240 });
+    const { container } = await mount(grouped());
+    expect(container.querySelector<HTMLElement>('[data-session-list]')?.scrollTop).toBe(240);
+  });
+
+  it('folds and unfolds every workspace at once', async () => {
+    const { container } = await mount(grouped());
+    const all = () => container.querySelector<HTMLButtonElement>('[data-session-groups-fold-all]')!;
+    expect(all().getAttribute('aria-label')).toBe('Collapse all workspaces');
+    await act(async () => { all().click(); });
+    expect(container.querySelectorAll('[data-session-row]')).toHaveLength(0);
+    expect(all().getAttribute('aria-label')).toBe('Expand all workspaces');
+    await act(async () => { all().click(); });
+    expect(container.querySelectorAll('[data-session-row]')).toHaveLength(2);
+  });
+
+  it('shows matches inside folded groups while a filter runs, counted against the workspace', async () => {
+    writeWorkspaceGroupMemory('local', { collapsed: ['ws_a'] });
+    const extra = { ...session('a2'), workspace_id: 'ws_a' };
+    const { container } = await mount({
+      ...grouped(),
+      sessions: [inA, extra, inB],
+      filters: { status: [], workspaces: ['ws_a'], archived: 'hide' },
+      sessionGroups: [{ key: 'ws_a', label: 'alpha', items: [inA] }],
+    });
+    expect(container.querySelector('[data-session-row="a1"]')).not.toBeNull();
+    expect(container.querySelector('[data-session-group-header="ws_a"] [data-session-group-count]')?.textContent).toBe('1 of 2');
+    // No fold toggle while filtered, and no fold-all; the fold itself is kept.
+    expect(container.querySelector('button[data-session-group="ws_a"]')).toBeNull();
+    expect(container.querySelector('[data-session-groups-fold-all]')).toBeNull();
+    expect(readWorkspaceGroupMemory('local').collapsed).toEqual(['ws_a']);
   });
 });

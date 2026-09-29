@@ -5487,4 +5487,8 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'activity.badgeCount.one': '活动里有 {count} 项新内容',
   'activity.badgeCount.other': '活动里有 {count} 项新内容',
   'activity.inWorkspace': '在 {workspace}',
+  'sidebar.currentWorkspace': '当前',
+  'sidebar.groupCountOf': '{count} / {total}',
+  'sidebar.collapseAllGroups': '折叠全部工作区',
+  'sidebar.expandAllGroups': '展开全部工作区',
 };
