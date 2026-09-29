@@ -104,6 +104,14 @@ describe('buildSwitcherItems — with query', () => {
     expect(items[2]).toMatchObject({ kind: 'hit', snippet: '…the persimmon cache…' });
   });
 
+  it('retains the agent and turn needed to locate a content hit', () => {
+    const items = buildSwitcherItems({
+      query: 'needle', sessions: [], hits: [{ ...hit('s1', 'needle'), agent_id: 'agent-child', turn: 4 }],
+      untitled: 'Untitled',
+    });
+    expect(items[0]).toMatchObject({ kind: 'hit', sessionId: 's1', agentId: 'agent-child', turn: 4 });
+  });
+
   it('is case-insensitive and caps title matches and hits', () => {
     const many = Array.from({ length: SWITCHER_TITLE_MATCH_LIMIT + 4 }, (_, index) =>
       session(`PERSIMMON-${index}`, `2026-01-0${(index % 8) + 1}T00:00:00.000Z`),
