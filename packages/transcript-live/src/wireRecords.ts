@@ -24,6 +24,7 @@ export interface WireRecordsStreamOptions {
   readonly maxRecords?: number;
   readonly maxLineBytes?: number;
   readonly startByteOffset?: number;
+  readonly startRecordOrdinal?: number;
   readonly signal?: AbortSignal;
   readonly onRecord: (record: ContextRecord, span: WireRecordSpan) => void;
 }
@@ -66,6 +67,8 @@ export async function streamWireRecords(
   const maxRecords = optionalLimit(options.maxRecords);
   const maxLineBytes = optionalLimit(options.maxLineBytes);
   const startByteOffset = optionalLimit(options.startByteOffset) ?? 0;
+  const startRecordOrdinal = optionalLimit(options.startRecordOrdinal) ?? 0;
+  if (!Number.isSafeInteger(startRecordOrdinal)) throw new Error('invalid wire record ordinal');
   const signal = options.signal;
   let remainingBytes = maxBytes ?? Number.POSITIVE_INFINITY;
   let lineChunks: Buffer[] = [];
@@ -109,7 +112,7 @@ export async function streamWireRecords(
     }
     const endByteOffset = nextByteOffset + line.length + (terminated ? 1 : 0);
     options.onRecord(record as ContextRecord, {
-      startByteOffset: nextByteOffset, endByteOffset, ordinal: recordCount,
+      startByteOffset: nextByteOffset, endByteOffset, ordinal: startRecordOrdinal + recordCount,
     });
     recordCount += 1;
     nextByteOffset = endByteOffset;

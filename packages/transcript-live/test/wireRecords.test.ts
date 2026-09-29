@@ -570,8 +570,8 @@ describe('streamWireRecords', () => {
         expect(result.nextByteOffset).toBe(Buffer.byteLength(raw));
         const resumed: typeof spans = [];
         await streamWireRecords(wirePath, { startByteOffset: spans[1]!.startByteOffset,
-          chunkBytes, onRecord: (_record, span) => resumed.push(span) });
-        expect(resumed).toEqual([{ ...spans[1], ordinal: 0 }]);
+          startRecordOrdinal: 1, chunkBytes, onRecord: (_record, span) => resumed.push(span) });
+        expect(resumed).toEqual([spans[1]]);
       }
     });
   });
