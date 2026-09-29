@@ -1,5 +1,5 @@
 /**
- * memory-off — the shipped default: `[memory] enabled = false`. The sidebar
+ * memory-off — an explicit disabled-memory scenario: `[memory] enabled = false`. The sidebar
  * entry is still there, and opening it lands on the turn-on guide rather than
  * an empty console. One scenario per state so the off path can never regress
  * into "looks like a bug".

@@ -62,6 +62,13 @@ afterEach(async () => {
 });
 
 describe('memory persistence and snapshot', () => {
+  it('enables memory by default while honoring a workspace-level disable', () => {
+    const defaults = MemoryConfigSchema.parse({});
+    expect(defaults.enabled).toBe(true);
+    expect(memoryEnabled(defaults, workspaceId)).toBe(true);
+    expect(memoryEnabled({ ...defaults, workspaces: { [workspaceId]: false } }, workspaceId)).toBe(false);
+  });
+
   it('makes a prior session entry visible to a new session and keeps its snapshot frozen during writes', async () => {
     const first = start();
     const initial = await first.snapshot.get();
@@ -238,7 +245,7 @@ describe('memory persistence and snapshot', () => {
   });
 
   it('does not resolve MemoryStore when constructing a disabled agent snapshot', async () => {
-    settings = MemoryConfigSchema.parse({});
+    settings = MemoryConfigSchema.parse({ enabled: false });
     _clearScopedRegistryForTests();
     registerScopedService(LifecycleScope.Agent, IAgentMemorySnapshot, AgentMemorySnapshot, ScopeActivation.OnDemand, 'memory');
     app = createAppScope({ seeds: [[IConfigService, { _serviceBrand: undefined, get: () => settings }]] });
@@ -253,14 +260,14 @@ describe('memory persistence and snapshot', () => {
 
   it('freezes a disabled or enabled memory view until explicit invalidation', async () => {
     const { store, snapshot } = start();
-    settings = MemoryConfigSchema.parse({});
+    settings = MemoryConfigSchema.parse({ enabled: false });
     expect(await snapshot.get()).toBe('');
     const saved = await create(store);
     settings = MemoryConfigSchema.parse({ enabled: true });
     expect(await snapshot.get()).toBe('');
     snapshot.invalidate();
     expect(await snapshot.get()).toContain(saved.entry.id);
-    settings = MemoryConfigSchema.parse({});
+    settings = MemoryConfigSchema.parse({ enabled: false });
     expect(await snapshot.get()).toContain(saved.entry.id);
     snapshot.invalidate();
     expect(await snapshot.get()).toBe('');
@@ -268,7 +275,7 @@ describe('memory persistence and snapshot', () => {
 
   it('does not expose tools or alter rendered prompt with enabled=false', async () => {
     const { snapshot } = start();
-    settings = MemoryConfigSchema.parse({});
+    settings = MemoryConfigSchema.parse({ enabled: false });
     expect(await snapshot.get()).toBe('');
     expect(memoryEnabled(settings, workspaceId)).toBe(false);
     const tools = getAgentToolContributions().filter((item) => ['MemoryWrite', 'MemoryRead', 'MemorySearch'].includes(item.options.name));

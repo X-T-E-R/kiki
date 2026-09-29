@@ -331,7 +331,7 @@ compaction_soft_context_size = 0
 # ##########################################################################
 
 [memory]
-enabled = false
+enabled = true
 approval = "auto"
 budget = 2000
 workspaces = {  }

@@ -1,7 +1,7 @@
 /**
  * /memory — the one place memory is managed (`/api/memory/*`).
  *
- * Memory is off by default, and the nav entry is permanent either way: switched
+ * Memory is on by default, and the nav entry is permanent either way: switched
  * off, this page is the turn-on guide (what it does, where the files live, one
  * switch); switched on, it is the entry console.
  *

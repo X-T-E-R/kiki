@@ -554,7 +554,7 @@ class FixtureServer {
     // per-scope entry stores; `memoryJournal` seeds undoable operations. Writes
     // mutate this state and append journal records, so the page's save / delete
     // / undo / inbox paths are all exercisable against the real wire shapes.
-    this.memory = structuredClone(data.memory ?? { enabled: false, approval: 'auto', budget: 2_000, workspaces: {} });
+    this.memory = structuredClone(data.memory ?? { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} });
     this.memoryEntries = new Map(
       Object.entries(structuredClone(data.memoryEntries ?? {})).map(([scope, entries]) => [scope, entries]),
     );

@@ -15,7 +15,7 @@ interface CapturedRoute {
 
 function setup() {
   const routes: CapturedRoute[] = [];
-  let settings: MemoryConfig = MemoryConfigSchema.parse({});
+  let settings: MemoryConfig = MemoryConfigSchema.parse({ enabled: false });
   const store = {
     list: async () => [], get: async () => undefined, journal: async () => [], undo: async () => undefined,
     put: async (input: Record<string, unknown>) => ({ entry: input, operationId: 'receipt-id' }),
@@ -85,7 +85,7 @@ describe('memory REST', () => {
       return { http: response.status, envelope: await response.json() as { code: number; data: any; msg: string } };
     };
     try {
-      expect((await request('GET', '/settings')).envelope.data.enabled).toBe(false);
+      expect((await request('GET', '/settings')).envelope.data.enabled).toBe(true);
       expect((await request('PATCH', '/settings', { enabled: true })).envelope.code).toBe(0);
       const write = await request('PUT', '/global/new', { type: 'user', title: 'Language', body: 'Reply in Chinese.', reason: 'User preference' });
       expect(write.http).toBe(200);
