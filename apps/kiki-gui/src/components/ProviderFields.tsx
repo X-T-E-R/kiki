@@ -32,7 +32,6 @@ import type { OAuthMethodStatus } from '@kiki/klient';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
-  fetchRemoteModels,
   humanizeMs,
   isProviderDraftDirty,
   KNOWN_CAPABILITIES,
@@ -882,7 +881,9 @@ export function ProviderFields({
           : { tone: 'error', text: t('st.fetchModels.serverUnsupported') });
         return;
       }
-      const models = await fetchRemoteModels({ type: draft.type, baseUrl: draft.baseUrl, apiKey: draft.apiKey });
+      // Probe through the server: a browser-direct fetch from the desktop
+      // WebView is blocked by CORS on most provider endpoints.
+      const models = await client.probeProviderDraft({ type: draft.type, baseUrl: draft.baseUrl, apiKey: draft.apiKey });
       setLocalSuggestions(models.map((model) => ({ ...draftCatalogChoice(model), source: 'discovered' })));
       setProbeFeedback({ tone: 'success', text: t('st.fetchModels.suggestions', { count: models.length }) });
     } catch (error) {
