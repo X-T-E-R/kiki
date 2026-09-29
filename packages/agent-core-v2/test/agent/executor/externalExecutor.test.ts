@@ -95,6 +95,7 @@ interface FakeHarnessOptions {
   readonly thoughtConfigId?: string;
   readonly completionUsage?: AcpTurnResult['response']['usage'];
   readonly executorId?: string;
+  readonly agentId?: string;
   readonly providerName?: string;
   readonly modelAlias?: string;
   readonly unpinModel?: boolean;
@@ -391,7 +392,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
   };
   const executorContext: AgentExecutorContext = {
     agent: {
-      id: 'external-agent',
+      id: options.agentId ?? 'external-agent',
       accessor: {
         get: (id) => {
           if (!services.has(id)) throw new Error(`Missing service ${String(id)}`);
@@ -756,8 +757,9 @@ describe('ACP external executor', () => {
     }
   });
 
-  it('sends live Todo and goal state with delivery events even without injected history', async () => {
+  it.each(['external-agent', 'main'] as const)('sends only the %s agent\'s live Todo and goal state', async (agentId) => {
     const harness = createExecutionHarness({
+      agentId,
       todos: [{ title: 'Finish integration', status: 'in_progress' }],
       notes: { next: 'Run the server test' },
       goal: {
@@ -774,12 +776,16 @@ describe('ACP external executor', () => {
     try {
       const run = await harness.execution.run({ kind: 'prompt', prompt: 'Continue' },
         { signal: new AbortController().signal });
-      expect(harness.starts[0]?.prompt).toContain('Goal (active): Land the external harness');
-      expect(harness.starts[0]?.prompt).toContain('Completion criterion: All tests green');
+      if (agentId === 'main') {
+        expect(harness.starts[0]?.prompt).toContain('Goal (active): Land the external harness');
+        expect(harness.starts[0]?.prompt).toContain('Completion criterion: All tests green');
+      } else {
+        expect(harness.starts[0]?.prompt).not.toContain('[Kiki goal_state]');
+      }
       expect(harness.starts[0]?.prompt).toContain('[in_progress] Finish integration');
       expect(harness.starts[0]?.prompt).toContain('next: Run the server test');
       expect(harness.events.filter((event) => event instanceof ExecutorHintDelivery)).toMatchObject([
-        { origin: 'goal_state', method: 'next_turn_preamble', status: 'delivered' },
+        ...agentId === 'main' ? [{ origin: 'goal_state', method: 'next_turn_preamble', status: 'delivered' }] : [],
         { origin: 'todo_state', method: 'next_turn_preamble', status: 'delivered' },
       ]);
       await harness.turnCancel();
