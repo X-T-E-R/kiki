@@ -466,27 +466,24 @@ body
     ).toThrow(/"name"/);
   });
 
-  it('rejects a derived name that is not kebab-case', () => {
-    expect(() =>
-      parseAgentFileText({
-        path: '/tmp/agents/My Agent.md',
-        source: 'project',
-        text: '---\ndescription: d\n---\n\nbody\n',
-      }),
-    ).toThrow(/kebab-case/);
+  it('accepts underscore names from frontmatter and filenames, but rejects invalid separators', () => {
+    expect(parse('---\nname: contestant_deepseek\ndescription: d\n---\nbody\n').name).toBe('contestant_deepseek');
+    expect(parseAgentFileText({
+      path: '/tmp/agents/contestant_deepseek.md',
+      source: 'project',
+      text: '---\ndescription: d\n---\nbody\n',
+    }).name).toBe('contestant_deepseek');
+    for (const name of ['CodeReviewer', 'code__reviewer', 'code-_reviewer', 'code reviewer']) {
+      expect(() => parse(`---\nname: ${name}\ndescription: d\n---\nbody\n`)).toThrow(/hyphens or underscores/);
+    }
   });
 
   it('rejects a missing description', () => {
     expect(() => parse('---\nname: solo\n---\n\nbody\n')).toThrow(/"description"/);
   });
 
-  it('rejects non kebab-case names', () => {
-    expect(() => parse('---\nname: CodeReviewer\ndescription: d\n---\n\nbody\n')).toThrow(
-      /kebab-case/,
-    );
-    expect(() => parse('---\nname: code_reviewer\ndescription: d\n---\n\nbody\n')).toThrow(
-      /kebab-case/,
-    );
+  it('accepts mixed lowercase hyphen/underscore names', () => {
+    expect(parse('---\nname: code-reviewer_deepseek\ndescription: d\n---\nbody\n').name).toBe('code-reviewer_deepseek');
   });
 
   it('rejects unknown top-level frontmatter keys', () => {
@@ -754,7 +751,7 @@ subagents:
 
 body
 `),
-    ).toThrow(/kebab-case profile name, not a route id/);
+    ).toThrow(/profile name, not a route id/);
   });
 
   it('rejects prompt_mode replace on a lease', () => {

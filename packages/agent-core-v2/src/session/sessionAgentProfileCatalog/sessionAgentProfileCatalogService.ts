@@ -180,9 +180,20 @@ export class SessionAgentProfileCatalogService
       const profile = input.profile === undefined ? undefined : this.get(input.profile);
       if (profile === undefined) {
         const available = this.list().map((item) => item.name).join(', ');
+        const requested = input.profile?.replaceAll('_', '-').toLowerCase();
+        const skipped = requested === undefined ? [] : this.relevantEntries().flatMap((entry) =>
+          (entry.contribution.skipped ?? []).filter((file) => {
+            const stem = file.path.split(/[\\/]/).pop()?.replace(/\.md$/i, '').replaceAll('_', '-').toLowerCase();
+            const invalidName = /Invalid agent name "([^"]+)"/.exec(file.reason)?.[1]?.replaceAll('_', '-').toLowerCase();
+            return stem === requested || invalidName === requested;
+          }),
+        );
+        const explanation = skipped.length > 0
+          ? ` Skipped matching agent files: ${skipped.map((file) => `${file.path} was skipped: ${file.reason}`).join('; ')}`
+          : '';
         throw new Error2(
           ErrorCodes.PROFILE_UNKNOWN,
-          `Unknown agent profile: "${input.profile ?? ''}". Available agent profiles: ${available}`,
+          `Unknown agent profile: "${input.profile ?? ''}".${explanation} Available agent profiles: ${available}`,
           { details: { profileName: input.profile, available } },
         );
       }
@@ -195,7 +206,7 @@ export class SessionAgentProfileCatalogService
         { details: { route: input.route } },
       );
     }
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/.test(input.route)) {
+    if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/.test(input.route)) {
       throw new Error2(ErrorCodes.ROUTE_INVALID_ID, `Invalid agent profile route id: "${input.route}"`, {
         details: { route: input.route },
       });

@@ -63,7 +63,7 @@ export interface ParsedSubagentField {
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
 }
 
-const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 
 const LEASE_KEYS = new Set([
   'name',
@@ -262,12 +262,12 @@ function parseLeaseMapping(
   const name = requiredString(item['name'], `${prefix}.name`, filePath);
   if (name.includes('.')) {
     throw new SubagentLeaseParseError(
-      `Frontmatter field "${prefix}.name" in ${filePath} must be a kebab-case profile name, not a route id; use route on the Agent tool`,
+      `Frontmatter field "${prefix}.name" in ${filePath} must be a profile name, not a route id; use route on the Agent tool`,
     );
   }
   if (!AGENT_NAME_PATTERN.test(name)) {
     throw new SubagentLeaseParseError(
-      `Frontmatter field "${prefix}.name" in ${filePath} must be kebab-case`,
+      `Frontmatter field "${prefix}.name" in ${filePath} must use lowercase letters and digits separated by hyphens or underscores`,
     );
   }
   const source = parseSourcePath(item['source'], `${prefix}.source`, filePath);

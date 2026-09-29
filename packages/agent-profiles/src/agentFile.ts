@@ -32,7 +32,7 @@ export interface ParseAgentFileOptions {
   readonly forceOverride?: boolean;
 }
 
-const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 
 const AGENT_FILE_KEYS = new Set([
   'name',
@@ -121,7 +121,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
   }
   if (options.forceName === undefined && !AGENT_NAME_PATTERN.test(name)) {
     throw new AgentFileParseError(
-      `Invalid agent name "${name}" in ${options.path}: expected kebab-case (e.g. "code-reviewer")`,
+      `Invalid agent name "${name}" in ${options.path}: expected lowercase letters and digits separated by hyphens or underscores (e.g. "code-reviewer" or "code_reviewer")`,
     );
   }
 

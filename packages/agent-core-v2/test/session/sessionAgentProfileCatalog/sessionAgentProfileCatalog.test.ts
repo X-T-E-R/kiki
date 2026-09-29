@@ -383,6 +383,26 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     container.dispose();
   });
 
+  it('reports a matching invalid profile file when selection fails', () => {
+    const { container, catalog } = makeCatalog(WORKSPACE_KEY, [], [{
+      sourceId: 'workspace', priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
+      workspaceKey: WORKSPACE_KEY,
+      contribution: {
+        profiles: [],
+        skipped: [
+          { path: '/project/agents/contestant_deepseek.md', reason: 'Missing required frontmatter field "description"' },
+          { path: '/project/agents/unrelated.md', reason: 'Unreadable file' },
+        ],
+      },
+    }]);
+    expect(() => catalog.resolveSelection({ profile: 'contestant-deepseek' })).toThrow(
+      '/project/agents/contestant_deepseek.md was skipped: Missing required frontmatter field "description"',
+    );
+    expect(() => catalog.resolveSelection({ profile: 'other' })).not.toThrow(/unrelated\.md/);
+    catalog.dispose();
+    container.dispose();
+  });
+
   it('lets a higher-priority file profile replace a same-name low-priority candidate', () => {
     const { container, catalog, contribute } = makeCatalog();
     const builtinProfile = profile(DEFAULT_AGENT_PROFILE_NAME);

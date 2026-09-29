@@ -7,8 +7,8 @@ import type {
 import { AgentFileParseError } from './agentFile';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
 
-const ROUTE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/;
-const PROFILE_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const ROUTE_ID_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/;
+const PROFILE_NAME_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 const ALLOWED_KEYS = new Set([
   'id',
   'profile',
@@ -58,12 +58,12 @@ export function parseAgentRouteFileText(
   if (!ROUTE_ID_PATTERN.test(id)) {
     throw invalid(
       options.path,
-      `Invalid route id "${id}": expected lowercase kebab-case dotted segments`,
+      `Invalid route id "${id}": expected a lowercase hyphen/underscore-separated profile and kebab-case dotted route segments`,
     );
   }
   const profile = requiredString(parsed.data['profile'], 'profile', options.path);
   if (!PROFILE_NAME_PATTERN.test(profile)) {
-    throw invalid(options.path, `Invalid base profile "${profile}": expected kebab-case`);
+    throw invalid(options.path, `Invalid base profile "${profile}": expected lowercase letters and digits separated by hyphens or underscores`);
   }
   const idProfile = id.slice(0, id.indexOf('.'));
   const routeName = id.slice(id.indexOf('.') + 1);
