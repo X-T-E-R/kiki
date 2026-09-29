@@ -565,7 +565,10 @@ function markerToBlock(item: {
     const key = payloadRecord?.['strategy'] === 'relay'
       ? fallbackFrom === 'summarize' ? 'transcript.marker.compactionRescue' : 'transcript.marker.compactionFresh'
       : fallbackFrom === 'relay' ? 'transcript.marker.compactionFallback' : 'transcript.marker.compactionSummarize';
-    return { ...base, text: item.marker, i18n: { key } };
+    const reasonCodes = Array.isArray(payloadRecord?.['reasonCodes'])
+      ? payloadRecord['reasonCodes'].filter((code): code is string => typeof code === 'string')
+      : undefined;
+    return { ...base, text: item.marker, i18n: { key }, reasonCodes };
   }
 
   const text =

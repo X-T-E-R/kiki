@@ -1573,6 +1573,8 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       'transcript.marker.compactionFallback',
       'transcript.marker.compactionRescue',
     ]);
+    expect(projected.blocks[3]).toMatchObject({ reasonCodes: ['notes_missing'] });
+    expect(projected.blocks[0]).not.toHaveProperty('reasonCodes', expect.any(Array));
   });
 
   it('renders each compaction once, at the durable record, across live and replayed markers', () => {
