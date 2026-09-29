@@ -1782,6 +1782,14 @@ function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
   return false;
 }
 
+/**
+ * The agent's lane: every row the agent produces (prose, thinking, tools,
+ * folds, cards, notices, dividers) ends on one right edge, set by the
+ * agent's reading measure rather than by the user's bubbles, which keep the
+ * full row and sit on the right on their own.
+ */
+const AGENT_LANE = 'w-full max-w-[var(--kiki-agent-column,640px)]';
+
 const TRANSCRIPT_OVERSCAN = 6;
 const TRANSCRIPT_OLDER_INTENT_MS = 1000;
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
@@ -3009,39 +3017,45 @@ export function Transcript({
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
                   {first ? <TopEdge state={state} onLoadOlder={onLoadOlder} /> : null}
                   {node === undefined ? null : (
-                    <TranscriptRow
-                      node={node}
-                      agentId={agentId}
-                      readOnly={readOnly}
-                      approvalShortcutHints={hasUnresolvedApproval}
-                      agentNames={agentNames}
-                      childBlocks={childBlocks}
-                      forest={stableForest}
-                      rowActions={rowActions}
-                      latestFinalAssistantId={latestFinalAssistantId}
-                      annotations={annotationTargets.get(virtualNodeKey(node))}
-                      executionBadge={executionBadges.get(virtualNodeKey(node))}
-                      stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
-                      subagentFormOverrides={cardForms}
-                      onToggleSubagentForm={handleToggleSubagentForm}
-                      openFolds={openFolds}
-                      onToggleFold={handleToggleFold}
-                      onResolveApproval={onResolveApproval}
-                      onAnswerQuestion={onAnswerQuestion}
-                      onDismissQuestion={onDismissQuestion}
-                      onCancelQueued={onCancelQueued}
-                      onOpenAgent={onOpenAgent}
-                    />
+                    <div data-transcript-lane={node.kind === 'user' ? 'user' : 'agent'} className={node.kind === 'user' ? undefined : AGENT_LANE}>
+                      <TranscriptRow
+                        node={node}
+                        agentId={agentId}
+                        readOnly={readOnly}
+                        approvalShortcutHints={hasUnresolvedApproval}
+                        agentNames={agentNames}
+                        childBlocks={childBlocks}
+                        forest={stableForest}
+                        rowActions={rowActions}
+                        latestFinalAssistantId={latestFinalAssistantId}
+                        annotations={annotationTargets.get(virtualNodeKey(node))}
+                        executionBadge={executionBadges.get(virtualNodeKey(node))}
+                        stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
+                        subagentFormOverrides={cardForms}
+                        onToggleSubagentForm={handleToggleSubagentForm}
+                        openFolds={openFolds}
+                        onToggleFold={handleToggleFold}
+                        onResolveApproval={onResolveApproval}
+                        onAnswerQuestion={onAnswerQuestion}
+                        onDismissQuestion={onDismissQuestion}
+                        onCancelQueued={onCancelQueued}
+                        onOpenAgent={onOpenAgent}
+                      />
+                    </div>
                   )}
                   {last && showTurnStatus ? (
-                    <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} />
+                    <div className={AGENT_LANE}>
+                      <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} />
+                    </div>
                   ) : null}
                   {last && !state.busy && state.turnTail !== undefined ? (
-                    <TurnTailLine
-                      tail={state.turnTail}
-                      onResume={resumeStopped}
-                      resumeDisabled={rowActions?.disabled === true}
-                    />
+                    <div className={AGENT_LANE}>
+                      <TurnTailLine
+                        tail={state.turnTail}
+                        onResume={resumeStopped}
+                        resumeDisabled={rowActions?.disabled === true}
+                      />
+                    </div>
                   ) : null}
                 </div>
               </div>
