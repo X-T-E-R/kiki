@@ -26,7 +26,8 @@ export interface WireRecordsStreamOptions {
   readonly startByteOffset?: number;
   readonly startRecordOrdinal?: number;
   readonly signal?: AbortSignal;
-  readonly onRecord: (record: ContextRecord, span: WireRecordSpan) => void;
+  readonly onRecord: (record: ContextRecord, span: WireRecordSpan, raw?: Uint8Array) => unknown;
+  readonly includeRawRecord?: boolean;
 }
 
 export interface WireRecordsStreamResult {
@@ -111,11 +112,12 @@ export async function streamWireRecords(
       return;
     }
     const endByteOffset = nextByteOffset + line.length + (terminated ? 1 : 0);
-    options.onRecord(record as ContextRecord, {
+    const keepReading = options.onRecord(record as ContextRecord, {
       startByteOffset: nextByteOffset, endByteOffset, ordinal: startRecordOrdinal + recordCount,
-    });
+    }, options.includeRawRecord ? terminated ? Buffer.concat([line, Buffer.from('\n')]) : line : undefined);
     recordCount += 1;
     nextByteOffset = endByteOffset;
+    if (keepReading === false) stop('record_budget');
   };
 
   const mergeLine = (): Buffer => {

@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises';
+
 import {
   IHistoryArchive,
   type HistoryHit,
@@ -15,6 +17,7 @@ import { GlobalSearchError, IGlobalSearchService } from '../search/searchService
 import { SearchWorkerError } from '../search/worker/host';
 import { makeSnippet } from '../search/snippet';
 import { matchHistoryText, planHistoryQuery } from './history/historyQuery';
+import type { HistoryLocatorStore } from './history/historyLocatorStore';
 import type {
   BoundedTranscriptSnapshot,
   TranscriptColdReadLimits,
@@ -170,9 +173,86 @@ async function fallbackSearch(
   };
 }
 
-export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => TranscriptService): ScopeSeed {
+interface ScanCursor {
+  readonly v: 1;
+  readonly offset: number;
+  readonly incarnation: string;
+  readonly asOf: number;
+}
+
+function parseScanCursor(value: string | undefined): ScanCursor | undefined {
+  if (value === undefined) return undefined;
+  let raw: unknown;
+  try { raw = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')); }
+  catch { throw new Error('invalid_scan_cursor'); }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('invalid_scan_cursor');
+  const c = raw as Partial<ScanCursor>;
+  if (c.v !== 1 || !Number.isSafeInteger(c.offset) || c.offset! < 0 ||
+      typeof c.incarnation !== 'string' || !c.incarnation ||
+      !Number.isSafeInteger(c.asOf) || c.asOf! < c.offset!) throw new Error('invalid_scan_cursor');
+  return c as ScanCursor;
+}
+
+async function navigationSearch(transcript: TranscriptService, nav: HistoryLocatorStore,
+  input: FallbackInput, pageToken?: string, signal?: AbortSignal): Promise<HistorySearchPage> {
+  signal?.throwIfAborted();
+  const location = await transcript.historyWireLocation(input.sessionId!, input.agentId!);
+  const missing: HistorySearchPage = { items: [], hasMore: false, source: 'fallback',
+    indexState: { state: 'unavailable', degraded: 'transcript source missing' },
+    incomplete: 'source_missing', coverage: { complete: false, domain: 'full_text', gaps: ['source_missing'] } };
+  if (location === undefined) return missing;
+  const cursor = parseScanCursor(pageToken);
+  const size = cursor?.asOf ?? await stat(location.wirePath).then((info) => info.size, (error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (size === undefined) return missing;
+  const asOf = size;
+  const scan = await nav.scan(input.sessionId!, input.agentId!, signal, {
+    query: input.query, mode: input.mode ?? 'auto', role: input.role,
+    after: input.after, before: input.before, pageSize: input.pageSize, asOf,
+    cursor: cursor === undefined ? undefined : { offset: cursor.offset, incarnation: cursor.incarnation },
+  });
+  if (scan === undefined) return { items: [], hasMore: false, source: 'fallback',
+    indexState: { state: 'unavailable' }, incomplete: 'source_missing',
+    coverage: { complete: false, domain: 'full_text', gaps: ['source_missing'] } };
+  const hits = scan.hits ?? [];
+  const stuck = !scan.complete && scan.nextByteOffset <= (cursor?.offset ?? 0);
+  const next = scan.complete || stuck ? undefined : Buffer.from(JSON.stringify({ v: 1,
+    offset: scan.nextByteOffset, incarnation: scan.incarnation, asOf } satisfies ScanCursor)).toString('base64url');
+  return { items: hits.slice(0, input.pageSize), hasMore: next !== undefined, pageToken: next,
+    source: 'fallback', continuation: next === undefined ? undefined : 'scan',
+    incomplete: stuck ? scan.incompleteReason ?? 'wire_scan_error' : !scan.complete ? 'wire_scan_limit' :
+      hits.length > input.pageSize ? 'result_limit' : undefined,
+    coverage: { complete: scan.complete && hits.length <= input.pageSize, domain: 'full_text',
+      gaps: stuck ? [scan.incompleteReason ?? 'wire_scan_error'] :
+        hits.length > input.pageSize ? ['result_limit_without_cursor'] : !scan.complete ? ['wire_scan_limit'] : undefined,
+      scanned: { bytes: scan.bytesRead, records: scan.recordsRead } },
+    indexState: { state: 'unavailable', stale: true, degraded: SEARCH_INDEX_UNAVAILABLE },
+    fallback: { reason: SEARCH_INDEX_UNAVAILABLE, scope: 'requested_session_wire',
+      maxBytes: 8 << 20, maxRecords: 50_000, bytesRead: scan.bytesRead,
+      recordsRead: scan.recordsRead, truncated: !scan.complete || hits.length > input.pageSize },
+  };
+}
+
+export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => TranscriptService,
+  getNavigation?: () => HistoryLocatorStore): ScopeSeed {
   const archive: IHistoryArchive = {
     _serviceBrand: undefined,
+    async readRef(ref) {
+      const nav = getNavigation?.();
+      if (nav === undefined) return { status: 'source_missing' };
+      let result: Awaited<ReturnType<HistoryLocatorStore['read']>>;
+      try { result = await nav.read(ref); }
+      catch (error) {
+        if (error instanceof Error && error.message === 'invalid_ref') return { status: 'invalid_ref' };
+        throw error;
+      }
+      if (result.status !== 'ok') return result;
+      const { row, text } = result;
+      return { status: 'ok', text, turn: row.turn, stepId: row.step, role: row.role,
+        toolName: row.toolName, part: row.part, ref: nav.ref(row) };
+    },
     search: async ({
       query,
       mode,
@@ -189,7 +269,9 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       pageToken,
       fallbackSessionId,
       fallbackAgentId,
+      signal,
     }) => {
+      signal?.throwIfAborted();
       planHistoryQuery(query, mode ?? 'auto');
       let unavailablePage: HistorySearchPage | undefined;
       if (source !== 'transcript' && (mode === 'terms' || mode === 'literal')) {
@@ -209,7 +291,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
         }
       }
       if (sessionId === undefined || agentId === undefined || includeSubagents === true ||
-          (source !== 'transcript' && mode !== 'auto' && mode !== 'all' && mode !== 'any' &&
+          (source !== 'transcript' && mode !== undefined && mode !== 'auto' && mode !== 'all' && mode !== 'any' &&
            (sessionId !== fallbackSessionId || agentId !== fallbackAgentId))) {
         return { ...unavailablePage, items: [], hasMore: false, source: 'index',
           indexState: unavailablePage?.indexState ?? { state: 'unavailable', degraded: SEARCH_INDEX_UNAVAILABLE },
@@ -219,9 +301,9 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
           warning: "The requested range needs a searchable index or a specific session and agent for a transcript scan.",
         };
       }
-      return fallbackSearch(getTranscript(), {
-        query, mode, role, after, before, sort, pageSize, sessionId, agentId,
-      });
+      const fallback = { query, mode, role, after, before, sort, pageSize, sessionId, agentId };
+      return getNavigation === undefined ? fallbackSearch(getTranscript(), fallback) :
+        navigationSearch(getTranscript(), getNavigation(), fallback, pageToken, signal);
     },
     async readTurn(sessionId, agentId, ordinal, stepId) {
       if (!isPlainAgentId(agentId)) throw new Error('Invalid agent id.');

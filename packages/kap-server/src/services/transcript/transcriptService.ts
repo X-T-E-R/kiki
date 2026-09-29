@@ -1364,6 +1364,15 @@ export class TranscriptService {
     return snapshot;
   }
 
+  async historyWireLocation(sessionId: string, agentId: string): Promise<{ workspaceId: string; wirePath: string } | undefined> {
+    this.assertReadableAgent(sessionId, agentId);
+    const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
+    if (summary === undefined || !isPlainAgentId(agentId)) return undefined;
+    return { workspaceId: summary.workspaceId, wirePath: join(
+      this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, AGENTS_DIR, agentId, WIRE_FILE,
+    ) };
+  }
+
   async readColdSnapshotBounded(
     sessionId: string,
     agentId: string = MAIN_AGENT_ID,

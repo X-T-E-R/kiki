@@ -37,9 +37,12 @@ export const HistoryReadInputSchema = z.object({
   agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent here or main in another session.'),
   turn: z.number().int().nonnegative().optional().describe('0-based transcript turn; omit when step_id or cursor identifies it.'),
   step_id: z.string().regex(/^t\d+\.\d+$/).optional().describe('Step ID such as t42.3; sufficient without turn.'),
+  ref: z.string().min(1).max(2048).optional().describe('Durable source ref from a Search hit, List entry, or Read block; supplies its own target.'),
+  start_char: z.number().int().nonnegative().optional().describe('For one text-block ref, read from this UTF-16 offset (use range.end after a cursor expires).'),
+  max_chars: z.number().int().min(1000).max(20_000).optional().describe('Text budget per page, defaults to 6000 UTF-16 characters.'),
   cursor: z.string().min(1).max(4096).optional().describe('Pass alone to continue a previous Read page.'),
-}).strict().refine((input) => input.turn !== undefined || input.step_id !== undefined || input.cursor !== undefined, {
-  message: 'Provide turn, step_id, or cursor.',
+}).strict().refine((input) => input.turn !== undefined || input.step_id !== undefined || input.ref !== undefined || input.cursor !== undefined, {
+  message: 'Provide ref, turn, step_id, or cursor.',
 });
 
 export interface HistoryHit {
@@ -93,8 +96,12 @@ export interface IHistoryArchive {
     pageToken?: string;
     fallbackSessionId?: string;
     fallbackAgentId?: string;
+    signal?: AbortSignal;
   }): Promise<HistorySearchPage>;
   readTurn(sessionId: string, agentId: string, turn: number, stepId?: string): Promise<string | undefined>;
+  readRef?(ref: string): Promise<{ status: 'ok'; text?: string; turn: number; stepId?: string;
+    role?: 'user' | 'assistant' | 'tool'; toolName?: string; part?: string; ref: string } |
+    { status: 'stale_ref' | 'source_missing' | 'invalid_ref' }>;
 }
 
 export const IHistoryArchive = createDecorator<IHistoryArchive>('historyArchive');
@@ -104,6 +111,33 @@ export const IHistoryReadTool = createDecorator<AgentTool<z.infer<typeof History
 const PAGE_CHARS = 3_000;
 
 type ReadCursor = { v: 1; session: string; agent: string; turn: number; step?: string; offset: number; hash: string };
+type BlockCursor = { v: 2; ref: string; offset: number; maxChars: number };
+type RefTarget = { workspace: string; session: string; agent: string; focus?: number };
+
+function decodeBlockCursor(cursor: string | undefined): BlockCursor | undefined {
+  if (cursor === undefined) return undefined;
+  try {
+    const raw = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Partial<BlockCursor>;
+    if (raw?.v !== 2) return undefined;
+    if (typeof raw.ref !== 'string' || !Number.isSafeInteger(raw.offset) || raw.offset! < 0 ||
+        !Number.isSafeInteger(raw.maxChars) || raw.maxChars! < 1000 || raw.maxChars! > 20_000) {
+      throw new Error('invalid');
+    }
+    return raw as BlockCursor;
+  } catch { return undefined; }
+}
+
+function refTarget(ref: string): RefTarget {
+  if (!ref.startsWith('h1_') || ref.length > 2048) throw new Error('Invalid HistoryRead ref.');
+  try {
+    const value = JSON.parse(Buffer.from(ref.slice(3), 'base64url').toString('utf8')) as Partial<RefTarget>;
+    if (typeof value.workspace === 'string' && value.workspace.length > 0 &&
+        typeof value.session === 'string' && value.session.length > 0 &&
+        typeof value.agent === 'string' && AgentIdSchema.safeParse(value.agent).success &&
+        (value.focus === undefined || Number.isSafeInteger(value.focus) && value.focus >= 0)) return value as RefTarget;
+  } catch {}
+  throw new Error('Invalid HistoryRead ref.');
+}
 
 function readCursor(value: string | undefined): ReadCursor | undefined {
   if (value === undefined) return undefined;
@@ -174,7 +208,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
 
   async resolveExecution(input: SearchInput): Promise<ToolExecution> {
     const cursor = input.cursor === undefined ? undefined : input.query === undefined
-      ? decodeSearchCursor(input.cursor) : (() => { try { return decodeSearchCursor(input.cursor!); } catch { return undefined; } })();
+      ? decodeSearchCursor(input.cursor) : (() => { try { return decodeSearchCursor(input.cursor); } catch { return undefined; } })();
     const supplied = { ...input, cursor: undefined };
     const prior = cursor?.request;
     const mismatch = cursor !== undefined && Object.entries(supplied).some(
@@ -203,33 +237,61 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
       approvalRule: this.name,
       description: 'Searching history',
       accesses: target.externalRoot === undefined ? ToolAccesses.none() : ToolAccesses.searchTree(target.externalRoot, true),
-      execute: async () => {
-        if (mismatch) return { isError: true, output: JSON.stringify({ error: {
-          code: 'cursor_mismatch', message: 'HistorySearch cursor conflicts with the query.',
-          retryable: true, next_call: { tool: 'HistorySearch', arguments: request },
-        } }) };
-        const page = await this.archive.search({
-          query: request.query!, mode: request.mode ?? 'auto', workspaceId: target.id,
-          sessionId, agentId, includeSubagents: request.include_subagents,
-          role: request.role, after: request.after === undefined ? undefined : Date.parse(request.after),
-          before: request.before === undefined ? undefined : Date.parse(request.before),
-          sort: request.sort, source: request.source, pageSize: request.limit ?? SEARCH_DEFAULT_LIMIT,
-          pageToken: cursor?.page ?? (cursor === undefined ? input.cursor : undefined),
-          fallbackSessionId: target.id === this.session.workspaceId ? this.session.sessionId : undefined,
-          fallbackAgentId: target.id === this.session.workspaceId ? this.caller.agentId : undefined,
-        });
+      execute: async (context) => {
+        context.signal.throwIfAborted();
+        if (mismatch) return { isError: true, output: JSON.stringify({ scope_used: scope,
+          mode_used: request.mode ?? 'auto', target: { workspace_id: target.id, session_id: sessionId,
+            agent_id: agentId, all_agents: request.include_subagents === true ? true : undefined }, error: {
+            code: 'cursor_mismatch', message: 'HistorySearch cursor conflicts with the query.',
+            retryable: true, next_call: { tool: 'HistorySearch', arguments: request },
+          } }) };
+        let page: HistorySearchPage;
+        try {
+          page = await this.archive.search({
+            query: request.query!, mode: request.mode ?? 'auto', workspaceId: target.id,
+            sessionId, agentId, includeSubagents: request.include_subagents,
+            role: request.role, after: request.after === undefined ? undefined : Date.parse(request.after),
+            before: request.before === undefined ? undefined : Date.parse(request.before),
+            sort: request.sort, source: request.source, pageSize: request.limit ?? SEARCH_DEFAULT_LIMIT,
+            pageToken: cursor?.page ?? (cursor === undefined ? input.cursor : undefined),
+            fallbackSessionId: target.id === this.session.workspaceId ? this.session.sessionId : undefined,
+            fallbackAgentId: target.id === this.session.workspaceId ? this.caller.agentId : undefined,
+            signal: context.signal,
+          });
+          context.signal.throwIfAborted();
+        } catch (error) {
+          if (error instanceof Error && (error.message === 'stale_scan_cursor' || error.message === 'invalid_scan_cursor')) {
+            return { isError: true, output: JSON.stringify({ scope_used: scope,
+              mode_used: request.mode ?? 'auto', target: { workspace_id: target.id, session_id: sessionId,
+                agent_id: agentId, all_agents: request.include_subagents === true ? true : undefined },
+              error: { code: error.message,
+                message: 'HistorySearch scan cursor is no longer available; restart the original query.',
+                retryable: true, next_call: { tool: 'HistorySearch', arguments: request },
+              } }) };
+          }
+          throw error;
+        }
         const next = page.pageToken === undefined ? undefined : Buffer.from(JSON.stringify({
           v: 2, request: { ...request, cursor: undefined }, page: page.pageToken,
         } satisfies SearchCursor)).toString('base64url');
+        const hits = page.items.filter((hit) => hit.turn !== undefined && hit.role !== 'title');
+        const expandedMode = request.mode === 'literal' || request.mode === 'terms' ? request.mode : 'terms';
         return { output: JSON.stringify({
           schema_version: 2, status: page.incomplete !== undefined ||
             (page.coverage !== undefined ? !page.coverage.complete :
               (page.indexState.state !== 'ready' && page.source !== 'live') || request.include_subagents === true)
-            ? 'partial' : page.items.length ? 'ok' : 'no_match',
+            ? 'partial' : hits.length > 0 ? 'ok' : 'no_match',
           target: { workspace_id: target.id, session_id: sessionId, agent_id: agentId,
-            all_agents: request.include_subagents || undefined },
-          hits: page.items.filter((hit) => hit.turn !== undefined && hit.role !== 'title')
-            .map((hit) => ({ session_id: hit.sessionId, agent_id: hit.agentId, role: hit.role,
+            all_agents: request.include_subagents === true ? true : undefined },
+          scope_used: scope, mode_used: request.mode ?? 'auto',
+          expand_hint: scope !== 'workspace' && hits.length < (request.limit ?? SEARCH_DEFAULT_LIMIT)
+            ? { message: expandedMode === (request.mode ?? 'auto')
+              ? "Need results beyond this session? Retry with scope='workspace'."
+              : "Need results beyond this session? Retry with scope='workspace', mode='terms' (indexed token-AND matching).",
+              next_call: { tool: 'HistorySearch', arguments: { ...request, mode: expandedMode,
+                scope: 'workspace', session_id: undefined, source: undefined, cursor: undefined } } }
+            : undefined,
+          hits: hits.map((hit) => ({ session_id: hit.sessionId, agent_id: hit.agentId, role: hit.role,
               turn: hit.turn, step_id: hit.stepId, ref: hit.ref, time: hit.time,
               snippet: hit.snippet, matched: hit.matched })),
           next_cursor: next, has_more: next !== undefined, continuation: page.continuation,
@@ -249,9 +311,9 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
 export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infer<typeof HistoryReadInputSchema>> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryRead';
-  readonly description = 'Read an exact transcript turn or step, including tool output. A step_id such as t42.3 is sufficient without turn. Pass only cursor to continue a page; turn is 0-based.';
+  readonly description = 'Read earlier original text with a durable ref from HistorySearch or HistoryList, a step_id such as t42.3, or a 0-based turn. A ref supplies its own target; stale refs report an error instead of redirecting. Block refs page by text range; cursor continues and block ref plus start_char recovers from an expired cursor.';
   readonly parameters = toInputJsonSchema(HistoryReadInputSchema, (schema) => {
-    schema['anyOf'] = [{ required: ['turn'] }, { required: ['step_id'] }, { required: ['cursor'] }];
+    schema['anyOf'] = [{ required: ['ref'] }, { required: ['turn'] }, { required: ['step_id'] }, { required: ['cursor'] }];
   });
 
   constructor(
@@ -262,7 +324,67 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
     @IAgentScopeContext private readonly caller: IAgentScopeContext,
   ) { super(archive, session, workspaces); }
 
+  private async resolveRef(input: z.infer<typeof HistoryReadInputSchema>, cursor?: BlockCursor): Promise<ToolExecution> {
+    const ref = cursor?.ref ?? input.ref!;
+    const source = refTarget(ref);
+    if (input.turn !== undefined || input.step_id !== undefined ||
+        (input.cursor !== undefined && cursor === undefined) ||
+        (cursor !== undefined && (input.ref !== undefined && input.ref !== ref ||
+          input.start_char !== undefined && input.start_char !== cursor.offset ||
+          input.max_chars !== undefined && input.max_chars !== cursor.maxChars))) {
+      throw new Error('HistoryRead ref or cursor conflicts with another selector.');
+    }
+    const summary = await this.sessions.get(source.session);
+    if (summary === undefined) throw new Error('Session not found.');
+    const target = await this.target(input.workspace_id ?? source.workspace);
+    if (summary.workspaceId !== source.workspace || target.id !== source.workspace ||
+        input.session_id !== undefined && input.session_id !== source.session ||
+        input.agent_id !== undefined && input.agent_id !== source.agent) {
+      throw new Error('HistoryRead ref conflicts with the requested target.');
+    }
+    const limit = cursor?.maxChars ?? input.max_chars ?? 6000;
+    const start = cursor?.offset ?? input.start_char ?? Math.max(0, (source.focus ?? 0) - 160);
+    return {
+      approvalRule: this.name, description: 'Reading historical source block',
+      accesses: target.externalRoot === undefined ? ToolAccesses.none() : ToolAccesses.readFile(target.externalRoot, true),
+      execute: async () => {
+        const read = await this.archive.readRef?.(ref);
+        if (read === undefined || read.status !== 'ok') return { isError: true, output: JSON.stringify({ error: {
+          code: read?.status ?? 'source_missing',
+          message: read?.status === 'invalid_ref' ? 'Invalid historical source ref; search for a fresh hit.' :
+            'Historical source is missing or no longer matches this ref.',
+          retryable: read?.status === 'stale_ref',
+          next_call: { tool: 'HistorySearch', arguments: { query: '<distinctive words>' } },
+        } }) };
+        if (read.text === undefined) return { isError: true, output: JSON.stringify({ error: {
+          code: 'no_text_block', message: 'This ref identifies a turn or step directory entry; read by its turn or step_id.',
+          next_call: { tool: 'HistoryRead', arguments: { session_id: source.session, agent_id: source.agent,
+            turn: read.turn, step_id: read.stepId } },
+        } }) };
+        if (start > read.text.length) return { isError: true, output: JSON.stringify({ error: {
+          code: 'range_out_of_bounds', message: 'start_char exceeds the verified block length.',
+          next_call: { tool: 'HistoryRead', arguments: { ref: read.ref, start_char: 0 } },
+        } }) };
+        let end = Math.min(read.text.length, start + limit);
+        if (end < read.text.length && /[\uD800-\uDBFF]/.test(read.text[end - 1]!)) end -= 1;
+        const next = end < read.text.length ? Buffer.from(JSON.stringify({ v: 2, ref: read.ref,
+          offset: end, maxChars: limit } satisfies BlockCursor)).toString('base64url') : undefined;
+        return { output: JSON.stringify({ schema_version: 2, status: 'ok', ref, target: {
+          workspace_id: source.workspace, session_id: source.session, agent_id: source.agent },
+          source: 'transcript', coverage: { complete: true, domain: 'full_text' },
+          blocks: [{ ref: read.ref, turn: read.turn, step_id: read.stepId, role: read.role,
+            tool_name: read.toolName, part: read.part, text: read.text.slice(start, end),
+            range: { start, end, total: read.text.length, unit: 'utf16' },
+            has_earlier: start > 0 }], next_cursor: next, has_more: next !== undefined,
+          continuation: next === undefined ? undefined : 'results',
+        }) };
+      },
+    };
+  }
+
   async resolveExecution(input: z.infer<typeof HistoryReadInputSchema>): Promise<ToolExecution> {
+    const blockCursor = decodeBlockCursor(input.cursor);
+    if (input.ref !== undefined || blockCursor !== undefined) return this.resolveRef(input, blockCursor);
     const cursor = readCursor(input.cursor);
     const stepTurn = input.step_id === undefined ? undefined : Number(input.step_id.match(/^t(\d+)\.\d+$/)?.[1]);
     if (input.turn === undefined && stepTurn === undefined && cursor === undefined) {

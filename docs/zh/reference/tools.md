@@ -56,6 +56,14 @@ MCP、插件和延迟提供的内置工具先公告名称。需要调用时，�
 
 未配置 MCP server 或插件时，延迟提供的内置 Plan 模式工具仍可能出现在公告中。如果当前没有可用的延迟工具，工具列表不会出现 `SelectTools` 或 `CallTool`。仍有延迟工具可用时，MCP server 重连或插件装卸只改变增量公告，不改变顶层工具列表。profile 目录变化时，仅当当前 Agent 实际可派遣的 profile 新增、移除或发生变化，才会在下一条用户消息时公告。用户主动修改工具组、MCP server 或记忆配置，则从下一条用户消息开始应用，顶层工具列表可能变化。
 
+## 历史工具
+
+`HistorySearch`、`HistoryRead` 和 `HistoryList` 是 `history` 工具组中延迟提供的内置工具。收到公告后，用 `SelectTools` 只加载当前需要的工具。它们按照既有工作区访问权限读取会话原文；来源 `ref` 是证据位置，不授予额外权限。
+
+**从旧版 Search 默认值迁移：**`HistorySearch({"query":"有辨识度的词"})` 现在默认以 `mode: "auto"`（完整词组匹配）搜索当前会话、当前 Agent；此前默认在整个工作区进行词元 AND 检索。仍持有旧工具描述的窗口也执行新默认值，执行契约不会按模型见过的 schema 版本锁定。每次 Search 都返回 `scope_used`、`mode_used` 和 `target`。会话范围内的结果少于 `limit` 时，`expand_hint.next_call` 给出可直接调用的 `scope: "workspace"` 扩大范围方案；对 auto/all/any 会明确切换到索引支持的 `mode: "terms"`（词元 AND），返回值会回显这一模式变化。需要明确保留旧检索方式时，传 `{"scope":"workspace","mode":"terms"}`；`scope: "this_session"` 仍是锁定当前会话的兼容别名。搜索已知旧会话须显式给 `session_id`；扩大 Agent 范围须指定 `agent_id` 或 `include_subagents`。检查 `coverage` 和 `next_cursor`：空结果且状态为 partial 表示已扫描或已索引范围尚未覆盖完整。扫描 cursor 续接有界片段；cursor 过期后重新发起原查询。
+
+不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会打开原始用户输入；在 block 分页完善期间，读取整轮请传条目里的 `turn` 数字。导航目录尚在构建时，coverage 会披露已扫描范围。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。旧的按 turn/step 读取形式在 block 分页完善期间仍可使用。
+
 ## 网络类
 
 两个工具都由 Kiki 内置的搜索与抓取模块支撑，随产品一起安装，不需要额外的安装步骤。免密钥的仓库搜索 lane 和 URL 抓取链无需配置即可使用；通用网页搜索需选择其他 lane。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。

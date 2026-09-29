@@ -10,11 +10,10 @@ import { toolGroupForName } from '../../../src/agent/toolRegistry/toolGroups';
 import { isToolActive } from '../../../src/agent/toolPolicy/evaluate';
 import type { ISessionContext } from '../../../src/session/sessionContext/sessionContext';
 import type { IAgentScopeContext } from '../../../src/agent/scopeContext/scopeContext';
-
-const caller = { agentId: 'main' } as IAgentScopeContext;
 import type { ISessionIndex } from '../../../src/app/sessionIndex/sessionIndex';
 import type { IWorkspaceService } from '../../../src/app/workspace/workspace';
 
+const caller = { agentId: 'main' } as IAgentScopeContext;
 const session = { sessionId: 'current', workspaceId: 'ws-a' } as ISessionContext;
 const workspaces = {
   get: vi.fn(async (id: string) => id === 'ws-b' ? { root: '/external/project' } : undefined),
@@ -41,6 +40,7 @@ interface HistoryToolData {
   readonly has_more?: boolean;
   readonly next_cursor?: string;
   readonly warning?: string;
+  readonly expand_hint?: { readonly next_call: { readonly arguments: Record<string, unknown> } };
   readonly fallback?: {
     readonly maxBytes: number;
     readonly maxRecords: number;
@@ -75,7 +75,25 @@ describe('history tools', () => {
       workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', mode: 'auto', pageSize: 5,
     }));
     expect(data.hits).toEqual([{ session_id: 'older', agent_id: 'main', role: 'user', turn: 3, snippet: '原话' }]);
-    await run(tool, { query: '原话', scope: 'workspace', mode: 'literal' });
+    expect(data).toMatchObject({ scope_used: 'session', mode_used: 'auto', expand_hint: {
+      next_call: { tool: 'HistorySearch', arguments: { query: '原话', mode: 'terms', scope: 'workspace' } },
+    } });
+    const expand = data.expand_hint?.next_call.arguments;
+    expect(expand).toBeDefined();
+    const widened = await run(tool, expand ?? {});
+    expect(widened.data).toMatchObject({ scope_used: 'workspace', mode_used: 'terms' });
+    expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaceId: 'ws-a', sessionId: undefined, mode: 'terms',
+    }));
+    const narrowed = await run(tool, { query: '原话', session_id: 'older', source: 'transcript', role: 'tool' });
+    const wider = await run(tool, narrowed.data.expand_hint?.next_call.arguments ?? {});
+    expect(wider.data).toMatchObject({ scope_used: 'workspace', mode_used: 'terms' });
+    expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: undefined, source: undefined, role: 'tool', mode: 'terms',
+    }));
+    const across = await run(tool, { query: '原话', scope: 'workspace', mode: 'literal' });
+    expect(across.data).toMatchObject({ scope_used: 'workspace', mode_used: 'literal' });
+    expect(across.data).not.toHaveProperty('expand_hint');
     expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({
       workspaceId: 'ws-a', sessionId: undefined, mode: 'literal',
     }));

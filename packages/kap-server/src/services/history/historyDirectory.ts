@@ -71,7 +71,7 @@ export function historyDirectorySeed(
     _serviceBrand: undefined,
     list: async (request) => {
       const navigation = getNavigation?.();
-      if (navigation !== undefined) return navigation.list(request);
+      if (navigation !== undefined && request.kind === 'turns') return navigation.list(request);
       return listFromTranscript(getTranscript() as unknown as TranscriptDirectorySource, request);
     },
   };

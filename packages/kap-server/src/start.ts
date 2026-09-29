@@ -36,6 +36,8 @@ import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
 import { panelBoardSeeds } from './transport/klient/panelBoardSeeds';
 import { historyArchiveSeed } from './services/historyArchive';
 import { historyDirectorySeed } from './services/history/historyDirectory';
+import { HistoryLocatorStore } from './services/history/historyLocatorStore';
+import { IQueryStore } from '@kiki/agent-core-v2';
 import './services/historyTools';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
 import {
@@ -308,6 +310,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
   const validateCredential = createCredentialValidator(authTokenService, opts.rpcToken);
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
+  let locator: HistoryLocatorStore | undefined;
+  const navigation = (): HistoryLocatorStore => locator ??= new HistoryLocatorStore(
+    core.accessor.get(IQueryStore), transcriptService,
+  );
   const { app: core } = bootstrap(
     {
       homeDir,
@@ -329,8 +335,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       },
     },
     [...logSeed(logging), ...panelBoardSeeds(() => core),
-      ...historyArchiveSeed(() => core, () => transcriptService),
-      ...historyDirectorySeed(() => transcriptService), ...(opts.seeds ?? [])],
+      ...historyArchiveSeed(() => core, () => transcriptService, navigation),
+      ...historyDirectorySeed(() => transcriptService, navigation), ...(opts.seeds ?? [])],
   );
 
   if (exposureClass !== 'loopback') {
