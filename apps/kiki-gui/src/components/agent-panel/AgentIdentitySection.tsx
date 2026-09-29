@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useState, type ReactNode } from 'react';
 import type { AgentCapabilityTarget } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
@@ -13,7 +13,7 @@ import type {
 } from './types';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
 import { agentUsageCacheHitRate } from './cacheRate';
-import { INSPECTOR_LINK, InspectorRow } from './InspectorSection';
+import { INSPECTOR_HEAD, INSPECTOR_LINK, InspectorRow } from './InspectorSection';
 
 function dispatchPolicyClass(policy: AgentCapabilityTarget['dispatch_policy']): string {
   return policy === 'strict'
@@ -133,6 +133,8 @@ export interface AgentIdentitySectionProps {
    * legacy `all` (heading + both) for standalone callers.
    */
   readonly part?: 'all' | 'usage' | 'setup';
+  /** Setup slice: the caller's fact rows replace the model / effort / profile list. */
+  readonly setupFacts?: ReactNode;
 }
 
 export const AgentIdentitySection = memo(function AgentIdentitySection({
@@ -148,8 +150,9 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
   onOpenTreeSelect,
   onOpenUsageDetail,
   part = 'all',
+  setupFacts,
 }: AgentIdentitySectionProps) {
-  const { t } = useI18n();
+  const { t, tp } = useI18n();
   const unknownLabel = t('agentPanel.unknown');
   const formatNumber = (val: number | null | undefined, suffix = ''): string => {
     if (val === null || val === undefined) return unknownLabel;
@@ -216,7 +219,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
     metricRows.push({ key: 'cache', label: t('agentPanel.cacheRate'), value: `${cacheRate}%`, title: cacheTooltip });
   }
   if (known(usage?.compactionCount) && usage.compactionCount > 0) {
-    metricRows.push({ key: 'compaction', label: t('agentPanel.compactionLabel').replace(/[:：]\s*$/, ''), value: t('agentPanel.compactionCount', { count: usage.compactionCount }) });
+    metricRows.push({ key: 'compaction', label: t('agentPanel.compactionLabel').replace(/[:：]\s*$/, ''), value: tp('agentPanel.compactionCount', usage.compactionCount) });
   }
   const treeRows: { key: string; label: string; value: string; title?: string }[] = [];
   if (identity.isMain && treeMetrics !== undefined && (treeMetrics.totalSubagentsCount ?? 0) > 0) {
@@ -262,49 +265,101 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
     />
   );
 
-  // Context bar + only the metrics that are actually known. No Unknown /
-  // Not reported rows: an absent figure is an absent row.
-  const usageBlock = contextPct !== null || metricRows.length > 0 || treeRows.length > 0 ? (
-    <div className="space-y-2.5">
-      {contextPct !== null ? (
-        <div
-          role="meter"
-          aria-label={t('inspector.context')}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={contextPct}
-          className="h-1 w-full overflow-hidden rounded-full bg-ink/[0.08]"
-        >
-          <div className={`h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none ${barColor}`} style={{ width: `${contextPct}%` }} />
+  // Usage in two lines: context (label, bar, used / limit), then one tabular
+  // line of the rest ("$1.42 · 75% cached · 147k tokens · 1 compaction").
+  // With subagents a light text switch flips the figures between this agent
+  // and the whole tree. Sans throughout: figures are data, not headings.
+  const [scope, setScope] = useState<'agent' | 'tree'>('agent');
+  const treeScope = scope === 'tree' && treeRows.length > 0;
+  const costShort = (val: number | null | undefined): string | undefined => {
+    if (!known(val)) return undefined;
+    return val > 0 && val < 0.01 ? '<$0.01' : `$${val.toFixed(2)}`;
+  };
+  const tokensShort = (val: number | null | undefined): string | undefined => {
+    if (!known(val)) return undefined;
+    const compact = val >= 1_000_000 ? `${(val / 1_000_000).toFixed(1)}M` : val >= 1_000 ? `${Math.round(val / 1_000)}k` : String(val);
+    return t('inspector.tokensShort', { tokens: compact });
+  };
+  const facts = treeScope
+    ? [
+        { key: 'cost', text: costShort(treeMetrics?.totalCostUsd), title: known(treeMetrics?.totalCostUsd) ? formatCost(treeMetrics.totalCostUsd) : undefined },
+        { key: 'cache', text: known(treeMetrics?.cacheHitRate) ? t('inspector.cached', { pct: treeMetrics.cacheHitRate }) : undefined, title: treeRows.find((row) => row.key === 'tree-cache')?.title },
+        { key: 'tokens', text: tokensShort(treeMetrics?.totalTokens), title: undefined },
+      ]
+    : [
+        { key: 'cost', text: costShort(usage?.totalCostUsd), title: known(usage?.totalCostUsd) ? formatCost(usage.totalCostUsd) : undefined },
+        { key: 'cache', text: cacheRate !== null ? t('inspector.cached', { pct: cacheRate }) : undefined, title: cacheTooltip },
+        {
+          key: 'tokens',
+          text: tokensShort(usage?.totalTokens),
+          title: known(usage?.inputTokens) && known(usage?.outputTokens)
+            ? `${formatNumber(usage.inputTokens)} in · ${formatNumber(usage.outputTokens)} out`
+            : undefined,
+        },
+        {
+          key: 'compaction',
+          text: known(usage?.compactionCount) && usage.compactionCount > 0 ? tp('inspector.compactions', usage.compactionCount) : undefined,
+          title: undefined,
+        },
+      ];
+  const shownFacts = facts.filter((fact): fact is { key: string; text: string; title: string | undefined } => fact.text !== undefined);
+  const partial = !treeScope && (usage?.usagePartial === true || usage?.costPartial === true);
+  const scopeButton = (value: 'agent' | 'tree', label: string) => (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={scope === value}
+      data-usage-scope={value}
+      onClick={() => { setScope(value); }}
+      className={`h-7 rounded-md px-1.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+        scope === value ? 'text-ink' : 'text-ink-faint hover:text-ink-soft'
+      }`}
+    >
+      {label}
+    </button>
+  );
+  const scopeSwitch = treeRows.length > 0 ? (
+    <div role="radiogroup" aria-label={t('inspector.scopeAria')} className="-mr-1.5 flex shrink-0 items-center">
+      {scopeButton('agent', t('inspector.scopeAgent'))}
+      <span aria-hidden className="text-[12px] text-hairline-strong">/</span>
+      {scopeButton('tree', t('inspector.treeTotal'))}
+    </div>
+  ) : null;
+  const usageBlock = contextPct !== null || known(contextUsed) || shownFacts.length > 0 ? (
+    <div className="space-y-2">
+      {contextPct !== null || known(contextUsed) ? (
+        <div className="flex items-center gap-3 text-[12.5px]">
+          <span className="shrink-0 text-ink-soft">{t('inspector.context')}</span>
+          {/* Compaction-point marking on this bar is owned by the context
+              meter work; this slot only lays the bar out. */}
+          {contextPct !== null ? (
+            <div
+              role="meter"
+              aria-label={t('inspector.context')}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={contextPct}
+              title={`${contextPct}%`}
+              className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-ink/[0.08]"
+            >
+              <div className={`h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none ${barColor}`} style={{ width: `${contextPct}%` }} />
+            </div>
+          ) : <span className="flex-1" />}
+          <span className="shrink-0 text-ink tabular-nums">
+            {contextLimit !== null ? `${formatNumber(contextUsed)} / ${formatNumber(contextLimit)}` : formatNumber(contextUsed)}
+          </span>
         </div>
       ) : null}
-      {metricRows.length > 0 ? (
-        <dl data-agent-usage>
-          {metricRows.map((row) => (
-            <InspectorRow key={row.key} label={row.label} title={row.title}>
-              {row.value}
-              {row.partial ? <span className="ml-1 text-[11.5px] text-amber-ink">{t('agentPanel.partialBadge')}</span> : null}
-            </InspectorRow>
+      {shownFacts.length > 0 ? (
+        <p {...(treeScope ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="truncate text-[12px] text-ink-soft tabular-nums" title={shownFacts.map((fact) => fact.text).join(' · ')}>
+          {shownFacts.map((fact, index) => (
+            <span key={fact.key} title={fact.title} className={index === 0 ? 'text-ink' : undefined}>
+              {index > 0 ? <span aria-hidden className="mx-1.5 text-ink-faint">·</span> : null}
+              {fact.text}
+            </span>
           ))}
-        </dl>
-      ) : null}
-      {treeRows.length > 0 ? (
-        <dl data-tree-metrics>
-          <p className="pb-0.5 text-[12px] text-ink-faint">
-            {t('inspector.treeTotal')}
-            {' · '}
-            {t('inspector.treeCounts', { active: treeMetrics?.activeSubagentsCount ?? 0, total: treeMetrics?.totalSubagentsCount ?? 0 })}
-          </p>
-          {treeRows.map((row) => (
-            <InspectorRow key={row.key} label={row.label} title={row.title}>{row.value}</InspectorRow>
-          ))}
-        </dl>
-      ) : null}
-      {onOpenUsageDetail && metricRows.length > 0 ? (
-        <button type="button" onClick={onOpenUsageDetail} className={INSPECTOR_LINK}>
-          {t('inspector.usage')}
-          <Icon name="arrowRight" size={12} className="text-ink-faint" />
-        </button>
+          {partial ? <span className="ml-1.5 text-amber-ink">{t('agentPanel.partialBadge')}</span> : null}
+        </p>
       ) : null}
     </div>
   ) : null;
@@ -312,7 +367,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
   // Model / effort / profile line plus source badges and dispatch policy.
   const setupBlock = (
     <div className="space-y-2">
-      <dl>
+      {setupFacts ?? <dl>
         {identity.model !== undefined ? (
           <InspectorRow label={t('inspector.agent')} title={identity.model}>{identity.model}</InspectorRow>
         ) : null}
@@ -322,7 +377,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
         {identity.profile !== '' && identity.profile !== unknownLabel ? (
           <InspectorRow label={t('inspector.profile')} title={identity.profile}>{identity.profile}</InspectorRow>
         ) : null}
-      </dl>
+      </dl>}
       {hasBadges ? (
         <div className="flex flex-wrap gap-1">
           {identity.thinkingEffortSource !== undefined ? (
@@ -363,7 +418,22 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
   if (part === 'usage') {
     return usageBlock === null ? null : (
       <section data-agent-identity-section data-agent-identity-part="usage">
-        <p className="flex h-8 items-center text-[12px] font-medium text-ink-soft">{t('inspector.context')}</p>
+        <div className="mb-1 flex min-h-7 items-center gap-1.5">
+          <h3 className={INSPECTOR_HEAD}>{t('inspector.budget')}</h3>
+          {onOpenUsageDetail ? (
+            <button
+              type="button"
+              onClick={onOpenUsageDetail}
+              title={t('inspector.usage')}
+              aria-label={t('inspector.usage')}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+            >
+              <Icon name="arrowUpRight" size={12} />
+            </button>
+          ) : null}
+          <span className="flex-1" />
+          {scopeSwitch}
+        </div>
         {usageBlock}
       </section>
     );

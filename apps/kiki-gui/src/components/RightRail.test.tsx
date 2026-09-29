@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Task } from '@kiki/protocol';
-import { buildAgentForest, createViewState } from '@kiki/session-core/session';
+import { buildAgentForest, createViewState, type ApprovalBlock } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { RightRail, type SubagentRailContext } from './RightRail';
 import { PreviewFocusBridge } from './SessionView';
@@ -68,7 +68,11 @@ async function renderRail({
   onClose,
   onInspectMain,
   onOpenSubagent,
+  sessionPending,
+  onResolveApproval,
 }: {
+  sessionPending?: readonly ApprovalBlock[];
+  onResolveApproval?: (approvalId: string, decision: 'approved' | 'rejected') => Promise<void>;
   subagent?: SubagentRailContext;
   empty?: boolean;
   agentForest?: ReturnType<typeof buildAgentForest>;
@@ -99,6 +103,8 @@ async function renderRail({
             onOpenSubagent={onOpenSubagent ?? (() => {})}
             onClose={onClose}
             onInspectMain={onInspectMain}
+            sessionPending={sessionPending}
+            onResolveApproval={onResolveApproval}
           />
         </I18nProvider>
       </MemoryRouter>,
@@ -109,9 +115,9 @@ async function renderRail({
 
 /** Data-driven chapters (the always-present setup / session chapters excluded). */
 function sharedChapters(container: Element) {
-  return [...container.querySelectorAll<HTMLElement>('[data-agent-panel-scroll] > section:not([data-subagent-context]):not([data-inspector-setup]):not([data-inspector-session])')]
+  return [...container.querySelectorAll<HTMLElement>('[data-agent-panel-scroll] .rail-page > section:not([data-inspector-now])')]
     .map((section) => ({
-      title: section.querySelector(':scope > div > button > span:first-child')?.textContent,
+      title: section.querySelector(':scope > div span.font-medium')?.textContent,
       className: section.className,
     }));
 }
@@ -128,14 +134,14 @@ describe('RightRail shared chapters', () => {
     });
     try {
       const rail = await renderRail();
-      // Todo / plan read live state only and mount at once; the usage slice
-      // (which starts a capability read) waits for its slot to scroll in.
+      // Todo / plan read live state only and mount at once; the overview
+      // (which starts the capability read) waits for its slot to scroll in.
       expect(rail.querySelector('[data-panel-props="work"]')).not.toBeNull();
-      expect(rail.querySelector('[data-panel-props="usage"]')).toBeNull();
+      expect(rail.querySelector('[data-panel-props="overview"]')).toBeNull();
       await act(async () => {
         notify?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
       });
-      expect(rail.querySelector('[data-panel-props="usage"]')).not.toBeNull();
+      expect(rail.querySelector('[data-panel-props="overview"]')).not.toBeNull();
       const mounted = mounts[0];
       await act(async () => { mounted?.root.unmount(); });
       mounts.shift();
@@ -145,32 +151,32 @@ describe('RightRail shared chapters', () => {
     }
   });
 
-  it('names the rail owner in both focus states: main agent or the focused subagent', async () => {
+  it('names the page owner with a breadcrumb in both focus states', async () => {
     const main = await renderRail();
     const child = await renderRail({ subagent: context });
 
     const mainOwner = main.querySelector('[data-rail-owner]');
-    expect(mainOwner).not.toBeNull();
-    expect(mainOwner?.textContent).toContain('Main agent');
+    expect(mainOwner?.querySelector('[aria-current="page"]')?.textContent).toContain('Main agent');
+    expect(mainOwner?.querySelector('[data-inspect-main]')).toBeNull();
+    expect(mainOwner?.getAttribute('data-rail-owner-name')).toBeNull();
+    // A subagent page: "Main agent / Researcher", main a step back up.
     const childOwner = child.querySelector('[data-rail-owner]');
-    expect(childOwner).not.toBeNull();
-    // Focused subagent identity: label, model, and status — not the session title.
     expect(childOwner?.getAttribute('data-rail-owner-name')).toBe('Researcher');
-    expect(childOwner?.textContent).toContain('Researcher');
-    expect(mainOwner?.getAttribute('data-rail-owner-name')).not.toBe('Researcher');
-    // The badge leads the scroll content in both focus states.
+    expect(childOwner?.querySelector('[aria-current="page"]')?.textContent).toContain('Researcher');
+    expect(childOwner?.querySelector('[data-inspect-main]')?.textContent).toBe('Main agent');
+    // The head leads the scroll content in both focus states.
     for (const rail of [main, child]) {
       expect(rail.querySelector('[data-agent-panel-scroll]')?.firstElementChild?.hasAttribute('data-rail-owner')).toBe(true);
     }
   });
 
-  it('keeps an accessible rail-close action on the owner badge', async () => {
+  it('keeps an accessible rail-close action at the end of the head', async () => {
     const onClose = vi.fn();
     const rail = await renderRail({ subagent: context, onClose });
     const close = rail.querySelector<HTMLButtonElement>('[data-rail-close]');
     expect(close?.closest('[data-rail-owner]')).not.toBeNull();
+    expect(close?.closest('nav')).toBeNull();
     expect(close?.getAttribute('aria-label')).toBe('Hide panel');
-    expect(close?.getAttribute('title')).toBe('Hide panel');
     expect(close?.className).toContain('h-11');
     expect(close?.className).toContain('lg:h-7');
     await act(async () => { close?.click(); });
@@ -212,35 +218,36 @@ describe('RightRail shared chapters', () => {
     expect(main.querySelector('[data-task-open="background-1"]')).not.toBeNull();
   });
 
-  it('renders the same tree, background tasks, bulk subagent stop and session chapters in both modes', async () => {    const main = await renderRail();
+  it('keeps the team, background tasks and bulk stop on main, and the focused agent page on a subagent', async () => {
+    const main = await renderRail();
     const child = await renderRail({ subagent: context });
 
-    expect(sharedChapters(main)).toEqual(sharedChapters(child));
-    expect(sharedChapters(child).map((chapter) => chapter.title)).toEqual([
-      'Subagents', 'Background tasks',
-    ]);
+    expect(sharedChapters(main).map((chapter) => chapter.title)).toEqual(['Agents', 'Background tasks']);
+    expect(sharedChapters(child).map((chapter) => chapter.title)).toEqual(['Background tasks']);
+    // Main's team: one row per subagent, content under the name.
+    expect(main.querySelector('[data-agent-tree] [data-agent-id="agent-1"]')).not.toBeNull();
+    expect(main.querySelector('[data-terminate-all-subagents]')).not.toBeNull();
     for (const rail of [main, child]) {
-      expect(rail.querySelector('[data-agent-tree] [data-agent-id="agent-1"]')).not.toBeNull();
-      expect(rail.querySelector('[data-subagent-scroll] + [data-subagents-view-all]')).not.toBeNull();
       expect(rail.querySelector('[data-tasks-scroll] [data-task-open="background-1"]')).not.toBeNull();
       expect(rail.querySelector('[data-task-open="subagent-1"]')).toBeNull();
-      expect(rail.querySelector('[data-terminate-all-subagents]')).not.toBeNull();
       expect(rail.querySelector('[data-panel-props]')).not.toBeNull();
     }
     expect(main.querySelector('[data-subagent-context]')).toBeNull();
-    const highlight = child.querySelector('[data-subagent-context]');
-    expect(highlight).not.toBeNull();
-    expect(highlight?.textContent).toContain('Subagent task');
-    expect(highlight?.querySelector('[data-needs-input]')?.textContent).toContain('1');
-    // Reading order: the focused subagent's own brief comes before its work
-    // slice (todo / plan), which comes before the shared tree and tasks.
+    // The focused subagent: Now says its state (waiting on the user here) and
+    // offers its own controls; the team roster stays on main's page.
+    const now = child.querySelector('[data-inspector-now]');
+    expect(now?.querySelector('[data-needs-input]')).not.toBeNull();
+    expect(now?.textContent).toContain('Needs you');
+    expect(child.querySelector('[data-subagent-context] [data-rail-locate]')).not.toBeNull();
+    expect(child.querySelector('[data-agent-tree]')).toBeNull();
+    // Reading order: now, the resident overview, the agent's work slice,
+    // tasks, then model and capabilities and the folded session row.
     const scroll = child.querySelector('[data-agent-panel-scroll]')!;
     const order = [
-      highlight,
-      scroll.querySelector('[data-panel-props="work"]'),
-      scroll.querySelector('[data-agent-tree]'),
-      scroll.querySelector('[data-tasks-scroll]'),
+      now,
       scroll.querySelector('[data-rail-agent-panel-slot]'),
+      scroll.querySelector('[data-panel-props="work"]'),
+      scroll.querySelector('[data-tasks-scroll]'),
       scroll.querySelector('[data-inspector-setup]'),
       scroll.querySelector('[data-inspector-session]') ?? scroll.querySelector('[data-inspector-setup]'),
     ];
@@ -255,33 +262,28 @@ describe('RightRail shared chapters', () => {
     }
   });
 
-  it('names the focused agent in the heading and offers one step back to main', async () => {
+  it('turns back to main from the crumb, and keeps the way up for a nested agent', async () => {
     const onInspectMain = vi.fn();
-    const main = await renderRail();
-    expect(main.querySelector('[data-inspect-main]')).toBeNull();
     const child = await renderRail({ subagent: context, onInspectMain });
     const back = child.querySelector<HTMLButtonElement>('[data-rail-owner] [data-inspect-main]');
-    expect(back?.getAttribute('aria-label')).toBe('Inspect the main agent');
+    expect(back?.getAttribute('title')).toBe('Inspect the main agent');
     await act(async () => { back?.click(); });
     expect(onInspectMain).toHaveBeenCalledTimes(1);
     expect(child.querySelector('[data-session-rail]')?.getAttribute('data-inspector-agent')).toBe('agent-1');
-  });
 
-  it('keeps a way up for a nested agent: a spawning-parent crumb beside main', async () => {
     const deep = buildAgentForest([], [
       { agentId: 'main', name: 'Main' },
       { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'running' },
       { agentId: 'agent-1a', parentAgentId: 'agent-1', name: 'Reader', status: 'running' },
     ]);
     const opened: string[] = [];
-    const rail = await renderRail({
+    // The routed agent page has no onInspectMain: a crumb navigates instead.
+    const nested = await renderRail({
       agentForest: deep,
-      onInspectMain: () => {},
       onOpenSubagent: (agentId) => { opened.push(agentId); },
       subagent: { agentId: 'agent-1a', block: undefined, pendingInteractionCount: 0, onJumpToSpawn: undefined },
     });
-    const owner = rail.querySelector('[data-rail-owner]')!;
-    // Main first, then the direct parent, then the agent in focus.
+    const owner = nested.querySelector('[data-rail-owner]')!;
     expect(owner.textContent).toContain('Main agent');
     const crumb = owner.querySelector<HTMLButtonElement>('[data-inspect-parent]');
     expect(crumb?.textContent).toBe('Researcher');
@@ -292,75 +294,81 @@ describe('RightRail shared chapters', () => {
     expect(shallow.querySelector('[data-inspect-parent]')).toBeNull();
   });
 
-  it('keeps the setup chapter collapsed so its capability read never starts unasked', async () => {
+  it('opens model and capabilities by default and folds only the session row', async () => {
     const rail = await renderRail();
     const setup = rail.querySelector('[data-inspector-setup]');
     const toggle = setup?.querySelector<HTMLButtonElement>(':scope > div > button');
-    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
-    expect(setup?.querySelector('[data-panel-props="setup"]')).toBeNull();
-    await act(async () => { toggle?.click(); });
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
     expect(setup?.querySelector('[data-panel-props="setup"]')).not.toBeNull();
+    const session = rail.querySelector('[data-inspector-session]');
+    expect(session === null || session.querySelector('[aria-expanded="false"]') !== null).toBe(true);
   });
 
-  it('keeps empty chapters hidden and retains collapsible chapter behavior in both modes', async () => {
+  it('keeps the resident overview in every state, idle and empty included', async () => {
     for (const subagent of [undefined, context]) {
       const empty = await renderRail({ subagent, empty: true });
       expect(sharedChapters(empty).map((chapter) => chapter.title)).toEqual([]);
+      expect(empty.querySelector('[data-rail-agent-panel-slot]')).not.toBeNull();
       expect(empty.querySelector('[data-subagent-context]') !== null).toBe(subagent !== undefined);
-
-      const populated = await renderRail({ subagent });
-      const tree = populated.querySelector('[data-agent-tree]');
-      const section = tree?.closest('section');
-      const toggle = section?.querySelector<HTMLButtonElement>(':scope > div > button');
-      expect(toggle?.getAttribute('aria-expanded')).toBe('true');
-      await act(async () => { toggle?.click(); });
-      expect(toggle?.getAttribute('aria-expanded')).toBe('false');
-      expect(section?.querySelector('[data-agent-tree]')).toBeNull();
-      await act(async () => { toggle?.click(); });
-      expect(section?.querySelector('[data-agent-tree]')).not.toBeNull();
     }
+    // The agent roster and tasks are fixed chapters: a label, no fold.
+    const populated = await renderRail();
+    const roster = populated.querySelector('[data-inspector-agents]');
+    expect(roster?.querySelector(':scope > div > [aria-expanded]')).toBeNull();
   });
 
-  it('bounds mounted agent rows in a large rail and its view-all dialog', async () => {
+  it('windows a large roster, folds settled agents and filters by status', async () => {
     const large = buildAgentForest([], [
       { agentId: 'main', name: 'Main' },
       ...Array.from({ length: 511 }, (_, index) => ({
-        agentId: `child-${index}`, parentAgentId: 'main', name: `Child ${index}`, status: 'completed' as const,
+        agentId: `child-${index}`, parentAgentId: 'main', name: `Child ${index}`,
+        status: (index % 50 === 0 ? 'failed' : index < 60 ? 'running' : 'completed') as 'failed' | 'running' | 'completed',
       })),
     ]);
     const rail = await renderRail({ agentForest: large });
-    const railRows = rail.querySelectorAll('[data-subagent-scroll] [data-agent-id]');
-    expect(railRows.length).toBeGreaterThan(0);
-    expect(railRows.length).toBeLessThan(25);
-    const scroll = rail.querySelector<HTMLDivElement>('[data-subagent-scroll]')!;
-    await act(async () => {
-      scroll.scrollTop = 52 * 480;
-      scroll.dispatchEvent(new Event('scroll'));
-    });
-    const expectedId = large.byId['main']!.childIds[479];
-    expect(scroll.querySelector(`[data-agent-id="${expectedId}"]`)).not.toBeNull();
-    expect(scroll.querySelectorAll('[data-agent-id]').length).toBeLessThan(25);
-    await act(async () => {
-      rail.querySelector<HTMLButtonElement>('[data-subagents-view-all]')!.click();
-    });
-    const dialogRows = document.querySelectorAll('[data-subagents-all-scroll] [data-agent-id]');
-    expect(dialogRows.length).toBeGreaterThan(0);
-    expect(dialogRows.length).toBeLessThan(35);
+    const rows = rail.querySelectorAll('[data-agent-tree] [data-agent-id]');
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(60);
+    expect(rail.querySelector('[data-roster-done-group]')?.textContent).toContain('completed');
+    expect(rail.querySelector('[data-roster-search]')).not.toBeNull();
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-roster-filter="failed"]')!.click(); });
+    const failed = [...rail.querySelectorAll<HTMLElement>('[data-agent-tree] [data-agent-id]')];
+    expect(failed.length).toBe(11);
+    expect(failed.every((row) => row.dataset['rosterBucket'] === 'failed')).toBe(true);
   });
 
-  it('does not remeasure every task row when opening the tree dialog', async () => {
-    const rail = await renderRail();
-    const tasks = rail.querySelector('[data-tasks-scroll]')!;
-    const measure = vi.spyOn(tasks, 'querySelectorAll');
-    try {
-      await act(async () => { rail.querySelector<HTMLButtonElement>('[data-subagents-view-all]')!.click(); });
-      expect(measure).not.toHaveBeenCalled();
-    } finally {
-      measure.mockRestore();
-    }
+  it('bubbles nested approvals to the top with their trail and decides them in place', async () => {
+    const deep = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'lead', parentAgentId: 'main', name: 'Lead', status: 'running' },
+      { agentId: 'worker', parentAgentId: 'lead', name: 'Worker', status: 'suspended' },
+    ]);
+    const approval: ApprovalBlock = {
+      kind: 'approval',
+      id: 'approval-a1',
+      request: {
+        approval_id: 'a1', session_id: 'sess-1', tool_call_id: 'c1', tool_name: 'Bash', action: 'Run: ls',
+        tool_input_display: { kind: 'command', command: 'ls -la' }, created_at: '2026-01-01T00:00:00.000Z', expires_at: '2026-01-02T00:00:00.000Z',
+      },
+      resolution: undefined,
+      originAgentId: 'worker',
+    };
+    const decided: string[] = [];
+    const rail = await renderRail({
+      agentForest: deep,
+      sessionPending: [approval],
+      onResolveApproval: async (id, decision) => { decided.push(`${id}:${decision}`); },
+    });
+    const block = rail.querySelector('[data-inspector-needs-you]')!;
+    expect(block.textContent).toContain('From Lead › Worker');
+    // It leads the page, above Now.
+    expect(block.compareDocumentPosition(rail.querySelector('[data-inspector-now]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-needs-you-approve="a1"]')!.click(); });
+    expect(decided).toEqual(['a1:approved']);
+    // The lead's folded row says a descendant waits.
+    expect(rail.querySelector('[data-agent-id="lead"]')?.textContent).toContain('1 needs you below');
   });
 });
-
 describe('preview focus bridge', () => {
   it('reports the active agent panel tab and hands the rail back on file focus', async () => {
     const seen: Array<string | undefined> = [];

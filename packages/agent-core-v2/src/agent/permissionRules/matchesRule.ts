@@ -72,9 +72,11 @@ export function matchPermissionRule({
   }
 
   const approvalName = execution.approvalRule?.split('(', 1)[0];
-  const matchesLegacyAction = approvalName !== undefined &&
-    canonicalToolName(approvalName) === toolName && picomatch.isMatch(approvalName, parsed.toolName);
-  if (parsed.toolName !== '*' && !picomatch.isMatch(toolName, parsed.toolName) && !matchesLegacyAction) {
+  const hostQualified = approvalName?.includes('@') === true;
+  if (hostQualified && !parsed.toolName.includes('@')) return undefined;
+  const matchesAction = approvalName !== undefined && picomatch.isMatch(approvalName, parsed.toolName) &&
+    (hostQualified || canonicalToolName(approvalName) === toolName);
+  if (parsed.toolName !== '*' && !picomatch.isMatch(toolName, parsed.toolName) && !matchesAction) {
     return undefined;
   }
 

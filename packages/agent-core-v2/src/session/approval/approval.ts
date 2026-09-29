@@ -6,7 +6,29 @@ export type {
   ExternalPermissionOption,
 } from '#/tool/toolInputDisplay';
 
+export interface SshCredentialSubmission {
+  readonly password?: string;
+  readonly privateKeyPath?: string;
+  readonly privateKeyContents?: string;
+  readonly passphrase?: string;
+  readonly answers?: readonly string[];
+  readonly save?: 'session' | 'workspace' | 'global';
+}
+
+export interface SshApprovalDetail {
+  readonly kind: 'login' | 'host_key';
+  readonly hostname: string;
+  readonly user: string;
+  readonly port: number;
+  readonly proxyJump?: string;
+  readonly proxyCommand?: string;
+  readonly algorithm?: string;
+  readonly fingerprint?: string;
+  readonly prompts?: readonly { readonly prompt: string; readonly echo: boolean }[];
+}
+
 export interface ApprovalRequest {
+  readonly ssh?: SshApprovalDetail;
   readonly id?: string;
   readonly sessionId?: string;
   readonly agentId?: string;
@@ -34,6 +56,8 @@ export interface ISessionApprovalService {
   request(req: ApprovalRequest): Promise<ApprovalResponse>;
   enqueue(req: ApprovalRequest): ApprovalRequest & { readonly id: string };
   decide(id: string, response: ApprovalResponse): void;
+  decideSsh(id: string, response: ApprovalResponse, credential?: SshCredentialSubmission): void;
+  takeSshCredential(id: string): SshCredentialSubmission | undefined;
   listPending(): readonly ApprovalRequest[];
 }
 

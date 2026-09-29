@@ -26,6 +26,7 @@ import { useI18n } from '../i18n';
 import { reviewerLabel, reviewerTooltip } from './approvalReviewer';
 import { DisclosureChevron, Icon } from './icons';
 import { Markdown } from './Markdown';
+import { SshApprovalCard } from './ssh/SshApprovalCard';
 
 type ApprovalIntent = 'allow-once' | 'allow-always' | 'reject-once';
 
@@ -287,6 +288,11 @@ export function ApprovalCard({
         </span>
       </div>
     );
+  }
+
+  // SSH login / host-key requests answer through their own route (ssh/SshApprovalCard).
+  if (block.request.ssh !== undefined) {
+    return <SshApprovalCard block={block} ssh={block.request.ssh} originAgentName={originAgentName} />;
   }
 
   const external = externalPermissionFromDisplay(block.request.tool_input_display);

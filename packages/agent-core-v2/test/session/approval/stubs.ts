@@ -6,6 +6,8 @@ export function stubApprovalService(respond: () => ApprovalResponse): ISessionAp
     request: async () => respond(),
     enqueue: (req) => ({ ...req, id: 'stub-approval-id' }),
     decide: () => {},
+    decideSsh: () => {},
+    takeSshCredential: () => undefined,
     listPending: () => [],
   };
 }

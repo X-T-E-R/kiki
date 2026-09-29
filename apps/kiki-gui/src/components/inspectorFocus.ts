@@ -108,11 +108,37 @@ export function useInspectorFocusTracking({
       }
       if (isKnownRef.current(agentId)) onPinRef.current(agentId);
     };
+    // A press inside the inspector pins on click, not on pointerdown: pinning
+    // re-lays the rail out (the page turns), which would move the pressed
+    // control out from under the pointer and swallow the click.
+    let railPress = false;
+    let railPressReset: ReturnType<typeof setTimeout> | undefined;
+    const inRail = (target: EventTarget | null) =>
+      target instanceof Element && target.closest('[data-session-rail]') !== null;
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      if (inRail(event.target)) {
+        railPress = true;
+        return;
+      }
       pin(event.target);
     };
-    const onFocusIn = (event: FocusEvent) => { pin(event.target); };
+    const onPointerEnd = () => {
+      // A press dragged off its control never clicks; release the flag after
+      // the click (if any) has been dispatched.
+      if (!railPress) return;
+      if (railPressReset !== undefined) clearTimeout(railPressReset);
+      railPressReset = setTimeout(() => { railPress = false; }, 0);
+    };
+    const onClick = (event: MouseEvent) => {
+      if (!railPress) return;
+      railPress = false;
+      pin(event.target);
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (railPress) return;
+      pin(event.target);
+    };
     const onPointerOver = (event: PointerEvent) => {
       if (event.pointerType === 'touch') return;
       const agentId = resolveInspectorTarget(event.target);
@@ -136,15 +162,22 @@ export function useInspectorFocusTracking({
     };
 
     document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('pointerup', onPointerEnd, true);
+    document.addEventListener('pointercancel', onPointerEnd, true);
+    document.addEventListener('click', onClick, true);
     document.addEventListener('focusin', onFocusIn, true);
     document.addEventListener('pointerover', onPointerOver, true);
     document.documentElement.addEventListener('pointerleave', onLeaveWindow);
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('pointerup', onPointerEnd, true);
+      document.removeEventListener('pointercancel', onPointerEnd, true);
+      document.removeEventListener('click', onClick, true);
       document.removeEventListener('focusin', onFocusIn, true);
       document.removeEventListener('pointerover', onPointerOver, true);
       document.documentElement.removeEventListener('pointerleave', onLeaveWindow);
       if (dwell !== undefined) clearTimeout(dwell);
+      if (railPressReset !== undefined) clearTimeout(railPressReset);
       setPeek(undefined);
     };
   }, []);

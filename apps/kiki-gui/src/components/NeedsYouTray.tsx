@@ -103,7 +103,10 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
   // y/n decide the expanded approval from anywhere outside a text field (the
   // session's own y/n resolver only sees cards inside the timeline, which now
   // holds one-line records instead).
-  const currentApprovalId = ordered[0]?.kind === 'approval' ? ordered[0].request.approval_id : undefined;
+  // SSH cards answer through their own form (and route); no global y/n.
+  const currentApprovalId = ordered[0]?.kind === 'approval' && ordered[0].request.ssh === undefined
+    ? ordered[0].request.approval_id
+    : undefined;
   useEffect(() => {
     if (currentApprovalId === undefined) return;
     const onKeyDown = (event: KeyboardEvent) => {

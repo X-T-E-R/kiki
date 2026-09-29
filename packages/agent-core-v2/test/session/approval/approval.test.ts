@@ -7,8 +7,9 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
 import { type ApprovalRequest, ISessionApprovalService } from '#/session/approval/approval';
 import { SessionApprovalService } from '#/session/approval/approvalService';
-import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { ISessionInteractionService, type InteractionResolution } from '#/session/interaction/interaction';
 import { SessionInteractionService } from '#/session/interaction/interactionService';
+import { InteractionResolvedEvent } from '#/session/interaction/interactionOps';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
 
@@ -188,6 +189,26 @@ describe('SessionApprovalService', () => {
       selectedOptionId: 'unknown',
     });
     await expect(unknown).resolves.toEqual({ decision: 'cancelled' });
+  });
+
+  it('keeps SSH credentials out of wire resolution, transcript interaction, and public approvals', async () => {
+    const svc = ix.get(ISessionApprovalService);
+    const interaction = ix.get(ISessionInteractionService);
+    const resolved: InteractionResolution[] = [];
+    disposables.add(interaction.onDidResolve((event) => resolved.push(event)));
+    const secret = 'TEST_ONLY_SECRET_51e84d';
+    const parked = svc.request({ ...makeRequest('ssh-login'), ssh: {
+      kind: 'login', hostname: 'example.test', user: 'tester', port: 22,
+    } });
+    expect(JSON.stringify(svc.listPending())).not.toContain(secret);
+    svc.decideSsh('ssh-login', { decision: 'approved' }, { password: secret, save: 'session' });
+    await expect(parked).resolves.toEqual({ decision: 'approved' });
+    expect(JSON.stringify(resolved)).not.toContain(secret);
+    const wire = new InteractionResolvedEvent({ id: resolved[0]!.id, response: resolved[0]!.response });
+    expect(JSON.stringify(wire)).not.toContain(secret);
+    expect(JSON.stringify(interaction.listPending())).not.toContain(secret);
+    expect(svc.takeSshCredential('ssh-login')).toEqual({ password: secret, save: 'session' });
+    expect(svc.takeSshCredential('ssh-login')).toBeUndefined();
   });
 
   it('listPending surfaces the minted interaction id so hosts can decide', async () => {

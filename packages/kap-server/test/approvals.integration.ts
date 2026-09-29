@@ -24,6 +24,7 @@ interface Envelope<T> {
 interface ApprovalWire {
   approval_id: string;
   session_id: string;
+  agent_id?: string;
   turn_id?: number;
   tool_call_id: string;
   tool_name: string;
@@ -104,11 +105,12 @@ describe('server-v2 /api/sessions/{sid}/approvals', () => {
     return body.data.id;
   }
 
-  function enqueueApproval(sessionId: string, toolCallId: string): string {
+  function enqueueApproval(sessionId: string, toolCallId: string, agentId?: string): string {
     const handle = getLiveSessionById(server!.core.accessor, sessionId);
     expect(handle).toBeDefined();
     const parked = handle!.accessor.get(ISessionApprovalService).enqueue({
       toolCallId,
+      agentId,
       toolName: 'Bash',
       action: 'run',
       display: { kind: 'command', command: 'echo hi' },
@@ -132,6 +134,24 @@ describe('server-v2 /api/sessions/{sid}/approvals', () => {
     expect(item.tool_input_display).toEqual({ kind: 'command', command: 'echo hi' });
     expect(Number.isNaN(Date.parse(item.created_at))).toBe(false);
     expect(Number.isNaN(Date.parse(item.expires_at))).toBe(false);
+  });
+
+  it('includes a subagent source in approvals and the session snapshot', async () => {
+    const sid = await createSession();
+    const agentId = 'subagent-approval';
+    const aid = enqueueApproval(sid, 'tc-subagent', agentId);
+
+    const listed = await getJson<ListWire>(`/api/sessions/${sid}/approvals?status=pending`);
+    expect(listed.body.code).toBe(0);
+    expect(listed.body.data.items).toEqual([
+      expect.objectContaining({ approval_id: aid, agent_id: agentId }),
+    ]);
+
+    const snapshot = await getJson<{ pending_approvals: ApprovalWire[] }>(`/api/sessions/${sid}/snapshot`);
+    expect(snapshot.body.code).toBe(0);
+    expect(snapshot.body.data.pending_approvals).toEqual([
+      expect.objectContaining({ approval_id: aid, agent_id: agentId }),
+    ]);
   });
 
   it('resolves a pending approval', async () => {

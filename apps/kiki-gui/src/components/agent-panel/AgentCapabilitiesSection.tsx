@@ -64,13 +64,13 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
           type="button"
           aria-expanded={toolsOpen}
           onClick={() => setToolsOpen(!toolsOpen)}
-          className="flex h-8 w-full items-center justify-between text-ink transition-colors hover:text-ink-soft"
+          className="flex min-h-8 w-full items-center justify-between gap-3 text-left text-ink transition-colors hover:text-ink-soft"
         >
           <span className="flex items-center gap-1.5">
             <DisclosureChevron open={toolsOpen} className="text-current" />
             <span>{t('agentPanel.registeredTools')}</span>
           </span>
-          <span className="text-[12px] text-ink-faint tabular-nums">
+          <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-faint tabular-nums">
             {t('agentPanel.enabledOfTotal', { enabled: enabledToolCount, total: tools.length })}
           </span>
         </button>
@@ -110,13 +110,13 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
           type="button"
           aria-expanded={skillsOpen}
           onClick={() => setSkillsOpen(!skillsOpen)}
-          className="flex h-8 w-full items-center justify-between text-ink transition-colors hover:text-ink-soft"
+          className="flex min-h-8 w-full items-center justify-between gap-3 text-left text-ink transition-colors hover:text-ink-soft"
         >
           <span className="flex items-center gap-1.5">
             <DisclosureChevron open={skillsOpen} className="text-current" />
             <span>{t('agentPanel.skills')}</span>
           </span>
-          <span className="text-[12px] text-ink-faint tabular-nums">
+          <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-faint tabular-nums">
             {t('agentPanel.skillsCount', { workspace: workspaceSkills.length, global: globalSkills.length })}
           </span>
         </button>
@@ -198,13 +198,13 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
           type="button"
           aria-expanded={subagentsOpen}
           onClick={() => setSubagentsOpen(!subagentsOpen)}
-          className="flex h-8 w-full items-center justify-between text-ink transition-colors hover:text-ink-soft"
+          className="flex min-h-8 w-full items-center justify-between gap-3 text-left text-ink transition-colors hover:text-ink-soft"
         >
           <span className="flex items-center gap-1.5">
             <DisclosureChevron open={subagentsOpen} className="text-current" />
             <span>{t('agentPanel.subagents')}</span>
           </span>
-          <span className="text-[12px] text-ink-faint tabular-nums">
+          <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-faint tabular-nums">
             {t('agentPanel.allowedCount', {
               allowed: subagentTargets.filter((t) => t.launchAllowed !== false && t.defaultsAvailable).length,
               total: subagentTargets.length,

@@ -14,7 +14,7 @@ import {
   type AgentTreeNode,
 } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
-import { DisclosureChevron } from './icons';
+import { DisclosureChevron, Icon } from './icons';
 
 const STATUS_I18N: Record<AgentStatus, I18nKey> = {
   unknown: 'subagent.status.unknown',
@@ -135,8 +135,11 @@ const AgentTreeRow = memo(function AgentTreeRow({
                 onOpen(node.agentId);
               }}
               className={`agent-tree-row flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent ${
+                // The rail's own surface is panel, the lightest step, so the
+                // selected sheet stays panel and lifts by its ring + shadow
+                // (paper here would read as a grey fill).
                 selected
-                  ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
+                  ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]'
                   : 'hover:bg-ink/[0.04]'
               }`}
             >
@@ -147,7 +150,7 @@ const AgentTreeRow = memo(function AgentTreeRow({
               />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[12px] font-medium text-ink">{node.label}</span>
-                <span className="block truncate text-[10px] text-ink-faint">
+                <span className="block truncate text-[12px] text-ink-faint">
                   {t(refreshing ? 'subagent.status.refreshing' : STATUS_I18N[node.status])}
                   {node.model !== undefined ? ` · ${node.model}` : ''}
                   {node.thinkingEffort !== undefined
@@ -160,12 +163,8 @@ const AgentTreeRow = memo(function AgentTreeRow({
                 </span>
               </span>
               {node.status === 'failed' && node.error !== undefined ? (
-                <span
-                  aria-hidden
-                  title={node.error}
-                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-danger/10 text-[10px] font-bold text-danger"
-                >
-                  !
+                <span aria-hidden title={node.error} className="flex shrink-0 text-danger">
+                  <Icon name="warning" size={14} />
                 </span>
               ) : null}
             </button>

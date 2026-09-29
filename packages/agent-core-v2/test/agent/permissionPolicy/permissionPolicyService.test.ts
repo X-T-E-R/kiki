@@ -34,6 +34,8 @@ import { IBashParserService } from '#/app/bashParser/bashParser';
 import { BashParserService } from '#/app/bashParser/bashParserService';
 import { IConfigService } from '#/app/config/config';
 import { IGitService } from '#/app/git/git';
+import { IWorktreeService, type SessionWorktree } from '#/app/git/worktreeModel';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { findGitWorkTree } from '#/app/git/workTree';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
@@ -54,6 +56,7 @@ describe('AgentPermissionPolicyService chain', () => {
   let rules: PermissionRule[];
   let sessionApprovalRulePatterns: string[];
   let workspace: ReturnType<typeof workspaceStub>;
+  let worktreeMeta: SessionWorktree | undefined;
   let dangerousBash: DangerousBashGuard | undefined;
 
   beforeEach(() => {
@@ -62,6 +65,7 @@ describe('AgentPermissionPolicyService chain', () => {
     rules = [];
     sessionApprovalRulePatterns = [];
     workspace = workspaceStub('/workspace');
+    worktreeMeta = undefined;
     dangerousBash = undefined;
     ix = createServices(disposables, {
       additionalServices: (reg) => {
@@ -114,6 +118,8 @@ describe('AgentPermissionPolicyService chain', () => {
         });
         reg.defineInstance(ITelemetryService, recordingTelemetry([]));
         reg.definePartialInstance(IGitService, { findWorkTree: async () => null });
+        reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, worktree: worktreeMeta }) });
+        reg.definePartialInstance(IWorktreeService, { list: async () => [] });
         reg.define(IAgentPermissionPolicyService, AgentPermissionPolicyService);
       },
       strict: true,
@@ -200,6 +206,18 @@ describe('AgentPermissionPolicyService chain', () => {
         message: 'Tool "Bash" was denied by permission rule. Reason: blocked by test',
       },
     });
+  });
+
+  it('denies writes into the source checkout even in yolo mode', async () => {
+    mode = 'yolo';
+    worktreeMeta = { worktreeId: 'wt_test', branch: 'kiki/test', sourceRoot: '/source', baseRef: 'HEAD' };
+    await expect(evaluate({
+      toolName: 'Write', args: { path: '/source/file.ts', content: 'x' },
+      accesses: ToolAccesses.writeFile('/source/file.ts'),
+    })).resolves.toMatchObject({ policyName: 'worktree-isolation-deny', result: { kind: 'deny' } });
+    await expect(evaluate({
+      toolName: 'Bash', args: { command: 'git -C /source commit -m bad', timeout: 60 },
+    })).resolves.toMatchObject({ policyName: 'worktree-isolation-deny', result: { kind: 'deny' } });
   });
 
   it('keeps ask rules higher priority than matching allow rules', async () => {
@@ -553,6 +571,8 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
         reg.definePartialInstance(IGitService, {
           findWorkTree: (cwd: string) => findGitWorkTree(hostFs, cwd),
         });
+        reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false }) });
+        reg.definePartialInstance(IWorktreeService, { list: async () => [] });
         reg.define(IAgentPermissionPolicyService, AgentPermissionPolicyService);
       },
       strict: true,

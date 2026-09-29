@@ -129,11 +129,13 @@ export function registerApprovalsRoutes(app: ApprovalRouteHost, core: Scope): vo
           return;
         }
         const interaction = handle.accessor.get(ISessionInteractionService);
-        const isPending = interaction
-          .listPending('approval')
-          .some((i) => i.id === approval_id);
+        const pendingApproval = interaction.listPending('approval').find((i) => i.id === approval_id);
+        if (pendingApproval?.payload && (pendingApproval.payload as ApprovalRequest).ssh !== undefined) {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Use the SSH-specific approval endpoint', req.id));
+          return;
+        }
 
-        if (!isPending) {
+        if (pendingApproval === undefined) {
           if (interaction.isRecentlyResolved(approval_id)) {
             reply.send({
               code: ErrorCode.APPROVAL_ALREADY_RESOLVED,
@@ -178,11 +180,13 @@ export function registerApprovalsRoutes(app: ApprovalRouteHost, core: Scope): vo
 export function toWireApproval(interaction: Interaction, sessionId: string): {
   approval_id: string;
   session_id: string;
+  agent_id?: string;
   turn_id?: number;
   tool_call_id: string;
   tool_name: string;
   action: string;
   tool_input_display: unknown;
+  ssh?: Omit<NonNullable<ApprovalRequest['ssh']>, 'prompts'> & { prompts?: { prompt: string; echo: boolean }[] };
   created_at: string;
   expires_at: string;
 } {
@@ -190,11 +194,14 @@ export function toWireApproval(interaction: Interaction, sessionId: string): {
   return {
     approval_id: interaction.id,
     session_id: sessionId,
+    agent_id: interaction.origin.agentId,
     turn_id: interaction.origin.turnId,
     tool_call_id: p.toolCallId ?? interaction.id,
     tool_name: p.toolName,
     action: p.action,
     tool_input_display: p.display,
+    ssh: p.ssh === undefined ? undefined : { ...p.ssh,
+      prompts: p.ssh.prompts?.map((item) => ({ prompt: item.prompt, echo: item.echo })) },
     created_at: new Date(interaction.createdAt).toISOString(),
     expires_at: new Date(interaction.createdAt + APPROVAL_EXPIRY_MS).toISOString(),
   };

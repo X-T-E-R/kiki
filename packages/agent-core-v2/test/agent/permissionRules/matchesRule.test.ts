@@ -132,6 +132,18 @@ describe('permissionRules/matchPermissionRule', () => {
     expect(matches(rule('Bad(unclosed'), 'Bad', noArgs)).toBe(false);
   });
 
+  it('separates SSH host-qualified approvals from local rules', () => {
+    const remote = { approvalRule: 'Read@dev(/home/tester/file.txt)', matchesRule: (pattern: string) => matchesPathRuleSubject(pattern, '/home/tester/file.txt') };
+    for (const localRule of ['*', 'Read', 'Read(*)', 'Read(/home/**)']) {
+      expect(matches(rule(localRule), 'Read', remote)).toBe(false);
+    }
+    expect(matches(rule('Read@dev'), 'Read', remote)).toBe(true);
+    expect(matches(rule('Read@dev(/home/**)'), 'Read', remote)).toBe(true);
+    expect(matches(rule('Read@prod(/home/**)'), 'Read', remote)).toBe(false);
+    expect(matches(rule('Read@dev(/etc/**)'), 'Read', remote)).toBe(false);
+    expect(matches(rule('Read@dev'), 'Read', { approvalRule: 'Read(/home/tester/file.txt)' })).toBe(false);
+  });
+
   it('keeps legacy Cron and Goal approval rules scoped to their original actions', () => {
     const create = { approvalRule: 'CronCreate({"cron":"0 9 * * *"})' };
     expect(matches(rule('CronCreate'), 'Cron', create)).toBe(true);

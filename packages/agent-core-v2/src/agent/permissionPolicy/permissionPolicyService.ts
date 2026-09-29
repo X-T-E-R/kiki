@@ -13,6 +13,7 @@ import { SessionApprovalHistoryPermissionPolicyService } from '#/agent/permissio
 import { UserConfiguredAllowPermissionPolicyService } from '#/agent/permissionPolicy/policies/user-configured-allow';
 import { UserConfiguredAskPermissionPolicyService } from '#/agent/permissionPolicy/policies/user-configured-ask';
 import { UserConfiguredDenyPermissionPolicyService } from '#/agent/permissionPolicy/policies/user-configured-deny';
+import { WorktreeIsolationDenyPermissionPolicyService } from '#/agent/permissionPolicy/policies/worktree-isolation-deny';
 import { YoloModeApprovePermissionPolicyService } from '#/agent/permissionPolicy/policies/yolo-mode-approve';
 import {
   IAgentPermissionPolicyService,
@@ -43,6 +44,7 @@ export class AgentPermissionPolicyService
     super();
     this.adjudicationPolicies = [
       this.instantiation.createInstance(UserConfiguredDenyPermissionPolicyService),
+      this.instantiation.createInstance(WorktreeIsolationDenyPermissionPolicyService),
       this.instantiation.createInstance(SessionApprovalHistoryPermissionPolicyService),
       this.instantiation.createInstance(UserConfiguredAskPermissionPolicyService),
       this.instantiation.createInstance(SensitiveFileAccessAskPermissionPolicyService),

@@ -14,7 +14,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
   treeMetrics,
   onOpenUsageDetail,
 }: AgentUsageSectionProps) {
-  const { t } = useI18n();
+  const { t, tp } = useI18n();
   const unknownLabel = t('agentPanel.unknown');
   const formatTokens = (count: number | null | undefined): string => {
     if (count === null || count === undefined) return unknownLabel;
@@ -124,7 +124,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
               <span className="block text-[10px] text-ink-faint uppercase">{t('agentPanel.compactionLabel')}</span>
               <span className="font-medium text-ink">
                 {usage.compactionCount !== null
-                  ? t('agentPanel.compactionCount', { count: usage.compactionCount })
+                  ? tp('agentPanel.compactionCount', usage.compactionCount)
                   : unknownLabel}
               </span>
             </div>

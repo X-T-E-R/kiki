@@ -8,11 +8,13 @@ import { ISessionInteractionService } from '#/session/interaction/interaction';
 import {
   type ApprovalRequest,
   type ApprovalResponse,
+  type SshCredentialSubmission,
   ISessionApprovalService,
 } from './approval';
 
 export class SessionApprovalService implements ISessionApprovalService {
   declare readonly _serviceBrand: undefined;
+  private readonly sshCredentials = new Map<string, SshCredentialSubmission>();
 
   constructor(@ISessionInteractionService private readonly interaction: ISessionInteractionService) {}
 
@@ -42,6 +44,10 @@ export class SessionApprovalService implements ISessionApprovalService {
     const pending = this.interaction
       .listPending('approval')
       .find((entry) => entry.id === id)?.payload as ApprovalRequest | undefined;
+    if (pending?.ssh !== undefined) {
+      this.interaction.respond(id, { decision: 'cancelled' } satisfies ApprovalResponse);
+      return;
+    }
     if (pending?.display.kind === 'external_permission') {
       const selected = response.selectedOptionId;
       if (
@@ -53,6 +59,24 @@ export class SessionApprovalService implements ISessionApprovalService {
       }
     }
     this.interaction.respond(id, response);
+  }
+
+  decideSsh(id: string, response: ApprovalResponse, credential?: SshCredentialSubmission): void {
+    const pending = this.interaction.listPending('approval')
+      .find((entry) => entry.id === id)?.payload as ApprovalRequest | undefined;
+    if (pending?.ssh === undefined) throw new Error('SSH approval not pending');
+    if (pending.ssh.kind === 'host_key' && credential !== undefined) throw new Error('Host key confirmation cannot carry credentials');
+    if (response.feedback !== undefined || response.selectedLabel !== undefined || response.selectedOptionId !== undefined) {
+      throw new Error('SSH approval cannot carry feedback or option fields');
+    }
+    if (response.decision === 'approved' && credential !== undefined) this.sshCredentials.set(id, credential);
+    this.interaction.respond(id, { decision: response.decision } satisfies ApprovalResponse);
+  }
+
+  takeSshCredential(id: string): SshCredentialSubmission | undefined {
+    const value = this.sshCredentials.get(id);
+    this.sshCredentials.delete(id);
+    return value;
   }
 
   listPending(): readonly ApprovalRequest[] {

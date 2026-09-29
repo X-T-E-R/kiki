@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { useI18n } from '../../i18n';
+import { Icon } from '../icons';
 import type { AgentActiveWorkItem, AgentBoardSummary } from './types';
 
 export interface AgentActiveWorkSectionProps {
@@ -48,7 +49,7 @@ export const AgentActiveWorkSection = memo(function AgentActiveWorkSection({
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 font-medium text-ink truncate">
-                        <span className="h-1.5 w-1.5 rounded-full bg-accent animate-ping" />
+                        <span className="h-1.5 w-1.5 rounded-full bg-accent animate-ping motion-reduce:animate-none" />
                         <span>{item.label}</span>
                       </div>
                       {item.detail ? (
@@ -134,7 +135,8 @@ export const AgentPinnedBoardFooter = memo(function AgentPinnedBoardFooter({
 
           {summary?.activeTaskTitle ? (
             <p className="mt-1 truncate text-[11.5px] font-medium text-ink" title={summary.activeTaskTitle}>
-              📌 {summary.activeTaskTitle}
+              <Icon name="pin" size={12} className="mr-1 inline-block align-[-1px] text-ink-faint" />
+              {summary.activeTaskTitle}
             </p>
           ) : (
             <p className="mt-0.5 text-[11px] text-ink-faint">
@@ -148,17 +150,20 @@ export const AgentPinnedBoardFooter = memo(function AgentPinnedBoardFooter({
             <button
               type="button"
               onClick={onNewBoardTask}
-              className="rounded-lg border border-hairline bg-paper px-2 py-1 text-[11px] font-mono text-ink hover:border-accent hover:text-accent transition-colors"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-hairline bg-paper text-ink-soft hover:border-hairline-strong hover:text-ink transition-colors"
               title={t('agentPanel.quickCreateBoardTask')}
+              aria-label={t('agentPanel.quickCreateBoardTask')}
             >
-              +
+              <Icon name="plus" size={14} />
             </button>
           ) : null}
           <button
             type="button"
             onClick={onOpenBoard}
-            className="rounded-lg bg-accent px-2.5 py-1 text-[11.5px] font-medium text-panel hover:bg-accent-deep transition-colors shadow-xs"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-deep transition-colors shadow-xs"
           >
+            {/* The board opens in-app (/board), so it wears the board mark, not `external`. */}
+            <Icon name="board" size={12} />
             {t('agentPanel.openBoard')}
           </button>
         </div>
