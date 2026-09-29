@@ -9,6 +9,7 @@ import {
   readWireRecords,
   readWireRecordsWithCompleteness,
   streamWireRecords,
+  streamWireRecordsAwaited,
   WIRE_COLD_READ_MAX_BYTES,
   WIRE_COLD_READ_MAX_LINE_BYTES,
   WIRE_COLD_READ_MAX_RECORDS,
@@ -629,6 +630,86 @@ describe('streamWireRecords', () => {
     } finally {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
+  });
+});
+
+describe('streamWireRecordsAwaited', () => {
+  it('awaits each callback in source order across several bounded batches', async () => {
+    const records = Array.from({ length: 300 }, (_, index) => ({ type: 'metadata', index, text: '中'.repeat(50) }));
+    await withWireFile(`${records.map((record) => JSON.stringify(record)).join('\n')}\n`, async (wirePath) => {
+      let active = 0;
+      let maxActive = 0;
+      const ordinals: number[] = [];
+      const result = await streamWireRecordsAwaited(wirePath, {
+        chunkBytes: 127,
+        includeRawRecord: true,
+        onRecord: async (record, span, raw) => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await Promise.resolve();
+          expect(raw?.toString()).toBe(`${JSON.stringify(record)}\n`);
+          ordinals.push(span.ordinal);
+          active -= 1;
+        },
+      });
+      expect(maxActive).toBe(1);
+      expect(ordinals).toEqual(records.map((_record, index) => index));
+      expect(result).toMatchObject({ complete: true, recordCount: 300 });
+    });
+  });
+
+  it('stops at the awaited false result and resumes exactly after that record', async () => {
+    const records = Array.from({ length: 200 }, (_, index) => ({ type: 'metadata', index }));
+    const lines = records.map((record) => `${JSON.stringify(record)}\n`);
+    await withWireFile(lines.join(''), async (wirePath) => {
+      const visited: number[] = [];
+      const first = await streamWireRecordsAwaited(wirePath, {
+        onRecord: async (record) => {
+          visited.push(record['index'] as number);
+          await Promise.resolve();
+          return visited.length !== 3;
+        },
+      });
+      expect(visited).toEqual([0, 1, 2]);
+      expect(first).toMatchObject({ complete: false, incompleteReason: 'record_budget', recordCount: 3,
+        nextByteOffset: Buffer.byteLength(lines.slice(0, 3).join('')) });
+      const rest: number[] = [];
+      const second = await streamWireRecordsAwaited(wirePath, {
+        startByteOffset: first.nextByteOffset, startRecordOrdinal: first.recordCount,
+        onRecord: async (record, span) => {
+          rest.push(record['index'] as number);
+          expect(span.ordinal).toBe(record['index']);
+        },
+      });
+      expect(rest).toEqual(records.slice(3).map((record) => record.index));
+      expect(second).toMatchObject({ complete: true, recordCount: 197 });
+    });
+  });
+
+  it('preserves empty zero-budget, partial-tail and cancellation behavior', async () => {
+    await withWireFile('', async (wirePath) => {
+      expect(await streamWireRecordsAwaited(wirePath, { maxBytes: 0, onRecord: () => undefined }))
+        .toMatchObject({ complete: true, recordCount: 0 });
+    });
+    await withWireFile('{"type":"metadata","index":0}\n{"type":', async (wirePath) => {
+      const received: number[] = [];
+      const partial = await streamWireRecordsAwaited(wirePath, {
+        chunkBytes: 3, onRecord: async (record) => { received.push(record['index'] as number); },
+      });
+      expect(received).toEqual([0]);
+      expect(partial).toMatchObject({ complete: false, recordCount: 1, incompleteReason: 'partial_tail' });
+    });
+    await withWireFile('{"type":"metadata","index":0}\n{"type":"metadata","index":1}\n', async (wirePath) => {
+      const controller = new AbortController();
+      const received: number[] = [];
+      await expect(streamWireRecordsAwaited(wirePath, { signal: controller.signal,
+        onRecord: async (record) => {
+          received.push(record['index'] as number);
+          controller.abort(new DOMException('awaited read stopped', 'AbortError'));
+        },
+      })).rejects.toThrow('awaited read stopped');
+      expect(received).toEqual([0]);
+    });
   });
 });
 

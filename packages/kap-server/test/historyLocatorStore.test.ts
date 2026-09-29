@@ -12,6 +12,7 @@ import type { IWorkspaceService } from '@kiki/agent-core-v2/app/workspace/worksp
 
 import { TranscriptWireAdapter } from '@kiki/transcript';
 import { HistoryLocatorStore, HISTORY_NAV_COLLECTION } from '../src/services/history/historyLocatorStore';
+import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
 import { historyArchiveSeed } from '../src/services/historyArchive';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 
@@ -106,6 +107,53 @@ describe('history navigation source rows', () => {
       expect(undone?.recordsRead).toBe(1);
       expect((await nav.read(nav.ref(row!))).status).toBe('stale_ref');
     } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('hides a large SQLite suffix with range effects, keeps earlier refs and reuses IDs after clear', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-disk-undo-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      const prompts = Array.from({ length: 200 }, (_, turnId) => line({ type: 'turn.prompt', turnId,
+        promptId: `p${turnId}`, origin: { kind: 'user' }, input: [{ type: 'text', text: `prompt ${turnId}` }] }));
+      await writeFile(wirePath, prompts.join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      expect((await nav.scan('s', 'main'))?.recordsRead).toBe(200);
+      const earlier = await nav.row('ws', 's', 'main', 'turn', 19);
+      const removed = await nav.row('ws', 's', 'main', 'turn', 21);
+      await appendFile(wirePath, line({ type: 'context.undo', count: 180 }));
+      expect((await nav.scan('s', 'main'))?.recordsRead).toBe(1);
+      expect((await nav.read(nav.ref(earlier!))).status).toBe('ok');
+      expect((await nav.read(nav.ref(removed!))).status).toBe('stale_ref');
+      await appendFile(wirePath, line({ type: 'context.clear' }));
+      await nav.scan('s', 'main');
+      expect((await nav.read(nav.ref(earlier!))).status).toBe('stale_ref');
+      await appendFile(wirePath, line({ type: 'turn.prompt', turnId: 0, promptId: 'again',
+        origin: { kind: 'user' }, input: [{ type: 'text', text: 'new turn zero' }] }));
+      await nav.scan('s', 'main');
+      const reused = await nav.row('ws', 's', 'main', 'turn', 0);
+      expect(await nav.read(nav.ref(reused!))).toMatchObject({ status: 'ok', text: 'new turn zero' });
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('serializes two concurrent SQLite query workspaces and keeps both source hits readable', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-disk-parallel-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      await writeFile(wirePath, lines.join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const [prompt, tool] = await Promise.all([
+        nav.scan('s', 'main', undefined, { query: '原话', mode: 'auto', pageSize: 5 }),
+        nav.scan('s', 'main', undefined, { query: 'needle', mode: 'auto', pageSize: 5 }),
+      ]);
+      expect(prompt?.hits?.map((hit) => hit.turn)).toEqual([4]);
+      expect(tool?.hits?.map((hit) => hit.turn)).toEqual([4]);
+      expect((await nav.read(prompt!.hits![0]!.ref!)).status).toBe('ok');
+      expect((await nav.read(tool!.hits![0]!.ref!)).status).toBe('ok');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
   it('returns a bounded, non-repeating partial result when one wire line exceeds the scan page', async () => {
@@ -283,9 +331,10 @@ describe('history navigation source rows', () => {
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
-  it('materializes a managed prompt from its own delivery and preserves earlier frames across delivery undo', async () => {
+  it.each(['memory', 'sqlite'] as const)('preserves accepted delivery frames across undo with %s state', async (backend) => {
     const dir = await mkdtemp(join(tmpdir(), 'history-nav-undo-'));
     const wirePath = join(dir, 'wire.jsonl');
+    const db = backend === 'sqlite' ? HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite')) : undefined;
     try {
       const records = [
         { type: 'turn.prompt', turnId: 0, promptId: 'p0', managed: true, origin: { kind: 'user' },
@@ -304,7 +353,7 @@ describe('history navigation source rows', () => {
       ];
       await writeFile(wirePath, records.map(line).join(''));
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
-      const nav = new HistoryLocatorStore(memoryStore(), transcript);
+      const nav = new HistoryLocatorStore(db ?? memoryStore(), transcript);
       await nav.scan('s', 'main');
       const turn = await nav.row('ws', 's', 'main', 'turn', 0);
       const before = await nav.row('ws', 's', 'main', 'frame', 0, 't0.1', 'before:text', 'text');
@@ -323,7 +372,7 @@ describe('history navigation source rows', () => {
       expect((await nav.read(nav.ref(turn!))).status).toBe('ok');
       expect((await nav.read(nav.ref(before!))).status).toBe('ok');
       expect((await nav.read(nav.ref(after!))).status).toBe('stale_ref');
-    } finally { await rm(dir, { recursive: true, force: true }); }
+    } finally { await db?.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
   it('projects legacy assistant parts and tool messages while skipping hidden legacy origins', async () => {

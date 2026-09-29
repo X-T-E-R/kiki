@@ -1,4 +1,6 @@
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
+import { MemoryNavigationAnchorSequence, MemoryNavigationTurnSequence,
+  type NavigationAnchor, type NavigationAnchorSequence, type NavigationTurnSequence } from './navigationSequence';
 import type { TranscriptWireRecord } from './wireAdapter';
 
 /** A source-backed navigation effect. Text fields live only for the current wire record. */
@@ -13,13 +15,31 @@ export type NavigationEffect =
         readonly role?: 'assistant'; readonly text?: string; readonly input?: unknown;
         readonly output?: unknown; readonly name?: string; readonly selector?: string } }
   | { readonly op: 'visibility.reset'; readonly turns: readonly number[];
+      readonly sequenceRange?: readonly [number, number];
       readonly retain?: { readonly turn: number; readonly beforeOrdinal: number } };
 
 type Step = { turnId: string; ordinal: number; sourceOrdinal: number };
 type Tool = { turnId: string; stepId: string; stepOrdinal: number;
   frameId: string; name: string; sourceOrdinal: number };
 
-type Anchor = { ordinal: number; turnId?: string; messageId?: string };
+type Anchor = NavigationAnchor;
+
+/** Scalar identity tables may be disk-backed; the default adapter keeps test fixtures in memory. */
+export interface NavigationScalarState {
+  readonly turns?: NavigationTurnSequence;
+  readonly anchors?: NavigationAnchorSequence;
+  /** Disk state can purge a removed suffix without enumerating every turn in JavaScript. */
+  purgeRemovedTurns?(range: readonly [number, number]): void;
+  readonly canonicalTurns: Set<string>;
+  readonly turnStart: Map<string, number>;
+  readonly turnStates: Map<string, 'running' | 'completed'>;
+  readonly steps: Map<string, Step>;
+  readonly currentStep: Map<string, string>;
+  readonly tools: Map<string, Tool>;
+  readonly deliveries: Map<string, Anchor>;
+  readonly steeredMessageIds: Set<string>;
+  readonly unpairedSteerCredits: Map<string, number>;
+}
 
 const objectOf = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -42,17 +62,18 @@ const outputOf = (value: unknown): string => typeof value === 'string' ? value :
 
 /** Unlike the canonical replay adapter, this projection never retains message or tool bodies. */
 export class NavigationWireAdapter {
-  private readonly turns: string[] = [];
-  private readonly canonicalTurns = new Set<string>();
-  private readonly turnStart = new Map<string, number>();
-  private readonly turnStates = new Map<string, 'running' | 'completed'>();
-  private readonly steps = new Map<string, Step>();
-  private readonly currentStep = new Map<string, string>();
-  private readonly tools = new Map<string, Tool>();
-  private readonly deliveries = new Map<string, Anchor>();
-  private readonly steeredMessageIds = new Set<string>();
-  private readonly unpairedSteerCredits = new Map<string, Map<string, number>>();
-  private readonly anchors: Anchor[] = [];
+  private readonly turns: NavigationTurnSequence;
+  private readonly canonicalTurns: Set<string>;
+  private readonly turnStart: Map<string, number>;
+  private readonly turnStates: Map<string, 'running' | 'completed'>;
+  private readonly steps: Map<string, Step>;
+  private readonly currentStep: Map<string, string>;
+  private readonly tools: Map<string, Tool>;
+  private readonly deliveries: Map<string, Anchor>;
+  private readonly steeredMessageIds: Set<string>;
+  private readonly unpairedSteerCredits: Map<string, number>;
+  private readonly anchors: NavigationAnchorSequence;
+  private readonly purgeRemovedTurns: NavigationScalarState['purgeRemovedTurns'];
   private currentTurn: string | undefined;
   private currentPrompt: string | undefined;
   private legacyTurn = 0;
@@ -60,7 +81,20 @@ export class NavigationWireAdapter {
   /** Long-lived body character count (kept for the memory gate). */
   readonly retainedBodyChars = 0;
 
-  constructor(readonly agentId: string) {}
+  constructor(readonly agentId: string, state: Partial<NavigationScalarState> = {}) {
+    this.turns = state.turns ?? new MemoryNavigationTurnSequence();
+    this.anchors = state.anchors ?? new MemoryNavigationAnchorSequence();
+    this.purgeRemovedTurns = state.purgeRemovedTurns;
+    this.canonicalTurns = state.canonicalTurns ?? new Set<string>();
+    this.turnStart = state.turnStart ?? new Map<string, number>();
+    this.turnStates = state.turnStates ?? new Map<string, 'running' | 'completed'>();
+    this.steps = state.steps ?? new Map<string, Step>();
+    this.currentStep = state.currentStep ?? new Map<string, string>();
+    this.tools = state.tools ?? new Map<string, Tool>();
+    this.deliveries = state.deliveries ?? new Map<string, Anchor>();
+    this.steeredMessageIds = state.steeredMessageIds ?? new Set<string>();
+    this.unpairedSteerCredits = state.unpairedSteerCredits ?? new Map<string, number>();
+  }
 
   add(record: TranscriptWireRecord): NavigationEffect[] {
     const ordinal = this.ordinal++;
@@ -96,10 +130,9 @@ export class NavigationWireAdapter {
       const promptId = stringOf(record['promptId']);
       if (promptId !== undefined) this.steeredMessageIds.add(promptId);
       else {
-        const credits = this.unpairedSteerCredits.get(turnId) ?? new Map<string, number>();
         const kind = stringOf(objectOf(record['origin'])?.['kind']) ?? 'user';
-        credits.set(kind, (credits.get(kind) ?? 0) + 1);
-        this.unpairedSteerCredits.set(turnId, credits);
+        const key = `${turnId}\0${kind}`;
+        this.unpairedSteerCredits.set(key, (this.unpairedSteerCredits.get(key) ?? 0) + 1);
       }
       return [];
     }
@@ -107,9 +140,9 @@ export class NavigationWireAdapter {
     if (record.type === 'context.undo') {
       const count = numberOf(record['count']) ?? 1;
       if (count <= 0) return [];
-      const target = this.anchors.toSorted((a, b) => b.ordinal - a.ordinal)[count - 1];
+      const target = this.anchors.nthFromLast(count);
       if (target === undefined) return [];
-      const cut = target.turnId === undefined ? this.turns.findIndex((id) => (this.turnStart.get(id) ?? -1) >= target.ordinal)
+      const cut = target.turnId === undefined ? this.turns.findFromOrdinal(target.ordinal)
         : this.turns.indexOf(target.turnId);
       if (target.messageId !== undefined && target.turnId !== undefined && cut >= 0) {
         const removed = this.reset(cut + 1);
@@ -121,12 +154,16 @@ export class NavigationWireAdapter {
         }
         this.currentTurn = target.turnId;
         this.currentStep.delete(target.turnId);
-        const earlier = [...this.steps].filter(([, step]) => step.turnId === target.turnId)
-          .toSorted((a, b) => a[1].sourceOrdinal - b[1].sourceOrdinal).at(-1);
+        let earlier: [string, Step] | undefined;
+        for (const [id, step] of this.steps) {
+          if (step.turnId === target.turnId &&
+              (earlier === undefined || step.sourceOrdinal >= earlier[1].sourceOrdinal)) earlier = [id, step];
+        }
         if (earlier !== undefined) this.currentStep.set(target.turnId, earlier[0]);
-        this.anchors.splice(0, this.anchors.length, ...this.anchors.filter((a) => a.ordinal < target.ordinal));
+        this.anchors.discardFromOrdinal(target.ordinal);
         for (const [id, delivery] of this.deliveries) if (delivery.ordinal >= target.ordinal) this.deliveries.delete(id);
-        return [{ op: 'visibility.reset', turns: removed[0]?.op === 'visibility.reset' ? removed[0].turns : [],
+        const reset = removed[0]?.op === 'visibility.reset' ? removed[0] : undefined;
+        return [{ op: 'visibility.reset', turns: reset?.turns ?? [], sequenceRange: reset?.sequenceRange,
           retain: { turn: Number(target.turnId.slice(1)), beforeOrdinal: target.ordinal } }];
       }
       return this.reset(cut < 0 ? this.turns.length : cut);
@@ -244,11 +281,11 @@ export class NavigationWireAdapter {
     if (this.deliveries.has(messageId) || canonical === undefined && messageId === this.currentPrompt ||
         this.steeredMessageIds.has(messageId)) return [];
     if (canonical === undefined && this.currentTurn !== undefined && isVisibleLegacyTurnOrigin(this.agentId, origin)) {
-      const credits = this.unpairedSteerCredits.get(this.currentTurn);
       const kind = stringOf(origin?.['kind']) ?? 'user';
-      const count = credits?.get(kind) ?? 0;
+      const key = `${this.currentTurn}\0${kind}`;
+      const count = this.unpairedSteerCredits.get(key) ?? 0;
       if (count > 0) {
-        credits!.set(kind, count - 1);
+        this.unpairedSteerCredits.set(key, count - 1);
         this.steeredMessageIds.add(messageId);
         return [];
       }
@@ -258,7 +295,7 @@ export class NavigationWireAdapter {
       const turnId = turnOf(canonical?.['turnId']) ?? this.currentTurn;
       this.deliveries.set(messageId, { ordinal, turnId, messageId });
       if (turnId !== undefined && messageId === this.currentPrompt) {
-        if (isUndoAnchorOrigin(message['origin']) && !this.anchors.some((a) => a.turnId === turnId)) {
+        if (isUndoAnchorOrigin(message['origin']) && !this.anchors.hasTurn(turnId)) {
           this.anchors.push({ ordinal: this.turnStart.get(turnId) ?? ordinal, turnId });
         }
         return [{ op: 'turn.upsert', turn: { turnId, ordinal: Number(turnId.slice(1)),
@@ -296,29 +333,43 @@ export class NavigationWireAdapter {
   }
 
   private track(id: string, ordinal: number): void {
-    if (!this.turnStart.has(id)) { this.turnStart.set(id, ordinal); this.turns.push(id); }
+    if (!this.turnStart.has(id)) { this.turnStart.set(id, ordinal); this.turns.push(id, ordinal); }
   }
 
   private reset(start: number): NavigationEffect[] {
-    const ids = this.turns.splice(start);
-    for (const id of ids) {
-      this.turnStart.delete(id);
-      this.turnStates.delete(id);
-      this.canonicalTurns.delete(id);
-      this.currentStep.delete(id);
-      this.unpairedSteerCredits.delete(id);
-      for (const [stepId, step] of this.steps) if (step.turnId === id) this.steps.delete(stepId);
-      for (const [callId, tool] of this.tools) if (tool.turnId === id) this.tools.delete(callId);
+    if (start >= this.turns.length) {
+      if (start === 0) {
+        this.anchors.discardFromOrdinal(0);
+        this.deliveries.clear();
+        this.currentTurn = undefined;
+        this.currentPrompt = undefined;
+      }
+      return [];
     }
-    const firstOrdinal = ids.length > 0 ? Number(ids[0]!.slice(1)) : Number.POSITIVE_INFINITY;
-    for (let i = this.anchors.length - 1; i >= 0; i -= 1) {
-      if ((this.anchors[i]!.turnId !== undefined && Number(this.anchors[i]!.turnId!.slice(1)) >= firstOrdinal) || start === 0) {
-        this.anchors.splice(i, 1);
+    const removed = this.turns.removeFrom(start);
+    if (removed.sequenceRange !== undefined && this.purgeRemovedTurns !== undefined) {
+      this.purgeRemovedTurns(removed.sequenceRange);
+    } else {
+      for (const id of removed.ids ?? []) {
+        this.turnStart.delete(id);
+        this.turnStates.delete(id);
+        this.canonicalTurns.delete(id);
+        this.currentStep.delete(id);
+        for (const key of this.unpairedSteerCredits.keys()) {
+          if (key.startsWith(`${id}\0`)) this.unpairedSteerCredits.delete(key);
+        }
+        for (const [stepId, step] of this.steps) if (step.turnId === id) this.steps.delete(stepId);
+        for (const [callId, tool] of this.tools) if (tool.turnId === id) this.tools.delete(callId);
       }
     }
-    if (start === 0) this.deliveries.clear();
+    this.anchors.discardRemovedTurns(removed.sequenceRange, removed.ids);
+    if (start === 0) {
+      this.anchors.discardFromOrdinal(0);
+      this.deliveries.clear();
+    }
     this.currentTurn = this.turns.at(-1);
     this.currentPrompt = undefined;
-    return ids.length > 0 ? [{ op: 'visibility.reset', turns: ids.map((id) => Number(id.slice(1))) }] : [];
+    return [{ op: 'visibility.reset', turns: (removed.ids ?? []).map((id) => Number(id.slice(1))),
+      sequenceRange: removed.sequenceRange }];
   }
 }

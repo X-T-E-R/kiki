@@ -26,6 +26,10 @@
     "./navigationWireAdapter": {
       "types": "./src/facts/navigationWireAdapter.ts",
       "default": "./src/facts/navigationWireAdapter.ts"
+    },
+    "./navigationSequence": {
+      "types": "./src/facts/navigationSequence.ts",
+      "default": "./src/facts/navigationSequence.ts"
     }
   },
   "scripts": {

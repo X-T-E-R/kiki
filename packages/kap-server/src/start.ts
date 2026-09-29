@@ -38,7 +38,7 @@ import { panelBoardSeeds } from './transport/klient/panelBoardSeeds';
 import { historyArchiveSeed } from './services/historyArchive';
 import { historyDirectorySeed } from './services/history/historyDirectory';
 import { HistoryLocatorStore } from './services/history/historyLocatorStore';
-import { IQueryStore } from '@kiki/agent-core-v2';
+import { HistoryNavigationDb } from './services/history/historyNavigationDb';
 import './services/historyTools';
 import { NotificationService } from './services/notifications/notificationService';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
@@ -312,9 +312,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
   const validateCredential = createCredentialValidator(authTokenService, opts.rpcToken);
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
+  const navigationDb = HistoryNavigationDb.lazy(join(homeDir, 'server', 'history-navigation.sqlite'));
   let locator: HistoryLocatorStore | undefined;
   const navigation = (): HistoryLocatorStore => locator ??= new HistoryLocatorStore(
-    core.accessor.get(IQueryStore), transcriptService,
+    navigationDb, transcriptService,
   );
   const { app: core } = bootstrap(
     {
@@ -504,6 +505,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     capabilityInstallSubscription.dispose();
     authFailureLimiter?.dispose();
     transcriptService.dispose();
+    try { await navigationDb.close(); }
+    catch (error) {
+      closeErrors.push(error);
+      logger.warn({ event_type: 'history_navigation_close_failed' }, 'history navigation close failed');
+    }
     try {
       await drainSessionMetadataWrites();
       await core.accessor.get(ISessionIndexMirror).drain();

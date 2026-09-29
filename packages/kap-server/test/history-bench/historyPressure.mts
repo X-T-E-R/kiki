@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, open, rm, stat, writeFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { digestWireBytes, WIRE_TRANSCRIPT_RECEIPT_KEY } from '../../../agent-core-v2/src/wire/transcriptReceipt';
 import { streamWireRecords, type ContextRecord } from '../../../transcript-live/src/wireRecords';
@@ -341,6 +341,7 @@ async function runNavigationImportWorker(): Promise<BenchResult> {
 async function runNavigationWorker(caseName: string, wirePath: string): Promise<BenchResult> {
   const beforeImportRssBytes = sampleRss();
   const { HistoryLocatorStore } = await import('../../src/services/history/historyLocatorStore');
+  const { HistoryNavigationDb } = await import('../../src/services/history/historyNavigationDb');
   const afterImportRssBytes = sampleRss();
   const documents = new Map<string, unknown>();
   const queryStore = {
@@ -350,8 +351,11 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
       for (const op of ops) if (op.kind === 'put') documents.set(`${op.collection}:${op.key}`, op.value);
     },
   };
+  const sqlite = caseName === 'navigation'
+    ? HistoryNavigationDb.lazy(join(dirname(wirePath), 'history-navigation.sqlite')) : undefined;
+  if (sqlite !== undefined) await sqlite.ready();
   const transcript = { historyWireLocation: async () => ({ wirePath, workspaceId: WORKSPACE_ID }) };
-  const nav = new HistoryLocatorStore(queryStore as never, transcript as never);
+  const nav = new HistoryLocatorStore((sqlite ?? queryStore) as never, transcript as never);
   const matches = matchesForNeedles();
   const startRssBytes = sampleRss();
   let peakRssBytes = startRssBytes;
@@ -401,7 +405,7 @@ async function runNavigationWorker(caseName: string, wirePath: string): Promise<
       peakRssBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes),
       rssDeltaBytes: Math.max(peakRssBytes, afterReadRssBytes, osHighWaterRssBytes) - startRssBytes,
       matches, segments, retainedBodyChars: nav.retainedBodyChars, error: String(error) };
-  } finally { clearInterval(sampler); }
+  } finally { clearInterval(sampler); await sqlite?.close(); }
 }
 
 async function runCurrentHistoryRead(
@@ -513,7 +517,7 @@ async function runWorker(args: readonly string[]): Promise<void> {
     workerResult(await runNavigationImportWorker());
     return;
   }
-  if (mode === 'navigation') {
+  if (mode === 'navigation' || mode === 'navigation-map') {
     workerResult(await runNavigationWorker(mode, wirePath));
     return;
   }
@@ -561,7 +565,8 @@ function printUsage(): void {
     'Usage: pnpm -C packages/kap-server exec tsx test/history-bench/historyPressure.mts [--navigation] [--current-api]',
     '',
     'HISTORY_BENCH_BYTES overrides the default 238000000-byte fixture.',
-    '--navigation scans the current navigation model through the deep-tail marker with bounded scan cursors.',
+    '--navigation scans the SQLite navigation model through the deep-tail marker with bounded scan cursors.',
+    '--navigation-map keeps the old in-memory row backend as a diagnostic comparison.',
     '--current-api runs the checked-out v1 HistoryRead archive backend for both marker turns.',
     'Synthetic input is always removed before the command exits.',
   ].join('\n'));
@@ -592,6 +597,9 @@ async function runParent(args: readonly string[]): Promise<void> {
     if (args.includes('--navigation')) {
       process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation-import', fixture))}\n`);
       process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation', fixture))}\n`);
+    }
+    if (args.includes('--navigation-map')) {
+      process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(await workerCommand('navigation-map', fixture))}\n`);
     }
     if (args.includes('--current-api')) {
       for (const mode of ['current-history-mid', 'current-history-tail']) {

@@ -7,10 +7,11 @@ import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor,
 import type { HistoryHit } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import type { IQueryStore, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
 import { NavigationWireAdapter, openingText, type NavigationEffect } from '@kiki/transcript/navigationWireAdapter';
-import { streamWireRecords, type WireRecordSpan } from '@kiki/transcript-live/wireRecords';
+import { streamWireRecordsAwaited, type WireRecordSpan } from '@kiki/transcript-live/wireRecords';
 
 import { decodeHistoryRef, encodeHistoryRef, hashHistoryRecord, historySourceIncarnation, verifyHistorySource,
   type HistorySourceAnchor, type HistoryRefKind } from './historySource';
+import type { LazyHistoryNavigationDb } from './historyNavigationDb';
 import { matchHistoryText, planHistoryQuery, type HistoryMode } from './historyQuery';
 import { makeSnippet } from '../../search/snippet';
 import type { TranscriptService } from '../transcript/transcriptService';
@@ -21,6 +22,7 @@ export const HISTORY_NAV_SCAN_RECORDS = 50_000;
 const HISTORY_NAV_CHUNK_BYTES = 64 << 10;
 const HISTORY_NAV_MAX_LINE_BYTES = 32 << 20;
 const MAX_SCANNERS = 2;
+const MAX_QUEUED_SCANS = 8;
 
 export interface HistoryNavRow {
   readonly workspace: string;
@@ -166,8 +168,11 @@ function originalText(record: Record<string, unknown>, part: HistoryNavRow['part
 export class HistoryLocatorStore {
   private readonly scanners = new Map<string, Scanner>();
   private readonly flights = new Map<string, Promise<HistoryNavScan>>();
+  private scanTail: Promise<void> = Promise.resolve();
+  private queuedScans = 0;
 
-  constructor(private readonly store: IQueryStore, private readonly transcript: TranscriptService) {}
+  constructor(private readonly store: Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn'>,
+    private readonly transcript: TranscriptService) {}
 
   get retainedBodyChars(): number {
     let chars = 0;
@@ -187,7 +192,21 @@ export class HistoryLocatorStore {
     }))}`}`;
     const existing = this.flights.get(key);
     if (existing !== undefined) return existing;
-    const flight = this.scanSlice({ workspace, session, agent, wirePath, incarnation, key, signal, search });
+    if (this.queuedScans >= MAX_QUEUED_SCANS) throw new Error('history_navigation_busy');
+    this.queuedScans += 1;
+    const previous = this.scanTail;
+    let release!: () => void;
+    this.scanTail = new Promise<void>((resolve) => { release = resolve; });
+    const flight = (async (): Promise<HistoryNavScan> => {
+      try {
+        await previous;
+        signal?.throwIfAborted();
+        return await this.scanSlice({ workspace, session, agent, wirePath, incarnation, key, signal, search });
+      } finally {
+        this.queuedScans -= 1;
+        release();
+      }
+    })();
     this.flights.set(key, flight);
     try { return await flight; }
     catch (error) { this.scanners.delete(key); throw error; }
@@ -196,56 +215,28 @@ export class HistoryLocatorStore {
 
   private async scanSlice(input: { workspace: string; session: string; agent: string; wirePath: string;
     incarnation: string; key: string; signal?: AbortSignal; search?: HistoryNavSearch }): Promise<HistoryNavScan> {
+    const stateDb = 'ready' in this.store
+      ? await (this.store as LazyHistoryNavigationDb).ready() : undefined;
     let scanner = this.scanners.get(input.key);
     if (input.search?.cursor !== undefined && (scanner?.offset !== input.search.cursor.offset ||
         scanner.incarnation !== input.search.cursor.incarnation)) throw new Error('stale_scan_cursor');
     if (scanner === undefined || scanner.incarnation !== input.incarnation ||
         input.search !== undefined && input.search.cursor === undefined) {
-      scanner = { adapter: new NavigationWireAdapter(input.agent),
+      stateDb?.clearState(input.key);
+      scanner = { adapter: new NavigationWireAdapter(input.agent, stateDb?.scalarState(input.key)),
         incarnation: input.incarnation, offset: 0, ordinal: 0 };
       this.scanners.delete(input.key);
-      if (this.scanners.size >= MAX_SCANNERS) this.scanners.delete(this.scanners.keys().next().value!);
+      if (this.scanners.size >= MAX_SCANNERS) {
+        const evicted = this.scanners.keys().next().value!;
+        this.scanners.delete(evicted);
+        stateDb?.clearState(evicted);
+      }
       this.scanners.set(input.key, scanner);
     }
     const pending: PendingRecord[] = [];
+    const store = this.store;
     const plan = input.search === undefined ? undefined : planHistoryQuery(input.search.query, input.search.mode);
     let matchedRecords = 0;
-    const read = await streamWireRecords(input.wirePath, {
-      startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
-      maxBytes: input.search?.asOf === undefined ? HISTORY_NAV_SCAN_BYTES :
-        Math.min(HISTORY_NAV_SCAN_BYTES, Math.max(0, input.search.asOf - scanner.offset)),
-      maxRecords: HISTORY_NAV_SCAN_RECORDS,
-      maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
-      signal: input.signal, includeRawRecord: true,
-      onRecord: (record, span, raw) => {
-        const projected = scanner.adapter.add(record);
-        pending.push({ operations: projected, span,
-          digest: hashHistoryRecord(raw!), recordTime: typeof record['time'] === 'number' ? record['time'] : undefined });
-        if (plan !== undefined) {
-          const hasMatch = projected.some((op) => {
-            const time = typeof record['time'] === 'number' ? record['time'] : undefined;
-            if (input.search?.after !== undefined && (time === undefined || time < input.search.after) ||
-                input.search?.before !== undefined && (time === undefined || time >= input.search.before)) return false;
-            if (op.op === 'turn.upsert' && input.search?.role !== 'assistant' && input.search?.role !== 'tool') {
-              return op.turn.prompt !== undefined && matchHistoryText(op.turn.prompt, plan) !== undefined;
-            }
-            if (op.op !== 'frame.upsert') return false;
-            const frame = op.frame;
-            if (frame.kind === 'text' && frame.role === 'assistant' && frame.text !== undefined &&
-                (input.search?.role === undefined || input.search.role === 'assistant')) {
-              return matchHistoryText(frame.text, plan) !== undefined;
-            }
-            if (frame.kind === 'tool' && (input.search?.role === undefined || input.search.role === 'tool')) {
-              return frame.output !== undefined && matchHistoryText(outputText(frame.output), plan) !== undefined;
-            }
-            return false;
-          });
-          if (hasMatch) matchedRecords += 1;
-          if (matchedRecords >= input.search!.pageSize) return false;
-        }
-        return true;
-      },
-    });
     const writes: WriteOp[] = [];
     const touched = new Map<string, HistoryNavRow>();
     const hits: HistoryHit[] = [];
@@ -268,7 +259,54 @@ export class HistoryLocatorStore {
       if (row !== undefined) touched.set(key, row);
       return row;
     };
-    for (const record of pending) {
+    let pendingBytes = 0;
+    const read = await streamWireRecordsAwaited(input.wirePath, {
+      startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
+      maxBytes: input.search?.asOf === undefined ? HISTORY_NAV_SCAN_BYTES :
+        Math.min(HISTORY_NAV_SCAN_BYTES, Math.max(0, input.search.asOf - scanner.offset)),
+      maxRecords: HISTORY_NAV_SCAN_RECORDS,
+      maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
+      signal: input.signal, includeRawRecord: true,
+      onRecord: async (record, span, raw) => {
+        const projected = scanner.adapter.add(record);
+        pending.push({ operations: projected, span,
+          digest: hashHistoryRecord(raw!), recordTime: typeof record['time'] === 'number' ? record['time'] : undefined });
+        pendingBytes += span.endByteOffset - span.startByteOffset;
+        if (plan !== undefined) {
+          const hasMatch = projected.some((op) => {
+            const time = typeof record['time'] === 'number' ? record['time'] : undefined;
+            if (input.search?.after !== undefined && (time === undefined || time < input.search.after) ||
+                input.search?.before !== undefined && (time === undefined || time >= input.search.before)) return false;
+            if (op.op === 'turn.upsert' && input.search?.role !== 'assistant' && input.search?.role !== 'tool') {
+              return op.turn.prompt !== undefined && matchHistoryText(op.turn.prompt, plan) !== undefined;
+            }
+            if (op.op !== 'frame.upsert') return false;
+            const frame = op.frame;
+            if (frame.kind === 'text' && frame.role === 'assistant' && frame.text !== undefined &&
+                (input.search?.role === undefined || input.search.role === 'assistant')) {
+              return matchHistoryText(frame.text, plan) !== undefined;
+            }
+            if (frame.kind === 'tool' && (input.search?.role === undefined || input.search.role === 'tool')) {
+              return frame.output !== undefined && matchHistoryText(outputText(frame.output), plan) !== undefined;
+            }
+            return false;
+          });
+          if (hasMatch) matchedRecords += 1;
+        }
+        const pageFull = input.search !== undefined && matchedRecords >= input.search.pageSize;
+        if (pageFull || pending.length >= 128 || pendingBytes >= (1 << 20)) await flushPending();
+        return !pageFull;
+      },
+    });
+    async function flushPending(): Promise<void> {
+      const commitTouched = async (): Promise<void> => {
+        for (const [key, value] of touched) writes.push({ kind: 'put', collection: HISTORY_NAV_COLLECTION,
+          key, value, columns: { turn: value.turn, time: value.time ?? 0, position: value.position ?? 0 } });
+        if (writes.length > 0) await store.batch(writes);
+        writes.length = 0;
+        touched.clear();
+      };
+      for (const record of pending) {
       input.signal?.throwIfAborted();
       const anchorBase = { v: 1 as const, workspace: input.workspace, session: input.session,
         agent: input.agent, incarnation: input.incarnation,
@@ -366,12 +404,19 @@ export class HistoryLocatorStore {
             if (part.part !== 'input') addHit(row, part.text);
           }
         } else if (operation.op === 'visibility.reset') {
+          if (stateDb !== undefined) {
+            await commitTouched();
+            stateDb.deactivateRange({ scope: input.key, workspace: input.workspace,
+              session: input.session, agent: input.agent,
+              range: operation.sequenceRange, retain: operation.retain });
+            continue;
+          }
           const removed = new Set(operation.turns);
           if (operation.retain !== undefined) removed.add(operation.retain.turn);
           for (const turn of removed) {
             let position = -1;
             for (;;) {
-              const page = await this.store.pageByColumn<HistoryNavRow>(HISTORY_NAV_COLLECTION, {
+              const page = await store.pageByColumn<HistoryNavRow>(HISTORY_NAV_COLLECTION, {
                 column: 'position', dir: 'asc',
                 filter: { workspace: input.workspace, session: input.session, agent: input.agent, turn },
                 bounds: { gt: position }, limit: 128,
@@ -402,9 +447,11 @@ export class HistoryLocatorStore {
         }
       }
     }
-    for (const [key, value] of touched) writes.push({ kind: 'put', collection: HISTORY_NAV_COLLECTION,
-      key, value, columns: { turn: value.turn, time: value.time ?? 0, position: value.position ?? 0 } });
-    if (writes.length > 0) await this.store.batch(writes);
+      await commitTouched();
+      pending.length = 0;
+      pendingBytes = 0;
+    }
+    await flushPending();
     scanner.offset = read.nextByteOffset;
     scanner.ordinal += read.recordCount;
     await this.store.put(HISTORY_NAV_COLLECTION, `${input.key}\0checkpoint`, {
@@ -413,7 +460,7 @@ export class HistoryLocatorStore {
     });
     const activeHits: HistoryHit[] = [];
     for (const hit of hits) {
-      const parent = touched.get(rowKey({ workspace: input.workspace, session: input.session, agent: input.agent,
+      const parent = await load(rowKey({ workspace: input.workspace, session: input.session, agent: input.agent,
         kind: 'turn', turn: hit.turn! }));
       if (parent?.active === false || hit.ref === undefined) continue;
       const anchor = decodeHistoryRef(hit.ref);
