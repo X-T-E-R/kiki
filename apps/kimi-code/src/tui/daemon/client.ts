@@ -102,10 +102,15 @@ export class DaemonClient implements SessionTransport {
 
   async createSession(input: {
     readonly workDir: string;
+    readonly ephemeral?: boolean;
     readonly additionalDirs?: readonly string[];
     readonly title?: string;
   }): Promise<{ readonly id: string }> {
     return this.klient.global.sessions.create(input);
+  }
+
+  endEphemeralSession(sessionId: string): Promise<{ ended: true }> {
+    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}/ephemeral/end`, {});
   }
 
   listModels(): Promise<ListModelsResponse> {

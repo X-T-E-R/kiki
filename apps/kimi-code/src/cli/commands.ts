@@ -41,6 +41,7 @@ export function createProgram(
         .argParser((val: string | boolean) => (val === true ? '' : (val as string))),
     )
     .option('-c, --continue', 'Continue the previous session for the working directory.', false)
+    .option('--ephemeral', 'Create a temporary session that is deleted on exit.', false)
     .addOption(new Option('-C').hideHelp().default(false))
     .option('-y, --yolo', 'Auto-approve regular tool calls; the agent may still ask questions.', false)
     .option('--auto', 'Approve routine actions automatically; ask for protected access or user input.', false)
@@ -149,6 +150,7 @@ export function createProgram(
     const opts: CLIOptions = {
       session: sessionValue,
       continue: raw['continue'] === true || raw['C'] === true,
+      ephemeral: raw['ephemeral'] === true,
       yolo: yoloValue,
       auto: autoValue,
       plan: raw['plan'] as boolean,

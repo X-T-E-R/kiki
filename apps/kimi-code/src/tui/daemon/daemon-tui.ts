@@ -83,6 +83,7 @@ export interface DaemonTUIStartupInput {
   readonly cliOptions: {
     readonly session?: string;
     readonly continue: boolean;
+    readonly ephemeral?: boolean;
     readonly yolo: boolean;
     readonly auto: boolean;
     readonly plan: boolean;
@@ -160,6 +161,7 @@ export class DaemonTUI {
   private readonly attachmentRefreshes = new WeakMap<object, Promise<void>>();
   private readonly invalidUploadCleanups = new Map<string, InvalidUploadCleanup>();
   private readonly sideControllers = new Set<SessionController>();
+  private readonly temporarySessionIds = new Set<string>();
   private stopped = false;
 
   constructor(connection: DaemonConnection, startup: DaemonTUIStartupInput) {
@@ -249,6 +251,10 @@ export class DaemonTUI {
     await cleanup(() => {
       this.clearSourceOverlayHeartbeat();
     });
+    for (const sessionId of this.temporarySessionIds) {
+      await cleanup(async () => { await this.client.endEphemeralSession(sessionId); });
+    }
+    this.temporarySessionIds.clear();
     await cleanup(() => this.client.close());
     await cleanup(() => {
       this.state.footer.dispose();
@@ -672,8 +678,10 @@ export class DaemonTUI {
   private async createSession(): Promise<void> {
     const session = await this.client.createSession({
       workDir: this.startup.workDir,
+      ephemeral: this.startup.cliOptions.ephemeral === true,
       additionalDirs: this.startup.additionalDirs,
     });
+    if (this.startup.cliOptions.ephemeral === true) this.temporarySessionIds.add(session.id);
     await this.openSession(session.id);
   }
 

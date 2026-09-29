@@ -161,6 +161,7 @@ export interface GlobalSessionsFacade {
   create(input: {
     sessionId?: string;
     workDir: string;
+    ephemeral?: boolean;
     additionalDirs?: readonly string[];
     title?: string;
     mainAgentBinding?: { profile?: string; model?: string; thinking?: string };
@@ -503,9 +504,9 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       get: (id) => call('sessionIndex', 'get', [id]) as Promise<SessionSummary | undefined>,
       countActive: (workspaceIds) =>
         call('sessionIndex', 'count', [{ workspaceIds }]) as Promise<number>,
-      create: async ({ sessionId, workDir, additionalDirs, title, mcpServers, mainAgentBinding }) => {
+      create: async ({ sessionId, workDir, ephemeral, additionalDirs, title, mcpServers, mainAgentBinding }) => {
         const handle = (await scoped({}, 'sessionManager', 'create', [
-          { sessionId, workDir, additionalDirs, mcpServers, mainAgentBinding },
+          { sessionId, workDir, ephemeral, additionalDirs, mcpServers, mainAgentBinding },
         ])) as { id: string };
         const scope = { sessionId: handle.id };
         if (title !== undefined) {

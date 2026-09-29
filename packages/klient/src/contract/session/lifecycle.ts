@@ -14,6 +14,7 @@ import type { ServiceContract } from '../types.js';
 export const createSessionOptionsSchema = z.object({
   sessionId: z.string().optional(),
   workDir: z.string(),
+  ephemeral: z.boolean().optional(),
   additionalDirs: z.array(z.string()).optional(),
   mainAgentBinding: z.object({
     profile: z.string().optional(), model: z.string().optional(), thinking: z.string().optional(),

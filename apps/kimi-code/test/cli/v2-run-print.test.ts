@@ -161,7 +161,7 @@ function makeFakeHarness() {
     [IAuthSummaryService, { ensureReady: vi.fn(async () => {}) }],
     [ISessionManager, {
       create: vi.fn(async () => session), resume: vi.fn(async () => session),
-      get: vi.fn(() => session), list: vi.fn(() => [session]), close: vi.fn(async () => {}),
+      get: vi.fn(() => session), list: vi.fn(() => [session]), close: vi.fn(async () => {}), delete: vi.fn(async () => {}),
     }],
     [ISessionIndex, { prepare: vi.fn(async () => {}), get: vi.fn(async () => undefined), listRecent: vi.fn(async () => ({ items: [] })) }],
     [IBootstrapService, { osHomeDir: '/home/test' }],
@@ -331,6 +331,23 @@ describe('runV2Print', () => {
     expect(dispatcher.flush).toHaveBeenCalledOnce();
     expect(sessions.close).toHaveBeenCalledOnce();
     expect(order).toEqual(['flush', 'close', 'dispose']);
+  });
+
+  it('deletes a print-mode temporary session without writing a resume hint', async () => {
+    const { app, agent, appServices } = makeFakeHarness();
+    mocks.bootstrap.mockReturnValue({ app });
+    mocks.ensureMainAgent.mockResolvedValue(agent);
+    const sessions = appServices.get(ISessionManager) as {
+      create: Mock<ISessionManager['create']>;
+      close: Mock<ISessionManager['close']>;
+      delete: Mock<ISessionManager['delete']>;
+    };
+    const stderr = writer();
+    await runV2Print(opts({ ephemeral: true }) as never, 'test', { stdout: writer(), stderr });
+    expect(sessions.create).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true }));
+    expect(sessions.delete).toHaveBeenCalledWith('ses_v2');
+    expect(sessions.close).not.toHaveBeenCalled();
+    expect(stderr.text()).not.toContain('To resume');
   });
 
   it('passes explicit skill dirs from --skillsDir into bootstrap args', async () => {

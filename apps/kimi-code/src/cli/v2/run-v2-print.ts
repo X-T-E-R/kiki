@@ -111,7 +111,8 @@ export async function runV2Print(
           // persist failure must never mask the run's outcome.
           await raceWithTimeout(host.flushWires(), CLI_SHUTDOWN_TIMEOUT_MS).catch(() => {});
           try {
-            await activeSession?.close();
+            if (opts.ephemeral === true) await activeSession?.delete();
+            else await activeSession?.close();
           } finally {
             await host.dispose();
           }
@@ -137,7 +138,7 @@ export async function runV2Print(
     } else {
       await runPrintTurn(klient, resolved.session, resolved.agent, opts.prompt!, outputFormat, stdout, stderr);
     }
-    writeResumeHint(resolved.sessionId, outputFormat, stdout, stderr);
+    if (opts.ephemeral !== true) writeResumeHint(resolved.sessionId, outputFormat, stdout, stderr);
   } finally {
     await cleanup();
   }
@@ -219,6 +220,7 @@ async function resolvePrintSession(
 
   const created = await klient.global.sessions.create({
     workDir,
+    ephemeral: opts.ephemeral,
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
     mainAgentBinding: { profile: agentProfileName ?? 'agent', model: opts.model, thinking: opts.thinking },
   });

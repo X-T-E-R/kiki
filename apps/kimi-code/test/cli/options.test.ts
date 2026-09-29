@@ -175,6 +175,23 @@ describe('CLI options parsing', () => {
     });
   });
 
+  describe('--ephemeral', () => {
+    it('creates temporary sessions in both shell and print modes', () => {
+      const shell = parse(['--ephemeral']);
+      expect(shell.ephemeral).toBe(true);
+      expect(validateOptions(shell).uiMode).toBe('shell');
+      const print = parse(['--ephemeral', '-p', 'hello']);
+      expect(print.ephemeral).toBe(true);
+      expect(validateOptions(print).uiMode).toBe('print');
+    });
+
+    it('rejects combining a new temporary session with resume or continue', () => {
+      for (const argv of [['--ephemeral', '--session', 'id'], ['--ephemeral', '--continue']]) {
+        expect(() => validateOptions(parse(argv))).toThrow('Cannot combine --ephemeral with --session/--continue.');
+      }
+    });
+  });
+
   describe('--plan', () => {
     it('sets plan mode flag', () => {
       expect(parse(['--plan']).plan).toBe(true);

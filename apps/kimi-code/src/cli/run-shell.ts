@@ -168,7 +168,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     const gutter = ' '.repeat(CHROME_GUTTER);
     process.stdout.write(`${gutter}Bye!\n`);
     const hints: string[] = [];
-    if (sessionId !== '' && hasContent) {
+    if (sessionId !== '' && hasContent && opts.ephemeral !== true) {
       hints.push(`${gutter}To resume this session: kiki -r ${sessionId}`);
     }
     if (hints.length > 0) {

@@ -37,6 +37,7 @@ export function resolveOutputFormat(
 export interface CLIOptions {
   session: string | undefined;
   continue: boolean;
+  ephemeral?: boolean;
   yolo: boolean;
   auto: boolean;
   plan: boolean;
@@ -114,6 +115,9 @@ export function validateOptions(
   }
   if (opts.continue && opts.session !== undefined) {
     throw new OptionConflictError('Cannot combine --continue, --session.');
+  }
+  if (opts.ephemeral === true && (opts.session !== undefined || opts.continue)) {
+    throw new OptionConflictError('Cannot combine --ephemeral with --session/--continue.');
   }
   if (opts.yolo && opts.auto) {
     throw new OptionConflictError('Cannot combine --yolo with --auto.');
