@@ -131,7 +131,12 @@
   --color-hairline-strong: #40382c;
   --color-ink: #efe8dc;
   --color-ink-soft: #b8ac99;
-  --color-ink-faint: #958978;
+  /* Faint text is the most-used label role, so it is sized for the tinted
+   * grounds it lands on, not just the ladder: ≥5.3:1 on the accent-soft and
+   * selected washes, hairline-filled chips and the hover wash, and still
+   * ≥4.4:1 at the /80 alpha some secondary labels take. It stays a clear step
+   * below ink-soft (6.6 vs 8.2:1 on paper) so the hierarchy survives. */
+  --color-ink-faint: #a59987;
   --color-accent: #f08a4b;
   --color-accent-deep: #f6a574;
   --color-accent-ink: #f08a4b;
