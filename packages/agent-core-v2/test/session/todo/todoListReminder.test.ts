@@ -130,6 +130,30 @@ describe('todoListStaleReminder', () => {
     parse.mockRestore();
   });
 
+  it('latches the near-window note reminder once per durable epoch', () => {
+    const tracker = new TodoListReminderTracker();
+    let remindedEpoch: number | undefined;
+    const input = { active: true, history: [assistantMessage()], todos: [], notesEnabled: true,
+      threshold: 100_000, currentTokens: 86_000, epoch: 2, estimateMessage: () => 1,
+      onNearWindow: (epoch: number) => { remindedEpoch = epoch; } };
+    expect(tracker.reminder({ ...input, remindedEpoch })).toContain('renewed soon');
+    expect(remindedEpoch).toBe(2);
+    expect(tracker.reminder({ ...input, remindedEpoch })).toBeUndefined();
+    expect(tracker.reminder({ ...input, epoch: 3, remindedEpoch })).toContain('renewed soon');
+  });
+
+  it('keeps the existing reminder unchanged when notes are disabled and reminds when notes age', () => {
+    const history = [todoListWrite([{ title: 'task', status: 'pending' }]),
+      ...Array.from({ length: 10 }, () => assistantMessage())];
+    const base = { active: true, history, todos: [{ title: 'task', status: 'pending' as const }] };
+    const original = todoListStaleReminder(base);
+    expect(original).toContain('clear or rewrite it if stale');
+    expect(todoListStaleReminder({ ...base, notesEnabled: true, threshold: 100_000,
+      estimateMessage: () => 1_000 })).toContain('Working notes were last updated');
+    expect(todoListStaleReminder({ ...base, notesEnabled: true, threshold: 100_000,
+      estimateMessage: () => 1 })).not.toContain('Working notes were last updated');
+  });
+
   it('rebuilds counts when history is rewritten', () => {
     const tracker = new TodoListReminderTracker();
     const todos: TodoItem[] = [{ title: 'Read code', status: 'in_progress' }];

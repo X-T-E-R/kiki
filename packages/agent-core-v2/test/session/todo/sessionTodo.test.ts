@@ -11,6 +11,8 @@ import { Emitter } from '#/_base/event';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { ContextAppendMessage, ContextUndo } from '#/agent/contextMemory/contextEvents';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
@@ -97,6 +99,7 @@ function makeFakeAgent(
   ix.set(IAgentBlobService, noopBlob);
   ix.set(IWireService, stubWireJournal(journal));
   ix.set(IAgentStateService, new AgentStateService());
+  ix.get(IAgentStateService).contributeState(contextWindowEpochKey);
   ix.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
   const dispatcher = ix.get(IEventDispatcher);
 
@@ -113,6 +116,7 @@ function makeFakeAgent(
       if (id === IAgentContextMemoryService) return memoryStub as unknown as T;
       if (id === IAgentProfileService) return profileStub as unknown as T;
       if (id === IAgentToolPolicyService) return profileStub as unknown as T;
+      if (id === IAgentFullCompactionService) return { getContextStrategy: () => ({ strategy: 'summarize', source: 'default', shadow: false }) } as unknown as T;
       if (id === IEventBus) return eventBus as unknown as T;
       if (id === IWireService) return ix.get(IWireService) as unknown as T;
       if (id === IEventDispatcher) return dispatcher as unknown as T;
@@ -339,6 +343,31 @@ describe('SessionTodoService', () => {
     subscription.dispose();
 
     expect(seen).toEqual([[{ title: 'kept', status: 'pending' }]]);
+  });
+
+  it('persists notes separately from todo updates and rolls notes back with undo', async () => {
+    const main = makeFakeAgent('main');
+    const service = makeTodoService(makeLifecycleStub([main.handle]).service);
+    service.setNotes({ goal: 'preserved' }, { turnId: 1, step: 3, toolCallId: 'first' });
+    const before = service.getNotes().meta!;
+    expect(before.writtenStep).toBe('t1.3');
+    service.setTodos([{ title: 'x', status: 'pending' }]);
+    expect(service.getNotes().notes).toEqual({ goal: 'preserved' });
+    service.setNotes({ goal: 'preserved' }, { turnId: 2, step: 1, toolCallId: 'same' });
+    expect(service.getNotes().meta?.rev).toBe(before.rev);
+    expect(service.getNotes().meta?.writtenStep).toBe('t2.1');
+    expect(service.getNotes().meta?.coveredMessageId).toBe(before.coveredMessageId);
+    await main.dispatcher.dispatch(new ContextAppendMessage({ message: { role: 'user', content: [{ type: 'text', text: 'next' }], toolCalls: [] } }));
+    service.setNotes({ next: 'new work' }, { turnId: 2, step: 5, toolCallId: 'changed' });
+    expect(service.getNotes().meta?.rev).toBe(before.rev + 1);
+    expect(service.getNotes().meta?.writtenStep).toBe('t2.5');
+    await main.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    expect(service.getNotes().notes).toEqual({ goal: 'preserved' });
+    const restoredMain = makeFakeAgent('main');
+    const restored = makeTodoService(makeLifecycleStub([restoredMain.handle]).service);
+    await restoredMain.restore(main.journal);
+    expect(restored.getNotes().notes).toEqual(service.getNotes().notes);
+    expect(restored.getTodos()).toEqual(service.getTodos());
   });
 
   it('appends a tools.update_store record to the main agent wire on setTodos', () => {

@@ -161,6 +161,10 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
         keptUserMessageCount: result.keptUserMessageCount,
         keptHeadUserMessageCount: result.keptHeadUserMessageCount,
         droppedCount: result.droppedCount,
+        strategy: input.strategy,
+        shapeVersion: input.shapeVersion,
+        reasonCodes: input.reasonCodes,
+        fallbackFrom: input.fallbackFrom,
       }),
     );
     void this.dispatcher.dispatch(
@@ -178,7 +182,7 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
     });
     const { messages: _messages, ...publicResult } = result;
     void _messages;
-    return publicResult;
+    return { ...publicResult, strategy: input.strategy, shapeVersion: input.shapeVersion, reasonCodes: input.reasonCodes, fallbackFrom: input.fallbackFrom };
   }
 
   private publishSplice(input: ContextSplicedPayload): void {

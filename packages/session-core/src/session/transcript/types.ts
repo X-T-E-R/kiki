@@ -236,7 +236,25 @@ export interface NoticeBlock {
   readonly createdAt?: string;
   readonly turnId?: string;
   readonly i18n?: { readonly key: I18nKey; readonly params?: I18nParams };
+  /** External-engine runtime fact the GUI renders as a quiet in-turn note, not a divider. */
+  readonly executor?: ExecutorNote;
 }
+
+/**
+ * External-engine records carried by a notice: a prompt-delivery status
+ * (`executor.prompt.delivery`), an engine compaction, a whole-turn diff, or an
+ * update Kiki could not map. `queued` is not delivered and never shown as such.
+ */
+export type ExecutorNote =
+  | {
+      readonly kind: 'hint';
+      readonly method: 'native_steer' | 'next_turn_preamble' | 'undelivered';
+      readonly status: 'delivered' | 'queued' | 'undelivered';
+      readonly origin?: string;
+    }
+  | { readonly kind: 'compaction' }
+  | { readonly kind: 'diff'; readonly diff: string }
+  | { readonly kind: 'unknown'; readonly updateType?: string };
 
 export interface ApprovalResolution {
   readonly decision: ApprovalDecision | 'expired' | 'resolved_elsewhere';
@@ -321,6 +339,8 @@ export interface TurnExecutionInfo {
   readonly executorId: string;
   readonly protocol: string;
   readonly resumeMode: string | undefined;
+  /** How the profile instructions reached the engine (`first_prompt_preamble`, `system_prompt_override`, …). */
+  readonly profileDelivery?: string;
   readonly fidelity: 'full' | 'degraded';
   /** Stable loss codes (e.g. `tool_output_summary_only`); open set. */
   readonly losses: readonly string[];

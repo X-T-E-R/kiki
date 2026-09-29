@@ -1,6 +1,8 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
 
 import { TODO_LIST_TOOL_NAME, type TodoItem } from './todoItem';
+import { coveredMessageIndex } from '#/agent/fullCompaction/freshEligibility';
+import type { NotesMeta } from './todoNotes';
 
 export const TODO_LIST_REMINDER_VARIANT = 'todo_list_reminder';
 
@@ -11,6 +13,14 @@ interface TodoListReminderInput {
   readonly active: boolean;
   readonly history: readonly ContextMessage[];
   readonly todos: readonly TodoItem[];
+  readonly notesEnabled?: boolean;
+  readonly notesMeta?: NotesMeta;
+  readonly threshold?: number;
+  readonly currentTokens?: number;
+  readonly epoch?: number;
+  readonly remindedEpoch?: number;
+  readonly estimateMessage?: (message: ContextMessage) => number;
+  readonly onNearWindow?: (epoch: number) => void;
 }
 
 interface TodoListReminderTurnCounts {
@@ -30,14 +40,21 @@ export class TodoListReminderTracker {
     if (!input.active) return undefined;
 
     this.scan(input.history);
-    if (
-      this.counts.turnsSinceLastWrite < TODO_LIST_REMINDER_TURNS_SINCE_WRITE ||
-      this.counts.turnsSinceLastReminder < TODO_LIST_REMINDER_TURNS_BETWEEN_REMINDERS
-    ) {
-      return undefined;
-    }
-
-    return renderTodoListReminder(input.todos);
+    const todoStale = this.counts.turnsSinceLastWrite >= TODO_LIST_REMINDER_TURNS_SINCE_WRITE &&
+      this.counts.turnsSinceLastReminder >= TODO_LIST_REMINDER_TURNS_BETWEEN_REMINDERS;
+    if (!input.notesEnabled) return todoStale ? renderTodoListReminder(input.todos) : undefined;
+    const after = input.history.slice(coveredMessageIndex(input.history, input.notesMeta) + 1);
+    const assistantCount = after.filter((message) => message.role === 'assistant').length;
+    const newTokens = input.estimateMessage === undefined ? 0 : after.reduce((sum, message) => sum + input.estimateMessage!(message), 0);
+    const threshold = input.threshold ?? 0;
+    const near = threshold > 0 && (input.currentTokens ?? 0) >= threshold * 0.85 &&
+      input.epoch !== undefined && input.remindedEpoch !== input.epoch;
+    const stale = assistantCount >= 10 && newTokens >= Math.max(8_000, threshold * 0.1);
+    if (!near && (!stale || this.counts.turnsSinceLastReminder < 10) && !todoStale) return undefined;
+    if (near && input.epoch !== undefined) input.onNearWindow?.(input.epoch);
+    const prefix = near ? `The context window will be renewed soon (about ${Math.max(0, Math.round(threshold - (input.currentTokens ?? 0)))} tokens left). Bring TodoList notes up to date: decisions, rejected options, evidence, and the exact next step. Do not mention this reminder to the user.`
+      : stale && this.counts.turnsSinceLastReminder >= 10 ? `Working notes were last updated at ${input.notesMeta?.writtenStep ?? 'none'} and ~${newTokens} tokens of new work followed. Update TodoList notes when convenient. Do not mention this reminder to the user.` : '';
+    return [prefix, todoStale ? renderTodoListReminder(input.todos).replace('clear or rewrite it if stale', 'rewrite items if stale') : ''].filter(Boolean).join('\n\n');
   }
 
   private scan(history: readonly ContextMessage[]): void {

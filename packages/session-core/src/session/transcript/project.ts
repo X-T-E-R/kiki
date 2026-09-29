@@ -1,4 +1,5 @@
 import type {
+  ApprovalRequest,
   DeferredAppendTiming,
   GoalSnapshot,
   PermissionMode,
@@ -369,6 +370,7 @@ function originAgentFromInteraction(interaction: AgentTranscriptInteraction): st
   if (typeof request === 'object' && request !== null) {
     const record = request as Record<string, unknown>;
     if (typeof record['agentId'] === 'string') return record['agentId'];
+    if (typeof record['agent_id'] === 'string') return record['agent_id'];
     if (typeof record['originAgentId'] === 'string') return record['originAgentId'];
   }
   return undefined;
@@ -414,6 +416,10 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
         tool_name: recordString(request, 'toolName', 'tool_name') ?? 'tool',
         action: recordString(request, 'action') ?? 'Approve the action',
         tool_input_display: request['display'] ?? request['toolInputDisplay'] ?? request['tool_input_display'],
+        // Non-secret SSH card fields (login / host_key); absent on other approvals.
+        ...(typeof request['ssh'] === 'object' && request['ssh'] !== null
+          ? { ssh: request['ssh'] as NonNullable<ApprovalRequest['ssh']> }
+          : {}),
         created_at: createdAt,
         expires_at: expiresAt,
       },
@@ -488,6 +494,33 @@ const MARKER_SUMMARY_KEYS = {
   interruption: 'transcript.marker.interruption',
 } as const satisfies Record<string, I18nKey>;
 
+/** Project durable external-engine marker payloads into timeline notes. */
+function executorNoteOf(marker: string, payload: Record<string, unknown> | undefined): NoticeBlock['executor'] {
+  switch (marker) {
+    case 'executor.degradation': {
+      const value = payload?.['value'];
+      const updateType = typeof value === 'object' && value !== null ? (value as Record<string, unknown>)['updateType'] : undefined;
+      return { kind: 'unknown', ...(typeof updateType === 'string' ? { updateType } : {}) };
+    }
+    case 'executor.compaction':
+      return { kind: 'compaction' };
+    case 'executor.diff': {
+      const value = payload?.['value'];
+      return typeof value === 'string' ? { kind: 'diff', diff: value } : { kind: 'unknown' };
+    }
+    case 'executor.prompt.delivery': {
+      const method = payload?.['method'];
+      const status = payload?.['status'];
+      if ((method !== 'native_steer' && method !== 'next_turn_preamble' && method !== 'undelivered')
+        || (status !== 'delivered' && status !== 'queued' && status !== 'undelivered')) return undefined;
+      const origin = payload?.['origin'];
+      return { kind: 'hint', method, status, ...(typeof origin === 'string' ? { origin } : {}) };
+    }
+    default:
+      return undefined;
+  }
+}
+
 function markerToBlock(item: {
   markerId: string;
   marker: string;
@@ -516,6 +549,23 @@ function markerToBlock(item: {
       text: item.marker,
       i18n: { key: summaryKey },
     };
+  }
+
+  // External-engine runtime facts (payload = the durable wire record, like
+  // `executor.degradation`): a quiet line in the engine's turn, never a banner.
+  const executorNote = executorNoteOf(item.marker, payloadRecord);
+  if (executorNote !== undefined) return { ...base, text: item.marker, executor: executorNote };
+
+  // Compaction records carry the summary itself; the marker names only how
+  // the window was renewed. The wire calls the fresh strategy `relay`, and a
+  // record without `strategy` is a plain summarize run (older records, or the
+  // default strategy, which the engine does not stamp).
+  if (item.marker === 'compaction') {
+    const fallbackFrom = payloadRecord?.['fallbackFrom'];
+    const key = payloadRecord?.['strategy'] === 'relay'
+      ? fallbackFrom === 'summarize' ? 'transcript.marker.compactionRescue' : 'transcript.marker.compactionFresh'
+      : fallbackFrom === 'relay' ? 'transcript.marker.compactionFallback' : 'transcript.marker.compactionSummarize';
+    return { ...base, text: item.marker, i18n: { key } };
   }
 
   const text =
@@ -1733,6 +1783,7 @@ export function turnExecutionFromItem(item: object): TurnExecutionInfo | undefin
   if (typeof executorId !== 'string' || executorId === '') return undefined;
   if (typeof protocol !== 'string' || protocol === '') return undefined;
   const resumeMode = record['resumeMode'] ?? record['resume_mode'];
+  const profileDelivery = record['profileDelivery'] ?? record['profile_delivery'];
   const losses = Array.isArray(record['losses'])
     ? record['losses'].filter((code): code is string => typeof code === 'string')
     : [];
@@ -1740,6 +1791,7 @@ export function turnExecutionFromItem(item: object): TurnExecutionInfo | undefin
     executorId,
     protocol,
     resumeMode: typeof resumeMode === 'string' ? resumeMode : undefined,
+    ...(typeof profileDelivery === 'string' && profileDelivery !== '' ? { profileDelivery } : {}),
     fidelity: record['fidelity'] === 'degraded' ? 'degraded' : 'full',
     losses,
   };
@@ -1754,6 +1806,7 @@ function sameTurnExecution(
     left.executorId === right.executorId &&
     left.protocol === right.protocol &&
     left.resumeMode === right.resumeMode &&
+    left.profileDelivery === right.profileDelivery &&
     left.fidelity === right.fidelity &&
     left.losses.length === right.losses.length &&
     left.losses.every((code, index) => code === right.losses[index])

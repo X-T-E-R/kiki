@@ -43,6 +43,7 @@ export interface ContextCompactionShapeInput {
   readonly keptHeadUserMessageCount?: number;
   readonly droppedCount?: number;
   readonly legacyTail?: boolean;
+  readonly userBudget?: { readonly max: number; readonly head: number };
 }
 
 export interface ContextCompactionShape {
@@ -87,8 +88,8 @@ export function buildContextCompactionShape(
   const compactableUserMessages = collectCompactableUserMessages(compactedHistory);
   const selection = selectCompactionUserMessages(
     compactableUserMessages,
-    COMPACT_USER_MESSAGE_MAX_TOKENS,
-    COMPACT_USER_MESSAGE_HEAD_TOKENS,
+    input.userBudget?.max ?? COMPACT_USER_MESSAGE_MAX_TOKENS,
+    input.userBudget?.head ?? COMPACT_USER_MESSAGE_HEAD_TOKENS,
     estimate.message,
   );
   const elisionMessage = selection.elided

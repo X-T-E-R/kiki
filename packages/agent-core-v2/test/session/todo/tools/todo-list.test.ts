@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { TODO_LIST_TOOL_NAME, type TodoItem } from '#/session/todo/todoItem';
+import { mergeTodoNotes, type TodoNotes } from '#/session/todo/todoNotes';
 import { ITodoListTool, TodoListInputSchema } from '#/agent/tools/todo-list/todo-list';
 import { TodoListTool } from '#/agent/tools/todo-list/todoListTool';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -14,8 +15,10 @@ const signal = new AbortController().signal;
 function makeTool(initial: readonly TodoItem[] = []): {
   readonly tool: ITodoListTool;
   readonly getTodos: () => readonly TodoItem[];
+  readonly getNotes: () => TodoNotes | undefined;
 } {
   let todos = [...initial];
+  let notes: TodoNotes | undefined;
   const ix = new TestInstantiationService();
   ix.set(IAgentScopeContext, makeAgentScopeContext({ agentId: 'child', agentScope: 'child' }));
   ix.set(ISessionTodoService, {
@@ -28,12 +31,14 @@ function makeTool(initial: readonly TodoItem[] = []): {
       expect(agentId).toBe('child');
       todos = next.map((todo) => ({ title: todo.title, status: todo.status }));
     },
+    getNotes: () => ({ notes }),
+    setNotes: (patch) => { notes = mergeTodoNotes(notes, patch); },
     clear: () => { todos = []; },
     onDidChange: () => ({ dispose: () => {} }),
     onDidChangeAgent: () => ({ dispose: () => {} }),
   });
   ix.set(ITodoListTool, new SyncDescriptor(TodoListTool));
-  return { tool: ix.get(ITodoListTool), getTodos: () => todos };
+  return { tool: ix.get(ITodoListTool), getTodos: () => todos, getNotes: () => notes };
 }
 
 describe('TodoListTool', () => {
@@ -134,6 +139,31 @@ describe('TodoListTool', () => {
 
     expect(result).toMatchObject({ isError: false, output: 'Todo list cleared.' });
     expect(getTodos()).toEqual([]);
+  });
+
+  it('merges, reads and clears notes independently from todos', async () => {
+    const { tool, getNotes, getTodos } = makeTool([{ title: 'keep', status: 'pending' }]);
+    const invoke = (args: object) => executeTool(tool, { turnId: 2, step: 4, toolCallId: 'notes', args, signal });
+    expect(TodoListInputSchema.safeParse({ notes: { next: 'continue' } }).success).toBe(true);
+    await invoke({ notes: { goal: 'initial', next: 'continue' } });
+    await invoke({ notes: { next: '', evidence: 'proof' } });
+    expect(getNotes()).toEqual({ goal: 'initial', evidence: 'proof' });
+    const read = await invoke({});
+    expect(read.output).toContain('goal: initial');
+    await invoke({ todos: [] });
+    expect(getTodos()).toEqual([]);
+    expect(getNotes()).toEqual({ goal: 'initial', evidence: 'proof' });
+    await invoke({ notes: null });
+    expect(getNotes()).toBeUndefined();
+  });
+
+  it('rejects note limits without updating either notes or todos', async () => {
+    const { tool, getNotes, getTodos } = makeTool([{ title: 'keep', status: 'pending' }]);
+    const result = await executeTool(tool, { turnId: 2, toolCallId: 'notes',
+      args: { notes: { goal: 'x'.repeat(1_501) }, todos: [] }, signal });
+    expect(result.isError).toBe(true);
+    expect(getNotes()).toBeUndefined();
+    expect(getTodos()).toEqual([{ title: 'keep', status: 'pending' }]);
   });
 
   it('resolveExecution description reflects the mode', async () => {

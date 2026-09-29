@@ -28,6 +28,7 @@ export {
   type ToolBlock,
   type ToolStatus,
   type TurnExecutionInfo,
+  type ExecutorNote,
   type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,

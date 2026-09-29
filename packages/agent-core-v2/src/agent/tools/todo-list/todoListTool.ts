@@ -9,6 +9,7 @@ import {
   renderTodoList,
   type TodoItem,
 } from '#/session/todo/todoItem';
+import { mergeTodoNotes, renderTodoNotes } from '#/session/todo/todoNotes';
 
 import {
   ITodoListTool,
@@ -29,30 +30,33 @@ export class TodoListTool implements ITodoListTool {
   ) {}
 
   resolveExecution(args: TodoListInput): ToolExecution {
-    const description =
-      args.todos === undefined
-        ? 'Reading todo list'
-        : args.todos.length === 0
-          ? 'Clearing todo list'
-          : 'Updating todo list';
+    const description = args.todos === undefined
+      ? args.notes === undefined ? 'Reading todo list' : 'Updating working notes'
+      : args.todos.length === 0 ? 'Clearing todo list' : 'Updating todo list';
     return {
       description,
       approvalRule: this.name,
-      execute: async () => {
-        if (args.todos === undefined) {
-          return { isError: false, output: renderTodoList(this.todo.getTodos(this.scope.agentId)) };
+      execute: async (ctx) => {
+        if (args.todos === undefined && args.notes === undefined) {
+          const notes = renderTodoNotes(this.todo.getNotes(this.scope.agentId).notes);
+          return { isError: false, output: `${renderTodoList(this.todo.getTodos(this.scope.agentId))}${notes ? `\n\n## Working notes\n${notes}` : ''}` };
         }
-
-        const next: readonly TodoItem[] = args.todos.map((todo) => ({
-          title: todo.title,
-          status: todo.status,
-        }));
+        if (args.notes !== undefined) {
+          if (ctx.step === undefined) return { isError: true, output: 'Working notes require a turn step.' };
+          try {
+            mergeTodoNotes(this.todo.getNotes(this.scope.agentId).notes, args.notes);
+          } catch (error) {
+            return { isError: true, output: error instanceof Error ? error.message : 'Invalid working notes.' };
+          }
+          this.todo.setNotes(args.notes, { turnId: ctx.turnId, step: ctx.step, toolCallId: ctx.toolCallId }, this.scope.agentId);
+        }
+        if (args.todos === undefined) {
+          return { isError: false, output: `Working notes updated.\n${renderTodoNotes(this.todo.getNotes(this.scope.agentId).notes) || '(empty)'}` };
+        }
+        const next: readonly TodoItem[] = args.todos.map((todo) => ({ title: todo.title, status: todo.status }));
         this.todo.setTodos(next, this.scope.agentId);
         const stored = this.todo.getTodos(this.scope.agentId);
-        const output =
-          stored.length === 0
-            ? 'Todo list cleared.'
-            : `Todo list updated.\n${renderTodoList(stored)}`;
+        const output = stored.length === 0 ? 'Todo list cleared.' : `Todo list updated.\n${renderTodoList(stored)}`;
         return { isError: false, output };
       },
     };

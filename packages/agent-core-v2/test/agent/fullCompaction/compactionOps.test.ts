@@ -5,6 +5,9 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
+import { contextStrategyOverrideKey, ContextStrategyOverrideChanged } from '#/agent/fullCompaction/contextStrategyOps';
+import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
+import { ContextApplyCompaction } from '#/agent/contextMemory/contextEvents';
 import {
   fullCompactionKey,
   FullCompactionBegin,
@@ -52,6 +55,8 @@ function buildHost(key: string): {
   });
   const dispatcher = registerTestEventDispatcher(ix);
   ix.get(IAgentStateService).contributeState(fullCompactionKey);
+  ix.get(IAgentStateService).contributeState(contextStrategyOverrideKey);
+  ix.get(IAgentStateService).contributeState(contextWindowEpochKey);
   return {
     dispatcher,
     agentState: ix.get(IAgentStateService),
@@ -80,6 +85,21 @@ async function readRecords(key = KEY): Promise<WireRecord[]> {
 }
 
 describe('fullCompaction ops (wire-backed)', () => {
+  it('persists the main-agent strategy override and monotone window epoch', async () => {
+    void dispatcher.dispatch(new ContextStrategyOverrideChanged({ strategy: 'fresh' }));
+    void dispatcher.dispatch(new ContextApplyCompaction({ summary: 'relay', compactedCount: 1, keptUserMessageCount: 0,
+      strategy: 'relay', shapeVersion: 1, reasonCodes: [] }));
+    expect(agentState.get(contextStrategyOverrideKey)).toBe('fresh');
+    expect(agentState.get(contextWindowEpochKey)).toBe(1);
+    const records = await readRecords();
+    const restored = buildHost(`${KEY}-strategy-restored`);
+    await restoreTestEventDispatcher(restored.dispatcher, restored.log, testWireScope(SCOPE, `${KEY}-strategy-restored`), records);
+    expect(restored.agentState.get(contextStrategyOverrideKey)).toBe('fresh');
+    expect(restored.agentState.get(contextWindowEpochKey)).toBe(1);
+    void dispatcher.dispatch(new ContextStrategyOverrideChanged({ strategy: null }));
+    expect(agentState.get(contextStrategyOverrideKey)).toBeNull();
+  });
+
   it('begin/complete/cancel drive the phase and persist flat records', async () => {
     expect(agentState.get(fullCompactionKey).phase).toBe('idle');
 

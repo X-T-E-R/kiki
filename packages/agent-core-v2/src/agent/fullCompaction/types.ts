@@ -7,11 +7,16 @@ export interface CompactionResult {
   keptUserMessageCount?: number;
   keptHeadUserMessageCount?: number;
   droppedCount?: number;
+  strategy?: 'summarize' | 'relay';
+  shapeVersion?: number;
+  reasonCodes?: string[];
+  fallbackFrom?: 'relay' | 'summarize';
 }
 
 export type CompactionSource = 'manual' | 'auto';
 
 export interface CompactionBeginData {
   instruction?: string;
+  strategy?: 'summarize' | 'relay';
   source: CompactionSource;
 }

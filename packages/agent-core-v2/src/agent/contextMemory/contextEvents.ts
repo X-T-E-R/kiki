@@ -69,6 +69,11 @@ const contextCompactionBaseShape = {
   keptHeadUserMessageCount: z.number().optional(),
   droppedCount: z.number().optional(),
   legacyTail: z.boolean().optional(),
+  strategy: z.enum(['summarize', 'relay']).optional(),
+  shapeVersion: z.number().int().positive().optional(),
+  reasonCodes: z.array(z.string()).optional(),
+  fallbackFrom: z.enum(['relay', 'summarize']).optional(),
+  userBudget: z.object({ max: z.number().int().nonnegative(), head: z.number().int().nonnegative() }).optional(),
 };
 
 const contextApplyCompactionSchema = z.union([

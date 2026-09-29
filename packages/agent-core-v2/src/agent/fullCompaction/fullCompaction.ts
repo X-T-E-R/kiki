@@ -9,6 +9,7 @@ import type { Hooks } from '#/hooks';
 export interface FullCompactionInput {
   readonly source: CompactionSource;
   readonly instruction?: string;
+  readonly strategy?: 'summarize' | 'relay';
 }
 
 export interface FullCompactionTask {
@@ -29,6 +30,8 @@ export interface IAgentFullCompactionService {
   getAutoCompact(): import('./autoCompact').ResolvedAutoCompact;
   getDefaultAutoCompact(): import('./autoCompact').ResolvedAutoCompact;
   setAutoCompactOverride(tokens: number | null): void;
+  getContextStrategy(): { strategy: 'summarize' | 'auto' | 'fresh'; source: 'session' | 'profile' | 'global' | 'default' | 'subagent' | 'executor'; shadow: boolean };
+  setContextStrategyOverride(strategy: 'summarize' | 'auto' | 'fresh' | null): void;
 
   readonly hooks: Hooks<{
     onWillCompact: FullCompactionTask;

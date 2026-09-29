@@ -4,27 +4,48 @@
  * is an explicit action inside that card rather than the ring's click side
  * effect.
  *
- * The ring colors by threshold (mirrors liveagent's contextUsage levels):
+ * When the server reports an automatic-compaction point, the ring colours
+ * against that point (amber from 80% of it, red once it is reached) while the
+ * percent keeps reading "share of the usable window". Without one (older
+ * engines, external executors) it falls back to fixed window ratios:
  *   - < 50%  accent (normal)
  *   - ≥ 50%  amber (warn, and the minimum at which manual compaction is advised)
  *   - ≥ 80%  red (danger / over the keep-under threshold)
  *
  * The detail card keeps the two §9.5 semantics apart: a "Context window"
- * section (used / available / limit, right now) and a "This session —
+ * section (the compaction track, or used / available / limit) and a "This session —
  * cumulative" section (lifetime input / output / cache-read / cache-write
  * tokens + cost), plus a prefiltered deep link to the session on /usage.
  */
 
-import { createContext, useContext, useId, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 
 import { Link } from 'react-router-dom';
 
 import type { SessionUsage } from '@kiki/protocol';
 
+import { sessionActionErrorText } from '@kiki/session-core/commands';
 import { formatCostUsd } from '@kiki/session-core/util';
 import type { ContextBreakdown } from '@kiki/session-core/wire';
 import { useI18n } from '../i18n';
+import { compactUsageLevel } from '../lib/autoCompact';
+import { pushToast } from '../lib/toasts';
 import { usageSessionDeepLink } from '../lib/usageV2';
+import { ContextCompactSection, type ContextCompactSectionProps } from './ContextCompactSection';
+import { ContextStrategySection, STRATEGY_LABEL_KEY } from './ContextStrategySection';
+import { Icon } from './icons';
+import type { ContextStrategyHandle, ManualCompactStrategy } from './useContextStrategy';
+
+/**
+ * Compaction wiring for the detail card, when the server reports a point.
+ * `used` and the configured window come from the meter's own props.
+ */
+export type ContextMeterAutoCompact = Omit<ContextCompactSectionProps, 'used' | 'windowTokens' | 'residentTokens'> & {
+  /** The detail card opened: a chance to re-read the point from the server. */
+  readonly onOpen?: () => void;
+  /** Context-renewal strategy for this agent, when the engine reports one. */
+  readonly strategy?: ContextStrategyHandle;
+};
 
 /** Usage fraction at which the meter warns (yellow) and compaction becomes available. */
 export const CONTEXT_WARN_RATIO = 0.5;
@@ -106,6 +127,7 @@ export function ContextMeter({
   sessionId,
   onCompact,
   placement = 'above',
+  autoCompact,
 }: {
   used: number;
   limit: number;
@@ -122,17 +144,36 @@ export function ContextMeter({
   /** Requests a compaction (the session view's /compact action). */
   onCompact?: () => void;
   placement?: 'above' | 'below';
+  /**
+   * The server-reported automatic-compaction point. When present the ring
+   * colours against that point (amber from 80% of it, red at it) and the
+   * card shows the adjustable track; absent, the card keeps the plain
+   * used / limit / available rows (older engines, external executors).
+   */
+  autoCompact?: ContextMeterAutoCompact;
 }) {
-  const { t, time } = useI18n();
+  const { t, time, locale } = useI18n();
   const breakdown = useContext(ContextBreakdownContext);
   const detailsId = useId();
   const [open, setOpen] = useState(false);
-  const percent = contextUsagePercent(used, limit);
-  const level = contextUsageLevel(used, limit);
+  // The percent answers "how full is the usable window"; colour answers
+  // "is compaction close", so it keys on the point once one is known.
+  const usable = autoCompact?.status.effectiveMaxContextTokens ?? limit;
+  const percent = contextUsagePercent(used, usable);
+  const level = autoCompact !== undefined
+    ? compactUsageLevel(used, autoCompact.status.tokens)
+    : contextUsageLevel(used, limit);
   const warn = level !== 'ok';
   const remaining = Math.max(0, limit - used);
   const label = t('context.meter', { percent });
-  const title = t(
+  const title = autoCompact !== undefined ? t(
+    level === 'danger' ? 'context.meterCompactDueTitle' : 'context.meterCompactTitle',
+    {
+      used: time.formatTokens(used),
+      limit: time.formatTokens(usable),
+      point: time.formatTokens(autoCompact.status.tokens),
+    },
+  ) : t(
     level === 'danger'
       ? 'context.meterDangerTitle'
       : warn
@@ -155,7 +196,10 @@ export function ContextMeter({
         type="button"
         data-context-meter
         data-context-level={level}
-        onClick={() => { setOpen((value) => !value); }}
+        onClick={() => {
+          if (!open) autoCompact?.onOpen?.();
+          setOpen((value) => !value);
+        }}
         title={title}
         aria-label={title}
         aria-expanded={open}
@@ -216,6 +260,14 @@ export function ContextMeter({
           </div>
           {/* §9.5 split: the ring answers "how much context is left right now";
               the cumulative block below answers "what has this session spent". */}
+          {autoCompact !== undefined ? (
+            <ContextCompactSection
+              {...autoCompact}
+              used={used}
+              windowTokens={limit}
+              residentTokens={breakdown === undefined ? undefined : breakdown.systemTokens + breakdown.toolsTokens}
+            />
+          ) : (<>
           <div className="mt-2 flex items-baseline justify-between gap-3">
             <p className="text-[12px] font-medium text-ink-soft">{t('context.windowTitle')}</p>
             <span className="text-[12px] text-ink-faint">{t('context.windowHint')}</span>
@@ -245,7 +297,7 @@ export function ContextMeter({
                   className="transition-[stroke-dashoffset,stroke] duration-300"
                 />
               </svg>
-              <span className="absolute font-mono text-[9px] leading-none font-semibold tabular-nums">
+              <span className="absolute font-mono text-[11px] leading-none font-medium tabular-nums">
                 {percent}
               </span>
             </span>
@@ -264,6 +316,10 @@ export function ContextMeter({
               </div>
             </dl>
           </div>
+          </>)}
+          {autoCompact?.strategy !== undefined ? (
+            <ContextStrategySection handle={autoCompact.strategy} profileName={autoCompact.profile?.name} />
+          ) : null}
 
           {usage !== undefined ? (
             <dl
@@ -326,18 +382,112 @@ export function ContextMeter({
           ) : null}
 
           {onCompact !== undefined ? (
-            <button
-              type="button"
-              data-context-compact
-              onClick={() => {
+            <CompactActions
+              strategy={autoCompact?.strategy}
+              onCompact={() => {
                 setOpen(false);
                 onCompact();
               }}
-              className="mt-3 w-full rounded-md bg-amber-card px-2.5 py-1.5 text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none"
-            >
-              {t('context.compactAction')}
-            </button>
+              onCompactWith={(strategy) => {
+                setOpen(false);
+                void autoCompact?.strategy?.compact(strategy)
+                  .then(() => { pushToast({ tone: 'success', text: t(`context.strategy.compactRequested.${strategy}`) }); })
+                  .catch((error: unknown) => {
+                    pushToast({ tone: 'error', text: t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }) });
+                  });
+              }}
+            />
           ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+const COMPACT_OPTIONS: readonly ManualCompactStrategy[] = ['summarize', 'fresh'];
+
+/**
+ * The card's compaction action. Without a strategy handle it is the plain
+ * button; with one, a split button: the main part compacts with the
+ * session's own strategy, the chevron offers a one-off choice.
+ */
+function CompactActions({
+  strategy,
+  onCompact,
+  onCompactWith,
+}: {
+  strategy: ContextStrategyHandle | undefined;
+  onCompact: () => void;
+  onCompactWith: (strategy: ManualCompactStrategy) => void;
+}) {
+  const { t } = useI18n();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    const onPointer = (event: PointerEvent) => {
+      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointer);
+    return () => { document.removeEventListener('pointerdown', onPointer); };
+  }, [menuOpen]);
+  const tone = 'bg-amber-card text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none';
+  if (strategy === undefined || !strategy.writable || strategy.status?.source === 'executor') {
+    return (
+      <button type="button" data-context-compact onClick={onCompact} className={`mt-3 w-full rounded-md px-2.5 py-1.5 ${tone}`}>
+        {t('context.compactAction')}
+      </button>
+    );
+  }
+  const move = (delta: number) => {
+    const rows = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])];
+    const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+    rows[(index + delta + rows.length) % rows.length]?.focus();
+  };
+  return (
+    <div ref={rootRef} className="relative mt-3 flex gap-px">
+      <button type="button" data-context-compact onClick={onCompact} className={`min-w-0 flex-1 rounded-l-md px-2.5 py-1.5 ${tone}`}>
+        {t('context.compactAction')}
+      </button>
+      <button
+        type="button"
+        data-context-compact-with
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={t('context.strategy.compactOptionsLabel')}
+        onClick={() => { setMenuOpen((value) => !value); }}
+        className={`flex w-8 shrink-0 items-center justify-center rounded-r-md pointer-coarse:w-11 ${tone}`}
+      >
+        <Icon name="chevron" size={12} className={`transition-transform ${menuOpen ? '-rotate-90' : 'rotate-90'}`} />
+      </button>
+      {menuOpen ? (
+        <div
+          ref={menuRef}
+          role="menu"
+          data-context-compact-menu
+          aria-label={t('context.strategy.compactWith')}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') { event.stopPropagation(); setMenuOpen(false); }
+            if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
+            if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
+          }}
+          className="anim-enter absolute right-0 bottom-full z-40 mb-1 w-64 max-w-[calc(100vw-48px)] rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
+        >
+          <p className="px-2.5 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.strategy.compactWith')}</p>
+          {COMPACT_OPTIONS.map((option) => (
+            <button
+              key={option}
+              type="button"
+              role="menuitem"
+              data-context-compact-option={option}
+              onClick={() => { setMenuOpen(false); onCompactWith(option); }}
+              className="flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-accent/40 pointer-coarse:py-2.5"
+            >
+              <span>{t(STRATEGY_LABEL_KEY[option])}</span>
+              <span className="text-[12px] leading-4 text-ink-faint">{t(`context.strategy.hint.${option}`)}</span>
+            </button>
+          ))}
         </div>
       ) : null}
     </div>

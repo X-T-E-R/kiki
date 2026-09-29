@@ -203,6 +203,9 @@ export interface CompactionFinishedEvent {
   input_cache_read?: number;
   input_cache_creation?: number;
   trace_id?: string;
+  strategy?: 'summarize' | 'relay';
+  reason_codes?: string[];
+  fallback_from?: 'relay' | 'summarize';
 }
 
 export interface CompactionFailedEvent {
@@ -215,6 +218,9 @@ export interface CompactionFailedEvent {
   thinking_effort: string;
   error_type: string;
   trace_id?: string;
+  strategy?: 'summarize' | 'relay';
+  reason_codes?: string[];
+  fallback_from?: 'relay' | 'summarize';
 }
 
 export interface ContextProjectionRepairedEvent {
@@ -672,6 +678,9 @@ export const telemetryEventDefinitions = {
       input_cache_creation: 'Cache-creation input tokens',
       trace_id:
         'Trace id of the final compaction request round; absent for non-Kimi protocols',
+      strategy: 'Effective compaction strategy',
+      reason_codes: 'Eligibility reasons recorded at the boundary',
+      fallback_from: 'Strategy that failed before this strategy completed',
     },
   }),
   compaction_failed: defineAgentTelemetryEvent<CompactionFailedEvent>({
@@ -688,6 +697,9 @@ export const telemetryEventDefinitions = {
       error_type: 'Error class name',
       trace_id:
         'Trace id of the failed compaction request, from its response headers or its error response; absent when the failure happened before any request or before response headers arrived (network errors), and for non-Kimi protocols',
+      strategy: 'Attempted compaction strategy',
+      reason_codes: 'Eligibility reasons recorded at failure',
+      fallback_from: 'Strategy attempted before fallback',
     },
   }),
   context_projection_repaired: defineAgentTelemetryEvent<ContextProjectionRepairedEvent>({

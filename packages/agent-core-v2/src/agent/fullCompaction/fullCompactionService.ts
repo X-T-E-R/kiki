@@ -5,7 +5,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { defineState } from '#/state/state';
 import { renderPrompt } from "#/_base/utils/render-prompt";
-import { buildCompactionSummaryText, isRealUserInput } from '#/agent/contextMemory/compactionHandoff';
+import { buildCompactionSummaryText, buildContextCompactionShape, isRealUserInput } from '#/agent/contextMemory/compactionHandoff';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
@@ -14,16 +14,26 @@ import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
 import { retryBackoffDelay, sleepForRetry } from '#/_base/utils/retry';
 import { IAgentLoopService, type LoopErrorContext } from '#/agent/loop/loop';
 import { TurnStarted } from '#/agent/loop/turnEvents';
-import { TurnEnded } from '#/agent/loop/turnOps';
+import { TurnEnded, turnKey } from '#/agent/loop/turnOps';
 import { isAbortError } from '#/_base/utils/abort';
 import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { stripDynamicToolContext } from '#/agent/toolSelect/dynamicTools';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
+import { renderTodoNotes } from '#/session/todo/todoNotes';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IConfigService } from '#/app/config/config';
+import { type LoopControl } from '#/agent/loop/configSection';
+import { contextWindowEpochKey } from './windowEpoch';
+import { ContextStrategyOverrideChanged, contextStrategyOverrideKey } from './contextStrategyOps';
+import { evaluateFreshEligibility, type ReasonCode } from './freshEligibility';
+import { renderPendingReceipts, renderRelay, type RelayInput } from './relayPackage';
 import {
   APIContextOverflowError,
   APIEmptyResponseError,
@@ -143,6 +153,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
+    @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @ISessionTodoService private readonly todo: ISessionTodoService,
     @IAgentScopeContext private readonly scope: IAgentScopeContext,
     @ITelemetryService private readonly telemetry: ITelemetryService,
@@ -151,8 +162,13 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     @ILogService private readonly log: ILogService,
     @IAgentLoopService private readonly loopService: IAgentLoopService,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IConfigService private readonly appConfig: IConfigService,
+    @ISessionContext private readonly session: ISessionContext,
+    @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
   ) {
     super();
+    this.states.contributeState(contextStrategyOverrideKey);
+    this.states.contributeState(contextWindowEpochKey);
     this.states.contributeState(fullCompactionKey);
     this.states.contributeState(autoCompactOverrideKey);
     this.states.contributeState(fullCompactionCompactionCountInTurnKey);
@@ -301,6 +317,28 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     this.publishAutoCompactStatus();
   }
 
+  getContextStrategy(): { strategy: 'summarize' | 'auto' | 'fresh'; source: 'session' | 'profile' | 'global' | 'default' | 'subagent' | 'executor'; shadow: boolean } {
+    if (this.profile.data().executorId !== undefined && this.profile.data().executorId !== 'native') return { strategy: 'summarize', source: 'executor', shadow: false };
+    const config = this.appConfig.get<LoopControl>('loopControl');
+    const shadow = config?.relayShadow === true;
+    const profileStrategy = this.profile.resolveContextStrategy?.();
+    if (this.scope.agentId !== 'main') {
+      if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
+      return { strategy: config?.subagentContextStrategy ?? 'summarize', source: 'subagent', shadow };
+    }
+    const override = this.states.get(contextStrategyOverrideKey);
+    if (override !== null) return { strategy: override, source: 'session', shadow };
+    if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
+    if (config?.contextStrategy !== undefined) return { strategy: config.contextStrategy, source: 'global', shadow };
+    return { strategy: 'summarize', source: 'default', shadow };
+  }
+
+  setContextStrategyOverride(strategy: 'summarize' | 'auto' | 'fresh' | null): void {
+    if (this.scope.agentId !== 'main') throw new Error2(ErrorCodes.REQUEST_INVALID, 'Session strategy override belongs to the main agent.');
+    void this.dispatcher.dispatch(new ContextStrategyOverrideChanged({ strategy }));
+    this.publishAutoCompactStatus();
+  }
+
   private publishAutoCompactStatus(): void {
     if (!this.profile.hasModel() || !this.profile.isRunnable()) return;
     try {
@@ -310,6 +348,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         autoCompactSource: resolved.source,
         effectiveMaxContextTokens: resolved.effectiveMaxContextTokens,
         reservedContextTokens: resolved.reservedContextTokens,
+        contextStrategy: this.getContextStrategy().strategy,
+        contextStrategySource: this.getContextStrategy().source,
       }));
     } catch (error) {
       this.log.warn('failed to publish auto compaction status', { error });
@@ -370,7 +410,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   begin(input: FullCompactionInput): boolean {
     if (this._compacting) return false;
-    const data: CompactionBeginData = { source: input.source, instruction: input.instruction };
+    const data: CompactionBeginData = { source: input.source, instruction: input.instruction, strategy: input.strategy };
     if (!this.reserveCompactionSlot(data.source)) return false;
 
     const tokenCount = this.validateCompactionStart(data.source);
@@ -682,6 +722,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     let retryCount = 0;
     let requestAttempts = 0;
     let thinkingEffort = this.profile.data().thinkingLevel;
+    let attemptedStrategy: 'summarize' | 'relay' = 'summarize';
+    let failureReasons: string[] = [];
 
     try {
       const signal = active.abortController.signal;
@@ -704,6 +746,69 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
       }
 
+      const choice = data.strategy === undefined ? this.getContextStrategy() : {
+        strategy: data.strategy === 'relay' ? 'fresh' as const : 'summarize' as const,
+        source: 'session' as const, shadow: false,
+      };
+      const epoch = this.states.get(contextWindowEpochKey);
+      const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
+      const memoryEntries = choice.strategy !== 'summarize' ? await this.memorySnapshot.getSessionEntries() : [];
+      const turns = this.states.get(turnKey);
+      const relayInput: RelayInput = {
+        history: originalHistory, compactCount, agentId: this.scope.agentId,
+        sessionId: this.session.sessionId, epoch,
+        turnId: active.originTurnId ?? turns?.lastEnded?.turnId ?? Math.max(0, (turns?.nextTurnId ?? 1) - 1),
+        notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
+        estimateText: (text) => this.tokenCounting.estimateText(text), memoryEntries,
+      };
+      let relaySummary: string | undefined;
+      let renderFailed = false;
+      if (choice.strategy !== 'summarize' || choice.shadow) {
+        try {
+          relaySummary = renderRelay(relayInput);
+        } catch (error) {
+          this.log.warn('relay render failed; summarizing', { error });
+          renderFailed = true;
+        }
+      }
+      const projected = relaySummary === undefined ? 0 : buildContextCompactionShape(originalHistory, {
+        summary: relaySummary, compactedCount: compactCount, tokensBefore,
+        requestOverheadTokens: this.requestTokens([]),
+      }).tokensAfter;
+      const eligibility = choice.strategy === 'summarize' && !choice.shadow
+        ? { eligible: false, safe: false, reasons: [] as ReasonCode[] }
+        : renderFailed ? { eligible: false, safe: false, reasons: ['relay_render_failed'] as ReasonCode[] }
+          : evaluateFreshEligibility({
+            history: originalHistory, compactCount, notes: notes.notes, meta: notes.meta,
+            windowEpoch: epoch, strategy: choice.strategy, threshold: this.getAutoCompact().tokens,
+            projectedTokens: projected, instruction: customInstruction,
+            historyAvailable: this.toolPolicy.isToolActive('HistoryRead', 'builtin') &&
+              this.toolPolicy.isToolActive('HistorySearch', 'builtin') &&
+              this.toolSelect.shapeTools(this.toolRegistry.list()).some((tool) => tool.name === 'HistoryRead') &&
+              this.toolSelect.shapeTools(this.toolRegistry.list()).some((tool) => tool.name === 'HistorySearch'),
+            estimateMessage: (message) => this.tokenCounting.estimateMessage(message),
+          });
+      const reasons: ReasonCode[] = [...eligibility.reasons];
+      failureReasons = reasons;
+      const fallbackFrom = choice.strategy !== 'summarize' && !eligibility.eligible ? 'relay' as const : undefined;
+      const useRelay = choice.strategy !== 'summarize' && eligibility.eligible && relaySummary !== undefined;
+      if (useRelay && relaySummary !== undefined) {
+        attemptedStrategy = 'relay';
+        if (!historySafeToCompact(this.context.get(), originalHistory)) throw compactionCancelledReason(active);
+        const result = this.context.applyCompaction({
+          summary: relaySummary, contextSummary: relaySummary, compactedCount: compactCount, tokensBefore,
+          requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
+          reasonCodes: reasons,
+        });
+        this.telemetry.track2('compaction_finished', {
+          source: data.source, turn_id: active.originTurnId, tokens_before: result.tokensBefore,
+          tokens_after: result.tokensAfter, duration_ms: Date.now() - startedAt,
+          compacted_count: result.compactedCount, retry_count: 0, round: 1,
+          thinking_effort: thinkingEffort, strategy: 'relay', reason_codes: reasons,
+        });
+        return result;
+      }
+
       const maxAttempts = resolvedModel.compactionMaxAttempts ?? MAX_COMPACTION_RETRY_ATTEMPTS;
       let attempt: CompactionAttemptResult | undefined;
       let droppedCount = 0;
@@ -720,6 +825,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         return selected;
       };
       let historyForModel = selectHistoryForModel();
+      try {
       while (true) {
         const messagesToCompact = historyForModel;
         const messages: Message[] = [...messagesToCompact, createUserMessage(instruction)];
@@ -790,6 +896,21 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
           retryCount += 1;
         }
       }
+      } catch (error) {
+        if (choice.strategy === 'summarize' || !eligibility.safe || customInstruction ||
+            !(this.shouldRecoverFromContextOverflow(error) || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError)) throw error;
+        if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;
+        const rescueReasons = [...reasons, 'summarize_failed_relay_rescue'];
+        const summary = renderRelay(relayInput);
+        const result = this.context.applyCompaction({ summary, contextSummary: summary, compactedCount: relayInput.compactCount,
+          tokensBefore, requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
+          reasonCodes: rescueReasons, fallbackFrom: 'summarize' });
+        this.telemetry.track2('compaction_finished', { source: data.source, turn_id: active.originTurnId,
+          tokens_before: result.tokensBefore, tokens_after: result.tokensAfter, duration_ms: Date.now() - startedAt,
+          compacted_count: result.compactedCount, retry_count: retryCount, round: 1,
+          thinking_effort: thinkingEffort, strategy: 'relay', reason_codes: rescueReasons, fallback_from: 'summarize' });
+        return result;
+      }
 
       if (attempt === undefined) {
         throw new APIEmptyResponseError(
@@ -805,7 +926,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         throw compactionCancelledReason(active);
       }
 
-      const summary = this.postProcessSummary(attempt.summary);
+      const summary = this.postProcessSummary(attempt.summary, { ...relayInput, compactCount });
       const result = this.context.applyCompaction({
         summary,
         contextSummary: buildCompactionSummaryText(summary),
@@ -814,6 +935,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         summaryOutputTokens: attempt.usage?.output,
         requestOverheadTokens: this.requestTokens([]),
         droppedCount: droppedCount === 0 ? undefined : droppedCount,
+        ...(choice.shadow || choice.strategy !== 'summarize' ? { strategy: 'summarize' as const, shapeVersion: 1, reasonCodes: reasons, fallbackFrom } : {}),
       });
 
       const properties: CompactionFinishedEvent = {
@@ -828,6 +950,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         round: 1,
         thinking_effort: thinkingEffort,
         trace_id: attempt.traceId,
+        ...(choice.shadow || choice.strategy !== 'summarize' ? { strategy: 'summarize' as const, reason_codes: reasons, fallback_from: fallbackFrom } : {}),
         ...usageTelemetry(attempt.usage),
       };
       this.telemetry.track2('compaction_finished', properties);
@@ -844,6 +967,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         thinking_effort: thinkingEffort,
         error_type: error instanceof Error ? error.name : 'Unknown',
         trace_id: findAPIStatusError(error)?.traceId ?? active.traceId,
+        strategy: attemptedStrategy,
+        reason_codes: failureReasons,
       };
       this.telemetry.track2('compaction_failed', properties);
       const code = isError2(error) &&
@@ -858,12 +983,13 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     }
   }
 
-  private postProcessSummary(summary: string): string {
+  private postProcessSummary(summary: string, input: RelayInput): string {
     const todos = this.currentTodos();
-    if (todos.length === 0) {
-      return summary;
-    }
-    return `${summary.trim()}\n\n${renderTodoList(todos, '## TODO List')}`;
+    const notes = renderTodoNotes(this.todo.getNotes?.(this.scope.agentId)?.notes);
+    const receipts = renderPendingReceipts(input);
+    if (todos.length === 0 && !notes && !receipts) return summary;
+    return [summary.trim(), todos.length ? renderTodoList(todos, '## TODO List') : '',
+      notes ? `## Working notes\n${notes}` : '', receipts].filter(Boolean).join('\n\n');
   }
 
   private currentTodos(): readonly TodoItem[] {

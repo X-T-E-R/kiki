@@ -508,8 +508,14 @@ export class TranscriptWireAdapter {
         },
       ];
     }
-    if (record.type === 'executor.runtime.update' && record['kind'] === 'unknown') {
-      return [this.marker(record, ordinal, 'executor.degradation')];
+    if (record.type === 'executor.prompt.delivery') {
+      return [this.marker(record, ordinal, 'executor.prompt.delivery')];
+    }
+    if (record.type === 'executor.runtime.update') {
+      const marker = record['kind'] === 'diff' ? 'executor.diff'
+        : record['kind'] === 'compaction' ? 'executor.compaction'
+        : record['kind'] === 'unknown' ? 'executor.degradation' : undefined;
+      return marker === undefined ? [] : [this.marker(record, ordinal, marker)];
     }
     if (record.type === 'tools.update_store' && record['key'] === 'todo') {
       return [
@@ -2326,7 +2332,7 @@ function executionOf(record: TranscriptWireRecord): TranscriptTurnExecution | un
     executorId === undefined ||
     protocol === undefined ||
     !['live', 'resume', 'load', 'new', 'handoff'].includes(resumeMode ?? '') ||
-    !['native', 'first_prompt_preamble', 'system_prompt_override'].includes(profileDelivery ?? '') ||
+    !['native', 'first_prompt_preamble', 'system_prompt_override', 'developer_instructions', 'base_instructions'].includes(profileDelivery ?? '') ||
     (fidelity !== 'full' && fidelity !== 'degraded')
   ) {
     return undefined;

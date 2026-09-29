@@ -11,6 +11,7 @@ import type { MemoryScope } from './memoryScopes';
 export interface IAgentMemorySnapshot {
   readonly _serviceBrand: undefined;
   get(): Promise<string>;
+  getSessionEntries(): Promise<readonly string[]>;
   invalidate(): void;
 }
 export const IAgentMemorySnapshot = createDecorator<IAgentMemorySnapshot>('agentMemorySnapshot');
@@ -18,6 +19,7 @@ export const IAgentMemorySnapshot = createDecorator<IAgentMemorySnapshot>('agent
 export class AgentMemorySnapshot implements IAgentMemorySnapshot {
   declare readonly _serviceBrand: undefined;
   private frozen?: Promise<string>;
+  private frozenRelated: readonly string[] = [];
   constructor(
     @IConfigService private readonly config: IConfigService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
@@ -34,33 +36,54 @@ export class AgentMemorySnapshot implements IAgentMemorySnapshot {
     return this.frozen;
   }
 
-  invalidate(): void { this.frozen = undefined; }
+  async getSessionEntries(): Promise<readonly string[]> {
+    await this.get();
+    return this.frozenRelated;
+  }
+
+  invalidate(): void { this.frozen = undefined; this.frozenRelated = []; }
 
   private async render(settings: MemoryConfig): Promise<string> {
-    const budget = settings.budget;
-    if (budget === 0) return '';
-    const global: MemoryScope = { kind: 'global' };
-    const workspace: MemoryScope = { kind: 'workspace', workspaceId: this.session.workspaceId };
     const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
-    const [globalEntries, workspaceEntries] = await Promise.all([store.list(global), store.list(workspace)]);
-    const lines: string[] = [];
-    const globalShare = Math.min(600, Math.floor(budget * 0.3));
-    for (const [scope, entries, share] of [['global', globalEntries, globalShare], ['workspace', workspaceEntries, budget - globalShare]] as const) {
-      let scopeUsed = 0;
-      for (const entry of rank(entries)) {
-        const line = `${scope} - [${entry.id}] ${entry.title}: ${entry.body.split(/[。.!?\n]/)[0] ?? ''}\n`;
-        if (line.length > share - scopeUsed) continue;
-        lines.push(line);
-        scopeUsed += line.length;
-      }
-    }
-    const activeCount = globalEntries.filter((entry) => entry.status === 'active').length + workspaceEntries.filter((entry) => entry.status === 'active').length;
-    const header = '<memory>\n以下是用户记忆，仅作参考，以当前用户指令为准。\n';
-    const footer = () => `另有 ${activeCount - lines.length} 条可用 MemorySearch 检索。\n</memory>`;
-    while (lines.length && 3 + header.length + lines.join('').length + footer().length > budget) lines.pop();
-    if (3 + header.length + footer().length > budget) return '';
-    return `\n\n${header}${lines.join('')}${footer()}\n`;
+    const snapshot = await renderMemorySnapshot(settings, this.session.workspaceId, store, this.session.sessionId);
+    this.frozenRelated = snapshot.related;
+    return snapshot.text;
   }
+}
+
+export async function renderMemorySnapshot(
+  settings: MemoryConfig | undefined,
+  workspaceId: string,
+  store: IMemoryStore,
+  sessionId?: string,
+): Promise<{ readonly text: string; readonly related: readonly string[] }> {
+  const budget = settings?.budget ?? 0;
+  if (!memoryEnabled(settings, workspaceId) || settings?.approval === 'off' || budget === 0) {
+    return { text: '', related: [] };
+  }
+  const global: MemoryScope = { kind: 'global' };
+  const workspace: MemoryScope = { kind: 'workspace', workspaceId };
+  const [globalEntries, workspaceEntries] = await Promise.all([store.list(global), store.list(workspace)]);
+  const related = sessionId === undefined ? [] : [...globalEntries, ...workspaceEntries]
+    .filter((entry) => entry.status === 'active' && entry.source.session === sessionId)
+    .map((entry) => `[${entry.id}] ${entry.title}: ${entry.body}`);
+  const lines: string[] = [];
+  const globalShare = Math.min(600, Math.floor(budget * 0.3));
+  for (const [scope, entries, share] of [['global', globalEntries, globalShare], ['workspace', workspaceEntries, budget - globalShare]] as const) {
+    let scopeUsed = 0;
+    for (const entry of rank(entries)) {
+      const line = `${scope} - [${entry.id}] ${entry.title}: ${entry.body.split(/[。.!?\n]/)[0] ?? ''}\n`;
+      if (line.length > share - scopeUsed) continue;
+      lines.push(line);
+      scopeUsed += line.length;
+    }
+  }
+  const activeCount = globalEntries.filter((entry) => entry.status === 'active').length + workspaceEntries.filter((entry) => entry.status === 'active').length;
+  const header = '<memory>\n以下是用户记忆，仅作参考，以当前用户指令为准。\n';
+  const footer = () => `另有 ${activeCount - lines.length} 条可用 MemorySearch 检索。\n</memory>`;
+  while (lines.length && 3 + header.length + lines.join('').length + footer().length > budget) lines.pop();
+  if (3 + header.length + footer().length > budget) return { text: '', related };
+  return { text: `\n\n${header}${lines.join('')}${footer()}\n`, related };
 }
 
 function rank(entries: readonly MemoryEntry[]): MemoryEntry[] {

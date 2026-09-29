@@ -749,6 +749,48 @@ describe('TranscriptWireAdapter', () => {
     expect(override.getTurn('t0')?.execution?.profileDelivery).toBe('system_prompt_override');
   });
 
+  it.each(['developer_instructions', 'base_instructions'] as const)(
+    'recovers a Codex turn with %s delivery through the transcript contract',
+    (profileDelivery) => {
+      const transcript = replay([
+        records[0]!,
+        {
+          type: 'executor.turn.metadata', turnId: 0, executorId: 'codex-app-server',
+          protocol: 'codex-app-server', resumeMode: 'new', profileDelivery,
+          fidelity: 'full', losses: [],
+        },
+        records.at(-1)!,
+      ]);
+      const snapshot = agentTranscriptSnapshotSchema.parse(transcript.snapshot());
+      const recovered = new AgentTranscript('main');
+      recovered.apply([{ op: 'reset', agentId: 'main', snapshot }]);
+      expect(transcriptResponseSchema.parse({
+        session_id: 'session', agent_id: 'main', ...recovered.snapshot(), has_more: false,
+        agents: [], pending_interactions: [], coverage: { kind: 'full', hasMoreOlder: false },
+      }).items).toEqual(snapshot.items);
+      expect(recovered.getTurn('t0')?.execution?.profileDelivery).toBe(profileDelivery);
+    },
+  );
+
+  it('projects durable executor delivery, diff, compaction, and unknown markers through recovery', () => {
+    const delivery = { type: 'executor.prompt.delivery', executorId: 'codex-app-server', turnId: 0,
+      promptId: 'queued', origin: 'user', method: 'native_steer', status: 'delivered' };
+    const updates = [
+      { type: 'executor.runtime.update', turnId: 0, executorId: 'codex-app-server', kind: 'diff', value: 'diff --git a/x b/x' },
+      { type: 'executor.runtime.update', turnId: 0, executorId: 'codex-app-server', kind: 'compaction', value: { threadId: 'thr-1' } },
+      { type: 'executor.runtime.update', turnId: 0, executorId: 'codex-app-server', kind: 'unknown', value: { updateType: 'other' } },
+    ];
+    const snapshot = agentTranscriptSnapshotSchema.parse(replay([records[0]!, delivery, ...updates, records.at(-1)!]).snapshot());
+    const recovered = new AgentTranscript('main');
+    recovered.apply([{ op: 'reset', agentId: 'main', snapshot }]);
+    expect(recovered.getItems().filter((item) => item.kind === 'marker')).toMatchObject([
+      { marker: 'executor.prompt.delivery', payload: delivery },
+      { marker: 'executor.diff', payload: updates[0] },
+      { marker: 'executor.compaction', payload: updates[1] },
+      { marker: 'executor.degradation', payload: updates[2] },
+    ]);
+  });
+
   it('normalizes bundled skill prompts and gives media and markers stable identities', () => {
     const transcript = replay([
       {

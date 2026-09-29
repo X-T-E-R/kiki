@@ -132,6 +132,8 @@ export function readContextCompactionShapeInput(
 ): ContextCompactionShapeInput {
   const fields = record as UnknownRecord;
   const keptUserMessageCount = readOptionalNumber(fields, 'keptUserMessageCount');
+  const shapeVersion = readOptionalNumber(fields, 'shapeVersion');
+  if (shapeVersion !== undefined && shapeVersion !== 1) throw new Error2(ErrorCodes.STORAGE_DECODE_FAILED, `Unknown compaction shape version ${shapeVersion}`);
   return {
     summary: readContextCompactionRawSummary(fields),
     legacySummaryMessage: readLegacySummaryMessage(fields),
@@ -143,6 +145,7 @@ export function readContextCompactionShapeInput(
     keptUserMessageCount,
     keptHeadUserMessageCount: readOptionalNumber(fields, 'keptHeadUserMessageCount'),
     droppedCount: readOptionalNumber(fields, 'droppedCount'),
+    userBudget: fields['userBudget'] as { max: number; head: number } | undefined,
     legacyTail: readOptionalBoolean(fields, 'legacyTail') ?? keptUserMessageCount === undefined,
   };
 }

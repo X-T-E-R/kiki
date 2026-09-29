@@ -1093,6 +1093,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         signal,
         steerSignal,
         turnId,
+        step: currentStep,
         trace,
         onToolCall: ({ toolCallId, name, args }) => {
           const callUuid = randomUUID();

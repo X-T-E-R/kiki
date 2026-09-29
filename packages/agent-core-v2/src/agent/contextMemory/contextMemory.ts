@@ -23,6 +23,10 @@ export interface ContextCompactionInput {
   readonly keptUserMessageCount?: number;
   readonly keptHeadUserMessageCount?: number;
   readonly droppedCount?: number;
+  readonly strategy?: 'summarize' | 'relay';
+  readonly shapeVersion?: number;
+  readonly reasonCodes?: string[];
+  readonly fallbackFrom?: 'relay' | 'summarize';
 }
 
 export interface ContextCompactionResult {
@@ -34,6 +38,10 @@ export interface ContextCompactionResult {
   keptUserMessageCount: number;
   keptHeadUserMessageCount?: number;
   droppedCount?: number;
+  strategy?: 'summarize' | 'relay';
+  shapeVersion?: number;
+  reasonCodes?: string[];
+  fallbackFrom?: 'relay' | 'summarize';
 }
 
 export interface IAgentContextMemoryService {
