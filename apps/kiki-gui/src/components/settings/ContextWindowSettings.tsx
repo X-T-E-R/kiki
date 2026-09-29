@@ -26,6 +26,7 @@ import { ContextStepper } from '../ProviderFields';
 import { FeedbackLine, Hint, InlineError, SavedTick, type Feedback } from '../controls';
 import { SMALL_INPUT } from '../ui';
 import { CompactPointField } from './CompactPointField';
+import { AdvancedDetails } from './fields';
 import { SectionCard } from './SectionCard';
 import { useSavedTick } from './useSavedTick';
 
@@ -275,11 +276,8 @@ export function GlobalCompactionCard() {
         <Hint>{hasLegacy
           ? t('st.compact.globalLegacyHint', { percent: String(Math.round((legacyRatio ?? 0.85) * 100)) })
           : t('st.compact.globalHint')}</Hint>
-        <details className="group">
-          <summary className="flex h-7 w-fit cursor-pointer list-none items-center rounded-md px-1 text-[12px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink">
-            {t('st.compact.advanced')}
-          </summary>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+        <AdvancedDetails summary={t('st.compact.advanced')} data-auto-compact-advanced>
+          <div className="flex flex-wrap items-center gap-2">
             <label htmlFor="st-auto-compact-reserve" className="text-[13px] text-ink">{t('st.compact.reserveLabel')}</label>
             <input
               id="st-auto-compact-reserve"
@@ -293,8 +291,8 @@ export function GlobalCompactionCard() {
               onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); saveReserve(); } }}
             />
           </div>
-          <p className="mt-1 max-w-[62ch] text-[12px] leading-snug text-ink-faint">{t('st.compact.reserveHint')}</p>
-        </details>
+          <p className="max-w-[62ch] text-[12px] leading-snug text-ink-faint">{t('st.compact.reserveHint')}</p>
+        </AdvancedDetails>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>

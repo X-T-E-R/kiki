@@ -8,7 +8,7 @@ import { sourceBadgeLabel } from '../../agent-panel/SourceBadge';
 import { SearchableSelect } from '../../SearchableSelect';
 import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from '../SettingsPrimitives';
 import { diagnosticTone, type ProfileDiagnostic } from './diagnostics';
-import { EFFORTS, isExternalExecutor } from './profileDraft';
+import { EFFORTS, effortLabel, isExternalExecutor } from './profileDraft';
 import { TeamRoster } from './TeamRoster';
 
 export type TeamFilter = 'all' | 'main' | 'subagent';
@@ -202,9 +202,9 @@ export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, 
               </td>
               <td className="border-b border-hairline py-2 pr-3 max-sm:border-0 max-sm:p-0" data-team-effort>
                 {quickEditable ? <SearchableSelect id={`team-effort-${row.key}`} value={effort} hideFilter
-                  options={[{ value: '', label: '—' }, ...EFFORTS.map((level) => ({ value: level, label: level })),
-                    ...(effort !== '' && !(EFFORTS as readonly string[]).includes(effort) ? [{ value: effort, label: effort }] : [])]}
-                  triggerLabel={effort === '' ? <span className="text-ink-soft">—</span> : effort}
+                  options={[{ value: '', label: '—' }, ...EFFORTS.map((level) => ({ value: level, label: effortLabel(level) })),
+                    ...(effort !== '' && !(EFFORTS as readonly string[]).includes(effort) ? [{ value: effort, label: effortLabel(effort) }] : [])]}
+                  triggerLabel={effort === '' ? <span className="text-ink-soft">—</span> : effortLabel(effort)}
                   ariaLabel={t('st.profiles.effortFor', { name: profile.name })} buttonClassName={`${SETTINGS_SELECT_TRIGGER} text-[12px]`}
                   onChange={(next) => { if (next !== effort) onQuickSave(row, { thinking_effort: next === '' ? null : next }); }} />
                   : <span className="inline-flex h-8 items-center text-[12px]">{effort === '' ? <span className="text-ink-soft">—</span> : effort}</span>}

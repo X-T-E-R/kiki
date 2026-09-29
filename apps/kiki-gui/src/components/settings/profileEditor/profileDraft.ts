@@ -102,6 +102,11 @@ export function spawnConstraintsBody(value: SpawnConstraintsDraft): UpdateNamedA
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
+/** Display form of an effort level, matching the composer's picker ("High"); the value stays as stored. */
+export function effortLabel(level: string): string {
+  return level === '' ? level : level.charAt(0).toUpperCase() + level.slice(1);
+}
+
 export function isExternalExecutor(executor: string | undefined): boolean {
   return executor !== undefined && executor !== '' && executor !== 'native';
 }

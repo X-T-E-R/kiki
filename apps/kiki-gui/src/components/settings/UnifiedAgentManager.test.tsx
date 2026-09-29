@@ -106,7 +106,7 @@ describe('agents team view', () => {
     expect(rows).toEqual(['agent', 'reviewer', 'explore']);
     const lead = container.querySelector('[data-team-row="agent"]')!;
     expect(lead.querySelector('[data-team-dispatch]')?.textContent).toContain('reviewer, explore');
-    expect(lead.querySelector('[data-team-effort]')?.textContent).toContain('high');
+    expect(lead.querySelector('[data-team-effort]')?.textContent).toContain('High');
     const reviewer = container.querySelector('[data-team-row="reviewer"]')!;
     expect(reviewer.querySelector('[data-team-dispatch]')?.textContent).toContain('None');
     expect(reviewer.querySelector('[data-team-warning]')).not.toBeNull();
@@ -205,7 +205,7 @@ describe('profile editor sheet', () => {
     await open('agent');
     const field = sheet().querySelector<HTMLElement>('[data-subagents-field]')!;
     expect([...field.querySelectorAll('[data-subagent-row]')].map((row) => row.getAttribute('data-subagent-row'))).toEqual(['reviewer', 'explore']);
-    await choose(field.querySelector<HTMLElement>('#lease-effort-explore')!, 'high');
+    await choose(field.querySelector<HTMLElement>('#lease-effort-explore')!, 'High');
     await save();
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({
       subagents: ['reviewer', { name: 'explore', model_alias: 'fixture/lite', thinking_effort: 'high' }],

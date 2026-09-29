@@ -7,7 +7,7 @@ import { buildCatalogModelOptions } from '../../modelSelectOptions';
 import { SearchableSelect, type SearchableSelectOption } from '../../SearchableSelect';
 import { FORM_SELECT_TRIGGER } from '../SettingsPrimitives';
 import type { NamedAgentExecutorField } from '@kiki/protocol';
-import { EFFORTS } from './profileDraft';
+import { EFFORTS, effortLabel } from './profileDraft';
 
 /** Stacked field: label (12/500), control, optional hint and applicability note. */
 export function Field({ label, htmlFor, hint, children, applicability, engine, dataField }: {
@@ -72,8 +72,8 @@ export function EffortPicker({ id, value, onChange, supported, disabled, allowUn
   const { t } = useI18n();
   const levels = supported !== undefined && supported.length > 0 ? supported : EFFORTS;
   const choices = [...(allowUnset ? [{ value: '', label: unsetLabel ?? t('st.profiles.effortUnset') }] : []),
-    ...levels.map((level) => ({ value: level, label: level })),
-    ...(value !== '' && !levels.includes(value) ? [{ value, label: value, hint: t('st.profiles.effortUnsupported') }] : [])];
+    ...levels.map((level) => ({ value: level, label: effortLabel(level) })),
+    ...(value !== '' && !levels.includes(value) ? [{ value, label: effortLabel(value), hint: t('st.profiles.effortUnsupported') }] : [])];
   return <SearchableSelect id={id} value={value} disabled={disabled} options={choices} hideFilter
     triggerLabel={value === '' ? unsetTrigger : undefined}
     ariaLabel={ariaLabel ?? t('st.profiles.effort')} buttonClassName={FORM_SELECT_TRIGGER} onChange={onChange} />;

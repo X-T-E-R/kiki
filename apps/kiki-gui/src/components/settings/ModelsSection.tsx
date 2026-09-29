@@ -41,7 +41,8 @@ import { SearchableSelect } from '../SearchableSelect';
 import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
-import { FORM_LABEL, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { FORM_LABEL, SettingsDraftFooter, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { effortLabel } from './profileEditor/profileDraft';
 import { SettingField } from './fields';
 import { useInstantSave } from './useInstantSave';
 import { LoopLimitsCard } from './LoopLimitsCard';
@@ -75,6 +76,9 @@ export function GlobalRequestIdentityCard() {
     requestIdentityLayerDraftFromPolicy(undefined));
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  // Text draft, parsed on save: a JSON problem lands under the textarea, not in the footer.
+  const [jsonIssue, setJsonIssue] = useState<string | null>(null);
+  const [saved, markSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const dirty = !requestIdentityDraftsEqual(draft, baseline);
 
@@ -85,19 +89,23 @@ export function GlobalRequestIdentityCard() {
     setBaseline(next);
   }, [configQuery.data, dirty]);
 
-  useDirtyReporter('global-request-identity', dirty);
-
   const save = async () => {
+    let requestIdentity: ReturnType<typeof requestIdentityPolicyFromDraft>;
+    try {
+      requestIdentity = requestIdentityPolicyFromDraft(draft);
+    } catch (error) {
+      setJsonIssue(errorText(locale, error));
+      return;
+    }
     setSaving(true);
     setFeedback(null);
     try {
-      const requestIdentity = requestIdentityPolicyFromDraft(draft);
       const echoed = await client.patchConfig({ request_identity: requestIdentity ?? null });
       queryClient.setQueryData(['config'], echoed);
       const next = requestIdentityLayerDraftFromPolicy(echoed.request_identity);
       setDraft(next);
       setBaseline(next);
-      setFeedback({ tone: 'success', text: t('st.requestIdentity.saved') });
+      markSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -107,20 +115,20 @@ export function GlobalRequestIdentityCard() {
 
   return (
     <SectionCard id="st-card-request-identity" title={t('st.requestIdentity.defaultTitle')}>
-      <div className="space-y-3">
-        <RequestIdentityLayerEditor
-          value={draft}
-          onChange={setDraft}
-          label={t('st.requestIdentity.defaultLabel')}
-          inheritLabel={t('st.requestIdentity.inheritBuiltin')}
-          hint={t('st.requestIdentity.defaultHint')}
-        />
-        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-          {saving ? t('common.saving') : t('common.save')}
-        </button>
-        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
-        <FeedbackLine feedback={feedback} />
-      </div>
+      <RequestIdentityLayerEditor
+        value={draft}
+        onChange={(next) => { setDraft(next); setJsonIssue(null); }}
+        label={t('st.requestIdentity.defaultLabel')}
+        inheritLabel={t('st.requestIdentity.inheritBuiltin')}
+        hint={t('st.requestIdentity.defaultHint')}
+        issue={jsonIssue}
+      />
+      {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+      <SettingsDraftFooter id="global-request-identity" dirty={dirty} saving={saving} saved={saved}
+        saveDisabled={jsonIssue !== null}
+        onSave={() => void save()}
+        onDiscard={() => { setDraft(baseline); setJsonIssue(null); setFeedback(null); }} />
+      <FeedbackLine feedback={feedback} />
     </SectionCard>
   );
 }
@@ -578,7 +586,7 @@ export function ThinkingCard() {
               value={effort}
               disabled={!thinkingEnabled || busy}
               onChange={(value) => void saveThinking(thinkingEnabled, value)}
-              choices={defaultItem.support_efforts.map((level) => ({ value: level, label: level }))}
+              choices={defaultItem.support_efforts.map((level) => ({ value: level, label: effortLabel(level) }))}
             />
           ) : (
             <input
