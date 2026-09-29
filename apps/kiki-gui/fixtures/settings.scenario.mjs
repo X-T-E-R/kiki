@@ -24,6 +24,14 @@ export default {
       overrides: { client: { user_agent: 'host' } },
     },
     thinking: { enabled: true, effort: 'high' },
+    // Engine defaults as GET /config returns them (camelCase, defaults filled).
+    worktree: {
+      enabled: true, root: '', branchPrefix: 'kiki/', defaultBase: 'head', gitTimeoutMs: 300000,
+      cleanup: { auto: true, afterDays: 7, disposableIgnored: ['node_modules/', '.turbo/', 'dist/', '.venv/', 'target/'] },
+    },
+    session_residency: { idleTtlMs: 600000, maxLiveSessions: 8, minIdleMs: 60000, sweepIntervalMs: 30000, maxConcurrentRestores: 1, maxQueuedRestores: 8 },
+    retry: { maxAttempts: 4, policies: [{ match: 'rate_limit', maxAttempts: 6, backoff: 1000, retry: true }] },
+    loop_control: { maxAttemptsPerStep: 5 },
     merge_all_available_skills: true,
     extra_skill_dirs: ['C:/fixture/skills'],
     experimental: { search_worker: true },

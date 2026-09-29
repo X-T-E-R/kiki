@@ -30,6 +30,7 @@ import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { WorktreeRemoveDialog, outcomeReasonKey } from './WorktreeRemoveDialog';
+import { WorktreePolicy, useWorktreePolicy } from './WorktreePolicy';
 
 type Notice =
   | { readonly tone: 'success' | 'info'; readonly text: string }
@@ -43,6 +44,7 @@ export function WorktreesCard() {
   const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const available = client.klient.rest !== undefined;
+  const afterDays = useWorktreePolicy().data?.cleanup.afterDays ?? 7;
   const list = useQuery({
     queryKey: worktreeKeys.list(),
     queryFn: () => worktreeApi(client).list(),
@@ -160,7 +162,10 @@ export function WorktreesCard() {
           >
             {gcBusy ? t('st.worktrees.cleanupChecking') : t('st.worktrees.cleanup')}
           </button>
-          <p className="min-w-0 flex-1 basis-64 text-[12px] leading-snug text-ink-faint">{t('st.worktrees.cleanupRule')}</p>
+          <p className="min-w-0 flex-1 basis-64 text-[12px] leading-snug text-ink-faint">{t('st.worktrees.cleanupRule', { days: afterDays })}</p>
+        </div>
+        <div className="pt-4">
+          <WorktreePolicy />
         </div>
       </div>
 

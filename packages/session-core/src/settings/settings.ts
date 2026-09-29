@@ -2055,7 +2055,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
   { section: 'plugins', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.runtimeHint'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
-  { section: 'workspaces', cardId: 'st-card-worktrees', titleKey: 'st.worktrees.title', keywordKeys: ['st.worktrees.hint', 'st.worktrees.cleanup'] },
+  { section: 'workspaces', cardId: 'st-card-worktrees', titleKey: 'st.worktrees.title', keywordKeys: ['st.worktrees.hint', 'st.worktrees.cleanup', 'st.worktreePolicy.prefix', 'st.worktreePolicy.base', 'st.worktreePolicy.autoCleanup'], synonyms: ['branch prefix', '分支前缀', 'worktree policy', 'worktree 策略'] },
   { section: 'ssh', cardId: 'st-card-ssh-hosts', titleKey: 'st.ssh.hostsTitle', keywordKeys: ['st.ssh.addHost', 'st.ssh.writeBack'], synonyms: ['ssh', 'ssh config', '~/.ssh/config', 'remote host', '远程主机', '主机'] },
   { section: 'ssh', cardId: 'st-card-ssh-connection', titleKey: 'st.ssh.connectionTitle', keywordKeys: ['st.ssh.syncToggle', 'st.ssh.approvalToggle', 'st.ssh.approvalHint'], synonyms: ['connection approval', '连接审批', 'host key', '主机密钥', 'known_hosts'] },
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
