@@ -5,7 +5,6 @@ import {
   type Scope,
   type ScopeSeed,
 } from '@kiki/agent-core-v2';
-import { normalizeLiteral, tokenize } from '@kiki/minidb';
 import {
   isPlainAgentId,
   type AgentTranscriptSnapshot,
@@ -15,6 +14,7 @@ import {
 import { GlobalSearchError, IGlobalSearchService } from '../search/searchService';
 import { SearchWorkerError } from '../search/worker/host';
 import { makeSnippet } from '../search/snippet';
+import { matchHistoryText, planHistoryQuery } from './history/historyQuery';
 import type {
   BoundedTranscriptSnapshot,
   TranscriptColdReadLimits,
@@ -56,32 +56,25 @@ function outputText(output: unknown): string {
     .join('');
 }
 
-function matches(text: string, query: string, mode: 'terms' | 'literal'): boolean {
-  if (mode === 'literal') return normalizeLiteral(text).includes(normalizeLiteral(query));
-  const terms = [...new Set(tokenize(query))];
-  if (terms.length === 0) return false;
-  const textTerms = new Set(tokenize(text));
-  return terms.every((term) => textTerms.has(term));
-}
-
 function fallbackHits(
   snapshot: AgentTranscriptSnapshot | undefined,
   input: FallbackInput,
 ): HistoryHit[] {
   if (snapshot === undefined) return [];
-  const mode = input.mode ?? 'terms';
+  const plan = planHistoryQuery(input.query, input.mode ?? 'terms');
   const hits: HistoryHit[] = [];
   for (const item of snapshot.items) {
     if (item.kind !== 'turn') continue;
     const prompt = item.prompt?.trim();
-    if (prompt !== undefined && prompt.length > 0 &&
-        (input.role === undefined || input.role === 'user') && matches(prompt, input.query, mode)) {
+    const promptMatch = prompt !== undefined && (input.role === undefined || input.role === 'user')
+      ? matchHistoryText(prompt, plan) : undefined;
+    if (prompt !== undefined && promptMatch !== undefined) {
       hits.push({
         sessionId: input.sessionId!,
         agentId: input.agentId!,
         role: 'user',
         turn: item.ordinal,
-        snippet: makeSnippet(prompt, input.query),
+        snippet: makeSnippet(prompt, promptMatch.matched[0] ?? input.query),
       });
     }
     for (const step of item.steps) {
@@ -91,14 +84,15 @@ function fallbackHits(
         if (role === undefined || (input.role !== undefined && input.role !== role)) continue;
         const text = frame.kind === 'text' ? frame.text.trim() :
           frame.kind === 'tool' ? outputText(frame.output).trim() : '';
-        if (text.length === 0 || !matches(text, input.query, mode)) continue;
+        const match = text.length > 0 ? matchHistoryText(text, plan) : undefined;
+        if (match === undefined) continue;
         hits.push({
           sessionId: input.sessionId!,
           agentId: input.agentId!,
           role,
           turn: item.ordinal,
           stepId: step.stepId,
-          snippet: makeSnippet(text, input.query),
+          snippet: makeSnippet(text, match.matched[0] ?? input.query),
         });
       }
     }
