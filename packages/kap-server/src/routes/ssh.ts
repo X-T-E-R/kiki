@@ -6,6 +6,7 @@ import { parseTransientSshTarget } from '@kiki/agent-core-v2/app/ssh/sshConfig';
 import {
   ErrorCode, sshHostInputSchema, sshHostResponseSchema, sshHostsResponseSchema,
   sshHostStatusSchema, sshSessionHostsResponseSchema, sshApprovalSubmitSchema,
+  copySharedSshCredentialsRequestSchema, copySharedSshCredentialsResponseSchema,
 } from '@kiki/protocol';
 import { z } from 'zod';
 
@@ -116,6 +117,24 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
     reply.send(okEnvelope({ enabled: req.body.enabled }, req.id));
   });
   app.put(approvalUpdate.path, approvalUpdate.options, approvalUpdate.handler as SshHandler);
+
+  const copyCredentials = defineRoute({
+    method: 'POST', path: '/ssh/credentials:copy-to-isolated',
+    body: copySharedSshCredentialsRequestSchema,
+    success: { data: copySharedSshCredentialsResponseSchema }, tags: ['ssh'],
+    errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+  }, async (req, reply) => {
+    try {
+      reply.send(okEnvelope({ hosts: await hosts().copySharedCredentialsToIsolated(req.body.hosts) }, req.id));
+    } catch (error) {
+      if (error instanceof Error && (/^SSH credential copying requires|^Unknown Kiki SSH host/.test(error.message))) {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
+        return;
+      }
+      throw error;
+    }
+  });
+  app.post(copyCredentials.path, copyCredentials.options, copyCredentials.handler as SshHandler);
 
   const actionParams = z.object({ tail: z.string().min(1) });
   const status = defineRoute({

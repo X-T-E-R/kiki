@@ -36,6 +36,7 @@ import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { configResponseSchema, patchConfigRequestSchema } from '../protocol/rest-config';
+import { removeSpaceConfigOverrideRequestSchema } from '../protocol/rest-space';
 import { REVIEWER_API_KEY_ENV } from './secrets';
 import type { ConfigResponse } from '../protocol/rest-config';
 
@@ -190,6 +191,33 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
     },
   );
   app.post(setRoute.path, setRoute.options, setRoute.handler as Parameters<ConfigRouteHost['post']>[2]);
+
+  const removeOverrideRoute = defineRoute({
+    method: 'POST',
+    path: '/config/overrides:remove',
+    body: removeSpaceConfigOverrideRequestSchema,
+    success: { data: configResponseSchema },
+    errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'Remove one space-local config override (or a whole domain when key_path is empty) and resume inheritance from the main space',
+    tags: ['config'],
+  }, async (req, reply) => {
+    try {
+      if (core.accessor.get(IBootstrapService).spaceId === undefined) {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Only independent spaces can restore inherited settings', req.id));
+        return;
+      }
+      const config = core.accessor.get(IConfigService);
+      const domain = snakeToCamel(req.body.domain);
+      await config.removeOverride(domain, req.body.key_path);
+      const response = toConfigResponse(config.getAll(), config);
+      core.accessor.get(IEventService).publish(new ConfigChanged({ payload: { changedFields: [req.body.domain], config: response } }));
+      reply.send(okEnvelope(response, req.id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
+    }
+  });
+  app.post(removeOverrideRoute.path, removeOverrideRoute.options, removeOverrideRoute.handler as Parameters<ConfigRouteHost['post']>[2]);
 
   const migrationPath = '/config/model-generation-migration';
   const previewRoute = defineRoute({

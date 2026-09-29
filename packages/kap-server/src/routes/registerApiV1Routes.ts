@@ -23,6 +23,7 @@ import { registerCronRoutes } from './cron';
 import { registerFilesRoutes } from './files';
 import { registerFsRoutes } from './fs';
 import { registerGuiStoreRoutes } from './guiStore';
+import { registerHomesRoutes } from './homes';
 import { registerMessagesRoutes } from './messages';
 import type { IGuiStoreService } from '../services/guiStore/guiStore';
 import { registerDebugRoutes } from '../transport/registerDebugRoutes';
@@ -174,6 +175,7 @@ export async function registerApiV1Routes(
       );
       registerOAuthRoutes(apiV1 as unknown as Parameters<typeof registerOAuthRoutes>[0], core);
       registerConfigRoutes(apiV1 as unknown as Parameters<typeof registerConfigRoutes>[0], core);
+      registerHomesRoutes(apiV1 as unknown as Parameters<typeof registerHomesRoutes>[0], core);
       registerNbSearchRoutes(apiV1 as unknown as Parameters<typeof registerNbSearchRoutes>[0], core);
       registerSecretsRoutes(apiV1 as unknown as Parameters<typeof registerSecretsRoutes>[0], core, opts.notifications);
       registerNotificationRoutes(apiV1 as unknown as Parameters<typeof registerNotificationRoutes>[0], opts.notifications);

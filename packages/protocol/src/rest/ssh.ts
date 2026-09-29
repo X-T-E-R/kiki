@@ -46,6 +46,22 @@ export const sshCredentialSchema = z.object({
 }).strict();
 export type SshCredential = z.infer<typeof sshCredentialSchema>;
 
+export const copySharedSshCredentialsRequestSchema = z.object({
+  hosts: z.array(z.object({
+    hostId: z.string().min(1).regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+    workspaceId: z.string().min(1).optional(),
+  })).max(64),
+});
+export type CopySharedSshCredentialsRequest = z.infer<typeof copySharedSshCredentialsRequestSchema>;
+export const copySharedSshCredentialsResponseSchema = z.object({
+  hosts: z.array(z.object({
+    hostId: z.string(),
+    workspaceId: z.string().optional(),
+    copied: z.number().int().min(0),
+  })),
+});
+export type CopySharedSshCredentialsResponse = z.infer<typeof copySharedSshCredentialsResponseSchema>;
+
 export const sshApprovalSubmitSchema = z.object({
   decision: z.enum(['approved', 'rejected', 'cancelled']),
   credential: sshCredentialSchema.optional(),

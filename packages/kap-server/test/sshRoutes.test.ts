@@ -42,6 +42,7 @@ describe('SSH management REST routes', () => {
       setSyncSshConfig: vi.fn(async () => undefined),
       connectionApprovalEnabled: vi.fn(async () => false),
       setConnectionApproval: vi.fn(async () => undefined),
+      copySharedCredentialsToIsolated: vi.fn(async () => [{ hostId: 'dev', workspaceId: undefined, copied: 1 }]),
       writeBack: vi.fn(async () => undefined),
       status: vi.fn(() => ({ hostId: 'dev', state: 'idle', generation: 0 })),
       disconnect: vi.fn(async () => undefined),
@@ -72,6 +73,8 @@ describe('SSH management REST routes', () => {
     expect((await request('GET', '/ssh/connection-approval')).data).toEqual({ enabled: false });
     expect((await request('PUT', '/ssh/connection-approval', { enabled: true })).data).toEqual({ enabled: true });
     expect(hosts.setConnectionApproval).toHaveBeenCalledWith(true);
+    expect((await request('POST', '/ssh/credentials:copy-to-isolated', { hosts: [{ hostId: 'dev' }] })).data).toEqual({ hosts: [{ hostId: 'dev', copied: 1 }] });
+    expect(hosts.copySharedCredentialsToIsolated).toHaveBeenCalledWith([{ hostId: 'dev' }]);
     expect((await request('POST', '/ssh/hosts/:tail', undefined, 'dev:write-back')).code).toBe(ErrorCode.VALIDATION_FAILED);
     expect(hosts.writeBack).not.toHaveBeenCalled();
     expect((await request('POST', '/ssh/hosts/:tail', undefined, 'dev:disconnect')).data).toEqual({ disconnected: true });

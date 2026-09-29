@@ -51,6 +51,47 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('uses typed space management, override restoration and explicit SSH credential copying routes', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({ path, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      if (path === '/api/homes' && init?.method === 'GET') return envelope({ items: [{ id: 'main', name: 'Main space', path: '/main', primary: true }] });
+      if (path === '/api/homes' || path === '/api/homes:attach') return envelope({ id: 'h-abc', name: 'Secret', path: '/space' });
+      if (path.endsWith('/ssh-copy-candidates')) return envelope({ hosts: [{ hostId: 'prod', name: 'Production', credential_kinds: ['password'] }] });
+      if (path.startsWith('/api/homes/') && init?.method === 'PATCH') return envelope({ space: { id: 'h-abc', name: 'Secret', path: '/space', credentials_shared: false }, restart_required: true, copied_ssh_entries: 1 });
+      if (path.startsWith('/api/homes/')) return envelope({ items: [] });
+      if (path === '/api/config/overrides:remove') return envelope({ providers: {} });
+      if (path === '/api/ssh/credentials:copy-to-isolated') return envelope({ hosts: [{ hostId: 'prod', copied: 1 }] });
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.homes.list()).resolves.toMatchObject({ items: [{ id: 'main' }] });
+      await channel.rest.homes.create({ name: 'Secret', path: '/space', inherit: { credentials: 'isolated' } });
+      await channel.rest.homes.attach({ path: '/space' });
+      await expect(channel.rest.homes.sshCopyCandidates('h-abc')).resolves.toMatchObject({ hosts: [{ hostId: 'prod' }] });
+      await expect(channel.rest.homes.update('h-abc', { inherit: { credentials: 'isolated' }, copy_ssh_credentials: { hosts: [{ hostId: 'prod' }] } })).resolves.toMatchObject({ restart_required: true, copied_ssh_entries: 1 });
+      await channel.rest.homes.remove('h-abc');
+      await channel.rest.homes.erase('h-abc', { confirm_name: 'Secret' });
+      await channel.rest.config.removeOverride({ domain: 'default_permission_mode', key_path: [] });
+      await channel.rest.ssh.copySharedCredentialsToIsolated({ hosts: [{ hostId: 'prod' }] });
+      expect(calls).toEqual([
+        { path: '/api/homes', method: 'GET', body: undefined },
+        { path: '/api/homes', method: 'POST', body: { name: 'Secret', path: '/space', inherit: { credentials: 'isolated' } } },
+        { path: '/api/homes:attach', method: 'POST', body: { path: '/space' } },
+        { path: '/api/homes/h-abc/ssh-copy-candidates', method: 'GET', body: undefined },
+        { path: '/api/homes/h-abc', method: 'PATCH', body: { inherit: { credentials: 'isolated' }, copy_ssh_credentials: { hosts: [{ hostId: 'prod' }] } } },
+        { path: '/api/homes/h-abc', method: 'DELETE', body: undefined },
+        { path: '/api/homes/h-abc:delete', method: 'POST', body: { confirm_name: 'Secret' } },
+        { path: '/api/config/overrides:remove', method: 'POST', body: { domain: 'default_permission_mode', key_path: [] } },
+        { path: '/api/ssh/credentials:copy-to-isolated', method: 'POST', body: { hosts: [{ hostId: 'prod' }] } },
+      ]);
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('posts typed rendered-prompt previews to an encoded agent profile path', async () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       expect(new URL(String(input)).pathname).toBe('/api/agents/reviewer%2Fcodex/executor-prompt:preview');

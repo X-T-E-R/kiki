@@ -274,6 +274,7 @@ export interface HttpRestFacade {
     addSessionHost(sessionId: string, hostId: string): Promise<{ readonly host: import('@kiki/protocol').SshHost }>;
     removeSessionHost(sessionId: string, hostId: string): Promise<{ readonly removed: true }>;
     submitApproval(sessionId: string, approvalId: string, body: import('@kiki/protocol').SshApprovalSubmit): Promise<{ readonly resolved: true }>;
+    copySharedCredentialsToIsolated(body: import('@kiki/protocol').CopySharedSshCredentialsRequest): Promise<import('@kiki/protocol').CopySharedSshCredentialsResponse>;
   };
 
   readonly worktrees: {
@@ -340,9 +341,20 @@ export interface HttpRestFacade {
     listSkills(workspaceId: string): Promise<ListSkillsResponse>;
   };
 
+  readonly homes: {
+    list(): Promise<import('@kiki/protocol').ListSpacesResponse>;
+    create(body: import('@kiki/protocol').CreateSpaceRequest): Promise<import('@kiki/protocol').SpaceRecord>;
+    attach(body: import('@kiki/protocol').AttachSpaceRequest): Promise<import('@kiki/protocol').SpaceRecord>;
+    sshCopyCandidates(id: string): Promise<import('@kiki/protocol').SshCopyCandidatesResponse>;
+    update(id: string, body: import('@kiki/protocol').UpdateSpaceRequest): Promise<import('@kiki/protocol').UpdateSpaceResponse>;
+    remove(id: string): Promise<import('@kiki/protocol').ListSpacesResponse>;
+    erase(id: string, body: import('@kiki/protocol').DeleteSpaceRequest): Promise<import('@kiki/protocol').ListSpacesResponse>;
+  };
+
   readonly config: {
     get(): Promise<ConfigResponse>;
     patch(body: HttpRestConfigPatch): Promise<ConfigResponse>;
+    removeOverride(body: import('@kiki/protocol').RemoveSpaceConfigOverrideRequest): Promise<ConfigResponse>;
     previewModelGenerationMigration(): Promise<import('@kiki/protocol').ModelGenerationMigrationPreviewResponse>;
     applyModelGenerationMigration(revision: string): Promise<import('@kiki/protocol').ModelGenerationMigrationApplyResponse>;
     restoreModelGenerationMigration(backupKey: string, revision: string): Promise<import('@kiki/protocol').ModelGenerationMigrationRestoreResponse>;

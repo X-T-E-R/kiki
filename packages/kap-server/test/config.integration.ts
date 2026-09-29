@@ -43,15 +43,15 @@ describe('server-v2 /api/config', () => {
     }
   });
 
-  async function boot(toml?: string): Promise<void> {
+  async function boot(toml?: string, selectedHome = home as string): Promise<void> {
     if (toml !== undefined) {
-      await writeFile(join(home as string, 'config.toml'), toml, 'utf-8');
+      await writeFile(join(selectedHome, 'config.toml'), toml, 'utf-8');
     }
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
-      homeDir: home,
+      homeDir: selectedHome,
       logLevel: 'silent',
     });
     base = `http://127.0.0.1:${server.port}`;
@@ -80,6 +80,27 @@ describe('server-v2 /api/config', () => {
   async function readCredentialsFile(): Promise<string> {
     return readFile(join(home as string, 'credentials', 'credentials.toml'), 'utf-8').catch(() => '');
   }
+
+  it('restores a space-local override through REST without changing the main space', async () => {
+    const main = home as string;
+    const child = join(main, 'space');
+    await mkdir(child);
+    await writeFile(join(main, 'config.toml'), 'default_permission_mode = "auto"\n');
+    await writeFile(join(child, 'home.toml'), `schema = 1\nid = "h-restore"\nname = "Restored"\nbase = ${JSON.stringify(main)}\n`);
+    await boot('default_permission_mode = "yolo"\n', child);
+    expect((await getConfig()).default_permission_mode).toBe('yolo');
+    const res = await authedFetch(server as RunningServer, base, '/api/config/overrides:remove', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domain: 'default_permission_mode', key_path: [] }),
+    });
+    expect(res.status).toBe(200);
+    const result = (await res.json()) as Envelope<ConfigResponse>;
+    expect(result.code).toBe(0);
+    expect(result.data.default_permission_mode).toBe('auto');
+    expect((await readFile(join(main, 'config.toml'), 'utf-8'))).toBe('default_permission_mode = "auto"\n');
+    expect(await readFile(join(child, 'config.toml'), 'utf-8')).not.toContain('default_permission_mode');
+  });
 
   it('persists ordered permission rules and dangerous Bash without dropping reviewer config', async () => {
     await boot();

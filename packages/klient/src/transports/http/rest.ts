@@ -116,6 +116,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/sessions/${encodeURIComponent(sessionId)}/ssh/approvals/${encodeURIComponent(approvalId)}`,
         { method: 'POST', body },
       ),
+      copySharedCredentialsToIsolated: (body) => transport.json('/ssh/credentials:copy-to-isolated', { method: 'POST', body }),
     },
 
     worktrees: {
@@ -271,12 +272,23 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
     },
 
+    homes: {
+      list: () => transport.json<import('@kiki/protocol').ListSpacesResponse>('/homes'),
+      create: (body) => transport.json<import('@kiki/protocol').SpaceRecord>('/homes', { method: 'POST', body }),
+      attach: (body) => transport.json<import('@kiki/protocol').SpaceRecord>('/homes:attach', { method: 'POST', body }),
+      sshCopyCandidates: (id) => transport.json<import('@kiki/protocol').SshCopyCandidatesResponse>(`/homes/${encodeURIComponent(id)}/ssh-copy-candidates`),
+      update: (id, body) => transport.json<import('@kiki/protocol').UpdateSpaceResponse>(`/homes/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
+      remove: (id) => transport.json<import('@kiki/protocol').ListSpacesResponse>(`/homes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      erase: (id, body) => transport.json<import('@kiki/protocol').ListSpacesResponse>(`/homes/${encodeURIComponent(id)}:delete`, { method: 'POST', body }),
+    },
+
     config: {
       get: () => transport.json<ConfigResponse>('/config'),
       patch: (body: HttpRestConfigPatch) => transport.json<ConfigResponse>('/config', {
         method: 'POST',
         body,
       }),
+      removeOverride: (body) => transport.json<ConfigResponse>('/config/overrides:remove', { method: 'POST', body }),
       previewModelGenerationMigration: () => transport.json('/config/model-generation-migration'),
       applyModelGenerationMigration: (revision) => transport.json('/config/model-generation-migration/apply', {
         method: 'POST', body: { revision, confirmed: true },
