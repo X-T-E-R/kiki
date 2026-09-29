@@ -1299,7 +1299,8 @@ const ToolGroupRow = memo(
  * stretch of process rows between two messages reads as one quiet line that
  * still counts what happened ("Worked · 8 steps · 2 thoughts · 1 failed").
  * Opening it lays the original rows back on a hairline spine in their own
- * order; a failure in the run lights the line, it does not force it open.
+ * order; a failure is counted in the line's neutral summary, the failed row
+ * itself carries the warning once opened.
  */
 function HistoryFoldRow({
   fold,
@@ -1324,13 +1325,12 @@ function HistoryFoldRow({
       attrs={{ 'data-history-fold': fold.members.length, 'data-history-fold-open': expanded || undefined }}
       glyph={<DisclosureChevron open={expanded} className="text-ink-faint" />}
       chevronInGlyph
-      tone={fold.failed > 0 ? 'danger' : 'plain'}
       label={t('transcript.fold.worked')}
       detail={
         <>
           <span className="text-ink-faint">{summary}</span>
           {fold.failed > 0 ? (
-            <span className="text-danger"> · {t('transcript.fold.failed', { count: fold.failed })}</span>
+            <span className="text-ink-faint"> · {t('transcript.fold.failed', { count: fold.failed })}</span>
           ) : null}
         </>
       }
