@@ -163,8 +163,12 @@ export class WorktreeService implements IWorktreeService {
         !(await this.git(input.workspaceId, sourceRoot, ['check-ref-format', '--branch', branch], true))) throw new Error('invalid worktree branch');
       const existing = await this.git(input.workspaceId, sourceRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], true);
       const branchCreated = existing === '';
-      const refBaseline = (await this.git(input.workspaceId, sourceRoot,
-        ['for-each-ref', '--format=%(refname)', 'refs'])).split('\n').filter(Boolean);
+      const refBaseline = Object.fromEntries((await this.git(input.workspaceId, sourceRoot,
+        ['for-each-ref', '--format=%(refname) %(objectname)', 'refs']))
+        .split('\n').filter(Boolean).map((line) => {
+          const [ref, tip] = line.split(' ');
+          return [ref!, tip!] as const;
+        }));
       const id = `wt_${randomBytes(8).toString('hex')}`;
       const path = join(root, fingerprint, randomBytes(2).toString('hex'));
       await createWorktreeParent(path);
@@ -217,10 +221,13 @@ export class WorktreeService implements IWorktreeService {
       const dirty = status.split('\0').filter(Boolean);
       const ahead = await this.git(workspaceId, record.path, ['rev-list', '--count', `${record.base.commit}..HEAD`]);
       const refs = (await this.git(workspaceId, record.path,
-        ['for-each-ref', '--format=%(refname)', 'refs']))
-        .split('\n').filter((ref) => ref !== '' && !ref.startsWith('refs/remotes/'));
-      const ownedRefs = refs.filter((ref) => ref === `refs/heads/${record.branch}` ||
-        record.refBaseline === undefined || !record.refBaseline.includes(ref));
+        ['for-each-ref', '--format=%(refname) %(objectname)', 'refs']))
+        .split('\n').filter(Boolean).map((line) => {
+          const [ref, tip] = line.split(' ');
+          return [ref!, tip!] as const;
+        }).filter(([ref]) => !ref.startsWith('refs/remotes/'));
+      const ownedRefs = refs.filter(([ref, tip]) => ref === `refs/heads/${record.branch}` ||
+        record.refBaseline === undefined || record.refBaseline[ref] !== tip).map(([ref]) => ref);
       const unpushed = await this.git(workspaceId, record.path,
         ['rev-list', '--count', 'HEAD', ...ownedRefs, '--not', record.base.commit, '--remotes']);
       const ignored = await this.git(workspaceId, record.path, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z']);
