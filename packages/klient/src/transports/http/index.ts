@@ -7,6 +7,8 @@ export {
   HTTP_TRANSPORT_TIMEOUT_REASON,
   HttpChannel,
   type HttpChannelOptions,
+  type HttpSocketCloseCause,
+  type HttpSocketDiagnostic,
 } from './channel.js';
 export type {
   HttpRestBinaryFile,

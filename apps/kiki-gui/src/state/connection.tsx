@@ -58,6 +58,7 @@ import {
   type DesktopBootStatus,
   type DesktopFailureInfo,
 } from './desktopConnection';
+import { watchPageLifecycle } from './connectionDiagnostics';
 
 export type { ConnectionConfig } from './connectionConfig';
 
@@ -548,6 +549,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       catalog.dispose();
     };
   }, [socket, klient, queryClient]);
+
+  // Page lifecycle next to the socket's own log: a close right after a long
+  // hidden-window timer gap reads very differently from one out of the blue.
+  useEffect(() => {
+    if (socket === null) return;
+    return watchPageLifecycle();
+  }, [socket]);
 
   // Browser recovery events nudge a parked socket without adding periodic work.
   useEffect(() => {

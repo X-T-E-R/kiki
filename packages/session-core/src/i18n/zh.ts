@@ -2310,6 +2310,13 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'st.conn.timeoutLabel': '请求超时（秒）',
   'st.conn.timeoutHint': '立即应用于 GUI 新发出的 HTTP 请求。请输入 {minimum}–{maximum} 的整数；打开大容量会话时可继续等待，不受此上限限制。',
   'st.conn.timeoutSaved': '请求超时已保存，新请求将使用更新后的上限。',
+  'st.conn.logTitle': '连接日志',
+  'st.conn.logBody': '记录实时连接断开的原因（最新在后）：关闭码、心跳间隔，以及当时窗口是否在后台。仅保存在本机，应用重启后清空。',
+  'st.conn.logSummary': '断开 {closes} 次 · 计时器暂停 {gaps} 次 · 共 {total} 条',
+  'st.conn.logEmpty': '应用启动以来没有记录到断开。',
+  'st.conn.logCopy': '复制连接日志',
+  'st.conn.logCopied': '连接日志已复制。',
+  'st.conn.logCopyFailed': '无法复制日志：{reason}',
   'st.conn.ownedTitle': '本机桌面服务器',
   'st.conn.ownedBody':
     'Kiki 桌面版管理 sidecar 的生命周期。重启会等待其关闭、启动新的 sidecar，并在返回前验证其需认证的端点。',

@@ -2330,6 +2330,13 @@ export const en = {
   'st.conn.timeoutLabel': 'Request timeout (seconds)',
   'st.conn.timeoutHint': 'Applies to new GUI HTTP requests immediately. Enter a whole number from {minimum} to {maximum}; opening a large session may continue beyond this limit.',
   'st.conn.timeoutSaved': 'Request timeout saved. New requests use the updated limit.',
+  'st.conn.logTitle': 'Connection log',
+  'st.conn.logBody': 'Why the live connection dropped, most recent last: close codes, heartbeat timing, and whether the window was hidden. Kept on this device until the app restarts.',
+  'st.conn.logSummary': '{closes} drops · {gaps} paused-timer gaps · {total} entries',
+  'st.conn.logEmpty': 'No drops recorded since the app started.',
+  'st.conn.logCopy': 'Copy connection log',
+  'st.conn.logCopied': 'Connection log copied.',
+  'st.conn.logCopyFailed': 'Could not copy the log: {reason}',
   'st.conn.ownedTitle': 'Owned desktop server',
   'st.conn.ownedBody':
     'Kiki desktop owns the sidecar lifecycle. Restart waits for shutdown, launches a new sidecar, and verifies its authenticated endpoint before returning.',

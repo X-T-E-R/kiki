@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-import { HTTP_TRANSPORT_TIMEOUT_REASON, HttpChannel } from '../src/transports/http/channel.js';
+import { HTTP_TRANSPORT_TIMEOUT_REASON, HttpChannel, type HttpSocketDiagnostic } from '../src/transports/http/channel.js';
 import { createKlient } from '../src/transports/http/index.js';
 import { KlientValidationError } from '../src/core/validation.js';
 
@@ -82,10 +82,10 @@ class FakeSocket {
     this.fire('open', {});
   }
 
-  serverClose(): void {
+  serverClose(event: { code?: number; reason?: string; wasClean?: boolean } = {}): void {
     if (this.readyState === 3) return;
     this.readyState = 3;
-    this.fire('close', {});
+    this.fire('close', event);
   }
 
   deliver(frame: Record<string, unknown>): void {
@@ -210,6 +210,30 @@ describe('http transport', () => {
       await vi.advanceTimersByTimeAsync(8_000);
       await rejection;
       klient.terminal.terminalDetach('s1', 't1');
+    } finally { await klient.close(); vi.useRealTimers(); }
+  });
+  it('reports why the event socket closed, with its close code and heartbeat timing', async () => {
+    vi.useFakeTimers();
+    const server = new FakeWebSocketServer();
+    const events: HttpSocketDiagnostic[] = [];
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server), onSocketDiagnostic: (event) => { events.push(event); } });
+    try {
+      klient.terminal.onStatus(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      server.push({ type: 'ping', data: { heartbeatMs: 10_000, nonce: 'n' } });
+      await vi.advanceTimersByTimeAsync(3_000);
+      server.sockets.at(-1)!.serverClose({ code: 1006, reason: '', wasClean: false });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(events.slice(0, 3)).toEqual([
+        { kind: 'open', attempt: 0 },
+        { kind: 'close', cause: 'server', code: 1006, reason: undefined, wasClean: false, openForMs: 3_000, sinceInboundMs: 3_000, heartbeatMs: 10_000 },
+        { kind: 'retry', attempt: 1, delayMs: 500 },
+      ]);
+      await vi.advanceTimersByTimeAsync(500);
+      server.push({ type: 'ping', data: { heartbeatMs: 10_000, nonce: 'm' } });
+      await vi.advanceTimersByTimeAsync(45_001);
+      klient.terminal.nudge();
+      expect(events.at(-1)).toMatchObject({ kind: 'close', cause: 'stale_heartbeat', heartbeatMs: 10_000, sinceInboundMs: 45_001 });
     } finally { await klient.close(); vi.useRealTimers(); }
   });
   it('shares one socket for PTY, ordered views and typed global events, replaying only unseen output', async () => {

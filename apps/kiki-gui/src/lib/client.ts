@@ -111,6 +111,7 @@ import {
 } from '@kiki/session-core/settings';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
+import { recordConnectionEvent } from '../state/connectionDiagnostics';
 import type { UsageResponseWire } from './usageV2';
 
 export { API_CODES, ApiError } from '@kiki/session-core/transport';
@@ -981,6 +982,7 @@ export class KikiClient {
       endpoint: this.baseUrl,
       token: this.token,
       timeoutMs: options.timeoutMs,
+      onSocketDiagnostic: (event) => { recordConnectionEvent(event); },
     });
     this.sessions = createSessionTransport(this.klient);
   }

@@ -47,7 +47,30 @@ export interface HttpChannelOptions {
   readonly WebSocket?: typeof WebSocket;
   /** Default deadline for HTTP calls and typed REST domains. */
   readonly timeoutMs?: number;
+  /** Observes the event socket's lifecycle, for connection diagnostics. */
+  readonly onSocketDiagnostic?: (event: HttpSocketDiagnostic) => void;
 }
+
+/**
+ * Why the event socket stopped: `server` is a close the client did not ask
+ * for (server close, network drop, heartbeat kill); the rest are client
+ * decisions.
+ */
+export type HttpSocketCloseCause = 'server' | 'establish_timeout' | 'fatal_frame' | 'view_restart' | 'stale_heartbeat';
+
+export type HttpSocketDiagnostic =
+  | { readonly kind: 'open'; readonly attempt: number }
+  | {
+    readonly kind: 'close';
+    readonly cause: HttpSocketCloseCause;
+    readonly code?: number;
+    readonly reason?: string;
+    readonly wasClean?: boolean;
+    readonly openForMs?: number;
+    readonly sinceInboundMs?: number;
+    readonly heartbeatMs?: number;
+  }
+  | { readonly kind: 'retry'; readonly attempt: number; readonly delayMs: number };
 
 interface ActiveCall {
   readonly controller: AbortController;
@@ -316,6 +339,7 @@ export class HttpChannel implements KlientChannel {
       endpoint,
       token: options.token,
       WebSocket: options.WebSocket,
+      onDiagnostic: options.onSocketDiagnostic,
     });
     this.rest = createHttpRestFacade({
       json: (path, restOptions) => this.requestJson(path, restOptions),
@@ -381,8 +405,10 @@ class HttpEventSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private establishmentTimer: ReturnType<typeof setTimeout> | undefined;
   private lastInboundAt = 0;
+  private openedAt = 0;
   private heartbeatMs: number | undefined;
   private seq = 0;
+  private readonly onDiagnostic: ((event: HttpSocketDiagnostic) => void) | undefined;
   readonly terminals = new HttpTerminals({
     nextId: () => this.nextId(),
     connect: () => { this.requireWebSocket(); this.ensureConnected(); },
@@ -396,17 +422,18 @@ class HttpEventSocket {
     connect: () => { this.requireWebSocket(); this.ensureConnected(); },
     isOpen: () => this.state === 'open',
     send: (frame) => { this.send(frame); },
-    restart: () => { this.restart(); },
+    restart: () => { this.restart('view_restart'); },
     nudge: () => { this.nudge(); },
   });
 
-  private restart(): void {
+  private restart(cause: HttpSocketCloseCause = 'view_restart'): void {
     if (this.closed) return;
     if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     const ws = this.ws;
     this.ws = undefined;
     this.state = 'idle';
+    if (ws !== undefined) this.reportClose(cause);
     ws?.close(4000, 'session view restart');
     const error = new Error('http event socket restarted');
     for (const stream of this.streams.values()) stream.error(error);
@@ -419,7 +446,7 @@ class HttpEventSocket {
   private nudge(): void {
     if (this.closed) return;
     if (this.state === 'open') {
-      if (this.heartbeatMs !== undefined && Date.now() - this.lastInboundAt > Math.max(45_000, this.heartbeatMs * 3)) this.restart();
+      if (this.heartbeatMs !== undefined && Date.now() - this.lastInboundAt > Math.max(45_000, this.heartbeatMs * 3)) this.restart('stale_heartbeat');
       return;
     }
     if (this.ws !== undefined) return;
@@ -435,10 +462,35 @@ class HttpEventSocket {
     endpoint: string;
     token?: string;
     WebSocket?: typeof WebSocket;
+    onDiagnostic?: (event: HttpSocketDiagnostic) => void;
   }) {
     this.wsUrl = toWebSocketUrl(options.endpoint);
     this.token = options.token;
     this.WebSocketCtor = options.WebSocket ?? globalThis.WebSocket;
+    this.onDiagnostic = options.onDiagnostic;
+  }
+
+  private diagnose(event: HttpSocketDiagnostic): void {
+    if (this.onDiagnostic === undefined) return;
+    try {
+      this.onDiagnostic(event);
+    } catch {
+    }
+  }
+
+  private reportClose(cause: HttpSocketCloseCause, event?: { code?: number; reason?: string; wasClean?: boolean }): void {
+    const now = Date.now();
+    this.diagnose({
+      kind: 'close',
+      cause,
+      code: event?.code,
+      reason: event?.reason === '' ? undefined : event?.reason,
+      wasClean: event?.wasClean,
+      openForMs: this.openedAt > 0 ? now - this.openedAt : undefined,
+      sinceInboundMs: this.lastInboundAt > 0 ? now - this.lastInboundAt : undefined,
+      heartbeatMs: this.heartbeatMs,
+    });
+    this.openedAt = 0;
   }
 
   listen(
@@ -628,16 +680,20 @@ class HttpEventSocket {
     this.ws = ws;
     this.heartbeatMs = undefined;
     this.lastInboundAt = 0;
+    this.openedAt = 0;
     clearTimeout(this.establishmentTimer);
     this.establishmentTimer = setTimeout(() => {
       if (this.ws !== ws || this.closed) return;
       this.ws = undefined;
+      this.reportClose('establish_timeout');
       ws.close(4000, 'WebSocket establishment timed out');
       this.onClose();
     }, 12_000);
     ws.addEventListener('open', () => {
       if (this.ws !== ws || this.closed) return;
       clearTimeout(this.establishmentTimer);
+      this.diagnose({ kind: 'open', attempt: this.reconnectAttempt });
+      this.openedAt = Date.now();
       this.reconnectAttempt = 0;
       this.state = 'open';
       for (const listen of this.listens.values()) this.send(listen.frame);
@@ -650,9 +706,10 @@ class HttpEventSocket {
       this.lastInboundAt = Date.now();
       this.onFrame(decodeJsonFrame(event.data));
     });
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (event) => {
       if (this.ws !== ws) return;
       this.ws = undefined;
+      if (!this.closed) this.reportClose('server', event as { code?: number; reason?: string; wasClean?: boolean });
       this.onClose();
     });
     ws.addEventListener('error', () => {
@@ -666,6 +723,7 @@ class HttpEventSocket {
       const ws = this.ws;
       this.ws = undefined;
       this.state = 'closed';
+      this.reportClose('fatal_frame', { reason: frame.msg });
       ws?.close(4000, 'fatal protocol error');
       this.onClose();
       return;
@@ -748,6 +806,7 @@ class HttpEventSocket {
       DEFAULT_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempt - 1),
       10_000,
     );
+    this.diagnose({ kind: 'retry', attempt: this.reconnectAttempt, delayMs: delay });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       this.state = 'idle';

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
@@ -14,6 +14,8 @@ import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { useBusySessionCount } from '../../lib/busySessionsHook';
 import { useConnection } from '../../state/connection';
+import { connectionLog, formatConnectionLog, subscribeConnectionLog } from '../../state/connectionDiagnostics';
+import { copyTextToClipboard } from '../../lib/clipboard';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, SavedTick, type Feedback } from '../controls';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -190,6 +192,8 @@ export function ConnectionSection() {
         </SettingField>
       </SectionCard>
 
+      <ConnectionLogCard />
+
       {!isSsh ? <SectionCard id="st-card-conn-owned" title={t('st.conn.ownedTitle')} badge="desktop">
         <div className="space-y-3">
           <p className="text-[12.5px] text-ink-soft">
@@ -245,5 +249,36 @@ export function ConnectionSection() {
         onCancel={() => { setConfirmRestart(false); }}
       />
     </div>
+  );
+}
+
+/** The client's own record of socket drops, copied whole for a bug report. */
+function ConnectionLogCard() {
+  const { t } = useI18n();
+  const log = useSyncExternalStore(subscribeConnectionLog, connectionLog, connectionLog);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const closes = log.filter((entry) => entry.kind === 'close').length;
+  const gaps = log.filter((entry) => entry.kind === 'timer_gap').length;
+  const copy = async () => {
+    try {
+      await copyTextToClipboard(formatConnectionLog(log));
+      setFeedback({ tone: 'success', text: t('st.conn.logCopied') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: t('st.conn.logCopyFailed', { reason: error instanceof Error ? error.message : String(error) }) });
+    }
+  };
+  return (
+    <SectionCard id="st-card-conn-log" title={t('st.conn.logTitle')}>
+      <div className="space-y-3" data-conn-log>
+        <p className="text-[12.5px] text-ink-soft">{t('st.conn.logBody')}</p>
+        <p className="text-[12.5px] tabular-nums text-ink" data-conn-log-summary>
+          {closes === 0 ? t('st.conn.logEmpty') : t('st.conn.logSummary', { closes, gaps, total: log.length })}
+        </p>
+        <button type="button" className={SECONDARY_BUTTON} data-conn-log-copy disabled={log.length === 0} onClick={() => { void copy(); }}>
+          {t('st.conn.logCopy')}
+        </button>
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
   );
 }
