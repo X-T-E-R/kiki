@@ -101,13 +101,14 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     const disclosure = this.enabled();
     const activeEntries = this.activeEntries(entries, disclosure);
     if (!disclosure) return activeEntries;
+    const hasLoadableTools = activeEntries.some((entry) => this.isDynamicallyLoadable(entry));
     const loaded = this.loadedToolNames();
     const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias).model;
     const kimiProvider = usesKimiToolSchema(model.providerType);
     const shaped: ShapedToolEntry[] = [];
     for (const entry of activeEntries) {
       if (entry.name === SELECT_TOOLS_TOOL_NAME || entry.name === CALL_TOOL_NAME) {
-        if (entry.name !== CALL_TOOL_NAME || !kimiProvider) shaped.push(entry);
+        if (hasLoadableTools && (entry.name !== CALL_TOOL_NAME || !kimiProvider)) shaped.push(entry);
         continue;
       }
       if (!this.isDynamicallyLoadable(entry)) {

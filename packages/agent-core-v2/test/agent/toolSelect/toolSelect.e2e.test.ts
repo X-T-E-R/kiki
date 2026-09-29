@@ -17,6 +17,12 @@ import { createTestAgent, type TestAgentContext } from '../../harness';
 
 const MCP_ALPHA = 'mcp__srv__alpha';
 const DASHBOARD_TOOL = 'dashboard_create';
+const OPENAI_PROVIDER = {
+  type: 'openai',
+  apiKey: 'test-key',
+  baseUrl: 'https://api.example.test/v1',
+  model: 'mock-openai-model',
+} as const;
 
 const DISCLOSURE_CAPABILITIES = {
   image_in: false,
@@ -108,6 +114,51 @@ describe('progressive tool disclosure end-to-end', () => {
     await ctx.dispose();
   });
 
+  it('exposes no discovery controls when no deferred tool is active', async () => {
+    registration?.dispose();
+    registration = undefined;
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES, tools: ['Read', 'Bash'] });
+    ctx.mockNextResponse(selectToolsCall('call_select_1', [MCP_ALPHA]));
+    ctx.mockNextResponse({
+      type: 'function',
+      id: 'call_bridge_1',
+      name: 'CallTool',
+      arguments: JSON.stringify({ name: MCP_ALPHA, arguments: {} }),
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'try an MCP tool' }] });
+    await ctx.untilTurnEnd();
+
+    const firstWire = ctx.llmCalls[0]!;
+    expect(historyText(firstWire.history)).not.toContain('<tools_added>');
+    expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain(
+      `Unknown tool: ${MCP_ALPHA}. Pick from the latest announced tools list.`,
+    );
+    expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain(
+      'This tool was not loaded or is no longer available.',
+    );
+    expect(alpha.calls).toBe(0);
+    expect(toolNames(firstWire.tools)).not.toContain('SelectTools');
+    expect(toolNames(firstWire.tools)).not.toContain('CallTool');
+  });
+
+  it('still exposes deferred plan tools without an MCP server or plugin', async () => {
+    registration?.dispose();
+    registration = undefined;
+    ctx.mockNextResponse(selectToolsCall('call_select_plan', ['EnterPlanMode']));
+    ctx.mockNextResponse({ type: 'text', text: 'plan tool loaded' });
+
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'load the plan tool' }] });
+    await ctx.untilTurnEnd();
+
+    expect(historyText(ctx.llmCalls[0]!.history)).toContain('EnterPlanMode');
+    expect(historyText(ctx.llmCalls[0]!.history)).not.toContain(MCP_ALPHA);
+    expect(toolNames(ctx.llmCalls[0]!.tools)).toContain('SelectTools');
+    expect(ctx.llmCalls[1]!.history.some((message) =>
+      message.tools?.some((tool) => tool.name === 'EnterPlanMode'))).toBe(true);
+  });
+
   it('announces the manifest, loads by name, keeps the top-level table byte-stable, and dispatches on the next step', async () => {
     ctx.mockNextResponse(selectToolsCall('call_select_1', [MCP_ALPHA]));
     ctx.mockNextResponse({
@@ -154,6 +205,36 @@ describe('progressive tool disclosure end-to-end', () => {
     expect(secondWire.tools).toEqual(firstWire.tools);
     expect(wireEvents(ctx, 'llm.tools_snapshot')).toHaveLength(1);
 
+    expect(alpha.calls).toBe(1);
+  });
+
+  it('routes a loaded MCP tool through CallTool and rejects the bridge before selection', async () => {
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.mockNextResponse({
+      type: 'function',
+      id: 'call_bridge_early',
+      name: 'CallTool',
+      arguments: JSON.stringify({ name: MCP_ALPHA, arguments: { query: 'moon' } }),
+    });
+    ctx.mockNextResponse(selectToolsCall('call_select_1', [MCP_ALPHA]));
+    ctx.mockNextResponse({
+      type: 'function',
+      id: 'call_bridge_loaded',
+      name: 'CallTool',
+      arguments: JSON.stringify({ name: MCP_ALPHA, arguments: { query: 'moon' } }),
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'call srv alpha' }] });
+    await ctx.untilTurnEnd();
+
+    expect(toolNames(ctx.llmCalls[0]!.tools)).toContain('CallTool');
+    expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain(
+      'This tool was not loaded or is no longer available.',
+    );
+    expect(ctx.llmCalls[2]!.tools).toEqual(ctx.llmCalls[0]!.tools);
+    expect(historyText(ctx.llmCalls[2]!.history)).toContain('<dynamic_tool_schemas>');
+    expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain('mcp ok');
     expect(alpha.calls).toBe(1);
   });
 

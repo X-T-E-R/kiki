@@ -10,11 +10,11 @@ import {
 } from './select-tools';
 
 const DESCRIPTION =
-  'Load one or more tools by name so you can call them. ' +
-  'All available tool names are listed in the <tools_added>/<tools_removed> announcements ' +
-  'in the system context — fold them in order to get the current list. ' +
-  'Pass the exact name(s) you need; their full definitions become available immediately, ' +
-  'so you can call them directly in your next tool call.';
+  'When you need an MCP, plugin, or deferred builtin tool listed in <tools_added>, ' +
+  'call SelectTools with its exact name before using it. Fold <tools_added>/<tools_removed> ' +
+  'announcements in order to find the current names. The selected schema arrives in the ' +
+  'next model step; then call the real tool by name, or use CallTool if it is listed. ' +
+  'Ordinary tools already listed in tools[] do not need selection.';
 
 export class SelectToolsTool implements ISelectToolsTool {
   declare readonly _serviceBrand: undefined;

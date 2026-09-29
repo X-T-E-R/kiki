@@ -52,9 +52,9 @@
 
 ## 动态工具
 
-MCP 和插件工具先公告名称，需要时由 `SelectTools` 加载。Kimi provider 在消息内携带工具 schema；OpenAI chat、OpenAI Responses 和 Anthropic provider 在 system 文本中携带 schema，并在顶层工具列表常驻 `CallTool` 桥接工具。模型也可以直接用真实名称调用已加载工具。审批、访问检查和界面工具卡片都使用真实工具名。模型具备工具调用能力时，这些 provider 默认启用 `tool-select`；不要求声明 `dynamically_loaded_tools`。关闭该 flag 会恢复内联工具提供方式。
+MCP、插件和延迟提供的内置工具先公告名称。需要调用时，先用 `SelectTools` 选择公告中的名称；模型会在下一步收到该工具的 schema。已列在工具列表中的普通工具可直接调用。Kimi provider 在消息内携带所选工具的 schema；OpenAI chat、OpenAI Responses 和 Anthropic provider 在 system 文本中携带 schema，只要还有延迟工具可用，就在顶层工具列表提供稳定的 `CallTool` 桥接工具。模型也可以直接用真实名称调用已加载工具。审批、访问检查和界面工具卡片都使用真实工具名。模型具备工具调用能力时，这些 provider 默认启用 `tool-select`；不要求声明 `dynamically_loaded_tools`。关闭该 flag 会恢复内联工具提供方式。
 
-MCP server 重连或插件装卸只改变增量公告，不改变顶层工具列表。profile 目录变化时，仅当当前 Agent 实际可派遣的 profile 新增、移除或发生变化，才会在下一条用户消息时公告。用户主动修改工具组、MCP server 或记忆配置，则从下一条用户消息开始应用，顶层工具列表可能变化。
+未配置 MCP server 或插件时，延迟提供的内置 Plan 模式工具仍可能出现在公告中。如果当前没有可用的延迟工具，工具列表不会出现 `SelectTools` 或 `CallTool`。仍有延迟工具可用时，MCP server 重连或插件装卸只改变增量公告，不改变顶层工具列表。profile 目录变化时，仅当当前 Agent 实际可派遣的 profile 新增、移除或发生变化，才会在下一条用户消息时公告。用户主动修改工具组、MCP server 或记忆配置，则从下一条用户消息开始应用，顶层工具列表可能变化。
 
 ## 网络类
 

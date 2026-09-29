@@ -668,13 +668,25 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(afterLoad.find((entry) => entry.name === USER_INLINE)?.deferred).toBeUndefined();
   });
 
-  it('keeps a stable CallTool on OpenAI but not Kimi', () => {
-    flagEnabled = true;
+  it('keeps a stable CallTool on OpenAI with deferred tools but not Kimi', () => {
     const h = createHarness();
+    registerMcp(h, new StubMcpTool(MCP_ALPHA));
     disposables.add(h.registry.register(h.ix.createInstance(CallTool), { source: 'builtin' }));
     expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).toContain(CALL_TOOL_NAME);
     providerType = 'kimi';
     expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain(CALL_TOOL_NAME);
+  });
+
+  it('removes both discovery controls when no active deferred tools remain', () => {
+    const h = createHarness();
+    const registration = registerMcp(h, new StubMcpTool(MCP_ALPHA));
+    disposables.add(h.registry.register(h.ix.createInstance(SelectToolsTool), { source: 'builtin' }));
+    disposables.add(h.registry.register(h.ix.createInstance(CallTool), { source: 'builtin' }));
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).toEqual([
+      CALL_TOOL_NAME, SELECT_TOOLS_TOOL_NAME,
+    ]);
+    registration.dispose();
+    expect(h.sut.shapeTools(h.registry.list())).toEqual([]);
   });
 
   it('keeps SelectTools visible when the profile omits it while hiding inactive tools', () => {

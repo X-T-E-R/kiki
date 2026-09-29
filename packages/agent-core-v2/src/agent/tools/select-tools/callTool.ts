@@ -17,7 +17,7 @@ export const ICallTool = createDecorator<ICallTool>('callTool');
 export class CallTool implements ICallTool {
   declare readonly _serviceBrand: undefined;
   readonly name = CALL_TOOL_NAME;
-  readonly description = 'Call a dynamic tool already loaded with SelectTools (MCP, plugin, or deferred builtin). Pass its exact name and arguments object. The call executes as the real tool with its own policy and approval; unavailable or unloaded names are rejected.';
+  readonly description = 'After SelectTools has loaded an MCP, plugin, or deferred builtin tool, use CallTool to run it by exact name with its JSON arguments. Use ordinary tools directly; never use CallTool for names absent from the folded <tools_added>/<tools_removed> announcements. The real tool retains its permission checks. An unloaded or unavailable name returns an error.';
   readonly parameters = toInputJsonSchema(CallToolInputSchema);
 
   resolveExecution(): ToolExecution {
