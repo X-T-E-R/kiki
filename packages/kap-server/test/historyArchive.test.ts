@@ -66,6 +66,20 @@ describe('history archive', () => {
     await expect(archive.readTurn('old', '../outside', 0)).rejects.toThrow('Invalid agent id');
   });
 
+  it('routes workspace auto/all/any through scoped indexed phrase confirmation', async () => {
+    const { archive, search } = fixture(false);
+    for (const mode of ['auto', 'all', 'any'] as const) {
+      const page = await archive.search({ query: 'state badge', mode, workspaceId: 'ws-a',
+        agentId: 'main', pageSize: 5 }) as HistorySearchPage;
+      expect(search).toHaveBeenLastCalledWith(expect.objectContaining({
+        query: 'state badge', mode: 'terms', historyMode: mode, workspaceId: 'ws-a',
+        indexOnly: true, container: { sessionId: undefined, agentId: 'main' },
+      }));
+      expect(page.coverage).toMatchObject({ complete: true, domain: 'indexed_text',
+        gaps: ['tool_tail_not_indexed', 'refs_unavailable'] });
+    }
+  });
+
   it('keeps partial building results on the index instead of using the fallback heuristic', async () => {
     const { archive, readColdSnapshotBounded } = fixture(false, false, true);
     const page = await archive.search({ query: 'needle', mode: 'terms', pageSize: 8 }) as HistorySearchPage;

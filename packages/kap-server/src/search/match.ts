@@ -8,6 +8,7 @@ import {
   type GlobalSearchSource,
 } from './contract.ts';
 import type { MessageDoc, SearchDoc, TitleDoc } from './docs.ts';
+import { matchHistoryText, type HistoryQuery } from '../services/history/historyQuery';
 
 export interface NormalizedQuery {
   readonly query: string;
@@ -28,6 +29,7 @@ export interface NormalizedQuery {
    * mirroring `TextIndex.search`.
    */
   readonly termsQuery?: readonly string[];
+  readonly historyPlan?: HistoryQuery;
   readonly op: 'AND' | 'OR';
   readonly container?: { readonly sessionId?: string; readonly agentId?: string };
   /** Restrict to one workspace. */
@@ -210,6 +212,12 @@ export function matchDocs(
     if (q.role !== undefined && doc.role !== q.role) continue;
     if (q.startTime !== undefined && doc.time < q.startTime) continue;
     if (q.endTime !== undefined && doc.time > q.endTime) continue;
+    if (q.historyPlan !== undefined) {
+      budget.textCharsLeft -= doc.text.length;
+      if (budget.textCharsLeft < 0) return { rows, incomplete: 'deadline' };
+      const match = doc.role === 'title' ? undefined : matchHistoryText(doc.text, q.historyPlan);
+      if (match === undefined) continue;
+    }
     if (boundary !== undefined && !rowAfterBoundary(q, { key, value: doc, score }, boundary)) {
       continue;
     }
@@ -275,6 +283,7 @@ export function tokenFingerprint(q: NormalizedQuery, source: GlobalSearchSource)
     q.endTime,
     q.sort,
     source,
+    ...(q.historyPlan === undefined ? [] : [q.historyPlan.mode]),
   ]);
   return createHash('sha256').update(basis).digest('base64url').slice(0, 16);
 }

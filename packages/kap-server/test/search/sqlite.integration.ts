@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SqliteSearchIndex } from '../../src/search/sqlite/index';
 import { openSearchDatabase } from '../../src/search/sqlite/schema';
 import type { NormalizedQuery } from '../../src/search/match';
+import { planHistoryQuery } from '../../src/services/history/historyQuery';
 
 let home: string;
 let index: SqliteSearchIndex;
@@ -155,6 +156,42 @@ describe('SQLite derived search index', () => {
     }
     const short = await index.search({ ...q('ta', 'literal'), container: { sessionId: 's1' } }, undefined, budgets);
     expect(short.rows.map((row) => row.value.sessionId)).toEqual(['s1']);
+  });
+
+  it('matches workspace history auto/all/any clauses after scoped candidate selection', async () => {
+    await wire([user('state badge granted'), user('state-badge not granted', T + 1),
+      user('state badge pending', T + 2)]);
+    await index.syncSession(session());
+    for (const id of ['other-a', 'other-b']) {
+      const dir = join(home, id);
+      await mkdir(join(dir, 'agents', 'main'), { recursive: true });
+      await writeFile(join(dir, 'agents', 'main', 'wire.jsonl'), `${user('state badge granted')}\n`);
+      await index.syncSession({ id, dir, workspaceId: 'other', updatedAt: T });
+    }
+    const budget = { literalCandidateCap: 1, maxTextHits: 4,
+      postingsVisitBudget: 100, queryDeadlineMs: 10_000, queryTextBudgetChars: 100_000 };
+    const query = '"state badge" granted';
+    const tokens = [...new Set(['state', 'badge', 'granted'])];
+    const modeQuery = (mode: 'auto' | 'all' | 'any'): NormalizedQuery => ({
+      ...q(query), termsQuery: tokens, op: 'OR', historyPlan: planHistoryQuery(query, mode),
+      workspaceId: 'w', role: 'user',
+    });
+    const auto = await index.search(modeQuery('auto'), undefined, budget);
+    expect(auto.rows.map((row) => row.value.text)).toEqual([
+      'state badge granted', 'state-badge not granted', 'state badge pending',
+    ]);
+    expect(auto.incomplete).toBeUndefined();
+    expect((await index.search(modeQuery('all'), undefined, budget)).rows.map((row) => row.value.text))
+      .toEqual(['state badge granted']);
+    expect((await index.search(modeQuery('any'), undefined, budget)).rows.map((row) => row.value.text))
+      .toEqual(['state badge granted', 'state-badge not granted', 'state badge pending']);
+    const first = await index.search({ ...modeQuery('auto'), pageSize: 1 }, undefined, budget);
+    expect(first.rows).toHaveLength(1);
+    expect(first.pageToken).toBeDefined();
+    const second = await index.search({ ...modeQuery('auto'), pageSize: 1 }, first.pageToken, budget);
+    expect(second.rows[0]?.value.text).not.toBe(first.rows[0]?.value.text);
+    await expect(index.search({ ...modeQuery('all'), pageSize: 1 }, first.pageToken, budget))
+      .rejects.toMatchObject({ reason: 'invalid_page_token' });
   });
 
   it('rejects foreign and unknown databases before mutating their schema; resets an old owned schema', async () => {

@@ -286,16 +286,29 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       signal?.throwIfAborted();
       planHistoryQuery(query, mode ?? 'auto');
       let unavailablePage: HistorySearchPage | undefined;
-      if (source !== 'transcript' && (mode === 'terms' || mode === 'literal')) {
+      const indexedPhrases = source !== 'transcript' && sessionId === undefined &&
+        (mode === 'auto' || mode === 'all' || mode === 'any');
+      if (source !== 'transcript' && (indexedPhrases || mode === 'terms' || mode === 'literal')) {
         try {
           const page = await getCore().accessor.get(IGlobalSearchService).search({
-            query, mode, workspaceId, indexOnly: sessionId === undefined,
+            query, mode: indexedPhrases ? 'terms' : mode as 'terms' | 'literal',
+            historyMode: indexedPhrases ? mode : undefined,
+            workspaceId, indexOnly: sessionId === undefined,
             container: sessionId === undefined && agentId === undefined
               ? undefined : { sessionId, agentId }, role, pageSize, pageToken,
             startTime: after, endTime: before === undefined ? undefined : before - 1,
             sort: sort === 'oldest' ? 'time_asc' : sort === 'newest' ? 'time_desc' : 'score',
           });
-          if (page.indexState.state !== 'unavailable' || page.items.length > 0) return page;
+          signal?.throwIfAborted();
+          if (page.indexState.state !== 'unavailable' || page.items.length > 0) return indexedPhrases ? {
+            ...page, coverage: { complete: page.indexState.state === 'ready' &&
+              page.indexState.stale !== true && page.incomplete === undefined && includeSubagents !== true,
+            domain: 'indexed_text', gaps: [
+              'tool_tail_not_indexed', 'refs_unavailable',
+              includeSubagents ? 'subagents_may_be_unindexed' : undefined,
+              page.incomplete, page.indexState.state === 'ready' ? undefined : 'index_not_ready',
+            ].filter((gap): gap is string => gap !== undefined) },
+          } : page;
           unavailablePage = page;
         } catch (error) {
           if (!(error instanceof GlobalSearchError && error.reason === 'index_unavailable') &&

@@ -8,6 +8,8 @@ export interface GlobalSearchQuery {
    * 'terms'; literal hits carry score 0 and sort by time desc.
    */
   readonly mode?: 'terms' | 'literal';
+  /** History-only phrase confirmation after scoped index candidate retrieval; GUI callers omit it. */
+  readonly historyMode?: 'auto' | 'all' | 'any';
   /** Term combination, default AND. */
   readonly op?: 'AND' | 'OR';
   /** Omit to search across every session. */

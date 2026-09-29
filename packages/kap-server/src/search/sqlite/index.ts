@@ -555,6 +555,7 @@ export class SqliteSearchIndex {
     }
     if (q.workspaceId !== undefined) { filters.push('s.workspace_id=?'); filterValues.push(q.workspaceId); }
     if (q.role !== undefined) { filters.push('d.role=?'); filterValues.push(q.role); }
+    else if (q.historyPlan !== undefined) filters.push("d.role!='title'");
     if (q.startTime !== undefined) { filters.push('d.time>=?'); filterValues.push(q.startTime); }
     if (q.endTime !== undefined) { filters.push('d.time<=?'); filterValues.push(q.endTime); }
     const joins = (table: string) => `JOIN docs d ON d.id=${table}.rowid
@@ -568,7 +569,7 @@ export class SqliteSearchIndex {
         if (ranked) {
           matchedIds = db.prepare('SELECT rowid, rank FROM docs_terms WHERE docs_terms MATCH ? ORDER BY rank LIMIT ?')
             .all(expression, Math.min(budgets.maxTextHits, 64) + 1) as { rowid: number; rank: number }[];
-        } else if (q.sort === 'time_desc' && page.kind === 'first') {
+        } else if (q.sort === 'time_desc' && page.kind === 'first' && q.historyPlan === undefined) {
           matchedIds = db.prepare(`SELECT docs_terms.rowid FROM docs_terms ${joins('docs_terms')}
             WHERE docs_terms MATCH ?${scopedWhere}
             ORDER BY d.time DESC, CASE WHEN d.role='title'

@@ -52,6 +52,7 @@ import {
   type SearchBudgets,
 } from './match';
 import { makeSnippet } from './snippet';
+import { planHistoryQuery } from '../services/history/historyQuery';
 import { SEARCH_BACKEND_SECTION, type SearchConfig } from './searchConfig';
 import { SqliteSearchHost } from './sqlite/host';
 import { SearchWorkerError, SearchWorkerHost, dropLiveLockToken, noteLiveLockToken } from './worker/host';
@@ -186,8 +187,14 @@ function normalizeQuery(input: GlobalSearchQuery, maxQueryTerms: number): Normal
   if (query.length === 0) {
     throw new GlobalSearchError('invalid_query', 'query must be a non-empty string');
   }
+  if (input.historyMode !== undefined && (mode !== 'terms' || input.indexOnly !== true ||
+      input.workspaceId === undefined || input.role === 'title')) {
+    throw new GlobalSearchError('invalid_query', 'history phrase matching requires scoped indexed terms');
+  }
+  const historyPlan = input.historyMode === undefined ? undefined : planHistoryQuery(query, input.historyMode);
   const literalQuery = mode === 'literal' ? normalizeLiteral(query) : undefined;
-  const termsQuery = mode === 'terms' ? [...new Set(tokenize(query))] : undefined;
+  const termsQuery = mode === 'terms' ? [...new Set(historyPlan === undefined ? tokenize(query) :
+    historyPlan.clauses.flatMap((clause) => tokenize(clause.text)))] : undefined;
   if (termsQuery !== undefined && termsQuery.length > maxQueryTerms) {
     throw new GlobalSearchError(
       'invalid_query',
@@ -203,7 +210,8 @@ function normalizeQuery(input: GlobalSearchQuery, maxQueryTerms: number): Normal
     mode,
     literalQuery,
     termsQuery,
-    op: input.op ?? 'AND',
+    historyPlan,
+    op: historyPlan === undefined ? input.op ?? 'AND' : 'OR',
     container: input.container,
     workspaceId: input.workspaceId,
     role: input.role,
@@ -689,6 +697,9 @@ export class GlobalSearchService implements IGlobalSearchService {
       ? this.liveSource?.forSessionLive(sessionId) : undefined;
     if (liveStore !== undefined && sessionId !== undefined) {
       return this.searchLive(q, sessionId, liveStore, input.pageToken);
+    }
+    if (q.historyPlan !== undefined && this.sqliteHost === undefined) {
+      return this.unavailablePage('runtime_disabled', 'history phrase index requires the SQLite search route');
     }
     return this.searchIndex(q, input.pageToken);
   }
