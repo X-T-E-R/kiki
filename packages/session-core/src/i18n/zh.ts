@@ -1758,6 +1758,7 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'st.badge.restartRequired': '需要重启',
   'st.badge.desktopOnly': '仅桌面版',
   'st.savedTick': '已保存',
+  'st.draft.unsaved': '有未保存的更改',
   'st.search.placeholder': '搜索设置…',
   'st.search.aria': '搜索设置',
   'st.search.empty': '没有匹配“{query}”的设置项。',

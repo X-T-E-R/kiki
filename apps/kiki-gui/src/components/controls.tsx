@@ -8,17 +8,28 @@ import { Icon } from './icons';
 
 export type Feedback = { tone: 'success' | 'error' | 'info'; text: string } | null;
 
+/**
+ * Inline result of an action, in the reading font: one quiet line with a drawn
+ * mark, never a boxed banner. Success and info stay in the ink scale so a saved
+ * card does not shout; only an error takes the danger color.
+ */
 export function FeedbackLine({ feedback }: { feedback: Feedback }) {
   if (feedback === null) return null;
-  const classes =
-    feedback.tone === 'error'
-      ? 'border-danger/30 bg-danger/5 text-danger'
-      : feedback.tone === 'success'
-        ? 'border-success/30 bg-success/5 text-success'
-        : 'border-hairline bg-paper text-ink-soft';
+  const tone =
+    feedback.tone === 'error' ? 'text-danger'
+      : feedback.tone === 'success' ? 'text-ink-soft'
+        : 'text-ink-faint';
+  const mark = feedback.tone === 'error' ? 'warning' : feedback.tone === 'success' ? 'check' : null;
   return (
-    <p role={feedback.tone === 'error' ? 'alert' : 'status'} className={`rounded-md border px-2.5 py-2 font-mono text-[11px] ${classes}`}>
-      {feedback.text}
+    <p
+      role={feedback.tone === 'error' ? 'alert' : 'status'}
+      data-feedback-tone={feedback.tone}
+      className={`anim-enter flex max-w-[72ch] items-start gap-1.5 text-[12px] leading-[18px] ${tone}`}
+    >
+      {mark !== null ? (
+        <Icon name={mark} size={12} className={`mt-[3px] ${feedback.tone === 'success' ? 'text-success' : ''}`} />
+      ) : null}
+      <span className="min-w-0 break-words">{feedback.text}</span>
     </p>
   );
 }
@@ -35,20 +46,26 @@ export function InlineError({ error }: { error: unknown }) {
 }
 
 export function Toggle({
+  id,
   label,
   checked,
   onChange,
   disabled = false,
   layout = 'inline',
 }: {
+  id?: string;
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
-  /** `row`: label on the left, switch on the right edge (settings rows). */
-  layout?: 'inline' | 'row';
+  /**
+   * `row`: label on the left, switch on the right edge (settings rows).
+   * `bare`: the switch alone, for the control slot of a `SettingField` that
+   * already prints the label; the label stays for assistive tech only.
+   */
+  layout?: 'inline' | 'row' | 'bare';
 }) {
-  const text = <span className="text-[13px] text-ink">{label}</span>;
+  const text = <span className={layout === 'bare' ? 'sr-only' : 'text-[13px] text-ink'}>{label}</span>;
   // Quiet switch: a tinted track with a solid knob. Only the ON knob carries
   // the accent, so a column of switches reads as state, not as a row of
   // orange buttons. The real checkbox sits first so the track can show its
@@ -57,6 +74,7 @@ export function Toggle({
     <label className={`${layout === 'row' ? 'flex w-full justify-between' : 'inline-flex'} min-h-7 items-center gap-2.5 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
       {layout === 'row' ? text : null}
       <input
+        id={id}
         type="checkbox"
         className="peer sr-only"
         checked={checked}
@@ -77,7 +95,7 @@ export function Toggle({
           }`}
         />
       </span>
-      {layout === 'inline' ? text : null}
+      {layout === 'row' ? null : text}
     </label>
   );
 }
@@ -91,9 +109,22 @@ export function SavedTick({ show }: { show: boolean }) {
   const { t } = useI18n();
   if (!show) return null;
   return (
-    <span role="status" className="anim-enter inline-flex items-center gap-1 text-[12px] font-medium text-success">
+    <span role="status" data-saved-tick className="anim-enter inline-flex items-center gap-1 text-[12px] font-medium text-success">
       <Icon name="check" size={12} />
       {t('st.savedTick')}
     </span>
   );
+}
+
+/**
+ * The one inline save state for an instant-apply control: "Saving…" while the
+ * write is in flight, then the transient ✓ Saved. Errors are not shown here;
+ * they get their own `FeedbackLine` under the field, where there is room.
+ */
+export function SaveStatus({ saving, saved }: { saving: boolean; saved: boolean }) {
+  const { t } = useI18n();
+  if (saving) {
+    return <span role="status" data-save-status="saving" className="text-[12px] text-ink-faint">{t('common.saving')}</span>;
+  }
+  return <SavedTick show={saved} />;
 }

@@ -1773,6 +1773,7 @@ export const en = {
   'st.badge.restartRequired': 'Restart required',
   'st.badge.desktopOnly': 'Desktop only',
   'st.savedTick': 'Saved',
+  'st.draft.unsaved': 'Unsaved changes',
   'st.search.placeholder': 'Search settings…',
   'st.search.aria': 'Search settings',
   'st.search.empty': 'No settings match “{query}”.',

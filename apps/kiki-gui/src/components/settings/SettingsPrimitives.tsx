@@ -1,4 +1,7 @@
+import { useEffect, useId, useState } from 'react';
+
 import { useI18n } from '../../i18n';
+import { SavedTick } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { useDirtyReporter } from '../dirtyGuard';
 import { SearchableSelect } from '../SearchableSelect';
@@ -9,7 +12,7 @@ import { SearchableSelect } from '../SearchableSelect';
  * fixed order (Save · Discard · status). `extra` takes reset-style actions,
  * which sit at the far end so they are never the thing clicked by habit.
  */
-export function SettingsDraftFooter({ id, dirty, saving = false, saveDisabled = false, saveLabel, onSave, onDiscard, restartRequired = false, extra, persistent = false }: {
+export function SettingsDraftFooter({ id, dirty, saving = false, saveDisabled = false, saveLabel, onSave, onDiscard, restartRequired = false, extra, persistent = false, saved = false }: {
   id: string;
   dirty: boolean;
   saving?: boolean;
@@ -21,6 +24,11 @@ export function SettingsDraftFooter({ id, dirty, saving = false, saveDisabled = 
   extra?: React.ReactNode;
   /** Creation forms keep their commit button in view even before an edit. */
   persistent?: boolean;
+  /**
+   * Transient ✓ Saved after a successful save (from `useSavedTick`). The bar
+   * collapses to that one line instead of a boxed success message.
+   */
+  saved?: boolean;
 }) {
   const { t } = useI18n();
   useDirtyReporter(id, dirty);
@@ -28,17 +36,72 @@ export function SettingsDraftFooter({ id, dirty, saving = false, saveDisabled = 
   // appears with the first edit. `hidden` keeps the nodes mounted, so focus
   // order and tests see one stable bar.
   const shown = persistent || dirty || saving || restartRequired;
-  return <div data-settings-draft={id} data-dirty={dirty ? 'true' : undefined} hidden={!shown}
-    className={`flex flex-wrap items-center gap-2 pt-3 ${shown ? 'anim-enter' : ''}`}>
-    <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving || saveDisabled} onClick={onSave}>
-      {saving ? t('common.saving') : saveLabel ?? t('common.save')}
-    </button>
-    <button type="button" data-settings-discard={id} className={SECONDARY_BUTTON} disabled={!dirty || saving} onClick={onDiscard}>
-      {t('st.advanced.discard')}
-    </button>
-    {dirty ? <span role="status" className="text-[12px] text-ink-faint">{t('st.tools.unsaved')}</span> : null}
-    {restartRequired ? <span className="text-[12px] text-ink-soft">{t('st.badge.restartRequired')}</span> : null}
-    {extra !== undefined ? <span className="ml-auto flex items-center gap-2">{extra}</span> : null}
+  const justSaved = saved && !dirty && !saving;
+  return <>
+    <div data-settings-draft={id} data-dirty={dirty ? 'true' : undefined} hidden={!shown}
+      className={`flex flex-wrap items-center gap-2 pt-3 ${shown ? 'anim-enter' : ''}`}>
+      <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving || saveDisabled} onClick={onSave}>
+        {saving ? t('common.saving') : saveLabel ?? t('common.save')}
+      </button>
+      <button type="button" data-settings-discard={id} className={SECONDARY_BUTTON} disabled={!dirty || saving} onClick={onDiscard}>
+        {t('st.advanced.discard')}
+      </button>
+      {dirty ? <span role="status" className="text-[12px] text-ink-faint">{t('st.draft.unsaved')}</span> : null}
+      {justSaved && shown ? <SavedTick show /> : null}
+      {restartRequired ? <span className="text-[12px] text-ink-soft">{t('st.badge.restartRequired')}</span> : null}
+      {extra !== undefined ? <span className="ml-auto flex items-center gap-2">{extra}</span> : null}
+    </div>
+    {justSaved && !shown ? <div data-settings-draft-saved={id} className="pt-3"><SavedTick show /></div> : null}
+  </>;
+}
+
+/**
+ * Text or number field that saves itself: commits on blur or Enter, Escape
+ * restores the stored value. No Save button of its own; validation runs on
+ * commit and the message lands under the field. The parent shows
+ * `SaveStatus` next to it and performs the write in `onCommit`.
+ */
+export function CommitInput({ id, value, onCommit, validate, disabled = false, className = '', inputMode, placeholder, ariaLabel, ariaDescribedBy, dataAttr }: {
+  id?: string;
+  /** Stored value; the field resyncs to it whenever it changes. */
+  value: string;
+  /** Called with the trimmed text when it differs from `value` and validates. */
+  onCommit: (text: string) => void;
+  /** Returns an error message, or null when the text may be saved. */
+  validate?: (text: string) => string | null;
+  disabled?: boolean;
+  className?: string;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'];
+  placeholder?: string;
+  ariaLabel?: string;
+  ariaDescribedBy?: string;
+  /** Data attribute name placed on the input (e.g. `data-memory-budget`). */
+  dataAttr?: string;
+}) {
+  const [text, setText] = useState(value);
+  const [issue, setIssue] = useState<string | null>(null);
+  const errorId = useId();
+  useEffect(() => { setText(value); setIssue(null); }, [value]);
+  const commit = () => {
+    const next = text.trim();
+    const problem = validate?.(next) ?? null;
+    setIssue(problem);
+    if (problem === null && next !== value) onCommit(next);
+  };
+  const describedBy = [ariaDescribedBy, issue !== null ? errorId : undefined].filter(Boolean).join(' ') || undefined;
+  return <div className="min-w-0">
+    <input id={id} value={text} disabled={disabled} inputMode={inputMode} placeholder={placeholder}
+      aria-label={ariaLabel} aria-invalid={issue !== null} aria-describedby={describedBy}
+      {...(dataAttr !== undefined ? { [dataAttr]: '' } : {})}
+      autoComplete="off" spellCheck={false}
+      className={`h-8 rounded-md border bg-paper px-2.5 text-[13px] tabular-nums text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint ${issue !== null ? 'border-danger' : 'border-hairline hover:border-hairline-strong'} ${className}`}
+      onChange={(event) => { setText(event.target.value); if (issue !== null) setIssue(null); }}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') { event.preventDefault(); commit(); }
+        else if (event.key === 'Escape') { setText(value); setIssue(null); }
+      }} />
+    <FieldIssue id={errorId} text={issue} />
   </div>;
 }
 
@@ -134,16 +197,30 @@ export function SettingsSegmented<T extends string>({ choices, value, onChange, 
  * Short fixed-option dropdown on the shared SearchableSelect popover (the
  * composer's picker look). The filter row only appears for long lists.
  */
-export function SettingsSelect<T extends string>({ id, choices, value, onChange, ariaLabel, disabled, className }: {
+export function SettingsSelect<T extends string>({ id, choices, value, onChange, ariaLabel, disabled, className, variant = 'row', emptyText, dataAttr, mono = false }: {
   id?: string;
-  choices: readonly { value: T; label: string; hint?: string }[];
+  choices: readonly { value: T; label: string; hint?: string; group?: string }[];
   value: T;
   onChange: (value: T) => void;
   ariaLabel: string;
   disabled?: boolean;
   className?: string;
+  /**
+   * `row`: the quiet tinted pill for the control slot of a `SettingField`.
+   * `form`: the bordered full-width trigger that lines up with `INPUT` in a
+   * stacked form grid (dialogs, rule editors).
+   */
+  variant?: 'row' | 'form';
+  /** Trigger text when `value` matches no choice (e.g. nothing picked yet). */
+  emptyText?: string;
+  /** Data attribute name put on the wrapper, carrying the current value. */
+  dataAttr?: string;
+  /** Monospace trigger for machine values (enum ids, paths). */
+  mono?: boolean;
 }) {
-  return <SearchableSelect id={id} options={choices} value={value} ariaLabel={ariaLabel} disabled={disabled}
-    hideFilter={choices.length <= 8} onChange={(next) => { onChange(next as T); }}
-    buttonClassName={`${SETTINGS_SELECT_TRIGGER} ${className ?? ''}`} />;
+  const trigger = variant === 'form' ? FORM_SELECT_TRIGGER : SETTINGS_SELECT_TRIGGER;
+  const select = <SearchableSelect id={id} options={choices} value={value} ariaLabel={ariaLabel} disabled={disabled}
+    emptyText={emptyText} hideFilter={choices.length <= 8} onChange={(next) => { onChange(next as T); }}
+    buttonClassName={`${trigger} ${mono ? 'font-mono' : ''} ${className ?? ''}`} />;
+  return dataAttr === undefined ? select : <div className="contents" {...{ [dataAttr]: value }}>{select}</div>;
 }
