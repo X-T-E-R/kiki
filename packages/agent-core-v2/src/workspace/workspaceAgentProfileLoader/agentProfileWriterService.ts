@@ -412,8 +412,8 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
       (match.sourceId === 'builtin' ||
         match.sourceId === 'plugin' ||
         match.sourceId === 'explicit' ||
-        match.contribution.profiles.find((profile) => profile.name === name)?.sourcePath === undefined)
         match.sourceId === 'inherited' ||
+        match.contribution.profiles.find((profile) => profile.name === name)?.sourcePath === undefined)
     ) {
       throw readOnlyError(name, match.sourceId);
     }

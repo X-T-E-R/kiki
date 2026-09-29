@@ -1876,8 +1876,8 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'developer', labelKey: 'st.section.developer' },
   { id: 'labs', labelKey: 'st.section.labs' },
   { id: 'about', labelKey: 'st.section.about' },
-];
   { id: 'spaces', labelKey: 'st.section.spaces' },
+];
 
 // ---- grouped navigation (settings IA v2) ----
 
