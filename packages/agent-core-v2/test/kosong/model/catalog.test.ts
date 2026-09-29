@@ -1684,7 +1684,6 @@ describe('ModelCatalog enumeration', () => {
           type: 'kimi',
           base_url: 'https://api.example.test/v1',
           default_model: 'k2',
-          api_key: 'sk-test',
           has_api_key: true,
           status: 'connected',
           models: ['k2', 'turbo'],
@@ -1718,7 +1717,8 @@ describe('ModelCatalog enumeration', () => {
       const byId = Object.fromEntries(providers.map((p) => [p.id, p]));
       expect(byId['kimi']).toMatchObject({ has_api_key: true, api_key_env: 'KIMI_API_KEY', status: 'connected' });
       expect(byId['claude']).toMatchObject({ has_api_key: true, api_key_env: 'ANTHROPIC_API_KEY', status: 'connected' });
-      expect(byId['inline']).toMatchObject({ has_api_key: true, api_key: 'sk-inline', status: 'connected' });
+      expect(byId['inline']).toMatchObject({ has_api_key: true, status: 'connected' });
+      expect(byId['inline']?.api_key).toBeUndefined();
       expect(byId['__kimi_env__']).toMatchObject({ has_api_key: true, api_key_env: 'KIKI_MODEL_API_KEY' });
       expect(byId['empty']).toMatchObject({ has_api_key: false, status: 'unconfigured' });
       for (const id of ['kimi', 'claude', '__kimi_env__']) expect(byId[id]?.api_key).toBeUndefined();
