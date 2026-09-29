@@ -222,6 +222,9 @@ describe('UsageAggregationService accounting evidence', () => {
     expect(response.sessions.items).toEqual([]);
     expect(response.trend[0]?.groups[0]?.tokens.input_other).toBe(1);
     expect(response.trend[0]?.drilldown.sessions).toEqual([]);
+    const monthly = await query(service, { granularity: 'month' });
+    expect(monthly.trend[0]?.groups[0]?.tokens.input_other).toBe(1);
+    expect(monthly.sessions.items).toEqual([]);
   });
 
   it('preserves explicit missing usage and legacy-zero provenance without dropping known tokens', async () => {

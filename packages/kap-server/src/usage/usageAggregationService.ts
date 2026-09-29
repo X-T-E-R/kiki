@@ -688,17 +688,19 @@ export class UsageAggregationService {
       if (cost === undefined) unknownPriceModels.add(record.model);
       earliestAt = earliestAt === undefined ? record.time : Math.min(earliestAt, record.time);
       latestAt = latestAt === undefined ? record.time : Math.max(latestAt, record.time);
-      if (query.granularity !== 'day') continue;
-      const startAt = startOfDay(record.time, query.timezoneOffsetMinutes);
-      const key = String(startAt);
-      let bucket = buckets.get(key);
+      if (query.granularity === 'session') continue;
+      const period = resolveBucket(record.time, {
+        id: 'ephemeral', workspaceId: entry.workspaceId, createdAt: record.time,
+        updatedAt: record.time, archived: false,
+      }, query);
+      let bucket = buckets.get(period.key);
       if (bucket === undefined) {
         bucket = {
-          key, startAt, endAt: startAt + DAY_MS, groups: new Map(),
+          ...period, groups: new Map(),
           turnKeys: new Set(), requestCount: 0, drilldownSessions: new Map(),
           drilldownSessionsTruncated: false,
         };
-        buckets.set(key, bucket);
+        buckets.set(period.key, bucket);
       }
       bucket.requestCount += 1;
       const groupKey = query.dimension === 'project' ? entry.workspaceId
