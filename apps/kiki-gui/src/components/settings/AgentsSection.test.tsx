@@ -7,6 +7,7 @@ import type { NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { AgentCapabilitiesPanel } from '../AgentCapabilitiesPanel';
 import { NamedAgentProfilesCard, SubagentDispatchPoliciesCard } from './AgentsSection';
+import { optionLabels, pickValue } from './testControls';
 import { AgentTaskSettings } from './AgentTaskSettings';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 
@@ -284,10 +285,10 @@ describe('default main profile settings', () => {
     // The editor is a dialog portaled to document.body, outside the row.
     const dialog = document.body.querySelector('[role="dialog"]')!;
     expect(dialog.textContent).toContain('Edit agent: agent');
-    const effort = dialog.querySelector<HTMLSelectElement>('[data-agent-thinking-effort]')!;
-    expect(effort.value).toBe('medium');
+    const effort = dialog.querySelector<HTMLElement>('[data-agent-thinking-effort]')!;
+    expect(effort.getAttribute('data-agent-thinking-effort')).toBe('medium');
     await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'fixture/model-b');
-    expect(effort.value).toBe('');
+    expect(dialog.querySelector('[data-agent-thinking-effort]')?.getAttribute('data-agent-thinking-effort')).toBe('');
   });
 
   it('offers a separate follow-caller model pin for subagents and saves the literal inherit alias', async () => {
@@ -308,7 +309,7 @@ describe('default main profile settings', () => {
     expect(follow).toBeDefined();
     await act(async () => { follow.click(); });
     expect(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')?.value).toBe('inherit');
-    expect(dialog.querySelector<HTMLSelectElement>('[data-agent-thinking-effort]')?.value).toBe('');
+    expect(dialog.querySelector('[data-agent-thinking-effort]')?.getAttribute('data-agent-thinking-effort')).toBe('');
     await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
     await settle();
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('helper', expect.objectContaining({
@@ -541,11 +542,11 @@ describe('default main profile settings', () => {
  */
 describe('profile editor tool-list fidelity', () => {
   const toolsMode = (dialog: HTMLElement) =>
-    dialog.querySelector<HTMLSelectElement>('[data-tool-field-mode="tools"]')!;
+    dialog.querySelector<HTMLElement>('[data-tool-field="tools"] [data-tool-field-mode]')!;
   const toolsList = (dialog: HTMLElement) =>
     dialog.querySelector<HTMLTextAreaElement>('[data-tool-field-list="tools"]');
   const disallowedMode = (dialog: HTMLElement) =>
-    dialog.querySelector<HTMLSelectElement>('[data-tool-field-mode="disallowedTools"]')!;
+    dialog.querySelector<HTMLElement>('[data-tool-field="disallowedTools"] [data-tool-field-mode]')!;
   const disallowedList = (dialog: HTMLElement) =>
     dialog.querySelector<HTMLTextAreaElement>('[data-tool-field-list="disallowedTools"]');
   const descriptionField = (dialog: HTMLElement) => dialog.querySelector<HTMLTextAreaElement>('textarea')!;
@@ -594,12 +595,12 @@ describe('profile editor tool-list fidelity', () => {
 
   it('keeps an untouched `tools: []` out of the patch instead of clearing the field', async () => {
     const dialog = await openEditor({ tools: [] });
-    expect([...toolsMode(dialog).options].map((option) => option.textContent)).toEqual([
+    expect(await optionLabels(toolsMode(dialog))).toEqual([
       'Inherit',
       'Deny all',
       'Allow list only',
     ]);
-    expect(toolsMode(dialog).value).toBe('empty');
+    expect(toolsMode(dialog).getAttribute('data-tool-field-mode')).toBe('empty');
     expect(toolsList(dialog)).toBeNull();
     await setText(descriptionField(dialog), 'Touched description');
     const body = await save(dialog);
@@ -613,7 +614,7 @@ describe('profile editor tool-list fidelity', () => {
 
   it('keeps an untouched named list and its text', async () => {
     const dialog = await openEditor({ tools: ['Read', 'Bash'] });
-    expect(toolsMode(dialog).value).toBe('list');
+    expect(toolsMode(dialog).getAttribute('data-tool-field-mode')).toBe('list');
     expect(toolsList(dialog)!.value).toBe('Read, Bash');
     await setText(descriptionField(dialog), 'Touched description');
     const body = await save(dialog);
@@ -623,9 +624,9 @@ describe('profile editor tool-list fidelity', () => {
 
   it('keeps an untouched absent field absent and writes the list the user types', async () => {
     const dialog = await openEditor({ tools: undefined });
-    expect(toolsMode(dialog).value).toBe('inherit');
+    expect(toolsMode(dialog).getAttribute('data-tool-field-mode')).toBe('inherit');
     expect(toolsList(dialog)).toBeNull();
-    await setSelect(toolsMode(dialog), 'list');
+    await pickValue(toolsMode(dialog), 'data-tool-field-mode', 'list');
     await setText(toolsList(dialog)!, 'Read, Bash');
     await setText(descriptionField(dialog), 'Touched description');
     const body = await save(dialog);
@@ -634,7 +635,7 @@ describe('profile editor tool-list fidelity', () => {
 
   it('writes an explicit empty list when the allow list moves to the deny state', async () => {
     const dialog = await openEditor({ tools: ['Read'] });
-    await setSelect(toolsMode(dialog), 'empty');
+    await pickValue(toolsMode(dialog), 'data-tool-field-mode', 'empty');
     await setText(descriptionField(dialog), 'Touched description');
     const body = await save(dialog);
     expect(body['tools']).toEqual([]);
@@ -642,7 +643,7 @@ describe('profile editor tool-list fidelity', () => {
 
   it('clears the field when the allow list returns to inherit', async () => {
     const dialog = await openEditor({ tools: ['Read'] });
-    await setSelect(toolsMode(dialog), 'inherit');
+    await pickValue(toolsMode(dialog), 'data-tool-field-mode', 'inherit');
     await setText(descriptionField(dialog), 'Touched description');
     const body = await save(dialog);
     expect(body['tools']).toBeNull();
@@ -650,26 +651,26 @@ describe('profile editor tool-list fidelity', () => {
 
   it('refuses a named-list state that names nothing until the user fills it in', async () => {
     const dialog = await openEditor({ tools: [] });
-    await setSelect(toolsMode(dialog), 'list');
+    await pickValue(toolsMode(dialog), 'data-tool-field-mode', 'list');
     await setText(descriptionField(dialog), 'Touched description');
     const button = [...dialog.querySelectorAll('button')].find((item) => item.textContent === 'Save')!;
     expect(button.disabled).toBe(true);
     expect(dialog.querySelector('[data-tool-field-error="tools"]')?.textContent).toContain(
       'Enter at least one tool name',
     );
-    await setSelect(toolsMode(dialog), 'empty');
+    await pickValue(toolsMode(dialog), 'data-tool-field-mode', 'empty');
     expect(button.disabled).toBe(false);
     expect(dialog.querySelector('[data-tool-field-error="tools"]')).toBeNull();
   });
 
   it('tracks the disallowed list three-way as well', async () => {
     const dialog = await openEditor({ disallowed_tools: [] });
-    expect([...disallowedMode(dialog).options].map((option) => option.textContent)).toEqual([
+    expect(await optionLabels(disallowedMode(dialog))).toEqual([
       'Inherit',
       'Do not deny any tools',
       'Deny listed tools',
     ]);
-    expect(disallowedMode(dialog).value).toBe('empty');
+    expect(disallowedMode(dialog).getAttribute('data-tool-field-mode')).toBe('empty');
     await setText(descriptionField(dialog), 'Touched description');
     const untouched = await save(dialog);
     expect(untouched['disallowed_tools']).toBeUndefined();
@@ -677,9 +678,9 @@ describe('profile editor tool-list fidelity', () => {
 
   it('writes the deny list the user picks', async () => {
     const dialog = await openEditor({ disallowed_tools: ['WebSearch'] });
-    expect(disallowedMode(dialog).value).toBe('list');
+    expect(disallowedMode(dialog).getAttribute('data-tool-field-mode')).toBe('list');
     expect(disallowedList(dialog)!.value).toBe('WebSearch');
-    await setSelect(disallowedMode(dialog), 'empty');
+    await pickValue(disallowedMode(dialog), 'data-tool-field-mode', 'empty');
     await setText(descriptionField(dialog), 'Touched description');
     const body = await save(dialog);
     expect(body['disallowed_tools']).toEqual([]);

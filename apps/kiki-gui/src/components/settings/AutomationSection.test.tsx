@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import { HooksSection, ToolPolicyCard } from './AutomationSection';
 import { ExperimentalRows } from './ExperimentalRows';
+import { pickOption } from './testControls';
 
 interface FixtureConfig {
   tools: { enabled: string[]; disabled: string[] };
@@ -34,6 +35,9 @@ async function change(element: HTMLInputElement | HTMLSelectElement | HTMLTextAr
     element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
   });
 }
+const policy = (name: string) => container.querySelector(`[aria-label="Policy for ${name}"]`)!.closest('[data-tool-policy]')!;
+const policyValue = (name: string) => policy(name).getAttribute('data-tool-policy');
+async function pick(target: Element, label: string) { await pickOption(target, label); await flush(); }
 async function click(text: string, scope: Element = container) {
   const button = [...scope.querySelectorAll('button')].find((item) => item.textContent === text)!;
   expect(button, text).toBeTruthy();
@@ -59,29 +63,28 @@ afterEach(async () => { await act(async () => root.unmount()); container.remove(
 describe('safe automation drafts', () => {
   it('lists ThreadCreate separately, defaults to inherited on and can disable only that tool', async () => {
     await mount();
-    const create = container.querySelector<HTMLSelectElement>('[aria-label="Policy for ThreadCreate"]')!;
-    const list = container.querySelector<HTMLSelectElement>('[aria-label="Policy for ThreadList"]')!;
-    expect(create.value).toBe('inherited');
-    expect(list.value).toBe('inherited');
-    expect(create.closest('div.grid')?.textContent).toContain('Currently available on this server');
-    await change(create, 'disabled');
+    expect(policyValue('ThreadCreate')).toBe('inherited');
+    expect(policyValue('ThreadList')).toBe('inherited');
+    expect(policy('ThreadCreate').closest('div.grid')?.textContent).toContain('Currently available on this server');
+    await pick(policy('ThreadCreate'), 'Deny');
     await click('Save tool policy');
     expect(config.tools).toEqual({ enabled: [], disabled: ['ThreadCreate'] });
-    expect(list.value).toBe('inherited');
+    expect(policyValue('ThreadList')).toBe('inherited');
   });
 
   it('preserves a hook draft across tool save/refetch, validates, saves and reloads', async () => {
     await mount();
     await click('Add rule');
-    const event = container.querySelector<HTMLSelectElement>('#st-card-hooks select')!;
-    expect(event.value).toBe('PreToolUse');
-    expect([...event.options].some((option) => option.textContent?.includes('PreToolUse'))).toBe(false);
+    const event = container.querySelector('#st-card-hooks [data-hook-event]')!;
+    expect(event.getAttribute('data-hook-event')).toBe('PreToolUse');
+    expect(event.textContent).toContain('Before a tool runs');
+    expect(event.textContent).not.toContain('PreToolUse');
     const command = container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!;
     await change(command, 'echo example');
     const tools = container.querySelector('#st-card-tools')!;
-    await change(tools.querySelector('select')!, 'allowlist');
-    expect((tools.querySelector('button') as HTMLButtonElement).disabled).toBe(true);
-    await change(tools.querySelector<HTMLSelectElement>('[aria-label="Policy for Read"]')!, 'enabled');
+    await pick(tools.querySelector('[data-tool-mode]')!, 'Only allow selected tools');
+    expect(container.querySelector<HTMLButtonElement>('[data-settings-draft="tool-policy"] button')!.disabled).toBe(true);
+    await pick(policy('Read'), 'Selected');
     await click('Save tool policy');
     expect(config.tools).toEqual({ enabled: ['Read'], disabled: [] });
     expect(command.value).toBe('echo example');
@@ -114,7 +117,7 @@ describe('safe automation drafts', () => {
     const rule = { event: 'Notification', command: 'echo example', matcher: 'ready', timeout: 17 };
     await change(json, JSON.stringify([rule]));
     await click('Use rule form');
-    expect(container.querySelector<HTMLSelectElement>('#st-card-hooks select')!.value).toBe('Notification');
+    expect(container.querySelector('#st-card-hooks [data-hook-event]')!.getAttribute('data-hook-event')).toBe('Notification');
     expect(container.querySelector<HTMLInputElement>('#st-card-hooks input[type="number"]')!.value).toBe('17');
     await click('Save actions');
     expect(config.hooks).toEqual([rule]);
@@ -122,15 +125,15 @@ describe('safe automation drafts', () => {
 
   it('preserves tool edits across hook saves and failed saves', async () => {
     await mount();
-    await change(container.querySelector<HTMLSelectElement>('[aria-label="Policy for Write"]')!, 'disabled');
+    await pick(policy('Write'), 'Deny');
     await click('Add rule');
     await change(container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!, 'echo example');
     await click('Save actions');
-    expect(container.querySelector<HTMLSelectElement>('[aria-label="Policy for Write"]')!.value).toBe('disabled');
+    expect(policyValue('Write')).toBe('disabled');
     client.patchConfig.mockRejectedValueOnce(new Error('offline'));
     await click('Save tool policy');
     expect(container.textContent).toContain('offline');
-    expect(container.querySelector<HTMLSelectElement>('[aria-label="Policy for Write"]')!.value).toBe('disabled');
+    expect(policyValue('Write')).toBe('disabled');
     await click('Save tool policy');
     expect(config.tools.disabled).toEqual(['Write']);
   });

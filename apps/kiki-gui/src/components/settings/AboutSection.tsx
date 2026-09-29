@@ -11,8 +11,10 @@ import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { requestOnboardingOpen } from '../OnboardingWizard';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField } from './fields';
+import { SettingsSelect } from './SettingsPrimitives';
 
 export function AboutSection() {
   const host = useHost();
@@ -95,51 +97,42 @@ export function AboutSection() {
 
       {isDesktop ? (
         <div className="mt-4 space-y-3 border-t border-hairline pt-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1">
-              <span className="text-[12.5px] font-medium text-ink">{t('st.about.channel')}</span>
-              <select
-                value={channel}
-                aria-label={t('st.about.channel')}
-                disabled={updatesSupported !== true}
-                onChange={(event) => {
-                  const next = event.target.value === 'beta' ? 'beta' : 'stable';
-                  setChannel(next);
-                  setUpdate(null);
-                  setUpdateMessage(null);
-                  writeDesktopPrefs({ updateChannel: next });
-                  void host.writeDesktopPrefs({ updateChannel: next });
-                }}
-                className={`${SMALL_INPUT} w-full`}
-              >
-                <option value="stable">{t('st.about.stable')}</option>
-                <option value="beta">{t('st.about.beta')}</option>
-              </select>
-              {channel === 'beta' ? (
-                <p className="text-[11px] leading-relaxed text-amber-ink">{t('st.about.betaHint')}</p>
-              ) : null}
-            </label>
-            <label className="space-y-1">
-              <span className="text-[12.5px] font-medium text-ink">{t('st.about.autoUpdate')}</span>
-              <select
-                value={autoUpdate}
-                aria-label={t('st.about.autoUpdate')}
-                disabled={updatesSupported !== true}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  const next: AutoUpdateMode = value === 'off' || value === 'install' ? value : 'notify';
-                  setAutoUpdate(next);
-                  writeDesktopPrefs({ autoUpdate: next });
-                  void host.writeDesktopPrefs({ autoUpdate: next });
-                }}
-                className={`${SMALL_INPUT} w-full`}
-              >
-                <option value="off">{t('st.about.autoUpdateOff')}</option>
-                <option value="notify">{t('st.about.autoUpdateNotify')}</option>
-                <option value="install">{t('st.about.autoUpdateInstall')}</option>
-              </select>
-            </label>
-          </div>
+          <SettingField label={t('st.about.channel')}
+            help={channel === 'beta' ? <span className="text-amber-ink">{t('st.about.betaHint')}</span> : undefined}>
+            <SettingsSelect<'stable' | 'beta'>
+              ariaLabel={t('st.about.channel')}
+              value={channel}
+              disabled={updatesSupported !== true}
+              onChange={(next) => {
+                setChannel(next);
+                setUpdate(null);
+                setUpdateMessage(null);
+                writeDesktopPrefs({ updateChannel: next });
+                void host.writeDesktopPrefs({ updateChannel: next });
+              }}
+              choices={[
+                { value: 'stable', label: t('st.about.stable') },
+                { value: 'beta', label: t('st.about.beta') },
+              ]}
+            />
+          </SettingField>
+          <SettingField label={t('st.about.autoUpdate')}>
+            <SettingsSelect<AutoUpdateMode>
+              ariaLabel={t('st.about.autoUpdate')}
+              value={autoUpdate}
+              disabled={updatesSupported !== true}
+              onChange={(next) => {
+                setAutoUpdate(next);
+                writeDesktopPrefs({ autoUpdate: next });
+                void host.writeDesktopPrefs({ autoUpdate: next });
+              }}
+              choices={[
+                { value: 'off', label: t('st.about.autoUpdateOff') },
+                { value: 'notify', label: t('st.about.autoUpdateNotify') },
+                { value: 'install', label: t('st.about.autoUpdateInstall') },
+              ]}
+            />
+          </SettingField>
           {updatesSupported === false ? <Hint>{t('st.about.updatesUnavailable')}</Hint> : null}
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={checkForUpdate} disabled={updatesSupported !== true || updateStatus !== 'idle'} className={SECONDARY_BUTTON}>

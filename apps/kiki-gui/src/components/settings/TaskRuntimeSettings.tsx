@@ -14,6 +14,7 @@ import { SearchableSelect } from '../SearchableSelect';
 import { FORM_LABEL, FORM_SELECT_TRIGGER, SettingsDiagnosticRow, SettingsDraftFooter } from './SettingsPrimitives';
 import { SectionCard } from './SectionCard';
 import { NumberField } from './runtimeControls';
+import { useSavedTick } from './useSavedTick';
 
 /**
  * Task and background policy (runtime split): the `task` config domain moved
@@ -29,6 +30,7 @@ export function TaskPolicyCard() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
@@ -65,7 +67,7 @@ export function TaskPolicyCard() {
       queryClient.setQueryData(['config'], echoed);
       setDraft(runtimeConfigDraftFromConfig(echoed).task);
       setDirty(false);
-      setFeedback({ tone: 'success', text: t('st.taskPolicy.saved') });
+      pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -106,7 +108,7 @@ export function TaskPolicyCard() {
             <Toggle label={t('st.taskPolicy.autoBackground')} checked={draft.bashAutoBackgroundOnTimeout} onChange={(bashAutoBackgroundOnTimeout) => { updateTask({ bashAutoBackgroundOnTimeout }); }} />
           </div>
         </fieldset>
-        <SettingsDraftFooter id="task-policy" dirty={dirty} saving={saving}
+        <SettingsDraftFooter saved={justSaved} id="task-policy" dirty={dirty} saving={saving}
           onSave={() => void save()}
           onDiscard={() => { if (configQuery.data !== undefined) setDraft(runtimeConfigDraftFromConfig(configQuery.data).task); setDirty(false); setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}

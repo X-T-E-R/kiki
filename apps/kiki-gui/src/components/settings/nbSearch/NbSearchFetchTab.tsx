@@ -6,7 +6,8 @@ import { SectionCard } from '../SectionCard';
 import { useI18n } from '../../../i18n';
 import { costLabelKey, latencyLabelKey } from './types';
 import { NbSearchIssues } from './NbSearchIssues';
-import { SECONDARY_BUTTON, SMALL_INPUT } from '../../ui';
+import { SECONDARY_BUTTON } from '../../ui';
+import { SettingsSelect } from '../SettingsPrimitives';
 import { Icon } from '../../icons';
 
 function AvailabilityBadge({ availability }: { availability: 'ready' | 'unavailable' }) {
@@ -155,30 +156,28 @@ export function NbSearchFetchTab({
                   <div className="flex items-center gap-2 rounded-lg border border-hairline bg-paper p-2.5">
                     <StepNumber n={index + 1} />
 
-                    <select
-                      className={`${SMALL_INPUT} min-w-0 flex-1 font-mono text-[12px]`}
-                      value={pipelineId}
-                      aria-label={`${t('st.nbSearch.fetchChainLabel')} ${index + 1}`}
-                      onChange={(event) => {
-                        const next = [...fetchChain];
-                        next[index] = event.target.value;
-                        onChangeChain(next);
-                      }}
-                    >
-                      {pipeline === undefined ? (
-                        <option value={pipelineId}>{pipelineId}</option>
-                      ) : null}
-                      {capabilities.fetch.pipelines.map((candidate) => (
-                        <option key={candidate.id} value={candidate.id}>
-                          {candidate.id}
-                          {' ('}
-                          {tierLabel(latencyLabelKey(candidate.latency), candidate.latency)}
-                          {' · '}
-                          {tierLabel(costLabelKey(candidate.cost), candidate.cost)}
-                          {')'}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="min-w-0 flex-1">
+                      <SettingsSelect
+                        variant="form"
+                        mono
+                        dataAttr="data-fetch-chain-step"
+                        ariaLabel={`${t('st.nbSearch.fetchChainLabel')} ${index + 1}`}
+                        value={pipelineId}
+                        onChange={(nextId) => {
+                          const next = [...fetchChain];
+                          next[index] = nextId;
+                          onChangeChain(next);
+                        }}
+                        choices={[
+                          ...(pipeline === undefined ? [{ value: pipelineId, label: pipelineId }] : []),
+                          ...capabilities.fetch.pipelines.map((candidate) => ({
+                            value: candidate.id,
+                            label: candidate.id,
+                            hint: `${tierLabel(latencyLabelKey(candidate.latency), candidate.latency)} · ${tierLabel(costLabelKey(candidate.cost), candidate.cost)}`,
+                          })),
+                        ]}
+                      />
+                    </div>
 
                     {pipeline !== undefined ? (
                       <AvailabilityBadge availability={pipeline.availability} />

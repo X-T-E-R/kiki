@@ -14,6 +14,7 @@ import { SearchableSelect, type SearchableSelectOption } from '../SearchableSele
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { formatCompactTokens } from '../../lib/autoCompact';
 import { CompactPointField } from './CompactPointField';
+import { SettingsSelect } from './SettingsPrimitives';
 
 /**
  * Three-way state of one frontmatter tool list. `inherit` writes nothing (the
@@ -89,19 +90,17 @@ function ToolListField({
   const { t } = useI18n();
   return (
     <div className="space-y-1" data-tool-field={fieldKey}>
-      <label className="block text-[11px] font-medium text-ink-soft">
-        {label}
-        <select
-          data-tool-field-mode={fieldKey}
-          className={`${INPUT} mt-1`}
+      <div className="space-y-1 text-[11px] font-medium text-ink-soft">
+        <span className="block">{label}</span>
+        <SettingsSelect<ToolFieldMode>
+          variant="form"
+          dataAttr="data-tool-field-mode"
+          ariaLabel={label}
           value={field.mode}
-          onChange={(event) => { onChange({ ...field, mode: event.target.value as ToolFieldMode }); }}
-        >
-          {TOOL_FIELD_MODES.map((mode) => (
-            <option key={mode} value={mode}>{t(labels[mode])}</option>
-          ))}
-        </select>
-      </label>
+          onChange={(mode) => { onChange({ ...field, mode }); }}
+          choices={TOOL_FIELD_MODES.map((mode) => ({ value: mode, label: t(labels[mode]) }))}
+        />
+      </div>
       {field.mode === 'list' ? (
         <textarea
           data-tool-field-list={fieldKey}
@@ -313,20 +312,18 @@ export function AgentProfileEditorDialog({
           ) : null}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block text-[11px] font-medium text-ink-soft">
+          <div className="block text-[11px] font-medium text-ink-soft">
             {t('st.namedAgents.defaultModelThinkingEffort')}
-            <select data-agent-thinking-effort className={`${INPUT} mt-1`} value={thinkingEffort} onChange={(event) => { setThinkingEffort(event.target.value); }}>
-              <option value="">{t('st.namedAgents.inherit')}</option>
-              {['low', 'medium', 'high', 'xhigh', 'max'].map((value) => <option key={value} value={value}>{value}</option>)}
-            </select>
-          </label>
-          <label className="block text-[11px] font-medium text-ink-soft">
+            <div className="mt-1"><SettingsSelect variant="form" dataAttr="data-agent-thinking-effort" ariaLabel={t('st.namedAgents.defaultModelThinkingEffort')}
+              value={thinkingEffort} onChange={setThinkingEffort}
+              choices={[{ value: '', label: t('st.namedAgents.inherit') }, ...['low', 'medium', 'high', 'xhigh', 'max'].map((value) => ({ value, label: value }))]} /></div>
+          </div>
+          <div className="block text-[11px] font-medium text-ink-soft">
             {t('st.namedAgents.serviceTier')}
-            <select className={`${INPUT} mt-1`} value={serviceTier} onChange={(event) => { setServiceTier(event.target.value as typeof serviceTier); }}>
-              <option value="">{t('st.namedAgents.inherit')}</option>
-              {['auto', 'default', 'flex', 'priority'].map((value) => <option key={value} value={value}>{value}</option>)}
-            </select>
-          </label>
+            <div className="mt-1"><SettingsSelect variant="form" dataAttr="data-agent-service-tier" ariaLabel={t('st.namedAgents.serviceTier')}
+              value={serviceTier ?? ''} onChange={(next) => { setServiceTier(next as typeof serviceTier); }}
+              choices={[{ value: '', label: t('st.namedAgents.inherit') }, ...['auto', 'default', 'flex', 'priority'].map((value) => ({ value, label: value }))]} /></div>
+          </div>
         </div>
         <div data-profile-auto-compact className="space-y-1">
           <CompactPointField

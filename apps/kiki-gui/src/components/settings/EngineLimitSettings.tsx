@@ -13,6 +13,7 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 import { NumberField } from './runtimeControls';
+import { useSavedTick } from './useSavedTick';
 
 type ResourceLimitDraft = Pick<RuntimeConfigDraft, 'workspaceIdleTtlMs' | 'imageMaxEdgePx' | 'imageReadByteBudget'>;
 
@@ -30,6 +31,7 @@ export function ResourceLimitsCard() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
@@ -76,7 +78,7 @@ export function ResourceLimitsCard() {
         imageReadByteBudget: projected.imageReadByteBudget,
       });
       setDirty(false);
-      setFeedback({ tone: 'success', text: t('st.resourceLimits.saved') });
+      pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -98,7 +100,7 @@ export function ResourceLimitsCard() {
                 and patches never carry the mcp domain. */}
           </div>
         </fieldset>
-        <SettingsDraftFooter id="resource-limits" dirty={dirty} saving={saving} onSave={() => void save()}
+        <SettingsDraftFooter saved={justSaved} id="resource-limits" dirty={dirty} saving={saving} onSave={() => void save()}
           onDiscard={() => { if (configQuery.data !== undefined) { const value = runtimeConfigDraftFromConfig(configQuery.data); setDraft({ workspaceIdleTtlMs: value.workspaceIdleTtlMs, imageMaxEdgePx: value.imageMaxEdgePx, imageReadByteBudget: value.imageReadByteBudget }); } setDirty(false); setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />

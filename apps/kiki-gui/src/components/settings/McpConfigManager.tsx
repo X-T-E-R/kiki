@@ -21,6 +21,7 @@ import { useDirtyGuard, useDirtyReporter } from '../dirtyGuard';
 import { CapabilityIcon } from '../capabilities/CapabilityIcon';
 import { Disclosure, StatusDot, Tag } from '../capabilities/primitives';
 import { McpBearerValue, McpSecretRows, mcpSecretLines, mcpSecretRows, type McpSecretRow } from './McpSecretRows';
+import { SettingsSelect } from './SettingsPrimitives';
 
 /**
  * Listings arrive redacted (`envKeys` / `headerKeys`); an older server may
@@ -413,16 +414,24 @@ export function McpConfigManager({
               <input className={INPUT} value={draft.name} placeholder={t('st.mcp.namePlaceholder')} onChange={(event) => { setDraft({ ...draft, name: event.target.value }); }} />
               <Hint>{t('st.mcp.nameHint')}</Hint>
             </label>
-            <label className="space-y-1 text-[11px] font-medium text-ink-soft">
-              {t('st.mcp.transport')}
-              <select className={INPUT} value={draft.transport} onChange={(event) => {
-                setDraft({ ...draft, transport: event.target.value as McpTransport, headerRows: [], envRows: [], bearerTokenEnvVar: '', auth: undefined });
-              }}>
-                <option value="stdio">stdio</option>
-                <option value="http">http</option>
-                <option value="sse">sse</option>
-              </select>
-            </label>
+            <div className="space-y-1 text-[11px] font-medium text-ink-soft">
+              <span>{t('st.mcp.transport')}</span>
+              <SettingsSelect<McpTransport>
+                variant="form"
+                mono
+                dataAttr="data-mcp-transport"
+                ariaLabel={t('st.mcp.transport')}
+                value={draft.transport}
+                onChange={(transport) => {
+                  setDraft({ ...draft, transport, headerRows: [], envRows: [], bearerTokenEnvVar: '', auth: undefined });
+                }}
+                choices={[
+                  { value: 'stdio', label: 'stdio' },
+                  { value: 'http', label: 'http' },
+                  { value: 'sse', label: 'sse' },
+                ]}
+              />
+            </div>
           </div>
           {draft.transport === 'stdio' ? (
             <div className="space-y-3">

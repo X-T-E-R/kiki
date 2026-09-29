@@ -18,6 +18,7 @@ import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../contr
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter } from './SettingsPrimitives';
+import { useSavedTick } from './useSavedTick';
 
 /**
  * Skills defaults (redesign §10.3): the old capabilities skills card plus the
@@ -36,6 +37,7 @@ function SkillsDefaultsCard() {
   const [saving, setSaving] = useState(false);
   const [selectingDirs, setSelectingDirs] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const host = useHost();
   const canPickDirs = host.pickDirectories !== undefined;
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
@@ -98,7 +100,7 @@ function SkillsDefaultsCard() {
         markRestartRequired(['builtin_product_skills']);
         setFeedback({ tone: 'success', text: t('st.caps.savedRestart') });
       } else {
-        setFeedback({ tone: 'success', text: t('st.caps.saved') });
+        pingSaved();
       }
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -135,7 +137,7 @@ function SkillsDefaultsCard() {
           <textarea id="settings-extra-skill-dirs" className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
           <Hint>{t('st.caps.extraDirsHint')}</Hint>
         </div>
-        <SettingsDraftFooter id="skill-defaults" dirty={dirty} saving={saving} saveLabel={t('st.caps.save')} onSave={() => void save()}
+        <SettingsDraftFooter saved={justSaved} id="skill-defaults" dirty={dirty} saving={saving} saveLabel={t('st.caps.save')} onSave={() => void save()}
           onDiscard={() => { if (baseline !== null) { setMergeSkills(baseline.merge); setBuiltinProductSkills(baseline.builtin); setExtraDirs(baseline.dirs); } setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />

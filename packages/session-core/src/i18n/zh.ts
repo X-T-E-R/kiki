@@ -4094,6 +4094,7 @@ export const zh: Partial<Record<I18nKey, string>> = {
   'st.memory.workspaceOverrides': '其他工作区的覆盖设置',
   'st.memory.workspaceOverride': '{name}：{state}',
   'st.memory.workspaceEffective': '此工作区当前状态',
+  'st.memory.workspaceEffectiveInline': '当前：{state}。',
   'st.memory.enabled': '已开启',
   'st.memory.disabled': '已关闭',
   'st.memory.workspaceDisabled': '此工作区已单独关闭',

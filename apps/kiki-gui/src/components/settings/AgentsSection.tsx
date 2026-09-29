@@ -41,13 +41,14 @@ import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../contr
 import { useGuardedNavigate } from '../dirtyGuard';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
+import { SettingsDraftFooter, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { AdvancedDetails, SettingField } from './fields';
 import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
+import { useSavedTick } from './useSavedTick';
 
 const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
@@ -134,6 +135,7 @@ function SubagentModelGovernanceCard() {
   const [savedDraft, setSavedDraft] = useState<SubagentGovernanceDraft>(EMPTY_SUBAGENT_GOVERNANCE);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
@@ -156,7 +158,7 @@ function SubagentModelGovernanceCard() {
       const next = subagentGovernanceFromConfig(echoed);
       setDraft(next);
       setSavedDraft(next);
-      setFeedback({ tone: 'success', text: t('st.subagents.saved') });
+      pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -178,7 +180,7 @@ function SubagentModelGovernanceCard() {
             />
           </label>
         </fieldset>
-        <SettingsDraftFooter id="subagent-model-governance" dirty={dirty} saving={saving || configQuery.isLoading}
+        <SettingsDraftFooter saved={justSaved} id="subagent-model-governance" dirty={dirty} saving={saving || configQuery.isLoading}
           saveLabel={t('st.subagents.save')} onSave={() => void save()}
           onDiscard={() => { setDraft(savedDraft); setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
@@ -619,14 +621,15 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
       && item.source === profile.source && item.source_file === profile.source_file) === true;
   const workspaceSelector = (workspacesQuery.data?.items.length ?? 0) > 0 ? (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <label className="flex items-center gap-2 text-[11px] font-medium text-ink-soft">{t('new.workspace')}
-        <select className={SMALL_INPUT} value={selectedWorkspaceId ?? ''}
-          onChange={(event) => { setWorkspaceId(event.target.value); }}>
-          {workspacesQuery.data?.items.map((workspace) => (
-            <option key={workspace.id} value={workspace.id}>{workspace.name ?? workspace.root}</option>
-          ))}
-        </select>
-      </label>
+      <span className="text-[12px] font-medium text-ink-soft">{t('new.workspace')}</span>
+      <SettingsSelect
+        dataAttr="data-named-agents-workspace"
+        ariaLabel={t('new.workspace')}
+        className="max-w-64"
+        value={selectedWorkspaceId ?? ''}
+        onChange={(id) => { setWorkspaceId(id); }}
+        choices={(workspacesQuery.data?.items ?? []).map((workspace) => ({ value: workspace.id, label: workspace.name ?? workspace.root, hint: workspace.root }))}
+      />
       <Hint>{t('st.namedAgents.workspaceHint')}</Hint>
     </div>
   ) : null;

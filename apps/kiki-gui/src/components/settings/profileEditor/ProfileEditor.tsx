@@ -28,6 +28,7 @@ import {
 } from './profileDraft';
 import { RawPanel } from './RawPanel';
 import { SubagentsField } from './SubagentsField';
+import { useSavedTick } from '../useSavedTick';
 
 type Mode = 'form' | 'raw';
 
@@ -97,6 +98,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   const [draft, setDraft] = useState(baseline);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const [rawReload, setRawReload] = useState(0);
   const changed = changedFields(baseline, draft);
   const dirty = changed.length > 0;
@@ -134,7 +136,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       const updated = await client.updateNamedAgentProfile(profile.name, patchBody(profile, baseline, draft));
       accept(updated);
       setRawReload((value) => value + 1);
-      setFeedback({ tone: 'success', text: t('st.agentManager.saved') });
+      pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally { setSaving(false); }
@@ -353,7 +355,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {shippedEntry !== undefined ? <ShippedProfileControls entry={shippedEntry} profile={profile}
-          onRestored={() => { onSaved(profile); setFeedback({ tone: 'success', text: t('st.shipped.restored') }); }}
+          onRestored={() => { onSaved(profile); pingSaved(); }}
           onError={(error) => setFeedback({ tone: 'error', text: errorText(locale, error) })} /> : null}
         <Toggle label={t('st.namedAgents.enabled')} checked={!profile.disabled} disabled={toggleSaving}
           onChange={(enabled) => { void onToggleEnabled(enabled).catch((error: unknown) => setFeedback({ tone: 'error', text: errorText(locale, error) })); }} />
@@ -375,7 +377,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       {rail}
     </div> : <RawPanel profile={profile} writable={writable} reloadToken={rawReload} onSaved={accept} />}
     {writable && mode === 'form' ? <div className="sticky bottom-0 -mx-1 bg-canvas/95 px-1 backdrop-blur-sm">
-      <SettingsDraftFooter id={`agent-detail:${profile.source}:${profile.source_file ?? ''}:${profile.name}`} dirty={dirty} saving={saving}
+      <SettingsDraftFooter saved={justSaved} id={`agent-detail:${profile.source}:${profile.source_file ?? ''}:${profile.name}`} dirty={dirty} saving={saving}
         saveDisabled={problems.length > 0} onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }}
         extra={problemText !== null && dirty ? <span role="alert" className="text-[12px] text-danger">{problemText}</span>
           : dirty ? <span className="text-[12px] text-ink-faint">{tp('st.profiles.changedCount', changed.length)}</span> : undefined} />

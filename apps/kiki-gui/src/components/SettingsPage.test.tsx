@@ -19,6 +19,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import { SettingsPage } from './SettingsPage';
+import { commitText, pickOption } from './settings/testControls';
 
 const WORKSPACES = {
   items: [
@@ -286,26 +287,22 @@ describe('SettingsPage panel scopes', () => {
     expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Memory');
     expect(container.querySelector('#st-card-memory')).not.toBeNull();
     expect(container.querySelector('#st-card-memory-workspaces')).not.toBeNull();
-    expect(container.querySelector<HTMLSelectElement>('[data-memory-workspace-select]')?.value).toBe('ws-beta');
+    expect(container.querySelector('[data-memory-workspace-select]')?.getAttribute('data-memory-workspace-select')).toBe('ws-beta');
     expect(client.getWorkspaceMemorySettings).toHaveBeenCalledWith('ws-beta');
+    // One visible label per row: the switch keeps its name for assistive tech only.
+    const toggleRow = container.querySelector('#memory-enabled')!.closest('[data-settings-field]')!;
+    expect(toggleRow.querySelector('span.sr-only')?.textContent).toBe('Use memory');
+    expect([...toggleRow.querySelectorAll('label, span')].filter((node) => node.textContent === 'Use memory' && !node.classList.contains('sr-only') && node.children.length === 0)).toHaveLength(1);
 
-    const approval = container.querySelector<HTMLSelectElement>('[data-memory-approval]')!;
-    await act(async () => {
-      approval.value = 'review';
-      approval.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    await pickOption(container.querySelector('[data-memory-approval]')!, 'Review in Inbox');
     expect(client.patchMemorySettings).toHaveBeenCalledWith({ approval: 'review' });
 
-    const budget = container.querySelector<HTMLInputElement>('[data-memory-budget]')!;
-    await setInput(budget, '1735');
-    await click(container.querySelector('[data-memory-budget-save]')!);
+    // The budget saves itself on Enter; there is no separate save button.
+    expect(container.querySelector('[data-memory-budget-save]')).toBeNull();
+    await commitText(container.querySelector<HTMLInputElement>('[data-memory-budget]')!, '1735');
     expect(client.patchMemorySettings).toHaveBeenCalledWith({ budget: 1735 });
 
-    const override = container.querySelector<HTMLSelectElement>('[data-memory-workspace-override]')!;
-    await act(async () => {
-      override.value = 'false';
-      override.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    await pickOption(container.querySelector('[data-memory-workspace-override]')!, 'Off');
     expect(client.patchWorkspaceMemorySettings).toHaveBeenCalledWith('ws-beta', false);
   });
 
@@ -314,8 +311,10 @@ describe('SettingsPage panel scopes', () => {
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
     expect(container.querySelector('[data-memory-other-overrides]')?.textContent).toContain('Alpha: Off');
     const budget = container.querySelector<HTMLInputElement>('[data-memory-budget]')!;
-    await setInput(budget, '4001');
-    expect(container.querySelector<HTMLButtonElement>('[data-memory-budget-save]')?.disabled).toBe(true);
+    const writes = client.patchMemorySettings.mock.calls.length;
+    await commitText(budget, '4001');
+    expect(client.patchMemorySettings.mock.calls.length).toBe(writes);
+    expect(budget.getAttribute('aria-invalid')).toBe('true');
     expect(container.textContent).toContain('Enter a whole number from 0 to 4,000.');
   });
 });
@@ -403,7 +402,8 @@ describe('SettingsPage batch-3 leaves', () => {
       replace_domains: ['mcp'],
     });
     expect(save.disabled).toBe(true);
-    expect(card.textContent).toContain('MCP timeouts saved and echoed by the server.');
+    // Success is the transient saved tick, not a boxed message.
+    expect(card.querySelector('[data-saved-tick]')?.textContent).toBe('Saved');
   });
 
   it('splits the retired automation leaf into permissions and hooks', async () => {
@@ -473,7 +473,7 @@ describe('SettingsPage batch-3 leaves', () => {
       task: expect.objectContaining({ max_running_tasks: 6 }),
       replace_domains: ['task'],
     }));
-    expect(card.textContent).toContain('Task policy saved and echoed by the server.');
+    expect(card.querySelector('[data-saved-tick]')?.textContent).toBe('Saved');
   });
 
   it('keeps plan defaults on sessions and puts each flag on its feature page', async () => {
@@ -668,15 +668,9 @@ describe('SettingsPage batch-3 leaves', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
     client.patchConfig.mockClear();
     const card = container.querySelector('#st-card-tools')!;
-    const mode = card.querySelector('select')!;
-    await act(async () => {
-      mode.value = 'allowlist';
-      mode.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    await act(async () => {
-      mode.value = 'profile';
-      mode.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    const mode = card.querySelector('[data-tool-mode]')!;
+    await pickOption(mode, 'Only allow selected tools');
+    await pickOption(mode, 'Follow each agent');
     const saveButton = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Save tool policy')!;
     await click(saveButton);
     await flush();

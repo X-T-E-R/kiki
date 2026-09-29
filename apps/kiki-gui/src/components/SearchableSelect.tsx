@@ -342,6 +342,7 @@ export function SearchableSelect({
                         id={`${listId}-option-${index}`}
                         data-index={index}
                         role="option"
+                        data-option-value={option.value}
                         aria-selected={isSelected}
                         title={option.title ?? option.label}
                         onClick={() => { commit(option); }}
@@ -457,6 +458,7 @@ function CompactOptionRow({
       id={id}
       data-index={index}
       data-option-density="compact"
+      data-option-value={option.value}
       role="option"
       aria-selected={selected}
       title={tooltip}

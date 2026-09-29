@@ -4155,6 +4155,7 @@ export const en = {
   'st.memory.workspaceOverrides': 'Other workspace overrides',
   'st.memory.workspaceOverride': '{name}: {state}',
   'st.memory.workspaceEffective': 'Currently in this workspace',
+  'st.memory.workspaceEffectiveInline': 'Now: {state}.',
   'st.memory.enabled': 'On',
   'st.memory.disabled': 'Off',
   'st.memory.workspaceDisabled': 'Off for this workspace',

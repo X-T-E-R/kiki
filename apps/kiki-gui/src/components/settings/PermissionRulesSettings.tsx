@@ -5,10 +5,11 @@ import { errorText } from '@kiki/session-core/i18n';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { FieldIssue, SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
+import { FieldIssue, FORM_LABEL, SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
+import { useSavedTick } from './useSavedTick';
 
 type PermissionRule = NonNullable<NonNullable<KikiConfigResponse['permission']>['rules']>[number];
 type RuleDraft = { decision: PermissionRule['decision']; pattern: string; scope: PermissionRule['scope']; reason: string };
@@ -27,6 +28,7 @@ export function PermissionRulesSettings() {
   const [editing, setEditing] = useState<{ index: number | null; draft: RuleDraft } | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [saved, ping] = useSavedTick();
   const original = editing?.index === null ? NEW_RULE : rules[editing?.index ?? -1];
   const dirty = editing !== null && JSON.stringify(editing.draft) !== JSON.stringify(original && toDraft(original));
   const patternValid = editing === null || permissionRuleConfigSchema.shape.pattern.safeParse(editing.draft.pattern).success;
@@ -42,7 +44,7 @@ export function PermissionRulesSettings() {
         ...echoed,
         permission: echoed.permission ?? { ...baseline?.permission, rules: next },
       });
-      setFeedback({ tone: 'success', text: t('st.perm.rulesSaved') });
+      ping();
       return true;
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -104,30 +106,33 @@ export function PermissionRulesSettings() {
                 aria-label={`${t('st.perm.delete')} ${rule.pattern}`} onClick={() => void remove(index)}>{t('st.perm.delete')}</button>
             </div>
           </li>)}</ol>}
-      {editing === null ? <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
-        onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button> :
-        <div className="space-y-3 rounded-lg border border-hairline bg-paper/40 p-3" data-permission-rule-editor>
+      {editing === null ? <div className="flex items-center gap-3">
+        <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
+          onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>
+        <SaveStatus saving={saving} saved={saved} />
+      </div> :
+        <div className="space-y-3 border-l-2 border-hairline pl-3" data-permission-rule-editor>
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1"><span className="block text-[12px] text-ink-soft">{t('st.perm.pattern')}</span>
+            <label className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.pattern')}</span>
               <input className={INPUT} value={editing.draft.pattern} onChange={(event) => update({ pattern: event.target.value })}
                 aria-invalid={!patternValid} aria-describedby={!patternValid ? 'permission-rule-pattern-error' : undefined}
                 placeholder="Bash(rm -rf*)" /></label>
-            <div className="space-y-1"><span className="block text-[12px] text-ink-soft">{t('st.perm.decision')}</span>
-              <SettingsSelect ariaLabel={t('st.perm.decision')} value={editing.draft.decision}
+            <div className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.decision')}</span>
+              <SettingsSelect variant="form" ariaLabel={t('st.perm.decision')} value={editing.draft.decision}
                 onChange={(decision) => update({ decision })} choices={(['allow', 'deny', 'ask'] as const).map((value) => ({ value, label: t(`st.perm.decision.${value}`) }))} /></div>
           </div>
           <FieldIssue id="permission-rule-pattern-error" text={!patternValid ? t('st.perm.invalidPattern') : null} />
           <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1"><span className="block text-[12px] text-ink-soft">{t('st.perm.scope')}</span>
-              <SettingsSelect ariaLabel={t('st.perm.scope')} value={editing.draft.scope}
+            <div className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.scope')}</span>
+              <SettingsSelect variant="form" ariaLabel={t('st.perm.scope')} value={editing.draft.scope}
                 onChange={(scope) => update({ scope })} choices={(['user', 'project', 'turn-override', 'session-runtime'] as const).map((value) => ({ value, label: t(`st.perm.scope.${value}`) }))} /></div>
-            <label className="space-y-1"><span className="block text-[12px] text-ink-soft">{t('st.perm.reason')}</span>
+            <label className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.reason')}</span>
               <input className={INPUT} value={editing.draft.reason} onChange={(event) => update({ reason: event.target.value })} /></label>
           </div>
           {editing.draft.scope === 'session-runtime' ? <Hint>{t('st.perm.sessionScopeHint')}</Hint> : null}
           <SettingsDraftFooter id="permission-rule" dirty={dirty} saving={saving} saveDisabled={!patternValid}
             onSave={() => void saveDraft()} onDiscard={() => { setEditing(null); setFeedback(null); }} />
-          {!dirty ? <button type="button" className={SECONDARY_BUTTON} onClick={() => setEditing(null)}>{t('st.advanced.discard')}</button> : null}
+          {!dirty ? <button type="button" className={SECONDARY_BUTTON} onClick={() => setEditing(null)}>{t('common.cancel')}</button> : null}
         </div>}
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
       <FeedbackLine feedback={feedback} />

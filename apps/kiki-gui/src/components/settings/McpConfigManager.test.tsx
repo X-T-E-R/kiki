@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { McpManagedServer } from '@kiki/session-core/transport';
 import { I18nProvider } from '../../i18n';
 import { McpConfigManager } from './McpConfigManager';
+import { pickOption } from './testControls';
 
 const mcp = vi.hoisted(() => ({
   add: vi.fn(), update: vi.fn(), remove: vi.fn(), test: vi.fn(),
@@ -256,9 +257,9 @@ describe('MCP managed header editor', () => {
     expect(fieldset.querySelector<HTMLInputElement>('[data-mcp-bearer-env]')!.value).toBe('');
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Test connection')!);
     expect(mcp.test.mock.calls[0]![0].server).toMatchObject({ url: 'https://new.example.test/mcp', headers: undefined, bearerTokenEnvVar: undefined, auth: undefined });
-    const transport = fieldset.querySelector('select')!;
-    await change(transport, 'sse');
-    await change(transport, 'http');
+    const transport = fieldset.querySelector('[data-mcp-transport]')!;
+    await pickOption(transport, 'sse');
+    await pickOption(transport, 'http');
     await change(fieldset.querySelector<HTMLInputElement>('input[placeholder="https://mcp.example.com"]')!, 'https://old.example.test/mcp');
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
     expect(mcp.update.mock.calls[0]![0].server).toMatchObject({ headers: undefined, bearerTokenEnvVar: undefined, auth: undefined });
@@ -496,9 +497,9 @@ describe('MCP OAuth credential reset', () => {
     expect(fieldset.textContent).toContain('saved OAuth credentials for remote at https://old.example.test/mcp');
     await change(fieldset.querySelector<HTMLInputElement>('input[placeholder="https://mcp.example.com"]')!, 'https://old.example.test/mcp');
     expect(fieldset.textContent).not.toContain('Changing the name, URL, or transport does not remove');
-    await change(fieldset.querySelector('select')!, 'stdio');
+    await pickOption(fieldset.querySelector('[data-mcp-transport]')!, 'stdio');
     expect(fieldset.textContent).toContain('saved OAuth credentials for remote at https://old.example.test/mcp');
-    await change(fieldset.querySelector('select')!, 'http');
+    await pickOption(fieldset.querySelector('[data-mcp-transport]')!, 'http');
     await change(fieldset.querySelector<HTMLInputElement>('input[placeholder="https://mcp.example.com"]')!, 'https://old.example.test/mcp');
     await change(fieldset.querySelector<HTMLInputElement>('input')!, 'renamed');
     expect(fieldset.textContent).toContain('saved OAuth credentials for remote at https://old.example.test/mcp');

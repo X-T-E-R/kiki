@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { I18nProvider } from '../../i18n';
 import { AboutSection } from './AboutSection';
+import { pickOption, selectText } from './testControls';
 
 const { checkDesktopUpdate, supportsDesktopUpdates, writeDesktopPrefs } = vi.hoisted(() => ({
   checkDesktopUpdate: vi.fn(),
@@ -80,23 +81,15 @@ async function renderSection(): Promise<HTMLDivElement> {
   return container;
 }
 
-async function selectValue(select: HTMLSelectElement, value: string): Promise<void> {
-  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
-  await act(async () => {
-    setter.call(select, value);
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-}
-
 describe('AboutSection desktop updates', () => {
   it('persists the selected automatic update mode to local and native preferences', async () => {
     const container = await renderSection();
-    const autoUpdate = container.querySelector<HTMLSelectElement>('select[aria-label="Automatic updates"]');
+    const autoUpdate = container.querySelector<HTMLButtonElement>('button[aria-label="Automatic updates"]');
     expect(autoUpdate).not.toBeNull();
     expect(autoUpdate!.disabled).toBe(false);
-    expect(autoUpdate!.value).toBe('notify');
+    expect(selectText(autoUpdate!)).toBe('Notify me');
 
-    await selectValue(autoUpdate!, 'install');
+    await pickOption(autoUpdate!, 'Download and install');
 
     expect(JSON.parse(localStorage.getItem('kiki.desktopPrefs') ?? '{}')).toMatchObject({
       autoUpdate: 'install',
@@ -107,7 +100,7 @@ describe('AboutSection desktop updates', () => {
   it('disables update controls and shows a friendly message for unsupported builds', async () => {
     supportsDesktopUpdates.mockResolvedValue(false);
     const container = await renderSection();
-    const selects = [...container.querySelectorAll('select')];
+    const selects = [...container.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="listbox"]')];
     const checkButton = [...container.querySelectorAll('button')].find(
       (button) => button.textContent === 'Check for updates',
     );

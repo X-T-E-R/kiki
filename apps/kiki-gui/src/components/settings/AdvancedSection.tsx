@@ -10,6 +10,7 @@ import { INPUT } from '../ui';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 import type { KikiConfigResponse } from '../../lib/client';
 import { SectionCard } from './SectionCard';
+import { useSavedTick } from './useSavedTick';
 
 /**
  * Developer → raw engine configuration: permission, loop_control, and
@@ -24,6 +25,7 @@ export function AdvancedSection() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   const textFromConfig = (config: KikiConfigResponse) => JSON.stringify({
@@ -60,7 +62,7 @@ export function AdvancedSection() {
       queryClient.setQueryData(['config'], echoed);
       setAdvanced(textFromConfig(echoed));
       setDirty(false);
-      setFeedback({ tone: 'success', text: t('st.advanced.saved') });
+      pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -73,7 +75,7 @@ export function AdvancedSection() {
         <div className="space-y-3">
           <Hint>{t('st.advanced.hint')}</Hint>
           <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => { setAdvanced(event.target.value); setDirty(true); setFeedback(null); }} aria-label={t('st.advanced.aria')} />
-          <SettingsDraftFooter id="advanced-json" dirty={dirty} saving={saving} saveLabel={t('st.advanced.save')} onSave={() => void save()} onDiscard={discard} />
+          <SettingsDraftFooter saved={justSaved} id="advanced-json" dirty={dirty} saving={saving} saveLabel={t('st.advanced.save')} onSave={() => void save()} onDiscard={discard} />
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>

@@ -11,6 +11,7 @@ import { INPUT } from '../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
 import { SectionCard } from './SectionCard';
 import { SETTINGS_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
+import { useSavedTick } from './useSavedTick';
 
 const CATEGORIES = ['policy_compliance', 'no_secret_egress', 'no_irreversible_damage', 'no_outward_effect', 'prompt_injection_absent'] as const;
 type Category = typeof CATEGORIES[number];
@@ -68,6 +69,7 @@ export function ReviewerSettings() {
   const [draft, setDraft] = useState<ReviewerDraft>(DEFAULT_DRAFT);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
   const reviewerEcho = configQuery.data?.permission?.reviewer;
   const keySource = reviewerEcho?.apiKeySource ?? (reviewerEcho?.hasApiKey === true ? 'kiki' : 'none');
@@ -96,7 +98,7 @@ export function ReviewerSettings() {
       queryClient.setQueryData(['config'], echoed);
       const next = reviewerFromConfig(echoed.permission);
       setBaseline(next); setDraft(next);
-      setFeedback({ tone: 'success', text: t('st.reviewer.saved') });
+      pingSaved();
     } catch (error) { setFeedback({ tone: 'error', text: errorText(locale, error) }); }
     finally { setSaving(false); }
   };
@@ -136,7 +138,7 @@ export function ReviewerSettings() {
             })} />{t(`st.reviewer.category.${category}` as I18nKey)}</label>)}
         </fieldset>
       </fieldset>
-      <SettingsDraftFooter id="permission-reviewer" dirty={dirty} saving={saving} saveDisabled={!valid(draft)}
+      <SettingsDraftFooter saved={justSaved} id="permission-reviewer" dirty={dirty} saving={saving} saveDisabled={!valid(draft)}
         onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }} />
       {dirty && !valid(draft) ? <p role="alert" className="text-[12px] text-danger">{t('st.reviewer.invalid')}</p> : null}
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}

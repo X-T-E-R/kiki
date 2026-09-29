@@ -15,9 +15,11 @@ import {
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { INPUT, SECONDARY_BUTTON, SMALL_INPUT, DANGER_GHOST_BUTTON } from '../ui';
+import { INPUT, SECONDARY_BUTTON, DANGER_GHOST_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingsDraftFooter } from './SettingsPrimitives';
+import { SettingField } from './fields';
+import { FORM_LABEL, SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
+import { useSavedTick } from './useSavedTick';
 
 /**
  * Tool policy (Permissions leaf): per-tool enabled/disabled/inherited. The save goes through the narrow `toolPolicyPatch`
@@ -34,6 +36,7 @@ export function ToolPolicyCard() {
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const toolsQuery = useQuery({ queryKey: ['tools'], queryFn: () => client.listTools(), staleTime: 60_000 });
 
@@ -66,7 +69,7 @@ export function ToolPolicyCard() {
       setDraft(toolPolicyDraftFromConfig(echoed));
       setDirty(false);
       await queryClient.invalidateQueries({ queryKey: ['tools'] });
-      setFeedback({ tone: 'success', text: t('st.runtime.saved') });
+      pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -82,18 +85,21 @@ export function ToolPolicyCard() {
           configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>
         ) : (
           <fieldset disabled={saving} className="min-w-0 space-y-3">
-            <label className="grid gap-1 text-[13px] text-ink">
-              {t('st.tools.mode')}
-              <select className={INPUT} aria-label={t('st.tools.mode')} value={mode} onChange={(event) => {
-                const next = event.target.value as typeof mode;
-                setMode(next);
-                edit({ ...draft, toolsEnabled: next === 'profile' ? [] : draft.toolsEnabled });
-              }}>
-                <option value="profile">{t('st.tools.followAgent')}</option>
-                <option value="allowlist">{t('st.tools.allowlist')}</option>
-              </select>
-            </label>
-            <Hint>{t(mode === 'profile' ? 'st.tools.profileImpact' : 'st.tools.allowlistImpact')}</Hint>
+            <SettingField label={t('st.tools.mode')} help={t(mode === 'profile' ? 'st.tools.profileImpact' : 'st.tools.allowlistImpact')}>
+              <SettingsSelect<typeof mode>
+                dataAttr="data-tool-mode"
+                ariaLabel={t('st.tools.mode')}
+                value={mode}
+                onChange={(next) => {
+                  setMode(next);
+                  edit({ ...draft, toolsEnabled: next === 'profile' ? [] : draft.toolsEnabled });
+                }}
+                choices={[
+                  { value: 'profile', label: t('st.tools.followAgent') },
+                  { value: 'allowlist', label: t('st.tools.allowlist') },
+                ]}
+              />
+            </SettingField>
             {emptyAllowlist ? <p role="alert" className="text-[12px] text-ink">{t('st.tools.emptyAllowlist')}</p> : null}
             <input type="search" className={INPUT} aria-label={t('st.tools.search')} placeholder={t('st.tools.search')} value={search} onChange={(event) => setSearch(event.target.value)} />
             <div className="max-h-[28rem] overflow-y-auto">
@@ -106,12 +112,17 @@ export function ToolPolicyCard() {
                       <p className="text-[11px] text-ink-soft">{descriptor === undefined ? t('st.tools.configOnly') : t(descriptor.active ? 'st.tools.currentOn' : 'st.tools.currentOff')}</p>
                       {descriptor !== undefined ? <details className="text-[11px] text-ink-soft"><summary className="cursor-pointer">{t('st.tools.description')}</summary>{descriptor.description}</details> : null}
                     </div>
-                    <select className={SMALL_INPUT} value={toolPolicyValue(draft, name)} aria-label={t('st.tools.policyAria', { name })}
-                      onChange={(event) => edit(setToolPolicy(draft, name, event.target.value as 'enabled' | 'disabled' | 'inherited'))}>
-                      <option value="inherited">{t(mode === 'profile' ? 'st.tools.inherited' : 'st.tools.excluded')}</option>
-                      {mode === 'allowlist' ? <option value="enabled">{t('st.tools.enabled')}</option> : null}
-                      <option value="disabled">{t('st.tools.disabled')}</option>
-                    </select>
+                    <SettingsSelect<'enabled' | 'disabled' | 'inherited'>
+                      dataAttr="data-tool-policy"
+                      ariaLabel={t('st.tools.policyAria', { name })}
+                      value={toolPolicyValue(draft, name)}
+                      onChange={(next) => edit(setToolPolicy(draft, name, next))}
+                      choices={[
+                        { value: 'inherited', label: t(mode === 'profile' ? 'st.tools.inherited' : 'st.tools.excluded') },
+                        ...(mode === 'allowlist' ? [{ value: 'enabled' as const, label: t('st.tools.enabled') }] : []),
+                        { value: 'disabled', label: t('st.tools.disabled') },
+                      ]}
+                    />
                   </div>
                 );
               })}
@@ -119,7 +130,7 @@ export function ToolPolicyCard() {
             {!toolNames.some((name) => name.toLowerCase().includes(search.toLowerCase())) && !toolsQuery.isLoading ? <Hint>{t('st.tools.noMatches')}</Hint> : null}
             {toolsQuery.isLoading ? <Hint>{t('st.tools.loading')}</Hint> : null}
             {toolsQuery.isError ? <InlineError error={toolsQuery.error} /> : null}
-            <SettingsDraftFooter id="tool-policy" dirty={dirty} saving={saving} saveDisabled={emptyAllowlist} saveLabel={t('st.tools.savePolicy')}
+            <SettingsDraftFooter saved={justSaved} id="tool-policy" dirty={dirty} saving={saving} saveDisabled={emptyAllowlist} saveLabel={t('st.tools.savePolicy')}
               onSave={() => void save()}
               onDiscard={() => { if (configQuery.data !== undefined) { const next = toolPolicyDraftFromConfig(configQuery.data); setDraft(next); setMode(next.toolsEnabled.length > 0 ? 'allowlist' : 'profile'); } setDirty(false); setFeedback(null); }} />
             <FeedbackLine feedback={feedback} />
@@ -140,6 +151,7 @@ function HooksCard() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   useEffect(() => {
@@ -182,7 +194,7 @@ function HooksCard() {
       queryClient.setQueryData(['config'], echoed);
       setDraft(JSON.stringify(echoed.hooks ?? [], null, 2));
       setDirty(false);
-      setFeedback({ tone: 'success', text: t('st.hooks.saved') });
+      pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -207,11 +219,17 @@ function HooksCard() {
               {rules.map((rule, index) => (
                 <fieldset key={index} className="min-w-0 space-y-2 border-b border-hairline pb-4">
                   <legend className="text-[13px] font-medium text-ink">{t('st.hooks.rule', { rule: index + 1 })}</legend>
-                  <label className="grid gap-1 text-[12px] text-ink">{t('st.hooks.event')}
-                    <select className={INPUT} aria-label={t('st.hooks.event')} value={rule.event} onChange={(event) => update(index, { event: event.target.value as SettingsHook['event'] })}>
-                      {HOOK_EVENTS.map((event) => <option key={event} value={event}>{t(`st.hooks.event.${event}`)}</option>)}
-                    </select>
-                  </label>
+                  <div className="grid gap-1">
+                    <span className={FORM_LABEL}>{t('st.hooks.event')}</span>
+                    <SettingsSelect<SettingsHook['event']>
+                      variant="form"
+                      dataAttr="data-hook-event"
+                      ariaLabel={t('st.hooks.event')}
+                      value={rule.event}
+                      onChange={(next) => update(index, { event: next })}
+                      choices={HOOK_EVENTS.map((event) => ({ value: event, label: t(`st.hooks.event.${event}`) }))}
+                    />
+                  </div>
                   <label className="grid gap-1 text-[12px] text-ink">{t('st.hooks.command')}
                     <textarea className={`${INPUT} min-h-16 font-mono`} value={rule.command} onChange={(event) => update(index, { command: event.target.value })} />
                   </label>
@@ -230,7 +248,7 @@ function HooksCard() {
               <button type="button" className={SECONDARY_BUTTON} onClick={() => edit([...rules, { event: 'PreToolUse', command: '' }])}>{t('st.hooks.add')}</button>
             </>
           )}
-          <SettingsDraftFooter id="hooks" dirty={dirty} saving={saving} saveLabel={t('st.hooks.save')} onSave={() => void save()}
+          <SettingsDraftFooter saved={justSaved} id="hooks" dirty={dirty} saving={saving} saveLabel={t('st.hooks.save')} onSave={() => void save()}
             onDiscard={() => { const json = JSON.stringify(configQuery.data?.hooks ?? [], null, 2); setDraft(json); try { setRules(parseHooksJson(json)); } catch { setAdvanced(true); } setDirty(false); setFeedback(null); }} />
         </fieldset>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}

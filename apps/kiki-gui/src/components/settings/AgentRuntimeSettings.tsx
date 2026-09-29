@@ -16,6 +16,7 @@ import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 import { Icon } from '../icons';
+import { useSavedTick } from './useSavedTick';
 
 type AgentIdentityDraft = Pick<
   RuntimeConfigDraft,
@@ -128,6 +129,7 @@ export function AgentRuntimeCard() {
   const [saved, setSaved] = useState<AgentIdentityDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const lastConfig = useRef<typeof configQuery.data>(undefined);
 
@@ -192,7 +194,7 @@ export function AgentRuntimeCard() {
       setDraft(next);
       setSaved(next);
       if (identityChanged) markRestartRequired(['identity']);
-      setFeedback({ tone: 'success', text: t('st.agentIdentity.saved') });
+      pingSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -224,7 +226,7 @@ export function AgentRuntimeCard() {
           <StringListEditor label={t('st.agentIdentity.extraAgentDirs')} values={draft.extraAgentDirs} placeholder="C:\agents" onChange={(extraAgentDirs) => { updateDraft({ ...draft, extraAgentDirs }); }} />
           <StringListEditor label={t('st.agentIdentity.disabledProfiles')} values={draft.disabledNamedProfiles} placeholder="profile-name" onChange={(disabledNamedProfiles) => { updateDraft({ ...draft, disabledNamedProfiles }); }} />
         </fieldset>
-        <SettingsDraftFooter id="agent-identity" dirty={dirty} saving={saving} onSave={() => void save()}
+        <SettingsDraftFooter saved={justSaved} id="agent-identity" dirty={dirty} saving={saving} onSave={() => void save()}
           onDiscard={() => { setDraft(saved); setFeedback(null); }} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
