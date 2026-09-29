@@ -319,9 +319,10 @@ describe('progressive tool disclosure end-to-end', () => {
     const snapshots = wireEvents(ctx, 'llm.tools_snapshot');
     expect(calls).toHaveLength(2);
     expect(snapshots).toHaveLength(1);
-    expect((calls[0]!.args as { toolsHash?: string }).toolsHash).toBe(
-      (calls[1]!.args as { toolsHash?: string }).toolsHash,
-    );
+    const firstRequest = calls[0]!.args as { systemPromptHash?: string; toolsHash?: string };
+    const secondRequest = calls[1]!.args as { systemPromptHash?: string; toolsHash?: string };
+    expect(firstRequest.systemPromptHash).toBe(secondRequest.systemPromptHash);
+    expect(firstRequest.toolsHash).toBe(secondRequest.toolsHash);
     expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
   });
 
