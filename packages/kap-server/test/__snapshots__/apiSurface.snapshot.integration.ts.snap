@@ -486,11 +486,11 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
-      "/api/ssh/hosts{discover}",
+      "/api/ssh/hosts:discover",
     ],
     [
       "GET",
-      "/api/ssh/hosts/{id}:status",
+      "/api/ssh/hosts/{tail}",
     ],
     [
       "GET",
@@ -918,11 +918,7 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
-      "/api/ssh/hosts/{id}:disconnect",
-    ],
-    [
-      "POST",
-      "/api/ssh/hosts/{id}:write-back",
+      "/api/ssh/hosts/{tail}",
     ],
     [
       "POST",
@@ -958,7 +954,7 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
-      "/api/worktrees{gc}",
+      "/api/worktrees:gc",
     ],
     [
       "POST",
