@@ -12,6 +12,12 @@ export interface WireRecordsReadResult {
 
 export type WireRecordsIncompleteReason = 'byte_budget' | 'record_budget' | 'line_budget' | 'partial_tail';
 
+export interface WireRecordSpan {
+  readonly startByteOffset: number;
+  readonly endByteOffset: number;
+  readonly ordinal: number;
+}
+
 export interface WireRecordsStreamOptions {
   readonly chunkBytes?: number;
   readonly maxBytes?: number;
@@ -19,7 +25,7 @@ export interface WireRecordsStreamOptions {
   readonly maxLineBytes?: number;
   readonly startByteOffset?: number;
   readonly signal?: AbortSignal;
-  readonly onRecord: (record: ContextRecord) => void;
+  readonly onRecord: (record: ContextRecord, span: WireRecordSpan) => void;
 }
 
 export interface WireRecordsStreamResult {
@@ -80,7 +86,10 @@ export async function streamWireRecords(
 
   const consume = (line: Buffer, terminated: boolean): void => {
     const normalized = line.length > 0 && line.at(-1) === 0x0d ? line.subarray(0, -1) : line;
-    if (normalized.length === 0) return;
+    if (normalized.length === 0) {
+      nextByteOffset += line.length + (terminated ? 1 : 0);
+      return;
+    }
     if (maxRecords !== undefined && recordCount >= maxRecords) {
       stop('record_budget');
       return;
@@ -98,9 +107,12 @@ export async function streamWireRecords(
       stop('partial_tail');
       return;
     }
+    const endByteOffset = nextByteOffset + line.length + (terminated ? 1 : 0);
+    options.onRecord(record as ContextRecord, {
+      startByteOffset: nextByteOffset, endByteOffset, ordinal: recordCount,
+    });
     recordCount += 1;
-    options.onRecord(record as ContextRecord);
-    nextByteOffset += line.length + (terminated ? 1 : 0);
+    nextByteOffset = endByteOffset;
   };
 
   const mergeLine = (): Buffer => {

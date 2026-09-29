@@ -552,6 +552,30 @@ describe('streamWireRecords', () => {
     });
   });
 
+  it('reports exact byte spans across multibyte text, blank lines and resume offsets', async () => {
+    const first = '{"type":"one","text":"😀中"}\r\n';
+    const blank = '\n\r\n';
+    const second = '{"type":"two","text":"ﬁ"}\n';
+    const raw = first + blank + second;
+    await withWireFile(raw, async (wirePath) => {
+      for (const chunkBytes of [1, 2, 5, 64]) {
+        const spans: Array<{ startByteOffset: number; endByteOffset: number; ordinal: number }> = [];
+        const result = await streamWireRecords(wirePath, {
+          chunkBytes, onRecord: (_record, span) => spans.push(span),
+        });
+        expect(spans).toEqual([
+          { startByteOffset: 0, endByteOffset: Buffer.byteLength(first), ordinal: 0 },
+          { startByteOffset: Buffer.byteLength(first + blank), endByteOffset: Buffer.byteLength(raw), ordinal: 1 },
+        ]);
+        expect(result.nextByteOffset).toBe(Buffer.byteLength(raw));
+        const resumed: typeof spans = [];
+        await streamWireRecords(wirePath, { startByteOffset: spans[1]!.startByteOffset,
+          chunkBytes, onRecord: (_record, span) => resumed.push(span) });
+        expect(resumed).toEqual([{ ...spans[1], ordinal: 0 }]);
+      }
+    });
+  });
+
   it('rejects a resume offset beyond the current file instead of returning empty history', async () => {
     await withWireFile(`${JSON.stringify({ type: 'metadata' })}\n`, async (wirePath) => {
       await expect(streamWireRecords(wirePath, {
