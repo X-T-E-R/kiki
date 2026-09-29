@@ -1785,6 +1785,93 @@ async function flushCaret(): Promise<void> {
   });
 }
 
+describe('Composer ＋ menu', () => {
+  const panelKey = async (container: HTMLDivElement, key: string) => {
+    await act(async () => {
+      (document.activeElement ?? container.querySelector('[data-add-menu]')!)
+        .dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    });
+  };
+
+  it('groups Add context above Session and drills in and back by keyboard', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const { container } = await renderComposer({
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill: vi.fn(),
+      onRebuildContext: vi.fn(),
+    });
+    for (let index = 0; index < 6; index += 1) await settle();
+    await openAddMenu(container);
+    const groups = [...container.querySelectorAll('[data-add-panel] [role="group"]')].map((group) => group.getAttribute('aria-label'));
+    expect(groups).toEqual(['Add context', 'Session']);
+    expect(document.activeElement?.hasAttribute('data-add-search')).toBe(true);
+
+    // ↓ from the search lands on the first row; walk to Skills and drill in with →.
+    await panelKey(container, 'ArrowDown');
+    await panelKey(container, 'ArrowDown');
+    expect(document.activeElement?.hasAttribute('data-add-menu-skills')).toBe(true);
+    await panelKey(container, 'ArrowRight');
+    await settle();
+    expect(container.querySelector('[data-add-panel="skills"]')).not.toBeNull();
+    expect(container.querySelector('[data-add-skill="review"]')).not.toBeNull();
+    // Escape inside a drilled view goes back to the root, a second one closes.
+    await panelKey(container, 'Escape');
+    expect(container.querySelector('[data-add-panel="root"]')).not.toBeNull();
+    await panelKey(container, 'Escape');
+    expect(container.querySelector('[data-add-panel]')).toBeNull();
+  });
+
+  it('inserts a skill as the same /name token and chips it in the tray', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onChange = vi.fn();
+    const { container, rerender } = await renderComposer({
+      value: 'check the parser',
+      onChange,
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill: vi.fn(),
+    });
+    for (let index = 0; index < 6; index += 1) await settle();
+    await openAddMenu(container);
+    await click(container.querySelector('[data-add-menu-skills]')!);
+    await settle();
+    await click(container.querySelector('[data-add-skill="review"]')!);
+    expect(onChange).toHaveBeenLastCalledWith('/review check the parser');
+    expect(container.querySelector('[data-add-panel]')).toBeNull();
+
+    await rerender({
+      value: '/review check the parser',
+      onChange,
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill: vi.fn(),
+    });
+    const chip = container.querySelector('[data-context-tray] [data-skill-chip="review"]');
+    expect(chip).not.toBeNull();
+    await click(chip!.querySelector('button[aria-label="Remove skill review"]')!);
+    expect(onChange).toHaveBeenLastCalledWith('check the parser');
+  });
+
+  it('searches files from the root and mentions a hit as the @ chip', async () => {
+    const fsSearch = vi.fn().mockResolvedValue([
+      { path: 'src/parser.ts', name: 'parser.ts', kind: 'file', score: 1, match_positions: [] },
+    ]);
+    const onChangeAttachments = vi.fn();
+    const { container } = await renderComposer({ fsSearch, onChangeAttachments, onRebuildContext: vi.fn() });
+    await openAddMenu(container);
+    const search = container.querySelector<HTMLInputElement>('[data-add-search]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(search, 'pars');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)); });
+    for (let index = 0; index < 4; index += 1) await settle();
+    expect(fsSearch).toHaveBeenCalledWith('pars');
+    await click(container.querySelector('[data-add-results] [data-add-file="src/parser.ts"]')!);
+    expect(onChangeAttachments).toHaveBeenLastCalledWith([
+      { kind: 'file', path: 'src/parser.ts', name: 'parser.ts', isDir: false },
+    ]);
+  });
+});
+
 describe('Composer input history', () => {
   it('recalls sent prompts with ArrowUp from an empty draft and walks both ways', async () => {
     pushInputHistory('s_hist', 'first prompt');

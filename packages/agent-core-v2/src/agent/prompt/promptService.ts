@@ -13,6 +13,8 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
 import { USER_PROMPT_ORIGIN, type BundledSkillActivation, type ContextMessage, type PromptOrigin } from '#/agent/contextMemory/types';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { ExecutorHintDelivery } from '#/agent/execution/externalExecutorOps';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService, type EnqueueReceipt, type Turn, type TurnResult } from '#/agent/loop/loop';
 import { TurnSteer } from '#/agent/loop/turnOps';
@@ -59,6 +61,7 @@ import {
   type PromptPayload,
   type PromptQueueHold,
   type PromptQueueSnapshot,
+  PROMPT_EDIT_HOLD_TTL_MS,
   type PromptReservation,
   type PromptSnapshot,
   type PromptState,
@@ -524,6 +527,7 @@ export class AgentPromptService implements IAgentPromptService {
   private active: (Record & { turn: Turn }) | undefined;
   private readonly pending: Record[] = [];
   private readonly immediatePromptIds = new Set<string>();
+  private readonly queuedExternalSteerIds = new Set<string>();
   private readonly steered = new Map<string, Record[]>();
   private readonly steeredTurnIds = new Map<string, number>();
   private readonly steeringFlights = new Map<
@@ -541,6 +545,8 @@ export class AgentPromptService implements IAgentPromptService {
   private steering = 0;
   private waitingForLoop = false;
   private recoveryHold = false;
+  /** The single queued prompt a client is editing; it and everything after it wait. */
+  private editHold: { readonly promptId: string; timer: ReturnType<typeof setTimeout> } | undefined;
   private fullCompactionService: IAgentFullCompactionService | undefined;
   readonly hooks = { onBeforeSubmitPrompt: new OrderedHookSlot<PromptSubmitContext>() };
 
@@ -609,7 +615,6 @@ export class AgentPromptService implements IAgentPromptService {
 
   readonly [promptRetry] = {
     lookup: async (promptId: string, fingerprint: string): Promise<PromptRetryReceipt | undefined> => {
-      this.assertNativePromptExecutor();
       const committed = this.states.get(promptRetryReceiptKey).get(promptId);
       if (committed === undefined) {
         if (this.states.get(promptAdmissionKey).has(promptId)) {
@@ -644,7 +649,6 @@ export class AgentPromptService implements IAgentPromptService {
   };
 
   [promptAdmission](promptId?: string, durableAcceptance = false): PromptReservation {
-    this.assertNativePromptExecutor();
     if (promptId !== undefined && promptId.length === 0) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_id must not be empty');
     }
@@ -676,7 +680,6 @@ export class AgentPromptService implements IAgentPromptService {
       id,
       submit: async (message, execution, deferredDisabledTools, appendTiming, signal) => {
         if (submitted) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt reservation already submitted');
-        this.assertNativePromptExecutor();
         this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, execution));
         submitted = true;
         reservation.commit(id);
@@ -697,7 +700,6 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async enqueueNow(input: PromptInput): Promise<PromptHandle> {
-    this.assertNativePromptExecutor();
     const peerMessageId =
       input.message.origin?.kind === 'peer_thread' ? input.message.origin.messageId : undefined;
     if (peerMessageId !== undefined) {
@@ -750,7 +752,7 @@ export class AgentPromptService implements IAgentPromptService {
     this.pending.push(record);
     this.bindSubmissionSignal(record, signal);
     const idle = this.active === undefined && !this.launching;
-    const queued = this.recoveryHold || !idle || !this.isTimingReady(record.appendTiming) || this.loop.status().state === 'running' || this.fullCompaction.compacting !== null;
+    const queued = this.recoveryHold || this.isEditHeld(this.pending.length - 1) || !idle || !this.isTimingReady(record.appendTiming) || this.loop.status().state === 'running' || this.fullCompaction.compacting !== null;
     this.publishSubmitted(record, queued ? 'queued' : 'running');
     if (queued) {
       this.publishQueued(record);
@@ -912,11 +914,51 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   hasReadyPending(): boolean {
-    return this.pending.some((item) => this.isReadyPending(item));
+    return this.pending.some((item, index) => this.isReadyPending(item, index));
   }
 
-  private isReadyPending(item: Record): boolean {
-    return this.immediatePromptIds.has(item.id) || (!this.recoveryHold && this.isTimingReady(item.appendTiming));
+  private isReadyPending(item: Record, index: number): boolean {
+    if (this.immediatePromptIds.has(item.id)) return true;
+    return !this.recoveryHold && !this.isEditHeld(index) && this.isTimingReady(item.appendTiming);
+  }
+
+  /** True when the queue slot sits at or behind the prompt being edited. */
+  private isEditHeld(index: number): boolean {
+    if (this.editHold === undefined) return false;
+    const heldIndex = this.pending.findIndex((candidate) => candidate.id === this.editHold?.promptId);
+    return heldIndex >= 0 && index >= heldIndex;
+  }
+
+  setEditHold(promptId: string, held: boolean): void {
+    if (!held) {
+      if (this.editHold?.promptId !== promptId) return;
+      this.releaseEditHold();
+      void this.startNext();
+      return;
+    }
+    if (!this.pending.some((candidate) => candidate.id === promptId) || this.steeringPromptIds.has(promptId)) {
+      throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${promptId} is not holdable`);
+    }
+    if (this.editHold !== undefined) clearTimeout(this.editHold.timer);
+    const timer = setTimeout(() => {
+      if (this.editHold?.promptId !== promptId) return;
+      this.editHold = undefined;
+      void this.startNext();
+    }, PROMPT_EDIT_HOLD_TTL_MS);
+    (timer as { unref?: () => void }).unref?.();
+    this.editHold = { promptId, timer };
+  }
+
+  private releaseEditHold(): void {
+    if (this.editHold === undefined) return;
+    clearTimeout(this.editHold.timer);
+    this.editHold = undefined;
+  }
+
+  /** Drop a hold whose prompt left the queue (launched, steered, aborted). */
+  private syncEditHold(): void {
+    if (this.editHold === undefined) return;
+    if (!this.pending.some((candidate) => candidate.id === this.editHold?.promptId)) this.releaseEditHold();
   }
 
   resumeRecoveredQueue(): void {
@@ -1067,6 +1109,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   async steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {
+    if ((this.profile.data().executorId ?? 'native') !== 'native') return this.steerExternal(promptIds);
     this.assertNativePromptExecutor();
     if (promptIds.length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
     const targetTurnId = this.active?.turn.id ?? this.loop.status().activeTurnId;
@@ -1188,6 +1231,57 @@ export class AgentPromptService implements IAgentPromptService {
     }
   }
 
+  private async steerExternal(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {
+    if (promptIds.length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
+    const ids = new Set(promptIds);
+    if (ids.size !== promptIds.length || this.pending.filter((item) => ids.has(item.id)).length !== ids.size) {
+      throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
+    }
+    const selected = this.pending.filter((item) => ids.has(item.id));
+    if (selected.some((item) => this.hasExecutionBindingChange(item.execution))) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with a different execution binding must run as their own turn');
+    }
+    const active = this.active;
+    for (const item of selected) this.steeringPromptIds.add(item.id);
+    try {
+      const message = mergeSteerMessages(selected);
+      const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
+      const textOnly = message.content.every((part) => part.type === 'text');
+      const delivered = active !== undefined && textOnly &&
+        await (execution.steer?.(message) ?? Promise.resolve(false));
+      if (delivered && selected.every((item) => this.pending.includes(item))) {
+        for (const item of selected) {
+          this.pending.splice(this.pending.indexOf(item), 1);
+          item.state = 'steered';
+          item.launchedDeferred.resolve(active.turn);
+          this.steeredTurnIds.set(item.id, active.turn.id);
+        }
+        this.steered.set(active.id, [...(this.steered.get(active.id) ?? []), ...selected]);
+        await this.dispatcher.dispatch(new PromptSteered({
+          activePromptId: active.id, promptIds: selected.map((item) => item.id),
+          content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString(),
+        }));
+        for (const item of selected) await this.dispatcher.dispatch(new ExecutorHintDelivery({
+          turnId: active.turn.id, executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user',
+          method: 'native_steer', status: 'delivered',
+        }));
+        this.syncRecoveryHold();
+      } else {
+        for (const item of selected) {
+          this.queuedExternalSteerIds.add(item.id);
+          await this.dispatcher.dispatch(new ExecutorHintDelivery({
+            executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user',
+            method: 'next_turn_preamble', status: 'queued',
+          }));
+        }
+      }
+      return selected.map((item) => item.handle);
+    } finally {
+      for (const item of selected) this.steeringPromptIds.delete(item.id);
+      if (this.active === undefined) void this.startNext();
+    }
+  }
+
   abort(promptId: string, reason: Error = userCancellationReason()): boolean {
     const cancelled = this.cancelLivePrompt(promptId, reason);
     if (cancelled === undefined) {
@@ -1225,6 +1319,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private syncRecoveryHold(): void {
+    this.syncEditHold();
     if (!this.recoveryHold) return;
     if (this.pending.length === 0) this.recoveryHold = false;
     this.publishQueueHoldChanged();
@@ -1233,6 +1328,9 @@ export class AgentPromptService implements IAgentPromptService {
   private cancelUnlaunched(item: Record, beforeStart: boolean): void {
     this.immediatePromptIds.delete(item.id);
     this.recoveryPendingIds.delete(item.id);
+    if (this.queuedExternalSteerIds.delete(item.id)) void this.dispatcher.dispatch(new ExecutorHintDelivery({
+      executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user', method: 'undelivered', status: 'undelivered',
+    }));
     item.state = 'cancelled';
     item.launchedDeferred.resolve(undefined);
     item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'cancelled' });
@@ -1283,7 +1381,7 @@ export class AgentPromptService implements IAgentPromptService {
   private async startNext(): Promise<void> {
     if (this.active !== undefined || this.launching || this.steering > 0 || this.pending.length === 0) return;
     if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') return;
-    const candidateIndex = this.pending.findIndex((candidate) => this.isReadyPending(candidate));
+    const candidateIndex = this.pending.findIndex((candidate, index) => this.isReadyPending(candidate, index));
     if (candidateIndex < 0) return;
     let admission: ReturnType<IAgentLoopService['tryAcquireQuiescence']>;
     try {
@@ -1312,7 +1410,6 @@ export class AgentPromptService implements IAgentPromptService {
       this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, item.execution));
       await this.applyExecutionBinding(item.execution);
       controller.signal.throwIfAborted();
-      this.assertNativePromptExecutor();
       if (item.deferredDisabledTools !== undefined) {
         await this.toolPolicy.setSessionDisabledTools(item.deferredDisabledTools);
         controller.signal.throwIfAborted();
@@ -1346,13 +1443,31 @@ export class AgentPromptService implements IAgentPromptService {
       if (item.execution?.permissionMode !== undefined) this.permissionMode.setMode(item.execution.permissionMode);
       if (item.execution?.planGate !== undefined) this.plan.setGate(item.execution.planGate);
       const recovered = this.recoveryPendingIds.delete(item.id);
-      const receipt = this.loop.enqueue(
-        new PromptStepRequest(message, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined),
-        { at: 'head' },
-      );
-      launching.receipt = receipt;
-      admission.dispose();
-      const turn = (await receipt.assigned).turn;
+      let turn: Turn | undefined;
+      if ((this.profile.data().executorId ?? 'native') === 'native') {
+        const receipt = this.loop.enqueue(
+          new PromptStepRequest(message, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined),
+          { at: 'head' },
+        );
+        launching.receipt = receipt;
+        admission.dispose();
+        turn = (await receipt.assigned).turn;
+      } else {
+        const text = message.content.map((part) => {
+          if (part.type !== 'text') throw new Error2(ErrorCodes.REQUEST_INVALID, 'External executor prompts currently require text content');
+          return part.text;
+        }).join('');
+        admission.dispose();
+        const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
+        turn = (await execution.run({ kind: 'prompt', prompt: text, origin: message.origin }, { signal: controller.signal })).turn;
+        if (this.queuedExternalSteerIds.delete(item.id)) {
+          await this.dispatcher.dispatch(new ExecutorHintDelivery({
+            executorId: this.profile.data().executorId, turnId: turn.id,
+            promptId: item.id, origin: message.origin?.kind ?? 'user',
+            method: 'next_turn_preamble', status: 'delivered',
+          }));
+        }
+      }
       if (turn === undefined) {
         throw new Error2(ErrorCodes.INTERNAL, 'Prompt launch was not assigned after launch commit');
       }
@@ -1361,6 +1476,9 @@ export class AgentPromptService implements IAgentPromptService {
       else this.publishStarted(item);
       void turn.result.then((result) => this.settle(item, result));
     } catch (error) {
+      if (this.queuedExternalSteerIds.delete(item.id)) await this.dispatcher.dispatch(new ExecutorHintDelivery({
+        executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user', method: 'undelivered', status: 'undelivered',
+      }));
       if (controller.signal.aborted) {
         if (item.state !== 'cancelled') this.cancelUnlaunched(item, true);
       } else {

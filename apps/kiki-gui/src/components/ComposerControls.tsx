@@ -1,9 +1,10 @@
 /**
  * ComposerControls — the popover controls on the composer's status line:
  *
- * - AddMenu (＋): Attach files · Mode ▸ · Rebuild context. The Mode view is
- *   the same popover swapped to the run-mode panel, so `/plan`, `/goal` and
- *   the run-mode chip all open one surface.
+ * - AddMenu (＋): one searchable "add" menu — Add context (files & images,
+ *   skills, @-mention, SSH hosts) and Session (Mode, Rebuild). The Mode view
+ *   is the same popover swapped to the run-mode panel, so `/plan`, `/goal`
+ *   and the run-mode chip all open one surface.
  * - RunModeChip: shown only when the run mode is not Normal; its ✕ returns
  *   to Normal.
  * - PermissionSelect: the approvals chip + menu, rendered from the
@@ -14,9 +15,11 @@
  * registers as an overlay so the global Escape (turn abort) stays out.
  */
 
-import { useEffect, useRef, type KeyboardEvent, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
-import type { PermissionMode } from '@kiki/protocol';
+import type { FsSearchHit, PermissionMode } from '@kiki/protocol';
+import { filterSlashItems, type SlashItem } from '@kiki/session-core/commands';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
@@ -209,11 +212,158 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
 }
 
 /**
- * ＋ — Attach files · Mode ▸ · Rebuild context. `view` is parent-owned so
- * `/plan`, `/goal` and the run-mode chip can open straight into Mode.
- * `data-plan-select` stays on the root for proofs that address the run-shape
- * panel by that hook.
+ * ＋ — the "add to this message / session" entry point. Root: a search field,
+ * then two groups:
+ *
+ *   Add context   Files & images · Skills ▸ · Mention a file ▸ · SSH hosts ▸
+ *   Session       Mode ▸ · Rebuild context
+ *
+ * Typing in the search filters skills, files and SSH hosts in one list. Each
+ * ▸ row drills into its own view (→ / Enter in, ← / Escape / the Back row
+ * out). What the menu adds lands where typing would put it: a skill becomes
+ * the same `/name ` token the `/` picker writes, a file the same @-mention
+ * chip, a host the same session host chip. `view` is parent-owned so `/plan`,
+ * `/goal` and the run-mode chip can open straight into Mode (Escape then
+ * closes, since nothing was drilled from). `data-plan-select` stays on the
+ * root for proofs that address the run-shape panel by that hook.
+ *
+ * The panel floats above the whole composer card (`anchorRef`), never over
+ * the card's own chips or header.
  */
+export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention';
+
+/** One SSH host as the ＋ search lists it (the SSH view owns the full panel). */
+export interface AddMenuHost {
+  readonly id: string;
+  readonly name: string;
+  readonly detail?: string;
+  readonly joined: boolean;
+}
+
+export interface AddMenuSkills {
+  /** Skill rows only (`kind === 'skill'`), same catalog as the `/` picker. */
+  readonly items: readonly SlashItem[];
+  readonly status: 'loading' | 'error' | 'ready';
+  readonly onInsert: (item: SlashItem) => void;
+  /** Called when a skills list is about to show (lets a stale catalog refresh). */
+  readonly onShow?: () => void;
+}
+
+export interface AddMenuFiles {
+  readonly search: (query: string) => Promise<FsSearchHit[]>;
+  /** Cache scope shared with the `@` picker's query key. */
+  readonly scopeKey: string;
+  readonly onMention: (hit: FsSearchHit) => void;
+}
+
+const FILE_ROW_LIMIT = 8;
+const SEARCH_ROW_LIMIT = 5;
+const FILE_DEBOUNCE_MS = 200;
+/** Gap between the composer card's top edge and the panel. */
+const PANEL_GAP_PX = 6;
+
+function useDebounced<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => { setDebounced(value); }, delay);
+    return () => { clearTimeout(timer); };
+  }, [value, delay]);
+  return debounced;
+}
+
+/**
+ * Bottom offset (px) that lifts an absolutely positioned panel inside `root`
+ * to just above `anchor`'s top edge; re-measured while the anchor resizes
+ * (host chips joining from the SSH view grow the card under an open panel).
+ */
+function useAboveAnchor(
+  open: boolean,
+  rootRef: RefObject<HTMLDivElement | null>,
+  anchorRef: RefObject<HTMLElement | null> | undefined,
+): number | undefined {
+  const [offset, setOffset] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!open || anchorRef === undefined) return;
+    const measure = () => {
+      const root = rootRef.current;
+      const anchor = anchorRef.current;
+      if (root === null || anchor === null) return;
+      const rootRect = root.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      setOffset(Math.max(0, rootRect.bottom - anchorRect.top) + PANEL_GAP_PX);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined' || anchorRef.current === null) return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(anchorRef.current);
+    window.addEventListener('resize', measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [open, rootRef, anchorRef]);
+  return offset;
+}
+
+function GroupLabel({ children }: { children: React.ReactNode }) {
+  return <p role="presentation" className={POPOVER_LABEL_CLASS}>{children}</p>;
+}
+
+function Chevron() {
+  return <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />;
+}
+
+function SkillRow({ item, onInsert, result = false }: { item: SlashItem; onInsert: (item: SlashItem) => void; result?: boolean }) {
+  const hint = item.skill?.argument_hint;
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      data-menu-row
+      data-add-result={result ? '' : undefined}
+      data-add-skill={item.name}
+      aria-disabled={item.disabled === true || undefined}
+      title={item.description}
+      onClick={() => { if (item.disabled !== true) onInsert(item); }}
+      className={`${MENU_ROW_CLASS} items-start aria-disabled:cursor-not-allowed aria-disabled:opacity-50`}
+    >
+      <Icon name="skill" size={14} className="mt-[3px] shrink-0 text-ink-soft" />
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="truncate font-medium text-ink">/{item.name}</span>
+          {hint !== undefined && hint !== '' ? <span className="truncate text-[12px] text-ink-faint">{hint}</span> : null}
+        </span>
+        {item.description !== '' ? (
+          <span className="mt-0.5 block truncate text-[12px] leading-snug text-ink-faint">{item.description}</span>
+        ) : null}
+      </span>
+    </button>
+  );
+}
+
+function FileRow({ hit, onMention, result = false }: { hit: FsSearchHit; onMention: (hit: FsSearchHit) => void; result?: boolean }) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      data-menu-row
+      data-add-result={result ? '' : undefined}
+      data-add-file={hit.path}
+      title={hit.path}
+      onClick={() => { onMention(hit); }}
+      className={MENU_ROW_CLASS}
+    >
+      <Icon name="file" size={14} className="shrink-0 text-ink-soft" />
+      <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink">
+        {hit.name}{hit.kind === 'directory' ? '/' : ''}
+      </span>
+      {hit.path.includes('/') ? (
+        <span className="max-w-[45%] min-w-0 truncate font-mono text-[11px] text-ink-faint">{hit.path.slice(0, hit.path.lastIndexOf('/'))}</span>
+      ) : null}
+    </button>
+  );
+}
+
 export function AddMenu({
   view,
   onViewChange,
@@ -222,9 +372,13 @@ export function AddMenu({
   onRebuild,
   rebuildDisabled,
   runMode,
+  ssh,
+  skills,
+  files,
+  anchorRef,
 }: {
-  readonly view: 'closed' | 'root' | 'mode';
-  readonly onViewChange: (view: 'closed' | 'root' | 'mode') => void;
+  readonly view: AddMenuView;
+  readonly onViewChange: (view: AddMenuView) => void;
   readonly attachDisabled: boolean;
   readonly onAttach: () => void;
   /** Absent hides the row (no rebuild path for this composer). */
@@ -232,28 +386,147 @@ export function AddMenu({
   readonly rebuildDisabled?: boolean;
   /** Absent hides the Mode row (subagent composer). */
   readonly runMode?: RunModeControls;
+  /** SSH hosts row + view (components/ssh/ComposerSsh); absent hides it. */
+  readonly ssh?: {
+    readonly count: number;
+    readonly renderPanel: (close: (refocus?: boolean) => void) => React.ReactNode;
+    /** Hosts for the root search; toggling joins/leaves the session. */
+    readonly hosts?: readonly AddMenuHost[];
+    readonly onToggleHost?: (id: string) => void;
+  };
+  /** Skills row + view; absent hides it. */
+  readonly skills?: AddMenuSkills;
+  /** Mention-a-file row + view (the `@` picker's search); absent hides it. */
+  readonly files?: AddMenuFiles;
+  /** The composer card: the panel floats above it instead of over its chips. */
+  readonly anchorRef?: RefObject<HTMLElement | null>;
 }) {
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const open = view !== 'closed';
+  const [query, setQuery] = useState('');
+  // Whether the current sub-view was entered from the root (Back returns
+  // there) or opened directly (`/plan` → Mode: Escape just closes).
+  const drilledRef = useRef(false);
   const close = (refocus = false) => {
+    drilledRef.current = false;
     onViewChange('closed');
     if (refocus) triggerRef.current?.focus();
   };
-  const onKeyDown = usePopover(open, close, rootRef, 'composer-add');
+  const drill = (next: AddMenuView) => {
+    drilledRef.current = true;
+    setQuery('');
+    onViewChange(next);
+  };
+  const back = () => {
+    drilledRef.current = false;
+    setQuery('');
+    onViewChange('root');
+  };
+  const popoverKeyDown = usePopover(open, close, rootRef, 'composer-add');
+  const bottomOffset = useAboveAnchor(open, rootRef, anchorRef);
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
   // With Attach as the only action (the subagent composer) a menu would be
   // one pointless extra click: ＋ attaches directly.
-  const attachOnly = runMode === undefined && onRebuild === undefined;
+  const attachOnly =
+    runMode === undefined && onRebuild === undefined && ssh === undefined && skills === undefined && files === undefined;
+  const searchable = skills !== undefined || files !== undefined || (ssh?.hosts !== undefined && ssh.hosts.length > 0);
 
-  // Opening focuses the first row so the menu is keyboard-ready.
+  const trimmed = query.trim();
+  const needle = trimmed.toLowerCase();
+  const searching = view === 'root' && trimmed !== '';
+  const fileQuery = useDebounced(trimmed, FILE_DEBOUNCE_MS);
+  const filesWanted = open && files !== undefined && (view === 'mention' || (view === 'root' && fileQuery !== ''));
+  const filesQuery = useQuery({
+    queryKey: ['fs-search', files?.scopeKey ?? 'none', fileQuery],
+    queryFn: () => files!.search(fileQuery),
+    enabled: filesWanted,
+    staleTime: 30_000,
+  });
+  const fileHits = (filesQuery.data ?? []).slice(0, view === 'mention' ? FILE_ROW_LIMIT : SEARCH_ROW_LIMIT);
+  const skillMatches = skills === undefined ? [] : trimmed === '' ? skills.items : filterSlashItems(skills.items, trimmed);
+  const hostMatches = (ssh?.hosts ?? []).filter(
+    (host) => host.name.toLowerCase().includes(needle) || (host.detail ?? '').toLowerCase().includes(needle),
+  );
+
+  const onShowSkills = skills?.onShow;
+  useEffect(() => {
+    if (open && (view === 'skills' || view === 'root')) onShowSkills?.();
+    // Once per open / view change; the catalog refreshes only when stale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, view]);
+
+  // Opening (or changing view) focuses the view's first stop.
   useEffect(() => {
     if (!open) return;
     const root = rootRef.current;
     if (root === null) return;
-    const field = view === 'mode' ? root.querySelector<HTMLElement>('[data-goal-objective]') : null;
-    (field ?? root.querySelector<HTMLElement>('[role="radio"][aria-checked="true"], [data-menu-row]'))?.focus();
+    const field =
+      view === 'mode'
+        ? root.querySelector<HTMLElement>('[data-goal-objective]')
+        : root.querySelector<HTMLElement>('[data-add-search]');
+    (field ?? root.querySelector<HTMLElement>('[role="radio"][aria-checked="true"], [data-menu-row]:not([data-add-back])') ?? root.querySelector<HTMLElement>('[data-menu-row]'))?.focus();
   }, [open, view]);
+
+  const firstRow = () =>
+    rootRef.current?.querySelector<HTMLElement>('[data-menu-row]:not([data-add-back]):not(:disabled):not([aria-disabled="true"])') ?? null;
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!open) return;
+    const target = event.target as HTMLElement;
+    const inSearch = target.dataset['addSearch'] !== undefined;
+    if (event.key === 'Escape') {
+      if (inSearch && query !== '') {
+        event.preventDefault();
+        event.stopPropagation();
+        setQuery('');
+        return;
+      }
+      if (view !== 'root' && drilledRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        back();
+        return;
+      }
+    }
+    if (inSearch) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        firstRow()?.focus();
+        return;
+      }
+      if (event.key === 'ArrowLeft' && query === '' && view !== 'root' && drilledRef.current) {
+        event.preventDefault();
+        back();
+        return;
+      }
+      if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+        firstRow()?.click();
+        return;
+      }
+    } else if (target.tagName !== 'INPUT') {
+      if (event.key === 'ArrowRight' && target.dataset['addDrill'] !== undefined) {
+        event.preventDefault();
+        target.click();
+        return;
+      }
+      if (event.key === 'ArrowLeft' && view !== 'root' && drilledRef.current) {
+        event.preventDefault();
+        back();
+        return;
+      }
+      // Typing on a row goes to the view's search field.
+      const search = rootRef.current?.querySelector<HTMLInputElement>('[data-add-search]');
+      if (search !== null && search !== undefined && event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        search.focus();
+      }
+    }
+    popoverKeyDown(event);
+  };
 
   if (attachOnly) {
     return (
@@ -273,6 +546,188 @@ export function AddMenu({
     );
   }
 
+  const insertSkill = (item: SlashItem) => { close(); skills?.onInsert(item); };
+  const mentionFile = (hit: FsSearchHit) => { close(); files?.onMention(hit); };
+
+  const searchField = (placeholder: string) => (
+    <div className="px-1 pt-0.5 pb-1">
+      <label className="flex h-8 items-center gap-2 rounded-md bg-ink/[0.04] px-2.5 text-ink-faint focus-within:ring-2 focus-within:ring-accent/40">
+        <Icon name="search" size={14} className="shrink-0" />
+        <input
+          data-add-search
+          value={query}
+          onChange={(event) => { setQuery(event.target.value); }}
+          placeholder={placeholder}
+          aria-label={placeholder}
+          spellCheck={false}
+          autoComplete="off"
+          className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-faint"
+        />
+      </label>
+    </div>
+  );
+
+  const backRow = (label: string) =>
+    drilledRef.current ? (
+      <button type="button" role="menuitem" data-menu-row data-add-back onClick={back} className={`${MENU_ROW_CLASS} text-ink-soft`}>
+        <Icon name="chevron" size={12} className="shrink-0 rotate-180 text-ink-faint" />
+        <span className="flex-1 font-medium">{label}</span>
+      </button>
+    ) : null;
+
+  const drillRow = (id: AddMenuView, icon: React.ReactNode, label: string, trailing?: React.ReactNode, data?: Record<string, string>) => (
+    <button
+      type="button"
+      role="menuitem"
+      data-menu-row
+      data-add-drill
+      {...data}
+      aria-haspopup="menu"
+      onClick={() => { drill(id); }}
+      className={MENU_ROW_CLASS}
+    >
+      {icon}
+      <span className="flex-1">{label}</span>
+      {trailing}
+      <Chevron />
+    </button>
+  );
+
+  const note = (text: string, tone: 'faint' | 'danger' = 'faint') => (
+    <p role={tone === 'danger' ? 'alert' : undefined} className={`px-2.5 py-1.5 text-[12px] leading-4 ${tone === 'danger' ? 'text-danger' : 'text-ink-faint'}`}>
+      {text}
+    </p>
+  );
+
+  const rootBody = searching ? (
+    <div data-add-results>
+      {skills !== undefined && skillMatches.length > 0 ? (
+        <>
+          <GroupLabel>{t('composer.addMenu.skills')}</GroupLabel>
+          {skillMatches.slice(0, SEARCH_ROW_LIMIT).map((item) => (
+            <SkillRow key={item.name} item={item} onInsert={insertSkill} result />
+          ))}
+        </>
+      ) : null}
+      {files !== undefined && fileHits.length > 0 ? (
+        <>
+          <GroupLabel>{t('composer.addMenu.files')}</GroupLabel>
+          {fileHits.map((hit) => <FileRow key={hit.path} hit={hit} onMention={mentionFile} result />)}
+        </>
+      ) : null}
+      {hostMatches.length > 0 && ssh?.onToggleHost !== undefined ? (
+        <>
+          <GroupLabel>{t('composer.addMenu.ssh')}</GroupLabel>
+          {hostMatches.slice(0, SEARCH_ROW_LIMIT).map((host) => (
+            <button
+              key={host.id}
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={host.joined}
+              data-menu-row
+              data-add-result
+              data-add-host={host.id}
+              onClick={() => { ssh.onToggleHost?.(host.id); }}
+              className={`${MENU_ROW_CLASS} items-start`}
+            >
+              <Check on={host.joined} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-ink">{host.name}</span>
+                {host.detail !== undefined ? <span className="block truncate font-mono text-[12px] leading-4 text-ink-faint">{host.detail}</span> : null}
+              </span>
+            </button>
+          ))}
+        </>
+      ) : null}
+      {skillMatches.length === 0 && hostMatches.length === 0 && (files === undefined || (fileHits.length === 0 && !(filesQuery.isFetching || fileQuery !== trimmed)))
+        ? note(t('composer.addMenu.noMatch', { query: trimmed }))
+        : null}
+      {files !== undefined && fileHits.length === 0 && (filesQuery.isFetching || fileQuery !== trimmed) ? note(t('composer.filesSearching')) : null}
+    </div>
+  ) : (
+    <>
+      <div role="group" aria-label={t('composer.addMenu.contextGroup')}>
+        <GroupLabel>{t('composer.addMenu.contextGroup')}</GroupLabel>
+        <button
+          type="button"
+          role="menuitem"
+          data-menu-row
+          data-attach-button
+          disabled={attachDisabled}
+          onClick={() => { close(); onAttach(); }}
+          className={MENU_ROW_CLASS}
+        >
+          <MenuIcon d="M9.5 6.5 6.2 9.8a2.3 2.3 0 0 1-3.3-3.3l3.9-3.9a1.5 1.5 0 0 1 2.2 2.2L5.3 8.5a.7.7 0 0 1-1-1l3.2-3.2" />
+          <span className="flex-1">{t('composer.addMenu.attach')}</span>
+          <span className="text-[12px] text-ink-faint">{t('composer.addMenu.attachHint')}</span>
+        </button>
+        {skills !== undefined
+          ? drillRow('skills', <Icon name="skill" size={14} className="shrink-0 text-ink-soft" />, t('composer.addMenu.skills'),
+              <span className="font-mono text-[12px] text-ink-faint">/</span>, { 'data-add-menu-skills': '' })
+          : null}
+        {files !== undefined
+          ? drillRow('mention', <span aria-hidden className="flex w-3.5 shrink-0 justify-center font-mono text-[13px] leading-none text-ink-soft">@</span>,
+              t('composer.addMenu.mention'), <span className="font-mono text-[12px] text-ink-faint">@</span>, { 'data-add-menu-mention': '' })
+          : null}
+        {ssh !== undefined
+          ? drillRow('ssh', <Icon name="terminal" size={14} className="shrink-0 text-ink-soft" />, t('composer.addMenu.ssh'),
+              ssh.count > 0 ? <span className="text-[12px] text-ink-faint tabular-nums">{ssh.count}</span> : undefined, { 'data-add-menu-ssh': '' })
+          : null}
+      </div>
+      {runMode !== undefined || onRebuild !== undefined ? (
+        <div role="group" aria-label={t('composer.addMenu.sessionGroup')} className="mt-1 border-t border-hairline pt-1">
+          <GroupLabel>{t('composer.addMenu.sessionGroup')}</GroupLabel>
+          {runMode !== undefined
+            ? drillRow('mode', <MenuIcon d="M2.5 4h7M2.5 8h7M4.5 2.5v3M7.5 6.5v3" />, t('composer.addMenu.mode'),
+                <span className="text-[12px] text-ink-faint">{t(RUN_MODES.find((mode) => mode.id === runMode.runMode)!.labelKey)}</span>,
+                { 'data-add-menu-mode': '' })
+            : null}
+          {onRebuild !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-row
+              data-add-menu-rebuild
+              disabled={rebuildDisabled}
+              onClick={() => { close(); onRebuild(); }}
+              className={MENU_ROW_CLASS}
+            >
+              <MenuIcon d="M9.6 5A3.7 3.7 0 0 0 3 3.8M2.4 7A3.7 3.7 0 0 0 9 8.2M3 2v1.9h1.9M9 10V8.1H7.1" />
+              <span className="flex-1">{t('composer.addMenu.rebuild')}</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+
+  const skillsBody = skills === undefined ? null : (
+    <div data-add-skills-view>
+      {backRow(t('composer.addMenu.skills'))}
+      {searchField(t('composer.addMenu.searchSkills'))}
+      <div className="max-h-72 overflow-y-auto">
+        {skills.status === 'loading' && skills.items.length === 0 ? note(t('composer.addMenu.skillsLoading'))
+          : skills.status === 'error' && skills.items.length === 0 ? note(t('composer.addMenu.skillsFailed'), 'danger')
+          : skillMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.skillsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
+          : skillMatches.map((item) => <SkillRow key={item.name} item={item} onInsert={insertSkill} />)}
+      </div>
+    </div>
+  );
+
+  const mentionBody = files === undefined ? null : (
+    <div data-add-mention-view>
+      {backRow(t('composer.addMenu.mention'))}
+      {searchField(t('composer.addMenu.searchFiles'))}
+      <div className="max-h-72 overflow-y-auto">
+        {filesQuery.isError ? note(t('composer.filesFailed'), 'danger')
+          : fileHits.length === 0 && (filesQuery.isFetching || fileQuery !== trimmed) ? note(t('composer.filesSearching'))
+          : fileHits.length === 0 ? note(trimmed === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query: trimmed }))
+          : fileHits.map((hit) => <FileRow key={hit.path} hit={hit} onMention={mentionFile} />)}
+      </div>
+      <p className="px-2.5 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.mentionHint')}</p>
+    </div>
+  );
+
   return (
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape/arrow handling for the open panel
     <div ref={rootRef} className="relative self-start" data-add-menu data-plan-select onKeyDown={onKeyDown}>
@@ -284,7 +739,7 @@ export function AddMenu({
         aria-expanded={open}
         aria-label={t('composer.addMenuAria')}
         title={t('composer.addMenuAria')}
-        onClick={() => { onViewChange(open ? 'closed' : 'root'); }}
+        onClick={() => { if (open) close(); else { drilledRef.current = false; onViewChange('root'); } }}
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors duration-150 hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none aria-expanded:bg-paper aria-expanded:text-ink pointer-coarse:h-10 pointer-coarse:w-10"
       >
         <svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden
@@ -294,58 +749,37 @@ export function AddMenu({
       </button>
       {open ? (
         <div
-          role={view === 'root' ? 'menu' : 'dialog'}
-          aria-label={view === 'root' ? t('composer.addMenuAria') : t('composer.runModeHeading')}
-          className={`anim-enter absolute bottom-full left-0 z-30 mb-1.5 w-72 max-w-[calc(100vw-48px)] p-1 ${POPOVER_SURFACE_CLASS}`}
+          data-add-panel={view}
+          role={view === 'mode' ? 'dialog' : 'menu'}
+          aria-label={
+            view === 'ssh' ? t('composer.ssh.heading')
+              : view === 'mode' ? t('composer.runModeHeading')
+              : view === 'skills' ? t('composer.addMenu.skills')
+              : view === 'mention' ? t('composer.addMenu.mention')
+              : t('composer.addMenuAria')
+          }
+          style={bottomOffset === undefined ? undefined : { bottom: bottomOffset }}
+          className={`anim-enter absolute left-0 z-30 w-80 max-w-[calc(100vw-32px)] p-1 ${bottomOffset === undefined ? 'bottom-full mb-1.5' : ''} ${POPOVER_SURFACE_CLASS}`}
         >
           {view === 'root' ? (
             <>
-              <button
-                type="button"
-                role="menuitem"
-                data-menu-row
-                data-attach-button
-                disabled={attachDisabled}
-                onClick={() => { close(); onAttach(); }}
-                className={MENU_ROW_CLASS}
-              >
-                <MenuIcon d="M9.5 6.5 6.2 9.8a2.3 2.3 0 0 1-3.3-3.3l3.9-3.9a1.5 1.5 0 0 1 2.2 2.2L5.3 8.5a.7.7 0 0 1-1-1l3.2-3.2" />
-                <span className="flex-1">{t('composer.addMenu.attach')}</span>
-              </button>
-              {runMode !== undefined ? (
-                <button
-                  type="button"
-                  role="menuitem"
-                  data-menu-row
-                  data-add-menu-mode
-                  onClick={() => { onViewChange('mode'); }}
-                  className={MENU_ROW_CLASS}
-                >
-                  <MenuIcon d="M2.5 4h7M2.5 8h7M4.5 2.5v3M7.5 6.5v3" />
-                  <span className="flex-1">{t('composer.addMenu.mode')}</span>
-                  <span className="text-[12px] text-ink-faint">
-                    {t(RUN_MODES.find((mode) => mode.id === runMode.runMode)!.labelKey)}
-                  </span>
-                  <Icon name="chevron" size={12} className="text-ink-faint" />
-                </button>
-              ) : null}
-              {onRebuild !== undefined ? (
-                <button
-                  type="button"
-                  role="menuitem"
-                  data-menu-row
-                  data-add-menu-rebuild
-                  disabled={rebuildDisabled}
-                  onClick={() => { close(); onRebuild(); }}
-                  className={MENU_ROW_CLASS}
-                >
-                  <MenuIcon d="M9.6 5A3.7 3.7 0 0 0 3 3.8M2.4 7A3.7 3.7 0 0 0 9 8.2M3 2v1.9h1.9M9 10V8.1H7.1" />
-                  <span className="flex-1">{t('composer.addMenu.rebuild')}</span>
-                </button>
-              ) : null}
+              {searchable ? searchField(t('composer.addMenu.search')) : null}
+              {rootBody}
+            </>
+          ) : view === 'skills' ? (
+            skillsBody
+          ) : view === 'mention' ? (
+            mentionBody
+          ) : view === 'ssh' && ssh !== undefined ? (
+            <>
+              {backRow(t('composer.addMenu.ssh'))}
+              {ssh.renderPanel(close)}
             </>
           ) : runMode !== undefined ? (
-            <RunModePanel controls={runMode} />
+            <>
+              {backRow(t('composer.addMenu.mode'))}
+              <RunModePanel controls={runMode} />
+            </>
           ) : null}
         </div>
       ) : null}

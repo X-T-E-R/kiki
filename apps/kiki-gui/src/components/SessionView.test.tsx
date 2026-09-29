@@ -126,7 +126,7 @@ describe('QueueStrip', () => {
       </I18nProvider>,
     );
     expect(html).toContain('data-queue-strip');
-    expect(html).toContain('2 prompts queued');
+    expect(html).toContain('In send order');
     // Drain order reads as plain numbers (no # prefix).
     expect(html).toMatch(/>1<\/span>/);
     expect(html).toMatch(/>2<\/span>/);
@@ -134,6 +134,7 @@ describe('QueueStrip', () => {
     expect(html).toContain('second parked prompt');
     expect(html).toContain('Send now');
     expect(html).toContain('Remove');
+    // The strip is the queue drawer body: its header carries Clear all.
     expect(html).toContain('Clear all');
   });
 
@@ -165,26 +166,7 @@ describe('QueueStrip', () => {
     expect(html).toBe('');
   });
 
-  it('renders a multi-prompt list expanded behind an aria-wired count header', () => {
-    const html = renderToStaticMarkup(
-      <I18nProvider>
-        <QueueStrip
-          items={[
-            { promptId: 'p1', text: 'first parked prompt' },
-            { promptId: 'p2', text: 'second parked prompt' },
-          ]}
-          onSendNow={noop}
-          onRemove={noop}
-          onClearAll={noop}
-        />
-      </I18nProvider>,
-    );
-    expect(html).toMatch(/aria-expanded="true" aria-controls="[^"]+" aria-label="Show or hide the queued prompts"/);
-    // The list is visible by default; the header can collapse it on demand.
-    expect(html).not.toMatch(/<ol id="[^"]+" hidden=""/);
-  });
-
-  it('shows a single queued prompt without a collapse toggle', () => {
+  it('renders the full list open (the drawer is the disclosure) under the queue region label', () => {
     const html = renderToStaticMarkup(
       <I18nProvider>
         <QueueStrip
@@ -195,8 +177,9 @@ describe('QueueStrip', () => {
         />
       </I18nProvider>,
     );
-    expect(html).not.toContain('aria-label="Show or hide the queued prompts"');
+    expect(html).toContain('aria-label="Queued prompts"');
     expect(html).not.toContain('hidden=""');
+    expect(html).not.toContain('Show or hide the queued prompts');
     expect(html).toContain('only parked prompt');
   });
 
@@ -270,7 +253,7 @@ describe('QueueStrip', () => {
     expect(pair.match(/aria-label="Reorder this queued prompt"/g)).toHaveLength(2);
   });
 
-  it('marks the row parked in the composer and force-expands the list while editing', () => {
+  it('marks the row parked in the composer and explains the edit hold', () => {
     const html = renderToStaticMarkup(
       <I18nProvider>
         <QueueStrip
@@ -286,9 +269,10 @@ describe('QueueStrip', () => {
         />
       </I18nProvider>,
     );
-    expect(html).toContain('Editing in the composer');
+    expect(html).toContain('Editing · starts when idle');
+    expect(html).toContain('data-queue-hold-notice');
+    expect(html).toContain('the 1 ahead still send');
     expect(html).not.toContain('hidden=""');
-    expect(html).toMatch(/aria-expanded="true"/);
   });
 });
 
@@ -1443,9 +1427,9 @@ describe('agent tree chrome', () => {
         </I18nProvider>
       </MemoryRouter>,
     );
+    // Main's team roster: bounded rows (overflow goes to the view-all dialog).
     expect(html).toContain('data-subagent-scroll');
-    expect(html).toContain('max-h-80');
-    expect(html).toContain('overflow-y-auto');
+    expect(html).toContain('data-agent-tree');
   });
 
   it('adds subagent context to the shared rail: own task, needs-input badge, tree as the switch surface', async () => {
@@ -1509,28 +1493,27 @@ describe('agent tree chrome', () => {
       );
     });
     const html = container.innerHTML;
-    // Own task chapter stays focused on status and task description.
-    expect(html).toContain('Review the presentation contract');
-    expect(html).not.toContain('Presentation contract verified.');
+    // Now tells the finished agent's story: its result, the brief on hover.
+    expect(html).toContain('Presentation contract verified.');
+    expect(html).toContain('title="Presentation contract verified.\n\nReview the presentation contract"');
     expect(html).toContain('data-agent-status="completed"');
     expect(html).not.toContain('30.0s');
     // Needs-input badge with the pending count.
     expect(html).toContain('data-needs-input');
     expect(html).toContain('Needs you');
-    // Switching agents goes through the tree, not a separate nav block.
+    // Switching agents goes up the breadcrumb to main's team list, not a
+    // separate sibling nav block.
     expect(html).not.toContain('data-jump-to-spawn');
     expect(html).not.toContain('data-sibling-prev');
     expect(html).not.toContain('data-sibling-next');
-    expect(html).toContain('Researcher');
-    expect(html).toContain('Scribe');
+    expect(html).not.toContain('data-agent-tree');
     // The agent's own todos, not the main agent's.
     expect(html).toContain('child-only todo');
-    // Context remains additive to the full shared tree.
+    // The focused agent's own controls.
     expect(html).toContain('data-subagent-context');
-    expect(html).toContain('data-subagent-scroll');
-    // Focus ownership is explicit: the badge names the focused subagent.
-    expect(html).toContain('data-rail-owner');
-    expect(html).toContain('Researcher');
+    // Focus ownership is explicit: the head reads "Main agent / Reviewer".
+    expect(html).toContain('data-rail-owner-name="Reviewer"');
+    expect(html).toContain('data-inspect-main');
     await act(async () => root.unmount());
     container.remove();
   });
@@ -1618,7 +1601,7 @@ describe('agent tree chrome', () => {
     expect(html).toContain('text-danger');
   });
 
-  it('exposes a view-all entry, clickable task rows, and the bulk stop button', () => {
+  it('lists the team, clickable task rows, and the bulk stop button', () => {
     const railForest = buildAgentForest(
       [],
       [
@@ -1669,9 +1652,11 @@ describe('agent tree chrome', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     );
-    expect(html).toContain('data-subagents-view-all');
+    // Few agents fit the team roster; the view-all entry waits for overflow.
+    expect(html).not.toContain('data-subagents-view-all');
+    expect(html).toContain('data-agent-id="agent-1"');
     expect(html).toContain('data-task-open="t1"');
-    // Subagent runs stay in the tree chapter; the task rows skip them.
+    // Subagent runs stay in the team chapter; the task rows skip them.
     expect(html).not.toContain('data-task-open="sub-1"');
     expect(html).toContain('data-terminate-all-subagents');
   });

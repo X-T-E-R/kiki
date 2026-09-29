@@ -1,6 +1,6 @@
 /**
- * QueueStrip — the parked-prompt queue as a quiet panel strip directly above
- * the composer (between the transcript and the input card):
+ * QueueStrip — the parked-prompt queue's detail, grown inside the composer card
+ * (see ComposerHeader; the row summary itself is QueueHeaderSummary):
  *
  *   - one row per queued prompt, in drain order (#1 runs first), each with a
  *     truncated preview and a hover/focus-revealed action set:
@@ -11,7 +11,12 @@
  *                    to end;
  *       Edit     — hands the prompt's text to the composer for a round-trip
  *                    edit; confirming there replaces the queued prompt AT ITS
- *                    ORIGINAL position (wire `:replace`, no requeue);
+ *                    ORIGINAL position (wire `:replace`, no requeue). While the
+ *                    edit is open the engine holds that prompt AND every prompt
+ *                    behind it (wire `:hold`); prompts ahead of it still run.
+ *                    The detail says so: a notice line, the edited row's own
+ *                    readiness ("ready — sends when you finish"), and a
+ *                    "waits for your edit" hint on each row behind it;
  *       Remove   — two-step: the first click arms the button ("Remove?"), the
  *                    second actually aborts the queued prompt. The engine
  *                    drops the before-start transcript block, so nothing stays
@@ -20,14 +25,7 @@
  *     onto another row to land before/after it, or focus the handle and move
  *     with ↑/↓ — both go through `:move` (prompt.moved) and the strip
  *     repaints from the server's authoritative order;
- *   - with more than one parked prompt the list defaults to expanded; the
- *     count header toggles collapse, an in-flight composer edit force-expands
- *     it, and a single prompt always shows without a toggle;
- *   - a strip header carrying the drain explanation ("…starts when the current
- *     turn finishes") plus Clear all;
- *   - every row mounts with anim-enter, so pressing Enter while busy produces
- *     a visible "it landed in the queue" placement — no more guessing whether
- *     the prompt was queued.
+ *   - a header with the count plus Clear all.
  *
  * The parent renders nothing for an empty queue; rows leave by reconcile
  * (promotion, steer, abort) — never by local removal.
@@ -38,7 +36,7 @@ import { useEffect, useId, useRef, useState, type DragEvent, type KeyboardEvent,
 import type { DeferredAppendTiming } from '@kiki/protocol';
 import type { QueuedPromptPreview } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
-import { DisclosureChevron, Icon } from './icons';
+import { Icon } from './icons';
 
 /** The armed remove falls back to idle after this long without the second click. */
 const REMOVE_ARM_TIMEOUT_MS = 5_000;
@@ -58,6 +56,37 @@ const TIMING_HINT_KEY = {
   tasks_done: 'timing.hint.tasksDone',
 } as const;
 
+/**
+ * The queue half of the composer's top row, small ink-soft text: "1 queued",
+ * the first prompt's preview when the row has room (a container query drops
+ * it first on narrow cards), and "paused" while an edit holds the queue.
+ */
+export function QueueHeaderSummary({
+  count,
+  preview,
+  editing = false,
+  alone = false,
+}: {
+  readonly count: number;
+  readonly preview?: string;
+  /** A queued prompt is parked in the composer: the queue waits on the user. */
+  readonly editing?: boolean;
+  /** No goal beside it: the queue owns the row, so the preview gets the width. */
+  readonly alone?: boolean;
+}) {
+  const { t, tp } = useI18n();
+  return (
+    <span className={`flex min-w-0 items-center gap-1 ${alone ? 'justify-start' : 'justify-end'}`}>
+      <span className="shrink-0 tabular-nums">{tp('sv.queueBar', count)}</span>
+      {editing ? (
+        <span data-queue-paused className="shrink-0">· {t('queue.headerPaused')}</span>
+      ) : preview !== undefined && preview !== '' ? (
+        <span data-queue-row-preview className="composer-header-preview min-w-0 truncate">· {preview}</span>
+      ) : null}
+    </span>
+  );
+}
+
 export function QueueStrip({
   items,
   onSendNow,
@@ -69,6 +98,7 @@ export function QueueStrip({
   onMove,
   onChangeTiming,
   sendNowDisabled = false,
+  timingReady,
 }: {
   readonly items: readonly QueuedPromptPreview[];
   readonly onSendNow: (promptId: string) => Promise<void> | void;
@@ -95,16 +125,23 @@ export function QueueStrip({
   readonly onChangeTiming?: (promptId: string, timing: DeferredAppendTiming) => Promise<void> | void;
   /** Steer is a send-equivalent; disable it while the session is resyncing. */
   readonly sendNowDisabled?: boolean;
+  /**
+   * Whether a timing condition is met right now (agent idle and the awaited
+   * work done). Only used to tell the user an edited prompt would already be
+   * sending; absent means "unknown" and the row just shows its timing.
+   */
+  readonly timingReady?: (timing: DeferredAppendTiming) => boolean;
 }) {
-  const { t, tp } = useI18n();
-  const listId = useId();
+  const { t } = useI18n();
+  const noticeId = useId();
   // A row with an in-flight action stays disabled until the action settles
   // (success removes the row via reconcile; failure keeps it, re-enabled,
   // with the view-level error line explaining why).
   const [pendingIds, setPendingIds] = useState<readonly string[]>([]);
-  const [collapsed, setCollapsed] = useState(false);
   // Two-step remove: the first click arms the row's button, the second runs.
   const [armedRemoveId, setArmedRemoveId] = useState<string | null>(null);
+  // Touch has no hover: a row's ⋯ toggle opens its actions instead.
+  const [touchOpenId, setTouchOpenId] = useState<string | null>(null);
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Drag reorder: the dragged row's id plus the insertion slot (in pre-removal
   // terms, 0..items.length) the pointer currently hovers.
@@ -113,14 +150,12 @@ export function QueueStrip({
   useEffect(() => {
     setPendingIds((current) => current.filter((id) => items.some((item) => item.promptId === id)));
   }, [items]);
-  // Reset to the expanded default as the queue drains to a single row; disarm
-  // a remove whose row left the queue underneath it.
+  // Disarm a remove whose row left the queue underneath it.
   useEffect(() => {
-    if (items.length <= 1 && collapsed) setCollapsed(false);
     if (armedRemoveId !== null && !items.some((item) => item.promptId === armedRemoveId)) {
       setArmedRemoveId(null);
     }
-  }, [items, collapsed, armedRemoveId]);
+  }, [items, armedRemoveId]);
   useEffect(
     () => () => {
       if (armTimerRef.current !== null) clearTimeout(armTimerRef.current);
@@ -134,9 +169,8 @@ export function QueueStrip({
   // the pre-move order would land on a stale slot.
   const interactionLocked = pendingIds.length > 0;
   const draggable = onMove !== undefined && items.length > 1;
-  // The composer round-trip edit keeps its row visible and identifiable.
-  const expanded = !collapsed || editingPromptId !== undefined;
-  const listVisible = items.length === 1 || expanded;
+  // Edit hold: the edited row and every row behind it wait for the edit.
+  const editIndex = editingPromptId === undefined ? -1 : items.findIndex((item) => item.promptId === editingPromptId);
 
   const run = (promptId: string, action: (promptId: string) => Promise<void> | void) => {
     if (pendingIds.includes(promptId)) return;
@@ -220,13 +254,15 @@ export function QueueStrip({
     }
   };
 
-  const countLabel = tp('sv.queueBar', items.length);
   const rows: ReactNode[] = [];
   items.forEach((item, index) => {
     const pending = pendingIds.includes(item.promptId);
     const isEditing = editingPromptId === item.promptId;
     const editLocked = editingPromptId !== undefined && !isEditing;
     const armed = armedRemoveId === item.promptId;
+    // Queued behind the prompt being edited: holds its place until the edit ends.
+    const waitsForEdit = editIndex >= 0 && index > editIndex;
+    const timing = item.appendTiming ?? 'agent_idle';
     if (dropSlot === index) {
       rows.push(<li key={`drop-${index}`} aria-hidden className="pointer-events-none mx-1 h-0.5 rounded-full bg-accent" />);
     }
@@ -235,8 +271,10 @@ export function QueueStrip({
         key={item.promptId}
         onDragOver={(event) => { rowDragOver(event, index); }}
         onDrop={rowDrop}
-        className={`anim-enter group flex flex-wrap items-center gap-2 rounded-md px-2 py-1 transition-colors duration-150 ${
-          isEditing ? 'bg-accent-soft' : 'hover:bg-paper focus-within:bg-paper'
+        data-queue-item={item.promptId}
+        data-queue-waits-edit={waitsForEdit ? '' : undefined}
+        className={`anim-enter group flex min-h-8 flex-wrap items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
+          isEditing ? 'bg-ink/[0.05]' : 'hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]'
         } ${dragId === item.promptId ? 'opacity-50' : ''}`}
       >
         {draggable ? (
@@ -249,7 +287,7 @@ export function QueueStrip({
             disabled={pending || interactionLocked || isEditing}
             title={t('queue.dragHandleTitle')}
             aria-label={t('queue.dragHandleAria')}
-            className="flex h-5 w-4 shrink-0 cursor-grab items-center justify-center rounded text-[11px] leading-none text-ink-faint transition-colors hover:bg-hairline hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none active:cursor-grabbing"
+            className="flex h-5 w-4 shrink-0 cursor-grab items-center justify-center rounded text-[11px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none active:cursor-grabbing"
           >
             <Icon name="grip" size={12} />
           </button>
@@ -284,11 +322,34 @@ export function QueueStrip({
           );
         })}
         {isEditing ? (
-          <span className="shrink-0 text-[12px] font-medium text-accent">
-            {t('queue.editingBadge')}
+          <span data-queue-edit-status className="shrink-0 text-[12px] text-ink-soft">
+            {/* The edited prompt's own start condition, so a met condition
+                ("after subagents" and they are done) reads as ready, not stuck. */}
+            {timingReady?.(timing) === true
+              ? t('queue.editReady')
+              : t('queue.editWaiting', { timing: t(TIMING_SHORT_KEY[timing]) })}
           </span>
         ) : (
-          <span className="flex shrink-0 items-center gap-1 opacity-70 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100">
+          <>
+          <button
+            type="button"
+            aria-label={t('queue.rowActionsAria')}
+            aria-expanded={touchOpenId === item.promptId}
+            onClick={() => { setTouchOpenId((current) => (current === item.promptId ? null : item.promptId)); }}
+            className="dock-more ml-auto h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink"
+          >
+            <Icon name="more" size={14} />
+          </button>
+          {waitsForEdit ? (
+            <span data-queue-waits-hint className="shrink-0 text-[12px] text-ink-faint">
+              {t('queue.waitsForEdit')}
+            </span>
+          ) : null}
+          <span
+            data-queue-row-actions
+            data-shown={armed || touchOpenId === item.promptId ? '' : undefined}
+            className="dock-reveal ml-auto flex shrink-0 items-center gap-0.5"
+          >
             {onChangeTiming !== undefined ? (
               <select
                 aria-label={t('queue.timingAria')}
@@ -301,7 +362,7 @@ export function QueueStrip({
                   if (timing === (item.appendTiming ?? 'agent_idle')) return;
                   run(item.promptId, (id) => onChangeTiming(id, timing));
                 }}
-                className="h-7 rounded-md border border-hairline bg-panel px-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+                className="h-7 rounded-md border border-transparent bg-transparent px-1 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
               >
                 {QUEUE_TIMINGS.map((timing) => (
                   <option key={timing} value={timing} data-timing={timing}>
@@ -317,7 +378,7 @@ export function QueueStrip({
                 onClick={() => { onEdit(item.promptId); }}
                 title={t('queue.editTitle')}
                 aria-label={t('sv.queueEditAria')}
-                className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-hairline hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+                className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
               >
                 {t('sv.queueEdit')}
               </button>
@@ -328,7 +389,7 @@ export function QueueStrip({
               onClick={() => { run(item.promptId, onSendNow); }}
               title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')}
               aria-label={t('sv.queueSendNow')}
-              className="h-7 rounded-md px-2 text-[12px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
+              className="h-7 rounded-md px-2 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
             >
               {t('sv.queueSendNow')}
             </button>
@@ -348,12 +409,13 @@ export function QueueStrip({
               className={`h-7 rounded-md px-2 text-[12px] font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
                 armed
                   ? 'bg-danger/10 text-danger hover:bg-danger/15 focus-visible:ring-danger/50'
-                  : 'text-ink-soft hover:bg-hairline hover:text-ink focus-visible:ring-accent/40'
+                  : 'text-ink-soft hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-accent/40'
               }`}
             >
               {armed ? t('queue.removeConfirm') : t('sv.queueRemove')}
             </button>
           </span>
+          </>
         )}
       </li>,
     );
@@ -363,51 +425,35 @@ export function QueueStrip({
   }
 
   return (
-    <div className="px-6 pb-1.5">
-      <section
-        data-queue-strip
-        aria-label={t('sv.queueAria')}
-        className="anim-enter mx-auto max-w-[var(--kiki-chat-content-width,760px)] rounded-[10px] border border-hairline bg-panel px-2 py-1.5"
-      >
-        <header className="flex items-center gap-2 px-1">
-          {items.length > 1 ? (
-            <button
-              type="button"
-              onClick={() => { setCollapsed((value) => !value); }}
-              aria-expanded={expanded}
-              aria-controls={listId}
-              aria-label={t('sv.queueExpandAria')}
-              disabled={editingPromptId !== undefined}
-              className="flex min-w-0 flex-1 items-center gap-1.5 text-left disabled:opacity-70"
-            >
-              <span className="min-w-0 truncate text-[12px] font-medium text-ink-soft">
-                {countLabel}
-              </span>
-              <DisclosureChevron open={expanded} />
-            </button>
-          ) : (
-            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink-soft">
-              {countLabel}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={onClearAll}
-            title={t('sv.queueClearAllTitle')}
-            className="shrink-0 rounded-md px-2 py-0.5 text-[12px] text-ink-faint transition-colors hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
-          >
-            {t('sv.queueClearAll')}
-          </button>
-        </header>
-        <ol
-          id={listId}
-          hidden={!listVisible}
-          className="mt-1 flex-col gap-0.5"
-          style={{ display: listVisible ? 'flex' : undefined }}
+    <section
+      data-queue-strip
+      data-queue-edit-hold={editIndex >= 0 ? '' : undefined}
+      aria-label={t('sv.queueAria')}
+      aria-describedby={editIndex >= 0 ? noticeId : undefined}
+    >
+      <header className="flex min-h-7 items-center gap-2 pl-1.5">
+        {/* The row already names the count; the header reads as drain order. */}
+        <span className="min-w-0 flex-1 text-[12px] text-ink-faint">{t('queue.drainOrder')}</span>
+        <button
+          type="button"
+          onClick={onClearAll}
+          title={t('sv.queueClearAllTitle')}
+          className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none"
         >
-          {rows}
-        </ol>
-      </section>
-    </div>
+          {t('sv.queueClearAll')}
+        </button>
+      </header>
+      {editIndex >= 0 ? (
+        <p id={noticeId} role="status" data-queue-hold-notice className="flex items-center gap-1.5 px-1.5 pb-1 text-[12px] text-ink-soft">
+          <Icon name="hold" size={12} className="shrink-0 text-ink-faint" />
+          <span className="min-w-0">
+            {editIndex > 0 ? t('queue.holdNoticeAhead', { count: editIndex }) : t('queue.holdNotice')}
+          </span>
+        </p>
+      ) : null}
+      <ol className="flex flex-col gap-0.5 pb-1">
+        {rows}
+      </ol>
+    </section>
   );
 }

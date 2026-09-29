@@ -8,7 +8,7 @@ import type { GoalSnapshot } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import { ApiError } from '../lib/client';
-import { GoalCard, RecoveryHoldBar } from './GoalCard';
+import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -109,6 +109,13 @@ describe('GoalCard', () => {
     expect(card.textContent).toContain('Subagents done');
     expect(card.querySelector('button[title^="Pause the goal"]')).not.toBeNull();
     expect(card.querySelector('button[title^="Resume the goal"]')).toBeNull();
+    // Detail body: the row beside it owns the status mark, so no second dot;
+    // no caps pill, and the controls in plain view (the row is the disclosure).
+    expect(card.querySelector('.kiki-life')).toBeNull();
+    expect(card.querySelector('.uppercase')).toBeNull();
+    expect(card.querySelector('[data-goal-actions] button[title^="Pause the goal"]')).not.toBeNull();
+    expect(card.querySelector('.dock-reveal')).toBeNull();
+    expect(card.textContent).toContain('follow-up · Subagents done');
   });
 
   it('offers resume instead of pause for a paused goal', async () => {
@@ -220,6 +227,45 @@ describe('GoalCard', () => {
     await settle();
     expect(container.querySelector('[data-goal-error]')?.textContent).toContain('engine busy');
     expect(container.querySelector('[data-goal-card]')).not.toBeNull();
+  });
+});
+
+describe('GoalHeaderSummary', () => {
+  async function renderSummary(goal: GoalSnapshot): Promise<HTMLDivElement> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<I18nProvider><GoalHeaderSummary goal={goal} /></I18nProvider>);
+    });
+    return container;
+  }
+
+  it('names the objective and its status word, with a still dot and no accent while active', async () => {
+    const container = await renderSummary(goalFixture());
+    expect(container.querySelector('[data-goal-title]')?.textContent).toBe('Ship the batch');
+    expect(container.querySelector('[data-goal-status-word]')?.textContent).toBe('active');
+    expect(container.querySelector('.kiki-life[data-life="working"][data-life-still]')).not.toBeNull();
+    expect(container.querySelector('.text-accent-ink')).toBeNull();
+  });
+
+  it('puts the accent on the waiting mark and the word "blocked" only', async () => {
+    const container = await renderSummary(goalFixture({ status: 'blocked' }));
+    expect(container.querySelector('.kiki-life[data-life="waiting"]')).not.toBeNull();
+    const word = container.querySelector('[data-goal-status-word]')!;
+    expect(word.textContent).toBe('blocked');
+    expect(word.className).toContain('text-accent-ink');
+    expect(container.querySelector('[data-goal-title]')!.className).not.toContain('accent');
+    const paused = await renderSummary(goalFixture({ status: 'paused' }));
+    expect(paused.querySelector('.kiki-life')).toBeNull();
+    expect(paused.querySelector('[data-goal-status-word]')?.textContent).toBe('paused');
+  });
+
+  it('leaves the row once the goal is complete', () => {
+    expect(goalShowsInHeader(goalFixture({ status: 'complete' }))).toBe(false);
+    expect(goalShowsInHeader(null)).toBe(false);
+    expect(goalShowsInHeader(goalFixture())).toBe(true);
   });
 });
 

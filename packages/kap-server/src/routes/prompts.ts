@@ -69,6 +69,8 @@ import {
   promptSubmitResultSchema,
   promptTimingRequestSchema,
   promptTimingResultSchema,
+  promptHoldRequestSchema,
+  promptHoldResultSchema,
   type PromptSkillActivation,
 } from '../protocol/rest-prompt';
 import { z } from 'zod';
@@ -638,6 +640,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         promptMoveRequestSchema,
         promptReplaceRequestSchema,
         promptTimingRequestSchema,
+        promptHoldRequestSchema,
       ]),
       success: {
         data: z.union([
@@ -645,6 +648,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           promptMoveResultSchema,
           promptReplaceResultSchema,
           promptTimingResultSchema,
+          promptHoldResultSchema,
           promptSteerResultSchema,
         ]),
       },
@@ -654,7 +658,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         [ErrorCode.PROMPT_NOT_FOUND]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
       },
-      description: 'Abort, move, replace, retime, or steer a prompt',
+      description: 'Abort, move, replace, retime, hold for editing, or steer a prompt',
       tags: ['prompts'],
       operationId: 'promptAction',
     },
@@ -666,7 +670,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         const { session_id, tail } = req.params as { session_id: string; tail: string };
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['abort', 'move', 'replace', 'timing', 'steer'] as const,
+          allowedActions: ['abort', 'move', 'replace', 'timing', 'hold', 'steer'] as const,
           resourceLabel: 'prompt',
         });
         if (parsed.kind !== 'action') {
@@ -739,6 +743,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             timing.data.expected_revision,
           );
           reply.send(okEnvelope(projectPromptHandle(handle), req.id));
+        } else if (parsed.action === 'hold') {
+          const hold = promptHoldRequestSchema.safeParse(req.body);
+          if (!hold.success) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'held is required');
+          }
+          resolved.prompt.setEditHold(parsed.id, hold.data.held);
+          reply.send(okEnvelope({ prompt_id: parsed.id, held: hold.data.held }, req.id));
         } else if (parsed.action === 'abort') {
           resolved.prompt.abort(parsed.id);
           requestLog(req)?.info({ session_id, prompt_id: parsed.id }, 'prompt aborted');

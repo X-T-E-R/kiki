@@ -1,24 +1,23 @@
 /**
- * GoalCard — the session goal as a persistent card floating above the composer
- * (rendered in the dock slot, over the queue strip):
+ * GoalCard — the session goal's detail, grown inside the composer card (see
+ * ComposerHeader; the row summary itself is GoalHeaderSummary):
  *
- *   - header row: ◎ marker, status pill (active / paused / blocked), the
- *     objective (two-line clamp, full text on hover), and the follow-up timing
- *     when the server reports one;
- *   - actions on the right: Edit, Pause/Resume (by status), and a two-step
- *     Cancel (first click arms, second confirms — same idiom as the queue
- *     strip's remove);
+ *   - the objective in full, its status word and the follow-up condition
+ *     (plus the completion criterion when one is set);
+ *   - the controls in plain view: Edit, Pause/Resume (by status), and a
+ *     two-step Cancel (first click arms, second confirms — same idiom as the
+ *     queue strip's remove);
  *   - Edit opens an inline form (objective, completion criterion, follow-up
  *     timing). Opening it first pulls the authoritative snapshot so the save
  *     rides the real goalId + controlRevision; a revision conflict (40001)
  *     reloads the form with the latest values and says so inline instead of
  *     failing silently;
- *   - a completed goal needs no control surface, so the card hides itself and
- *     leaves the timeline record to speak.
+ *   - a completed goal needs no control surface, so the composer row drops it
+ *     and leaves the timeline record to speak (`goalShowsInHeader`).
  *
  * RecoveryHoldBar — the cold-recovery gate: after a server restart a restored
- * queue stays parked until someone confirms; this slim bar above the queue
- * strip is that confirmation ("queue restored, resume?"). The Later dismiss
+ * queue stays parked until someone confirms; this slim bar above the composer
+ * is that confirmation ("queue restored, resume?"). The Later dismiss
  * collapses the explanation into a compact one-line resume button — it keeps
  * the queue parked and the entry visible until the hold actually clears.
  */
@@ -31,6 +30,7 @@ import { API_CODES, ApiError } from '../lib/client';
 import type { UpdateAgentGoalInput } from '../lib/client';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
+import { LifeMark } from './LifeMark';
 
 /** The armed cancel falls back to idle after this long without the second click. */
 const CANCEL_ARM_TIMEOUT_MS = 5_000;
@@ -41,6 +41,34 @@ const GOAL_TIMING_LABEL_KEY = {
   subagents_done: 'timing.subagentsDone',
   tasks_done: 'timing.tasksDone',
 } as const;
+
+/** A completed goal leaves the composer row; every other goal gets its half. */
+export function goalShowsInHeader(goal: GoalSnapshot | null | undefined): goal is GoalSnapshot {
+  return goal !== undefined && goal !== null && goal.status !== 'complete';
+}
+
+/**
+ * The goal half of the composer's top row: LifeMark, the objective on one
+ * truncated line (visible at every width), and the status word. Accent only
+ * while a blocked goal waits on the user: the mark and the word "blocked".
+ */
+export function GoalHeaderSummary({ goal }: { readonly goal: GoalSnapshot }) {
+  const { t } = useI18n();
+  const statusTone =
+    goal.status === 'blocked' ? 'text-accent-ink' : goal.status === 'paused' ? 'text-amber-ink' : 'text-ink-faint';
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <span aria-hidden className="flex w-[7px] shrink-0 justify-center">
+        {goal.status === 'active' ? <LifeMark markId="goal-row" life="working" still /> : null}
+        {goal.status === 'blocked' ? <LifeMark markId="goal-row" life="waiting" /> : null}
+      </span>
+      <span data-goal-title className="min-w-0 truncate text-ink">{goal.objective}</span>
+      <span data-goal-status-word className={`shrink-0 ${statusTone}`}>
+        {t(`composer.goalStatus.${goal.status}`)}
+      </span>
+    </span>
+  );
+}
 
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -202,44 +230,43 @@ export function GoalCard({
   const timingLabel =
     goal.followUpTiming !== undefined ? t(GOAL_TIMING_LABEL_KEY[goal.followUpTiming]) : undefined;
 
+  const actionClass =
+    'h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none';
+  const statusTone =
+    goal.status === 'active' ? 'text-ink-faint' : goal.status === 'paused' ? 'text-amber-ink' : 'text-accent-ink';
+  const followUp = timingLabel !== undefined ? t('goal.followUp', { timing: timingLabel }) : undefined;
+
   return (
-    <div className="px-6 pb-1.5" data-goal-card-wrapper>
-      <section
-        data-goal-card
-        aria-label={t('goal.cardAria')}
-        className="anim-enter mx-auto max-w-[760px] rounded-xl border border-accent/35 bg-panel px-3 py-2"
-      >
-        <div className="flex items-center gap-2">
-          <Icon name="goal" className="h-3.5 w-3.5 text-accent" />
-          <span
-            className={`shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-semibold tracking-[0.04em] uppercase ${
-              goal.status === 'active'
-                ? 'bg-accent/15 text-accent'
-                : goal.status === 'paused'
-                  ? 'bg-amber-rule/25 text-amber-ink'
-                  : 'bg-danger/10 text-danger'
-            }`}
-          >
-            {t(`composer.goalStatus.${goal.status}`)}
-          </span>
-          <span
-            title={goal.objective}
-            className="min-w-0 flex-1 truncate text-[12px] text-ink"
-          >
-            {goal.objective}
-          </span>
-          {timingLabel !== undefined ? (
-            <span className="hidden shrink-0 text-[10px] text-ink-faint sm:inline">
-              {t('goal.followUp', { timing: timingLabel })}
-            </span>
-          ) : null}
-          <span className="flex shrink-0 items-center gap-1">
+    <section
+      data-goal-card
+      data-goal-status={goal.status}
+      aria-label={t('goal.cardAria')}
+      className="px-1.5 pt-1.5"
+    >
+      <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
+        {/* The row below already carries the status mark; the detail aligns
+            its full objective with the row's title instead of repeating it. */}
+        <span aria-hidden className="w-[7px] shrink-0" />
+        <div className="min-w-0 flex-1 basis-56">
+          <p className="text-[13px] leading-5 break-words text-ink">{goal.objective}</p>
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] text-ink-faint">
+            <span className={statusTone}>{t(`composer.goalStatus.${goal.status}`)}</span>
+            {followUp !== undefined ? <span>{followUp}</span> : null}
+            {goal.completionCriterion !== undefined && goal.completionCriterion !== '' ? (
+              <span className="min-w-0 truncate" title={goal.completionCriterion}>
+                {t('goal.doneWhen', { criterion: goal.completionCriterion })}
+              </span>
+            ) : null}
+          </p>
+        </div>
+        {editing ? null : (
+          <span data-goal-actions className="ml-auto flex shrink-0 items-center gap-0.5">
             <button
               type="button"
               disabled={busy}
               onClick={openEditor}
               title={t('goal.editTitle')}
-              className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+              className={actionClass}
             >
               {t('goal.edit')}
             </button>
@@ -249,7 +276,7 @@ export function GoalCard({
                 disabled={busy}
                 onClick={() => { act('pause', onPause); }}
                 title={t('goal.pauseTitle')}
-                className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+                className={actionClass}
               >
                 {t('goal.pause')}
               </button>
@@ -273,7 +300,7 @@ export function GoalCard({
                       ? t('goal.resumeBlockedTitle')
                       : t('goal.resumeTitle')
                 }
-                className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+                className={armedResume ? `${actionClass} bg-ink/[0.05] text-ink` : actionClass}
               >
                 {armedResume ? t('goal.resumeConfirm') : t('goal.resume')}
               </button>
@@ -290,20 +317,21 @@ export function GoalCard({
                 }
               }}
               title={armedCancel ? t('goal.cancelConfirm') : t('goal.cancelTitle')}
-              className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
+              className={`h-6 rounded-md px-1.5 text-[12px] font-medium transition-colors duration-[var(--kiki-motion-quick)] disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
                 armedCancel
-                  ? 'border-danger/60 bg-danger/10 text-danger hover:bg-danger/20 focus-visible:ring-danger/50'
-                  : 'border-hairline text-ink-soft hover:border-danger/60 hover:text-danger focus-visible:ring-accent/50'
+                  ? 'bg-danger/10 text-danger hover:bg-danger/15 focus-visible:ring-danger/50'
+                  : 'text-ink-soft hover:bg-danger/10 hover:text-danger focus-visible:ring-accent/50'
               }`}
             >
               {armedCancel ? t('goal.cancelConfirm') : t('goal.cancel')}
             </button>
           </span>
-        </div>
+        )}
+      </div>
         {editing ? (
-          <div className="mt-2 space-y-1.5 border-t border-hairline/70 pt-2" data-goal-editor>
+          <div className="mt-2 space-y-2 pb-1 pl-[15px]" data-goal-editor>
             <label className="block">
-              <span className="mb-0.5 block text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
+              <span className="mb-1 block text-[12px] font-medium text-ink-soft">
                 {t('goal.editObjective')}
               </span>
               <textarea
@@ -311,28 +339,28 @@ export function GoalCard({
                 onChange={(event) => { setObjective(event.target.value); }}
                 rows={2}
                 disabled={pending === 'refresh' || pending === 'save'}
-                className="w-full resize-none rounded-lg border border-hairline bg-paper px-2 py-1 text-[12px] text-ink focus:border-accent focus:outline-none disabled:opacity-60"
+                className="w-full resize-none rounded-lg border border-hairline bg-panel px-2 py-1 text-[13px] text-ink focus:border-accent focus:outline-none disabled:opacity-60"
               />
             </label>
             <label className="block">
-              <span className="mb-0.5 block text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
+              <span className="mb-1 block text-[12px] font-medium text-ink-soft">
                 {t('goal.editCriterion')}
               </span>
               <input
                 value={criterion}
                 onChange={(event) => { setCriterion(event.target.value); }}
                 disabled={pending === 'refresh' || pending === 'save'}
-                className="w-full rounded-lg border border-hairline bg-paper px-2 py-1 text-[12px] text-ink focus:border-accent focus:outline-none disabled:opacity-60"
+                className="w-full rounded-lg border border-hairline bg-panel px-2 py-1 text-[13px] text-ink focus:border-accent focus:outline-none disabled:opacity-60"
               />
             </label>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
+              <span className="text-[12px] font-medium text-ink-soft">
                 {t('goal.editTiming')}
               </span>
               <span
                 role="radiogroup"
                 aria-label={t('goal.editTiming')}
-                className="flex items-center gap-0.5 rounded-full border border-hairline bg-paper p-0.5"
+                className="flex items-center gap-0.5 rounded-lg bg-ink/[0.04] p-0.5"
               >
                 {GOAL_FOLLOW_UP_TIMINGS.map((timing) => (
                   <button
@@ -342,8 +370,8 @@ export function GoalCard({
                     aria-checked={timing === followUpTiming}
                     data-goal-timing={timing}
                     onClick={() => { setFollowUpTiming(timing); }}
-                    className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${
-                      timing === followUpTiming ? 'bg-accent text-on-accent' : 'text-ink-soft hover:bg-hairline/60'
+                    className={`h-6 rounded-md px-2 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${
+                      timing === followUpTiming ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
                     }`}
                   >
                     {t(GOAL_TIMING_LABEL_KEY[timing])}
@@ -359,7 +387,7 @@ export function GoalCard({
                     setActionError(null);
                   }}
                   disabled={pending === 'save'}
-                  className="rounded-full border border-hairline px-2.5 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+                  className="h-7 rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
                 >
                   {t('common.cancel')}
                 </button>
@@ -368,26 +396,25 @@ export function GoalCard({
                   onClick={save}
                   disabled={pending !== null || objective.trim() === ''}
                   data-goal-save
-                  className="rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-on-accent transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+                  className="h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
                 >
                   {t('common.save')}
                 </button>
               </span>
             </div>
             {conflict ? (
-              <p role="status" data-goal-conflict className="text-[11px] text-amber-ink">
+              <p role="status" data-goal-conflict className="text-[12px] text-amber-ink">
                 {t('goal.conflict')}
               </p>
             ) : null}
           </div>
         ) : null}
         {actionError !== null ? (
-          <p role="alert" data-goal-error className="mt-1.5 break-words text-[11px] text-danger">
+          <p role="alert" data-goal-error className="mt-1 pb-1 pl-[15px] break-words text-[12px] text-danger">
             {t('goal.actionFailed', { detail: actionError })}
           </p>
         ) : null}
-      </section>
-    </div>
+    </section>
   );
 }
 
@@ -409,13 +436,13 @@ export function RecoveryHoldBar({
           data-recovery-hold-compact
           role="status"
           aria-label={t('sv.queueRecovered.title')}
-          className="anim-enter mx-auto flex max-w-[760px] items-center justify-end gap-2"
+          className="anim-enter mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] items-center justify-end gap-2"
         >
           <button
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-on-accent transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md bg-accent px-2.5 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>
@@ -424,23 +451,24 @@ export function RecoveryHoldBar({
     );
   }
   return (
-    <div className="px-6 pb-1.5" data-recovery-hold-wrapper>
+    <div className="px-6 pb-2" data-recovery-hold-wrapper>
+      <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
       <section
         data-recovery-hold
         role="status"
         aria-label={t('sv.queueRecovered.title')}
-        className="anim-enter mx-auto max-w-[760px] rounded-xl border border-hairline bg-panel px-3 py-2"
+        className="anim-enter rounded-[10px] border border-hairline bg-canvas py-1 pr-1 pl-3"
       >
-        <div className="flex flex-wrap items-center gap-2">
-          <Icon name="hold" className="h-3.5 w-3.5 text-ink-faint" />
-          <span className="min-w-0 flex-1 text-[11.5px] text-ink-soft">
+        <div className="flex min-h-7 flex-wrap items-center gap-2">
+          <Icon name="hold" size={14} className="text-ink-faint" />
+          <span className="min-w-0 flex-1 text-[13px] text-ink-soft">
             {tp('sv.queueRecovered.body', count)}
           </span>
           <button
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[10.5px] font-medium text-on-accent transition-colors hover:bg-accent/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md bg-accent px-2.5 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>
@@ -448,12 +476,13 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={() => setCompact(true)}
-            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.dismiss')}
           </button>
         </div>
       </section>
+      </div>
     </div>
   );
 }

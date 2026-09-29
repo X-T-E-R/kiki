@@ -158,6 +158,20 @@ export type PromptTimingRequest = z.infer<typeof promptTimingRequestSchema>;
 export const promptTimingResultSchema = promptItemSchema;
 export type PromptTimingResult = z.infer<typeof promptTimingResultSchema>;
 
+// Edit hold (`POST …/prompts/{pid}:hold`): `held: true` parks the prompt and
+// everything queued after it while a client edits it (renew to keep it; it
+// lapses after a few minutes on its own); `held: false` releases it.
+export const promptHoldRequestSchema = z.object({
+  held: z.boolean(),
+});
+export type PromptHoldRequest = z.infer<typeof promptHoldRequestSchema>;
+
+export const promptHoldResultSchema = z.object({
+  prompt_id: z.string().min(1),
+  held: z.boolean(),
+});
+export type PromptHoldResult = z.infer<typeof promptHoldResultSchema>;
+
 export const promptMoveRequestSchema = z.object({
   target_index: z.number().int().nonnegative(),
 });

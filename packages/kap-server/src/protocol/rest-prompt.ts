@@ -105,6 +105,17 @@ export type PromptTimingRequest = z.infer<typeof promptTimingRequestSchema>;
 export const promptTimingResultSchema = promptItemSchema;
 export type PromptTimingResult = z.infer<typeof promptTimingResultSchema>;
 
+export const promptHoldRequestSchema = z.object({
+  held: z.boolean(),
+});
+export type PromptHoldRequest = z.infer<typeof promptHoldRequestSchema>;
+
+export const promptHoldResultSchema = z.object({
+  prompt_id: z.string().min(1),
+  held: z.boolean(),
+});
+export type PromptHoldResult = z.infer<typeof promptHoldResultSchema>;
+
 export const promptMoveRequestSchema = z.object({
   target_index: z.number().int().nonnegative(),
 });

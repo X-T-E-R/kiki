@@ -1486,6 +1486,21 @@ export class SessionController {
   }
 
   /**
+   * Edit hold (`POST …:hold`): while a queued prompt is being edited the
+   * engine keeps it — and everything queued behind it — from launching;
+   * prompts ahead of it still run. The hold lapses server-side unless renewed,
+   * so callers re-send `held: true` while the edit stays open. A transport
+   * without the command (older server) resolves `false`: the edit still works,
+   * the prompt just is not protected from launching.
+   */
+  async holdQueued(promptId: string, held: boolean): Promise<boolean> {
+    if (this.client.holdPrompt === undefined) return false;
+    assertSessionWritable(this.state);
+    await this.client.holdPrompt(this.sessionId, promptId, { held });
+    return true;
+  }
+
+  /**
    * "Send now" for a parked prompt — a REAL wire capability, not a client
    * approximation: `POST …:steer` injects the queued prompt's content into
    * the currently running turn immediately, and the prompt leaves the queue

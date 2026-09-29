@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { QueueStrip } from './QueueStrip';
+import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -217,55 +217,74 @@ describe('QueueStrip edit round-trip', () => {
     expect(container.querySelector('button[aria-label="Remove"]')).not.toBeNull();
   });
 
-  it('badges the row being edited, force-expands the list and locks the other rows', async () => {
+  it('marks the row being edited, locks the other rows, and says the queue waits for it', async () => {
     const { container } = await renderStrip({ onEdit: vi.fn(), editingPromptId: 'p2' });
     const list = rows(container);
 
-    expect(list[1]!.textContent).toContain('Editing in the composer');
-    // The edited row swaps its action group for the badge.
+    // The edited row swaps its action group for its own start condition.
+    expect(list[1]!.querySelector('[data-queue-edit-status]')?.textContent).toBe('Editing · starts when idle');
     expect(list[1]!.querySelector('button[aria-label="Edit queued prompt"]')).toBeNull();
     expect(list[1]!.querySelector('button[aria-label="Remove"]')).toBeNull();
     // Other rows keep their actions but Edit is disabled for the duration.
     expect(
       list[0]!.querySelector<HTMLButtonElement>('button[aria-label="Edit queued prompt"]')!.disabled,
     ).toBe(true);
-    // The collapsed default cannot hide the row being edited away.
-    expect(container.querySelector('ol')!.hasAttribute('hidden')).toBe(false);
-    expect(
-      container.querySelector<HTMLButtonElement>('button[aria-label="Show or hide the queued prompts"]')!
-        .disabled,
-    ).toBe(true);
+    // Ahead of the edit: sends as usual. Behind it: waits, and says so.
+    expect(list[0]!.hasAttribute('data-queue-waits-edit')).toBe(false);
+    expect(list[0]!.querySelector('[data-queue-waits-hint]')).toBeNull();
+    expect(list[2]!.hasAttribute('data-queue-waits-edit')).toBe(true);
+    expect(list[2]!.querySelector('[data-queue-waits-hint]')?.textContent).toBe('waits for your edit');
+    const notice = container.querySelector('[data-queue-hold-notice]');
+    expect(notice?.getAttribute('role')).toBe('status');
+    expect(notice?.textContent).toContain('the 1 ahead still send');
+    expect(container.querySelector('[data-queue-strip]')!.getAttribute('aria-describedby')).toBe(notice?.id);
+  });
+
+  it('says an edited prompt is ready when its start condition is already met', async () => {
+    const { container } = await renderStrip({
+      items: [{ promptId: 'p1', text: 'after the subagents', appendTiming: 'subagents_done' }],
+      onEdit: vi.fn(),
+      editingPromptId: 'p1',
+      timingReady: (timing) => timing === 'subagents_done',
+    });
+    expect(container.querySelector('[data-queue-edit-status]')?.textContent).toBe('Ready · sends when you finish editing');
+    // Editing the head: nothing ahead, the plain notice.
+    expect(container.querySelector('[data-queue-hold-notice]')?.textContent).toContain('the queue resumes in order');
+  });
+
+  it('shows no hold notice while nothing is being edited', async () => {
+    const { container } = await renderStrip();
+    expect(container.querySelector('[data-queue-hold-notice]')).toBeNull();
+    expect(container.querySelector('[data-queue-waits-hint]')).toBeNull();
   });
 });
 
-describe('QueueStrip collapse behavior', () => {
-  it('shows queued rows expanded by default and collapses via the header', async () => {
-    const { container } = await renderStrip();
-    const list = container.querySelector('ol')!;
-    expect(list.hasAttribute('hidden')).toBe(false);
-    await click(container.querySelector('button[aria-label="Show or hide the queued prompts"]')!);
-    expect(list.hasAttribute('hidden')).toBe(true);
+describe('QueueStrip drawer body', () => {
+  it('lists every row with Clear all in the header (the tab carries the count)', async () => {
+    const onClearAll = vi.fn();
+    const { container } = await renderStrip({ onClearAll });
+    expect(rows(container)).toHaveLength(3);
+    expect(container.querySelector('ol')!.hasAttribute('hidden')).toBe(false);
+    await click(Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Clear all')!);
+    expect(onClearAll).toHaveBeenCalledOnce();
   });
 
-  it('returns to the expanded default after the queue drains to a single row', async () => {
-    const { container, root } = await renderStrip();
-    await click(container.querySelector('button[aria-label="Show or hide the queued prompts"]')!);
-    expect(container.querySelector('ol')!.hasAttribute('hidden')).toBe(true);
+  it('summarises the queue for the composer row: count, first preview, or paused while editing', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
     await act(async () => {
       root.render(
         <I18nProvider>
-          <QueueStrip items={[ITEMS[0]]} onSendNow={() => {}} onRemove={() => {}} onClearAll={() => {}} />
+          <span data-idle><QueueHeaderSummary count={1} preview="Once the tests settle" /></span>
+          <span data-held><QueueHeaderSummary count={2} preview="ignored while held" editing /></span>
         </I18nProvider>,
       );
     });
-    await act(async () => {
-      root.render(
-        <I18nProvider>
-          <QueueStrip items={ITEMS} onSendNow={() => {}} onRemove={() => {}} onClearAll={() => {}} />
-        </I18nProvider>,
-      );
-    });
-    expect(container.querySelector('ol')!.hasAttribute('hidden')).toBe(false);
+    expect(container.querySelector('[data-idle]')?.textContent).toBe('1 queued· Once the tests settle');
+    expect(container.querySelector('[data-held]')?.textContent).toBe('2 queued· paused');
+    expect(container.querySelector('[data-held] [data-queue-row-preview]')).toBeNull();
   });
 });
 
@@ -402,7 +421,7 @@ describe('QueueStrip timing picker', () => {
     expect(first.querySelector('[data-timing="subagents_done"]')?.textContent).toBe('after subagents');
     // The dropdown lives in the hover/focus-revealed action set like the
     // edit / send-now / remove buttons.
-    expect(first.closest('[class*="group-hover:opacity-100"]')).not.toBeNull();
+    expect(first.closest('.dock-reveal[data-queue-row-actions]')).not.toBeNull();
     // Older servers omit the field; the display falls back to agent_idle.
     const second = container.querySelector<HTMLSelectElement>('[data-timing-picker="p2"]')!;
     expect(second.value).toBe('agent_idle');

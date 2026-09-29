@@ -16,21 +16,24 @@ import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, Work
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
+import { useContextMeterAutoCompact } from './useContextMeterAutoCompact';
 import {
   useConversationShell,
   useRegisterSeat,
   type ConversationPhase,
   type ConversationSeat,
 } from './ConversationShell';
-import { GoalCard, RecoveryHoldBar } from './GoalCard';
+import { ComposerHeader, type ComposerHeaderSection } from './ComposerHeader';
+import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
-import { QueueStrip } from './QueueStrip';
+import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { useInspectorFocusTracking } from './inspectorFocus';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
 import { useStableForest, type TranscriptRowActions } from './Transcript';
 import { Icon } from './icons';
+import { WorktreeMark } from './WorktreeMark';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import {
@@ -112,6 +115,9 @@ import {
   terminalCapabilityAvailable,
   TerminalManager,
 } from '../state/terminalManager';
+
+/** Renew cadence for a queue-edit hold (the server lets it lapse after 5 minutes). */
+export const QUEUE_EDIT_HOLD_RENEW_MS = 60_000;
 
 export async function replaceQueuedPrompt(
   promptId: string,
@@ -235,6 +241,7 @@ function Header({
           <SessionTitle
             title={session.title}
             cwd={session.metadata.cwd}
+            worktree={session.worktree}
             editing={renaming}
             onEditingChange={setRenaming}
             onRename={onRenameSession}
@@ -304,6 +311,7 @@ function Header({
 export function SessionTitle({
   title,
   cwd,
+  worktree,
   editing,
   onEditingChange,
   onRename,
@@ -311,6 +319,8 @@ export function SessionTitle({
 }: {
   title: string;
   cwd: string | undefined;
+  /** Present only for a session running in a Kiki-managed worktree. */
+  worktree?: Session['worktree'];
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
   onRename: (title: string) => Promise<void>;
@@ -390,9 +400,11 @@ export function SessionTitle({
           title={cwd}
           className="hidden min-w-0 shrink-[100] truncate text-[12px] text-ink-faint transition-colors hover:text-ink-soft sm:block"
         >
-          {shortCwd(cwd)}
+          {/* A worktree checkout path is Kiki's own; the project reads by its source. */}
+          {shortCwd(worktree?.source_root ?? cwd)}
         </button>
       ) : null}
+      {!editing ? <WorktreeMark worktree={worktree} className="max-w-[8rem] shrink-[50] self-center sm:max-w-[12rem]" /> : null}
     </div>
   );
 }
@@ -2314,6 +2326,7 @@ export function SessionView({
   });
   const inspectMain = useCallback(() => { setPanelFocusAgent(undefined); }, []);
   const openFileInPreview = useCallback((path: string) => { previewRef.current?.openFile(path); }, []);
+  const openImageInPreview = useCallback((src: string, name: string) => { previewRef.current?.openImage(src, name); }, []);
 
   const handleResolveApproval = useCallback(
     (
@@ -2446,7 +2459,24 @@ export function SessionView({
       handleQueueEditCancel();
     }
   }, [queueEdit, state.loaded, state.queuedPromptIds, handleQueueEditCancel]);
+  // Edit hold: while a queued prompt sits in the composer for editing, the
+  // engine must not launch it (nor anything queued behind it; prompts ahead
+  // of it still run). The server lets an unrenewed hold lapse, so renew it
+  // while the edit stays open; leaving the edit (save, cancel, remove, the
+  // row vanishing) releases it and the queue resumes in order.
+  const editHoldPromptId = queueEdit?.promptId;
+  useEffect(() => {
+    if (editHoldPromptId === undefined || controller === null) return;
+    const hold = () => { void controller.holdQueued(editHoldPromptId, true).catch(() => undefined); };
+    hold();
+    const renew = setInterval(hold, QUEUE_EDIT_HOLD_RENEW_MS);
+    return () => {
+      clearInterval(renew);
+      void controller.holdQueued(editHoldPromptId, false).catch(() => undefined);
+    };
+  }, [controller, editHoldPromptId]);
   const handleRetryLoad = useCallback(() => void controller?.retryOpen(), [controller]);
+
 
   // Submit the prompt or skill that was drafted on /new, now that the live
   // controller is subscribed and will receive the stream.
@@ -2545,6 +2575,18 @@ export function SessionView({
   const contextLimit =
     state.maxContextTokens ??
     (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
+  // The main agent's automatic-compaction point, read from the server for the
+  // meter's adjustable track (absent on engines that do not report one).
+  const contextAutoCompact = useContextMeterAutoCompact({
+    sessionId,
+    agentId: MAIN_AGENT_ID,
+    modelId: sessionModel,
+    modelLabel: catalogItem?.display_name ?? sessionModel,
+    maxContextTokens: contextLimit,
+    running: canAbortActiveTurn(state),
+    profileName: boundProfile,
+    profileCatalog: agentProfileCatalogMode,
+  });
 
   // ---- conversation shell seat ----
   // The composer element is published into ConversationShell's seat (stable
@@ -2588,6 +2630,67 @@ export function SessionView({
     [client, sessionId],
   );
   const handleGoalCancel = useCallback(() => client.cancelAgentGoal(sessionId), [client, sessionId]);
+
+  // ---- composer header: goal + queue as the card's top row ----
+  // Readiness mirrors the engine's timing rule (promptService.isTimingReady)
+  // from the client's view: idle, then no running subagent, then no running
+  // task. Display only — the engine stays the authority on dispatch.
+  const agentIdle = !state.busy;
+  const runningSubagents = state.tasks.some((task) => task.status === 'running' && task.kind === 'subagent');
+  const anyRunningTask = state.tasks.some((task) => task.status === 'running');
+  const queueTimingReady = useCallback(
+    (timing: DeferredAppendTiming) =>
+      agentIdle &&
+      (timing === 'agent_idle' || (timing === 'subagents_done' ? !runningSubagents : !anyRunningTask)),
+    [agentIdle, runningSubagents, anyRunningTask],
+  );
+  const headerGoal = goalShowsInHeader(state.goal) ? state.goal : undefined;
+  const headerGoalSection = useMemo<ComposerHeaderSection | undefined>(() => (
+    headerGoal === undefined ? undefined : {
+      summary: <GoalHeaderSummary goal={headerGoal} />,
+      ariaLabel: t('goal.cardAria'),
+      title: headerGoal.objective,
+      panel: (
+        <GoalCard goal={headerGoal} onRefresh={handleGoalRefresh} onUpdate={handleGoalUpdate}
+          onPause={handleGoalPause} onResume={handleGoalResume} onCancel={handleGoalCancel} />
+      ),
+    }
+  ), [headerGoal, t, handleGoalRefresh, handleGoalUpdate, handleGoalPause, handleGoalResume, handleGoalCancel]);
+  const headerQueueSection = useMemo<ComposerHeaderSection | undefined>(() => {
+    if (queuedItems.length === 0) return undefined;
+    const first = queuedItems[0]!;
+    return {
+      summary: (
+        <QueueHeaderSummary
+          count={queuedItems.length}
+          preview={first.text === '' ? t('sv.queueNoText') : first.text}
+          editing={queueEdit !== null}
+          alone={headerGoal === undefined}
+        />
+      ),
+      ariaLabel: t('sv.queueAria'),
+      count: queuedItems.length,
+      // The round-trip edit keeps its row (and the hold notice) in sight.
+      forceOpen: queueEdit !== null,
+      panel: (
+        <QueueStrip
+          items={queuedItems} onSendNow={handleSendNowQueued} onRemove={handleCancelQueued}
+          onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
+          onMove={handleMoveQueued} onChangeTiming={handleQueuedTiming}
+          editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
+          sendNowDisabled={state.resyncing || state.resyncFailed}
+          timingReady={queueTimingReady}
+        />
+      ),
+    };
+  }, [
+    queuedItems, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
+    handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
+    handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady,
+  ]);
+  const composerHeader = headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
+    <ComposerHeader goal={headerGoalSection} queue={headerQueueSection} settled={state.loaded} />
+  );
 
   // Keep recovery controls mounted until the engine releases the queue hold.
   const [recoveryPending, setRecoveryPending] = useState(false);
@@ -2650,6 +2753,7 @@ export function SessionView({
                 ? { used: contextUsed, limit: contextLimit }
                 : undefined
             }
+            contextAutoCompact={contextAutoCompact}
             sessionUsage={usage}
             sessionId={sessionId}
             workspaceId={profileWorkspaceId}
@@ -2678,6 +2782,8 @@ export function SessionView({
             onQueueEditConfirm={handleQueueEditConfirm}
             onQueueEditCancel={handleQueueEditCancel}
             onQueueEditRemove={handleQueueEditRemove}
+            header={composerHeader}
+            onOpenImage={openImageInPreview}
           />
         </ContextBreakdownProvider>
       ),
@@ -2706,6 +2812,7 @@ export function SessionView({
     effectiveEffort,
     contextUsed,
     contextLimit,
+    contextAutoCompact,
     sessionId,
     profileWorkspaceId,
     agentProfileCatalogMode,
@@ -2725,6 +2832,8 @@ export function SessionView({
     handleQueueEditConfirm,
     handleQueueEditCancel,
     handleQueueEditRemove,
+    composerHeader,
+    openImageInPreview,
     handleModelChange,
     handleEffortChange,
     handleAgentProfileChange,
@@ -2891,22 +3000,9 @@ export function SessionView({
               error={state.resyncError}
               onRetry={controller === null ? undefined : () => { void controller.resync(); }}
             />
-            {state.goal !== undefined && state.goal !== null ? (
-              <GoalCard goal={state.goal} onRefresh={handleGoalRefresh} onUpdate={handleGoalUpdate}
-                onPause={handleGoalPause} onResume={handleGoalResume} onCancel={handleGoalCancel} />
-            ) : null}
             {recoveryHold ? (
               <RecoveryHoldBar count={state.queuedPromptIds.length} pending={recoveryPending}
                 onConfirm={handleRecoveryConfirm} />
-            ) : null}
-            {queuedItems.length > 0 ? (
-              <QueueStrip
-                items={queuedItems} onSendNow={handleSendNowQueued} onRemove={handleCancelQueued}
-                onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
-                onMove={handleMoveQueued} onChangeTiming={handleQueuedTiming}
-                editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
-                sendNowDisabled={state.resyncing || state.resyncFailed}
-              />
             ) : null}
             <NeedsYouTray
               ref={trayRef}
@@ -2926,6 +3022,7 @@ export function SessionView({
             onOpenSubagent={openAgent} onClose={closeRail}
             onInspectMain={inspectMain} onOpenFile={openFileInPreview}
             onReviewPending={(kind, id) => { trayRef.current?.focusItem(kind, id); }}
+            sessionPending={trayItems} onResolveApproval={handleResolveApproval}
           />,
         }}
       />

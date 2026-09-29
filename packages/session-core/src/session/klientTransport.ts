@@ -29,6 +29,7 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
     movePrompt: (id, target, body) => run(() => commands(id).move(target, body)),
     replacePrompt: (id, target, body) => run(() => commands(id).replace(target, body)),
     timingPrompt: (id, target, body) => run(() => commands(id).timing(target, body)),
+    holdPrompt: (id, target, body) => run(() => commands(id).hold(target, body)),
     steerPrompt: (id, target) => run(() => commands(id).steer(target)),
     resolveApproval: (id, target, body) => run(() => commands(id).approve(target, body)),
     resolveQuestion: (id, target, body) => run(() => commands(id).answer(target, body)),

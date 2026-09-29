@@ -14,7 +14,9 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { IAgentPromptService, reservePrompt } from '#/agent/prompt/prompt';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { ExecutorHintDelivery } from '#/agent/execution/externalExecutorOps';
+import { IAgentPromptService, PROMPT_EDIT_HOLD_TTL_MS, reservePrompt } from '#/agent/prompt/prompt';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -234,6 +236,16 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
   };
   let activeTasks: readonly AgentTaskInfo[] = [];
   const taskService = { list: vi.fn(() => activeTasks) };
+  const externalTurns: Array<{ finish(): void }> = [];
+  const externalSteer = vi.fn(async () => true);
+  const externalRun = vi.fn(async () => {
+    const finished = deferred<{ type: 'completed'; steps: number; truncated: boolean }>();
+    const turn = { id: 200 + externalTurns.length, state: 'running' as const,
+      signal: new AbortController().signal, ready: Promise.resolve(), result: finished.promise,
+      cancel: () => false };
+    externalTurns.push({ finish: () => finished.resolve({ type: 'completed', steps: 1, truncated: false }) });
+    return { agentId: 'main', turn, completion: finished.promise.then(() => ({ summary: '' })) };
+  });
   const ix = createServices(disposables, {
     strict: true, additionalServices: (reg) => {
       registerStateServices(reg);
@@ -254,6 +266,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       reg.define(IAgentSystemReminderService, AgentSystemReminderService);
       reg.define(ISessionHistoryMutationService, SessionHistoryMutationService);
       reg.define(IAgentPromptService, AgentPromptService);
+      reg.definePartialInstance(IAgentExecutionService, { run: externalRun, steer: externalSteer });
       reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
       reg.definePartialInstance(ISessionMetadata, metadata);
       reg.definePartialInstance(IEventService, { publish: () => {} });
@@ -273,6 +286,9 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     toolPolicy,
     loop,
     context,
+    externalRun,
+    externalSteer,
+    externalTurns,
     fullCompaction,
     eventBus: ix.get(IEventBus),
     dispatcher: ix.get(IEventDispatcher),
@@ -291,39 +307,59 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
 }
 
 describe('AgentPromptService', () => {
-  it('rejects direct prompts and steering for an external executor before accepting or starting a native turn', async () => {
-    const { prompt, loop, setExecutor } = harness({ manualTurnResult: true });
-    const reservation = reservePrompt(prompt, 'reserved-before-switch');
-    setExecutor('grok-acp');
-    expect(() => reservePrompt(prompt, 'external')).toThrow(expect.objectContaining({
-      code: ErrorCodes.REQUEST_INVALID,
-      message: expect.stringContaining('use AgentSend'),
+  it('runs an external direct prompt and steers a queued prompt through the active executor', async () => {
+    const { prompt, loop, setExecutor, externalRun, externalSteer, externalTurns, eventBus } = harness();
+    const deliveries: ExecutorHintDelivery[] = [];
+    eventBus.subscribe(ExecutorHintDelivery, (event) => deliveries.push(event));
+    setExecutor('codex-app-server');
+    const active = await prompt.enqueue({ id: 'active', message: message('work') });
+    expect((await active.launched)?.id).toBe(200);
+    const queued = await prompt.enqueue({ id: 'queued', message: message('change direction') });
+    expect(queued.state).toBe('pending');
+    await expect(prompt.steer([queued.id])).resolves.toEqual([queued]);
+    expect(externalSteer).toHaveBeenCalledWith(expect.objectContaining({
+      content: [{ type: 'text', text: 'change direction' }],
     }));
-    await expect(reservation.submit(message('work'))).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
-    reservation.dispose();
-    await expect(prompt.enqueue({ message: message('work') })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
-    await expect(prompt.steer(['queued'])).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
-    expect(prompt.list().pending).toEqual([]);
+    expect(deliveries).toEqual([expect.objectContaining({ method: 'native_steer', status: 'delivered' })]);
+    expect(externalRun).toHaveBeenCalledTimes(1);
     expect(loop.launches).toEqual([]);
-    setExecutor(undefined);
-    const native = await prompt.enqueue({ message: message('native work') });
-    expect((await native.launched)?.id).toBeDefined();
-    loop.settleActive();
-    await native.completion;
+    externalTurns[0]!.finish();
+    await active.completion;
+    await queued.completion;
   });
 
-  it('does not enter the native loop when a queued prompt selects an external profile at launch', async () => {
-    const { prompt, loop } = harness();
+  it('keeps an unsupported external steer queued and records delivery on the next turn', async () => {
+    const { prompt, setExecutor, externalSteer, externalTurns, eventBus } = harness();
+    const deliveries: ExecutorHintDelivery[] = [];
+    eventBus.subscribe(ExecutorHintDelivery, (event) => deliveries.push(event));
+    setExecutor('grok-acp');
+    externalSteer.mockResolvedValue(false);
+    const active = await prompt.enqueue({ id: 'active', message: message('work') });
+    const queued = await prompt.enqueue({ id: 'queued', message: message('follow up') });
+    await prompt.steer([queued.id]);
+    expect(queued.state).toBe('pending');
+    expect(deliveries).toEqual([expect.objectContaining({ method: 'next_turn_preamble', status: 'queued' })]);
+    externalTurns[0]!.finish();
+    await active.completion;
+    expect((await queued.launched)?.id).toBe(201);
+    expect(deliveries).toEqual([
+      expect.objectContaining({ status: 'queued' }),
+      expect.objectContaining({ turnId: 201, method: 'next_turn_preamble', status: 'delivered' }),
+    ]);
+    externalTurns[1]!.finish();
+    await queued.completion;
+  });
+
+  it('routes a queued profile switch to the external executor without entering the native loop', async () => {
+    const { prompt, loop, externalRun, externalTurns } = harness();
     const queued = await prompt.enqueue({
-      message: message('work'),
-      execution: { profile: 'external-profile' },
+      message: message('work'), execution: { profile: 'external-profile' },
     });
-    expect((await queued.completion).state).toBe('failed');
-    expect((await queued.completion).result).toMatchObject({
-      type: 'failed',
-      error: { code: ErrorCodes.REQUEST_INVALID },
-    });
+    expect((await queued.launched)?.id).toBe(200);
+    expect(externalRun).toHaveBeenCalledWith(expect.objectContaining({ prompt: 'work' }), expect.anything());
     expect(loop.launches).toEqual([]);
+    externalTurns[0]!.finish();
+    await queued.completion;
   });
 
   it.each(['prompt', 'mailbox'] as const)('cancels a queued native %s run without cancelling another active turn', async (kind) => {
@@ -806,6 +842,75 @@ describe('AgentPromptService', () => {
     expect(() => prompt.changeTiming('queued', 'tasks_done', 0)).toThrowError(
       expect.objectContaining({ code: ErrorCodes.REQUEST_INVALID }),
     );
+  });
+
+  it('keeps an edit-held prompt and everything behind it parked while earlier prompts launch', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    const before = await prompt.enqueue({ id: 'before', message: message('before') });
+    const edited = await prompt.enqueue({ id: 'edited', message: message('edited') });
+    await prompt.enqueue({ id: 'after', message: message('after') });
+    prompt.setEditHold('edited', true);
+
+    loop.settleActive();
+    await before.launched;
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['edited', 'after']);
+
+    loop.settleActive();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(prompt.list().active).toBeUndefined();
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['edited', 'after']);
+    expect(prompt.hasReadyPending()).toBe(false);
+
+    await prompt.enqueue({ id: 'late', message: message('late') });
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['edited', 'after', 'late']);
+
+    prompt.replace('edited', [{ type: 'text', text: 'edited, better' }]);
+    prompt.setEditHold('edited', false);
+    await edited.launched;
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['after', 'late']);
+  });
+
+  it('releases an edit hold when the held prompt leaves the queue, and on its own after the lapse', async () => {
+    vi.useFakeTimers();
+    try {
+      const { prompt, loop } = harness({ manualTurnResult: true });
+      await prompt.enqueue({ id: 'active', message: message('active') });
+      await prompt.enqueue({ id: 'edited', message: message('edited') });
+      const after = await prompt.enqueue({ id: 'after', message: message('after') });
+      prompt.setEditHold('edited', true);
+      prompt.abort('edited');
+      loop.settleActive();
+      await vi.advanceTimersByTimeAsync(0);
+      await after.launched;
+
+      const next = await prompt.enqueue({ id: 'next', message: message('next') });
+      prompt.setEditHold('next', true);
+      loop.settleActive();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(prompt.list().pending.map((item) => item.id)).toEqual(['next']);
+      await vi.advanceTimersByTimeAsync(PROMPT_EDIT_HOLD_TTL_MS);
+      await next.launched;
+      expect(prompt.list().pending).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects an edit hold on a prompt that is not queued, and steer still bypasses a hold', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    expect(() => prompt.setEditHold('active', true)).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }),
+    );
+    const held = await prompt.enqueue({ id: 'held', message: message('held') });
+    prompt.setEditHold('held', true);
+    loop.settleActive();
+    await Promise.resolve();
+    await prompt.steer(['held']);
+    await held.launched;
+    expect(prompt.list().pending).toEqual([]);
   });
 
   it('moves queued prompts to an exact final index and publishes the resulting order', async () => {

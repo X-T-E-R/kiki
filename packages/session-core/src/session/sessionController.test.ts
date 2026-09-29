@@ -1052,6 +1052,7 @@ describe('SessionController transcript authority', () => {
       abortTurn: vi.fn(async () => ({ aborted: true })),
       movePrompt: vi.fn(),
       timingPrompt: vi.fn(),
+      holdPrompt: vi.fn(async (_id: string, target: string, body: { held: boolean }) => ({ prompt_id: target, held: body.held })),
       getTranscriptOps: vi.fn(async () => ({
         session_id: 'session_test',
         agent_id: 'main',
@@ -2211,6 +2212,15 @@ describe('SessionController transcript authority', () => {
 
     expect(client.movePrompt).toHaveBeenCalledWith('session_test', 'p3', { target_index: 0 });
     expect(controller.getState().queuedPromptIds).toEqual(['p3', 'p1', 'p2']);
+    controller.close();
+  });
+
+  it('holds and releases a queued prompt for editing over the wire', async () => {
+    const { controller, client } = await openTranscriptController();
+    await expect(controller.holdQueued('p1', true)).resolves.toBe(true);
+    await controller.holdQueued('p1', false);
+    expect(client.holdPrompt).toHaveBeenNthCalledWith(1, 'session_test', 'p1', { held: true });
+    expect(client.holdPrompt).toHaveBeenNthCalledWith(2, 'session_test', 'p1', { held: false });
     controller.close();
   });
 
