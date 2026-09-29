@@ -3,9 +3,9 @@
  * attachments) can localize without React. The React provider lives in
  * `index.tsx`; dictionaries in `en.ts` / `zh.ts`.
  *
- * Missing-key behavior: zh is typed `Record<I18nKey, string>` so gaps are
- * compile errors; at runtime `translate` still falls back to English and then
- * to the raw key, so a stale build degrades instead of crashing.
+ * Missing-key behavior: zh is `Partial` — new copy lands in en.ts first and is
+ * translated in batches. At runtime `translate` falls back to English and then
+ * to the raw key, so an untranslated key degrades instead of crashing.
  */
 
 import { en } from './en';
@@ -18,7 +18,7 @@ export type I18nParams = Readonly<Record<string, string | number>>;
 
 export const LOCALE_STORAGE_KEY = 'kiki.locale';
 
-const DICTIONARIES: Record<Locale, Record<I18nKey, string>> = { en, zh };
+const DICTIONARIES: Record<Locale, Partial<Record<I18nKey, string>>> = { en, zh };
 
 /**
  * Resolution order: an explicit stored choice wins; otherwise the browser

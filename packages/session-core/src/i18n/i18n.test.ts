@@ -67,10 +67,10 @@ describe('translate', () => {
 
 describe('translatePlural', () => {
   it('picks one/other forms in English and the shared form in Chinese', () => {
-    expect(translatePlural('en', 'sv.queueBar', 1)).toContain('1 prompt queued');
-    expect(translatePlural('en', 'sv.queueBar', 3)).toContain('3 prompts queued');
-    expect(translatePlural('zh', 'sv.queueBar', 1)).toContain('1 条消息已排队');
-    expect(translatePlural('zh', 'sv.queueBar', 3)).toContain('3 条消息已排队');
+    expect(translatePlural('en', 'sv.queueBar', 1)).toBe('1 queued');
+    expect(translatePlural('en', 'sv.queueBar', 3)).toBe('3 queued');
+    expect(translatePlural('zh', 'sv.queueBar', 1)).toBe('1 条排队');
+    expect(translatePlural('zh', 'sv.queueBar', 3)).toBe('3 条排队');
     expect(translatePlural('en', 'sv.queueBar', 1)).not.toContain('current turn');
     expect(translatePlural('zh', 'sv.queueBar', 1)).not.toContain('当前轮次');
     expect(translatePlural('en', 'st.plugins.contrib.skills', 1)).toBe('1 skill');
@@ -83,10 +83,11 @@ describe('translatePlural', () => {
 });
 
 describe('dictionary parity', () => {
-  it('zh covers every en key with a non-empty string', () => {
-    for (const key of Object.keys(en) as I18nKey[]) {
-      expect(zh[key], `missing zh translation for ${key}`).toBeTypeOf('string');
-      expect(zh[key].trim(), `empty zh translation for ${key}`).not.toBe('');
+  // zh is Partial (batch translation); only present entries must be non-empty.
+  it('present zh translations are non-empty strings', () => {
+    for (const [key, value] of Object.entries(zh)) {
+      expect(value, `non-string zh translation for ${key}`).toBeTypeOf('string');
+      expect(value!.trim(), `empty zh translation for ${key}`).not.toBe('');
     }
   });
 
@@ -100,7 +101,9 @@ describe('dictionary parity', () => {
     const placeholders = (text: string) =>
       [...text.matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
     for (const key of Object.keys(en) as I18nKey[]) {
-      expect(placeholders(zh[key]), `placeholder mismatch for ${key}`).toEqual(
+      const translated = zh[key];
+      if (translated === undefined) continue;
+      expect(placeholders(translated), `placeholder mismatch for ${key}`).toEqual(
         placeholders(en[key]),
       );
     }
