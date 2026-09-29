@@ -3,7 +3,7 @@ import { registerConfigSection } from '@kiki/agent-core-v2/app/config/configSect
 
 export const SearchConfigSchema = z.object({
   enabled: z.boolean().optional(),
-  index_subagent_tool_output: z.boolean().optional(),
+  index_subagents: z.boolean().optional(),
 }).passthrough();
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 export const SEARCH_BACKEND_SECTION = 'search_backend';

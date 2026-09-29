@@ -73,6 +73,30 @@ it('does not mark a completed NFKC two-character literal scan as incomplete', as
   expect(capped.incomplete).toBe('candidate_cap');
 });
 
+it('migrates extractor v2 by refreshing only subagent files and leaves main watermarks intact', async () => {
+  index.close();
+  index = await SqliteSearchIndex.open(join(home, 'index.sqlite'), { indexSubagents: true });
+  const main = await wire('s1', 'main keeps this');
+  const child = join(home, 's1', 'agents', 'child', 'wire.jsonl');
+  await mkdir(join(home, 's1', 'agents', 'child'), { recursive: true });
+  await writeFile(child, line('subagent old document'));
+  await index.syncSession(session('s1'));
+  const mainBefore = offset(main);
+  const mainDoc = index.db.prepare("SELECT id FROM docs WHERE text='main keeps this'").get() as { id: number };
+  index.db.prepare("UPDATE meta SET v='2' WHERE k='extractor_version'").run();
+  index.close();
+  index = await SqliteSearchIndex.open(join(home, 'index.sqlite'));
+  expect((index.db.prepare('SELECT policy FROM files WHERE path=?').get(main) as { policy: string }).policy).toBe('full');
+  expect((index.db.prepare('SELECT policy FROM files WHERE path=?').get(child) as { policy: string }).policy).toBe('refresh');
+  index.resetReadCounters();
+  await index.syncSession(session('s1'));
+  expect(index.syncStatus).toMatchObject({ wireBytesRead: 0, wireFilesRead: 0 });
+  expect(offset(main)).toBe(mainBefore);
+  expect((index.db.prepare("SELECT id FROM docs WHERE text='main keeps this'").get() as { id: number }).id).toBe(mainDoc.id);
+  expect((index.db.prepare("SELECT count(*) AS n FROM docs WHERE text='subagent old document'").get() as { n: number }).n).toBe(0);
+  expect((index.db.prepare('SELECT policy FROM files WHERE path=?').get(child) as { policy: string }).policy).toBe('skip');
+});
+
 it('quarantines a file after two consecutive recorded indexer exits and keeps other files searchable', async () => {
   const bad = await wire('s1', 'first');
   await wire('s2', 'unaffected');

@@ -20,7 +20,7 @@ export interface SqliteHostOptions {
   readonly backoffMs?: readonly number[];
   readonly memoryBackoffMs?: readonly number[];
   readonly queryTimeoutMs?: number;
-  readonly indexSubagentToolOutput?: boolean;
+  readonly indexSubagents?: boolean;
 }
 
 export interface SqliteHostSnapshot {
@@ -53,7 +53,12 @@ export class SqliteSearchHost {
   private readonly sent = new Set<string>();
   private readonly resend = new Set<string>();
   private readonly known = new Map<string, SqliteSessionInput>();
+  private reindexRequest?: { id: number; resolve: (value: { sessions: number; documents: number }) => void;
+    reject: (error: Error) => void; timer: NodeJS.Timeout };
+  private rebuilding = false;
   private readonly queries = new Map<number, { resolve: (result: SqliteSearchResult) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  private readonly queryWaiters: Array<{ resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> = [];
+  private reservedQuerySlots = 0;
   private id = 0;
   private timer?: NodeJS.Timeout;
   private restart?: NodeJS.Timeout;
@@ -81,8 +86,8 @@ export class SqliteSearchHost {
     const indexedSessions = this.status?.indexedSessions ?? 0;
     const totalSessions = Math.max(indexedSessions, this.known.size);
     return { state: this.reason ? 'unavailable' : this.readonlyWriter ? 'readonly' :
-      this.ready && this.pending.size === 0 && indexedSessions >= totalSessions ? 'ready' : 'building',
-      reason: this.reason, stale: !!this.reason || this.pending.size > 0,
+      this.ready && !this.rebuilding && this.pending.size === 0 && indexedSessions >= totalSessions ? 'ready' : 'building',
+      reason: this.reason, stale: !!this.reason || this.rebuilding || this.pending.size > 0,
       indexedSessions, totalSessions, documents: this.status?.documents ?? 0,
       retryAfterMs: this.retryAt > Date.now() ? this.retryAt - Date.now() : undefined,
       indexerTerminal: this.terminal, indexerPid: this.child?.pid, indexerRss: this.rss, indexerStatus: this.status,
@@ -118,12 +123,60 @@ export class SqliteSearchHost {
     this.flushPending();
   }
 
+  async reindex(sessions: readonly SqliteSessionInput[]): Promise<{ sessions: number; documents: number }> {
+    if (this.stopped || !this.child || !this.ready) throw new GlobalSearchError('index_unavailable', 'search indexer is unavailable');
+    if (this.readonlyWriter) throw new GlobalSearchError('readonly_index', 'another process owns the search index');
+    if (this.reindexRequest) throw new GlobalSearchError('index_unavailable', 'search reindex is already running');
+    const child = this.child;
+    const id = ++this.id;
+    this.rebuilding = true;
+    for (const session of sessions) {
+      this.known.set(session.id, session);
+      this.pending.set(session.id, session);
+      this.sent.add(session.id);
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.finishReindex(new Error('search reindex timed out'));
+      }, 30 * 60_000);
+      this.reindexRequest = { id, resolve, reject, timer };
+      child.send({ type: 'reindex', id, sessions: [...sessions] } satisfies IndexerRequest, (error) => {
+        if (error) this.finishReindex(error);
+      });
+    });
+  }
+
+  private finishReindex(error?: Error, result?: { sessions: number; documents: number }): void {
+    const request = this.reindexRequest;
+    if (!request) return;
+    this.reindexRequest = undefined;
+    this.rebuilding = false;
+    clearTimeout(request.timer);
+    if (error) request.reject(error);
+    else request.resolve(result!);
+    if (!error) this.flushPending();
+  }
+
+  private releaseQuerySlot(): void {
+    const waiter = this.queryWaiters.shift();
+    if (waiter) { clearTimeout(waiter.timer); this.reservedQuerySlots++; waiter.resolve(); }
+  }
+
   async search(query: NormalizedQuery, pageToken?: string, budgets?: SearchBudgets): Promise<SqliteSearchResult & { stale: boolean }> {
-    if (this.queries.size >= 8) throw new GlobalSearchError('index_unavailable', 'search busy');
     await this.openReader();
-    if (this.queries.size >= 8) throw new GlobalSearchError('index_unavailable', 'search busy');
+    if (this.queries.size + this.reservedQuerySlots >= 8 || this.queryWaiters.length) {
+      if (this.queryWaiters.length >= 32) throw new GlobalSearchError('index_unavailable', 'search queue full');
+      await new Promise<void>((resolve, reject) => {
+        const waiter = { resolve, reject, timer: setTimeout(() => {
+          this.queryWaiters.splice(this.queryWaiters.indexOf(waiter), 1);
+          reject(new GlobalSearchError('index_unavailable', 'search queue timed out'));
+        }, this.options.queryTimeoutMs ?? 10_000) };
+        this.queryWaiters.push(waiter);
+      });
+      this.reservedQuerySlots--;
+    }
     const reader = this.reader;
-    if (!reader) throw new GlobalSearchError('index_unavailable', 'search database is unavailable');
+    if (!reader || this.stopped) throw new GlobalSearchError('index_unavailable', 'search database is unavailable');
     const id = ++this.id;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -133,12 +186,13 @@ export class SqliteSearchHost {
       this.queries.set(id, { resolve: (value) => resolve({ ...value, stale: this.snapshot().stale }), reject, timer });
       const request: QueryRequest = { id, type: 'search', query, pageToken, budgets };
       try { reader.postMessage(request); }
-      catch (error) { clearTimeout(timer); this.queries.delete(id); reject(error); }
+      catch (error) { clearTimeout(timer); this.queries.delete(id); this.releaseQuerySlot(); reject(error); }
     });
   }
 
   async close(): Promise<void> {
     this.stopped = true;
+    this.finishReindex(new Error('search host closed'));
     if (this.timer) clearInterval(this.timer);
     if (this.restart) clearTimeout(this.restart);
     const child = this.child;
@@ -150,6 +204,10 @@ export class SqliteSearchHost {
       request.reject(new Error('search host closed'));
     }
     this.queries.clear();
+    for (const waiter of this.queryWaiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error('search host closed'));
+    }
     const readerExit = reader?.terminate();
     const childExit = child && child.exitCode === null ? new Promise<void>((resolve) => {
       const deadline = setTimeout(() => child.kill(), 5000);
@@ -163,15 +221,15 @@ export class SqliteSearchHost {
     if (this.stopped || this.terminal || this.child || this.restart || this.retryAt > Date.now()) return;
     const sea = process.env['KIKI_SQLITE_INDEXER_SEA'] === '1';
     const entry = this.options.indexerEntry ?? fileURLToPath(new URL('./indexerDev.ts', import.meta.url));
-    const args = sea ? ['--max-old-space-size=256', INDEXER_COMMAND, this.options.database] :
+    const args = sea ? [INDEXER_COMMAND, this.options.database] :
       ['--max-old-space-size=256', '--experimental-transform-types', '--import', 'tsx', '--import',
         new URL('./register-dev-hooks.mjs', import.meta.url).href, entry, this.options.database];
     const child = spawn(process.execPath, args, {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true,
-      env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=256',
+      env: { ...process.env, NODE_OPTIONS: `--max-old-space-size=${sea ? 384 : 256}`,
         KIKI_SEARCH_INDEXER_HARD_MB: String(this.options.indexerHardMb ?? 768),
-        KIKI_SEARCH_INDEXER_SOFT_MB: String(this.options.indexerSoftMb ?? 384),
-        KIKI_SEARCH_INDEX_SUBAGENT_TOOL_OUTPUT: this.options.indexSubagentToolOutput ? '1' : '0' },
+        KIKI_SEARCH_INDEXER_SOFT_MB: String(this.options.indexerSoftMb ?? (sea ? 512 : 384)),
+        KIKI_SEARCH_INDEX_SUBAGENTS: this.options.indexSubagents ? '1' : '0' },
     });
     this.child = child;
     child.stderr?.on('data', (data: Buffer) => process.stderr.write(data));
@@ -219,6 +277,10 @@ export class SqliteSearchHost {
         if (this.resend.delete(message.sessionId)) this.flushPending();
         else this.pending.delete(message.sessionId);
         if (!this.pending.size) { this.failures = 0; this.memoryFailures = 0; }
+      } else if (message.type === 'reindexed') {
+        if (this.reindexRequest?.id === message.id) this.finishReindex(
+          message.error ? new Error(message.error) : undefined,
+          { sessions: message.sessions, documents: message.documents });
       } else if (message.type === 'error') {
         if (message.message === 'disk_low' || message.message === 'sqlite_unavailable') this.reason = message.message;
         else process.stderr.write(`search indexer: ${message.message}\n`);
@@ -227,6 +289,7 @@ export class SqliteSearchHost {
     const onExit = (code: number | null, signal: string | null): void => {
       if (this.child !== child) return;
       this.child = undefined;
+      this.finishReindex(new Error('search indexer exited during reindex'));
       if (this.stopped) return;
       this.sent.clear();
       this.resend.clear();
@@ -274,7 +337,7 @@ export class SqliteSearchHost {
   }
 
   private flushPending(): void {
-    if (!this.ready || this.readonlyWriter || !this.child) return;
+    if (!this.ready || this.readonlyWriter || !this.child || this.rebuilding) return;
     const sessions = [...this.pending.values()].filter((session) => !this.sent.has(session.id));
     for (let i = 0; i < sessions.length; i += 1000) {
       const batch = sessions.slice(i, i + 1000);
@@ -305,6 +368,7 @@ export class SqliteSearchHost {
           if (!request) return;
           clearTimeout(request.timer);
           this.queries.delete(event.id);
+          this.releaseQuerySlot();
           if (event.type === 'result') request.resolve(event.value);
           else request.reject(new Error(event.message));
         }
@@ -330,6 +394,10 @@ export class SqliteSearchHost {
       clearTimeout(request.timer);
       request.reject(error);
       this.queries.delete(id);
+    }
+    for (const waiter of this.queryWaiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
     }
     return exit;
   }

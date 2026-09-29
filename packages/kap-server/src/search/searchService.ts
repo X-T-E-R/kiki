@@ -127,6 +127,8 @@ export interface IGlobalSearchService {
   search(query: GlobalSearchQuery): Promise<GlobalSearchPage>;
   /** Full rebuild: wipe the index and rescan every wire file. */
   reindex(): Promise<{ sessions: number; documents: number }>;
+  /** Reset the SQLite indexer's retry backoff after a user-requested retry. */
+  retryIndexer(): void;
   /**
    * Diagnostic status (the `/api/debug` surface reflects it). Never
    * throws: a backend that cannot answer (failed open, worker down) reports
@@ -363,7 +365,7 @@ export class GlobalSearchService implements IGlobalSearchService {
         !this.flags.enabled('desktop_search'));
     if (backend === 'sqlite') this.sqliteHost = new SqliteSearchHost({
       database: join(this.bootstrap.homeDir, 'search-index-v2', 'index.sqlite'),
-      indexSubagentToolOutput: search?.index_subagent_tool_output === true,
+      indexSubagents: search?.index_subagents === true,
     });
     this.backend = this.flags.enabled(SEARCH_WORKER_FLAG_ID)
       ? new SearchWorkerHost({ dir: indexDir, log: this.log })
@@ -933,6 +935,7 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   private async searchSqlite(q: NormalizedQuery, pageToken?: string): Promise<GlobalSearchPage> {
+    if (pageToken !== undefined) decodePageToken(q, 'index', pageToken, undefined);
     if (this.sqliteDisabled) return this.unavailablePage('disabled');
     const host = this.sqliteHost!;
     this.requestSync();
@@ -1056,9 +1059,30 @@ export class GlobalSearchService implements IGlobalSearchService {
     };
   }
 
+  retryIndexer(): void {
+    if (this.sqliteHost === undefined || this.sqliteDisabled) return;
+    this.sqliteHost.retryIndexer();
+    this.requestSync();
+  }
+
   async reindex(): Promise<{ sessions: number; documents: number }> {
-    if (this.sqliteHost !== undefined) throw new GlobalSearchError('index_unavailable',
-      'SQLite index rebuild is not available while the indexer is running');
+    if (this.sqliteHost !== undefined) {
+      if (this.sqliteDisabled) throw new GlobalSearchError('index_unavailable', 'SQLite search is disabled');
+      this.reindexing = true;
+      try {
+        await this.syncPromise?.catch(() => {});
+        const sessions = await this.listAllSessions();
+        const stats = await this.sqliteHost.reindex(sessions.map((summary) => this.toSyncInput(summary)));
+        this.lastRefreshError = null;
+        return stats;
+      } catch (error) {
+        this.lastRefreshError = { at: Date.now(), message: errorMessage(error) };
+        throw error;
+      } finally {
+        this.reindexing = false;
+        this.requestSync();
+      }
+    }
     try {
       this.reindexing = true;
       await this.backend.ensureOpen();

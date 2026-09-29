@@ -8,6 +8,7 @@ export type IndexerRequest =
   | { type: 'heartbeat' }
   | { type: 'reader_released' }
   | { type: 'sync'; sessions: SqliteSessionInput[] }
+  | { type: 'reindex'; id: number; sessions: SqliteSessionInput[] }
   | { type: 'close' };
 
 export type IndexerEvent =
@@ -17,6 +18,7 @@ export type IndexerEvent =
   | { type: 'status'; rss: number; heapUsed: number; external: number; heapLimit: number;
       status: SqliteSyncStatus; pending: number; dbBytes: number; lastBatchMs: number; inflight?: string }
   | { type: 'synced'; sessionId: string }
+  | { type: 'reindexed'; id: number; documents: number; sessions: number; error?: string }
   | { type: 'error'; message: string };
 
 export type QueryRequest =

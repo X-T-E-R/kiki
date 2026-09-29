@@ -78,13 +78,11 @@ it('moves a corrupt derived database aside and opens a fresh incremental index',
   expect((await host.search(query)).rows.map((row) => row.value.text)).toEqual(['needle rebuilt']);
 });
 
-it('bounds the query worker queue at eight outstanding requests', async () => {
+it('queues bursts past eight worker slots with bounded backpressure', async () => {
   const { host } = await fixture();
   await waitFor(() => host.snapshot().state === 'ready');
   const settled = await Promise.allSettled(Array.from({ length: 16 }, () => host.search(query)));
-  expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(8);
-  expect(settled.filter((result) => result.status === 'rejected' &&
-    String(result.reason).includes('search busy'))).toHaveLength(8);
+  expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(16);
   expect(host.snapshot().watchdogTimeouts).toBe(0);
 });
 
@@ -140,6 +138,27 @@ it('retries an in-flight session and quarantines its wire after two indexer cras
   } finally { db.close(); }
 });
 
+it('reindexes the owned SQLite database through the indexer and replaces obsolete documents', async () => {
+  const { host, home, database } = await fixture();
+  const dir = join(home, 's1');
+  await mkdir(join(dir, 'agents', 'main'), { recursive: true });
+  const wire = join(dir, 'agents', 'main', 'wire.jsonl');
+  const record = (text: string) => JSON.stringify({ type: 'context.append_message', time,
+    message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text }] } }) + '\n';
+  await writeFile(wire, record('needle old'));
+  const session = { id: 's1', dir, workspaceId: 'example', updatedAt: time };
+  host.sync([session]);
+  await waitFor(() => host.snapshot().pendingSessions === 0 && host.snapshot().documents === 1);
+  await writeFile(wire, record('replacement new'));
+  const stats = await host.reindex([session]);
+  expect(stats).toEqual({ sessions: 1, documents: 1 });
+  expect((await host.search(query)).rows).toEqual([]);
+  expect((await host.search({ ...query, query: 'replacement' })).rows.map((row) => row.value.text)).toEqual(['replacement new']);
+  const db = new DatabaseSync(database, { readOnly: true });
+  try { expect((db.prepare('SELECT count(*) AS n FROM docs').get() as { n: number }).n).toBe(1); }
+  finally { db.close(); }
+});
+
 it('indexes in a child while a read-only worker serves search from the parent', async () => {
   const { host, home } = await fixture();
   const dir = join(home, 's1');
@@ -164,6 +183,7 @@ it('elects one writer across hosts sharing the same database and leaves the othe
   hosts.push(other);
   await other.open();
   await waitFor(() => other.snapshot().state === 'readonly');
+  await expect(other.reindex([])).rejects.toMatchObject({ reason: 'readonly_index' });
   expect(other.snapshot().indexerPid).not.toBe(host.snapshot().indexerPid);
   const dir = join(home, 's1');
   await mkdir(join(dir, 'agents', 'main'), { recursive: true });

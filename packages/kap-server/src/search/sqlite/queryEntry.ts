@@ -6,6 +6,7 @@ const port = parentPort;
 if (!port) throw new Error('query entry requires a worker thread');
 let reader: SqliteSearchIndex | undefined;
 const recent = new Map<string, { expires: number; version: number; result: Promise<SqliteSearchResult> }>();
+const cacheMs = process.env['KIKI_SEARCH_QUERY_CACHE_MS'] === '0' ? 0 : 500;
 const send = (event: QueryEvent): void => port.postMessage(event);
 send({ type: 'ready' });
 port.on('message', async (message: QueryRequest) => {
@@ -16,15 +17,18 @@ port.on('message', async (message: QueryRequest) => {
   }
   try {
     if (!reader) reader = SqliteSearchIndex.openReader(workerData as string);
-    const key = JSON.stringify([message.query, message.pageToken, message.budgets]);
-    const version = (reader.db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version;
-    let entry = recent.get(key);
+    const key = cacheMs ? JSON.stringify([message.query, message.pageToken, message.budgets]) : '';
+    const version = cacheMs
+      ? (reader.db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version : 0;
+    let entry = cacheMs ? recent.get(key) : undefined;
     if (!entry || entry.expires < Date.now() || entry.version !== version) {
-      if (recent.size >= 16) recent.delete(recent.keys().next().value!);
+      if (cacheMs && recent.size >= 16) recent.delete(recent.keys().next().value!);
       const result = reader.search(message.query, message.pageToken, message.budgets);
-      entry = { expires: Date.now() + 500, version, result };
-      recent.set(key, entry);
-      void result.catch(() => { if (recent.get(key) === entry) recent.delete(key); });
+      entry = { expires: Date.now() + cacheMs, version, result };
+      if (cacheMs) {
+        recent.set(key, entry);
+        void result.catch(() => { if (recent.get(key) === entry) recent.delete(key); });
+      }
     }
     const value = await entry.result;
     send({ id: message.id, type: 'result', value });

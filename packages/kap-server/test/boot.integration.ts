@@ -113,6 +113,7 @@ function stubGlobalSearchService(
       throw new Error('not used by boot test');
     },
     reindex: async () => ({ sessions: 0, documents: 0 }),
+    retryIndexer: () => {},
     status: async () => ({
       sessions: 0,
       documents: 0,

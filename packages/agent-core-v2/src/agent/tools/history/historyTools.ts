@@ -155,7 +155,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<z.in
               turn: hit.turn, step_id: hit.stepId, snippet: hit.snippet })),
           next_cursor: page.pageToken, has_more: page.hasMore, incomplete: page.incomplete,
           index_state: page.indexState, warning: page.warning, fallback: page.fallback, source: page.source,
-          coverage: 'Subagent tool output and main tool output beyond 4096 chars are not indexed by default; use HistoryRead for full turns.',
+          coverage: 'Subagent content and main tool output beyond 4096 chars are not indexed by default; use HistoryRead for full turns.',
         }) };
       },
     };

@@ -2,7 +2,7 @@
 
 exports[`HistorySearch index states > snapshots building output with coverage and progress 1`] = `
 {
-  "coverage": "Subagent tool output and main tool output beyond 4096 chars are not indexed by default; use HistoryRead for full turns.",
+  "coverage": "Subagent content and main tool output beyond 4096 chars are not indexed by default; use HistoryRead for full turns.",
   "has_more": false,
   "hits": [
     {
@@ -26,7 +26,7 @@ exports[`HistorySearch index states > snapshots building output with coverage an
 
 exports[`HistorySearch index states > snapshots ready output with coverage and progress 1`] = `
 {
-  "coverage": "Subagent tool output and main tool output beyond 4096 chars are not indexed by default; use HistoryRead for full turns.",
+  "coverage": "Subagent content and main tool output beyond 4096 chars are not indexed by default; use HistoryRead for full turns.",
   "has_more": false,
   "hits": [
     {
@@ -50,7 +50,7 @@ exports[`HistorySearch index states > snapshots ready output with coverage and p
 
 exports[`HistorySearch index states > snapshots unavailable output with coverage and progress 1`] = `
 {
-  "coverage": "Subagent tool output and main tool output beyond 4096 chars are not indexed by default; use HistoryRead for full turns.",
+  "coverage": "Subagent content and main tool output beyond 4096 chars are not indexed by default; use HistoryRead for full turns.",
   "has_more": false,
   "hits": [],
   "index_state": {

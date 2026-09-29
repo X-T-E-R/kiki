@@ -58,7 +58,7 @@ export interface SqliteSearchResult {
 }
 
 export interface SqliteIndexOptions {
-  readonly indexSubagentToolOutput?: boolean;
+  readonly indexSubagents?: boolean;
   readonly walPauseBytes?: number;
   readonly walRetryMs?: number;
   readonly idleCheckpointMs?: number;
@@ -140,7 +140,7 @@ export class SqliteSearchIndex {
   private peakWal = 0;
   private readFiles = new Set<string>();
 
-  private constructor(readonly db: DatabaseSync, readonly indexSubagentToolOutput: boolean,
+  private constructor(readonly db: DatabaseSync, readonly indexSubagents: boolean,
     private readonly path: string, private readonly options: SqliteIndexOptions, readOnly = false) {
     if (readOnly) return;
     const inflight = db.prepare("SELECT v FROM meta WHERE k='inflight'").get() as { v: string } | undefined;
@@ -159,7 +159,7 @@ export class SqliteSearchIndex {
 
   static async open(path: string, options: SqliteIndexOptions = {}): Promise<SqliteSearchIndex> {
     const db = await openSearchDatabase(path);
-    try { return new SqliteSearchIndex(db, options.indexSubagentToolOutput ?? false, path, options); }
+    try { return new SqliteSearchIndex(db, options.indexSubagents ?? false, path, options); }
     catch (error) { db.close(); throw error; }
   }
 
@@ -245,6 +245,23 @@ export class SqliteSearchIndex {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.db.close();
+  }
+
+  async reindex(): Promise<void> {
+    await this.syncQueue;
+    if (this.closed) throw new Error('search index is closed');
+    const sessions = this.db.prepare('SELECT id FROM sessions').all() as { id: string }[];
+    for (const { id } of sessions) {
+      this.db.exec('BEGIN');
+      try {
+        this.deleteDocs('session_id', id);
+        this.db.prepare('DELETE FROM sessions WHERE id=?').run(id);
+        this.bumpGeneration();
+        this.db.exec('COMMIT');
+      } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      this.afterCommit();
+    }
+    this.db.prepare('DELETE FROM file_failures').run();
   }
 
   private get generation(): string {
@@ -354,6 +371,23 @@ export class SqliteSearchIndex {
     const db = this.db;
     const st = await stat(path);
     let file = db.prepare('SELECT * FROM files WHERE path=?').get(path) as FileRow | undefined;
+    const policy = agentId === 'main' || this.indexSubagents ? 'full' : 'skip';
+    if (policy === 'skip') {
+      if (file?.policy === 'quarantined') {
+        if (db.prepare('SELECT 1 FROM docs WHERE file_id=? LIMIT 1').get(file.id)) {
+          db.exec('BEGIN');
+          try { this.deleteDocs('file_id', file.id); this.bumpGeneration(); db.exec('COMMIT'); }
+          catch (error) { db.exec('ROLLBACK'); throw error; }
+        }
+      } else if (file?.policy !== 'skip') {
+        if (file) this.removeFile(file.id);
+        db.prepare("INSERT INTO files(session_id,agent_id,path,ino,size,mtime_ms,offset,tail_hash,turn_next,turn_has,step_state,policy) VALUES(?,?,?,?,?,?,0,NULL,0,0,?,'skip')")
+          .run(session.id, agentId, path, String(st.ino), st.size, st.mtimeMs, JSON.stringify(EMPTY_STEP));
+      } else if (file.size !== st.size || file.mtime_ms !== st.mtimeMs || file.ino !== String(st.ino)) {
+        db.prepare('UPDATE files SET ino=?,size=?,mtime_ms=? WHERE id=?').run(String(st.ino), st.size, st.mtimeMs, file.id);
+      }
+      return;
+    }
     const failure = db.prepare('SELECT strikes FROM file_failures WHERE path=?').get(path) as { strikes: number } | undefined;
     if (failure && failure.strikes >= 2) {
       if (!file) db.prepare("INSERT INTO files(session_id,agent_id,path,ino,size,mtime_ms,offset,tail_hash,turn_next,turn_has,step_state,policy) VALUES(?,?,?,?,?,?,0,NULL,0,0,?,'quarantined')")
@@ -362,7 +396,6 @@ export class SqliteSearchIndex {
       return;
     }
     if (file?.policy === 'quarantined') return;
-    const policy = agentId === 'main' || this.indexSubagentToolOutput ? 'full' : 'meta-only';
     const changed = file && (st.size !== file.size || st.mtimeMs !== file.mtime_ms || file.ino !== String(st.ino));
     const replace = file && (st.size < file.offset || file.policy !== policy || (changed && file.offset > 0 &&
       (file.ino !== String(st.ino) || file.tail_hash !== await this.tailHash(path, file.offset))));
@@ -462,7 +495,6 @@ export class SqliteSearchIndex {
               const messages = prompt === undefined ? analysis.messages : [prompt];
               for (let i = 0; i < messages.length; i++) {
                 const message = messages[i]!;
-                if (message.role === 'tool' && policy === 'meta-only') continue;
                 const text = message.text.replace(BINARY, '[binary]').slice(0,
                   agentId !== 'main' || message.role === 'tool' ? 4096 : MAX_DOC_TEXT_CHARS);
                 if (!text) continue;

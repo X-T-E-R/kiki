@@ -115,4 +115,8 @@ export function registerSearchRoutes(app: SearchRouteHost, core: Scope): void {
     },
   );
   app.post(route.path, route.options, route.handler as Parameters<SearchRouteHost['post']>[2]);
+  app.post('/search/retry', { preHandler: [] }, (req, reply) => {
+    core.accessor.get(IGlobalSearchService).retryIndexer();
+    reply.send(okEnvelope({ retried: true }, req.id));
+  });
 }

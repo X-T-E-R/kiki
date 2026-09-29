@@ -69,15 +69,16 @@ export async function openSearchDatabase(path: string): Promise<DatabaseSync> {
     db.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION}`);
     db.prepare("INSERT OR IGNORE INTO meta(k,v) VALUES('generation','0')").run();
     const extractor = db.prepare("SELECT v FROM meta WHERE k='extractor_version'").get() as { v: string } | undefined;
-    if (extractor && extractor.v !== '2') {
+    if (extractor && extractor.v !== '3') {
       db.exec('BEGIN');
       try {
-        db.prepare("UPDATE files SET policy='refresh'").run();
-        db.prepare("UPDATE meta SET v='2' WHERE k='extractor_version'").run();
+        if (extractor.v === '2') db.prepare("UPDATE files SET policy='refresh' WHERE agent_id <> 'main' AND policy <> 'quarantined'").run();
+        else db.prepare("UPDATE files SET policy='refresh' WHERE policy <> 'quarantined'").run();
+        db.prepare("UPDATE meta SET v='3' WHERE k='extractor_version'").run();
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     } else if (!extractor) {
-      db.prepare("INSERT INTO meta(k,v) VALUES('extractor_version','2')").run();
+      db.prepare("INSERT INTO meta(k,v) VALUES('extractor_version','3')").run();
     }
     return db;
   } catch (error) {

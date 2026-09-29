@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 process.env['KIKI_EXPERIMENTAL_SEARCH_WORKER'] = '1';
 
@@ -41,6 +42,7 @@ interface SearchPageWire {
     indexed_sessions: number;
     total_sessions: number;
     documents: number;
+    reason?: string;
   };
   source: string;
 }
@@ -173,6 +175,12 @@ describe('server-v2 /api/search', () => {
     expect(body!.data.source).toBe('index');
   });
 
+  it('accepts an authenticated search retry without a search body', async () => {
+    const response = await authedFetch(server!, base, '/api/search/retry', { method: 'POST' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ code: 0, data: { retried: true } });
+  });
+
   it('rejects invalid bodies with 40001', async () => {
     const emptyQuery = await postSearch({ query: '' });
     expect(emptyQuery.code).toBe(40001);
@@ -242,7 +250,11 @@ describe('server-v2 session routes with the global search DB unavailable', () =>
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-search-down-'));
-    await writeFile(join(home, 'search-index'), 'not a minidb directory', 'utf8');
+    const directory = join(home, 'search-index-v2');
+    await mkdir(directory);
+    const foreign = new DatabaseSync(join(directory, 'index.sqlite'));
+    foreign.exec('PRAGMA application_id=123; CREATE TABLE user_data(value TEXT)');
+    foreign.close();
   });
 
   afterEach(async () => {
@@ -303,8 +315,11 @@ describe('server-v2 session routes with the global search DB unavailable', () =>
     const messages = await getJson<{ items: unknown[] }>(`/api/sessions/${id}/messages`);
     expect(messages.code).toBe(0);
 
-    const probe = await stat(join(home as string, 'search-index'));
+    const probe = await stat(join(home as string, 'search-index-v2', 'index.sqlite'));
     expect(probe.isFile()).toBe(true);
+    const foreign = new DatabaseSync(join(home as string, 'search-index-v2', 'index.sqlite'), { readOnly: true });
+    try { expect(foreign.prepare("SELECT name FROM sqlite_master WHERE name='user_data'").get()).toBeDefined(); }
+    finally { foreign.close(); }
   });
 
   it('only the full-text search request reports the index outage', { timeout: 30_000 }, async () => {
@@ -316,13 +331,14 @@ describe('server-v2 session routes with the global search DB unavailable', () =>
 
     await expect
       .poll(
-        async () => (await postJson<SearchPageWire>('/api/search', { query: 'anything' })).code,
+        async () => (await postJson<SearchPageWire>('/api/search', { query: 'anything' })).data?.index_state.reason,
         { timeout: 10_000, interval: 100 },
       )
-      .toBe(50001);
+      .toBe('indexer_backoff');
     const search = await postJson<SearchPageWire>('/api/search', { query: 'anything' });
-    expect(search.code).toBe(50001);
-    expect(search.msg).toContain('search index failed to open');
+    expect(search.code).toBe(0);
+    expect(search.data.items).toEqual([]);
+    expect(search.data.index_state).toMatchObject({ state: 'unavailable', reason: 'indexer_backoff' });
 
     const list = await getJson<{ items: unknown[] }>('/api/sessions');
     expect(list.code).toBe(0);

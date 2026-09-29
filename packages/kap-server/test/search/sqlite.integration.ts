@@ -50,7 +50,8 @@ describe('SQLite derived search index', () => {
     await wire([user('苹果 first'), begin('u1', 3), assistant('apple first', T + 1, 'u1'),
       tool('main-tool-value'), user('苹果 second', T + 3)]);
     await writeFile(join(home, 's1', 'state.json'), JSON.stringify({ title: '季度总结' }));
-    await wire([user('sub dialogue'), JSON.stringify({ type: 'context.append_message', time: T + 4,
+    await wire([user('sub dialogue'), assistant('child reply'), assistant('visible-' + 'x '.repeat(2100) + 'hidden-child-tail'),
+      JSON.stringify({ type: 'context.append_message', time: T + 4,
       message: { role: 'user', origin: { kind: 'system_trigger', name: 'subagent' },
         content: [{ type: 'text', text: 'delegated unique prompt' }] } }), tool('hidden-sub-tool')], 'child');
     await index.syncSession(session());
@@ -63,15 +64,34 @@ describe('SQLite derived search index', () => {
     expect(shortAscii.incomplete).toBeUndefined();
     expect((await hits('main-tool', 'literal'))[0]).toMatchObject({ role: 'tool' });
     expect(await hits('hidden-sub-tool', 'literal')).toEqual([]);
-    expect((await hits('sub dialogue')).map((r) => r.role)).toEqual(['user']);
-    expect((await hits('delegated unique prompt')).map((r) => r.role)).toEqual(['user']);
+    expect(await hits('sub dialogue')).toEqual([]);
+    expect(await hits('child reply')).toEqual([]);
+    expect(await hits('delegated unique prompt')).toEqual([]);
+    expect(index.syncStatus.wireFilesRead).toBe(1);
     index.close();
-    index = await SqliteSearchIndex.open(join(home, 'index.sqlite'), { indexSubagentToolOutput: true });
+    index = await SqliteSearchIndex.open(join(home, 'index.sqlite'), { indexSubagents: true });
+    index.resetReadCounters();
     await index.syncSession(session());
+    expect(index.syncStatus.wireFilesRead).toBe(1);
+    expect((await hits('sub dialogue'))[0]).toMatchObject({ role: 'user' });
+    expect((await hits('child reply'))[0]).toMatchObject({ role: 'assistant' });
+    expect((await hits('visible', 'literal'))[0]).toMatchObject({ role: 'assistant' });
+    expect(await hits('hidden-child-tail', 'literal')).toEqual([]);
+    expect((await hits('delegated unique prompt'))[0]).toMatchObject({ role: 'user' });
     expect((await hits('hidden-sub-tool', 'literal'))[0]).toMatchObject({ role: 'tool' });
+    index.close();
+    index = await SqliteSearchIndex.open(join(home, 'index.sqlite'));
+    index.resetReadCounters();
+    await index.syncSession(session());
+    expect(index.syncStatus.wireFilesRead).toBe(0);
+    expect(await hits('sub dialogue')).toEqual([]);
+    expect(await hits('child reply')).toEqual([]);
+    expect(await hits('hidden-sub-tool', 'literal')).toEqual([]);
   });
 
   it('uses file watermarks, resumes partial lines and replaces only the changed file', async () => {
+    index.close();
+    index = await SqliteSearchIndex.open(join(home, 'index.sqlite'), { indexSubagents: true });
     const path = await wire([user('苹果 first')]);
     await wire([user('香蕉 independent')], 'child');
     await index.syncSession(session());

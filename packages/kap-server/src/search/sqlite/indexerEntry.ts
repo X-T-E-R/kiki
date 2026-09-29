@@ -37,6 +37,8 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   let index: SqliteSearchIndex | undefined;
   let pending = new Map<string, SqliteSessionInput>();
   let syncing = false;
+  let rebuilding = false;
+  let lastDrainError: string | undefined;
   let lastHeartbeat = Date.now();
   let soft = false;
   let nearSoft = false;
@@ -70,6 +72,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   const drain = async (): Promise<void> => {
     if (syncing || stopped || !index) return;
     syncing = true;
+    lastDrainError = undefined;
     try {
       while (pending.size && !stopped) {
         const entry = pending.entries().next().value;
@@ -90,8 +93,10 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         const elapsed = lastBatchMs;
         if (pending.size && elapsed > 0) await new Promise((resolve) => setTimeout(resolve, elapsed));
       }
-    } catch (error) { report({ type: 'error', message: error instanceof Error ? error.message : String(error) }); }
-    finally { syncing = false; }
+    } catch (error) {
+      lastDrainError = error instanceof Error ? error.message : String(error);
+      report({ type: 'error', message: lastDrainError });
+    } finally { syncing = false; }
   };
   const openOptions = {
     batchMaxDocs: () => nearSoft ? 250 : 500,
@@ -117,7 +122,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     }
     report({ type: 'error', message: 'corrupt_rebuilding' });
     index = await SqliteSearchIndex.open(path, { ...openOptions,
-      indexSubagentToolOutput: process.env['KIKI_SEARCH_INDEX_SUBAGENT_TOOL_OUTPUT'] === '1' });
+      indexSubagents: process.env['KIKI_SEARCH_INDEX_SUBAGENTS'] === '1' });
     if (opened) report({ type: 'ready', pid: process.pid, writer: true });
   };
   const free = await statfs(dirname(path)).then((value) => value.bavail * value.bsize);
@@ -141,7 +146,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     throw error;
   } finally { await rm(probeDir, { recursive: true, force: true }); }
   try { index = await SqliteSearchIndex.open(path, { ...openOptions,
-    indexSubagentToolOutput: process.env['KIKI_SEARCH_INDEX_SUBAGENT_TOOL_OUTPUT'] === '1' }); }
+    indexSubagents: process.env['KIKI_SEARCH_INDEX_SUBAGENTS'] === '1' }); }
   catch (error) { await recover(error); }
   index!.db.prepare("INSERT INTO meta(k,v) VALUES('selfcheck','passed') ON CONFLICT(k) DO UPDATE SET v=excluded.v").run();
   report({ type: 'ready', pid: process.pid, writer: true });
@@ -166,7 +171,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
       process.exit(87);
     }
     status();
-    if (pending.size && !syncing) void drain();
+    if (pending.size && !syncing && !rebuilding) void drain();
   }, 1000);
   process.on('disconnect', () => process.exit(0));
   await new Promise<void>((resolve) => {
@@ -178,14 +183,38 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         releaseReader?.();
       } else if (message.type === 'sync') {
         for (const session of message.sessions.slice(0, 1000)) pending.set(session.id, session);
-        void drain();
+        if (!rebuilding) void drain();
+      } else if (message.type === 'reindex') {
+        if (rebuilding) {
+          report({ type: 'reindexed', id: message.id, sessions: 0, documents: 0, error: 'reindex already running' });
+        } else {
+          rebuilding = true;
+          void (async () => {
+            while (syncing) await new Promise((done) => setTimeout(done, 25));
+            if (!index || stopped) throw new Error('indexer stopped during reindex');
+            await index.reindex();
+            pending = new Map([...message.sessions.map((session) => [session.id, session] as const), ...pending]);
+            while (pending.size && !stopped) {
+              await drain();
+              if (lastDrainError || index.syncStatus.state === 'wal_stuck')
+                throw new Error(lastDrainError ?? 'reindex paused at WAL checkpoint');
+              if (pending.size) await new Promise((done) => setTimeout(done, 100));
+            }
+            if (stopped) throw new Error('indexer stopped during reindex');
+            const result = index.syncStatus;
+            report({ type: 'reindexed', id: message.id, sessions: result.indexedSessions ?? 0,
+              documents: result.documents ?? 0 });
+          })().catch((error: unknown) => report({ type: 'reindexed', id: message.id, sessions: 0,
+            documents: 0, error: error instanceof Error ? error.message : String(error) }))
+            .finally(() => { rebuilding = false; if (pending.size && !syncing) void drain(); });
+        }
       } else if (message.type === 'close') {
         stopped = true;
         clearInterval(timer);
-        if (!syncing) resolve();
+        if (!syncing && !rebuilding) resolve();
         else {
           const closing = setInterval(() => {
-            if (!syncing) { clearInterval(closing); resolve(); }
+            if (!syncing && !rebuilding) { clearInterval(closing); resolve(); }
           }, 100);
         }
       }
