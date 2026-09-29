@@ -26,7 +26,7 @@ import { I18nProvider } from '../i18n';
 import {
   AgentBreadcrumb,
   AgentRelations,
-  SIBLING_PAGE,
+  CHILD_CHIP_LIMIT,
   relatedAgentNodes,
 } from './AgentBreadcrumb';
 import { AgentTreeView } from './AgentTreeView';
@@ -1339,24 +1339,28 @@ describe('agent tree chrome', () => {
     expect(html).toContain('data-agent-id="agent-review"');
   });
 
-  it('lists the parent and children open by default and folds siblings to a count', async () => {
+  it('shows parent and child chips by default and keeps siblings behind one count chip', async () => {
+    const longParent = 'Composer state variants for the settings sheet';
     const family = buildAgentForest(
       [],
       [
         { agentId: 'main', name: 'Main' },
-        { agentId: 'lead', parentAgentId: 'main', name: 'Composer state variants for the settings sheet' },
+        { agentId: 'lead', parentAgentId: 'main', name: longParent, status: 'running', description: 'Draft the composer states' },
         { agentId: 'agent-1', parentAgentId: 'lead', name: 'Current' },
-        ...Array.from({ length: SIBLING_PAGE + 5 }, (_, index) => ({
+        ...Array.from({ length: 14 }, (_, index) => ({
           agentId: `peer-${index + 1}`,
           parentAgentId: 'lead',
           name: `Peer ${index + 1}`,
         })),
-        { agentId: 'child-1', parentAgentId: 'agent-1', name: 'Child 1' },
-        { agentId: 'child-2', parentAgentId: 'agent-1', name: 'Child 2' },
+        ...Array.from({ length: CHILD_CHIP_LIMIT + 2 }, (_, index) => ({
+          agentId: `child-${index + 1}`,
+          parentAgentId: 'agent-1',
+          name: `Child ${index + 1}`,
+        })),
       ],
     );
     const related = relatedAgentNodes(family, 'agent-1');
-    expect(related.siblings).toHaveLength(SIBLING_PAGE + 5);
+    expect(related.siblings).toHaveLength(14);
     expect(related.siblings.every((node) => node.parentAgentId === 'lead')).toBe(true);
 
     const opened: string[] = [];
@@ -1370,33 +1374,63 @@ describe('agent tree chrome', () => {
         </I18nProvider>,
       );
     });
-    const group = (kind: string) => container.querySelector(`[data-relations-group="${kind}"]`)!;
-    // Parent: one full row with the whole name (never a truncated chip label).
-    const parentRows = group('parent').querySelectorAll('[data-agent-id]');
-    expect([...parentRows].map((row) => row.getAttribute('data-agent-id'))).toEqual(['lead']);
-    expect(parentRows[0]!.textContent).toContain('Composer state variants for the settings sheet');
-    // Children: listed at the same time, one row each.
-    expect([...group('children').querySelectorAll('[data-agent-id]')].map((row) => row.getAttribute('data-agent-id')))
-      .toEqual(['child-1', 'child-2']);
-    // Siblings: folded to one count line.
-    const toggle = container.querySelector<HTMLButtonElement>('[data-relations-toggle="siblings"]')!;
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(toggle.textContent).toContain(`Siblings${SIBLING_PAGE + 5}`);
-    expect(group('siblings').querySelector('[data-agent-id]')).toBeNull();
+    try {
+      const strip = container.querySelector('[data-agent-relations]')!;
+      // Parent: one chip; its word is a separate quiet label, never a
+      // "Parent:" prefix glued to the name. Full name, task and state ride
+      // the tooltip.
+      const parent = strip.querySelector<HTMLButtonElement>('[data-relation="parent"]')!;
+      expect(parent.textContent).toBe(`Parent${longParent}`);
+      expect(parent.textContent).not.toContain(':');
+      expect(parent.getAttribute('aria-label')).toBe(`Parent ${longParent}`);
+      expect(parent.title.split('\n')[0]).toBe(longParent);
+      expect(parent.title).toContain(longParent);
+      expect(parent.title).toContain('Draft the composer states');
+      expect(parent.title).toContain('Running');
+      // Children: visible at the same time, one chip each; past the inline
+      // cap (or the strip's two lines, measured in a browser) the rest fold
+      // into a "+N" chip that lists them.
+      const children = [...strip.querySelectorAll('[data-relation="child"]')].map((chip) => chip.getAttribute('data-agent-id'));
+      expect(children).toHaveLength(CHILD_CHIP_LIMIT);
+      const moreChildren = strip.querySelector<HTMLButtonElement>('[data-relations-toggle="children"]')!;
+      expect(moreChildren.textContent).toBe('+2');
+      await act(async () => { moreChildren.click(); });
+      const childList = document.querySelector<HTMLElement>('[data-relations-popover="children"]')!;
+      const listed = [...childList.querySelectorAll('[data-agent-id]')].map((row) => row.getAttribute('data-agent-id'));
+      // Chips and list together cover every child exactly once, in forest order.
+      expect([...children, ...listed]).toEqual(related.children.map((node) => node.agentId));
+      await act(async () => { moreChildren.click(); });
+      expect(document.querySelector('[data-relations-popover]')).toBeNull();
+      // Siblings: a single count chip, no sibling listed until it is opened.
+      const siblings = strip.querySelector<HTMLButtonElement>('[data-relations-toggle="siblings"]')!;
+      expect(siblings.getAttribute('aria-expanded')).toBe('false');
+      expect(siblings.textContent).toBe('Siblings14');
+      expect(document.querySelector('[data-relations-popover]')).toBeNull();
+      expect(strip.querySelector('[data-agent-id^="peer-"]')).toBeNull();
 
-    await act(async () => { toggle.click(); });
-    expect(group('siblings').querySelectorAll('[data-agent-id]')).toHaveLength(SIBLING_PAGE);
-    const more = container.querySelector<HTMLButtonElement>('[data-relations-more="siblings"]')!;
-    expect(more.textContent).toBe('Show 5 more siblings');
-    await act(async () => { more.click(); });
-    expect(group('siblings').querySelectorAll('[data-agent-id]')).toHaveLength(SIBLING_PAGE + 5);
+      await act(async () => { siblings.click(); });
+      const popover = document.querySelector<HTMLElement>('[data-relations-popover="siblings"]')!;
+      expect(popover.querySelectorAll('[data-agent-id]')).toHaveLength(14);
+      // A long list filters by name.
+      const filter = popover.querySelector<HTMLInputElement>('input[type="search"]')!;
+      await act(async () => {
+        const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+        setValue.call(filter, 'Peer 1');
+        filter.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect([...popover.querySelectorAll('[data-agent-id]')].map((row) => row.getAttribute('data-agent-id')))
+        .toEqual(['peer-1', 'peer-10', 'peer-11', 'peer-12', 'peer-13', 'peer-14']);
+      await act(async () => { popover.querySelector<HTMLButtonElement>('[data-agent-id="peer-12"]')!.click(); });
+      expect(document.querySelector('[data-relations-popover]')).toBeNull();
 
-    // Every row opens through the one handler the timeline card uses.
-    await act(async () => { group('parent').querySelector<HTMLButtonElement>('[data-agent-id="lead"]')!.click(); });
-    await act(async () => { group('children').querySelector<HTMLButtonElement>('[data-agent-id="child-2"]')!.click(); });
-    expect(opened).toEqual(['lead', 'child-2']);
-    await act(async () => { root.unmount(); });
-    container.remove();
+      // Every chip opens through the one handler the timeline card uses.
+      await act(async () => { parent.click(); });
+      await act(async () => { strip.querySelector<HTMLButtonElement>('[data-agent-id="child-2"]')!.click(); });
+      expect(opened).toEqual(['peer-12', 'lead', 'child-2']);
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
   });
 
   it('keeps the RightRail subagent section in a bounded scroll region', () => {

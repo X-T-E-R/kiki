@@ -3,7 +3,8 @@
  * agent's relations (parent, children, siblings) beneath it.
  */
 
-import { memo, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 import {
   agentChildren,
@@ -11,9 +12,10 @@ import {
   type AgentForest,
   type AgentTreeNode,
 } from '@kiki/session-core/session';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
-import { RelatedAgentRow, useMinuteClock } from './agent-panel/InspectorAgents';
-import { DisclosureChevron } from './icons';
+import { registerOverlay } from '../lib/uiBusy';
+import { Icon } from './icons';
 
 function uniqueAgentNodes(nodes: readonly AgentTreeNode[]): readonly AgentTreeNode[] {
   const seen = new Set<string>();
@@ -118,11 +120,87 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
   previous.onOpenAgent === next.onOpenAgent,
 );
 
+/** Most child chips ever laid out inline; the rest always fold into "+N". */
+export const CHILD_CHIP_LIMIT = 12;
+/** The strip never grows past this many chip lines. */
+const MAX_LINES = 2;
+
+const CHIP =
+  'inline-flex h-6 min-w-0 max-w-[16rem] shrink items-center gap-1.5 rounded-full border border-hairline px-2 text-[12px] leading-none text-ink-soft transition-colors hover:border-hairline-strong hover:bg-ink/[0.03] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent pointer-coarse:h-8';
+
+/** Status dot: running in the live colour, waiting in the accent, the rest quiet. */
+function chipDot(status: string): string {
+  switch (status) {
+    case 'running':
+    case 'background':
+      return 'bg-success';
+    case 'suspended':
+      return 'bg-attention';
+    case 'failed':
+      return 'bg-ink-soft';
+    default:
+      return 'bg-ink-faint/60';
+  }
+}
+
+/** Tooltip: the full name, then what it is doing and for how long. */
+function useChipTitle(): (node: AgentTreeNode) => string {
+  const { t, time } = useI18n();
+  return (node) => {
+    const started = node.startedAt === undefined ? Number.NaN : Date.parse(node.startedAt);
+    const ended = node.endedAt === undefined ? Date.now() : Date.parse(node.endedAt);
+    const elapsed = Number.isFinite(started) && ended >= started ? time.formatDuration(ended - started) : undefined;
+    const state = [t(`subagent.status.${node.status}` as I18nKey), elapsed].filter((part) => part !== undefined).join(' · ');
+    return [node.label, node.description, state].filter((part) => part !== undefined && part !== '').join('\n');
+  };
+}
+
+const AgentChip = memo(function AgentChip({
+  node,
+  kind,
+  title,
+  onOpen,
+}: {
+  node: AgentTreeNode;
+  kind: 'parent' | 'child';
+  title: string;
+  onOpen: (agentId: string) => void;
+}) {
+  const { t } = useI18n();
+  const parentLabel = t('sv.parentAgents');
+  return (
+    <button
+      type="button"
+      data-relation={kind}
+      data-relation-chip=""
+      data-agent-id={node.agentId}
+      title={title}
+      aria-label={kind === 'parent' ? `${parentLabel} ${node.label}` : node.label}
+      onClick={() => { onOpen(node.agentId); }}
+      // The parent may take its whole line: its name is the way back up.
+      className={kind === 'parent' ? CHIP.replace('max-w-[16rem]', 'max-w-full') : CHIP}
+    >
+      {/* The parent's word is its own quiet label beside an up arrow, never a
+          "Parent:" prefix glued to the name; the name keeps the width. */}
+      {kind === 'parent' ? (
+        <span aria-hidden className="-ml-0.5 flex shrink-0 items-center gap-0.5 text-[11px] text-ink-faint">
+          <Icon name="arrowUp" size={12} />
+          {parentLabel}
+        </span>
+      ) : null}
+      <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
+      <span className="min-w-0 truncate">{node.label}</span>
+    </button>
+  );
+});
+
 /**
- * An agent's neighbours. The parent and the children are the ways up and
- * down, so both are always listed, one roster row each. Siblings can run to
- * hundreds; they fold behind a one-line count and page in once opened.
- * Every row opens through `onOpen`, the same entry the timeline card uses.
+ * An agent's neighbours as one strip of chips, never more than MAX_LINES
+ * tall: the parent (marked with an up arrow), a gap, the children, then the
+ * siblings behind one count chip that opens a list (they can run to
+ * hundreds). Children that do not fit fold into "+N", which opens the same
+ * kind of list. Every chip opens through `onOpen`, the same entry the
+ * timeline card uses.
  */
 export const AgentRelations = memo(function AgentRelations({
   forest,
@@ -134,99 +212,204 @@ export const AgentRelations = memo(function AgentRelations({
   onOpen: (agentId: string) => void;
 }) {
   const { t } = useI18n();
-  const now = useMinuteClock();
+  const titleOf = useChipTitle();
   const related = relatedAgentNodes(forest, currentAgentId);
   const parent = related.parent?.agentId === MAIN_AGENT_ID ? undefined : related.parent;
-  const [siblingsOpen, setSiblingsOpen] = useState(false);
-  const [siblingsAll, setSiblingsAll] = useState(false);
-  if (parent === undefined && related.siblings.length === 0 && related.children.length === 0) {
+  const allChildren = related.children;
+  const stripRef = useRef<HTMLDivElement>(null);
+  // Chips laid out inline; measured down until the strip fits MAX_LINES.
+  const [shownCount, setShownCount] = useState(() => Math.min(allChildren.length, CHILD_CHIP_LIMIT));
+  const childKey = allChildren.map((node) => node.agentId).join('\u0000');
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    setShownCount(Math.min(allChildren.length, CHILD_CHIP_LIMIT));
+  }, [childKey, width, allChildren.length]);
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    if (strip === null || shownCount === 0) return;
+    const chips = [...strip.querySelectorAll<HTMLElement>('[data-relation-chip]')];
+    const tops = new Set(chips.map((chip) => chip.offsetTop));
+    if (tops.size > MAX_LINES) setShownCount((count) => Math.max(0, count - 1));
+  });
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (strip === null || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => {
+      const next = Math.round(entry?.contentRect.width ?? 0);
+      setWidth((current) => (Math.abs(current - next) > 4 ? next : current));
+    });
+    observer.observe(strip);
+    return () => { observer.disconnect(); };
+  }, []);
+  if (parent === undefined && related.siblings.length === 0 && allChildren.length === 0) {
     return <p className="text-ink-faint">{t('sv.noRelatedAgents')}</p>;
   }
-  const siblings = siblingsAll ? related.siblings : related.siblings.slice(0, SIBLING_PAGE);
-  const hiddenSiblings = related.siblings.length - siblings.length;
+  const children = allChildren.slice(0, shownCount);
+  const overflow = allChildren.slice(shownCount);
   return (
-    <div data-agent-relations className="space-y-1">
+    <div ref={stripRef} data-agent-relations className="flex flex-wrap items-center gap-x-1 gap-y-1">
       {parent !== undefined ? (
-        <RelationList kind="parent" label={t('sv.parentAgents')} nodes={[parent]} now={now} onOpen={onOpen} />
+        <span data-relations-group="parent" className="contents">
+          <AgentChip node={parent} kind="parent" title={titleOf(parent)} onOpen={onOpen} />
+        </span>
       ) : null}
-      {related.children.length > 0 ? (
-        <RelationList
-          kind="children" label={t('sv.childAgents')} count={related.children.length}
-          nodes={related.children} now={now} onOpen={onOpen}
-        />
+      {allChildren.length > 0 ? (
+        <span data-relations-group="children" role="group" aria-label={t('sv.childAgents')} className="contents">
+          {parent !== undefined ? <span aria-hidden className="w-1.5" /> : null}
+          {children.map((node) => (
+            <AgentChip key={node.agentId} node={node} kind="child" title={titleOf(node)} onOpen={onOpen} />
+          ))}
+          {overflow.length > 0 ? (
+            <AgentListChip
+              kind="children"
+              label={`+${overflow.length}`}
+              title={t('sv.moreChildAgents', { count: overflow.length })}
+              listLabel={t('sv.childAgents')}
+              nodes={overflow}
+              titleOf={titleOf}
+              onOpen={onOpen}
+            />
+          ) : null}
+        </span>
       ) : null}
       {related.siblings.length > 0 ? (
-        <div data-relations-group="siblings">
-          <button
-            type="button"
-            aria-expanded={siblingsOpen}
-            data-relations-toggle="siblings"
-            onClick={() => { setSiblingsOpen((value) => !value); }}
-            className={GROUP_HEAD_BUTTON}
-          >
-            <DisclosureChevron open={siblingsOpen} className="text-current" />
-            <span className="font-medium">{t('sv.siblingAgents')}</span>
-            <span className="tabular-nums">{related.siblings.length}</span>
-          </button>
-          {siblingsOpen ? (
-            <div role="list" className="mt-0.5">
-              {siblings.map((node) => (
-                <div key={node.agentId} role="listitem">
-                  <RelatedAgentRow node={node} now={now} onSelect={onOpen} />
-                </div>
-              ))}
-              {hiddenSiblings > 0 ? (
-                <button
-                  type="button"
-                  data-relations-more="siblings"
-                  onClick={() => { setSiblingsAll(true); }}
-                  className="ml-3.5 h-8 rounded-md px-1.5 text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
-                >
-                  {t('sv.moreSiblingAgents', { count: hiddenSiblings })}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
+        <>
+          {parent !== undefined || allChildren.length > 0 ? <span aria-hidden className="w-1.5" /> : null}
+          <AgentListChip
+            kind="siblings"
+            icon="branch"
+            label={<><span>{t('sv.siblingAgents')}</span><span className="tabular-nums">{related.siblings.length}</span></>}
+            listLabel={t('sv.siblingAgents')}
+            nodes={related.siblings}
+            titleOf={titleOf}
+            onOpen={onOpen}
+          />
+        </>
       ) : null}
     </div>
   );
 });
 
-/** Siblings shown once the fold is opened, before "Show N more". */
-export const SIBLING_PAGE = 20;
+/** Past this many agents a chip's list offers a filter field. */
+const LIST_FILTER_AT = 12;
 
-const GROUP_HEAD_BUTTON =
-  '-ml-1 flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1 text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:h-9';
-
-function RelationList({
+/** A count chip that opens a list of agents (siblings, or children that did not fit). */
+function AgentListChip({
   kind,
+  icon,
   label,
-  count,
+  title,
+  listLabel,
   nodes,
-  now,
+  titleOf,
   onOpen,
 }: {
-  kind: 'parent' | 'children';
-  label: string;
-  count?: number;
+  kind: 'siblings' | 'children';
+  icon?: 'branch';
+  label: ReactNode;
+  title?: string;
+  listLabel: string;
   nodes: readonly AgentTreeNode[];
-  now: number;
+  titleOf: (node: AgentTreeNode) => string;
   onOpen: (agentId: string) => void;
 }) {
+  const { t } = useI18n();
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const [query, setQuery] = useState('');
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const open = anchor !== null;
+  const closeRef = useRef((restoreFocus: boolean) => {
+    setAnchor(null);
+    setQuery('');
+    if (restoreFocus) buttonRef.current?.focus();
+  });
+  useEffect(() => {
+    if (!open) return;
+    const close = closeRef.current;
+    const unregister = registerOverlay(`relations-${kind}`);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); close(true); }
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target !== null && (listRef.current?.contains(target) === true || buttonRef.current?.contains(target) === true)) return;
+      close(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    listRef.current?.querySelector<HTMLElement>('input, button')?.focus();
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [open, kind]);
+  const needle = query.trim().toLowerCase();
+  const shown = needle === ''
+    ? nodes
+    : nodes.filter((node) => `${node.label} ${node.description ?? ''}`.toLowerCase().includes(needle));
   return (
-    <section data-relations-group={kind} aria-label={label}>
-      <h3 className="flex h-6 items-center gap-1.5 text-ink-faint">
-        <span className="font-medium">{label}</span>
-        {count !== undefined ? <span className="tabular-nums">{count}</span> : null}
-      </h3>
-      <div role="list">
-        {nodes.map((node) => (
-          <div key={node.agentId} role="listitem">
-            <RelatedAgentRow node={node} now={now} onSelect={onOpen} />
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        data-relation-chip=""
+        data-relations-toggle={kind}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title={title}
+        onClick={() => {
+          if (open) closeRef.current(false);
+          else setAnchor(buttonRef.current?.getBoundingClientRect() ?? null);
+        }}
+        className={`${CHIP} ${kind === 'children' ? 'border-dashed tabular-nums' : 'text-ink-faint'}`}
+      >
+        {icon !== undefined ? <Icon name={icon} size={12} className="-ml-0.5 shrink-0" /> : null}
+        {label}
+      </button>
+      {anchor !== null ? createPortal(
+        <div
+          ref={listRef}
+          role="dialog"
+          aria-label={listLabel}
+          data-relations-popover={kind}
+          className="anim-enter fixed z-50 flex max-h-[min(22rem,60vh)] w-72 max-w-[calc(100vw-16px)] flex-col rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
+          style={{ left: Math.max(8, Math.min(anchor.left, window.innerWidth - 296)), top: anchor.bottom + 4 }}
+        >
+          {nodes.length >= LIST_FILTER_AT ? (
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => { setQuery(event.target.value); }}
+              aria-label={t('inspector.searchAgentsAria')}
+              placeholder={t('inspector.searchAgents')}
+              className="m-1 h-8 shrink-0 rounded-md border border-hairline bg-transparent px-2 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-accent"
+            />
+          ) : null}
+          <div role="list" className="min-h-0 overflow-y-auto">
+            {shown.map((node) => (
+              <div key={node.agentId} role="listitem">
+                <button
+                  type="button"
+                  data-agent-id={node.agentId}
+                  title={titleOf(node)}
+                  onClick={() => { closeRef.current(false); onOpen(node.agentId); }}
+                  className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent pointer-coarse:py-2.5"
+                >
+                  <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
+                  <span className="min-w-0 flex-1 truncate">{node.label}</span>
+                  <span className="shrink-0 text-[11.5px] text-ink-faint">{t(`subagent.status.${node.status}` as I18nKey)}</span>
+                </button>
+              </div>
+            ))}
+            {shown.length === 0 ? (
+              <p className="px-2 py-1.5 text-[12px] text-ink-faint">{t('sv.noRelatedAgents')}</p>
+            ) : null}
           </div>
-        ))}
-      </div>
-    </section>
+        </div>,
+        document.body,
+      ) : null}
+    </>
   );
 }
