@@ -58,6 +58,7 @@ import type { McpServerConfig } from '@kiki/agent-core-v2/mcpCore/config-schema'
 import type { McpServerConfigView } from '@kiki/agent-core-v2/mcpCore/configView';
 import type { McpRevealedOAuthCredential, McpStoredOAuthCredential, McpStoredOAuthIdentity } from '@kiki/agent-core-v2/mcpCore/oauth/service';
 import type { FullCompactionInput } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
+import type { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
 import type { ISessionScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
 import type {
   CreateChildSessionOptions,
@@ -204,6 +205,7 @@ import {
   cancelPlanPayloadSchema,
   cancelShellCommandPayloadSchema,
   contextRebuildResultSchema,
+  contextStrategyStatusSchema,
   emptyPayloadSchema,
   getTaskOutputPayloadSchema,
   getTasksPayloadSchema,
@@ -814,6 +816,10 @@ const _getTaskOutputPayload: AssertWire<typeof getTaskOutputPayloadSchema, GetTa
 const _mcpServerEntry: AssertWire<typeof mcpServerEntrySchema, McpServerEntry> = true;
 const _fullCompactionInput: AssertWire<typeof fullCompactionInputSchema, FullCompactionInput> =
   true;
+const _contextStrategyStatus: AssertWire<
+  typeof contextStrategyStatusSchema,
+  ReturnType<IAgentFullCompactionService['getContextStrategy']>
+> = true;
 
 // ── agent scope (events.ts) ─────────────────────────────────────────────────
 // Parity against the protocol event types (the stream carries flat

@@ -970,6 +970,22 @@ export function defineKlientConformance(
       }
     });
 
+    it('reads and overrides the session context strategy across the transport', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      try {
+        const agent = target.klient.session(created.id).agent('main');
+        const initial = await agent.getContextStrategy();
+        expect(['summarize', 'auto', 'fresh']).toContain(initial.strategy);
+        expect(initial.source).not.toBe('session');
+        await agent.setContextStrategyOverride('fresh');
+        expect(await agent.getContextStrategy()).toMatchObject({ strategy: 'fresh', source: 'session' });
+        await agent.setContextStrategyOverride(null);
+        expect((await agent.getContextStrategy()).source).not.toBe('session');
+      } finally {
+        await target.klient.session(created.id).close();
+      }
+    });
+
     it('agent runtime binding is available through every transport', async () => {
       const created = await target.klient.global.sessions.create({
         workDir: process.cwd(),

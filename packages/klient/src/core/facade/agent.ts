@@ -14,6 +14,7 @@ import type { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/conte
 import type { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/contextInjector/contextInjector';
 import type { IAgentContextRebuildService } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuild';
 import type { IAgentConversationUndoService } from '@kiki/agent-core-v2/agent/undo/undo';
+import type { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
 import type { IAgentMcpService } from '@kiki/agent-core-v2/agent/mcp/mcp';
 import type { IAgentPluginCommandService } from '@kiki/agent-core-v2/agent/pluginCommand/pluginCommand';
 import type { IAgentPluginService } from '@kiki/agent-core-v2/agent/plugin/agentPlugin';
@@ -55,6 +56,8 @@ export type RuntimeBinding = ReturnType<IAgentRuntimeBindingService['get']>;
 export type PlanData = Awaited<ReturnType<IAgentPlanService['status']>>;
 export type { AgentTaskInfo } from '../../contract/agent/schemas.js';
 export type McpServerEntry = ReturnType<IAgentMcpService['list']>[number];
+export type ContextStrategy = ReturnType<IAgentFullCompactionService['getContextStrategy']>['strategy'];
+export type ContextStrategyStatus = ReturnType<IAgentFullCompactionService['getContextStrategy']>;
 
 export interface AgentFacade {
   prompt(input: Parameters<IAgentPromptService['submit']>[0]): Promise<PromptLaunchResult>;
@@ -150,6 +153,20 @@ export interface AgentFacade {
   getAutoCompact(): Promise<import('@kiki/agent-core-v2/agent/fullCompaction/autoCompact').ResolvedAutoCompact>;
   getDefaultAutoCompact(): Promise<import('@kiki/agent-core-v2/agent/fullCompaction/autoCompact').ResolvedAutoCompact>;
   setAutoCompactOverride(tokens: number | null): Promise<void>;
+  /**
+   * Effective context-window strategy for this agent and where it comes from
+   * (`session` override, profile, global config, subagent default, executor
+   * pin, or the built-in default). Mirrors
+   * `GET /sessions/{id}/agents/{agent}/context-strategy`.
+   */
+  getContextStrategy(): Promise<ContextStrategyStatus>;
+  /**
+   * Set this session's strategy override for the main agent; `null` clears it
+   * so the profile or global default applies again. Mirrors the `strategy`
+   * field of `PATCH /sessions/{id}/agents/{agent}/context-strategy` — saving
+   * the selection as the global default stays on that REST route.
+   */
+  setContextStrategyOverride(strategy: ContextStrategy | null): Promise<void>;
 }
 
 export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFacade {
@@ -298,5 +315,9 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentFullCompactionService', 'getDefaultAutoCompact', []) as ReturnType<AgentFacade['getDefaultAutoCompact']>,
     setAutoCompactOverride: (tokens) =>
       call(scope, 'agentFullCompactionService', 'setAutoCompactOverride', [tokens]) as Promise<void>,
+    getContextStrategy: () =>
+      call(scope, 'agentFullCompactionService', 'getContextStrategy', []) as Promise<ContextStrategyStatus>,
+    setContextStrategyOverride: (strategy) =>
+      call(scope, 'agentFullCompactionService', 'setContextStrategyOverride', [strategy]) as Promise<void>,
   };
 }

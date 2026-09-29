@@ -18,6 +18,8 @@ import {
   agentCommandInfoSchema,
   agentLoopStatusSchema,
   contextRebuildResultSchema,
+  contextStrategySchema,
+  contextStrategyStatusSchema,
   agentTaskInfoSchema,
   modelCapabilitySchema,
   permissionModeSchema,
@@ -228,6 +230,8 @@ export const agentFullCompactionContract = {
     effectiveMaxContextTokens: z.number(), reservedContextTokens: z.number(),
   }) },
   setAutoCompactOverride: { input: z.tuple([z.number().int().positive().safe().nullable()]), output: noResult },
+  getContextStrategy: { input: z.tuple([]), output: contextStrategyStatusSchema },
+  setContextStrategyOverride: { input: z.tuple([contextStrategySchema.nullable()]), output: noResult },
 } satisfies ServiceContract;
 
 export const agentTaskContract = {

@@ -619,6 +619,45 @@ describe('agent mcp / compaction routing', () => {
       args: [{ source: 'manual', instruction: 'keep the plan' }],
     });
   });
+  it('routes the session context strategy read and override through the compaction contract', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('main');
+    channel.results.set('agentFullCompactionService.getContextStrategy', {
+      strategy: 'auto',
+      source: 'profile',
+      shadow: false,
+    });
+
+    await expect(agent.getContextStrategy()).resolves.toEqual({
+      strategy: 'auto',
+      source: 'profile',
+      shadow: false,
+    });
+    await agent.setContextStrategyOverride('fresh');
+    await agent.setContextStrategyOverride(null);
+
+    expect(channel.calls).toEqual([
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentFullCompactionService',
+        method: 'getContextStrategy',
+        args: [],
+      },
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentFullCompactionService',
+        method: 'setContextStrategyOverride',
+        args: ['fresh'],
+      },
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentFullCompactionService',
+        method: 'setContextStrategyOverride',
+        args: [null],
+      },
+    ]);
+  });
 });
 
 describe('agent domain routing', () => {

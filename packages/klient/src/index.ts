@@ -94,6 +94,8 @@ export type {
   AgentCommandInfo,
   AgentContextData,
   ContextRebuildResult,
+  ContextStrategy,
+  ContextStrategyStatus,
   AgentFacade,
   AgentTaskInfo,
   McpServerEntry,
