@@ -157,7 +157,7 @@ export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOption
     space,
     homeDiagnostic: diagnostic,
     userAgentProfileHomeDir: input.userAgentProfileHomeDir ?? homeDir,
-    modelAccountHomeDir: input.modelAccountHomeDir ?? homeDir,
+    modelAccountHomeDir: input.modelAccountHomeDir ?? credentialsHomeDir,
     osHomeDir,
     platform: input.platform ?? process.platform,
     arch: input.arch ?? process.arch,

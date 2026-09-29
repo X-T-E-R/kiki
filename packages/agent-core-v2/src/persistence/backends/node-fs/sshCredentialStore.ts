@@ -8,6 +8,8 @@ import { join } from 'pathe';
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { TomlAtomicDocumentStore } from './atomicDocumentStore';
+import { FileStorageService } from './fileStorageService';
 import { LifecycleScope } from '#/app/scopes';
 import { ISshCredentialStore } from '#/persistence/interface/sshCredentialStore';
 
@@ -35,19 +37,43 @@ async function systemKeyring(account: string): Promise<SecretEntry> {
 
 export class SshCredentialStore {
   private readonly ephemeral = new Map<string, string>();
+  private readonly accounts: TomlAtomicDocumentStore | undefined;
 
   constructor(
     private readonly homeDir: string,
     private readonly entryFactory: SecretEntryFactory = systemKeyring,
-  ) {}
+    private readonly accountPrefix?: string,
+  ) {
+    if (accountPrefix !== undefined) {
+      if (!/^h-[a-z0-9-]+$/.test(accountPrefix)) throw new Error('Invalid SSH credential account prefix');
+      this.accounts = new TomlAtomicDocumentStore(new FileStorageService(homeDir, 0o700, 0o600));
+    }
+  }
 
   private account(hostId: string, kind: 'password' | 'passphrase' | 'identityFile'): string {
     if (!hostId.trim()) throw new Error('SSH host ID is required');
-    return `${kind}-${createHash('sha256').update(hostId).digest('hex')}`;
+    const digest = `${kind}-${createHash('sha256').update(hostId).digest('hex')}`;
+    return this.accountPrefix === undefined ? digest : `${this.accountPrefix}/${digest}`;
   }
 
   private fallbackPath(account: string): string {
-    return join(this.homeDir, 'credentials', 'ssh', `${account}.secret`);
+    return join(this.homeDir, 'credentials', 'ssh', `${account.slice(account.lastIndexOf('/') + 1)}.secret`);
+  }
+
+  private async trackAccount(account: string, remove = false): Promise<void> {
+    if (this.accounts === undefined) return;
+    const directory = join(this.homeDir, 'credentials', 'ssh');
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await restrictWindowsAcl(directory);
+    const key = 'credentials/ssh/keyring-accounts.json';
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const text = await this.accounts.getText('', key);
+      const current: unknown = text === undefined ? [] : JSON.parse(text);
+      if (!Array.isArray(current) || !current.every((entry) => typeof entry === 'string')) throw new Error('Invalid SSH keyring account manifest');
+      const next = remove ? current.filter((entry) => entry !== account) : [...new Set([...current, account])];
+      if (await this.accounts.compareAndSetText('', key, text, JSON.stringify(next))) return;
+    }
+    throw new Error('SSH keyring account manifest changed concurrently');
   }
 
   async save(hostId: string, kind: 'password' | 'passphrase' | 'identityFile', value: string, remember = true): Promise<'keyring' | 'file' | 'memory'> {
@@ -57,6 +83,7 @@ export class SshCredentialStore {
       this.ephemeral.set(account, value);
       return 'memory';
     }
+    if (this.accounts !== undefined) await this.trackAccount(account);
     let savedToKeyring = false;
     try {
       await (await this.entryFactory(account)).setPassword(value);
@@ -138,7 +165,8 @@ export class SshCredentialStore {
       });
       if (info !== undefined) {
         if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('SSH key directory is not a regular directory');
-        const prefix = `${this.account(hostId, 'passphrase')}-`;
+        const passphraseAccount = this.account(hostId, 'passphrase');
+        const prefix = `${passphraseAccount.slice(passphraseAccount.lastIndexOf('/') + 1)}-`;
         for (const name of await readdir(directory)) {
           if (!name.startsWith(prefix) || !/^[0-9a-f-]{36}$/.test(name.slice(prefix.length))) continue;
           await unlink(join(directory, name)).catch((error: NodeJS.ErrnoException) => {
@@ -148,6 +176,7 @@ export class SshCredentialStore {
       }
     }
     if (keyringError !== undefined) throw new Error('Could not remove SSH credential from system keyring', { cause: keyringError });
+    if (entry !== undefined) await this.trackAccount(account, true);
     this.ephemeral.delete(account);
   }
 
@@ -157,7 +186,7 @@ export class SshCredentialStore {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await restrictWindowsAcl(join(this.homeDir, 'credentials', 'ssh'));
     await restrictWindowsAcl(directory);
-    const path = join(directory, `${account}-${randomUUID()}`);
+    const path = join(directory, `${account.slice(account.lastIndexOf('/') + 1)}-${randomUUID()}`);
     const file = await open(path, 'wx', 0o600);
     try {
       await restrictWindowsAcl(path);
@@ -177,7 +206,8 @@ export class SshCredentialStorageService implements ISshCredentialStore {
   private readonly store: SshCredentialStore;
 
   constructor(@IBootstrapService bootstrap: IBootstrapService) {
-    this.store = new SshCredentialStore(bootstrap.homeDir);
+    const isolated = bootstrap.baseHomeDir !== undefined && bootstrap.space?.inherit.credentials === 'isolated';
+    this.store = new SshCredentialStore(bootstrap.credentialsHomeDir, systemKeyring, isolated ? bootstrap.spaceId : undefined);
   }
 
   save(hostId: string, kind: 'password' | 'passphrase' | 'identityFile', value: string, remember?: boolean): Promise<'keyring' | 'file' | 'memory'> {

@@ -85,6 +85,33 @@ describe('SSH credentials', () => {
     expect(await store.read('["workspace","other"]', 'identityFile')).toBeUndefined();
   });
 
+  it('keeps shared accounts unchanged and namespaces isolated accounts with a durable cleanup inventory', async () => {
+    const base = await temporaryHome();
+    const isolatedHome = await temporaryHome();
+    const values = new Map<string, string>();
+    const factory: SecretEntryFactory = async (account) => ({
+      async setPassword(value) { values.set(account, value); },
+      async getPassword() { return values.get(account); },
+      async deleteCredential() { return values.delete(account); },
+    });
+    const shared = new SshCredentialStore(base, factory);
+    const isolated = new SshCredentialStore(isolatedHome, factory, 'h-isolated');
+    await shared.save('dev', 'password', 'base');
+    await isolated.save('dev', 'password', 'child');
+    expect(await shared.read('dev', 'password')).toBe('base');
+    expect(await isolated.read('dev', 'password')).toBe('child');
+    const originalAccount = [...values.keys()].find((account) => !account.startsWith('h-'))!;
+    expect(originalAccount).toMatch(/^password-[a-f0-9]{64}$/);
+    expect(values.get(`h-isolated/${originalAccount}`)).toBe('child');
+    const inventory = join(isolatedHome, 'credentials', 'ssh', 'keyring-accounts.json');
+    expect(JSON.parse(await readFile(inventory, 'utf8'))).toEqual([`h-isolated/${originalAccount}`]);
+    await isolated.forget('dev', 'password');
+    expect(JSON.parse(await readFile(inventory, 'utf8'))).toEqual([]);
+    expect(await shared.read('dev', 'password')).toBe('base');
+    const key = await isolated.savePrivateKey('dev', 'isolated private key');
+    expect(key.startsWith(join(isolatedHome, 'credentials', 'ssh', 'keys'))).toBe(true);
+  });
+
   it.runIf(process.platform === 'win32' && process.env['KIKI_TEST_NATIVE_KEYRING'] === '1')('round-trips a disposable secret through native Windows Credential Manager', async () => {
     const store = new SshCredentialStore(await temporaryHome());
     const hostId = `smoke-${randomUUID()}`;

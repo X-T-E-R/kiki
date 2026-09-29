@@ -96,6 +96,23 @@ describe('SSH host store', () => {
     expect(await hosts.connectionApprovalEnabled()).toBe(true);
   });
 
+  it('inherits shared SSH hosts with home precedence and writes only into the child', async () => {
+    const { home, config } = await fixture();
+    const base = await mkdtemp(join(tmpdir(), 'kiki-ssh-base-'));
+    directories.push(base);
+    const baseDocs = new TomlAtomicDocumentStore(new FileStorageService(base, 0o700, 0o600));
+    const homeDocs = new TomlAtomicDocumentStore(new FileStorageService(home, 0o700, 0o600));
+    await baseDocs.setText('', 'ssh/hosts.toml', '[hosts.shared]\nname = "Base"\nhostname = "base.example.test"\n[hosts.dev]\nname = "Base dev"\n');
+    const child = new SshHostStore(homeDocs, config, baseDocs);
+    expect((await child.list()).find((host) => host.id === 'shared')?.name).toBe('Base');
+    await child.upsert({ id: 'dev', name: 'Child dev', hostname: 'child.example.test' });
+    expect((await child.list()).find((host) => host.id === 'dev')?.hostname).toBe('child.example.test');
+    expect(await baseDocs.getText('', 'ssh/hosts.toml')).toContain('Base dev');
+    expect(await homeDocs.getText('', 'ssh/hosts.toml')).toContain('Child dev');
+    const isolated = new SshHostStore(homeDocs, config);
+    expect((await isolated.list()).some((host) => host.id === 'shared')).toBe(false);
+  });
+
   it('accepts only absolute POSIX workspace roots', async () => {
     const { hosts } = await fixture();
     const host = { id: 'gpu', name: 'GPU', hostname: 'gpu.example.test' };

@@ -7,6 +7,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { SshCredentialStore } from '#/persistence/backends/node-fs/sshCredentialStore';
 import { IFlagService } from '#/app/flag/flag';
 import { LifecycleScope } from '#/app/scopes';
 import type { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -34,6 +35,7 @@ export interface ISshHostService {
   setSyncSshConfig(enabled: boolean): Promise<void>;
   connectionApprovalEnabled(): Promise<boolean>;
   setConnectionApproval(enabled: boolean): Promise<void>;
+  copySharedCredentialsToIsolated(targets: readonly { hostId: string; workspaceId?: string }[]): Promise<readonly { hostId: string; workspaceId?: string; copied: number }[]>;
   upsert(host: SshHostInput, workspaceId?: string): Promise<void>;
   remove(id: string, workspaceId?: string): Promise<void>;
   writeBack(id: string, workspaceId?: string): Promise<void>;
@@ -64,7 +66,8 @@ export class SshHostService extends Disposable implements ISshHostService {
     @ISshCredentialStore private readonly credentials: ISshCredentialStore,
   ) {
     super();
-    this.hosts = new SshHostStore(documents, join(bootstrap.osHomeDir, '.ssh', 'config'));
+    const shared = bootstrap.baseHomeDir !== undefined && bootstrap.space?.inherit.credentials === 'shared';
+    this.hosts = new SshHostStore(documents, join(bootstrap.osHomeDir, '.ssh', 'config'), shared ? bootstrap.baseConfigDocumentStore : undefined);
     this.connections = new SshConnectionManager((key) => this.resolveConnection(key));
     this._register(toDisposable(() => { void this.connections.dispose(); }));
   }
@@ -141,6 +144,31 @@ export class SshHostService extends Disposable implements ISshHostService {
 
   setConnectionApproval(enabled: boolean): Promise<void> {
     return this.hosts.setConnectionApproval(enabled);
+  }
+
+  async copySharedCredentialsToIsolated(targets: readonly { hostId: string; workspaceId?: string }[]): Promise<readonly { hostId: string; workspaceId?: string; copied: number }[]> {
+    const base = this.bootstrap.baseHomeDir;
+    const spaceId = this.bootstrap.spaceId;
+    if (base === undefined || spaceId === undefined || this.bootstrap.space?.inherit.credentials !== 'shared') {
+      throw new Error('SSH credential copying requires a space that currently shares credentials');
+    }
+    const shared = new SshCredentialStore(base);
+    const isolated = new SshCredentialStore(this.bootstrap.homeDir, undefined, spaceId);
+    const result: { hostId: string; workspaceId?: string; copied: number }[] = [];
+    for (const target of targets) {
+      const record = (await this.hosts.list(target.workspaceId)).find((host) => host.id === target.hostId);
+      if (record?.source !== 'kiki') throw new Error(`Unknown Kiki SSH host: ${target.hostId}`);
+      const account = this.key(target.hostId, target.workspaceId);
+      let copied = 0;
+      for (const kind of ['password', 'passphrase'] as const) {
+        const value = await shared.read(account, kind);
+        if (value === undefined) continue;
+        await isolated.save(account, kind, value);
+        copied++;
+      }
+      result.push({ hostId: target.hostId, workspaceId: target.workspaceId, copied });
+    }
+    return result;
   }
 
   private async forgetCredentials(id: string, workspaceId: string | undefined,

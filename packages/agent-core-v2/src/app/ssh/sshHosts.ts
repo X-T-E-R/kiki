@@ -76,7 +76,13 @@ export class SshHostStore {
   constructor(
     private readonly documents: IAtomicTomlDocumentStore,
     private readonly sshConfigFile = join(homedir(), '.ssh', 'config'),
+    private readonly baseDocuments?: IAtomicTomlDocumentStore,
   ) {}
+
+  private async baseGlobal(): Promise<HostDocument> {
+    if (this.baseDocuments === undefined) return {};
+    return parseDocument(await this.baseDocuments.getText(STORE_SCOPE, GLOBAL_KEY, { recoverMissing: false }));
+  }
 
   private async read(key: string): Promise<{ document: HostDocument; text: string | undefined }> {
     const text = await this.documents.getText(STORE_SCOPE, key, { recoverMissing: false });
@@ -97,7 +103,8 @@ export class SshHostStore {
   }
 
   async connectionApprovalEnabled(): Promise<boolean> {
-    return (await this.read(GLOBAL_KEY)).document.connection_approval !== false;
+    const home = (await this.read(GLOBAL_KEY)).document;
+    return (home.connection_approval ?? (await this.baseGlobal()).connection_approval) !== false;
   }
 
   async setConnectionApproval(enabled: boolean): Promise<void> {
@@ -105,15 +112,16 @@ export class SshHostStore {
   }
 
   async list(workspaceId?: string): Promise<readonly SshHostRecord[]> {
+    const base = await this.baseGlobal();
     const global = (await this.read(GLOBAL_KEY)).document;
     const workspace = workspaceId === undefined ? {} : (await this.read(workspaceSshKey(workspaceId))).document;
     const hosts = new Map<string, SshHostRecord>();
-    if (global.sync_ssh_config !== false) {
+    if ((global.sync_ssh_config ?? base.sync_ssh_config) !== false) {
       for (const alias of await discoverSshAliases(this.sshConfigFile)) {
         hosts.set(alias, { id: alias, name: alias, source: 'ssh-config' });
       }
     }
-    for (const document of [global, workspace]) {
+    for (const document of [base, global, workspace]) {
       for (const [id, input] of Object.entries(document.hosts ?? {})) {
         hosts.set(id, normalizeHost({ ...input, id }));
       }

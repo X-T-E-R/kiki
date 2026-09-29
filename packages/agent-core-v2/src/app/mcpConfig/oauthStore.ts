@@ -1,6 +1,9 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 
 import type { McpOAuthStore } from '#/mcpCore/oauth/store';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -40,8 +43,14 @@ export class McpOAuthStoreAdapter implements IMcpOAuthStore {
 
   private readonly delegate: McpOAuthStore;
 
-  constructor(@IAtomicDocumentStore docs: IAtomicDocumentStore) {
-    this.delegate = createMcpOAuthStore(docs);
+  constructor(
+    @IAtomicDocumentStore docs: IAtomicDocumentStore,
+    @IBootstrapService bootstrap: IBootstrapService,
+  ) {
+    const credentialDocs = bootstrap.credentialsHomeDir === bootstrap.homeDir
+      ? docs
+      : new JsonAtomicDocumentStore(new FileStorageService(bootstrap.credentialsHomeDir, 0o700, 0o600));
+    this.delegate = createMcpOAuthStore(credentialDocs);
   }
 
   read<T>(key: string): Promise<T | undefined> {

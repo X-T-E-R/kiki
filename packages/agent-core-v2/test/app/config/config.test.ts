@@ -3936,7 +3936,7 @@ describe('explicit model generation migration', () => {
 
 
 describe('space config layers', () => {
-  async function fixture(baseText: string, homeText: string, env: Record<string, string> = {}) {
+  async function fixture(baseText: string, homeText: string, env: Record<string, string> = {}, credentials: 'shared' | 'isolated' = 'shared') {
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
     const homeStorage = new InMemoryStorageService();
@@ -3949,9 +3949,9 @@ describe('space config layers', () => {
     ix.stub(IBootstrapService, {
       ...stubBootstrap('/tmp/kiki-space-test', env),
       baseHomeDir: '/tmp/kiki-base-test',
-      credentialsHomeDir: '/tmp/kiki-base-test',
+      credentialsHomeDir: credentials === 'shared' ? '/tmp/kiki-base-test' : '/tmp/kiki-space-test',
       spaceId: 'h-test',
-      space: { id: 'h-test', name: 'Test', baseHomeDir: '/tmp/kiki-base-test', inherit: { config: true, credentials: 'shared', agents: true, instructions: true, skills: true, mcp: true, appearance: true, plugins: false, genericRoots: true } },
+      space: { id: 'h-test', name: 'Test', baseHomeDir: '/tmp/kiki-base-test', inherit: { config: true, credentials, agents: true, instructions: true, skills: true, mcp: true, appearance: true, plugins: false, genericRoots: true } },
       baseConfigDocumentStore: baseStore,
     });
     ix.stub(IFileSystemStorageService, homeStorage);
@@ -4013,6 +4013,21 @@ describe('space config layers', () => {
       expect(f.config.get<Record<string, ProviderConfig>>('providers')['acme']?.apiKey).toBe('sk-base');
       expect(f.config.origins('providers')['acme.apiKey']).toBe('base');
       expect(await f.baseStore.getText('', 'credentials/credentials.toml')).toContain('sk-base');
+    } finally { f.disposables.dispose(); }
+  });
+
+  it('strips base inline and migrated secrets when the child isolates credentials', async () => {
+    const f = await fixture('[providers.acme]\ntype = "openai"\napi_key = "sk-inline-base"\nbase_url = "https://example.test/v1"\n', '', {}, 'isolated');
+    try {
+      await f.baseStore.setText('', 'credentials/credentials.toml', '[providers.acme]\napi_key = "sk-migrated-base"\n');
+      await f.config.reload();
+      const provider = f.config.get<Record<string, ProviderConfig>>('providers')['acme'];
+      expect(provider).toMatchObject({ type: 'openai', baseUrl: 'https://example.test/v1' });
+      expect(provider?.apiKey).toBeUndefined();
+      await f.homeStore.setText('', 'credentials/credentials.toml', '[providers.acme]\napi_key = "sk-home"\n');
+      await f.config.reload();
+      expect(f.config.get<Record<string, ProviderConfig>>('providers')['acme']?.apiKey).toBe('sk-home');
+      expect(await f.baseStore.getText('', 'config.toml')).toContain('sk-inline-base');
     } finally { f.disposables.dispose(); }
   });
 

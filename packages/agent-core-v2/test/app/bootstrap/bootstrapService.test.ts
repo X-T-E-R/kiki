@@ -93,6 +93,25 @@ describe('resolveBootstrapOptions', () => {
     ).toEqual(stubClientIdentity);
   });
 
+  it('shares model OAuth with the base when credentials are shared and isolates it on opt-in', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-space-auth-'));
+    try {
+      const base = join(root, 'base');
+      const child = join(root, 'child');
+      await mkdir(child);
+      await writeFile(join(child, 'home.toml'), `schema = 1\nid = "h-auth"\nname = "Test"\nbase = "${base.replaceAll('\\', '/')}"\n`);
+      const shared = resolveBootstrapOptions({ homeDir: child, clientIdentity: stubClientIdentity });
+      expect(shared.modelAccountHomeDir).toBe(base);
+      expect(shared.credentialsHomeDir).toBe(base);
+      await writeFile(join(child, 'home.toml'), `schema = 1\nid = "h-auth"\nname = "Test"\nbase = "${base.replaceAll('\\', '/')}"\n[inherit]\ncredentials = "isolated"\n`);
+      const isolated = resolveBootstrapOptions({ homeDir: child, clientIdentity: stubClientIdentity });
+      expect(isolated.modelAccountHomeDir).toBe(resolve(child));
+      expect(isolated.credentialsHomeDir).toBe(resolve(child));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('resolves an independent read-only config and user-agent source', () => {
     const options = resolveBootstrapOptions({
       homeDir: '/runtime',
@@ -225,7 +244,7 @@ describe('space home bootstrap', () => {
     try {
       await writeFile(join(home, 'home.toml'), `schema = 1\nid = "h-abc123"\nname = "Demo"\ncolor = "#C2410C"\nbase = "${base.replaceAll('\\', '/')}"\n[inherit]\ninstructions = "stack"\n`);
       const options = resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity });
-      expect(options).toMatchObject({ baseHomeDir: base, spaceId: 'h-abc123', credentialsHomeDir: base, modelAccountHomeDir: resolve(home), space: { inherit: { instructions: 'stack', config: true, credentials: 'shared', plugins: false } } });
+      expect(options).toMatchObject({ baseHomeDir: base, spaceId: 'h-abc123', credentialsHomeDir: base, modelAccountHomeDir: base, space: { inherit: { instructions: 'stack', config: true, credentials: 'shared', plugins: false } } });
       await writeFile(join(home, 'home.toml'), `schema = 1\nid = "h-abc123"\nname = "Demo"\nbase = "${base.replaceAll('\\', '/')}"\n[inherit]\ncredentials = "isolated"\n`);
       expect(resolveBootstrapOptions({ homeDir: home, clientIdentity: stubClientIdentity }).credentialsHomeDir).toBe(resolve(home));
       await writeFile(join(base, 'home.toml'), 'schema = 1\nid = "h-base"\nname = "Base"\n');
