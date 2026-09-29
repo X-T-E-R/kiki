@@ -58,7 +58,6 @@ import {
   type SubagentBlock,
   type SubagentEventBlock,
   type SystemBlock,
-  type SystemReminderBlock,
   type TurnExecutionInfo,
   type TurnRetryInfo,
   type TurnTailInfo,
@@ -92,21 +91,6 @@ export function agentStateToProjectionSource(
     prompts: Array.isArray(state.prompts) ? state.prompts : [...state.prompts.values()],
     tasks: Array.isArray(state.tasks) ? state.tasks : [...state.tasks.values()],
   };
-}
-
-function reminderBlocks(
-  id: string,
-  createdAt: string | undefined,
-  reminders: readonly string[],
-  turnId?: string,
-): SystemReminderBlock[] {
-  return reminders.map((reminder, index) => ({
-    kind: 'system-reminder',
-    id: `reminder-${id}-${index}`,
-    text: reminder,
-    createdAt,
-    turnId,
-  }));
 }
 
 function classifiedTextToBlocks(input: {
@@ -201,7 +185,8 @@ function classifiedTextToBlocks(input: {
     case 'reminder':
       break;
   }
-  blocks.push(...reminderBlocks(input.id, input.createdAt, classified.reminders, input.turnId));
+  // Daemon-injected <system-reminder> bodies are model context, not
+  // conversation: they are peeled out of the text and never shown.
   return blocks;
 }
 
@@ -1359,6 +1344,10 @@ function insertAfterAnchor(blocks: Block[], anchor: number, block: ApprovalBlock
   blocks.splice(index, 0, block);
 }
 
+function isSettledInteraction(block: ApprovalBlock | QuestionBlock): boolean {
+  return block.kind === 'approval' ? block.resolution !== undefined : block.outcome !== undefined;
+}
+
 function insertInteractionBlocks(
   source: readonly Block[],
   interactions: readonly AgentTranscriptInteraction[],
@@ -1410,15 +1399,23 @@ function insertInteractionBlocks(
       }
     }
     if (interaction.turnId !== undefined) {
-      const anchor = blocks.findLastIndex((candidate) =>
-        sameTurnId(blockTurnId(candidate), interaction.turnId),
+      // Sit with the turn's work, not after its final answer: a settled
+      // record anchored behind the reply reads as stale chrome at the tail.
+      const inTurn = (candidate: Block) => sameTurnId(blockTurnId(candidate), interaction.turnId);
+      const workAnchor = blocks.findLastIndex(
+        (candidate) => inTurn(candidate) && candidate.kind !== 'assistant' && candidate.kind !== 'user',
       );
+      const anchor = workAnchor >= 0 ? workAnchor : blocks.findLastIndex(inTurn);
       if (anchor >= 0) {
         insertAfterAnchor(blocks, anchor, interaction.block);
         continue;
       }
     }
     if (insertAtPreviousPosition(blocks, interaction.block, previous)) continue;
+    // A settled interaction whose tool call / turn is not in the loaded page
+    // (older history, compacted away) has nothing to sit next to; placing it
+    // by time would stack stale "Question answered" rows at the tail.
+    if (isSettledInteraction(interaction.block) && blockTimelineMs(interaction.block) === undefined) continue;
     insertByTimeline(blocks, interaction.block);
   }
   return blocks;
