@@ -12,6 +12,7 @@
 import { act, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
@@ -25,6 +26,7 @@ import { MediaPartList, MediaPreviewProvider, PreviewToggleButton, useMediaPrevi
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
 import { relativeToCwd } from './PreviewWorkspace';
+import { ConversationShell } from './ConversationShell';
 
 const FILES: Record<string, string> = {
   '/work/src/server.ts': "import { boot } from './boot';\nboot(5801);\n",
@@ -813,6 +815,44 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
     expect(fullscreenEscape.defaultPrevented).toBe(true);
     expect(workspace().classList.contains('fixed')).toBe(false);
     expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+  });
+
+  it('docked in the shell, fullscreen fills the conversation row instead of the window', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MemoryRouter initialEntries={['/s/s1']}>
+        <Routes>
+          <Route element={<ConversationShell />}>
+            <Route
+              path="/s/:id"
+              element={(
+                <MediaPreviewProvider cwd="/work" sessionId="s1">
+                  <OpenButton path="/work/src/server.ts" />
+                </MediaPreviewProvider>
+              )}
+            />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    await openFile(probe.container, '/work/src/server.ts');
+    expect(workspace().closest('.conversation-row')).not.toBeNull();
+    await act(async () => {
+      workspace().querySelector('[data-preview-fullscreen-toggle]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const ws = workspace();
+    expect(ws.hasAttribute('data-preview-fullscreen')).toBe(true);
+    // The row-scoped class, never the window-covering fixed/inset-0 overlay.
+    expect(ws.classList.contains('preview-workspace--fullscreen')).toBe(true);
+    expect(ws.classList.contains('fixed')).toBe(false);
+    expect(ws.classList.contains('w-screen')).toBe(false);
+    expect(ws.closest('.conversation-row')).not.toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
+    });
+    expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+    expect(workspace().classList.contains('preview-workspace--fullscreen')).toBe(false);
   });
 });
 

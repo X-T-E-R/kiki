@@ -226,9 +226,12 @@ export function PreviewWorkspace({
     return null;
   }
 
-  const containerClasses = isFullscreen
+  // Docked in the shell, fullscreen fills the conversation row (the main
+  // content area) and leaves the app sidebar in place; only the bare-provider
+  // overlay, which has no row to fill, takes the whole window.
+  const containerClasses = isFullscreen && overlay
     ? 'fixed inset-0 z-40 flex h-screen w-screen flex-col bg-panel'
-    : `preview-workspace ${overlay ? 'preview-workspace--overlay' : ''}`;
+    : `preview-workspace ${overlay ? 'preview-workspace--overlay' : ''} ${isFullscreen ? 'preview-workspace--fullscreen' : ''}`;
 
   // Inline `display:none` rather than the `hidden` class: the class rules on
   // `.preview-workspace` set a display of their own, so only an inline style

@@ -753,21 +753,36 @@ body[data-pane-resizing='true'] {
   display: contents;
 }
 
-/* Fullscreen preview covers the shell's sibling rail. Lift only the occupied
- * rail slot above it; dialogs at z-50 still take precedence. */
+/* Fullscreen preview fills the conversation row — the main content area —
+ * and never the window: the app sidebar stays visible and usable beside it.
+ * The shell's one rail is lifted over the preview's right edge (its drawer
+ * backdrop between the two); dialogs at z-50 and the mobile sidebar drawer
+ * (z-40) still take precedence. */
+.conversation-row:has(> .conversation-preview-slot > [data-preview-fullscreen]:not([hidden])) {
+  position: relative;
+}
+
+.preview-workspace.preview-workspace--fullscreen {
+  position: absolute;
+  inset: 0;
+  z-index: 34;
+  width: auto;
+  max-width: none;
+}
+
 .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden]))
   .conversation-rail-slot:has(.app-rail-shell) {
-  position: fixed;
+  position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
-  z-index: 45;
+  z-index: 36;
 }
 
 @media (max-width: 1023px) {
   .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden]))
     .app-overlay-backdrop {
-    z-index: 44;
+    z-index: 35;
   }
 }
 
