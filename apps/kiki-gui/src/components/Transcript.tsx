@@ -2307,15 +2307,22 @@ const CANCELLATION_LABEL_KEY = {
  * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
  * Ran for … · TTFT … · output decode throughput.
  */
+const TAIL_ACTION = 'min-h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-150 hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-60';
+
 export const TurnTailLine = memo(function TurnTailLine({
   tail,
   onResume,
   resumeDisabled = false,
+  onRetry,
+  retryDisabled = false,
 }: {
   tail: TurnTailInfo;
   /** Present when the stopped turn can be re-run (cancelled tails only). */
   onResume?: () => void;
   resumeDisabled?: boolean;
+  /** Present when the failed turn's message can be sent again (failed tails only). */
+  onRetry?: () => void;
+  retryDisabled?: boolean;
 }) {
   const { t, time } = useI18n();
   const [copied, setCopied] = useState(false);
@@ -2345,17 +2352,21 @@ export const TurnTailLine = memo(function TurnTailLine({
     });
   }, [tail.error]);
 
+  // A failed turn is a settled fact, not a call to act: it reads in neutral
+  // ink with one small danger dot as the only colour (FOLDING: failures are
+  // neutral; only what waits on the reader is emphasised).
   return (
     <div
       data-turn-tail
       data-turn-tail-state={tail.state}
-      className={`anim-enter py-1 ${isFailed ? 'text-danger' : isCancelled ? 'text-amber-ink' : ''}`}
+      className={`anim-enter py-1 ${isCancelled ? 'text-amber-ink' : ''}`}
     >
       <div className="flex items-center gap-3">
-        <span className={`h-px flex-1 ${isFailed ? 'bg-danger/25' : isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
+        <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
         <div className="flex items-center gap-2">
           {isFailed ? (
-            <span className="text-[12px] font-semibold text-danger">
+            <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
+              <span aria-hidden data-turn-tail-dot className="h-1.5 w-1.5 rounded-full bg-danger" />
               {t('notice.turnFailed')}
             </span>
           ) : isCancelled ? (
@@ -2378,26 +2389,39 @@ export const TurnTailLine = memo(function TurnTailLine({
               </button>
             </>
           ) : null}
-          <span className={`text-[12px] tabular-nums ${isFailed ? 'text-danger' : isCancelled ? 'text-amber-ink' : 'text-ink-faint'}`}>
+          <span className={`text-[12px] tabular-nums ${isCancelled ? 'text-amber-ink' : 'text-ink-faint'}`}>
             <RelativeTime at={tail.endedAt} />{facts.length > 0 ? ` · ${facts.join(' · ')}` : ''}
           </span>
           {isFailed && tail.error !== undefined ? (
             <button
               type="button"
               onClick={handleCopyError}
-              className="min-h-6 rounded-md px-1.5 text-[12px] font-medium text-danger hover:bg-danger/[0.08]"
+              className={TAIL_ACTION}
               title={tail.error}
             >
               {copied ? t('cb.copied') : t('cb.copy')}
             </button>
           ) : null}
+          {isFailed && onRetry !== undefined ? (
+            <button
+              type="button"
+              data-turn-tail-retry
+              onClick={onRetry}
+              disabled={retryDisabled}
+              title={t('transcript.promptOutcome.retryTitle')}
+              className={TAIL_ACTION}
+            >
+              {t('transcript.promptOutcome.retry')}
+            </button>
+          ) : null}
         </div>
-        <span className={`h-px flex-1 ${isFailed ? 'bg-danger/25' : isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
+        <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
       </div>
       {isFailed && tail.error !== undefined ? (
         <div
           title={tail.error}
-          className="mx-auto mt-1 max-w-[var(--kiki-chat-content-width,760px)] truncate rounded-md bg-danger/[0.06] px-2.5 py-1 text-center font-mono text-[12px] text-danger"
+          data-turn-tail-error
+          className="mx-auto mt-1 max-w-[var(--kiki-chat-content-width,760px)] truncate rounded-md bg-ink/[0.04] px-2.5 py-1 text-center font-mono text-[12px] text-ink-soft"
         >
           {tail.error}
         </div>
@@ -2583,14 +2607,21 @@ export function Transcript({
   // same turn's "Prompt aborted" / interruption notices would repeat it.
   const stoppedTailTurnId =
     visibleTailTurnId !== undefined && state.turnTail?.state === 'cancelled' ? visibleTailTurnId : undefined;
+  // Same rule for a failure: the tail's "Turn failed" line owns it, so the
+  // bubble of that turn drops its own failed line (and send-again moves to
+  // the tail). Bubbles without a tail — a prompt that never started, or an
+  // older turn — keep theirs.
+  const failedTailTurnId =
+    visibleTailTurnId !== undefined && state.turnTail?.state === 'failed' ? visibleTailTurnId : undefined;
   const tailNodes = useMemo(() => {
-    if (stoppedTailTurnId === undefined) return nodes;
+    if (stoppedTailTurnId === undefined && failedTailTurnId === undefined) return nodes;
     // Live abort notices can lack a turn id; anything after the last user row
     // belongs to the stopped tail turn too.
     const lastUserIndex = nodes.findLastIndex((node) => node.kind === 'user');
     return nodes
       .filter(
         (node, index) =>
+          stoppedTailTurnId === undefined ||
           !(
             node.kind === 'notice' &&
             (isAbortedPromptNotice(node) || isInterruptionNotice(node)) &&
@@ -2598,11 +2629,21 @@ export function Transcript({
           ),
       )
       .map((node) =>
-        node.kind === 'user' && node.promptOutcome?.status === 'aborted' && sameTurn(node.turnId, stoppedTailTurnId)
+        node.kind === 'user' &&
+        ((node.promptOutcome?.status === 'aborted' && sameTurn(node.turnId, stoppedTailTurnId)) ||
+          (node.promptOutcome?.status === 'failed' && sameTurn(node.turnId, failedTailTurnId)))
           ? { ...node, promptOutcome: undefined }
           : node,
       );
-  }, [nodes, stoppedTailTurnId]);
+  }, [nodes, stoppedTailTurnId, failedTailTurnId]);
+  // The failed turn's message, for the tail's send-again.
+  const failedTailText = useMemo(() => {
+    if (failedTailTurnId === undefined) return undefined;
+    const user = blocks.findLast(
+      (block): block is UserBlock => block.kind === 'user' && sameTurn(block.turnId, failedTailTurnId),
+    );
+    return user === undefined || user.text.trim() === '' ? undefined : user.text;
+  }, [blocks, failedTailTurnId]);
   // Settled entries are NOT folded behind a counter: they stay in place at
   // their own timestamp, one quiet activity line each. One subagent is ONE
   // line, though: when its card is on the page, the card absorbs the
@@ -2684,6 +2725,14 @@ export function Transcript({
         ? undefined
         : () => { onResumeStopped(stoppedAssistant); },
     [stoppedAssistant, onResumeStopped],
+  );
+  const onRetryPrompt = promptOutcomeActions.onRetry;
+  const retryFailed = useMemo(
+    () =>
+      failedTailText === undefined || onRetryPrompt === undefined
+        ? undefined
+        : () => { onRetryPrompt(failedTailText); },
+    [failedTailText, onRetryPrompt],
   );
   // External-executor badges: first display node of each turn that carries
   // `execution` provenance. Entry identity is stabilized upstream (the
@@ -3276,6 +3325,8 @@ export function Transcript({
                         tail={state.turnTail}
                         onResume={resumeStopped}
                         resumeDisabled={rowActions?.disabled === true}
+                        onRetry={retryFailed}
+                        retryDisabled={promptOutcomeActions.disabled === true}
                       />
                     </div>
                   ) : null}

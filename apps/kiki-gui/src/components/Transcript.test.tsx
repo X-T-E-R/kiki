@@ -32,6 +32,7 @@ import type { AgentTranscriptSnapshot } from '@kiki/transcript';
 
 import {
   getAnnotationOverridesSnapshot,
+  readDraft,
   resetAnnotationOverridesForTests,
 } from '@kiki/session-core/composer';
 import {
@@ -884,6 +885,44 @@ describe('live and event chrome', () => {
     expect(tail?.textContent).toContain('Turn failed');
     expect(tail?.textContent).toContain('Provider token quota exceeded');
     expect(tail?.querySelector('button')?.textContent).toBe('copy');
+    // Neutral: one small dot carries the colour, the words and error stay ink.
+    expect(tail?.querySelectorAll('[data-turn-tail-dot]')).toHaveLength(1);
+    expect(tail?.querySelector('.text-danger')).toBeNull();
+    expect(tail?.querySelector('[data-turn-tail-error]')?.className).toContain('font-mono');
+  });
+
+  it('lets the failed tail own the failure instead of repeating it under the bubble', async () => {
+    const outcome = { status: 'failed', delivered: true, error: 'Connection error.' } as const;
+    const failedTail = {
+      turnId: 't2', state: 'failed', error: 'Connection error.', endedAt: new Date().toISOString(),
+      durationMs: 5_000, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
+    } as const;
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'user-old', text: 'older failure', turnId: 't1', promptOutcome: outcome }),
+        { ...assistantBlock('a1', 'older reply'), turnId: 't1' },
+        userBlock({ id: 'user-now', text: 'send me again', turnId: 't2', promptOutcome: outcome }),
+        { ...assistantBlock('a2', 'partial reply'), turnId: 't2' },
+      ],
+      undefined,
+      { sessionId: 'session_tail', turnTail: failedTail },
+    );
+    // The tail's turn: no bubble line; the older turn keeps its own.
+    const lines = [...container.querySelectorAll('[data-prompt-outcome]')];
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.closest('[data-block-id]')?.getAttribute('data-block-id')).toBe('user-old');
+    const retry = container.querySelector<HTMLButtonElement>('[data-turn-tail] [data-turn-tail-retry]');
+    expect(retry?.textContent).toBe('Send again');
+    await act(async () => { retry!.click(); });
+    expect(readDraft('session_tail')).toContain('send me again');
+  });
+
+  it('keeps the bubble failure line when a prompt failed without a tail', async () => {
+    const container = await renderTranscript([
+      userBlock({ id: 'user-unsent', text: 'never started', promptOutcome: { status: 'failed', delivered: false } }),
+    ]);
+    expect(container.querySelector('[data-prompt-outcome="failed"]')?.textContent).toContain('Not sent');
+    expect(container.querySelector('[data-turn-tail]')).toBeNull();
   });
 
   it('renders tool stopped status with title and interrupted summary', async () => {
