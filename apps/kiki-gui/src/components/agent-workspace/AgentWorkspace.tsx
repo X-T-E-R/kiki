@@ -707,6 +707,11 @@ function ChildAgentWorkspace({
         visible: transcriptVisible,
       }}
       dock={<div className="space-y-2 pt-2">
+        <ResyncStatusBanner
+          resyncing={sessionState.resyncing} resyncFailed={sessionState.resyncFailed}
+          error={sessionState.resyncError}
+          onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+        />
         {sendNotice?.scope === sendScope ? (
           <p role="alert" className="rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-danger">
             {sendNotice.text}
@@ -730,11 +735,6 @@ function ChildAgentWorkspace({
           onSend={handleComposerSend}
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
           abortPending={stoppingTaskId !== null}
-        />
-        <ResyncStatusBanner
-          resyncing={sessionState.resyncing} resyncFailed={sessionState.resyncFailed}
-          error={sessionState.resyncError}
-          onRetry={controller === null ? undefined : () => { void controller.resync(); }}
         />
       </div>}
       rail={<RightRail
