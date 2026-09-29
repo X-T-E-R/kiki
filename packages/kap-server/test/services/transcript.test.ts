@@ -278,6 +278,39 @@ describe('TranscriptService projection', () => {
     }
   });
 
+  it('bounded cold snapshots expose the wire record fence and readable prefix', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-cold-bounded-'));
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+      await mkdir(wireDir, { recursive: true });
+      const records = [
+        {
+          type: 'context.append_message', time: 1000,
+          message: { role: 'user', content: [{ type: 'text', text: 'first bounded turn' }], origin: { kind: 'user' } },
+        },
+        {
+          type: 'context.append_message', time: 2000,
+          message: { role: 'user', content: [{ type: 'text', text: 'second bounded turn' }], origin: { kind: 'user' } },
+        },
+      ];
+      const wirePath = join(wireDir, 'wire.jsonl');
+      await writeFixtureFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+      const result = await service.readColdSnapshotBounded('s1', 'main', {
+        maxBytes: 1 << 20, maxRecords: 1, chunkBytes: 1 << 20,
+      });
+      expect(result.complete).toBe(false);
+      expect(result.incompleteReason).toBe('record_budget');
+      expect(result.recordsRead).toBe(1);
+      expect(result.snapshot?.items.some((item) =>
+        item.kind === 'turn' && item.prompt === 'first bounded turn')).toBe(true);
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('keeps two independently cropped media results in cold transcript frames', async () => {
     const home = await mkdtemp(join(tmpdir(), 'transcript-cold-media-'));
     const service = new TranscriptService({ homeDir: home, core: coldCore() });

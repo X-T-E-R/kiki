@@ -39,6 +39,12 @@ interface HistoryToolData {
   readonly text?: string;
   readonly has_more?: boolean;
   readonly next_cursor?: string;
+  readonly warning?: string;
+  readonly fallback?: {
+    readonly maxBytes: number;
+    readonly maxRecords: number;
+    readonly truncated: boolean;
+  };
 }
 
 async function run(tool: HistorySearchTool | HistoryReadTool, input: Record<string, unknown>) {
@@ -67,6 +73,28 @@ describe('history tools', () => {
     expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({
       workspaceId: 'ws-a', sessionId: 'current', mode: 'literal',
     }));
+  });
+
+  it('surfaces an unavailable index alongside bounded fallback metadata', async () => {
+    const source = archive();
+    source.search = vi.fn(async () => ({
+      items: [{ sessionId: 'current', agentId: 'main', role: 'user' as const, turn: 2, snippet: '原话' }],
+      hasMore: false,
+      indexState: { state: 'unavailable', stale: true, degraded: 'search index unavailable' },
+      warning: 'search index unavailable',
+      fallback: {
+        reason: 'search index unavailable', scope: 'current_session_wire',
+        maxBytes: 2 << 20, maxRecords: 10_000, bytesRead: 123, recordsRead: 4, truncated: false,
+      },
+      source: 'fallback' as const,
+    }));
+    const { data } = await run(new HistorySearchTool(source, session, workspaces, caller), { query: '原话' });
+    expect(source.search).toHaveBeenCalledWith(expect.objectContaining({
+      fallbackSessionId: 'current', fallbackAgentId: 'main',
+    }));
+    expect(data.warning).toBe('search index unavailable');
+    expect(data.fallback).toMatchObject({ maxBytes: 2 << 20, maxRecords: 10_000, truncated: false });
+    expect(data.hits).toEqual([{ session_id: 'current', agent_id: 'main', role: 'user', turn: 2, snippet: '原话' }]);
   });
 
   it('reads a precise step including tool output from a previous turn', async () => {

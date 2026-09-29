@@ -146,6 +146,7 @@ export interface GlobalSearchPage {
   readonly pageToken?: string;
   readonly incomplete?: GlobalSearchIncomplete;
   readonly indexState: GlobalSearchIndexState;
+  readonly unavailable?: boolean;
   /**
    * The route that produced this page. The page token's fingerprint covers
    * it: a route flip mid-pagination (e.g. the session closed) invalidates

@@ -47,7 +47,17 @@ export interface HistorySearchPage {
   readonly pageToken?: string;
   readonly incomplete?: string;
   readonly indexState: { readonly state: string; readonly stale?: boolean; readonly degraded?: string };
-  readonly source: 'live' | 'index';
+  readonly warning?: string;
+  readonly fallback?: {
+    readonly reason: string;
+    readonly scope: string;
+    readonly maxBytes: number;
+    readonly maxRecords: number;
+    readonly bytesRead: number;
+    readonly recordsRead: number;
+    readonly truncated: boolean;
+  };
+  readonly source: 'live' | 'index' | 'fallback';
 }
 
 export interface IHistoryArchive {
@@ -61,6 +71,8 @@ export interface IHistoryArchive {
     role?: 'user' | 'assistant' | 'tool';
     pageSize: number;
     pageToken?: string;
+    fallbackSessionId?: string;
+    fallbackAgentId?: string;
   }): Promise<HistorySearchPage>;
   readTurn(sessionId: string, agentId: string, turn: number, stepId?: string): Promise<string | undefined>;
 }
@@ -134,13 +146,15 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<z.in
           role: input.role,
           pageSize: input.limit ?? 8,
           pageToken: input.cursor,
+          fallbackSessionId: target.id === this.session.workspaceId ? this.session.sessionId : undefined,
+          fallbackAgentId: target.id === this.session.workspaceId ? input.agent_id ?? this.caller.agentId : undefined,
         });
         return { output: JSON.stringify({
           hits: page.items.filter((hit) => hit.turn !== undefined && hit.role !== 'title')
             .map((hit) => ({ session_id: hit.sessionId, agent_id: hit.agentId, role: hit.role,
               turn: hit.turn, step_id: hit.stepId, snippet: hit.snippet })),
           next_cursor: page.pageToken, has_more: page.hasMore, incomplete: page.incomplete,
-          index_state: page.indexState, source: page.source,
+          index_state: page.indexState, warning: page.warning, fallback: page.fallback, source: page.source,
         }) };
       },
     };

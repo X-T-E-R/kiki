@@ -110,6 +110,14 @@ export interface TranscriptColdReadLimits {
   readonly chunkBytes?: number;
 }
 
+export interface BoundedTranscriptSnapshot {
+  readonly snapshot: AgentTranscriptSnapshot | undefined;
+  readonly bytesRead: number;
+  readonly recordsRead: number;
+  readonly complete: boolean;
+  readonly incompleteReason?: WireRecordsIncompleteReason;
+}
+
 export interface TranscriptOpsJournalLimits {
   readonly maxAgentBytes?: number;
   readonly maxSessionBytes?: number;
@@ -154,6 +162,13 @@ interface LiveEntry {
 interface AgentHistoryState {
   status: 'pending' | 'complete' | 'failed';
   failureSignature?: string;
+}
+
+interface ColdSnapshotStats {
+  bytesRead: number;
+  recordsRead: number;
+  complete: boolean;
+  incompleteReason?: WireRecordsIncompleteReason;
 }
 
 interface MaterializedAgentToolCallState {
@@ -1327,6 +1342,33 @@ export class TranscriptService {
     return snapshot;
   }
 
+  async readColdSnapshotBounded(
+    sessionId: string,
+    agentId: string = MAIN_AGENT_ID,
+    limits: TranscriptColdReadLimits = {},
+    signal?: AbortSignal,
+  ): Promise<BoundedTranscriptSnapshot> {
+    signal?.throwIfAborted();
+    await this.live.get(sessionId)?.pendingDisposals.get(agentId);
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
+    const stats: ColdSnapshotStats = {
+      bytesRead: 0,
+      recordsRead: 0,
+      complete: false,
+    };
+    const snapshot = await this.loadColdSnapshot(
+      sessionId,
+      agentId,
+      undefined,
+      signal ?? new AbortController().signal,
+      limits,
+      stats,
+    );
+    this.assertReadableAgent(sessionId, agentId);
+    return { snapshot, ...stats };
+  }
+
   private async awaitColdSnapshot(
     flight: ColdSnapshotFlight,
     signal?: AbortSignal,
@@ -1411,6 +1453,8 @@ export class TranscriptService {
     agentId: string,
     preserveOpenTurnIds: (() => readonly string[]) | undefined,
     signal: AbortSignal,
+    limits?: TranscriptColdReadLimits,
+    stats?: ColdSnapshotStats,
   ): Promise<AgentTranscriptSnapshot | undefined> {
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
     if (summary === undefined) return undefined;
@@ -1426,8 +1470,9 @@ export class TranscriptService {
     );
     let info = await stat(wirePath).catch(() => undefined);
     signal.throwIfAborted();
-    const sealed = info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info.size, signal);
-    const liveVerified = !sealed && info !== undefined && await this.hasVerifiedLiveEpoch(sessionId, agentId);
+    const bounded = limits !== undefined;
+    const sealed = !bounded && info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info.size, signal);
+    const liveVerified = !bounded && !sealed && info !== undefined && await this.hasVerifiedLiveEpoch(sessionId, agentId);
     if (liveVerified) info = await stat(wirePath).catch(() => undefined);
     const verified = sealed || liveVerified;
     signal.throwIfAborted();
@@ -1464,23 +1509,30 @@ export class TranscriptService {
     }
     let complete: boolean;
     let readResult: WireRecordsStreamResult | undefined;
+    const readLimits = limits ?? this.coldReadLimits;
     const startedAt = Date.now();
     try {
       const read = await this.wireRecordReader(wirePath, {
         startByteOffset: checkpoint?.nextByteOffset,
-        chunkBytes: this.coldReadLimits.chunkBytes,
-        maxBytes: this.coldReadLimits.maxBytes,
-        maxRecords: this.coldReadLimits.maxRecords,
-        maxLineBytes: this.coldReadLimits.maxLineBytes,
+        chunkBytes: readLimits.chunkBytes,
+        maxBytes: readLimits.maxBytes,
+        maxRecords: readLimits.maxRecords,
+        maxLineBytes: readLimits.maxLineBytes,
         signal,
         onRecord: (record) => reducer.apply(adapter.add(record)),
       });
       readResult = read;
+      if (stats !== undefined) {
+        stats.bytesRead = read.bytesRead;
+        stats.recordsRead = read.recordCount;
+        stats.complete = read.complete;
+        stats.incompleteReason = read.incompleteReason;
+      }
       this.coldReadsCompleted += 1;
       this.coldReadBytes += read.bytesRead;
       this.coldReadRecords += read.recordCount;
       this.coldReadDurationMs += Date.now() - startedAt;
-      if (!read.complete && read.incompleteReason !== 'partial_tail') {
+      if (!read.complete && read.incompleteReason !== 'partial_tail' && !bounded) {
         this.coldReadsFenced += 1;
         this.logColdReadFence(sessionId, agentId, read.incompleteReason ?? 'unknown');
         return unknownSnapshot();

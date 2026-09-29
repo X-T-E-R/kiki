@@ -3051,6 +3051,7 @@ describe('search worker host (stage 4)', () => {
     expect(degraded.items).toEqual([]);
     expect(degraded.indexState.state).toBe('building');
     expect(degraded.indexState.degraded).toContain('worker');
+    expect(degraded.unavailable).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, 700));
     await settleSync(service);

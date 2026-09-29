@@ -858,7 +858,7 @@ export class GlobalSearchService implements IGlobalSearchService {
             'the search index is not ready yet; restart the search',
           );
         }
-        return this.buildingPage(null);
+        return this.buildingPage(null, true);
       }
       throw error;
     }
@@ -935,7 +935,7 @@ export class GlobalSearchService implements IGlobalSearchService {
    * the background coordinator/build catches up and a later search serves
    * real hits.
    */
-  private buildingPage(view: CoreIndexView | null): GlobalSearchPage {
+  private buildingPage(view: CoreIndexView | null, unavailable = false): GlobalSearchPage {
     const indexed = view?.indexedSessions ?? 0;
     const readOnly = view?.readOnly === true;
     return {
@@ -951,6 +951,7 @@ export class GlobalSearchService implements IGlobalSearchService {
         stale: true,
         degraded: this.lastRefreshError?.message ?? view?.degraded,
       },
+      unavailable: unavailable || undefined,
       source: 'index',
     };
   }
