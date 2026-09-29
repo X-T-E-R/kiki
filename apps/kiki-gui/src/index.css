@@ -926,6 +926,12 @@ body[data-pane-resizing='true'] {
   height: 100%;
 }
 
+/* CodeMirror sets the mono family on plain divs, outside preflight's
+ * code/pre and the `font-mono` utility: same no-ligature rule as the token. */
+.cm-editor {
+  font-feature-settings: var(--font-mono--font-feature-settings);
+}
+
 .conversation-middle {
   display: flex;
   flex: 1;
@@ -934,12 +940,6 @@ body[data-pane-resizing='true'] {
 }
 
 /* Active: the outlet (transcript with its own stick-to-bottom scroller) fills
-/* CodeMirror sets the mono family on plain divs, outside preflight's
- * code/pre and the `font-mono` utility: same no-ligature rule as the token. */
-.cm-editor {
-  font-feature-settings: var(--font-mono--font-feature-settings);
-}
-
  * the middle; the seat docks below it. */
 .conversation-body {
   display: flex;
@@ -955,14 +955,6 @@ body[data-pane-resizing='true'] {
   flex-direction: column;
 }
 
-/* The composer card: volume from a layered shadow and a faint ink ring, not a
- * hard border. Focus deepens the ring; dark swaps the drop for a near-black
- * shadow plus a light hairline ring so the card still lifts off the paper. */
-.composer-card {
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--color-ink) 8%, transparent),
-    0 1px 2px rgb(var(--kiki-shadow-ink) / 0.05),
-    0 12px 32px -16px rgb(var(--kiki-shadow-ink) / 0.24);
 /* Toast anchor (Toasts.tsx): a zero-height line inset to the column's
  * gutters, so the stack rises from the conversation column's lower-right
  * corner and never reaches the rail beside it. Docked (active/settling), it
@@ -992,6 +984,14 @@ body[data-pane-resizing='true'] {
   bottom: calc(100% + 20px);
 }
 
+/* The composer card: volume from a layered shadow and a faint ink ring, not a
+ * hard border. Focus deepens the ring; dark swaps the drop for a near-black
+ * shadow plus a light hairline ring so the card still lifts off the paper. */
+.composer-card {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-ink) 8%, transparent),
+    0 1px 2px rgb(var(--kiki-shadow-ink) / 0.05),
+    0 12px 32px -16px rgb(var(--kiki-shadow-ink) / 0.24);
 }
 .composer-card:has(textarea:focus-visible) {
   box-shadow:

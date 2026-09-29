@@ -113,7 +113,6 @@ export interface DesktopNativePrefs {
   updateChannel: UpdateChannel;
   autoUpdate: AutoUpdateMode;
   compatibility: CompatibilitySettings;
-}
   /**
    * How spaces open: one window that switches between them, or one window per
    * space. App-level (the main space's `desktop.json`), read at launch, so a
@@ -121,10 +120,10 @@ export interface DesktopNativePrefs {
    * `window_mode` and accepts either spelling on write.
    */
   windowMode: SpaceWindowMode;
+}
 
 export type CompatibilityHomeKind = 'kimi' | 'custom';
 export type SpaceWindowMode = 'switch' | 'windows';
-
 
 export interface CompatibilitySettings {
   homeKind: CompatibilityHomeKind;
@@ -332,6 +331,7 @@ const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
     homeKind: 'kimi',
     customHome: undefined,
   },
+  windowMode: 'switch',
 };
 
 function readObject(
@@ -599,7 +599,13 @@ export function readDesktopPrefs(): DesktopNativePrefs {
           ? compatibility.customHome
           : undefined,
     },
+    windowMode: parseSpaceWindowMode(stored.windowMode ?? (stored as { window_mode?: unknown }).window_mode),
   };
+}
+
+/** `read_desktop_prefs` returns the native `window_mode` spelling; the GUI stores `windowMode`. */
+function parseSpaceWindowMode(value: unknown): SpaceWindowMode {
+  return value === 'windows' || value === 'switch' ? value : DESKTOP_PREFS_DEFAULTS.windowMode;
 }
 
 export function writeDesktopPrefs(prefs: Partial<DesktopNativePrefs>): void {
@@ -611,15 +617,9 @@ export function writeDesktopPrefs(prefs: Partial<DesktopNativePrefs>): void {
     ...(rest.windowMode === undefined && nativeWindowMode !== undefined ? { windowMode: parseSpaceWindowMode(nativeWindowMode) } : {}),
   };
   try {
-    windowMode: parseSpaceWindowMode(stored.windowMode ?? (stored as { window_mode?: unknown }).window_mode),
     localStorage.setItem(DESKTOP_PREFS_KEY, JSON.stringify(next));
   } catch {
     // ignore
-/** `read_desktop_prefs` returns the native `window_mode` spelling; the GUI stores `windowMode`. */
-function parseSpaceWindowMode(value: unknown): SpaceWindowMode {
-  return value === 'windows' || value === 'switch' ? value : DESKTOP_PREFS_DEFAULTS.windowMode;
-}
-
   }
 }
 
