@@ -18,7 +18,7 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { ISessionTodoService } from './sessionTodo';
-import { readTodoState, todoKey, ToolsUpdateStore } from './todoOps';
+import { readTodoState, todoKey, ToolsUpdateStore, type TodoState } from './todoOps';
 import { TODO_LIST_TOOL_NAME, type TodoItem } from './todoItem';
 import { hashTodoNotes, mergeTodoNotes, type NotesMeta, type TodoNotes } from './todoNotes';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
@@ -135,6 +135,16 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     if (handle.id === MAIN_AGENT_ID) this.onDidChangeEmitter.fire(todos);
   }
 
+  private publishRollback(handle: IAgentScopeHandle, current: TodoState, itemsChanged: boolean, notesChanged: boolean): void {
+    const dispatcher = handle.accessor.get(IEventDispatcher);
+    if (itemsChanged) {
+      void dispatcher.dispatch(new ToolsUpdateStore({ key: 'todo', value: current.items }));
+    }
+    if (notesChanged) {
+      void dispatcher.dispatch(new ToolsUpdateStore({ key: 'todo_notes', value: { notes: current.notes, notesMeta: current.notesMeta } }));
+    }
+  }
+
   private prepareAgent(handle: IAgentScopeHandle): void {
     handle.accessor.get(IAgentStateService).contributeState(todoKey);
     this.reminderTrackers.set(handle.id, new TodoListReminderTracker());
@@ -153,8 +163,11 @@ export class SessionTodoService extends Service implements ISessionTodoService {
       handle.accessor.get(IEventBus).subscribe(ContextUndone, () => {
         const current = readTodoState(handle.accessor.get(IAgentStateService).get(todoKey));
         const previous = this.lastKnownTodos.get(handle.id);
-        if (previous?.rev === current.notesMeta?.rev && todoItemsEqual(current.items, previous?.items ?? [])) return;
+        const itemsChanged = !todoItemsEqual(current.items, previous?.items ?? []);
+        const notesChanged = previous?.rev !== current.notesMeta?.rev;
+        if (!itemsChanged && !notesChanged) return;
         this.publishTodos(handle);
+        this.publishRollback(handle, current, itemsChanged, notesChanged);
       }),
     );
   }

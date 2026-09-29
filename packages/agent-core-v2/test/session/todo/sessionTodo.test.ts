@@ -370,6 +370,45 @@ describe('SessionTodoService', () => {
     expect(restored.getTodos()).toEqual(service.getTodos());
   });
 
+  it('appends a tools.update_store correction when undo rewinds a todo checkpoint', async () => {
+    const main = makeFakeAgent('main');
+    const service = makeTodoService(makeLifecycleStub([main.handle]).service);
+    service.setTodos([{ title: 'kept', status: 'pending' }]);
+    service.setNotes({ goal: 'kept goal' }, { turnId: 1, step: 1, toolCallId: 'notes-kept' });
+    await main.dispatcher.dispatch(new ContextAppendMessage({ message: { role: 'user', content: [{ type: 'text', text: 'undo me' }], toolCalls: [] } }));
+    service.setTodos([{ title: 'doomed', status: 'in_progress' }]);
+    service.setNotes({ next: 'doomed work' }, { turnId: 2, step: 5, toolCallId: 'notes-doomed' });
+
+    const before = main.journal.length;
+    await main.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    await main.dispatcher.dispatch(new ContextUndone({ turns: 1 }));
+
+    expect(main.journal.slice(before).filter((record) => record.type === 'tools.update_store')).toEqual([
+      {
+        type: 'tools.update_store',
+        key: 'todo',
+        value: [{ title: 'kept', status: 'pending' }],
+        time: expect.any(Number),
+      },
+      {
+        type: 'tools.update_store',
+        key: 'todo_notes',
+        value: { notes: { goal: 'kept goal' }, notesMeta: expect.objectContaining({ rev: 1 }) },
+        time: expect.any(Number),
+      },
+    ]);
+
+    const reader = makeFakeAgent('main');
+    const projection = makeTodoService(makeLifecycleStub([reader.handle]).service);
+    await reader.restore(main.journal);
+    expect(projection.getTodos()).toEqual(service.getTodos());
+    expect(projection.getNotes()).toEqual(service.getNotes());
+
+    const settled = main.journal.filter((record) => record.type === 'tools.update_store').length;
+    await main.dispatcher.dispatch(new ContextUndone({ turns: 1 }));
+    expect(main.journal.filter((record) => record.type === 'tools.update_store')).toHaveLength(settled);
+  });
+
   it('appends a tools.update_store record to the main agent wire on setTodos', () => {
     const main = makeFakeAgent('main');
     const lifecycle = makeLifecycleStub([main.handle]);

@@ -1306,6 +1306,9 @@ describe('TranscriptWireAdapter', () => {
     reducer.apply(restored.add({ type: 'tools.update_store', key: 'todo_notes', value: { notesMeta: { ...meta, rev: 3 } } }));
     expect(transcript.getTodo('todo')).toMatchObject({ items: [{ title: 'next', status: 'in_progress' }], notesMeta: { rev: 3 } });
     expect(transcript.getTodo('todo')?.notes).toBeUndefined();
+    reducer.apply(restored.add({ type: 'tools.update_store', key: 'todo_notes', value: {} }));
+    expect(transcript.getTodo('todo')).toMatchObject({ items: [{ title: 'next', status: 'in_progress' }] });
+    expect(transcript.getTodo('todo')?.notesMeta).toBeUndefined();
   });
 
   it('folds todo, goal, plan, swarm, task, and interruption facts through the shared reducer', () => {

@@ -474,7 +474,7 @@ export const todoNotesMetaSchema = z.object({
 
 export const todoNotesUpdateSchema = z.object({
   notes: todoNotesSchema.optional(),
-  notesMeta: todoNotesMetaSchema,
+  notesMeta: todoNotesMetaSchema.optional(),
 });
 
 export const todoSchema = z.object({
