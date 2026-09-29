@@ -84,6 +84,13 @@ import {
 import { formatTokensPerSecond } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
+import {
+  normalizeTurnId,
+  registerTimelineLocator,
+  timelineBecameVisible,
+  type LocateOutcome,
+  type TimelineTarget,
+} from '../lib/timelineLocate';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import {
   HistoryLine,
@@ -2216,9 +2223,16 @@ export function Transcript({
   forest,
   onOpenAgent,
   rowActions,
+  visible = true,
 }: {
   state: SessionViewState;
   agentId?: string;
+  /**
+   * False while the timeline sits in a hidden tab or collapsed panel: its
+   * viewport anchor is frozen, and showing it again restores the reader's
+   * place (or the latest message) instead of whatever the hidden box kept.
+   */
+  visible?: boolean;
   onLoadOlder: () => Promise<boolean>;
   onResolveApproval: (
     approvalId: string,
@@ -2237,6 +2251,7 @@ export function Transcript({
 }) {
   const { t } = useI18n();
   const { blocks, loaded, loadError } = state;
+  const sessionIdForLocate = state.sessionId === '' ? undefined : state.sessionId;
   const timelineBlocks = useMemo(
     () => blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
     [blocks],
@@ -2466,6 +2481,32 @@ export function Transcript({
   }, [virtualNodes]);
   const nodeIndexesRef = useRef(nodeIndexes);
   nodeIndexesRef.current = nodeIndexes;
+  // Every block id and turn id on the page → the virtual row that shows it
+  // (a block inside a history fold or read run resolves to that row, plus the
+  // fold that must open). The locate entry resolves targets through this.
+  const locateIndex = useMemo(() => {
+    const blocks = new Map<string, { index: number; foldId?: string }>();
+    const turns = new Map<string, number>();
+    const subagents = new Map<string, number>();
+    const visit = (node: DisplayNode, index: number, foldId: string | undefined) => {
+      blocks.set(node.id, { index, foldId });
+      if (node.kind === 'subagent' && !subagents.has(node.subagentId)) subagents.set(node.subagentId, index);
+      if (node.kind === 'history-fold') {
+        for (const member of node.members) visit(member, index, node.id);
+      } else if (node.kind === 'tool-group') {
+        for (const member of node.members) blocks.set(member.id, { index, foldId });
+      }
+      const turnId = displayNodeTurnId(node);
+      if (turnId !== undefined) {
+        const key = normalizeTurnId(turnId);
+        if (!turns.has(key)) turns.set(key, index);
+      }
+    };
+    virtualNodes.forEach((node, index) => { if (node !== undefined) visit(node, index, undefined); });
+    return { blocks, turns, subagents };
+  }, [virtualNodes]);
+  const locateIndexRef = useRef(locateIndex);
+  locateIndexRef.current = locateIndex;
   const [editingBlockIds, setEditingBlockIds] = useState<readonly string[]>([]);
   const pinnedIndexes = useMemo(() => {
     const indexes = new Set<number>();
@@ -2567,6 +2608,8 @@ export function Transcript({
     offset: 0,
   });
   loadOlderRef.current = onLoadOlder;
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const initialScrollDoneRef = useRef(false);
   const initialScrollFrameRef = useRef<number | null>(null);
   const measuredResetRef = useRef(state.transcriptResetVersion);
@@ -2602,6 +2645,9 @@ export function Transcript({
     directDomUpdates: true,
     directDomUpdatesMode: 'position',
     onChange: (instance) => {
+      // A hidden (display:none) box reports scrollTop 0 on every tick; the
+      // reader's real place is the anchor captured while it was shown.
+      if (!visibleRef.current) return;
       viewportAnchorRef.current = captureTranscriptAnchor(instance);
     },
   });
@@ -2716,6 +2762,136 @@ export function Transcript({
       pendingResetRestoreRef.current = null;
     });
   }, [loadError, loaded, state.transcriptResetVersion, virtualNodes.length, virtualizer]);
+
+  // ---- visibility: a hidden tab keeps its reader's place ----
+  // While hidden the scroll box has no layout, so its scroll events report a
+  // meaningless offset; the anchor captured before hiding is what counts.
+  // Showing it again lands on the latest message when the reader was there
+  // (the new rows that arrived meanwhile included), else restores the row.
+  const wasVisibleRef = useRef(visible);
+  useLayoutEffect(() => {
+    const was = wasVisibleRef.current;
+    wasVisibleRef.current = visible;
+    if (!visible || was || !initialScrollDoneRef.current) return;
+    const anchor = viewportAnchorRef.current;
+    reconcileMountedRows(virtualizer);
+    const index = anchor.key === undefined ? undefined : nodeIndexesRef.current.get(anchor.key);
+    if (anchor.atEnd || index === undefined) {
+      landAtEnd(virtualizer);
+      viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
+    } else {
+      const offset = virtualizer.getOffsetForIndex(index, 'start')?.[0];
+      if (offset !== undefined) virtualizer.scrollToOffset(offset + anchor.offset, { align: 'start' });
+    }
+    if (sessionIdForLocate !== undefined) timelineBecameVisible(sessionIdForLocate, agentId);
+  }, [visible, virtualizer, agentId, sessionIdForLocate]);
+
+  // ---- unified locate entry (see lib/timelineLocate.ts) ----
+  const liveRef = useRef({ loaded, hasMore: state.hasMoreHistory, olderError: state.olderError, visible });
+  liveRef.current = { loaded, hasMore: state.hasMoreHistory, olderError: state.olderError, visible };
+  const nextFrame = () => new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
+  const locate = useCallback(async (target: TimelineTarget): Promise<LocateOutcome> => {
+    for (let wait = 0; !liveRef.current.loaded || !initialScrollDoneRef.current; wait += 1) {
+      if (wait > 120) return { status: 'no-timeline' };
+      await nextFrame();
+    }
+    if (target.kind === 'latest') {
+      if (target.respectReader === true && !viewportAnchorRef.current.atEnd) return { status: 'kept' };
+      landAtEnd(virtualizer);
+      viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
+      await nextFrame();
+      landAtEnd(virtualizer);
+      return { status: 'found' };
+    }
+    const resolve = (): { index: number; foldId?: string; blockId?: string } | undefined => {
+      const { blocks, turns, subagents } = locateIndexRef.current;
+      switch (target.kind) {
+        case 'block':
+          return blocks.has(target.blockId) ? { ...blocks.get(target.blockId)!, blockId: target.blockId } : undefined;
+        case 'annotation':
+          return blocks.has(target.blockId) ? { ...blocks.get(target.blockId)!, blockId: target.blockId } : undefined;
+        case 'turn': {
+          const index = turns.get(normalizeTurnId(target.turnId));
+          return index === undefined ? undefined : { index };
+        }
+        case 'subagent': {
+          const index = subagents.get(target.agentId);
+          return index === undefined ? undefined : { index };
+        }
+        case 'interaction':
+          for (const blockId of [`approval-${target.id}`, `question-${target.id}`]) {
+            const hit = blocks.get(blockId);
+            if (hit !== undefined) return { ...hit, blockId };
+          }
+          return undefined;
+      }
+    };
+    let hit = resolve();
+    // Not on the page: page older history in until it shows up or the
+    // beginning is reached. Each page re-renders before the next lookup.
+    for (let page = 0; hit === undefined && page < 40; page += 1) {
+      if (!liveRef.current.hasMore) break;
+      const loadedMore = await loadOlderRef.current();
+      for (let frame = 0; frame < 4; frame += 1) await nextFrame();
+      if (liveRef.current.olderError !== undefined) return { status: 'load-failed' };
+      hit = resolve();
+      if (!loadedMore && hit === undefined && liveRef.current.hasMore) {
+        for (let frame = 0; frame < 20 && hit === undefined; frame += 1) {
+          await nextFrame();
+          hit = resolve();
+        }
+        if (hit === undefined) return { status: 'load-failed' };
+      }
+    }
+    if (hit === undefined) return { status: 'not-found' };
+    if (hit.foldId !== undefined) {
+      const foldId = hit.foldId;
+      setOpenFolds((previous) => (previous.has(foldId) ? previous : new Set(previous).add(foldId)));
+      await nextFrame();
+    }
+    // Row first (virtualized: it may not be mounted), then the exact element
+    // (a fold member or an annotation mark inside a tall row).
+    virtualizer.scrollToIndex(hit.index, { align: 'center' });
+    let element: HTMLElement | null = null;
+    for (let frame = 0; frame < 12 && element === null; frame += 1) {
+      await nextFrame();
+      const scroll = scrollRef.current;
+      if (scroll === null) break;
+      const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${hit.index}"]`);
+      if (row === null) continue;
+      element =
+        target.kind === 'annotation'
+          ? ([...row.querySelectorAll<HTMLElement>('[data-annotation-ref]')].find(
+            (mark) => mark.dataset['annotationRef'] === target.annotationId && mark.tagName === 'MARK',
+          ) ?? null)
+          : hit.blockId === undefined
+            ? row
+            : ([...row.querySelectorAll<HTMLElement>('[data-block-id]')].find(
+              (candidate) => candidate.dataset['blockId'] === hit.blockId,
+            ) ?? row);
+    }
+    if (element === null) return { status: 'not-found' };
+    element.scrollIntoView?.({ block: 'center' });
+    viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
+    if (target.kind === 'annotation') element.focus({ preventScroll: true });
+    const flashed = element;
+    flashed.classList.add('settings-card-flash');
+    window.setTimeout(() => { flashed.classList.remove('settings-card-flash'); }, 1800);
+    return { status: 'found' };
+  }, [virtualizer]);
+  useEffect(() => {
+    if (sessionIdForLocate === undefined) return undefined;
+    return registerTimelineLocator(sessionIdForLocate, agentId, {
+      // `hidden` tabpanels and display:none panels both leave the box
+      // unrendered; either means the timeline is not what the reader sees.
+      isVisible: () => {
+        const scroll = scrollRef.current;
+        if (!liveRef.current.visible || scroll === null || !scroll.isConnected) return false;
+        return scroll.closest('[hidden], [style*="display: none"]') === null;
+      },
+      locate,
+    });
+  }, [sessionIdForLocate, agentId, locate]);
 
   useEffect(() => () => {
     const initialFrame = initialScrollFrameRef.current;

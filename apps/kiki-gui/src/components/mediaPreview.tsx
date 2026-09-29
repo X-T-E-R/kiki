@@ -37,6 +37,7 @@ import {
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import type { AgentWorkspaceNavigation } from './agent-workspace';
 import { useOptionalConversationShell } from './ConversationShell';
+import { locateInTimeline } from '../lib/timelineLocate';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
@@ -164,7 +165,12 @@ export function MediaPreviewProvider({
   const openAgentPanel = useCallback((agentId: string, title?: string) => {
     setTabsState((state) => openPreviewTab(state, { kind: 'panel', agentId, title }));
     setPanelOpen(true);
-  }, []);
+    // Opening (or re-opening) an agent lands on its latest message; a reader
+    // who scrolled that tab up keeps their place.
+    if (sessionId !== undefined) {
+      void locateInTimeline({ kind: 'latest', respectReader: true }, { sessionId, agentId, notify: false });
+    }
+  }, [sessionId]);
 
   const openBuiltinSkill = useCallback((name: string) => {
     setTabsState((state) => openPreviewTab(state, { kind: 'skill', name }));

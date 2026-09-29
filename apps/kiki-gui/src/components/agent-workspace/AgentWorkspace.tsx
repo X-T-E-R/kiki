@@ -38,7 +38,7 @@ import { useI18n } from '../../i18n';
 import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError } from '../../lib/client';
 import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
-import { revealSubagentCard } from '../ActivityHistory';
+import { locateInTimeline } from '../../lib/timelineLocate';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
 import {
   EMPTY_SLOTS,
@@ -465,11 +465,9 @@ function ChildAgentWorkspace({
   );
   const crumbs = useMemo(() => agentPath(forest, agentId), [forest, agentId]);
 
-  // Parent jump-back: navigate to the spawning agent's timeline, then
-  // smooth-scroll to this agent's card there (retried briefly while the
-  // target view mounts and publishes its first blocks). The card may sit
-  // inside a collapsed history run; revealSubagentCard expands that run on
-  // the way, so the retry loop converges once the run is mounted.
+  // Parent jump-back: navigate to the spawning agent's timeline, then locate
+  // this agent's card there (the locate entry waits for the target view to
+  // mount, pages older history in, and reports when the card is gone).
   const handleJumpToSpawn = (): void => {
     const spawnParentId = selectedNode?.parentAgentId ?? selectedSubagent?.parentAgentId;
     if (spawnParentId === undefined || spawnParentId === MAIN_AGENT_ID) {
@@ -477,11 +475,10 @@ function ChildAgentWorkspace({
     } else {
       navigation.openAgentRoute(spawnParentId);
     }
-    const scrollToCard = (attemptsLeft: number): void => {
-      if (revealSubagentCard(agentId)) return;
-      if (attemptsLeft > 0) window.setTimeout(() => { scrollToCard(attemptsLeft - 1); }, 150);
-    };
-    window.setTimeout(() => { scrollToCard(12); }, 150);
+    void locateInTimeline(
+      { kind: 'subagent', agentId },
+      { sessionId: target.sessionId, agentId: spawnParentId ?? MAIN_AGENT_ID },
+    );
   };
   const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
   const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
@@ -678,7 +675,10 @@ function ChildAgentWorkspace({
     ...agentLiveState,
     session: sessionState.session,
     blocks: filterBlocksToDirectChildren(capturedBlocks, forest, agentId),
-    loaded: agentLiveState.loaded || sessionState.loaded,
+    // The child's own transcript decides: the session being loaded says
+    // nothing about this agent's rows, and landing before they arrive
+    // would spend the one-time initial scroll on an empty list.
+    loaded: agentLiveState.loaded,
     loadError: agentLiveState.loadError ?? sessionState.loadError,
     busy: headerBusy,
     model: displayModel,
@@ -704,6 +704,7 @@ function ChildAgentWorkspace({
         state: agentState, agentId, onLoadOlder: handleLoadOlder,
         onResolveApproval: handleResolveApproval, onAnswerQuestion: handleAnswerQuestion,
         onDismissQuestion: handleDismissQuestion, forest, onOpenAgent: navigation.openAgent,
+        visible: transcriptVisible,
       }}
       dock={<div className="space-y-2 pt-2">
         {sendNotice?.scope === sendScope ? (

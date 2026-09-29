@@ -105,7 +105,7 @@ import {
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage, type UpdateAgentGoalInput } from '../lib/client';
-import { revealSubagentCard } from './ActivityHistory';
+import { locateInTimeline, normalizeTurnId } from '../lib/timelineLocate';
 import { InteractionPlacementContext, type InteractionPlacement } from './Interactions';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { pushToast } from '../lib/toasts';
@@ -1116,30 +1116,19 @@ export function SessionView({
   // Throttle for the ambiguous y/n hint (epoch ms of the last toast).
   const lastAmbiguityToastRef = useRef(0);
   const createHandoff = parseSessionCreateHandoff(location.state);
-  // Turn locator: /s/{id}?turn=N (the /usage drilldown's per-turn action)
-  // smooth-scrolls the transcript to that turn's first block, retrying briefly
-  // while the view mounts and publishes its rows (same pattern as the
-  // subagent jump-back locator). Turns outside the loaded transcript window
-  // degrade to landing on the session.
-  const turnLocator = new URLSearchParams(location.search).get('turn');
+  // Deep-link locators: /s/{id}?turn=N (search hits, the /usage drilldown)
+  // and ?block={blockId} go through the timeline's one locate entry, which
+  // pages older history in, opens folds, and says so when the place is gone.
+  const locatorParams = new URLSearchParams(location.search);
+  const turnLocator = locatorParams.get('turn');
+  const blockLocator = locatorParams.get('block');
   useEffect(() => {
-    if (turnLocator === null) return;
-    let cancelled = false;
-    const scrollToTurn = (attemptsLeft: number): void => {
-      if (cancelled) return;
-      const target = document.querySelector(`[data-turn-id="${CSS.escape(turnLocator)}"]`);
-      if (target !== null) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        return;
-      }
-      if (attemptsLeft > 0) window.setTimeout(() => { scrollToTurn(attemptsLeft - 1); }, 150);
-    };
-    const timer = window.setTimeout(() => { scrollToTurn(12); }, 150);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [turnLocator, sessionId]);
+    if (turnLocator === null && blockLocator === null) return;
+    const target = blockLocator !== null
+      ? { kind: 'block' as const, blockId: blockLocator }
+      : { kind: 'turn' as const, turnId: normalizeTurnId(turnLocator!) };
+    void locateInTimeline(target, { sessionId, agentId: selectedAgentIdRef.current });
+  }, [turnLocator, blockLocator, sessionId]);
   const initialPromptRef = useRef(createHandoff.initialPrompt);
   const initialSkillRef = useRef(createHandoff.initialSkill);
   const initialOptionsRef = useRef(createHandoff);
@@ -2285,11 +2274,7 @@ export function SessionView({
     const parentId = forest.byId[panelFocusAgent]?.parentAgentId ?? panelFocusBlock?.parentAgentId;
     if (parentId === undefined || parentId === MAIN_AGENT_ID) {
       // Already on the main timeline: locate the spawning card in place.
-      const scrollToCard = (attemptsLeft: number): void => {
-        if (revealSubagentCard(panelFocusAgent)) return;
-        if (attemptsLeft > 0) window.setTimeout(() => { scrollToCard(attemptsLeft - 1); }, 150);
-      };
-      window.setTimeout(() => { scrollToCard(12); }, 150);
+      void locateInTimeline({ kind: 'subagent', agentId: panelFocusAgent }, { sessionId });
       return;
     }
     openAgent(parentId);

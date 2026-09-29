@@ -64,6 +64,7 @@ import {
 import { I18nProvider } from '../i18n';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import { revealSubagentCard } from './ActivityHistory';
+import { locateInTimeline, normalizeTurnId, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
 import { Markdown } from './Markdown';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
@@ -3597,5 +3598,111 @@ describe('read-run folding (fold-steps)', () => {
       expect(probe.container.querySelector('[data-tool-id="last"]')).not.toBeNull();
       expect(probe.container.textContent).toContain('boom');
     });
+  });
+});
+
+describe('settled history folds and the unified locate entry', () => {
+  const at = '2026-01-01T00:00:00.000Z';
+  const doneTool = (id: string, turnId: string, extra: Partial<Extract<Block, { kind: 'tool' }>> = {}): Block => ({
+    kind: 'tool', id, toolCallId: id, name: 'Bash', argsText: '', args: { command: `echo ${id}` }, display: undefined,
+    description: undefined, status: 'done', output: 'ok', isError: undefined, durationMs: undefined, progressText: undefined,
+    turnId, ...extra,
+  });
+  const think = (id: string, turnId: string): Block => ({ kind: 'thinking', id, text: 'weighing it', streaming: false, createdAt: at, turnId });
+  const turnBlocks = (turn: number, userText: string): Block[] => {
+    const turnId = `t${turn}`;
+    return [
+      { ...userBlock({ id: `u${turn}`, text: userText }), turnId },
+      think(`th${turn}`, turnId),
+      doneTool(`tool${turn}a`, turnId),
+      doneTool(`tool${turn}b`, turnId),
+      { ...assistantBlock(`a${turn}`, `answer ${turn}`), turnId },
+    ];
+  };
+
+  it('folds a finished turn’s work into one line, keeps the latest turn open, and expands in place', async () => {
+    const container = await renderTranscript([...turnBlocks(1, 'first'), ...turnBlocks(2, 'second')]);
+    const folds = container.querySelectorAll('[data-history-fold]');
+    expect(folds).toHaveLength(1);
+    expect(folds[0]!.textContent).toContain('Worked');
+    expect(folds[0]!.textContent).toContain('2 steps');
+    expect(folds[0]!.textContent).toContain('1 thought');
+    expect(container.querySelector('[data-block-id="tool1a"]')).toBeNull();
+    // The latest turn is not folded.
+    expect(container.querySelector('[data-block-id="tool2a"]')).not.toBeNull();
+    await act(async () => { click(folds[0]!.querySelector('[data-activity-toggle]')!); });
+    expect(container.querySelector('[data-history-fold-members] [data-block-id="tool1a"]')).not.toBeNull();
+  });
+
+  it('locates a block inside a fold and in older, unloaded history; reports what is missing', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    let state = transcriptState([...turnBlocks(5, 'recent'), ...turnBlocks(6, 'latest')], {
+      sessionId: 'session_locate', hasMoreHistory: true,
+    });
+    const onLoadOlder = vi.fn(async () => {
+      state = { ...state, blocks: [...turnBlocks(1, 'oldest'), ...state.blocks], hasMoreHistory: false };
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      return true;
+    });
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await settleVirtualizer();
+
+    let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+    await act(async () => {
+      outcome = await locateInTimeline({ kind: 'block', blockId: 'tool5a' }, { sessionId: 'session_locate', notify: false });
+    });
+    expect(outcome).toEqual({ status: 'found' });
+    expect(container.querySelector('[data-history-fold-open] [data-block-id="tool5a"]')).not.toBeNull();
+    expect(onLoadOlder).not.toHaveBeenCalled();
+
+    await act(async () => {
+      outcome = await locateInTimeline({ kind: 'turn', turnId: normalizeTurnId(1) }, { sessionId: 'session_locate', notify: false });
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ status: 'found' });
+
+    await act(async () => {
+      outcome = await locateInTimeline({ kind: 'block', blockId: 'gone' }, { sessionId: 'session_locate', notify: false });
+    });
+    expect(outcome).toEqual({ status: 'not-found' });
+  });
+
+  it('re-lands a shown agent tab on its latest message unless the reader scrolled up', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    const many = Array.from({ length: 8 }, (_, index) => turnBlocks(index + 1, `message ${index + 1}`)).flat();
+    const state = transcriptState(many, { sessionId: 'session_reveal' });
+    const render = (visible: boolean) => renderSettled(root, (
+      <Transcript state={state} agentId="agent-x" visible={visible} onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()} onAnswerQuestion={() => noopActions()} onDismissQuestion={() => noopActions()} />
+    ));
+    await render(true);
+    await settleVirtualizer();
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+
+    // A reader who scrolled up keeps their place when the tab is re-opened.
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    await act(async () => {
+      outcome = await locateInTimeline({ kind: 'latest', respectReader: true }, { sessionId: 'session_reveal', agentId: 'agent-x', notify: false });
+    });
+    expect(outcome).toEqual({ status: 'kept' });
+    expect(scroll.scrollTop).toBe(0);
+
+    // A plain reveal (opening at the latest) lands at the end.
+    await act(async () => {
+      outcome = await locateInTimeline({ kind: 'latest' }, { sessionId: 'session_reveal', agentId: 'agent-x', notify: false });
+    });
+    expect(outcome).toEqual({ status: 'found' });
+    expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(80);
+
+    // Hidden then shown: the end anchor survives the hidden box's resets.
+    await render(false);
+    await setTranscriptScroll(scroll, 0);
+    await render(true);
+    await settleVirtualizer();
+    expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(80);
   });
 });
