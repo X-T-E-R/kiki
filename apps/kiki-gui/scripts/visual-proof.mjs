@@ -15,11 +15,11 @@
  * and reaches them through the per-job accessors below, so the scenarios can
  * run in parallel without sharing state.
  *
- * Locale: KIKI_PROOF_LOCALE=zh runs the same suite against the Chinese UI —
- * the runner seeds `kiki.locale` into localStorage before every app boot and
- * the walkers read UI chrome through the per-locale S table below (fixture
- * transcript content stays English; only chrome localizes). The `i18n`
- * scenario additionally toggles the language through Settings → General.
+ * Views: a scenario that walks theme × width (or any other dimension) does not
+ * loop over it — it declares the dimensions in `MATRIX` below, and the runner
+ * runs one job per combination with its own context (locale, theme, viewport).
+ * `--matrix=default` keeps the canonical en/light/1440 view, `--matrix=all`
+ * expands every declared dimension.
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -50,17 +50,24 @@ const TIMELINE_GATED = new Set([
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** UI language for the run; the app defaults to English when unset. */
-const LOCALE = process.env.KIKI_PROOF_LOCALE === 'zh' ? 'zh' : 'en';
-
 /**
- * Optional whole-run theme (KIKI_PROOF_THEME=dark|light). Unset keeps the
- * stored/app default, so existing runs are unchanged. Seeded only when the
- * stored settings carry no theme, so walkers that flip the theme still win.
+ * Dimensions a scenario delegates to the runner. These walks used to loop
+ * theme × width themselves and shoot every combination in one page; now each
+ * combination is its own job, and the walk captions the single pass it is
+ * given. `locale` is a base dimension of every scenario and is not listed.
  */
-const THEME = process.env.KIKI_PROOF_THEME === 'dark' || process.env.KIKI_PROOF_THEME === 'light'
-  ? process.env.KIKI_PROOF_THEME
-  : null;
+const MATRIX = {
+  capabilities: ['theme', 'width'],
+  'composer-modes': ['theme', 'width'],
+  'context-compact': ['theme', 'width'],
+  'models-page': ['theme', 'width'],
+  'models-page-empty': ['theme', 'width'],
+  'native-ssh': ['theme', 'width'],
+  'profile-editor': ['theme', 'width'],
+  'settings-ia': ['theme', 'width'],
+  skins: ['theme'],
+  worktrees: ['theme', 'width'],
+};
 
 /**
  * UI-chrome strings the walkers key on, per locale. Values must match
@@ -1377,16 +1384,16 @@ async function scenarioComposerModes() {
   // Select once at desktop width: the theme reload keeps the session route,
   // and at 390 the sidebar is off-canvas.
   await selectSession('Fixture: approvals gallery');
-  for (const theme of ['light', 'dark']) {
-    await resizeViewport(1440);
-    await setProofTheme(theme);
-    await resizeViewport(1440);
-    await modeShots(`${theme}-1440`);
-    await resizeViewport(390);
-    await modeShots(`${theme}-390`);
+  const { theme, width } = job().view;
+  await modeShots(`${theme}-${width}`);
+  if (width === 390) {
     const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     if (overflows) throw new Error(`composer overflows the 390 viewport (${theme})`);
+    return;
   }
+  // The dark-only blocks below are not a theme × width matrix; they run once,
+  // in the dark job, and shoot both widths themselves.
+  if (theme !== 'dark') return;
   // /new hero with the Goal objective field (dark), both widths.
   await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
@@ -1425,7 +1432,6 @@ async function scenarioComposerModes() {
   await resizeViewport(390);
   await shot('composer-onboarding-permissions-dark-390');
   await page.keyboard.press('Escape');
-  await setProofTheme('light');
 }
 
 async function scenarioHeroShell() {
@@ -4208,7 +4214,7 @@ async function scenarioContextRing() {
 /** Settings IA v2: nav blocks, owned pages, storage line, search, redirects (scripts/visual-proof-settings-ia.mjs). */
 async function scenarioSettingsIa() {
   const walk = createSettingsIaWalker({
-    page, shot, resizeViewport, setProofTheme,
+    page, shot, resizeViewport, setProofTheme, view: job().view,
     webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
   });
   await walk();
@@ -4217,7 +4223,7 @@ async function scenarioSettingsIa() {
 /** Agents team view + profile editor (scripts/visual-proof-profile-editor.mjs). */
 async function scenarioProfileEditor() {
   const walk = createProfileEditorWalker({
-    page, shot, resizeViewport, setProofTheme, control,
+    page, shot, resizeViewport, setProofTheme, control, view: job().view,
     webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
   });
   await walk();
@@ -4225,16 +4231,16 @@ async function scenarioProfileEditor() {
 
 /** Settings › Models & providers (scripts/visual-proof-models-page.mjs). */
 const modelsPageWalker = () => createModelsPageWalker({
-  page, shot, resizeViewport, setProofTheme,
-  webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
+  page, shot, resizeViewport, setProofTheme, view: job().view,
+  webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: job().view.locale,
 });
 async function scenarioModelsPage() { await modelsPageWalker().populated(); }
 
 /** Worktree isolation: /new opt-in, branch marks, Worktrees card, archive option (scripts/visual-proof-worktrees.mjs). */
 async function scenarioWorktrees() {
   const walk = createWorktreesWalker({
-    page, shot, resizeViewport, setProofTheme, control,
-    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
+    page, shot, resizeViewport, setProofTheme, control, view: job().view,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: job().view.locale,
   });
   await walk();
 }
@@ -4243,8 +4249,8 @@ async function scenarioModelsPageEmpty() { await modelsPageWalker().empty(); }
 /** Native SSH: settings, composer hosts, SSH approval cards (scripts/visual-proof-native-ssh.mjs). */
 async function scenarioNativeSsh() {
   const walk = createNativeSshWalker({
-    page, shot, resizeViewport, setProofTheme, control,
-    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: LOCALE,
+    page, shot, resizeViewport, setProofTheme, control, view: job().view,
+    webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN, locale: job().view.locale,
   });
   await walk();
 }
@@ -4252,7 +4258,7 @@ async function scenarioNativeSsh() {
 /** Automatic-compaction point: panel, model editor, profile editor (scripts/visual-proof-context-compact.mjs). */
 async function scenarioContextCompact() {
   const walk = createContextCompactWalker({
-    page, shot, selectSession, resizeViewport, setProofTheme, control,
+    page, shot, selectSession, resizeViewport, setProofTheme, control, view: job().view,
     webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
   });
   await walk();
@@ -4581,7 +4587,8 @@ async function scenarioSessionActions() {
  * run's locale.
  */
 async function scenarioI18n() {
-  const other = LOCALE === 'zh' ? 'en' : 'zh';
+  const locale = job().view.locale;
+  const other = locale === 'zh' ? 'en' : 'zh';
   // General's "Composer & session" card title (st-card-composer) is the
   // locale probe; new-session defaults moved to Models & providers › Defaults.
   const otherTitle = STRINGS[other].composerCardTitle;
@@ -4603,9 +4610,9 @@ async function scenarioI18n() {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector(cardTitle(otherTitle), { timeout: 10_000 });
   // Back to the run locale.
-  await page.locator(`[data-locale-choice="${LOCALE}"]`).click();
+  await page.locator(`[data-locale-choice="${locale}"]`).click();
   await page.waitForSelector(cardTitle(S.composerCardTitle), { timeout: 5000 });
-  await shot(`i18n-restored-${LOCALE}`);
+  await shot(`i18n-restored-${locale}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -4613,7 +4620,7 @@ async function scenarioI18n() {
 /** /capabilities and the settings Skills / MCP / Plugins leaves (scripts/visual-proof-capabilities.mjs). */
 async function scenarioCapabilities() {
   const walk = createCapabilitiesWalker({
-    page, shot, setProofTheme, control,
+    page, shot, setProofTheme, control, view: job().view,
     webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
   });
   await walk();
@@ -4659,14 +4666,14 @@ async function scenarioFirstRun() {
   await shot('onboarding-2-model');
   // Back to the appearance step for the theme, then forward again.
   await wizardButton(S.onboardingBack).click();
-  await wizardButton(LOCALE === 'zh' ? '暗色' : 'Dark').click();
+  await wizardButton(job().view.locale === 'zh' ? '暗色' : 'Dark').click();
   await wizardButton(S.onboardingNext).click();
   await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
   await wizard().locator('[data-provider-template="moonshot"]').waitFor({ timeout: 5000 });
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   await shot('onboarding-2-model-dark');
   await wizardButton(S.onboardingBack).click();
-  await wizardButton(LOCALE === 'zh' ? '亮色' : 'Light').click();
+  await wizardButton(job().view.locale === 'zh' ? '亮色' : 'Light').click();
   await wizardButton(S.onboardingNext).click();
   await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
 
@@ -4805,6 +4812,7 @@ async function scenarioSkins() {
 
   const directory = await page.locator('[data-skin-directory]').textContent();
   console.log(`[skins] themes directory reported: ${directory}`);
+  const theme = job().view.theme;
 
   // Every skin on every surface it has to hold up on.
   const SURFACES = [
@@ -4823,9 +4831,11 @@ async function scenarioSkins() {
   ];
 
   for (const [source, id, themes] of SKINS) {
-    for (const theme of themes) {
-      await applySkin(source, id, theme);
-      for (const [label, path] of SURFACES) {
+    // The theme is the job's dimension (`matrix: ['theme']`): shoot this skin
+    // only in the theme it declares, in the context that already carries it.
+    if (!themes.includes(theme)) continue;
+    await applySkin(source, id, theme);
+    for (const [label, path] of SURFACES) {
         await page.goto(link(path), { waitUntil: 'domcontentloaded' });
         // Each route has its own landmark; waiting on the skin attribute alone
         // would screenshot a half-painted page.
@@ -4849,9 +4859,8 @@ async function scenarioSkins() {
         }
         await page.waitForTimeout(350);
         await shot(`skin-${id}-${theme}-${label}`);
-      }
-      console.log(`[skins] ${id}/${theme}: 4 surfaces captured`);
     }
+    console.log(`[skins] ${id}/${theme}: 4 surfaces captured`);
   }
 
   // Adjustments apply at once (the page has no draft): the accent repaints
@@ -5108,7 +5117,7 @@ const BODIES = [
   ['responsive', scenarioResponsive],
 ];
 
-export const scenarios = BODIES.map(([name, body]) => scenario(name, body, ENTRY_EXTRA[name] ?? {}));
+export const scenarios = BODIES.map(([name, body]) => scenario(name, body, { ...ENTRY_EXTRA[name], matrix: MATRIX[name] }));
 
 async function main() {
   const { failed } = await runProof({
@@ -5116,8 +5125,6 @@ async function main() {
     scenarios,
     argv: process.argv.slice(2),
     label: 'proof',
-    locale: LOCALE,
-    theme: THEME,
     onWebUp: (url) => { WEB_URL = url; },
   });
   process.exitCode = failed.length > 0 ? 1 : 0;

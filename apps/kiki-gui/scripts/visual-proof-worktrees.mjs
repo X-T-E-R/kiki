@@ -9,7 +9,7 @@
  * beside the other owners' proof output.
  */
 
-export function createWorktreesWalker({ page, shot, resizeViewport, setProofTheme, control, webUrl, fixtureUrl, fixtureToken, locale }) {
+export function createWorktreesWalker({ page, shot, resizeViewport, setProofTheme, control, view, webUrl, fixtureUrl, fixtureToken, locale }) {
   const url = (path) => `${webUrl}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${fixtureToken}`;
   const name = (base, theme, width) => `worktree-${base}-${theme}-${width}-${locale}`;
   // The worktree is shared: another owner's save can trigger a vite full
@@ -160,20 +160,17 @@ export function createWorktreesWalker({ page, shot, resizeViewport, setProofThem
   }
 
   return async function walk() {
-    await createFlow();
-    await removeFlows();
-    for (const theme of ['light', 'dark']) {
-      await setProofTheme(theme);
-      for (const width of [1440, 390]) {
-        await resizeViewport(width);
-        await reset();
-        await newSession(theme, width);
-        await session(theme, width);
-        await settings(theme, width);
-        await archive(theme, width);
-      }
+    // Theme and width come from the job (registry `matrix`). The creation and
+    // removal flows shoot no screens, so they ride the desktop job only.
+    const { theme, width } = view;
+    if (width === 1440) {
+      await createFlow();
+      await removeFlows();
     }
-    await setProofTheme('light');
-    await resizeViewport(1440);
+    await reset();
+    await newSession(theme, width);
+    await session(theme, width);
+    await settings(theme, width);
+    await archive(theme, width);
   };
 }

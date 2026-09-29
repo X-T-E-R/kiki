@@ -6,7 +6,7 @@
  * starts, and an external-engine profile. Both themes; 1440 and 390.
  */
 
-export function createProfileEditorWalker({ page, shot, resizeViewport, setProofTheme, webUrl, fixtureUrl, fixtureToken, control }) {
+export function createProfileEditorWalker({ page, shot, resizeViewport, setProofTheme, view, webUrl, fixtureUrl, fixtureToken, control }) {
   const url = (path) => `${webUrl}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${fixtureToken}`;
   const sheet = () => page.locator('[role="dialog"]');
   const assertNoOverflow = async (label) => {
@@ -182,12 +182,13 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
   }
 
   return async function scenarioProfileEditor() {
-    for (const theme of ['light', 'dark']) {
-      if (theme === 'dark') await control({ action: 'scenario', name: 'profile-editor' });
-      await setProofTheme(theme);
+    // Theme and width come from the job (registry `matrix`): `desktop` is the
+    // 1440 pass, `mobile` the 390 one, each in its own fresh context.
+    const { theme, width } = view;
+    if (width === 1440) {
       await desktop(theme);
-      await mobile(theme);
+      return;
     }
-    await setProofTheme('light');
+    await mobile(theme);
   };
 }

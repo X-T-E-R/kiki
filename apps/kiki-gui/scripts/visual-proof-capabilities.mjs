@@ -13,7 +13,7 @@
  * `cap-<state>-<theme>-<width>`.
  */
 
-export function createCapabilitiesWalker({ page, shot, setProofTheme, webUrl, fixtureUrl, fixtureToken, control }) {
+export function createCapabilitiesWalker({ page, shot, setProofTheme, webUrl, fixtureUrl, fixtureToken, control, view }) {
   const url = (path) => `${webUrl}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${fixtureToken}`;
   const go = async (path, selector) => {
     await page.goto(url(path), { waitUntil: 'domcontentloaded' });
@@ -225,10 +225,8 @@ export function createCapabilitiesWalker({ page, shot, setProofTheme, webUrl, fi
   }
 
   return async function walk() {
-    for (const theme of ['light', 'dark']) {
-      await setProofTheme(theme);
-      for (const width of [1440, 390]) await pass(theme, width);
-    }
-    await page.setViewportSize({ width: 1440, height: 900 });
+    // Theme and width come from the job (registry `matrix`): one (theme,
+    // width) pass per context instead of a loop over all four.
+    await pass(view.theme, view.width);
   };
 }

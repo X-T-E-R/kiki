@@ -7,7 +7,7 @@
  * 1440 and 390.
  */
 
-export function createContextCompactWalker({ page, shot, selectSession, resizeViewport, setProofTheme, webUrl, fixtureUrl, fixtureToken, control }) {
+export function createContextCompactWalker({ page, shot, selectSession, resizeViewport, setProofTheme, view, webUrl, fixtureUrl, fixtureToken, control }) {
   const openDetails = async () => {
     await page.waitForSelector('[data-context-meter]', { timeout: 10_000 });
     if (await page.locator('[data-context-details]').count() === 0) await page.click('[data-context-meter]');
@@ -146,20 +146,14 @@ export function createContextCompactWalker({ page, shot, selectSession, resizeVi
   }
 
   return async function scenarioContextCompact() {
-    for (const theme of ['light', 'dark']) {
-      await setProofTheme(theme);
-      if (theme === 'dark') {
-        // Fresh fixture state for the second pass.
-        await control({ action: 'scenario', name: 'context-compact' });
-        await page.reload({ waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(900);
-      }
-      await sessionStates(theme);
+    // Theme and width come from the job (registry `matrix`); the desktop job
+    // also carries the settings-side probes, the 390 job the phone pass.
+    const { theme, width } = view;
+    if (width !== 1440) {
       await mobile(theme);
-      await settings(theme);
-      await page.goto(settingsUrl('/new'), { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(600);
+      return;
     }
-    await setProofTheme('light');
+    await sessionStates(theme);
+    await settings(theme);
   };
 }

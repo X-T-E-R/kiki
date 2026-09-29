@@ -14,7 +14,7 @@
  * .tmp/visual-proof/batch3), prefixed with the proof locale.
  */
 
-export function createNativeSshWalker({ page, shot, resizeViewport, setProofTheme, control, webUrl, fixtureUrl, fixtureToken, locale }) {
+export function createNativeSshWalker({ page, shot, resizeViewport, setProofTheme, control, view, webUrl, fixtureUrl, fixtureToken, locale }) {
   const url = (path) => `${webUrl}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${fixtureToken}`;
   const name = (base, theme, width) => `ssh-${base}-${theme}-${width}-${locale}`;
   const open = async (path, selector) => {
@@ -196,27 +196,21 @@ export function createNativeSshWalker({ page, shot, resizeViewport, setProofThem
   }
 
   return async function walk() {
-    for (const theme of ['light', 'dark']) {
-      await setProofTheme(theme);
-      for (const width of [1440, 390]) {
-        await resizeViewport(width);
-        await reset();
-        await settings(theme, width);
-        await reset();
-        await composer(theme, width);
-        await reset();
-        await approvals(theme, width);
-      }
-    }
-    // Short desktop: the sign-in forms must still reach their buttons.
-    for (const theme of ['light', 'dark']) {
-      await setProofTheme(theme);
+    // Theme and width come from the job (registry `matrix`): one pass each.
+    const { theme, width } = view;
+    await reset();
+    await settings(theme, width);
+    await reset();
+    await composer(theme, width);
+    await reset();
+    await approvals(theme, width);
+    // Short desktop: the sign-in forms must still reach their buttons. It is a
+    // 1440-only probe of a second viewport, so it rides the desktop job.
+    if (width === 1440) {
       await page.setViewportSize({ width: 1280, height: 720 });
       await page.waitForTimeout(300);
       await reset();
       await approvals(theme, '1280x720');
     }
-    await setProofTheme('light');
-    await resizeViewport(1440);
   };
 }

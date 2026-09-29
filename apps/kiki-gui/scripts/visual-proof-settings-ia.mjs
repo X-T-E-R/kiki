@@ -34,7 +34,7 @@ const HOST_PORT = /\b(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?|:\d{4,5}\b/;
 /** Scope wording that must not come back while the server is the local one. */
 const SCOPE_WORDS = /This device|All sessions|Applies to all your sessions|Only affects this app|Saved on the (?:remote )?server/;
 
-export function createSettingsIaWalker({ page, shot, resizeViewport, setProofTheme, webUrl, fixtureUrl, fixtureToken }) {
+export function createSettingsIaWalker({ page, shot, resizeViewport, setProofTheme, view, webUrl, fixtureUrl, fixtureToken }) {
   const url = (path) => {
     const [base, hash] = path.split('#');
     const sep = base.includes('?') ? '&' : '?';
@@ -159,10 +159,10 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
   }
 
   return async function walk() {
-    for (const theme of ['light', 'dark']) {
-      await resizeViewport(1440);
-      await page.goto(url('/settings/general'), { waitUntil: 'domcontentloaded' });
-      await setProofTheme(theme);
+    // Theme and width come from the job (registry `matrix`): the desktop and
+    // the 390 pass are separate contexts, so this walk runs one of them.
+    const { theme, width } = view;
+    if (width === 1440) {
       await nav(theme);
       await pages(theme, 1440);
       await unsaved(theme, 1440);
@@ -170,13 +170,11 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
       await redirects(theme);
       await experimental(theme, 1440);
       await labsIndex(theme);
-      await resizeViewport(390);
-      await pages(theme, 390);
-      await experimental(theme, 390);
-      await unsaved(theme, 390);
-      await mobileNav(theme);
+      return;
     }
-    await resizeViewport(1440);
-    await setProofTheme('light');
+    await pages(theme, 390);
+    await experimental(theme, 390);
+    await unsaved(theme, 390);
+    await mobileNav(theme);
   };
 }

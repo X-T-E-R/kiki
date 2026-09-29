@@ -51,6 +51,50 @@ const MATRIX_PREFIX = '--matrix=';
 const KEEP_RUNS = 10;
 const RUN_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
 
+/**
+ * Values a declared matrix dimension takes under `--matrix=all`. `--matrix=default`
+ * keeps only the canonical en/light/1440 view of every scenario.
+ */
+export const MATRIX_VALUES = {
+  locale: ['en', 'zh'],
+  theme: ['light', 'dark'],
+  width: [1440, 390],
+};
+const CANONICAL_VIEW = { locale: 'en', theme: 'light', width: 1440 };
+/** Every scenario runs in each locale; theme/width are opt-in per scenario. */
+const BASE_DIMENSIONS = ['locale'];
+
+function product(choices) {
+  return choices.reduce((rows, values) => rows.flatMap((row) => values.map((value) => [...row, value])), [[]]);
+}
+
+/** Job ids carry the non-canonical dimensions, so a FAIL line names its view. */
+function jobId(name, view) {
+  const extras = ['theme', 'width'].filter((dim) => view[dim] !== CANONICAL_VIEW[dim]).map((dim) => `${dim}=${view[dim]}`);
+  if (view.locale !== CANONICAL_VIEW.locale) extras.unshift(`locale=${view.locale}`);
+  return extras.length === 0 ? name : `${name}[${extras.join(' ')}]`;
+}
+
+/**
+ * One job per scenario × view. A scenario declares the dimensions its walk
+ * really varies (`matrix: ['theme', 'width']`); the runner gives each
+ * combination its own context, so no walker has to loop over them itself.
+ */
+export function expandJobs(scenarios, { only, matrix }) {
+  const jobs = [];
+  for (const entry of scenarios) {
+    if (only !== null && !only.includes(entry.name)) continue;
+    const dimensions = [...BASE_DIMENSIONS, ...(entry.matrix ?? [])];
+    const choices = dimensions.map((dim) => (matrix === 'all' ? MATRIX_VALUES[dim] : [CANONICAL_VIEW[dim]]));
+    for (const combination of product(choices)) {
+      const view = { ...CANONICAL_VIEW };
+      dimensions.forEach((dim, index) => { view[dim] = combination[index]; });
+      jobs.push({ entry, id: jobId(entry.name, view), view });
+    }
+  }
+  return jobs;
+}
+
 export function runId(now = new Date()) {
   return now.toISOString().replace(/[:.]/g, '-');
 }
@@ -337,9 +381,6 @@ export async function runProof({
   label = 'proof',
   goldensDir = join(root, 'screenshots', 'batch3'),
   distDir = join(root, '.tmp', 'visual-proof', 'dist'),
-  locale = 'en',
-  theme = null,
-  width = 1440,
   workers = Math.max(1, Number(process.env.KIKI_PROOF_WORKERS ?? 4)),
   jobTimeoutMs = Number(process.env.KIKI_PROOF_JOB_TIMEOUT_MS ?? 60_000),
   runTimeoutMs = Number(process.env.KIKI_PROOF_RUN_TIMEOUT_MS ?? 15 * 60_000),
@@ -347,9 +388,7 @@ export async function runProof({
 }) {
   const names = scenarios.map((entry) => entry.name);
   const options = selectOutput({ root, argv, scenarioNames: names, goldensDir });
-  const jobs = scenarios
-    .filter((entry) => options.only === null || options.only.includes(entry.name))
-    .map((entry) => ({ entry, id: entry.name, view: { locale: entry.locale ?? locale, theme: entry.theme ?? theme, width: entry.width ?? width } }));
+  const jobs = expandJobs(scenarios, options);
   await primeFixtureIds(root, [...new Set(jobs.map((job) => job.entry.fixture ?? job.entry.name))]);
 
   mkdirSync(options.outputDir, { recursive: true });
@@ -365,6 +404,7 @@ export async function runProof({
   }
   console.log(`[${label}] mode: ${options.updateGoldens ? 'update-goldens' : 'disposable'}`);
   console.log(`[${label}] output: ${options.outputDir}`);
+  console.log(`[${label}] matrix: ${options.matrix}`);
   console.log(`[${label}] jobs: ${jobs.length} (workers ${Math.min(workers, Math.max(jobs.length, 1))})`);
 
   const heartbeat = setTimeout(() => {
@@ -404,7 +444,7 @@ export async function runProof({
     const worker = async () => {
       for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         const result = await runJob({ browser, job: next, webUrl, out: options.outputDir, shotNames, jobTimeoutMs });
-        console.log(`[${label}] ${result.ok ? 'ok  ' : 'FAIL'} ${result.id} ${result.ms}ms${result.ok ? '' : ` — ${result.error}`}`);
+        console.log(`[${label}] ${result.ok ? 'ok  ' : 'FAIL'} ${result.id} ${result.ms}ms ${result.shots.length} shots${result.ok ? '' : ` — ${result.error}`}`);
         results.push(result);
       }
     };
