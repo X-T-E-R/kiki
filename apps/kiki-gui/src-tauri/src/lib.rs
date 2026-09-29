@@ -1607,6 +1607,59 @@ fn reload_space_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn notification_action_opens(action: &str) -> bool {
+    matches!(action, "default" | "open")
+}
+
+fn deliver_notification_click(app: &AppHandle, route: &str) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit("kiki://notification-click", serde_json::json!({ "route": route }));
+}
+
+fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>) -> Result<(), String> {
+    let mut notification = notify_rust::Notification::new();
+    notification.summary(&title).body(body.as_deref().unwrap_or(""));
+    if route.is_some() { notification.action("open", "Open Kiki"); }
+    #[cfg(windows)]
+    if let Ok(exe) = env::current_exe() {
+        let directory = exe.parent().map(|path| path.to_string_lossy().replace('\\', "/"));
+        if !directory.as_deref().is_some_and(|path| path.ends_with("/target/debug") || path.ends_with("/target/release")) {
+            notification.app_id(&app.config().identifier);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = notify_rust::set_application(if tauri::is_dev() { "com.apple.Terminal" } else { &app.config().identifier });
+        if let Some(route) = route {
+            let handle = notify_rust::NotificationHandle::new(notification.finalize());
+            thread::spawn(move || handle.wait_for_action(|action| {
+                if notification_action_opens(action) { deliver_notification_click(&app, &route); }
+            }));
+            return Ok(());
+        }
+    }
+    let handle = notification.show().map_err(|error| format!("Cannot show desktop notification: {error}"))?;
+    #[cfg(not(target_os = "macos"))]
+    if let Some(route) = route {
+        thread::spawn(move || handle.wait_for_action(|action| {
+            if notification_action_opens(action) { deliver_notification_click(&app, &route); }
+        }));
+    }
+    #[cfg(target_os = "macos")]
+    let _ = handle;
+    Ok(())
+}
+
+#[tauri::command]
+async fn send_desktop_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route))
+        .await.map_err(|error| format!("Notification task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn switch_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, home_id: String) -> Result<DesktopSpace, DesktopStartupFailure> {
     let manager = manager.inner().clone();
@@ -3121,6 +3174,14 @@ mod tests {
         assert!(requested_home(&["kiki-desktop".into(), "--home".into()]).is_err());
         assert!(requested_home(&["kiki-desktop".into(), "--home".into(), "relative".into()]).is_err());
         assert!(requested_home(&["kiki-desktop".into(), "--home".into(), root.into(), "--home".into(), root.into()]).is_err());
+    }
+
+    #[test]
+    fn notification_activation_routes_only_clicks_not_dismissals() {
+        assert!(notification_action_opens("default"));
+        assert!(notification_action_opens("open"));
+        assert!(!notification_action_opens("__closed"));
+        assert!(!notification_action_opens("reply"));
     }
 
     #[test]

@@ -30,6 +30,7 @@
     "allow-disconnect-ssh-profile",
     "allow-cancel-desktop-startup",
     "allow-show-main-window",
+    "allow-send-desktop-notification",
     "allow-write-host-file-text",
     "allow-reveal-host-path",
     "allow-open-host-path",

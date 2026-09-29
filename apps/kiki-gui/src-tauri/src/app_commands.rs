@@ -15,6 +15,7 @@ macro_rules! app_commands {
             disconnect_ssh_profile,
             cancel_desktop_startup,
             show_main_window,
+            send_desktop_notification,
             write_host_file_text,
             reveal_host_path,
             open_host_path,

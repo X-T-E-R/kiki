@@ -4,7 +4,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   isPermissionGranted,
   requestPermission,
-  sendNotification,
 } from '@tauri-apps/plugin-notification';
 
 import type {
@@ -42,13 +41,7 @@ async function ensureNotificationPermission(): Promise<boolean> {
   return granted;
 }
 
-/**
- * Native notification clicks. The desktop notification plugin reports no
- * click on Windows, macOS or Linux; the shell emits
- * `kiki://notification-click` with `{ route }` when it can, and until it
- * does this subscription simply never fires (the notification still shows,
- * and the activity inbox and badge carry the item).
- */
+/** Native notification clicks forwarded by the desktop shell with `{ route }`. */
 function onNotificationClick(callback: (route: string) => void): () => void {
   let unsubscribed = false;
   let unlisten: (() => void) | undefined;
@@ -142,8 +135,7 @@ export const tauriHost: TauriHostAdapter = {
   },
   async notify(options) {
     if (!(await ensureNotificationPermission())) return;
-    const { route, tag: _tag, ...rest } = options;
-    sendNotification(route === undefined ? rest : { ...rest, extra: { route } });
+    await invoke('send_desktop_notification', { title: options.title, body: options.body, route: options.route });
   },
   onNotificationClick,
   async setUnreadBadge(count) {
